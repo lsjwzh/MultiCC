@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/production-question-host');
+const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
 const { addonPath, getNative } = require('../src/native/runtime');
 

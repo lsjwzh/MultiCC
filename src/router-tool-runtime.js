@@ -23,8 +23,6 @@ const MAX_MESSAGE_LENGTH = 256 * 1024;
 const MAX_RESULT_LENGTH = 512 * 1024;
 const MAX_QUESTION_LENGTH = 16 * 1024;
 const MAX_REASON_LENGTH = 4 * 1024;
-const MAX_OPTION_LENGTH = 512;
-const MAX_OPTIONS = 12;
 const MAX_PENDING_EXTERNAL_WAITS = 8;
 const MAX_EXTERNAL_WAIT_SECONDS = 7 * 24 * 60 * 60;
 const MIN_CALLBACK_TIMEOUT_SECONDS = 10;
@@ -71,21 +69,6 @@ function cleanText(value, field, maxLength) {
 function cleanOptionalText(value, field, maxLength) {
   if (value == null || String(value).trim() === '') return '';
   return cleanText(value, field, maxLength);
-}
-
-function cleanOptions(value) {
-  if (value == null) return [];
-  if (!Array.isArray(value)) {
-    throw new RouterToolError('invalid_arguments', 'options must be an array');
-  }
-  if (value.length > MAX_OPTIONS) {
-    throw new RouterToolError('invalid_arguments', `options cannot exceed ${MAX_OPTIONS} items`);
-  }
-  const options = value.map(option => cleanText(option, 'option', MAX_OPTION_LENGTH));
-  if (new Set(options).size !== options.length) {
-    throw new RouterToolError('invalid_arguments', 'options must be unique');
-  }
-  return options;
 }
 
 function rejectUnknownArguments(args, allowed) {
@@ -923,29 +906,12 @@ function createRouterToolRuntime({
   }
 
   async function requestUserInput(context, args) {
-    const question = cleanText(args.question, 'question', MAX_QUESTION_LENGTH);
-    const reason = cleanOptionalText(args.reason, 'reason', MAX_REASON_LENGTH);
-    const options = cleanOptions(args.options);
-    const allowMultiple = args.allow_multiple === true;
-    if (allowMultiple && options.length < 2) {
-      throw new RouterToolError(
-        'invalid_arguments',
-        'allow_multiple requires at least two options',
-      );
-    }
-    const requestId = `usrq-${stableSuffix([
-      context.sessionId, context.turnId, question, reason,
-      options.join('\0'), allowMultiple,
-    ], cryptoImpl)}`;
-    const recorded = await recordUserInput({
-      requestId,
-      sessionId: context.sessionId,
-      turnId: context.turnId,
-      question,
-      reason,
-      options,
-      allowMultiple,
-    });
+    const { signal, error } = JSON.parse(getNative().sessionQuestionRequest('toolSignal', JSON.stringify({
+      sessionId: context.sessionId, turnId: context.turnId, args,
+    })));
+    if (error) throw new RouterToolError(error.code, error.message, error.status);
+    const requestId = signal.requestId;
+    const recorded = await recordUserInput(signal);
     if (!recorded || recorded.ok !== true) {
       throw new RouterToolError(
         recorded?.code || 'user_input_signal_rejected',

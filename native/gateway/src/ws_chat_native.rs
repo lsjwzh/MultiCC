@@ -5,6 +5,7 @@ mod auth;
 mod frames;
 mod launch;
 mod provider;
+mod question;
 mod route;
 mod shell;
 mod store;
@@ -326,18 +327,31 @@ where
             return;
         }
     };
-    let queue = {
-        let file = app.data_root.join("orchestration.sqlite");
-        let id = id.to_owned();
-        tokio::task::spawn_blocking(move || {
-            multicc_core::orchestration_store::chat_queue_snapshot(&file, &id)
-        })
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|result| result)
-    };
-    let (mut attached, frames) = {
+    let (mut attached, frames, queue) = {
         let state = session.lock().await;
+        let root = app.data_root.clone();
+        let session_id = id.to_owned();
+        let record = state.stored.record.clone();
+        let captured = shell::blocking(move || {
+            let question = question::read(&root, &session_id, &record)?;
+            let queue = multicc_core::orchestration_store::chat_queue_snapshot(
+                &root.join("orchestration.sqlite"),
+                &session_id,
+            );
+            Ok((question, queue))
+        })
+        .await;
+        let (question, queue) = match captured {
+            Ok(captured) => captured,
+            Err(error) => {
+                refuse(
+                    &mut socket,
+                    error_frame("session_work_owner_unavailable", &error),
+                )
+                .await;
+                return;
+            }
+        };
         let Some(attached) = app.native_chat.hub.attach(id, QUEUE_CAPACITY, QUEUE_BYTES) else {
             return;
         };
@@ -351,7 +365,18 @@ where
             shell_route.required,
         )
         .await;
-        (attached, frames)
+        let mut frames = frames;
+        let last = question
+            .category
+            .get("lastResolvedUserInput")
+            .unwrap_or(&V::Null);
+        if let Some(frame) = wire(&multicc_core::session_question::replay(
+            &question.pending,
+            last,
+        )) {
+            frames.push(frame);
+        }
+        (attached, frames, queue)
     };
     let resume_queue = queue.as_ref().is_ok_and(|frame| {
         store::text(frame, "state") == "idle"
@@ -532,6 +557,39 @@ async fn input(
     }
 }
 
+pub(crate) async fn question_access(app: &App, id: &str) -> Result<Option<bool>, String> {
+    let root = app.data_root.clone();
+    let id = id.to_owned();
+    shell::blocking(move || {
+        Ok(store::lookup(&store::records(&root)?, &id)
+            .map(|record| record.get("taskExecutionSlot") == Some(&V::Bool(true))))
+    })
+    .await
+}
+
+pub(crate) async fn dismiss_question(
+    app: &App,
+    id: &str,
+    request_id: &str,
+) -> Result<Value, String> {
+    let state = app.native_chat.session(app, id).await?;
+    let state = state.lock().await;
+    let root = app.data_root.clone();
+    let session_id = id.to_owned();
+    let record = state.stored.record.clone();
+    let command = value(
+        json!({"action":"resolve","requestId":request_id,"dismissed":true,
+        "nativeDismissal":true,"streaming":state.active.is_some() || state.shell_worker}),
+    );
+    let result =
+        shell::blocking(move || question::transition(&root, &session_id, &record, command)).await?;
+    if result.notification != V::Null {
+        app.native_chat.publish(id, result.notification, false);
+        return Ok(json!({"ok":true,"requestId":request_id,"resolution":"dismissed"}));
+    }
+    Ok(result.result)
+}
+
 async fn cancel_active(session: &Mutex<Session>) {
     let mut session = session.lock().await;
     if let Some(cancel) = session.active.as_mut().and_then(|turn| turn.cancel.take()) {
@@ -551,14 +609,49 @@ async fn admit(
     let client_id = incoming["clientMsgId"]
         .as_str()
         .filter(|value| !value.trim().is_empty());
-    if let Some(client_id) = client_id {
-        if let Some(row) = state.stored.messages.iter().rev().find(|row| {
-            is_role(row, "user") && optional_text(row, "clientMsgId").as_deref() == Some(client_id)
-        }) {
-            app.native_chat.send(connection, metadata(row));
+    let answer = incoming["userInputRequestId"]
+        .as_str()
+        .map(js::js_trim)
+        .filter(|id| !id.is_empty());
+    let previous = client_id
+        .and_then(|client_id| {
+            state.stored.messages.iter().rev().find(|row| {
+                is_role(row, "user")
+                    && optional_text(row, "clientMsgId").as_deref() == Some(client_id)
+            })
+        })
+        .cloned();
+    let replayed_answer = if let Some(row) = previous {
+        if answer.is_none() && row.get("userInputRequestId").is_none() {
+            app.native_chat.send(connection, metadata(&row));
             return Ok(());
         }
-    }
+        if optional_text(&row, "userInputRequestId").as_deref() != answer
+            || store::text(&row, "content") != prompt
+        {
+            return Err((
+                "idempotency_conflict",
+                "Reply does not match the saved message".into(),
+            ));
+        }
+        let (root, session_id, record) = (
+            app.data_root.clone(),
+            id.to_owned(),
+            state.stored.record.clone(),
+        );
+        let snapshot = shell::blocking(move || question::read(&root, &session_id, &record))
+            .await
+            .map_err(|error| ("session_work_owner_unavailable", error))?;
+        if optional_text(&snapshot.pending, "requestId").as_deref() != answer
+            || !multicc_core::session_question::is_open(&snapshot.pending)
+        {
+            app.native_chat.send(connection, metadata(&row));
+            return Ok(());
+        }
+        Some(row)
+    } else {
+        None
+    };
     if state.active.is_some() || state.shell_worker {
         return Err((
             "session_busy",
@@ -584,7 +677,6 @@ async fn admit(
         || incoming["unattended"].is_object()
         || incoming["goal"] == true
         || incoming["taskShell"] == true
-        || incoming["userInputRequestId"].is_string()
     {
         return Err((
             "chat_route_unavailable",
@@ -597,7 +689,18 @@ async fn admit(
             "Chat message exceeds the input limit".into(),
         ));
     }
-    let launched = prepare_turn(app, id, &mut state, prompt, client_id, None).await?;
+    let launched = prepare_turn(
+        app,
+        id,
+        &mut state,
+        prompt,
+        client_id,
+        TurnInput::Direct {
+            answer,
+            previous: replayed_answer,
+        },
+    )
+    .await?;
     let app = Arc::clone(app);
     let prompt = prompt.to_owned();
     let session = Arc::clone(session);
@@ -617,16 +720,55 @@ struct RunningTurn {
     provider_proxy: Option<provider::Proxy>,
 }
 
+enum TurnInput<'a> {
+    Direct {
+        answer: Option<&'a str>,
+        previous: Option<V>,
+    },
+    Shell(&'a shell::Delivery),
+}
+
 async fn prepare_turn(
     app: &App,
     id: &str,
     state: &mut Session,
     prompt: &str,
     client_id: Option<&str>,
-    delivery: Option<&shell::Delivery>,
+    input: TurnInput<'_>,
 ) -> Result<RunningTurn, (&'static str, String)> {
+    let (delivery, answer, previous) = match input {
+        TurnInput::Direct { answer, previous } => (None, answer, previous),
+        TurnInput::Shell(delivery) => (Some(delivery), None, None),
+    };
+    let root = app.data_root.clone();
+    let session_id = id.to_owned();
+    let record = state.stored.record.clone();
+    let snapshot = shell::blocking(move || question::read(&root, &session_id, &record))
+        .await
+        .map_err(|error| ("session_work_owner_unavailable", error))?;
+    if let Some(answer) = answer {
+        let pending = &snapshot.pending;
+        let current = snapshot.category.get("userInputSignalTurnId");
+        if optional_text(pending, "requestId").as_deref() != Some(answer)
+            || (js::truthy_opt(current) && current != pending.get("turnId"))
+        {
+            return Err((
+                "stale_control",
+                "The question belongs to another turn".into(),
+            ));
+        }
+        if !multicc_core::session_question::is_open(pending) {
+            return Err((
+                "answer_already_resolved",
+                "The question has already been settled".into(),
+            ));
+        }
+    }
     let (turn_id, message_id, prompt_uuid) = (
-        new_id("turn")?,
+        previous
+            .as_ref()
+            .and_then(|row| optional_text(row, "turnId"))
+            .map_or_else(|| new_id("turn"), Ok)?,
         new_id("m")?,
         random_id::random_uuid_v4().map_err(|error| ("internal_error", error.to_string()))?,
     );
@@ -655,7 +797,7 @@ async fn prepare_turn(
     if let Some(delivery) = delivery {
         quota_guard::set(&mut user, "taskId", V::from(delivery.task.as_str()));
         quota_guard::set(&mut user, "deliveryId", V::from(delivery.entry.as_str()));
-        quota_guard::set(&mut user, "taskStart", V::Bool(true));
+        quota_guard::set(&mut user, "taskStart", V::Bool(!delivery.answer));
         quota_guard::set(&mut user, "taskSource", V::from("task-shell"));
         quota_guard::set(&mut user, "taskText", V::from(prompt));
         if let Some(role) = delivery.role_prompt.as_ref() {
@@ -663,16 +805,42 @@ async fn prepare_turn(
         }
     }
     quota_guard::set(&mut user, "id", V::from(message_id));
-    save_row(&mut state.stored, user.clone())
-        .await
-        .map_err(|message| ("message_not_durable", message))?;
+    if let Some(answer) = answer {
+        quota_guard::set(&mut user, "userInputRequestId", V::from(answer));
+    }
+    if let Some(previous) = previous {
+        user = previous;
+    } else {
+        save_row(&mut state.stored, user.clone())
+            .await
+            .map_err(|message| ("message_not_durable", message))?;
+    }
     if let Some(delivery) = delivery {
         delivery
             .handoff()
             .await
             .map_err(|message| ("chat_handoff_failed", message))?;
     }
+    let root = app.data_root.clone();
+    let session_id = id.to_owned();
+    let record = state.stored.record.clone();
+    let command = value(
+        json!({"action":"beginTurn","expectedVersion":snapshot.version,"turnId":turn_id,
+        "originContinue":delivery.is_some_and(|delivery| delivery.answer) || answer.is_some(),"answerRequestId":answer,
+        "activeTurn":{"_activeTurn":{"turnId":turn_id},"isStreaming":true,
+            "_currentTaskId":delivery.map(|delivery| &delivery.task)}}),
+    );
+    let question =
+        shell::blocking(move || question::transition(&root, &session_id, &record, command))
+            .await
+            .map_err(|error| ("session_work_owner_unavailable", error))?;
+    if question.result["ok"] != true {
+        return Err(("stale_control", question.result.to_string()));
+    }
     let host = &app.native_chat;
+    if question.notification != V::Null {
+        host.publish(id, question.notification, false);
+    }
     host.publish(id, metadata(&user), false);
     let (cancel, cancelled) = oneshot::channel();
     let mut selected = route.event(id, "selected", "none");
@@ -715,35 +883,46 @@ async fn prepare_turn(
 async fn run_turn(
     app: &App,
     id: &str,
-    session: &Mutex<Session>,
-    launched: RunningTurn,
+    session: &Arc<Mutex<Session>>,
+    mut launched: RunningTurn,
     prompt: &str,
     scheduled: Option<(&shell::Writer, &shell::Delivery)>,
 ) -> TurnEnd {
     let host = &app.native_chat;
     let turn_id = launched.turn_id.as_str();
     let attempt_id = launched.attempt_id.as_str();
-    let result = chat_turn_host::run(
-        launched.options,
-        prompt,
-        &launched.prompt_uuid,
-        launched.cancelled,
-        |event| observe(host, id, session, turn_id, event),
-        |pid| async move {
-            if let Some((writer, delivery)) = scheduled {
-                writer.started(pid, turn_id, attempt_id, delivery).await?;
-            }
-            Ok(())
+    let question_tool =
+        question::open(&mut launched.options.launch, app, session, id, turn_id).await;
+    let result = match question_tool {
+        Ok(_tool) => {
+            chat_turn_host::run(
+                launched.options,
+                prompt,
+                &launched.prompt_uuid,
+                launched.cancelled,
+                |event| observe(host, id, session, turn_id, event),
+                |pid| async move {
+                    if let Some((writer, delivery)) = scheduled {
+                        writer.started(pid, turn_id, attempt_id, delivery).await?;
+                    }
+                    Ok(())
+                },
+            )
+            .await
+        }
+        Err(error) => chat_turn_host::RunResult {
+            outcome: chat_turn_host::Outcome::Failed(error),
+            writer_stopped: true,
         },
-    )
-    .await;
+    };
     drop(launched.provider_proxy);
     let usage_durable = matches!(&result.outcome, chat_turn_host::Outcome::Result(event) if event["usage"].is_object());
-    let phase = finish(app, id, session, &launched.turn_id, result.outcome).await;
+    let (phase, awaiting) = finish(app, id, session, &launched.turn_id, result.outcome).await;
     TurnEnd {
         id: launched.turn_id,
         attempt: launched.attempt_id,
         phase,
+        awaiting,
         stopped: result.writer_stopped,
         usage_durable: usage_durable && phase == "succeeded",
     }
@@ -753,6 +932,7 @@ struct TurnEnd {
     id: String,
     attempt: String,
     phase: &'static str,
+    awaiting: Option<String>,
     stopped: bool,
     usage_durable: bool,
 }
@@ -906,12 +1086,12 @@ async fn finish(
     session: &Mutex<Session>,
     turn_id: &str,
     outcome: chat_turn_host::Outcome,
-) -> &'static str {
+) -> (&'static str, Option<String>) {
     use chat_turn_host::Outcome;
     let host = &app.native_chat;
     let mut state = session.lock().await;
     if !state.active.as_ref().is_some_and(|turn| turn.id == turn_id) {
-        return "failed";
+        return ("failed", None);
     }
     let mut turn = state.active.take().expect("owned turn");
     let outcome = if turn.cancel.is_none() {
@@ -1050,6 +1230,35 @@ async fn finish(
             "released"
         }
     };
+    let root = app.data_root.clone();
+    let session_id = id.to_owned();
+    let record = state.stored.record.clone();
+    let command =
+        value(json!({"action":"finishNative","turnId":turn_id,"succeeded":phase == "succeeded"}));
+    let question = shell::blocking(move || {
+        let finished = question::transition(&root, &session_id, &record, command)?;
+        if finished.result["ok"] != true {
+            return Err(finished.result.to_string());
+        }
+        question::read(&root, &session_id, &record)
+    })
+    .await;
+    let (phase, awaiting) = match question {
+        Ok(question) => {
+            let awaiting = multicc_core::session_question::is_open(&question.pending)
+                .then(|| optional_text(&question.pending, "requestId"))
+                .flatten();
+            (phase, awaiting)
+        }
+        Err(error) => {
+            host.publish(
+                id,
+                error_frame("session_work_owner_unavailable", &error),
+                false,
+            );
+            ("failed", None)
+        }
+    };
     if let Some(task) = turn.task.as_deref() {
         let root = app.data_root.clone();
         let session_id = id.to_owned();
@@ -1116,7 +1325,14 @@ async fn finish(
             .and_then(|task| optional_text(task, "goal"));
         host.publish(
             id,
-            turn.attribute(frames::notify(phase, goal.as_deref().unwrap_or(""))),
+            turn.attribute(frames::notify(
+                if awaiting.is_some() && phase == "succeeded" {
+                    "waiting"
+                } else {
+                    phase
+                },
+                goal.as_deref().unwrap_or(""),
+            )),
             false,
         );
     }
@@ -1126,7 +1342,7 @@ async fn finish(
         turn.attribute(value(json!({"type":"stream_end"}))),
         false,
     );
-    phase
+    (phase, awaiting)
 }
 
 async fn save_assistant(

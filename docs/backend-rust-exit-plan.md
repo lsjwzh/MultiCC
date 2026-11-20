@@ -1,5 +1,7 @@
 # Rust backend exit plan
 
+The current execution order and whole-file retirement criteria are in [Node 后端分批搬迁计划](rust-migration/node-retirement-batches.md). The first batch is session questions and their full lifecycle.
+
 ## Goal and acceptance
 
 Continue the existing plan: steps 1–5 are complete; step 6 is the backend migration and remains open. The Goal created on 2026-11-08 stays active until **all four** criteria below have evidence. Completing one native kernel, addon or route batch does not complete this goal.

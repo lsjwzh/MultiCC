@@ -151,7 +151,7 @@ function fixture(t, overrides = {}) {
     storeOptions: overrides.storeOptions || {},
   });
   if (databaseFile) {
-    input = require('../src/session-work/production-question-host').createProductionQuestionHost({
+    input = require('../src/session-work/host').createProductionQuestionHost({
       getStore: () => runtime.store, getSession: id => ({ _currentTaskId: recovery(id)?.taskId || null }),
       getState: id => { const state = recovery(id) || {}; return { ...state, pendingUserInput: state.pendingUserInput || null }; },
       getRecord: id => ({ unattended: recovery(id)?.unattended || null }), setState: () => {}, now: () => clock.value,
@@ -991,7 +991,7 @@ test('自动切线等待保留同一投递且不耗失败次数，目标就绪�
 });
 
 test('a user shell continuation supersedes the old question; automatic continuations preserve it', async t => {
-  const { createUserInputSignalHost } = require('../src/classify/user-input-host');
+  const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
   for (const source of ['task-shell', 'continuation']) {
     let state = { pendingUserInput: { requestId: 'q1', turnId: 'old-turn', taskId: 'task-1', resolved: false } };
     const settlements = [];

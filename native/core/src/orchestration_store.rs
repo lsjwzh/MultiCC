@@ -108,6 +108,33 @@ pub fn chat_queue_snapshot(file: &Path, session: &str) -> Result<crate::js::JsVa
     ]))
 }
 
+/// Read the authoritative question even when the session has no active worker.
+pub fn chat_question_snapshot(file: &Path, session: &str) -> Result<Option<Value>> {
+    if !file.try_exists().map_err(err)? {
+        return Ok(None);
+    }
+    let db = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(err)?;
+    db.busy_timeout(Duration::from_millis(4000)).map_err(err)?;
+    // Old stores can be read before the first native write upgrades the schema.
+    let table: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='orchestration_session_work_state')",
+        [], |row| row.get(0),
+    ).map_err(err)?;
+    if !table {
+        let initialized: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM orchestration_meta WHERE key='sessionWorkStateSchema')",
+            [], |row| row.get(0),
+        ).map_err(err)?;
+        if initialized {
+            return Err(corrupt("initialized session work state table missing"));
+        }
+        return Ok(None);
+    }
+    let snapshot = session_work_state::encoded_read(&db, &json!({"sessionId":session}))?;
+    Ok((snapshot["exists"] == true).then_some(snapshot))
+}
+
 fn claim_metadata(connection: &Connection) -> Result<Value> {
     let input = json!({"collection":"outbox","options":{
         "where":{"state":{"$nin":["delivered","dead-letter","cancelled"]}},

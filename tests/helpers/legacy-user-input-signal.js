@@ -1,98 +1,8 @@
 'use strict';
 
-const crypto = require('crypto');
-const { applyUserInputEvidence } = require('./vocab');
-
-// Bounds mirror the MCP request_user_input tool (router-tool-runtime) so a signal
-// synthesized from a CLI's built-in ask tool is sanitized identically.
-const MAX_QUESTION_LENGTH = 16 * 1024;
-const MAX_REASON_LENGTH = 4 * 1024;
-const MAX_OPTION_LENGTH = 512;
-const MAX_OPTIONS = 12;
+// Frozen session question rules used as a differential oracle.
+const { applyUserInputEvidence } = require('../../src/classify/vocab');
 const SECRET_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
-
-function sanitizeOptions(value) {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set();
-  const out = [];
-  for (const raw of value) {
-    const text = String(raw == null ? '' : raw).trim().slice(0, MAX_OPTION_LENGTH);
-    if (!text || seen.has(text)) continue;
-    seen.add(text);
-    out.push(text);
-    if (out.length >= MAX_OPTIONS) break;
-  }
-  return out;
-}
-
-// Build a request_user_input signal from an adapter-decoded ask event (e.g.
-// codex's built-in AskUserQuestion). This lands a non-MCP ask on the SAME
-// structured waiting path (pendingUserInput → waiting → interactive options) as
-// the MCP tool, instead of silently degrading to plain text. Returns null when
-// there is no usable question text. requestId shape ("usrq-<hash>") matches the
-// MCP path so dedup/resolve behave identically.
-function buildAdapterUserInputSignal(
-  { sessionId, turnId, question, reason, options, allowMultiple } = {},
-  cryptoImpl = crypto,
-) {
-  const q = String(question == null ? '' : question).trim().slice(0, MAX_QUESTION_LENGTH);
-  if (!q) return null;
-  const r = String(reason == null ? '' : reason).trim().slice(0, MAX_REASON_LENGTH);
-  const opts = sanitizeOptions(options);
-  const multi = allowMultiple === true && opts.length >= 2;
-  const requestId = `usrq-${cryptoImpl.createHash('sha256')
-    .update([sessionId, turnId, q, r, opts.join('\0'), multi]
-      .map((v) => String(v == null ? '' : v)).join('\0'), 'utf8')
-    .digest('hex').slice(0, 24)}`;
-  return {
-    requestId,
-    sessionId: String(sessionId || ''),
-    turnId: String(turnId || ''),
-    question: q,
-    reason: r,
-    options: opts,
-    allowMultiple: multi,
-  };
-}
-
-// Record an adapter ask event as a structured waiting signal via the provided
-// recordInput port (server wires it to sessionWorkHost.recordInput, the same
-// port the MCP tool uses). On any failure it returns the event's fallbackText so
-// the caller can degrade to a plain-text passthrough — the question is never lost.
-function recordAdapterUserInput({ evt, sessionId, turnId, recordInput } = {}) {
-  const signal = buildAdapterUserInputSignal({
-    sessionId,
-    turnId,
-    question: evt?.question,
-    reason: evt?.reason,
-    options: evt?.options,
-    allowMultiple: evt?.allowMultiple,
-  });
-  const rec = signal && typeof recordInput === 'function' ? recordInput(signal) : null;
-  const outcome = result => {
-    const ok = !!(result && result.ok === true);
-    return { ok, requestId: ok ? signal.requestId : null,
-      fallbackText: ok ? '' : (evt?.fallbackText || '') };
-  };
-  return rec && typeof rec.then === 'function' ? rec.then(outcome) : outcome(rec);
-}
-
-const USER_INPUT_SIGNAL_PROMPT = Object.freeze([
-  '[Waiting for a user answer] When you are about to end the turn with a blocking question (a missing user decision, confirmation, choice, or required information means the task cannot safely continue), you must first call the MultiCC MCP tool wait_for_user_answer; the old name request_user_input exists only for compatibility.',
-  'The tool may appear as multicc_router.wait_for_user_answer or mcp__multicc_router__wait_for_user_answer. After a successful call, present the same question and options to the user as the final reply of this turn, then end the turn without running further tools.',
-  'Do not call it when you can reasonably continue with the information you have. Ordinary suggestions, optional follow-up work, and polite rhetorical questions do not require waiting for the user.',
-]);
-
-function buildCodexUserInputConstraint(enabled = true) {
-  if (!enabled) return '';
-  return [
-    '[MultiCC environment constraints]',
-    '- The Codex built-in request_user_input / AskUserQuestion tools are unavailable in this non-interactive execution environment.',
-    '- Before ending a turn with a blocking question, you must call the MultiCC MCP tool wait_for_user_answer (it may appear as mcp__multicc_router__wait_for_user_answer); do not call the Codex built-in tool of the same name.',
-    '- After the tool returns, present the same question as the final reply and end the turn; do not call it when you can safely and reasonably continue.',
-    '[End of MultiCC environment constraints]',
-  ].join('\n');
-}
 
 function createUserInputSignalHost({
   getSession,
@@ -279,10 +189,4 @@ function createUserInputSignalHost({
   return Object.freeze({ apply, beginTurn, degradedResult, lastResolved, move, pending, record, resolve, turnId });
 }
 
-module.exports = {
-  USER_INPUT_SIGNAL_PROMPT,
-  buildCodexUserInputConstraint,
-  buildAdapterUserInputSignal,
-  recordAdapterUserInput,
-  createUserInputSignalHost,
-};
+module.exports = { createUserInputSignalHost };

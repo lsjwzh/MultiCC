@@ -183,9 +183,7 @@ pub(super) fn claim_chat(store: &mut Store, input: &Value) -> Result<Value> {
             .as_str()
             .ok_or("invalid schedule category")?,
     )?;
-    if (truthy(&pending) && field(&pending, "resolved") != V::Bool(true))
-        || truthy(&field(&category, "unattended"))
-    {
+    if truthy(&field(&category, "unattended")) {
         return Ok(Value::Null);
     }
     let mut queue = queue_rows(&tx, session, &schedule)?;

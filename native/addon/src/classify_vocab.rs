@@ -20,3 +20,8 @@ pub fn parse_classify_result(text: String) -> Result<String> {
 pub fn classify_vocab_request(op: String, input: String) -> Result<String> {
     multicc_core::classify_vocab::request(&op, &input).map_err(napi::Error::from_reason)
 }
+
+#[napi]
+pub fn session_question_request(op: String, input: String) -> Result<String> {
+    multicc_core::session_question::request(&op, &input).map_err(napi::Error::from_reason)
+}

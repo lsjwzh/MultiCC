@@ -4,7 +4,10 @@
 // of the server composition root so the prompt policy lives next to the other
 // message-composition policy and can be reviewed independently of wiring.
 
-const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint } = require('../classify/user-input-host');
+const { getNative } = require('../native/runtime');
+const USER_INPUT_SIGNAL_PROMPT = Object.freeze(JSON.parse(getNative().sessionQuestionRequest('prompt', 'null')));
+const codexUserInputConstraint = JSON.parse(getNative().sessionQuestionRequest('codexConstraint', 'true'));
+function buildCodexUserInputConstraint(enabled = true) { return enabled ? codexUserInputConstraint : ''; }
 
 // Codex exec cannot use its built-in ask tool; steer it to MultiCC's MCP signal.
 // Keep codex exec alive until ALL background tasks complete.
@@ -151,6 +154,8 @@ function createHostPrompts(env = process.env, { assistRoot } = {}) {
 }
 
 module.exports = {
+  USER_INPUT_SIGNAL_PROMPT,
+  buildCodexUserInputConstraint,
   createHostPrompts,
   buildSubagentProviderHint,
   buildHumanAssistPrompt,

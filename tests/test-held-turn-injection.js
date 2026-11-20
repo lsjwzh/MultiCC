@@ -24,7 +24,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
-const { createProductionQuestionHost } = require('../src/session-work/production-question-host');
+const { createProductionQuestionHost } = require('../src/session-work/host');
 const {
   createHeldTurnInjection, spawnContractFacts, spawnContractOf, isDirectUserTyped,
 } = require('../src/chat/held-turn-injection');

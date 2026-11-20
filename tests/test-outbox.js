@@ -52,7 +52,7 @@ test('SQLite claim does not treat an uninitialized Rust question as empty', asyn
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-question-missing-'));
   const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
   t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
-  const { createQuestionOwner } = require('../src/session-work/question-owner');
+  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
   const owner = createQuestionOwner({ getStore: () => store, liveTurn: () => null,
     initialState: () => ({ pendingQuestion: { requestId: 'q', resolved: false }, activeTurn: null, category: 'W' }) });
   const outbox = createOutbox({ store });

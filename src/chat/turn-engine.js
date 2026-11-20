@@ -54,6 +54,7 @@ const { redactProviderRouteCapability } = require('../observability');
 const { taskIdForShortCode } = require('../classify/task-short-code');
 const { taskStateSeed } = require('./task-state-seed');
 const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../message-composer');
+const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
 const { buildSubagentProviderHint } = require('./host-prompts');
 const managedContext = require('./managed-context');
 const {
@@ -693,7 +694,7 @@ function createChatTurnEngine(deps) {
     rememberActiveCliState: (record) => rememberActiveCliState(record),
     savePersistedSessions: (reason) => savePersistedSessionsBestEffort(reason),
     finishProviderAttempt: (runner, outcome, facts) => finishProviderAttempt(runner, outcome, facts),
-    recordUserInput: (evt, sessionId, turnId) => require('./question-input-bridge').recordAdapterQuestion({ evt, sessionId, turnId, work: getSessionWorkHost(), recordAdapterUserInput, chatSessions,
+    recordUserInput: (evt, sessionId, turnId) => recordAdapterQuestion({ evt, sessionId, turnId, work: getSessionWorkHost(), recordAdapterUserInput, chatSessions,
       isCurrentTurnRunner, logger, forwardFallback: (id, cs, turn, runner, text) => getNative().chatApplyAdapterDecodedEvent({ name: cs.cli }, cs, persistedSessions.get(id), id, { type: 'assistant_text', text },
         event => forwardProviderEvent(id, cs, turn, runner, event), turn, runner, nativeChatEventPorts) }),
     consoleWarn: (...args) => console.warn(...args),
@@ -2687,7 +2688,7 @@ function createChatTurnEngine(deps) {
 
     if (Number.isInteger(ws._multiccConnId)) replay.join(sessionName, ws._multiccConnId);
     const stopShellWatch = shellId && taskContextHost.watchTaskShellChat(shellId, sessionName, event => sendWs(ws, event));
-    const replayGate = await require('./question-input-bridge').prepareQuestionReplay({ ws, input: userInputSignalHost,
+    const replayGate = await prepareQuestionReplay({ ws, input: userInputSignalHost,
       sessionId: sessionName, persisted, sendWs, cleanup: () => {
         if (stopShellWatch) stopShellWatch();
         if (Number.isInteger(ws._multiccConnId)) replay.leave(sessionName, ws._multiccConnId);

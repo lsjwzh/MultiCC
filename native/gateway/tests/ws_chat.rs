@@ -651,9 +651,25 @@ async fn a_refused_handshake_is_answered_with_the_planners_status_and_body() {
 #[cfg(unix)]
 const NATIVE_CLAUDE: &str = r#"#!/bin/sh
 resume=no
+configuration=
+read_configuration=no
 for arg in "$@"; do
-    case "$arg" in --resume=*) resume=yes ;; esac
+    if [ "$read_configuration" = yes ]; then
+        configuration=$arg
+        read_configuration=no
+    fi
+    case "$arg" in
+        --resume=*) resume=yes ;;
+        --mcp-config) read_configuration=yes ;;
+    esac
 done
+ask_user() {
+    url=$(printf '%s\n' "$configuration" | /usr/bin/sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+    auth=$(printf '%s\n' "$configuration" | /usr/bin/sed -n 's/.*"Authorization":"\([^"]*\)".*/\1/p')
+    /usr/bin/curl --noproxy '*' --silent --show-error --max-time 5 \
+        -H "Authorization: $auth" -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wait_for_user_answer","arguments":{"question":"Which workspace?","options":["local","remote"]}}}' "$url"
+}
 while IFS= read -r line; do
     case "$line" in
         *'"subtype":"initialize"'*|*'"subtype":"interrupt"'*)
@@ -663,6 +679,15 @@ while IFS= read -r line; do
             ;;
         *'"type":"user"'*'"text":"hold"'*)
             printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"等待取消"}}}'
+            ;;
+        *'"type":"user"'*'"text":"ask"'*)
+            response=$(ask_user)
+            case "$response" in
+                *'waiting_reply_signal_recorded'*)
+                    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"Which workspace?","usage":{}}' ;;
+                *)
+                    printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["question tool failed"]}' ;;
+            esac
             ;;
         *'"type":"user"'*'"text":"fail"'*)
             printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["fixture upstream timeout"]}'
@@ -699,10 +724,7 @@ impl Gateway {
 
     fn start_native_with_path(path: &str) -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let nonce = multicc_core::random_id::random_uuid_v4().unwrap();
         let dir = std::env::temp_dir().join(format!(
             "multicc-ws-chat-native-{}-{nonce}",
             std::process::id()
@@ -771,6 +793,20 @@ impl Gateway {
                 .unwrap();
         }
         drop(tasks);
+        Self::launch_native(dir, state, path)
+    }
+
+    fn restart_native(&mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+        let mut next = Self::launch_native(self.dir.clone(), self.state.clone(), "");
+        std::mem::swap(self, &mut next);
+        // Drop the old process handle without removing the reused state.
+        next.dir = PathBuf::new();
+    }
+
+    fn launch_native(dir: PathBuf, state: PathBuf, path: &str) -> Self {
+        let binary = dir.join("claude-fixture");
         let log = fs::File::create(dir.join("gateway.log")).unwrap();
         let executable =
             std::env::var_os("MULTICC_WS_CHAT_PROOF_GATEWAY").unwrap_or_else(|| GATEWAY_BIN.into());
@@ -1040,6 +1076,186 @@ async fn until(socket: &mut Ws, expected: &str) -> Value {
         assert_ne!(value["type"], "error", "{value}");
     }
     panic!("expected {expected}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_question_replays_after_restart_and_answer_is_idempotent() {
+    let mut gateway = Gateway::start_native();
+    let path = "/ws/chat?session=native";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    until(&mut socket, "session_queue").await;
+    send_text(
+        &mut socket,
+        r#"{"type":"user_message","text":"ask","clientMsgId":"ask-1"}"#,
+    )
+    .await;
+    let turn = until(&mut socket, "stream_start").await;
+    let question = until(&mut socket, "user_input_required").await;
+    assert_eq!(question["turnId"], turn["turnId"]);
+    assert_eq!(question["question"], "Which workspace?");
+    assert_eq!(question["options"], serde_json::json!(["local", "remote"]));
+    until(&mut socket, "stream_end").await;
+    drop(socket);
+
+    gateway.restart_native();
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(until(&mut socket, "user_input_required").await, question);
+    until(&mut socket, "session_queue").await;
+
+    send_text(
+        &mut socket,
+        r#"{"type":"user_message","text":"wrong","userInputRequestId":"obsolete"}"#,
+    )
+    .await;
+    assert_eq!(
+        native_frame(&mut socket, "error").await["code"],
+        "stale_control"
+    );
+    let answer = serde_json::json!({"type":"user_message","text":"local","clientMsgId":"answer-1",
+        "userInputRequestId":question["requestId"]})
+    .to_string();
+    send_text(&mut socket, &answer).await;
+    let resolved = until(&mut socket, "user_input_resolved").await;
+    assert_eq!(resolved["requestId"], question["requestId"]);
+    until(&mut socket, "stream_end").await;
+    send_text(&mut socket, &answer).await;
+    assert_eq!(
+        native_frame(&mut socket, "chat_msg_meta").await["clientMsgId"],
+        "answer-1"
+    );
+    send_text(&mut socket, r#"{"type":"ping"}"#).await;
+    native_frame(&mut socket, "pong").await;
+
+    let mut replay = gateway.connect_with(path, &[]).await;
+    let history = until(&mut replay, "chat_history").await;
+    let rows = history["messages"].as_array().unwrap();
+    assert_eq!(
+        rows.iter().filter(|row| row["content"] == "local").count(),
+        1
+    );
+    assert!(!rows.iter().any(|row| row["content"] == "wrong"));
+    let settled = until(&mut replay, "user_input_resolved").await;
+    assert_eq!(settled["requestId"], question["requestId"]);
+    assert_eq!(settled["replay"], true);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_question_dismisses_through_http_and_replays_settlement() {
+    let gateway = Gateway::start_native();
+    let path = "/ws/chat?session=native";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    until(&mut socket, "session_queue").await;
+    send_text(
+        &mut socket,
+        r#"{"type":"user_message","text":"ask","clientMsgId":"ask-dismiss"}"#,
+    )
+    .await;
+    let question = until(&mut socket, "user_input_required").await;
+    until(&mut socket, "stream_end").await;
+
+    let post = |session: &str| {
+        let body = serde_json::json!({"requestId":question["requestId"]}).to_string();
+        gateway.raw(&format!(
+            "POST /api/sessions/{session}/user-input/dismiss HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer gateway-chat-fixture-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
+    };
+    let hidden = post("internal");
+    assert!(hidden.starts_with("HTTP/1.1 404"), "{hidden}");
+    let response = post("native");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains(r#""resolution":"dismissed""#),
+        "{response}"
+    );
+    let event = until(&mut socket, "user_input_resolved").await;
+    assert_eq!(event["requestId"], question["requestId"]);
+    assert_eq!(event["resolution"], "dismissed");
+    let response = post("native");
+    assert!(response.contains(r#""duplicate":true"#), "{response}");
+
+    let mut replay = gateway.connect_with(path, &[]).await;
+    let event = until(&mut replay, "user_input_resolved").await;
+    assert_eq!(event["requestId"], question["requestId"]);
+    assert_eq!(event["replay"], true);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_replay_imports_the_legacy_question_before_accepting_input() {
+    let gateway = Gateway::start_native();
+    let pending = serde_json::json!({
+        "requestId":"old-question","turnId":"old-turn","question":"Reuse the old workspace?",
+        "resolved":false,"options":["yes","no"]
+    });
+    fs::write(
+        gateway.state.join("orchestration.json"),
+        serde_json::json!({
+            "schemaVersion":4,"revision":1,"updatedAt":1,"nextOutboxSequence":1,
+            "sessionWorkStateV1":{"native":{"version":7,
+                "pendingQuestionJson":pending.to_string(),"activeTurnJson":"null",
+                "categoryJson":r#"{"classifyState":"W","userInputSignalTurnId":"old-turn"}"#}},
+            "waits":{},"outbox":{},"operations":{},"tasks":{},"sessionSchedules":{}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut socket = gateway.connect_with("/ws/chat?session=native", &[]).await;
+    let replay = until(&mut socket, "user_input_required").await;
+    assert_eq!(replay["requestId"], pending["requestId"]);
+    assert_eq!(replay["question"], pending["question"]);
+    until(&mut socket, "session_queue").await;
+    send_text(&mut socket, r#"{"type":"user_message","text":"yes","userInputRequestId":"old-question","clientMsgId":"old-answer"}"#).await;
+    let settled = until(&mut socket, "user_input_resolved").await;
+    assert_eq!(settled["requestId"], "old-question");
+    until(&mut socket, "stream_end").await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn native_task_shell_answer_uses_the_durable_receipt() {
+    let mut gateway = Gateway::start_native();
+    let path = "/ws/chat?session=bound&shell=shell-bound";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    until(&mut socket, "session_queue").await;
+    send_text(
+        &mut socket,
+        r#"{"type":"user_message","text":"ask","clientMsgId":"ask-1","taskShell":true}"#,
+    )
+    .await;
+    until(&mut socket, "task_shell_routed").await;
+    let question = until(&mut socket, "user_input_required").await;
+    assert_eq!(question["taskId"], "tsk_bound");
+    until(&mut socket, "stream_end").await;
+    until(&mut socket, "session_queue").await;
+
+    drop(socket);
+    gateway.restart_native();
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(until(&mut socket, "user_input_required").await, question);
+    until(&mut socket, "session_queue").await;
+
+    let answer = serde_json::json!({"type":"user_message","text":"local","clientMsgId":"shell-answer",
+        "taskShell":true,"taskId":"tsk_bound","turnId":question["turnId"],
+        "userInputRequestId":question["requestId"]});
+    let mut obsolete = answer.clone();
+    obsolete["turnId"] = serde_json::json!("obsolete");
+    send_text(&mut socket, &obsolete.to_string()).await;
+    assert_eq!(
+        native_frame(&mut socket, "error").await["code"],
+        "stale_control"
+    );
+    send_text(&mut socket, &answer.to_string()).await;
+    let settled = until(&mut socket, "user_input_resolved").await;
+    assert_eq!(settled["requestId"], question["requestId"]);
+    let receipt = until(&mut socket, "task_shell_routed").await;
+    assert_eq!(receipt["decision"], "answer");
+    until(&mut socket, "stream_end").await;
+    until(&mut socket, "session_queue").await;
+    send_text(&mut socket, &answer.to_string()).await;
+    assert_eq!(until(&mut socket, "task_shell_routed").await, receipt);
 }
 
 #[cfg(unix)]

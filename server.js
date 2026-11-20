@@ -196,8 +196,8 @@ const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLa
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
 const { installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
 const { createTaskStateStore } = require('./src/routes/task-state-store');
-const { recordAdapterUserInput } = require('./src/classify/user-input-host');
-const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/production-question-host');
+const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
+const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/host');
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/chat/host-prompts');
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
