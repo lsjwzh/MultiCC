@@ -8,6 +8,7 @@
 //! |---|---|
 //! | `FIXTURE_MODE` | `ready` (default), `exit-before-ready`, `bad-ready-line`, `bad-version`, `silent` |
 //! | `FIXTURE_STDIN_FILE` | write the raw first stdin line here (plus `.eof` once stdin closes) |
+//! | `FIXTURE_PID_FILE` | write this process' pid here (process-existence checks) |
 //! | `FIXTURE_FAIL_FIRST` | exit before ready once, using this path as the marker |
 //! | `FIXTURE_READY_DELAY_MS` | wait before printing the ready line |
 //! | `FIXTURE_EXIT_AFTER_MS` / `FIXTURE_EXIT_CODE` | crash this long after ready |
@@ -18,7 +19,7 @@
 //! | `FIXTURE_REQUESTS_FILE` | append one JSON record per request |
 //! | `FIXTURE_ABORT_FILE` | append `aborted` when the client leaves mid-response |
 //! | `FIXTURE_ANNOTATION` | `/internal/annotation` answer: `ok` (default), `status500`, `notjson`, `array`, `number`, `stall` |
-//! | `FIXTURE_WS` | answer a WebSocket upgrade with: `echo` (default), `burst`, `slow`, `close:<code>`, `close-empty`, `drop` |
+//! | `FIXTURE_WS` | answer a `/ws/*` upgrade with: `echo` (default), `burst`, `slow`, `close:<code>`, `close-empty`, `drop` |
 //! | `FIXTURE_WS_FILE` | append WS events (`open`, `frame:<op>:<len>`, `close:<code>`, `eof`) |
 //! | `FIXTURE_WS_STATS_FILE` | overwritten each burst frame with the frames written so far |
 //! | `FIXTURE_WS_CHUNK` | bytes per burst frame (default 4096) |
@@ -45,6 +46,11 @@ fn main() {
     let first_line = read_first_line();
     if let Some(path) = std::env::var_os("FIXTURE_STDIN_FILE") {
         let _ = std::fs::write(path, &first_line);
+    }
+    // Test-only: record this process' pid so a test can assert the child is
+    // really gone (process existence), not just that it stopped logging.
+    if let Some(path) = std::env::var_os("FIXTURE_PID_FILE") {
+        let _ = std::fs::write(path, std::process::id().to_string());
     }
     if let Some(path) = std::env::var_os("FIXTURE_FAIL_FIRST") {
         if std::fs::metadata(&path).is_err() {
@@ -165,7 +171,12 @@ fn handle(mut stream: TcpStream, secret: &str) {
             return;
         }
     }
-    if std::env::var_os("FIXTURE_WS").is_some() {
+    // The WS bridge always dials `/ws/remote-screen...`; scoping the switch to
+    // that target lets one fixture process serve the HTTP forward
+    // (`/api/remote-screen`) and the WS bridge together, which is what the
+    // shared-child wiring test needs. Every WS-only test dials `/ws/*` too, so
+    // their behavior is unchanged.
+    if std::env::var_os("FIXTURE_WS").is_some() && request.target.starts_with("/ws/") {
         ws_serve(stream, &request);
         return;
     }

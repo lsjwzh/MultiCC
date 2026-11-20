@@ -355,11 +355,15 @@ async fn admission_facts(
     let cookie = cookies
         .get("multicc_auth")
         .filter(|value| !value.is_empty());
-    let snapshot = if app.auth.has_local() {
-        app.auth.snapshot().await.ok()
-    } else {
-        None
-    };
+    // Unlike `/ws/chat`, whose `--node` connections are handed to Node for
+    // admission, this path is terminated here under both modes. So the
+    // credential and the shutdown flag come from whichever side owns the
+    // authentication runtime (`Bridge` answers locally under `--no-node` and
+    // over the control channel under `--node`). Gating this on `has_local()`
+    // would leave `--node` with an empty secret and no redeemed ticket, and
+    // every public peer would be refused. A failed read is `None`: an empty
+    // secret admits nobody.
+    let snapshot = app.auth.snapshot().await.ok();
     let secret = snapshot.as_ref().map_or("", |value| value.secret.as_str());
     let now = auth_runtime::now_ms();
     let mut facts = Facts {
@@ -385,7 +389,7 @@ async fn admission_facts(
     };
     // `needs_share_record` is chat-only, so a `share` parameter never reaches
     // the share table on this path.
-    if app.auth.has_local() && ws_admission::needs_ticket(&facts) {
+    if ws_admission::needs_ticket(&facts) {
         let request = AuthRequest::ConsumeTicket {
             ticket: get("ticket").unwrap_or("").to_string(),
             path: PATH.to_string(),
