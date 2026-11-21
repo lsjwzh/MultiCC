@@ -153,6 +153,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), modelRequestPolicyValue: undefined
   };`);
   assert.equal(probeAddon(staleBudget), false, 'a stale addon cannot bypass model request budgets');
+  const staleBudgetInputs = write(root, 'stale-model-budget-inputs.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), resolveModelRequestPolicy: undefined
+  };`);
+  assert.equal(probeAddon(staleBudgetInputs), false, 'a stale addon cannot bypass live model budget input handling');
   const staleRetry = write(root, 'stale-retry.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), retryPolicyValue: undefined
   };`);
