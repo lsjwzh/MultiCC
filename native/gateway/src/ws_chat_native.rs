@@ -838,7 +838,7 @@ struct RunningTurn {
 
 enum TurnRunner {
     Claude(Box<multicc_core::claude_process::StartInput>),
-    Codex(codex::Launch),
+    Codex(Box<codex::Launch>),
 }
 
 fn codex_requires_provider_host(record: &V) -> bool {
@@ -921,7 +921,7 @@ async fn prepare_turn(
             Some(role) => format!("[Role prompt]\n{role}\n[End of role prompt]\n\n"),
             None => String::new(),
         };
-        (TurnRunner::Codex(options), context)
+        (TurnRunner::Codex(Box::new(options)), context)
     } else {
         let mut options = launch::launch_options(state);
         let reference = match delivery {
@@ -1155,7 +1155,7 @@ async fn run_turn(
         }
         TurnRunner::Codex(options) => {
             codex::run(
-                options,
+                *options,
                 &provider_prompt,
                 launched.cancelled,
                 |event| async move {
