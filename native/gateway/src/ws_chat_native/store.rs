@@ -333,3 +333,7 @@ pub fn cli(record: &V) -> String {
 pub fn is_claude(record: &V) -> bool {
     multicc_core::cli_capability::name_of(&cli(record)) == "claude"
 }
+
+pub fn is_codex_app(record: &V) -> bool {
+    record.get("cli") == Some(&V::from("codex-exp"))
+}

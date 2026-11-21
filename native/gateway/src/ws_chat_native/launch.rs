@@ -84,6 +84,7 @@ pub(super) async fn init_facts(
 ) -> (Option<String>, Value) {
     let effort = optional_text(record, "effort");
     let claude = super::store::is_claude(record);
+    let codex = super::store::is_codex_app(record);
     let home = app.home_dir.clone();
     tokio::task::spawn_blocking(move || {
         let effort = if claude {
@@ -107,17 +108,24 @@ pub(super) async fn init_facts(
         } else {
             effort
         };
-        let binary = claude_binary();
-        let path = Path::new(&binary);
-        let available = if path.components().count() > 1 {
-            path.is_file()
-        } else {
-            std::env::var_os("PATH").is_some_and(|paths| {
-                std::env::split_paths(&paths).any(|entry: PathBuf| entry.join(path).is_file())
-            })
-        };
-        (effort, json!({"claude":{"available":available}}))
+        let mut availability =
+            json!({"claude":{"available":available(Path::new(&claude_binary()))}});
+        if codex {
+            availability["codex-exp"] =
+                json!({"available":available(Path::new(&super::codex::binary()))});
+        }
+        (effort, availability)
     })
     .await
     .unwrap_or_default()
+}
+
+fn available(path: &Path) -> bool {
+    if path.components().count() > 1 {
+        path.is_file()
+    } else {
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|entry: PathBuf| entry.join(path).is_file())
+        })
+    }
 }

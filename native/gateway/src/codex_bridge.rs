@@ -62,6 +62,7 @@ struct Options {
     effort: V,
     prompt: V,
     resident: bool,
+    chat_host: bool,
 }
 impl Options {
     fn parse(args: &[String]) -> Result<Self, String> {
@@ -73,12 +74,14 @@ impl Options {
             effort: V::Undefined,
             prompt: V::Undefined,
             resident: false,
+            chat_host: false,
         };
         let mut index = 0;
         while index < args.len() {
             let flag = &args[index];
             match flag.as_str() {
                 "--resident" => out.resident = true,
+                "--chat-host" => out.chat_host = true,
                 "--" => {
                     out.prompt = text(&args[index + 1..].join(" "));
                     break;
@@ -176,18 +179,21 @@ fn unusable(error: &str) -> bool {
         .expect("thread error rule")
         .is_match(&view)
 }
-async fn open_thread(rpc: &Rpc, id: V, model: V) -> Result<V, String> {
+async fn open_thread(rpc: &Rpc, id: V, model: V, allow_replacement: bool) -> Result<V, String> {
     if truth(&id) {
         rpc.main(id.clone());
         let mut fields = vec![("threadId", id.clone()), ("excludeTurns", V::Bool(true))];
         fields.extend(common(model.clone()));
         match rpc.request("thread/resume", obj(&fields)).await {
-            Ok(_) => {
+            Ok(resumed) => {
+                if !allow_replacement && get(&get(&resumed, "thread"), "id") != id {
+                    return Err("app-server resumed a different Codex thread".into());
+                }
                 rpc.main(id.clone());
                 return Ok(id);
             }
             Err(error) => {
-                if !unusable(&error) {
+                if !allow_replacement || !unusable(&error) {
                     return Err(error);
                 }
                 let truncated = S::from(error).truncate_units(200).to_string_lossy();
@@ -277,7 +283,19 @@ async fn run(
     mut incoming: mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> Result<(), String> {
     initialize(&rpc).await?;
-    let mut id = open_thread(&rpc, options.thread.clone(), options.model.clone()).await?;
+    let mut id = open_thread(
+        &rpc,
+        options.thread.clone(),
+        options.model.clone(),
+        !options.chat_host,
+    )
+    .await?;
+    if options.chat_host {
+        emit(&obj(&[
+            ("method", text("multicc/chat_thread_ready")),
+            ("params", obj(&[("threadId", id.clone())])),
+        ]))?;
+    }
     if !options.resident {
         return start_turn(&rpc, id, options.prompt, options.model, options.effort).await;
     }
@@ -296,7 +314,7 @@ async fn run(
                 let effort = or(get(&turn, "effort"), options.effort.clone());
                 let next = get(&turn, "threadId");
                 if truth(&next) && next != id {
-                    id = open_thread(&rpc, next, model.clone()).await?;
+                    id = open_thread(&rpc, next, model.clone(), !options.chat_host).await?;
                 }
                 busy = true;
                 start_turn(&rpc, id.clone(), prompt, model, effort).await?;
