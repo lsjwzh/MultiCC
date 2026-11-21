@@ -23,7 +23,7 @@ const path = require('path');
 
 // realPathOf / isHomeOrAbove now live in the shared path-safety module so paths.js
 // and directories.js can never diverge again. Re-exported below for API compat.
-const { realPathOf, isHomeOrAbove } = require('./path-safety');
+const { pathSafety: { realPathOf, isHomeOrAbove } } = require('./native/runtime');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 
