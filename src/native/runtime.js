@@ -180,6 +180,35 @@ const codexAppAdapter = {
   isReconnectProgress: value => getNative().codexAppAdapterValue('reconnect', value, undefined),
   requestUserInputEvent: value => getNative().codexAppAdapterValue('question', value, undefined),
 };
+const codexBackground = {
+  safeText: (value, limit = 180) => getNative().codexBackgroundText('safe', value, limit),
+  unwrapShellCommand: value => getNative().codexBackgroundText('command', value, 0),
+  toolDetail: value => getNative().codexBackgroundText('detail', value, 0),
+  createCodexBackgroundEvents({ emit, attach, mainThreadId = null, now = Date.now,
+    setTimer = setTimeout, clearTimer = clearTimeout, throttleMs = 1000 } = {}) {
+    const owner = new (getNative().RustCodexBackground)(mainThreadId, throttleMs, !!attach);
+    const timers = [];
+    const call = (op, value, index = 0, failed = false) => {
+      const plan = owner.call(op, value, index, now(), failed);
+      for (const effect of plan.effects) {
+        switch (effect.kind) {
+          case 'emit': emit(effect.event); break;
+          case 'cancel': clearTimer(timers[effect.id]); delete timers[effect.id]; break;
+          case 'timer':
+            timers[effect.id] = setTimer(() => { delete timers[effect.id]; call('timer', null, effect.id); }, effect.delay);
+            timers[effect.id]?.unref?.(); break;
+          case 'attach':
+            Promise.resolve().then(() => attach(effect.id))
+              .then(result => call('attached', result, effect.agent))
+              .catch(() => call('attached', null, effect.agent, true)); break;
+        }
+      }
+      return plan.result;
+    };
+    return { consume: event => call('consume', event), activeCount: () => call('count', null),
+      setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
+  },
+};
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
-  createClaudeAdapter, codexAdapter, codexAppAdapter };
+  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground };

@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { safeText } = require('../../src/cli-adapters/codex-background-events.cjs');
+const { safeText } = require('../../src/native/runtime').codexBackground;
 
 // 原生子线程只负责展示和存活状态；结果由 CLI 自己回传主 Agent，避免重复唤醒。
 function createNativeBackgroundTasks({ broadcast, observe, now }) {
