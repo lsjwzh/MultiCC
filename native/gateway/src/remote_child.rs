@@ -433,7 +433,6 @@ async fn start_process(inner: &Arc<Inner>, flight: &Arc<Flight>) {
     // flag Windows would give the child a visible one.
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
@@ -680,8 +679,10 @@ async fn watch_exit(
             }
         }
     };
-    let _ = process.exited.send(true);
     finish_exit(&inner, &flight, &process, status);
+    // Shutdown must not return until exit state, logging, and notices are done.
+    // Retain the value even if shutdown has not subscribed yet.
+    process.exited.send_replace(true);
 }
 
 fn finish_exit(
@@ -1007,6 +1008,9 @@ mod tests {
     #[test]
     fn exit_text_keeps_node_spelling() {
         assert_eq!(exit_text(Some(3), None), "exited code=3");
+        #[cfg(unix)]
         assert_eq!(exit_text(None, Some(9)), "exited code=null signal=SIGKILL");
+        #[cfg(not(unix))]
+        assert_eq!(exit_text(None, Some(9)), "exited code=null");
     }
 }

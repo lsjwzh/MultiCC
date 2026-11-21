@@ -26,8 +26,8 @@
       "state": "host-port",
       "files": [
         "src/routes/*-host.js",
-        "src/workspace/air-routes-host.js",
-        "src/task-shell/host.js"
+        "src/task-shell/host.js",
+        "src/workspace/air-routes-host.js"
       ],
       "note": "每个端口对应一个已迁到前门的路由簇；条数随新簇迁入而增加，这是迁移推进的正向信号，不应当作负债清零。"
     },

@@ -80,6 +80,7 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
 
     // ── 一张卡：git 那行 + worktree 那行 ──────────────────────────────────
     assert.ok(await page.waitFor(`document.getElementById('directory-worktree-body').children.length>0`));
+    assert.ok(await page.waitFor(`document.querySelectorAll('#directory-git .directory-git-chip').length>=2 && document.querySelector('#directory-git .directory-git-actions button')`), 'Git 状态须加载完成');
     const merged = await page.evaluate(`(() => {
       const card = document.getElementById('directory-git');
       const wt = document.getElementById('directory-worktrees');
@@ -227,6 +228,9 @@ test('the directory home shares one scroll layer, shows a compact sticky heading
     assert.ok(oneRow.listH < page1.listH, '只剩一条时列表也缩小');
     await page.evaluate(`(() => { const i=document.getElementById('directory-task-search'); i.value=''; i.dispatchEvent(new Event('input')); })()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('#directory-task-list .directory-task-row').length===20`));
+    // 本地回退列表可能先于服务端分页结果显示 20 行；等分页信息也恢复后再点击。
+    assert.ok(await page.waitFor(`document.getElementById('directory-task-page').textContent==='第 1 / 3 页' && !document.getElementById('directory-task-next').disabled`),
+      '清空筛选后等待完整分页信息恢复');
 
     // 统计卡那档 quickFilter：第二格现在是「等我处理」= needsMe，且回到第一页。
     await page.evaluate(`document.getElementById('directory-task-next').click()`);

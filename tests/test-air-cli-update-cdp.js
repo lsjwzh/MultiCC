@@ -197,9 +197,12 @@ test('a long CLI update list scrolls to its last row instead of closing', async 
       const last = rows.lastElementChild, first = rows.firstElementChild;
       const p = pop.getBoundingClientRect();
       const l = last.getBoundingClientRect();
+      const hit = document.elementFromPoint(160, 400);
       return { rows: rows.children.length, hidden: pop.hidden,
         clientHeight: pop.clientHeight, scrollHeight: pop.scrollHeight, scrollTop: pop.scrollTop,
+        left: Math.round(p.left), right: Math.round(p.right), top: Math.round(p.top),
         bottom: Math.round(p.bottom), viewport: innerHeight,
+        wheelHitInside: !!hit && pop.contains(hit), wheelEvents: window.__cliWheelEvents || 0,
         lastBottom: Math.round(l.bottom), firstTop: Math.round(first.getBoundingClientRect().top) };
     })()`);
 
@@ -211,10 +214,10 @@ test('a long CLI update list scrolls to its last row instead of closing', async 
     assert.ok(initial.lastBottom > initial.bottom, `滚动前最后一行确实在框外：${JSON.stringify(initial)}`);
 
     // 用真实的滚轮事件在浮层上滚：这里以前会把它关掉（窗口捕获阶段的 scroll 监听）。
+    await page.evaluate(`window.__cliWheelEvents = 0; document.getElementById('cli-update-pop').addEventListener('wheel', () => { window.__cliWheelEvents++; }, { passive: true })`);
     await page.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 160, y: 400, deltaX: 0, deltaY: 240 });
-    await page.waitFor(`document.getElementById('cli-update-pop').scrollTop > 0`).then(ok => {
-      assert.ok(ok, `滚轮要能滚它：${JSON.stringify(initial)}`);
-    });
+    const wheelScrolled = await page.waitFor(`document.getElementById('cli-update-pop').scrollTop > 0`);
+    assert.ok(wheelScrolled, `滚轮要能滚它：初始 ${JSON.stringify(initial)}；滚后 ${JSON.stringify(await box())}`);
     assert.equal(await page.evaluate('document.getElementById("cli-update-pop").hidden'), false,
       '滚浮层不该把它自己关掉');
 

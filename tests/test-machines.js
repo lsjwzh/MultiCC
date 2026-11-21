@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
+const net = require('node:net');
+const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
@@ -53,6 +55,46 @@ async function instance(t, name) {
   return { origin, request, runtime, root, server, streamFinished: () => streamFinished };
 }
 
+// Machine WebSockets are terminated by the Rust front door. Keep the real
+// pairing and grant store above, and redeem the bridge ticket through the same
+// native auth control used by that front door instead of the retired Node path.
+async function machineGateway(t) {
+  const addonPath = process.env.MULTICC_RUST_ADDON || path.join(
+    process.env.MULTICC_RUST_PREBUILT_DIR || path.resolve(__dirname, '../native/prebuilt'),
+    `${process.platform}-${process.arch}`, 'multicc_core.node');
+  const binary = path.join(path.dirname(addonPath), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+  assert.ok(fs.existsSync(binary), 'machine WebSocket test requires the Rust gateway');
+  const probe = net.createServer();
+  probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-machines-gateway-'));
+  const env = { ...process.env, PORT: String(port), HOST: '127.0.0.1',
+    MULTICC_ENV_FILE: path.join(root, '.env'), MULTICC_DATA_DIR: root,
+    MULTICC_GATEWAY_BACKOFF_SCALE: '0.01', MULTICC_RUST_ADDON: addonPath };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('MULTICC_GATEWAY_') && key !== 'MULTICC_GATEWAY_BACKOFF_SCALE') delete env[key];
+  }
+  const child = spawn(binary, ['serve', '--cwd', root, '--node', process.execPath, '--stdin-lifeline', '--',
+    path.join(__dirname, 'helpers/gateway-auth-child.js')], { cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let diagnostics = '';
+  child.stdout.on('data', chunk => { diagnostics += chunk; });
+  child.stderr.on('data', chunk => { diagnostics += chunk; });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit'); child.kill('SIGINT'); await exited;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  for (let i = 0; i < 200; i++) {
+    try { if ((await fetch(origin + '/fixture/state')).ok) return { origin }; } catch (_) { /* starting */ }
+    if (child.exitCode !== null) throw new Error(`machine gateway exited: ${diagnostics}`);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(`machine gateway did not start: ${diagnostics}`);
+}
+
 test('two computers isolate writes, proxy raw uploads, bridge sockets and revoke access', { timeout: 30000, skip: !hasNative }, async t => {
   const a = await instance(t, 'entry'), b = await instance(t, 'target');
   const rejected = await a.request('/api/machines', 'POST', { name: '电脑乙', origin: b.origin, password: 'wrong' });
@@ -85,7 +127,14 @@ test('two computers isolate writes, proxy raw uploads, bridge sockets and revoke
   const issued = await a.request(`/api/machines/${id}/ws-ticket`, 'POST', { path: '/ws/meta?probe=1' });
   assert.equal(issued.status, 200);
   assert.equal(issued.body.path, '/ws/meta');
-  const ws = new WebSocket(`${a.origin.replace('http:', 'ws:')}${issued.body.proxyPath}?ticket=${issued.body.ticket}`);
+  const upstream = await a.runtime.operate('websocket', { id, path: '/ws/meta?probe=1' });
+  assert.equal(upstream.status, 200);
+  const gateway = await machineGateway(t);
+  const admission = await fetch(gateway.origin + '/fixture/issue-machine', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ machineId: id, ...upstream.data }) });
+  assert.equal(admission.status, 200);
+  const ticket = await admission.json();
+  const ws = new WebSocket(`${gateway.origin.replace('http:', 'ws:')}${issued.body.proxyPath}?ticket=${ticket.ticket}`);
   const opened = once(ws, 'open'); ws.on('error', () => {}); await opened;
   const echoed = once(ws, 'message'); ws.send('电脑实时连接'); assert.equal((await echoed)[0].toString(), '电脑实时连接');
   const closed = once(ws, 'close');

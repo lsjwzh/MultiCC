@@ -28,7 +28,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+#[cfg(unix)]
+use std::process::ExitStatus;
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
@@ -819,6 +821,7 @@ async fn http_and_ws_share_one_remote_child() {
 }
 
 impl Gateway {
+    #[cfg(unix)]
     fn wait_exit(&mut self, timeout: Duration) -> Option<ExitStatus> {
         let deadline = Instant::now() + timeout;
         loop {

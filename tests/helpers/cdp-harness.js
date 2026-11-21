@@ -8,6 +8,9 @@ const { spawn } = require('node:child_process');
 const WebSocket = require('ws');
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+// A loaded runner can stall Chrome on disk I/O before its DevTools port exists.
+// Keep command/assertion deadlines unchanged and bound startup separately.
+const CHROME_STARTUP_TIMEOUT_MS = 60_000;
 // options.locale 只改 acceptLanguage 也会动 UA，所以给一个明确的中性身份，
 // 别让页面按 UA 猜出一台不存在的设备。
 const DESKTOP_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
@@ -295,7 +298,7 @@ async function createCdpHarness(options = {}) {
     chrome.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-4_000); });
     const diagnostics = () => chromeStartupDiagnostics(binary, profileDir, chrome, startedAt,
       () => ({ spawnError, stdout: stdout.trim(), stderr: stderr.trim() }));
-    const active = await waitForActivePort(profileDir, chrome, timeoutMs, diagnostics, () => spawnError);
+    const active = await waitForActivePort(profileDir, chrome, Math.max(timeoutMs, CHROME_STARTUP_TIMEOUT_MS), diagnostics, () => spawnError);
     connection = await connect(`ws://127.0.0.1:${active.port}${active.wsPath}`, timeoutMs);
     await connection.send('Browser.getVersion');
     const created = await connection.send('Target.createTarget', { url: 'about:blank', background: true });

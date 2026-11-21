@@ -112,6 +112,77 @@ test('失败保留旧索引，恢复后继续推进', async t => {
   await runtime.flush(); assert.notEqual(runtime.index.cursor(), first);
 });
 
+test('待办元数据写入后，快照和分页等待摘要索引更新', async t => {
+  const data = snapshot([task(1, { runState: 'error' })]);
+  data.taskTodoIgnored = ['1'];
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), build: async () => structuredClone(data),
+    send() {}, debounceMs: 60_000 });
+  t.after(() => runtime.close());
+  await runtime.ensureReady();
+  data.taskTodoIgnored = [];
+  runtime.invalidate([]);
+  const [fresh, page] = await Promise.all([runtime.syncHttp({}), runtime.pageHttp({ status: 'needs' })]);
+  assert.deepEqual(fresh.taskTodoIgnored, []);
+  assert.deepEqual(page.tasks.map(item => item.id), ['1']);
+});
+
+test('摘要构建进行中发生新写入时，读取等待包含新写入的下一次构建', async t => {
+  const data = snapshot([task(1, { runState: 'error' })]);
+  data.taskTodoIgnored = ['1'];
+  let hold = false, release, started;
+  const building = new Promise(resolve => { started = resolve; });
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), send() {}, debounceMs: 60_000,
+    build: async () => {
+      const captured = structuredClone(data);
+      if (hold) { started(); await new Promise(resolve => { release = resolve; }); }
+      return captured;
+    } });
+  t.after(() => runtime.close());
+  await runtime.ensureReady();
+  hold = true;
+  runtime.invalidate([]);
+  const oldBuild = runtime.flush();
+  await building;
+  hold = false;
+  data.taskTodoIgnored = [];
+  runtime.invalidate([]);
+  const read = runtime.syncHttp({});
+  release();
+  await oldBuild;
+  assert.deepEqual((await read).taskTodoIgnored, []);
+});
+
+test('元数据更新失败时不返回旧快照，恢复后可读取', async t => {
+  const data = snapshot([task(1)]);
+  let fail = false;
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), send() {}, debounceMs: 60_000,
+    logger: { warn() {} }, build: async () => { if (fail) throw new Error('fixture unavailable'); return structuredClone(data); } });
+  t.after(() => runtime.close());
+  await runtime.ensureReady();
+  data.taskTodos = ['1']; fail = true;
+  runtime.invalidate([]);
+  await assert.rejects(runtime.syncHttp({}), error => error.status === 503 && error.code === 'air_refresh_pending');
+  await assert.rejects(runtime.pageHttp({ status: 'all' }), error => error.status === 503 && error.code === 'air_refresh_pending');
+  fail = false;
+  await runtime.flush();
+  assert.deepEqual((await runtime.syncHttp({})).taskTodos, ['1']);
+});
+
+test('元数据构建卡住时读取有界失败，后台恢复后可读取', async t => {
+  const data = snapshot([task(1)]);
+  let hold = false, release;
+  const runtime = createAirSyncRuntime({ index: createAirReadIndex(), send() {}, debounceMs: 60_000,
+    build: async () => { if (hold) await new Promise(resolve => { release = resolve; }); return structuredClone(data); } });
+  t.after(async () => { release?.(); await runtime.close(); });
+  await runtime.ensureReady();
+  data.taskTodos = ['1']; hold = true;
+  runtime.invalidate([]);
+  await assert.rejects(runtime.syncHttp({}), error => error.status === 503 && error.code === 'air_refresh_pending');
+  hold = false; release();
+  await runtime.flush();
+  assert.deepEqual((await runtime.syncHttp({})).taskTodos, ['1']);
+});
+
 test('冷启动告知磁盘写满、退避不重建、模块错配另报，恢复后可读', async t => {
   let calls = 0, failure = Object.assign(new Error('write /private/session/path'), { code: 'ENOSPC' });
   const runtime = createAirSyncRuntime({ index: createAirReadIndex(), logger: { warn() {} },
@@ -255,6 +326,41 @@ test('前端：隐藏期间迟到的分页不生效，恢复后重新请求；�
   fail = true; client.page('err', {}); await tick();
   const count = calls; client.page('err', {}); assert.equal(calls, count, '失败不能立即循环请求');
   assert.ok(timers.some(timer => timer.ms >= 5000 && timer.ms < 6000), '分页需要自己的有界重试');
+});
+
+test('前端：切筛选时不复用旧分页统计，同筛选翻页仍保留统计', async t => {
+  const index = createAirReadIndex();
+  index.apply(snapshot(Array.from({ length: 45 }, (_, i) => task(i + 1))));
+  const completions = [];
+  let failPage = false;
+  const client = create({ Socket: null, request: async path => {
+    const url = new URL(path, 'http://x');
+    if (!url.pathname.endsWith('/page')) return index.bootstrap();
+    if (failPage) throw new Error('fixture unavailable');
+    const result = index.page({ status: 'all', page: Number(url.searchParams.get('page')) || 1 });
+    return new Promise(done => completions.push(() => done(result)));
+  } });
+  t.after(() => client.close());
+  await client.sync();
+  client.page('directory', { status: 'all', page: 1 });
+  completions.shift()(); await tick();
+  assert.equal(client.page('directory', { status: 'all', page: 1 }).pages, 3);
+  const next = client.page('directory', { status: 'all', page: 2 });
+  assert.equal(next.loading, true);
+  assert.equal(next.pages, 3, '同一筛选的页数仍可用于翻页');
+  completions.shift()(); await tick();
+  const filtered = client.page('directory', { status: 'all', query: '任务 07', page: 1 });
+  assert.equal(filtered.loading, true);
+  assert.equal(filtered.pages, 1, '筛选变化时不得展示上一筛选的分页');
+  assert.equal(filtered.total, 0, '筛选变化时不得展示上一筛选的总数');
+  completions.shift()(); await tick();
+  failPage = true;
+  client.page('directory', { status: 'all', query: '不存在', page: 1 });
+  await tick();
+  const failed = client.page('directory', { status: 'all', query: '不存在', page: 1 });
+  assert.deepEqual(failed.tasks, [], '筛选请求失败不能把旧筛选任务当作当前结果');
+  assert.equal(failed.pages, 1);
+  assert.equal(failed.total, 0);
 });
 
 test('前端：新一代引导不被旧 pending 阻塞，同一游标重复帧不重画', async t => {

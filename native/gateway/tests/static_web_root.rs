@@ -703,9 +703,9 @@ fn an_unreadable_document_is_an_empty_500() {
 
 #[test]
 fn a_symlink_out_of_the_root_is_served_like_send_serves_it() {
-    let gateway = Gateway::start("symlink");
     #[cfg(unix)]
     {
+        let gateway = Gateway::start("symlink");
         let outside = gateway.dir.join("outside.txt");
         fs::write(&outside, "outside!").unwrap();
         std::os::unix::fs::symlink(&outside, gateway.dir.join("public/link.txt")).unwrap();

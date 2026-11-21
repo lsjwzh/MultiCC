@@ -343,6 +343,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn resolve_matches_node_posix() {
         // Truth values captured from Node's path.resolve on POSIX.

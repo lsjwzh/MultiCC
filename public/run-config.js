@@ -219,54 +219,9 @@
     return normalizeSubagentRoute(routes[family]);
   }
 
-  // 同步预览（dry run）→ 状态行文案。preview 的形状：
-  //   { state:'loading' }
-  //   { state:'ready', family, counts:{applied,deferred,unchanged,skipped,kept} }
-  //   { state:'error', error }
-  //   { state:'unavailable' }   ← 503：服务端加载的原生模块还是旧的，没有同步接口
-  // 只产出 {tone, text}，不碰 DOM —— tests/test-run-config.js 直接调。
-  function syncSummary(preview) {
-    if (!preview || typeof preview !== 'object') return { tone: 'idle', text: '' };
-    if (preview.state === 'loading') {
-      return { tone: 'loading', text: tt('runConfigSyncChecking', '正在检查要更新的任务…') };
-    }
-    if (preview.state === 'error') {
-      return { tone: 'error', text: tt('runConfigSyncPreviewFailed', '无法读取同步预览：{error}', { error: clean(preview.error) }) };
-    }
-    if (preview.state === 'unavailable') {
-      return { tone: 'error', text: tt('runConfigSyncUnavailable', '服务端加载的原生模块是旧版本，暂不支持同步。重启一次 MultiCC 会自动按当前代码重新编译加载，之后改这个设置不需要再重启。') };
-    }
-    const counts = preview.counts && typeof preview.counts === 'object' ? preview.counts : {};
-    const applied = Number(counts.applied) || 0;
-    const deferred = Number(counts.deferred) || 0;
-    const skipped = Number(counts.skipped) || 0;
-    const kept = Number(counts.kept) || 0;
-    const total = applied + deferred;
-    // 单独设置过子 agent 的任务同步不碰：单独说一句，免得以为漏了。
-    const suffix = (kept > 0 ? tt('runConfigSyncKeptSuffix', '，{k} 个单独设置过的保持不变', { k: kept }) : '')
-      + (skipped > 0 ? tt('runConfigSyncSkippedSuffix', '，{k} 个跳过', { k: skipped }) : '');
-    if (total > 0) {
-      return {
-        tone: 'ready',
-        text: (total === 1
-          ? tt('runConfigSyncPreviewOne', '将更新 1 个任务')
-          : tt('runConfigSyncPreview', '将更新 {n} 个任务', { n: total })) + suffix,
-      };
-    }
-    return {
-      tone: 'ready',
-      text: tt('runConfigSyncNothing', '没有需要更新的 {cli} 任务',
-        { cli: subagentFamilyLabel(preview.family) || '' }) + suffix,
-    };
-  }
-
-  // 清除全局默认前的确认文案（清除的 dry run 计数）：恢复随主的是跟随全局的任务。
-  function clearSummary(preview) {
-    const counts = preview && preview.counts && typeof preview.counts === 'object' ? preview.counts : {};
-    return tt('runConfigClearPreview', '清除后 {n} 个跟随全局的 {cli} 任务恢复随主，新建任务也不再默认使用；单独设置过的 {k} 个不受影响。', {
-      n: (Number(counts.applied) || 0) + (Number(counts.deferred) || 0), k: Number(counts.kept) || 0,
-      cli: subagentFamilyLabel(preview && preview.family) || '' });
-  }
+  const { syncSummary, clearSummary } = (typeof module === 'object' && module.exports
+    ? require('./run-config-controls') : scope().MultiCCRunConfigControls)
+    .createSubagentSummaries({ tt, clean, subagentFamilyLabel });
 
   // 首次引导只记「看过了」这一个事实；存储被禁（Safari 私密窗口等）时读不到
   // 就当作没看过，写失败也不抛 —— 引导只是提示，不能拦住对话框。

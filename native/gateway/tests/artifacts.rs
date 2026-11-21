@@ -616,10 +616,10 @@ fn other_methods_and_upgrades_are_never_claimed() {
 
 #[test]
 fn an_unreadable_asset_is_the_500_envelope_after_sends_headers() {
-    let gateway = Gateway::start("unreadable");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let gateway = Gateway::start("unreadable");
         let path = primary_file(&gateway, "art-1/locked.txt");
         fs::write(&path, "locked asset").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
@@ -641,9 +641,9 @@ fn an_unreadable_asset_is_the_500_envelope_after_sends_headers() {
 
 #[test]
 fn a_symlink_inside_the_root_is_served_like_send_serves_it() {
-    let gateway = Gateway::start("symlink");
     #[cfg(unix)]
     {
+        let gateway = Gateway::start("symlink");
         std::os::unix::fs::symlink(
             Path::new("nested").join("deep.txt"),
             primary_file(&gateway, "art-1/linked.txt"),

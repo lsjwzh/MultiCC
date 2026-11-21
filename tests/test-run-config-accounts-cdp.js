@@ -163,6 +163,8 @@ test('Command Code: add an account inline, save the pick, delete it back to the 
     await page.evaluate(`window.confirm = () => true;
       window.MultiCCRunConfig.open({ sessionId: 'acct', configuration: { cli: 'commandcode' } }, ['commandcode', 'claude-exp'], () => {})`);
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-account')?.value === '${NEW_ID}'`), 'the stored pick is read back');
+    assert.ok(await page.waitFor(`${visible('.rc-account-delete')} && !document.querySelector('.air-config-dialog[open] .rc-account-delete').disabled`),
+      'the account list has loaded and the delete action is available');
     await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-account-delete').click()`);
     assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-account').value === '' && !document.querySelector('.air-config-dialog[open] .rc-account option[value="${NEW_ID}"]')`));
     assert.ok(page.requests.some(req => req.method === 'DELETE' && req.path === `/api/cli-accounts/commandcode/${NEW_ID}`));

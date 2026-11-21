@@ -71,6 +71,14 @@ test('migration debt can only shrink and stale policy entries fail closed', () =
   }).violations[0].kind, 'stale_migration_debt');
 });
 
+test('the server bridge and other files remain gated', () => {
+  const result = evaluateLineBudgets([
+    { file: 'server.js', lines: 9000, bytes: 900000 },
+    { file: 'src/other.js', lines: 3001, bytes: 1 },
+  ], { migrationDebt: {}, exemptions: {} });
+  assert.deepEqual(result.violations.map(entry => entry.file), ['server.js', 'src/other.js']);
+});
+
 test('the current tracked tree satisfies the ratcheted budget', () => {
   const result = evaluateLineBudgets(trackedSourceEntries());
   assert.deepEqual(result.violations, []);
@@ -78,11 +86,7 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // budget is a violation above, so this pins the declared set — a new god file
   // cannot be quietly parked here, and retiring an entry (by splitting the file
   // back under 3000) means shrinking this list in the same commit.
-  // Remaining debt is the run-config model panel and server.js, which went back
-  // over 3000 with the held-turn injection wiring (chat delivery) and must be
-  // split again to retire the entry. The macOS Agent was split below 3000 lines
-  // and has no debt entry. New debt must be listed here; retiring debt must
-  // shrink both lists.
+  // The run-config model panel and server bridge remain tracked migration debt.
   assert.deepEqual(result.debts.map(entry => entry.file),
     ['public/run-config.js', 'server.js']);
 });

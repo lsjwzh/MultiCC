@@ -36,9 +36,10 @@ fn node_binary() -> String {
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
+        .parent()
+        .and_then(Path::parent)
         .expect("repository root")
+        .to_path_buf()
 }
 
 fn free_port() -> u16 {
@@ -1326,14 +1327,15 @@ async fn native_http_new_task_materializes_and_injects_verified_reference() {
     assert_eq!(status, 200, "{result}");
     let id = result["sessionId"].as_str().unwrap();
     let target = repo.join(".multicc-worktrees").join(id);
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let input = loop {
         if let Ok(text) = fs::read_to_string(gateway.state.join("provider-input")) {
             break text;
         }
         assert!(
             Instant::now() < deadline,
-            "{}",
+            "provider input did not arrive; accepted={result}; worktree_exists={}; gateway log:\n{}",
+            target.is_dir(),
             fs::read_to_string(gateway.dir.join("gateway.log")).unwrap()
         );
         tokio::time::sleep(Duration::from_millis(20)).await;

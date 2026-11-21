@@ -215,7 +215,8 @@ test('the Air bridges panel is native, keeps the legacy id skeleton and closes t
     await page.evaluate(`document.getElementById('tg-btn-save').click()`);
     assert.ok(await until(() => configWrites.length === 1), '保存凭证打的是 POST /api/telegram/config');
     assert.deepEqual(configWrites, [{ botToken: TOKEN }], 'body 只有我们填的那个字段（空字段不上送）');
-    assert.equal(await page.evaluate(`document.getElementById('tg-botToken').value`), '', '保存成功清空输入框');
+    assert.ok(await until(async () => (await page.evaluate(`document.getElementById('tg-botToken').value`)) === ''),
+      '保存成功清空输入框');
     await page.screenshot('01-bridges-telegram-running');
 
     // ── ⑥ 工具条的「刷新」= 再调一次 initialize()，不重建骨架 ──────────────

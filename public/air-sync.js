@@ -139,6 +139,9 @@
     function page(key, options, notify = onChange) {
       const q = { limit: 20, ...options, dayStart: dayStart() };
       const signature = JSON.stringify(q), cached = pages.get(key);
+      const { page: _page, ...filter } = q;
+      const filterSignature = JSON.stringify(filter);
+      const sameFilter = cached?.filterSignature === filterSignature;
       if (!closed && !paused && (!cached || cached.signature !== signature || number(cached.cursor) < number(cursor))
           && (cached?.signature !== signature || !cached?.errorAt || Date.now() - cached.errorAt >= 5000) && !pending.has(key)) {
         const attempt = serial;
@@ -149,13 +152,14 @@
           for (const task of result.tasks) put(task, result.cursor);
           const tasks = result.tasks.map(task => pool.get(task.id) || task);
           if (pages.size >= 16 && !pages.has(key)) pages.delete(pages.keys().next().value);
-          pages.set(key, { ...result, tasks, signature });
+          pages.set(key, { ...result, tasks, signature, filterSignature });
           viewVersion++;
           trim();
         }).catch(() => {
           if (closed || attempt !== serial) return;
-          onStatus('offline'); pages.set(key, { signature, cursor, tasks: cached?.tasks || [], total: cached?.total || 0,
-            page: Number(q.page) || 1, pages: cached?.pages || 1, errorAt: Date.now() });
+          onStatus('offline'); pages.set(key, { signature, filterSignature, cursor,
+            tasks: cached?.signature === signature ? cached.tasks : [], total: sameFilter ? cached.total : 0,
+            page: Number(q.page) || 1, pages: sameFilter ? cached.pages : 1, errorAt: Date.now() });
           if (!pageTimer) pageTimer = schedule(() => { pageTimer = null; if (!closed && !paused) notify(current()); }, 5100);
         }).finally(() => {
           if (pending.get(key) === promise) pending.delete(key);
@@ -164,7 +168,8 @@
         pending.set(key, promise);
       }
       return cached?.signature === signature ? { ...cached, tasks: cached.tasks.map(t => pool.get(t.id)).filter(Boolean) }
-        : { tasks: [], total: cached?.total || 0, pages: cached?.pages || 1, page: Number(q.page) || 1, loading: true };
+        : { tasks: [], total: sameFilter ? cached.total : 0, pages: sameFilter ? cached.pages : 1,
+          page: Number(q.page) || 1, loading: true };
     }
     function resume() {
       closed = false; paused = false;

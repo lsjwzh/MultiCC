@@ -1182,8 +1182,15 @@ mod tests {
         .await
         .unwrap();
 
-        let (early, early_closed) = upstream(false);
+        let (early, early_ready, early_closed) = upstream_with_ready(false);
         early.open().await.unwrap();
+        // The response headers can reach the client before the fixture finishes
+        // writing its first frame. Do not race the fixture's write with abort.
+        tokio::task::spawn_blocking(move || {
+            early_ready.recv_timeout(Duration::from_secs(2)).unwrap()
+        })
+        .await
+        .unwrap();
         early.start_stream_watch(500, 500, 1000, false).unwrap();
         assert_eq!(early.abort(), None);
         assert_eq!(early.finish_stream_watch(), Some("CLIENT_DISCONNECTED"));

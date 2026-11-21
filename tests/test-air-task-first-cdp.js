@@ -1077,9 +1077,9 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     assert.equal(await page.evaluate(`document.querySelectorAll('#air-aux-form select').length`), 3, '协议/Provider/模型三级联动');
     assert.equal(await page.evaluate(`document.querySelector('#air-aux-form select').value`), 'openai');
     await page.evaluate(`document.querySelectorAll('#air-aux-form select')[2].value='gpt-5.6-sol'`);
-    await page.evaluate(`[...document.querySelectorAll('#air-aux-form button')].find(b=>b.textContent==='保存').click()`);
-    // 保存成功后页面会重拉三份数据并重绘,等记录区重画完再断言提交内容。
-    await page.waitFor(`document.querySelectorAll('#air-aux-records .air-aux-item').length===1 && ${JSON.stringify('x')}==='x'`);
+    await page.evaluate(`window.__auxSaveButton=[...document.querySelectorAll('#air-aux-form button')].find(b=>b.textContent==='保存'); window.__auxSaveButton.click()`);
+    // 等待本次保存后的表单重绘，旧记录在请求发出之前就已存在，不能作为完成信号。
+    assert.ok(await page.waitFor(`window.__auxSaveButton && !window.__auxSaveButton.isConnected && document.querySelectorAll('#air-aux-records .air-aux-item').length===1`), '保存后重新加载配置');
     assert.deepEqual(auxPosts.at(-1), { protocol: 'openai', providerId: 'codex-lab', model: 'gpt-5.6-sol' }, '保存提交新模型');
     await page.evaluate(`document.querySelector('[data-air-view="settings"]').click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-title').textContent==='设置'`));
