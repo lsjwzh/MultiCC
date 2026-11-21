@@ -1,5 +1,5 @@
 'use strict';
-const { MAX_TASKS_PER_DIRECTORY, directoryAtCapacity } = require('./capacity');
+const { MAX_TASKS_PER_DIRECTORY, directoryAtCapacity } = require('../native/runtime').taskShellCapacity;
 
 const { randomUUID } = require('node:crypto');
 const {

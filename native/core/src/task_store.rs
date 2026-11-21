@@ -1,4 +1,5 @@
 //! 任务仓储：连接、事务、JSON、派生索引与缓存失效均由 Rust 持有。
+use crate::task_domain::MAX_TASKS_PER_DIRECTORY;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
@@ -16,7 +17,6 @@ mod workspace_permit;
 type Result<T> = std::result::Result<T, String>;
 /// v2：引用列 task_ref/receipt_ref（仓储写入时维护）+ 台账独立成类 + 上下文记录分层。
 pub const SCHEMA_VERSION: i64 = 2;
-const MAX_TASKS_PER_DIRECTORY: usize = 1024;
 fn items(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or(&[])
 }

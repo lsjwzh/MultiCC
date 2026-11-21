@@ -3,7 +3,7 @@
 const { hash } = require('../native/runtime').taskShellContext;
 const { historySnapshot, shellRecords } = require('./history-context');
 const { displayMessages, displayTask } = require('../task-display-attribution');
-const { directoryAtCapacity } = require('./capacity');
+const { directoryAtCapacity } = require('../native/runtime').taskShellCapacity;
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 // Air is the only task surface left. A task link is an Air task URL, and the
 // directory rides along so the page can name the task without a second lookup.

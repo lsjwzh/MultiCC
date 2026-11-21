@@ -2,7 +2,7 @@
 
 const { taskDomain } = require('../native/task-domain');
 const { isOpenRunState } = require('../classify/vocab');
-const { MAX_TASKS_PER_DIRECTORY } = require('../task-shell/capacity');
+const { MAX_TASKS_PER_DIRECTORY } = require('../native/runtime').taskShellCapacity;
 const MAX_BATCH_DELETE = 100;
 
 function timestamp(value) {

@@ -89,6 +89,11 @@ const isZcodeSessionId = value => getNative().isZcodeSessionId(value);
 const repairZcodeSessionState = session => getNative().repairZcodeSessionState(session);
 const resolveModelRequestPolicy = (session = {}, env = process.env) => getNative().resolveModelRequestPolicy(session, env);
 const createModelStreamProgress = () => getNative().createModelStreamProgress();
+const taskShellCapacity = {
+  get MAX_TASKS_PER_DIRECTORY() { return getNative().taskDirectoryCapacityLimit(); },
+  directoryTaskCount: (store, dirId) => getNative().taskDirectoryCapacity(store, dirId, false, require('./task-domain').taskDomain),
+  directoryAtCapacity: (store, dirId) => getNative().taskDirectoryCapacity(store, dirId, true, require('./task-domain').taskDomain),
+};
 function createCliProviderRegistry(adapters, fallbackName = 'claude') {
   const addon = getNative();
   if (cliRegistryAddon !== addon) {
@@ -267,4 +272,4 @@ module.exports = { addonPath, gatewayPath, getNative, record, status, runNative,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry };
+  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity };

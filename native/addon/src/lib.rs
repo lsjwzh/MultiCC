@@ -96,6 +96,7 @@ pub mod task_domain;
 pub mod task_read_model;
 pub mod task_routing;
 pub mod task_run_context;
+pub mod task_shell_capacity;
 pub mod task_shell_host;
 pub mod task_store;
 pub mod terminal_target;

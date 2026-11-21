@@ -1,5 +1,5 @@
 'use strict';
-const { directoryAtCapacity } = require('./capacity');
+const { directoryAtCapacity } = require('../native/runtime').taskShellCapacity;
 const { hash } = require('../native/runtime').taskShellContext;
 const { handoffSnapshot } = require('./history-context');
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
