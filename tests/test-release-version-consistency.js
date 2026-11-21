@@ -743,15 +743,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // 441 + 2 = 443 commands。
   // Restart supervisor and real-server checks use isolated processes and the
   // debug binaries built by test:release:core before the manifest runner.
-  assert.equal(core.length, 471, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 471);
+  // Settings byte/permission differential adds one deterministic entry; remote
+  // host action key mappings add one non-UI Flutter core entry (no device IO).
+  assert.equal(core.length, 473, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 473);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 391);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 392);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 49);
-  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 31,
+  assert.equal(core.filter(entry => entry.lane === 'flutter').length, 32,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
 
   const expectedPaths = core.flatMap(entry => Array.from(
@@ -759,8 +761,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 443,
-    '440 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 444,
+    '441 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

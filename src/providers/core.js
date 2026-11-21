@@ -26,7 +26,7 @@ const cliProviderRouter = require('cli-provider-router');
 const { createSqliteRuntime } = require('../sqlite-runtime');
 const { createPaths } = require('../paths');
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('../runtime-security');
-const { settingsOverrideFor } = require('./claude-settings-override');
+const { settingsOverrideFor } = require('../native/runtime').claudeSettingsOverride;
 const { createOpencodeModelLimitResolver } = require('./opencode-model-limits');
 const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
@@ -2386,5 +2386,5 @@ module.exports = {
   WIRE_DEFAULT_MODEL,
   probeRelayModels,
   claudeProbeRouteEnv,
-  ...require('./claude-settings-override'),
+  ...require('../native/runtime').claudeSettingsOverride,
 };

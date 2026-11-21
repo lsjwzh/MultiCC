@@ -1,7 +1,7 @@
 'use strict';
 
-// Unit tests for src/providers/claude-settings-override.js — the per-session
-// --settings override that keeps ~/.claude/settings.json env from hijacking
+// Tests for the Rust per-session --settings override that keeps
+// ~/.claude/settings.json env from hijacking
 // per-session provider routing on Claude Code ≥2.1, and that carries the
 // official lane's chosen model so a ccswitch-style terminal config cannot
 // redirect the official account.
@@ -26,7 +26,7 @@ const {
   settingsOverrideFor,
   routingEnvOf,
   OVERRIDE_DIR,
-} = require('../src/providers/claude-settings-override');
+} = require('../src/native/runtime').claudeSettingsOverride;
 
 // Mirrors BLANK_WHEN_ABSENT_KEYS: routing/model keys the session does not
 // define, which must be neutralized so the user-level settings cannot supply

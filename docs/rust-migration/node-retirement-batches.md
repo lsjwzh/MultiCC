@@ -157,6 +157,14 @@ Codex 配置切换复用 Rust 的 rollout 查找、歧义判断和原子复制�
 
 会话路由字节对拍曾出现 12 项 OPTIONS 返回 503。单条请求在同一二进制和端口先返回 503，兼容宿主启动后返回 200，确认 harness 在前门健康检查通过后过早启动语料。补充会话守卫就绪检查后，响应与副作用顺序均为 126/126 一致。原始失败、主线复现、单条请求和修复后记录位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-profile-scan`，组合门禁位于 `codex-profile-scan-gates`。后续继续迁移 `src/codex/session-home.js` 的启动和重试调用边界。
 
+### Claude 启动配置覆盖
+
+删除 `src/providers/claude-settings-override.js`（86 行），配置环境键筛选、缺失路由键清空、会话文件名生成、私有目录与原子写入迁入 `native/addon/src/claude_settings_override.rs`。沿用共享 Rust `state_file` 写入器，保持文件 0600、目录 0700，以及 Provider 切换后重写配置的行为。生产 Node 代码净减 76 行。
+
+现有回合引擎与 Provider 宿主仍在 Node，因此 `src/native/runtime.js` 暂留同步 N-API 调用和家目录路径适配。Rust 通过 N-API 访问 V8 的 live 值、`encodeURIComponent` 与 `JSON.stringify`，以保留 getter 异常、键顺序、`toJSON`、孤立 UTF-16 代理项及非 JSON 值语义；未在 Node 增加配置业务规则。调用方迁入原生宿主后可删除这段兼容接线。
+
+冻结对照 `tests/helpers/legacy-claude-settings-override.js` 来自 `5ec8703f`。仓库差分测试覆盖 540 组输入的环境投影、文件名、JSON 字节和权限，另验证 getter 访问顺序、异常对象身份及序列化失败保留原文件。完整门禁与合并收据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/claude-settings-override-gates/`。兼容测试使用项目锁定的 SDK 0.3.325 oracle；首次自动发现本机 0.3.317 的失败日志保留，未放宽环境字节断言。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。
