@@ -89,6 +89,10 @@ const isZcodeSessionId = value => getNative().isZcodeSessionId(value);
 const repairZcodeSessionState = session => getNative().repairZcodeSessionState(session);
 const resolveModelRequestPolicy = (session = {}, env = process.env) => getNative().resolveModelRequestPolicy(session, env);
 const createModelStreamProgress = () => getNative().createModelStreamProgress();
+function createModelDefaultResolver({ history, now, historyTtlMs }) {
+  const owner = new (getNative().RustModelDefaults)(historyTtlMs);
+  return request => owner.resolve(request, history, now);
+}
 function credential(input) {
   return JSON.parse(getNative().providerCredential(JSON.stringify(input)));
 }
@@ -279,4 +283,4 @@ module.exports = { addonPath, gatewayPath, getNative, record, status, runNative,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials };
+  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver };

@@ -4,7 +4,7 @@ const defaultFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { isResidentSession } = require('./cli-capability');
-const { createModelDefaultResolver } = require('./model-default');
+const { createModelDefaultResolver } = require('../native/runtime');
 const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../claude-models');
 
 const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
