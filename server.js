@@ -61,7 +61,6 @@ const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git/q
 
 const crypto = require('crypto');
 const bus = require('./src/bus');
-const services = require('./src/services');
 const state = require('./src/state/container');
 const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
 const providers = require('./src/providers/core');
@@ -2690,13 +2689,12 @@ const chatTurnEngine = createChatTurnEngine({ replay: chatReplay,
   CHAT_HISTORY_PAGE,
 });
 
-// Chat domain owns runChatTurn: bus 'chat:run' (fire-and-forget), registry 'chat.runTurn' (return value).
+// The chat domain owns admission through the chat:run bus listener.
 bus.on('chat:run', (sessionName, text, opts) => {
   chatTurnEngine.admitChatWork(sessionName, text, opts).catch(error => {
     logger.error('chat_work_admission_failed', { sessionId: sessionName, error: error.message });
   });
 });
-services.provide('chat.runTurn', chatTurnEngine.admitChatWork);
 
 // Delivery into a held Claude turn.
 // Rust decides eligibility; chat streams own writes.
