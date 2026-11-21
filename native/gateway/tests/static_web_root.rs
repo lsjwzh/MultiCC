@@ -387,6 +387,51 @@ fn the_release_binaries_keep_the_set_headers_hook() {
     );
 }
 
+// ── Anonymous (external) admission ─────────────────────────────────────────
+
+const EXTERNAL_IP: &str = "203.0.113.9";
+
+/// The iOS OTA installer carries no cookie: after the manifest it fetches the
+/// IPA with an anonymous HEAD and GET from the public address. A login redirect
+/// or 403 here makes the install silently do nothing.
+#[test]
+fn an_external_anonymous_client_can_fetch_the_release_binaries() {
+    let gateway = Gateway::start("anon-binaries");
+    let external = [("X-Forwarded-For", EXTERNAL_IP)];
+    for path in ["/multicc-ios.ipa", "/multicc.apk"] {
+        let get = gateway.exchange("GET", path, &external);
+        assert_eq!(get.status, 200, "GET {path}\n{}", gateway.log());
+        let head = gateway.exchange("HEAD", path, &external);
+        assert_eq!(head.status, 200, "HEAD {path}\n{}", gateway.log());
+    }
+    let ranged = gateway.exchange(
+        "GET",
+        "/multicc-ios.ipa",
+        &[("X-Forwarded-For", EXTERNAL_IP), ("Range", "bytes=0-2")],
+    );
+    assert_eq!(ranged.status, 206);
+    assert_eq!(ranged.body, "IPA");
+}
+
+/// Only the static extensions are public. A document still needs a login, and
+/// an anonymous `.ipa` that is not one of the two canonical names keeps the
+/// guard's 404 instead of the login redirect.
+#[test]
+fn an_external_anonymous_client_still_needs_a_login_for_documents() {
+    let gateway = Gateway::start("anon-documents");
+    let external = [("X-Forwarded-For", EXTERNAL_IP)];
+    let page = gateway.exchange("GET", "/chat.html", &external);
+    assert_eq!(page.status, 302, "{}", gateway.log());
+    assert_eq!(
+        page.header("location"),
+        Some("/login?redirect=%2Fchat.html")
+    );
+    let asset = gateway.exchange("GET", "/air.css", &external);
+    assert_eq!(asset.status, 200);
+    let other = gateway.exchange("GET", "/other.ipa", &external);
+    assert_eq!(other.status, 404);
+}
+
 // ── Range and conditional requests ─────────────────────────────────────────
 
 #[test]

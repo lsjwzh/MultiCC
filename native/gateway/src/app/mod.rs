@@ -1120,8 +1120,35 @@ pub async fn handle(
             return plugins::handle_file(&app, route, &ctx, &peer, &snapshot, host).await;
         }
     }
-    if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
-        return refusal;
+    // `public/` static files and the `.apk`/`.ipa` guard: Node's auth gate lets
+    // a static-extension path through without a login (`http_entry::public_path`),
+    // which is what lets the iOS OTA installer (no cookie) fetch
+    // `/multicc-ios.ipa` after the manifest. Same admission order as the plugin
+    // files: the peer allowlist first, then the login only for non-public paths.
+    let static_public = if matches!(route, Route::StaticWebRoot | Route::StaticAssets(_)) {
+        match plugins::file_admission(
+            app.lan_only,
+            http_gate::is_private_network_address(&peer),
+            plugins::file_is_public(ctx.method.as_str(), &ctx.path),
+        ) {
+            plugins::FileAdmission::PeerRejected => {
+                return express::json(
+                    &ctx,
+                    403,
+                    &http_gate::public_peer_rejected_dto(&ctx.ids),
+                    &[],
+                );
+            }
+            plugins::FileAdmission::Public => true,
+            plugins::FileAdmission::Gated => false,
+        }
+    } else {
+        false
+    };
+    if !static_public {
+        if let Some(refusal) = app.gate(&ctx, &peer, &snapshot).await {
+            return refusal;
+        }
     }
     // `/api/remote-screen`: the handler reads the raw body itself (it runs
     // `express.json` inside, before its method check), so it runs in front of
