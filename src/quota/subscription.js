@@ -9,7 +9,7 @@ function subscriptionFromBody(body, { source = 'account', observedAt = Date.now(
 }
 
 function codexAuthSubscription(auth) {
-  return require('../providers/native-credentials').credential({ operation: 'codexSubscription', auth });
+  return require('../native/runtime').providerCredentials.credential({ operation: 'codexSubscription', auth });
 }
 
 module.exports = { subscriptionFromBody, codexAuthSubscription };

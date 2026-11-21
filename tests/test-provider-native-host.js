@@ -7,7 +7,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { createNativeProviderStore } = require('../src/providers/native-store');
-const { credential, readCli } = require('../src/providers/native-credentials');
+const { credential, readCli } = require('../src/native/runtime').providerCredentials;
 const native = require('../src/native/runtime').getNative();
 const { createHopCredentialStore } = require(path.join(path.dirname(require.resolve('cli-provider-router')), 'proxy/hop-credentials'));
 function temp(t) {

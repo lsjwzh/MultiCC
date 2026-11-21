@@ -29,7 +29,7 @@ function requestCodexUsage(auth, { fetch = outboundFetch, signal } = {}) {
 // is picked up automatically. Returns null on any problem → the poll shows
 // nothing rather than fabricating.
 function readCodexAuth(authFile = path.join(os.homedir(), '.codex', 'auth.json')) {
-  return require('../providers/native-credentials').credential({ operation: 'codexAuth',
+  return require('../native/runtime').providerCredentials.credential({ operation: 'codexAuth',
     file: authFile || path.join(os.homedir(), '.codex', 'auth.json') });
 }
 

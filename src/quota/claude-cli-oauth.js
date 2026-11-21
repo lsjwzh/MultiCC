@@ -37,13 +37,13 @@ const EXPIRY_SKEW_MS = 60 * 1000;
 // The store is `{"claudeAiOauth":{accessToken,refreshToken,expiresAt,...}}` in
 // every version seen so far, but older builds wrote the fields at the top level.
 function parseCredentials(raw) {
-  return require('../providers/native-credentials').credential({ operation: 'parseCli', raw: String(raw || '') });
+  return require('../native/runtime').providerCredentials.credential({ operation: 'parseCli', raw: String(raw || '') });
 }
 
 // Injected reader + fetch keep this testable without a keychain or a network.
 async function readCliCredentials(options = {}) {
   if (!options.readKeychain && !options.readFile) {
-    return require('../providers/native-credentials').readCli({ platform: options.platform || process.platform,
+    return require('../native/runtime').providerCredentials.readCli({ platform: options.platform || process.platform,
       file: options.credentialsFile || CREDENTIALS_FILE, service: options.keychainService || KEYCHAIN_SERVICE });
   }
   const {

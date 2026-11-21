@@ -95,7 +95,7 @@ function rewrittenSince(file, importedAt) {
   try { return fs.statSync(file).mtimeMs > at + 2000; } catch (_) { return false; }
 }
 
-const { credential } = require('./providers/native-credentials');
+const { credential } = require('./native/runtime').providerCredentials;
 function readJsonIfExists(file) { return credential({ operation: 'readJson', file }); }
 function writeAccountJson(file, data) { return credential({ operation: 'writeJson', file, data }); }
 
