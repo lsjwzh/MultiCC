@@ -273,7 +273,13 @@ Rust 源码、原有工厂和 `resolve` 启动探针保持不变，既有模型�
 
 删除 `src/quota/subscription.js`（15 行），将两个具名函数正文原样集中到共享原生绑定，两个生产消费点及现有测试只更换导入，生产 Node 净减 8 行。订阅日期解析和 Codex 登录声明筛选原本由 Rust 持有，本批仅退休独立兼容入口，不宣称新增策略迁移。Node 保留 JSON 编解码、默认时钟参数和动态凭据导出查询，以兼容现有宿主协议；调用协议迁出 Node 后即可删除这些绑定。
 
-默认参数及 `Date.now` 求值时点、JSON 求值和异常传播边界不变，动态 `require` 仍解析到同一原生模块，现有订阅、账号及鉴权断言保留。冻结路由对拍辅助模块、Rust 实现和启动探针不变。完整验收尚在进行，证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/subscription-entry-gates/`。整体 Node 后端清零尚未完成。
+默认参数及 `Date.now` 求值时点、JSON 求值和异常传播边界不变，动态 `require` 仍解析到同一原生模块，现有订阅、账号及鉴权断言保留。冻结路由对拍辅助模块、Rust 实现和启动探针不变。完整 37 道门禁中 36 道退出 0，订阅与官方账号定向 80/80、零跳过，Rust 2,736 项及四组 HTTP 对拍通过；标准 npm 仍 exit 1，完整归一化失败报告与干净 `bf99c686` 已证明的第 249、514 行两项异常逐字一致，被短路的后续阶段未记通过。沿用仓库外正向健康启动器，未改语料、断言或冻结源码树；权限、持久诊断、慢读线程采样及日志哈希均核对。验收树 `8724e574` 原样提交为 `5ea747c2`，合入 `a04f0565` 时主仓与任务工作区干净且为 0/0；证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/subscription-entry-gates/`，合入收据见 [登记预览](/artifacts/cb22793be35ae2cf/subscription-entry-merge-receipt.json)。整体 Node 后端清零尚未完成，服务未重启。
+
+### 已有 Rust 任务提醒策略的可变对象入口（待完整验收）
+
+删除 `src/task-board/attention.js`（15 行），将 `call`、`mutate` 和方法表达式原样集中到 `src/native/task-domain.js` 的 `taskAttention` 导出，生产 Node 净减 2 行。提醒策略原本已在 Rust，本批只退休独立兼容入口。Node 保留默认时钟参数、同步 JSON 命令和旧调用者的可变对象写回协议；任务板宿主退出 Node 后即可删除。原生 taskDomain、replace、WeakMap/Proxy、存储和异常代码均未改动，唯一生产消费点及现有测试只换导入。
+
+原任务板和 Air 路由对拍分别导入独立冻结的原 15 行适配器，正文不变，不共享新命名空间。现有提醒、Air 通知、原生任务域和任务板仓储定向 62/62、零跳过，覆盖已读、时钟偏移、事件先后、广播、对象引用写回及持久化恢复。完整门禁尚待验收，不能把本批计入已交付减行数。证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/attention-entry-gates/`。仓库级残留盘点见 [2026-11-21 审计](node-backend-residual-audit-2026-11-21.md)。
 
 ## 每批验收与最后停用条件
 
