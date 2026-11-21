@@ -275,11 +275,19 @@ Rust 源码、原有工厂和 `resolve` 启动探针保持不变，既有模型�
 
 默认参数及 `Date.now` 求值时点、JSON 求值和异常传播边界不变，动态 `require` 仍解析到同一原生模块，现有订阅、账号及鉴权断言保留。冻结路由对拍辅助模块、Rust 实现和启动探针不变。完整 37 道门禁中 36 道退出 0，订阅与官方账号定向 80/80、零跳过，Rust 2,736 项及四组 HTTP 对拍通过；标准 npm 仍 exit 1，完整归一化失败报告与干净 `bf99c686` 已证明的第 249、514 行两项异常逐字一致，被短路的后续阶段未记通过。沿用仓库外正向健康启动器，未改语料、断言或冻结源码树；权限、持久诊断、慢读线程采样及日志哈希均核对。验收树 `8724e574` 原样提交为 `5ea747c2`，合入 `a04f0565` 时主仓与任务工作区干净且为 0/0；证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/subscription-entry-gates/`，合入收据见 [登记预览](/artifacts/cb22793be35ae2cf/subscription-entry-merge-receipt.json)。整体 Node 后端清零尚未完成，服务未重启。
 
-### 已有 Rust 任务提醒策略的可变对象入口（待完整验收）
+### 已有 Rust 任务提醒策略的可变对象入口
 
 删除 `src/task-board/attention.js`（15 行），将 `call`、`mutate` 和方法表达式原样集中到 `src/native/task-domain.js` 的 `taskAttention` 导出，生产 Node 净减 2 行。提醒策略原本已在 Rust，本批只退休独立兼容入口。Node 保留默认时钟参数、同步 JSON 命令和旧调用者的可变对象写回协议；任务板宿主退出 Node 后即可删除。原生 taskDomain、replace、WeakMap/Proxy、存储和异常代码均未改动，唯一生产消费点及现有测试只换导入。
 
-原任务板和 Air 路由对拍分别导入独立冻结的原 15 行适配器，正文不变，不共享新命名空间。现有提醒、Air 通知、原生任务域和任务板仓储定向 62/62、零跳过，覆盖已读、时钟偏移、事件先后、广播、对象引用写回及持久化恢复。完整门禁尚待验收，不能把本批计入已交付减行数。证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/attention-entry-gates/`。仓库级残留盘点见 [2026-11-21 审计](node-backend-residual-audit-2026-11-21.md)。
+原任务板和 Air 路由对拍分别导入独立冻结的原 15 行适配器，正文不变，不共享新命名空间。完整 38 门禁中 37 道退出 0，Rust 2,736 项、提醒 62/62 零跳过、四组 HTTP 对拍通过；npm 仍仅为上述 bf99c686 两项已证明的基线 FAIL。原父进程 sample 在符号处理阶段被外部观察器 5 秒等待截断；用户授权单点补证后，仅独立运行同一个慢读用例一次，生成有效父进程调用图，与原网关/Node 样本分别记录来源。原历史样本缺失及补证附加观察器缺少 pathlib 的工具错误均保留，不宣称原严格历史采样检查通过，不新增产品失败例外。原验收树 `2b63c501` 提交为 `92b917df`，经会话 API 合入 `2803ab1b`，双方干净且 0/0；[合入收据](/artifacts/f29a447441bafefb/attention-entry-merge-receipt.json)。证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/attention-entry-gates/`。仓库级残留盘点见 [2026-11-21 审计](node-backend-residual-audit-2026-11-21.md)。
+
+### 官方 fetch SDK 兼容门面（待完整验收）
+
+退休 `src/network/official-fetch.js`（11 行），两个原函数在既有 `src/network/outbound.js` 的非枚举 `official` 命名空间保持正文，仅统一增加缩进；唯一生产消费点仍在创建处理器时惰性读取，显式注入 fetch 时不触发。首次使用捕获 createOutbound、outboundFetch 与 macOS parser，随后缓存同一对象；缓存 undefined、依赖 getter 抛错后的重试以及消费者模块重载行为均与独立冻结门面对拍。原 SDK 工厂、Dispatcher、代理策略与 Rust/启动探针不变。
+
+本批 Node 例外仅为 Undici/proxy-agent 专属 SDK 适配和迁移期 CommonJS 装载桥接，不新增代理、重试或其它业务策略。SDK HTTP/官方中继端口迁至 Rust 后一起退出。保留惰性捕获新增 12 行、删除原入口 11 行，生产 Node **净增 1 行**、少 1 文件；不能把删文件行数记作净减。已交付基线为 585 文件/137,248 行，候选为 584 文件/137,249 行。支持的缓存契约是正常冷/热加载、导出替身、加载失败重试及消费者重载；没有生产代码单独逐出 outbound 依赖模块缓存。
+
+基线定向 84/84，新增三种缓存边界后 87/87、零跳过，覆盖函数与 close 身份、双字段投影、取消、NO_PROXY、代理发现、流与失败不重放。提前捕获别名的负向对照被拒绝，未修改生产源码做变异。原既有断言保留，旧门面仅在测试路径冻结；生产与活动测试没有退休模块的加载引用。完整门禁须保留前 38 项并增加本批定向项；验收前不计作交付。证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/official-fetch-entry-gates/`。
 
 ## 每批验收与最后停用条件
 

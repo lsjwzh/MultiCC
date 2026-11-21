@@ -384,7 +384,7 @@ function finishResponseObservation(observer, context) {
 
 function createCodexOfficialRelayHandler(options = {}) {
   const getProvider = options.getProvider;
-  const fetchImpl = options.fetch || require('../network/official-fetch').officialFetch;
+  const fetchImpl = options.fetch || require('../network/outbound').official.officialFetch;
   // Credential resolution is per-PROVIDER: a provider record marked with
   // settingsConfig.officialAccount.id borrows that account's auth.json (the
   // multicc-owned credential store) instead of the shared ~/.codex/auth.json.
