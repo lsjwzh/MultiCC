@@ -469,7 +469,7 @@ test('Pi thinking levels remain native and never inherit Claude defaults', t => 
 
 // 原生默认模型缓存：这些用例使用真实 TTL，补充上面禁用缓存的选择规则用例。
 function defaultResolver(options = {}) {
-  return require('../src/cli/model-default').createModelDefaultResolver({
+  return require('../src/native/runtime').createModelDefaultResolver({
     history: () => [], now: () => 0, historyTtlMs: 30, ...options,
   });
 }
