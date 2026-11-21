@@ -15,6 +15,10 @@ on:
         description: 配了 API 密钥时直接上传（关掉则只导出 IPA 作为构建产物）
         type: boolean
         default: true
+      archive_only:
+        description: 仅保留无签名归档，不签名、不导出或上传
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -73,7 +77,7 @@ jobs:
           retention-days: 7
 
       - name: Sign and export
-        if: ${{ env.HAS_ASC_KEY == 'true' }}
+        if: ${{ !inputs.archive_only && env.HAS_ASC_KEY == 'true' }}
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -111,7 +115,7 @@ jobs:
           ls -la "$RUNNER_TEMP/export"
 
       - name: Keep IPA
-        if: ${{ env.HAS_ASC_KEY == 'true' && !inputs.upload }}
+        if: ${{ !inputs.archive_only && env.HAS_ASC_KEY == 'true' && !inputs.upload }}
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
