@@ -57,6 +57,7 @@ pub mod opencode_context;
 pub mod opencode_error;
 pub mod orchestration_owner;
 pub mod orchestration_store;
+pub mod process_spawn_args;
 pub mod provider_attempt_creation;
 pub mod provider_attempt_identity;
 pub mod provider_attempt_lifecycle;
