@@ -15,6 +15,7 @@ pub mod background_hold;
 pub mod code_revision;
 pub mod delivery_class;
 pub mod workspace_release;
+pub mod zcode_session;
 
 pub mod background_tasks;
 pub mod chat_connect_frames;
