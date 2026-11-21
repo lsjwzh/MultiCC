@@ -2,14 +2,14 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createCodexBackgroundEvents, safeText } = require('../src/cli-adapters/codex-background-events.cjs');
+const { createCodexBackgroundEvents, safeText } = require('../src/native/runtime').codexBackground;
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
-const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
+const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
 
-function fixture(overrides = {}) {
+function fixture(overrides = {}, create = createCodexBackgroundEvents) {
   let time = 0;
   const events = [], timers = [], attached = [];
-  const tracker = createCodexBackgroundEvents({ mainThreadId: 'main', emit: event => events.push(event),
+  const tracker = create({ mainThreadId: 'main', emit: event => events.push(event),
     now: () => time, setTimer: (fn, ms) => { const timer = { fn, at: time + ms }; timers.push(timer); return timer; },
     clearTimer: timer => { if (timer) timer.cancelled = true; }, attach: id => { attached.push(id); }, ...overrides });
   function advance(ms) {
@@ -179,4 +179,57 @@ test('本轮工具和子任务进度带上具体操作：命令、文件、MCP �
   f.item('a', { id: 't', type: 'commandExecution', command: 'cargo build --release' }, 'item/started');
   assert.match(f.events.at(-1).description, /子任务 1：检查接口 · 正在执行命令 · cargo build --release/);
   f.tracker.dispose();
+});
+
+function frozenBackground() {
+  const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto'), Module = require('node:module');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-codex-background-events.cjs.txt'), 'utf8');
+  assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '8cd7aefe10b4a0e85d0a5d202ea4ce2418e6f66d01abc7f12d87f60109efb899');
+  const filename = path.resolve(__dirname, '../src/cli-adapters/codex-background-events.cjs');
+  const legacy = new Module(filename); legacy.filename = filename; legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  legacy._compile(source, filename); return legacy.exports;
+}
+
+test('Rust 后台所有者逐事件、节流、心跳和重启匹配冻结实现', async () => {
+  async function run(create) {
+    const f = fixture({}, create), results = [];
+    f.spawn('a'); f.spawn('b');
+    results.push(f.tracker.consume({ method: 'thread/started', params: { thread: { id: 'alien', parentThreadId: 'foreign' } } }));
+    for (let round = 0; round < 4; round++) {
+      f.item('a', { id: 'command', type: 'commandExecution', command: '/bin/zsh -lc "cd /work && npm test"' }, 'item/started');
+      f.tracker.consume({ method: 'item/commandExecution/outputDelta', params: { threadId: 'a', delta: '不要转发' } });
+      f.advance(500);
+      f.tracker.consume({ method: 'item/mcpToolCall/progress', params: { threadId: 'a', message: '进度' } });
+      f.advance(500);
+      f.item('a', { id: 'command', type: 'commandExecution', status: 'completed', exitCode: 0 });
+      f.item('main', { id: 'tool', type: 'mcpToolCall', tool: 'query', arguments: { query: '文档' } }, 'item/started');
+      f.tracker.consume({ method: 'item/mcpToolCall/progress', params: { threadId: 'main', itemId: 'tool', message: '下一页' } });
+      f.tracker.consume({ method: 'turn/completed', params: { threadId: 'main', turn: { status: 'completed' } } });
+    }
+    f.advance(30_000); await new Promise(resolve => setImmediate(resolve));
+    f.tracker.consume({ method: 'turn/completed', params: { threadId: 'a', turn: { status: 'completed' } } });
+    f.item('main', { type: 'collabAgentToolCall', tool: 'resumeAgent', receiverThreadIds: ['a'] });
+    f.tracker.consume({ method: 'thread/closed', params: { threadId: 'a' } });
+    f.spawn('nested', 'b');
+    f.tracker.consume({ method: 'thread/status/changed', params: { threadId: 'b', status: { type: 'systemError' } } });
+    const active = f.tracker.activeCount();
+    f.tracker.dispose(); f.advance(60_000);
+    return { events: f.events, results, attached: f.attached, active, afterDispose: f.tracker.activeCount() };
+  }
+  assert.deepEqual(await run(createCodexBackgroundEvents), await run(frozenBackground().createCodexBackgroundEvents));
+});
+
+test('Rust 工具摘要与脱敏保留冻结版本及 UTF-16 切片', () => {
+  const current = require('../src/native/runtime').codexBackground, oracle = frozenBackground();
+  for (const value of ['', null, 0, 'a\n\t\0b\u007fc', 'a'.repeat(179) + '😀尾', 'token=测试凭据 Bearer fake-test-key', 'proxy-route_test pr1.abc.def', Symbol('标记')]) {
+    for (const limit of [0, 1, 80, 180, -1, Infinity, NaN]) assert.equal(current.safeText(value, limit), oracle.safeText(value, limit));
+  }
+  for (const value of [null, ['/bin/zsh', '-lc', 'cd /work && npm test'], ['echo', 'a', null], '/bin/bash -c " cd \'my work\' && pwd "', 'fish -lc "echo x"', '/bin/sh\u0085-c "pwd"', '/bin/sh\ufeff-c "pwd"', 'echo x']) {
+    assert.equal(current.unwrapShellCommand(value), oracle.unwrapShellCommand(value));
+  }
+  const items = [
+    { type: 'fileChange', changes: [null, {}, { path: 'C:\\a\\b.js' }, { path: '/a/' }] },
+    ...['commandExecution', 'mcpToolCall', 'webSearch', 'unknown'].map(type => ({ type, command: 'npm test', arguments: { query: '关键词' }, action: { query: '搜索' } })),
+  ];
+  for (const item of items) assert.equal(current.toolDetail(item), oracle.toolDetail(item));
 });

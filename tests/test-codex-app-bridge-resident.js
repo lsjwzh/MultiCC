@@ -22,12 +22,13 @@ const test = require('node:test');
 
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
-const BRIDGE = path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs');
+const BRIDGE = 'codex-app-bridge';
+const BRIDGE_CMD = require('../src/native/runtime').gatewayPath();
 
 function startBridge(root, extraArgs = [], envExtra = {}) {
   const logFile = path.join(root, `requests-${extraArgs.length}-${Math.random().toString(36).slice(2)}.jsonl`);
   fs.writeFileSync(logFile, '');
-  const child = spawn(process.execPath, [BRIDGE, ...extraArgs], {
+  const child = spawn(BRIDGE_CMD, [BRIDGE, ...extraArgs], {
     cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile, ...envExtra }, stdio: ['pipe', 'pipe', 'pipe'],
   });
   const notifications = [];
@@ -194,4 +195,95 @@ test('resident bridge refuses a non-JSON stdin line instead of starting a turn',
   );
   bridge.child.stdin.end();
   await bridge.exited;
+});
+
+test('原生 Codex 桥在无 Node 的 PATH 中运行多轮并核对进程树', { timeout: 10_000 }, async (t) => {
+  if (process.platform === 'win32') return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-native-zero-node-'));
+  const bin = path.join(root, 'codex'); fs.mkdirSync(path.join(root, 'empty'));
+  fs.writeFileSync(bin, `#!/bin/sh
+turn=0
+while IFS= read -r line; do
+ id=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*"id":\\([0-9][0-9]*\\).*/\\1/p')
+ case "$line" in
+  *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"fixture/0.154.0"}}\\n' "$id";;
+  *'"method":"thread/start"'*) printf '{"id":%s,"result":{"thread":{"id":"native-thread"}}}\\n' "$id"; printf '{"method":"thread/started","params":{"thread":{"id":"native-thread"}}}\\n';;
+  *'"method":"turn/start"'*) turn=$((turn+1)); printf '{"id":%s,"result":{"turn":{"id":"turn-%s"}}}\\n' "$id" "$turn";
+   printf '{"method":"item/agentMessage/delta","params":{"itemId":"a","delta":"中文😀"}}\\n';
+   printf '{"method":"turn/completed","params":{"turn":{"id":"turn-%s","status":"completed"}}}\\n' "$turn";;
+ esac
+done
+`, { mode: 0o755 });
+  const bridge = startBridge(root, ['--codex-bin', bin, '--resident'], { PATH: path.join(root, 'empty') });
+  t.after(async () => { bridge.child.kill('SIGKILL'); await bridge.exited; fs.rmSync(root, { recursive: true, force: true }); });
+  for (let i = 0; i < 2; i++) {
+    const completed = bridge.nextTurn(); bridge.send('隔离执行');
+    assert.equal((await completed).params.turn.status, 'completed');
+  }
+  const ps = require('node:child_process').spawnSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,comm='], { encoding: 'utf8' });
+  assert.equal(ps.status, 0);
+  const rows = ps.stdout.trim().split('\n').map(line => { const fields = line.trim().split(/\s+/); return { pid: Number(fields[0]), parent: Number(fields[1]), command: fields.slice(2).join(' ') }; });
+  const tree = new Set([bridge.child.pid]);
+  for (const pid of tree) for (const row of rows) if (row.parent === pid) tree.add(row.pid);
+  const owned = rows.filter(row => tree.has(row.pid));
+  assert.ok(owned.length >= 2, '真实 CLI 子进程必须仍在运行');
+  const nodes = owned.filter(row => /^(node|nodejs|node.exe)$/.test(path.basename(row.command)));
+  console.log(`Codex 原生桥 PID ${bridge.child.pid}；PATH 无 Node；进程树 Node 数 ${nodes.length}`);
+  for (const row of owned) console.log(`${row.pid} ${row.parent} ${row.command}`);
+  assert.deepEqual(nodes, []);
+  assert.equal(bridge.notifications.filter(event => event.method === 'turn/completed').length, 2);
+  bridge.child.stdin.end(); assert.equal((await bridge.exited).code, 0);
+});
+
+test('等待 turn/start RPC 时关闭标准输入仍立即回收进程', { timeout: 5000 }, async (t) => {
+  if (process.platform === 'win32') return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-pending-eof-'));
+  const bin = writeFakeAppServer(root);
+  const bridge = startBridge(root, ['--codex-bin', bin, '--resident'], { FAKE_CODEX_SILENT_METHOD: 'turn/start' });
+  t.after(async () => { bridge.child.kill('SIGKILL'); await bridge.exited; fs.rmSync(root, { recursive: true, force: true }); });
+  bridge.send('等待确认');
+  const deadline = Date.now() + 2500;
+  while (!bridge.requests().some(item => item.method === 'turn/start')) {
+    assert.ok(Date.now() < deadline, bridge.stderr()); await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const started = Date.now(); bridge.child.stdin.end();
+  assert.equal((await bridge.exited).code, 0);
+  assert.ok(Date.now() - started < 2000, '关闭不能等待 30 秒 RPC 超时');
+});
+
+test('回合中请求切换线程会等待前一回合完成再恢复目标线程', { timeout: 5000 }, async (t) => {
+  if (process.platform === 'win32') return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-queued-switch-'));
+  const bin = writeFakeAppServer(root);
+  const bridge = startBridge(root, ['--codex-bin', bin, '--resident'], { FAKE_CODEX_HOLD_MS: '150' });
+  t.after(async () => { bridge.child.kill('SIGKILL'); await bridge.exited; fs.rmSync(root, { recursive: true, force: true }); });
+  const first = bridge.nextTurn(); bridge.send('第一轮');
+  const deadline = Date.now() + 2500;
+  while (!bridge.requests().some(item => item.method === 'turn/start')) {
+    assert.ok(Date.now() < deadline, bridge.stderr()); await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  bridge.child.stdin.write(`${JSON.stringify({ text: '第二轮', threadId: 'other-thread' })}\n`);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(bridge.requests().some(item => item.method === 'thread/resume'), false);
+  await first;
+  await bridge.nextTurn();
+  assert.deepEqual(bridge.requests().filter(item => item.id).map(item => item.method), ['initialize', 'thread/start', 'turn/start', 'thread/resume', 'turn/start']);
+  bridge.child.stdin.end(); await bridge.exited;
+});
+
+test('宿主关闭输出管道时透传写失败并回收 app-server', { timeout: 5000 }, async (t) => {
+  if (process.platform === 'win32') return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-output-close-'));
+  const bin = writeFakeAppServer(root);
+  const bridge = startBridge(root, ['--codex-bin', bin, '--resident']);
+  t.after(async () => { bridge.child.kill('SIGKILL'); await bridge.exited; fs.rmSync(root, { recursive: true, force: true }); });
+  const deadline = Date.now() + 2500;
+  while (!bridge.notifications.some(item => item.method === 'thread/started')) {
+    assert.ok(Date.now() < deadline, bridge.stderr()); await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const closed = new Promise(resolve => bridge.child.stdout.once('close', resolve));
+  bridge.child.stdout.destroy(); await closed;
+  bridge.send('触发输出写入');
+  assert.equal((await bridge.exited).code, 1);
+  assert.match(bridge.stderr(), /app-server output failed:.*(?:Broken pipe|broken pipe|os error 32)/);
 });

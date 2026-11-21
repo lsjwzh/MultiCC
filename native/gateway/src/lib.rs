@@ -13,6 +13,7 @@ pub mod args;
 pub mod auth_control;
 pub mod backoff;
 pub mod chat_bridge;
+pub mod codex_bridge;
 pub mod daemon;
 pub mod forward;
 pub mod host_port;

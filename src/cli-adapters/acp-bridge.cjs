@@ -4,7 +4,7 @@
 // JSON-RPC 2.0, one message per line, over the agent's stdio; every CLI that
 // speaks it (`opencode acp`, `gemini --experimental-acp`, `grok agent stdio`,
 // `codebuddy --acp`) is driven by this one file. Two lanes, mirroring
-// codex-app-server-bridge.cjs:
+// multicc-gateway codex-app-bridge:
 //
 //   • one-shot  — prompt after `--`. initialize → open session → one
 //                 session/prompt → exit when its response (the stopReason)

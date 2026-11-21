@@ -8,6 +8,9 @@ let deliveryOwner = null;
 let deliveryAddon = null;
 const counts = { search: 0, usage: 0 };
 
+function gatewayPath() {
+  return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
 function addonPath() {
   return process.env.MULTICC_RUST_ADDON || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.resolve(__dirname, '../../native/prebuilt'),
     `${process.platform}-${process.arch}`, 'multicc_core.node');
@@ -135,6 +138,80 @@ function createClaudeAdapter(deps = {}) {
     needsAsyncSessionIdCapture: false,
   };
 }
-module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
+const codexAdapter = {
+  createCodexAdapter(deps) {
+    const native = getNative(), ports = Object.assign(native.codexAdapterPorts(deps), {
+      renderPrompt: require('../message-composer').renderPrompt,
+      extractUpstreamError: require('../upstream-error').extractUpstreamError,
+      displayNameOf: require('../cli/cli-capability').displayNameOf,
+    });
+    return {
+      name: 'codex',
+      createCompletionTracker: () => require('../cli-adapters/completion').createProtocolCompletionTracker('codex'),
+      cmd: ports.cmd,
+      buildTerminalCmd: value => native.codexAdapterCall('terminal', value, ports),
+      buildInvocation: value => native.codexAdapterCall('invocation', value, ports),
+      decodeEvent: value => native.codexAdapterCall('decode', value, ports),
+      needsAsyncSessionIdCapture: true,
+    };
+  },
+  normalizeCodexUsage: value => getNative().codexAdapterCall('usage', value, undefined),
+  mcpResultText: value => getNative().codexAdapterCall('mcp-text', value, undefined),
+  isCodexInternalNoise: value => getNative().codexAdapterCall('noise', value, undefined),
+  routerMcpConfigArgs: (node, script) => getNative().codexAdapterCall('router', [node, script], undefined),
+};
+const codexAppAdapter = {
+  createCodexExpAdapter(deps = {}) {
+    const native = getNative();
+    const ports = Object.assign(native.codexAppAdapterPorts(deps,
+      'codex-app-bridge', gatewayPath(), process.execPath), {
+      renderPrompt: require('../message-composer').renderPrompt,
+      displayNameOf: require('../cli/cli-capability').displayNameOf,
+    });
+    const owner = new native.RustCodexAppAdapter();
+    return {
+      name: 'codex-exp', cmd: ports.executable,
+      createCompletionTracker: () => require('../cli-adapters/completion').createProtocolCompletionTracker('codex-exp'),
+      buildTerminalCmd: () => native.codexAppAdapterValue('terminal', deps, undefined),
+      buildInvocation: value => owner.invocation(value, ports),
+      decodeEvent: value => owner.decode(value, ports),
+      needsAsyncSessionIdCapture: true,
+    };
+  },
+  appServerUsage: value => getNative().codexAppAdapterValue('usage', value, undefined),
+  addUsage: (current = {}, next = {}) => getNative().codexAppAdapterValue('add', current, next),
+  isReconnectProgress: value => getNative().codexAppAdapterValue('reconnect', value, undefined),
+  requestUserInputEvent: value => getNative().codexAppAdapterValue('question', value, undefined),
+};
+const codexBackground = {
+  safeText: (value, limit = 180) => getNative().codexBackgroundText('safe', value, limit),
+  unwrapShellCommand: value => getNative().codexBackgroundText('command', value, 0),
+  toolDetail: value => getNative().codexBackgroundText('detail', value, 0),
+  createCodexBackgroundEvents({ emit, attach, mainThreadId = null, now = Date.now,
+    setTimer = setTimeout, clearTimer = clearTimeout, throttleMs = 1000 } = {}) {
+    const owner = new (getNative().RustCodexBackground)(mainThreadId, throttleMs, !!attach);
+    const timers = [];
+    const call = (op, value, index = 0, failed = false) => {
+      const plan = owner.call(op, value, index, now(), failed);
+      for (const effect of plan.effects) {
+        switch (effect.kind) {
+          case 'emit': emit(effect.event); break;
+          case 'cancel': clearTimer(timers[effect.id]); delete timers[effect.id]; break;
+          case 'timer':
+            timers[effect.id] = setTimer(() => { delete timers[effect.id]; call('timer', null, effect.id); }, effect.delay);
+            timers[effect.id]?.unref?.(); break;
+          case 'attach':
+            Promise.resolve().then(() => attach(effect.id))
+              .then(result => call('attached', result, effect.agent))
+              .catch(() => call('attached', null, effect.agent, true)); break;
+        }
+      }
+      return plan.result;
+    };
+    return { consume: event => call('consume', event), activeCount: () => call('count', null),
+      setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
+  },
+};
+module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
-  createClaudeAdapter };
+  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground };

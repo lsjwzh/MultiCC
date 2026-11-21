@@ -9,7 +9,7 @@
 // state may return here — Node is frozen.
 
 const { getNative } = require('../native/runtime');
-const { safeText } = require('../cli-adapters/codex-background-events.cjs');
+const { safeText } = require('../native/runtime').codexBackground;
 const { redactProviderRouteCapability } = require('../observability');
 
 // `undefined` means "host did not decide", which is the production case: the

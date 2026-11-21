@@ -5,7 +5,7 @@ const { createProtocolCompletionTracker } = require('./completion');
 const { displayNameOf } = require('../cli/cli-capability');
 
 const { renderPrompt } = require('../message-composer');
-const { normalizeCodexUsage, routerMcpConfigArgs } = require('./codex');
+const { normalizeCodexUsage, routerMcpConfigArgs } = require('../native/runtime').codexAdapter;
 
 function appServerUsage(source) {
   const usage = source?.last || source?.total || source || {};

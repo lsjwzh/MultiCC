@@ -23,6 +23,13 @@ launches; the listening log reports the actual port."
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("codex-app-bridge") {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        std::process::exit(runtime.block_on(multicc_gateway::codex_bridge::serve(&args[1..])));
+    }
     if args.iter().any(|arg| arg == "--version") {
         println!("{}", multicc_gateway::version_line());
         return;

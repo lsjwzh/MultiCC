@@ -545,3 +545,21 @@ test('unreadable live settings cannot be treated as an unchanged resident proces
   await assert.rejects(f.send('SECOND'), /ENOENT/);
   assert.equal(f.files.stdin().filter(row => row.type === 'user').length, 1);
 });
+
+test('a native session-id collision rotates the id and replays the turn', { timeout: 30000 }, async t => {
+  const f = await laneFixture(t, { scenario: 'session-id-collision' });
+  f.configure();
+  const reply = await f.send('COLLIDE_THEN_REPLAY');
+  assert.equal(reply.subtype, 'success', 'the replayed turn completes');
+  assert.match(reply.result, /COLLIDE_THEN_REPLAY/);
+  const spawns = f.files.spawns();
+  assert.equal(spawns.length, 2, 'the collided child is replaced by exactly one replay');
+  const idOf = spawn => (spawn.argv.find(arg => arg.startsWith('--session-id='))
+    || spawn.argv.find(arg => arg.startsWith('--resume=')) || '').split('=')[1];
+  const ids = spawns.map(idOf);
+  assert.ok(ids[0] && ids[1] && ids[0] !== ids[1], `rotated native id: ${ids.join(' -> ')}`);
+  const users = f.files.stdin().filter(row => row.type === 'user');
+  assert.equal(users.length, 1, 'the message ran exactly once, on the replay child');
+  assert.equal(users[0].session_id, ids[1], 'the replay carried the rotated native id');
+  assert.match(users[0].message.content[0].text, /COLLIDE_THEN_REPLAY/);
+});

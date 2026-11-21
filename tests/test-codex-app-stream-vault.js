@@ -17,7 +17,8 @@ const vault = require('../src/secrets-vault');
 const { createCodexAppStream } = require('../src/chat/codex-app-stream');
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
-const BRIDGE = path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs');
+const BRIDGE = 'codex-app-bridge';
+const BRIDGE_CMD = require('../src/native/runtime').gatewayPath();
 
 function createFixture(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `multicc-codex-vault-${name}-`));
@@ -27,7 +28,7 @@ function createFixture(name) {
   const stream = createCodexAppStream();
   const baseEnv = { ...process.env, FAKE_CODEX_LOG: logFile };
   const ensureTurn = () => stream.ensure(name, {
-    cmd: process.execPath,
+    cmd: BRIDGE_CMD,
     cwd: root,
     baseArgs: [BRIDGE, '--codex-bin', bin, '--resident'],
     env: vault.applyEnvOverlay({ ...baseEnv }),

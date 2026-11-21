@@ -17,8 +17,8 @@ const path = require('node:path');
 
 const adapters = [
   require('../src/native/runtime').createClaudeAdapter({}),
-  require('../src/cli-adapters/codex').createCodexAdapter({}),
-  require('../src/cli-adapters/codex-exp').createCodexExpAdapter({}),
+  require('../src/native/runtime').codexAdapter.createCodexAdapter({}),
+  require('../src/native/runtime').codexAppAdapter.createCodexExpAdapter({}),
   // Legacy JSON lane; the default ACP lane's completion is covered by test-acp-adapter.js.
   require('../src/cli-adapters/opencode').createOpencodeAdapter({ env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } }),
   require('../src/cli-adapters/zcode').createZcodeAdapter({}),

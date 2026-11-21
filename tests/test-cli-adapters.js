@@ -2,8 +2,8 @@
 
 const assert = require('assert');
 const { createClaudeAdapter } = require('../src/native/runtime');
-const { createCodexAdapter } = require('../src/cli-adapters/codex');
-const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
+const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
+const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 const { createQoderAdapter } = require('../src/cli-adapters/qoder');
