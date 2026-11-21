@@ -712,7 +712,7 @@ const { resolveModelRequestPolicy } = require('../src/native/runtime');
 const stallBudget = (session, env) => resolveModelRequestPolicy(session, env).stallTimeoutMs;
 const { recoverModelTimeout } = require('../src/chat/model-timeout-recovery');
 const { withModelConnectWatch } = require('../src/providers/model-connect-watch');
-const { createModelStreamProgress } = require('../src/providers/model-stream-progress');
+const { createModelStreamProgress } = require('../src/native/runtime');
 
 test('native stream progress handles split UTF-8, mixed chunks and oversized frames', () => {
   const progress = createModelStreamProgress();
@@ -1195,4 +1195,115 @@ test('Rust live budget entry keeps primitive/default inputs and invalid host sha
     assert.throws(() => legacyModelRequestPolicy(session, env), TypeError);
     assert.throws(() => resolveModelRequestPolicy(session, env), TypeError);
   }
+});
+
+const legacyStreamProgress = require('./helpers/legacy-model-stream-progress').createModelStreamProgress;
+
+test('native progress reader matches frozen state across every UTF-8 split and mixed chunk type', () => {
+  const frames = [
+    'data: {"type":"response.output_text.delta","delta":"你好🌍"}\r\n\r\n',
+    'data: {"type":"content_block_delta","delta":{"thinking":"思考"}}\n\n',
+    'data: {"type":"ping"}\n\n',
+    'data: {"type":"content_block_start","content_block":{"type":"tool_use"}}\n\n',
+    'data: {"type":"message_start"}\r\n\r\n',
+  ];
+  let comparisons = 0;
+  for (const frame of frames) {
+    const bytes = Buffer.from(frame), saved = Buffer.from(bytes);
+    for (let split = 0; split <= bytes.length; split++) {
+      const a = bytes.subarray(0, split), b = bytes.subarray(split);
+      for (const chunks of [[a, b], [Uint8Array.from(a), Array.from(b)], [a.toString(), b], [a, b.toString()]]) {
+        const old = legacyStreamProgress(), actual = createModelStreamProgress();
+        for (const chunk of [...chunks, ': keepalive\n\n', Buffer.from(frames[0])]) {
+          assert.equal(actual(chunk), old(chunk), `split ${split}`); comparisons++;
+        }
+      }
+    }
+    assert.deepEqual(bytes, saved, 'transport bytes remain untouched');
+  }
+  assert.ok(comparisons > 1000);
+  const old = legacyStreamProgress(), actual = createModelStreamProgress();
+  for (const chunk of ['x'.repeat(262145), frames[0], Buffer.from(frames[0]), 'data: [DONE]\n\n', frames[1]]) {
+    assert.equal(actual(chunk), old(chunk));
+  }
+  const first = createModelStreamProgress(), second = createModelStreamProgress();
+  assert.equal(first('data: {"type":"response.output_text.delta",'), false);
+  assert.equal(second('"delta":"text"}\n\n'), false, 'readers must not share pending state');
+  assert.equal(first('"delta":"text"}\n\n'), true);
+});
+
+test('native progress reader preserves Buffer.from conversions and thrown object identity', () => {
+  const frame = Buffer.from('data: {"type":"response.output_text.delta","delta":"ok"}\n\n');
+  const inputs = [() => frame, () => Array.from(frame), () => Uint8Array.from(frame),
+    () => Uint16Array.from(frame), () => Uint8Array.from(frame).buffer, () => new DataView(Uint8Array.from(frame).buffer),
+    () => ({ type: 'Buffer', data: Array.from(frame) }), () => ({ valueOf: () => frame }),
+    () => ({ [Symbol.toPrimitive]: () => frame.toString() }),
+    () => undefined, () => null, () => 5, () => 1n, () => Symbol('chunk'), () => () => frame];
+  const outcome = (read, value) => {
+    try { return { result: read(value) }; }
+    catch (error) { return { name: error.name, code: error.code, message: error.message }; }
+  };
+  for (const input of inputs) {
+    const old = legacyStreamProgress(), actual = createModelStreamProgress();
+    assert.deepEqual(outcome(actual, input()), outcome(old, input()));
+    assert.equal(actual(frame), old(frame), 'failed conversions must not change reader state');
+  }
+  const thrown = { fixture: 'original Buffer conversion failure' };
+  for (const make of [legacyStreamProgress, createModelStreamProgress]) {
+    const read = make();
+    assert.throws(() => read({ valueOf() { throw thrown; } }), error => error === thrown);
+    assert.equal(read(frame), true);
+  }
+});
+
+test('native progress reader allows reentry during Buffer conversion before mutating state', () => {
+  function exercise(make, throwAfterNested) {
+    const read = make(), trace = [], thrown = { fixture: 'after nested read' };
+    const frame = Buffer.from('data: {"type":"response.output_text.delta","delta":"你好"}\n\n');
+    const split = frame.length - 5;
+    const chunk = { valueOf() {
+      trace.push(read(frame.subarray(0, split)));
+      if (throwAfterNested) throw thrown;
+      return frame.subarray(split);
+    } };
+    if (throwAfterNested) {
+      assert.throws(() => read(chunk), error => error === thrown);
+      trace.push(read(frame.subarray(split)));
+    } else trace.push(read(chunk));
+    trace.push(read(': ping\n\n'));
+    return trace;
+  }
+  for (const throwing of [false, true]) {
+    assert.deepEqual(exercise(createModelStreamProgress, throwing), exercise(legacyStreamProgress, throwing));
+  }
+});
+
+test('native progress callbacks and cycles are collectible and do not keep Node alive', () => {
+  const { spawnSync } = require('node:child_process');
+  const runtime = require.resolve('../src/native/runtime');
+  const legacy = require.resolve('./helpers/legacy-model-stream-progress');
+  const child = spawnSync(process.execPath, ['--expose-gc', '-e', `
+    const assert = require('node:assert/strict');
+    function weakReaders(make) {
+      return Array.from({ length: 200 }, () => {
+        const read = make(); read.self = read; read(': ping\\n\\n'); return new WeakRef(read);
+      });
+    }
+    (async () => {
+      for (const make of [require(${JSON.stringify(legacy)}).createModelStreamProgress,
+        require(${JSON.stringify(runtime)}).createModelStreamProgress]) {
+        const refs = weakReaders(make);
+        let remaining = refs.length;
+        for (let i = 0; i < 30 && remaining; i++) {
+          await new Promise(resolve => setImmediate(resolve)); global.gc();
+          remaining = refs.filter(ref => ref.deref()).length;
+        }
+        assert.equal(remaining, 0);
+      }
+      console.log('progress readers collected; no background handles');
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `], { env: process.env, encoding: 'utf8', timeout: 5000 });
+  assert.equal(child.error, undefined, child.error?.message);
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /progress readers collected/);
 });

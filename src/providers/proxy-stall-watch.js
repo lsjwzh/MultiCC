@@ -3,7 +3,7 @@
 const { proxyRequestKind } = require('./proxy-outcome');
 const { performance } = require('node:perf_hooks');
 
-const { createModelStreamProgress } = require('./model-stream-progress');
+const { createModelStreamProgress } = require('../native/runtime');
 const { scheduleRequestTimer } = require('../native/request-timer');
 const { getNative } = require('../native/runtime');
 
