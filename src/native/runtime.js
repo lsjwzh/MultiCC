@@ -6,6 +6,8 @@ let loaded = null;
 let loadError = null;
 let deliveryOwner = null;
 let deliveryAddon = null;
+let cliRegistryOwner = null;
+let cliRegistryAddon = null;
 const counts = { search: 0, usage: 0 };
 
 function gatewayPath() {
@@ -87,6 +89,16 @@ const isZcodeSessionId = value => getNative().isZcodeSessionId(value);
 const repairZcodeSessionState = session => getNative().repairZcodeSessionState(session);
 const resolveModelRequestPolicy = (session = {}, env = process.env) => getNative().resolveModelRequestPolicy(session, env);
 const createModelStreamProgress = () => getNative().createModelStreamProgress();
+function createCliProviderRegistry(adapters, fallbackName = 'claude') {
+  const addon = getNative();
+  if (cliRegistryAddon !== addon) {
+    cliRegistryOwner = new addon.RustCliProviderRegistryFactory();
+    cliRegistryAddon = addon;
+  }
+  const owner = cliRegistryOwner;
+  const state = owner.create(adapters, fallbackName);
+  return { providers: state.providers, get(cli) { return owner.resolve(state, cli); } };
+}
 const zcodeEngine = {
   get DEFAULT_ZCODE_ENGINE() { return getNative().zcodeDefaultEngine(); },
   zcodeEngineCandidates: (options = {}) => getNative().zcodeEngineCandidates(options, path),
@@ -255,4 +267,4 @@ module.exports = { addonPath, gatewayPath, getNative, record, status, runNative,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine };
+  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry };

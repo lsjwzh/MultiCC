@@ -199,6 +199,12 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), RustProviderAttemptLifecycle: undefined
   };`);
   assert.equal(probeAddon(staleFence), false, 'a stale addon cannot bypass the provider replay fence');
+  for (const methods of ['', 'create() {}', 'resolve() {}']) {
+    const staleRegistry = write(root, `stale-cli-registry-${methods.length}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), RustCliProviderRegistryFactory: class { ${methods} }
+    };`);
+    assert.equal(probeAddon(staleRegistry), false, 'registry factory and both methods are required');
+  }
   for (const name of ['providerEventFence', 'providerHostTextEnvelope', 'chatOwnsCurrentRunner', 'chatAssignKillReason',
     'observeCodeFiles', 'RustWorkspaceRelease',
     'chatClearSucceededErrors', 'chatRecordResultEvent', 'chatRecordCloseResult', 'chatRecordPartialCheckpoint', 'chatHasPartialCheckpoint',

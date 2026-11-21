@@ -345,10 +345,169 @@ test('non-success stop reasons surface as errors', () => {
 
 
 test('retired Gemini records cannot launch an agent or fall back to Claude', () => {
-  const { createCliProviderRegistry } = require('../src/cli-adapters/core');
+  const { createCliProviderRegistry } = require('../src/native/runtime');
   const fallback = { name: 'claude', buildInvocation: () => ({ cmd: 'claude' }), decodeEvent: () => [] };
   const registry = createCliProviderRegistry([fallback]);
   assert.equal(registry.get('gemini').name, 'gemini');
   assert.throws(() => registry.get(' GEMINI ').buildInvocation({}), /Gemini CLI 已停用/);
   assert.doesNotMatch(registry.get('gemini').buildTerminalCmd(), /gemini --experimental-acp/);
+});
+
+// Byte-identical oracle from 83c714ba; it imports no production modules.
+const legacyRegistry = require('./helpers/legacy-cli-provider-registry').createCliProviderRegistry;
+const nativeRegistry = require('../src/native/runtime').createCliProviderRegistry;
+const registryAdapter = name => ({ name, buildInvocation() { return this; }, decodeEvent() { return []; } });
+
+function registryOutcome(run) {
+  try { return { value: run() }; }
+  catch (error) { return { name: error.name, message: error.message, code: error.code }; }
+}
+
+test('Rust CLI registry preserves opaque keys, replacement order, adapter identity and detached snapshots', () => {
+  const symbol = Symbol('provider'), object = { toString: () => 'object-name' };
+  const names = ['claude', 'codex', 'gemini', ' GEMINI ', '__proto__', 'constructor', '2', '1',
+    symbol, object, true, 1, NaN, '', 0, null, undefined];
+  let comparisons = 0;
+  for (const name of names) {
+    const fallback = registryAdapter('claude'), first = registryAdapter(name), last = registryAdapter(name);
+    const input = [null, undefined, false, 0, '', fallback, first, last];
+    const old = legacyRegistry(input), actual = nativeRegistry(input);
+    assert.deepEqual(Reflect.ownKeys(actual), Reflect.ownKeys(old));
+    assert.deepEqual(Reflect.ownKeys(actual.providers), Reflect.ownKeys(old.providers));
+    assert.deepEqual(Object.getOwnPropertyDescriptors(actual.providers), Object.getOwnPropertyDescriptors(old.providers));
+    assert.equal(Object.getPrototypeOf(actual.providers), Object.prototype);
+    for (const query of [name, 'claude', 'codex', 'missing', undefined, null, false, '', symbol, object]) {
+      const expected = old.get(query), got = actual.get(query);
+      if (expected.name === 'gemini' && Object.isFrozen(expected)) {
+        assert.equal(got.name, expected.name);
+        assert.equal(got.buildTerminalCmd(), expected.buildTerminalCmd());
+      } else assert.equal(got, expected);
+      comparisons++;
+    }
+    actual.providers.claude = registryAdapter('replacement');
+    old.providers.claude = registryAdapter('replacement');
+    assert.equal(actual.get('claude'), old.get('claude'), 'snapshot writes do not replace the lookup table');
+    delete actual.providers.claude;
+    assert.equal(actual.get('claude'), old.get('claude'));
+  }
+  assert.equal(comparisons, 170);
+  const chosen = registryAdapter(object);
+  assert.equal(nativeRegistry([chosen], object).get('unknown'), chosen);
+  assert.equal(nativeRegistry([chosen], object).get(object), chosen);
+});
+
+test('Rust CLI registry retains validation messages and fallback coercion without adding error codes', () => {
+  const fallback = registryAdapter('claude');
+  for (const adapter of [{ name: 'bad' }, { name: 'bad', buildInvocation() {} },
+    { name: Symbol('bad') }, { name: { toString: () => 'named-object' } },
+    { name: 'bad', buildInvocation: 1, decodeEvent() {} }]) {
+    assert.deepEqual(registryOutcome(() => nativeRegistry([fallback, adapter])),
+      registryOutcome(() => legacyRegistry([fallback, adapter])));
+  }
+  for (const name of [undefined, null, '', false, 0, 'missing', Symbol('missing'),
+    { toString: () => 'missing-object' }]) {
+    assert.deepEqual(registryOutcome(() => nativeRegistry([], name)),
+      registryOutcome(() => legacyRegistry([], name)));
+  }
+  for (const invalid of [null, undefined, false, 0, {}]) {
+    assert.throws(() => nativeRegistry(invalid), TypeError);
+    assert.throws(() => legacyRegistry(invalid), TypeError);
+  }
+});
+
+test('Rust CLI registry matches iterable closing, lazy getters, reentry and thrown object identities', () => {
+  function exercise(create, fail, closeFails) {
+    const trace = [], fault = { kind: 'getter fault' }, closeFault = { kind: 'close fault' };
+    const adapter = new Proxy(registryAdapter('claude'), { get(target, key, receiver) {
+      trace.push(String(key));
+      if (key === fail) throw fault;
+      if (key === 'buildInvocation') {
+        const nested = registryAdapter('nested');
+        assert.equal(create([nested], 'nested').get('unknown'), nested);
+      }
+      return Reflect.get(target, key, receiver);
+    } });
+    const input = { [Symbol.iterator]() {
+      trace.push('iterator'); let index = 0;
+      return { next() {
+        trace.push(`next:${index}`);
+        if (fail === 'next') throw fault;
+        return index++ === 0 ? { value: adapter, done: false } : { done: true };
+      }, return() { trace.push('return'); if (closeFails) throw closeFault; return {}; } };
+    } };
+    try { const registry = create(input); assert.equal(registry.get('claude'), adapter); return { trace }; }
+    catch (error) { assert.equal(error, fault); return { trace, threw: true }; }
+  }
+  for (const fail of [undefined, 'name', 'buildInvocation', 'decodeEvent', 'next']) {
+    for (const closeFails of [false, true]) {
+      assert.deepEqual(exercise(nativeRegistry, fail, closeFails), exercise(legacyRegistry, fail, closeFails));
+    }
+  }
+  for (const create of [legacyRegistry, nativeRegistry]) {
+    const fault = { kind: 'name coercion' };
+    assert.throws(() => create([], { toString() { throw fault; } }), error => error === fault);
+    assert.equal(create([registryAdapter('claude')]).get('unknown').name, 'claude');
+  }
+});
+
+test('Rust retired CLI adapter is frozen, shared across registries and never launches the fallback', () => {
+  const fallback = registryAdapter('claude');
+  const old = legacyRegistry([fallback]), actual = nativeRegistry([fallback]);
+  const retired = actual.get('gemini');
+  assert.equal(retired, nativeRegistry([registryAdapter('other')], 'other').get(' GEMINI '));
+  assert.equal(Object.isFrozen(retired), true);
+  assert.deepEqual(Reflect.ownKeys(retired), Reflect.ownKeys(old.get('gemini')));
+  for (const name of ['gemini', ' GEMINI ', '\ufeffGeMiNi\u2029', { toString: () => 'Gemini' }]) {
+    assert.equal(actual.get(name), retired);
+    assert.deepEqual(registryOutcome(() => actual.get(name).buildInvocation({})),
+      registryOutcome(() => old.get(name).buildInvocation({})));
+    assert.equal(actual.get(name).buildTerminalCmd(), old.get(name).buildTerminalCmd());
+    assert.deepEqual(actual.get(name).decodeEvent({}), []);
+  }
+  assert.notEqual(retired.decodeEvent({}), retired.decodeEvent({}), 'each decode returns a fresh array');
+  const fault = { kind: 'query coercion' };
+  for (const registry of [old, actual]) {
+    assert.throws(() => registry.get({ toString() { throw fault; } }), error => error === fault);
+    assert.equal(registry.get(Symbol('unregistered')), fallback);
+  }
+  assert.equal(nativeRegistry([fallback, registryAdapter('gemini')]).get('gemini'), retired);
+});
+
+test('Rust CLI registry closures retain live adapters, release cycles and do not keep a child alive', async () => {
+  const runtime = path.resolve(__dirname, '../src/native/runtime');
+  const source = `
+    const assert = require('node:assert/strict');
+    const { createCliProviderRegistry: create } = require(${JSON.stringify(runtime)});
+    const make = () => ({ name: 'claude', buildInvocation() {}, decodeEvent() { return []; } });
+    const collect = async refs => {
+      for (let i = 0; i < 80; i++) {
+        await new Promise(resolve => setImmediate(resolve)); global.gc();
+        if (refs.every(ref => ref.deref() === undefined)) return;
+      }
+      assert.fail('registry or adapter cycle retained');
+    };
+    (async () => {
+      let retained;
+      const live = (() => { const adapter = make(); retained = create([adapter]).get; return new WeakRef(adapter); })();
+      await new Promise(resolve => setImmediate(resolve)); global.gc();
+      assert.equal(retained('claude'), live.deref());
+      retained = null;
+      await collect([live]);
+      const refs = (() => { const adapter = make(), registry = create([adapter]); adapter.registry = registry;
+        return [new WeakRef(adapter), new WeakRef(registry)]; })();
+      await collect(refs);
+      console.log('registry GC and exit PASS');
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `;
+  const child = spawn(process.execPath, ['--expose-gc', '-e', source], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', data => { output += data; });
+  child.stderr.on('data', data => { output += data; });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+  const result = await new Promise((resolve, reject) => {
+    child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal }));
+  }).finally(() => clearTimeout(timer));
+  assert.equal(result.signal, null, output);
+  assert.equal(result.code, 0, output);
+  assert.match(output, /registry GC and exit PASS/);
 });
