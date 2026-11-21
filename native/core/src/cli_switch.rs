@@ -5,8 +5,8 @@
 //!   * every in-place mutation (`session.cliStates`, session field writes,
 //!     per-state `null` scrubbing) — object identity and key order can only be
 //!     preserved by the runtime that owns the objects;
-//!   * `repairZcodeSessionState(session)` — called at the exact same moment,
-//!     before the state snapshot, and its boolean is folded into the result;
+//!   * the N-API `repairZcodeSessionState(session)` bridge — Rust repairs live
+//!     host values before the snapshot, and its boolean is folded into the result;
 //!   * `providerlessClis()` membership and `isResidentSession()` — both read the
 //!     canonical CLI capability table that lives in JS, so the bridge passes the
 //!     derived booleans/arrays in;

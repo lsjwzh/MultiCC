@@ -6,6 +6,8 @@ let loaded = null;
 let loadError = null;
 let deliveryOwner = null;
 let deliveryAddon = null;
+let cliRegistryOwner = null;
+let cliRegistryAddon = null;
 const counts = { search: 0, usage: 0 };
 
 function gatewayPath() {
@@ -72,6 +74,38 @@ const codexProviderHome = {
   assertProxyConfigApplied: options => getNative().assertCodexProxyConfigApplied(options),
 };
 
+const settingsOverridesDir = path.join(require('node:os').homedir(), '.multicc', 'claude-settings-overrides');
+const claudeSettingsOverride = {
+  OVERRIDE_DIR: settingsOverridesDir,
+  ROUTING_KEY_RE: /^(?:ANTHROPIC_|CLAUDE_CODE_)/,
+  routingEnvOf: env => getNative().claudeRoutingEnv(env),
+  settingsOverrideFor: (session, env, extra) =>
+    getNative().claudeSettingsOverride(settingsOverridesDir, session, env, extra),
+};
+const opencodeProcessError = (cli, raw, stderr) =>
+  getNative().opencodeProcessError(cli, raw, stderr, require('../provider-error').classifyProviderError);
+const processSpawnArgs = (invocation, settings = null) => getNative().processSpawnArgs(invocation, settings);
+const isZcodeSessionId = value => getNative().isZcodeSessionId(value);
+const repairZcodeSessionState = session => getNative().repairZcodeSessionState(session);
+const resolveModelRequestPolicy = (session = {}, env = process.env) => getNative().resolveModelRequestPolicy(session, env);
+const createModelStreamProgress = () => getNative().createModelStreamProgress();
+function createCliProviderRegistry(adapters, fallbackName = 'claude') {
+  const addon = getNative();
+  if (cliRegistryAddon !== addon) {
+    cliRegistryOwner = new addon.RustCliProviderRegistryFactory();
+    cliRegistryAddon = addon;
+  }
+  const owner = cliRegistryOwner;
+  const state = owner.create(adapters, fallbackName);
+  return { providers: state.providers, get(cli) { return owner.resolve(state, cli); } };
+}
+const zcodeEngine = {
+  get DEFAULT_ZCODE_ENGINE() { return getNative().zcodeDefaultEngine(); },
+  zcodeEngineCandidates: (options = {}) => getNative().zcodeEngineCandidates(options, path),
+  zcodeBuiltinProviderConfig: engine => getNative().zcodeBuiltinProviderConfig(engine, path),
+  zcodeEngineEnv: (engine, env = process.env) => getNative().zcodeEngineEnv(engine, env, path),
+};
+
 // 原生任务共用 libuv 工作池。只限制并行数，避免搜索突发占满文件 I/O 线程；排满时
 // 等待而不拒绝：Air 刷新与任务板落盘也走这条队列，拒绝就是一次失败的刷新或保存。
 let active = 0;
@@ -111,7 +145,7 @@ const providerInvocation = {
     const native = getNative();
     const ports = Object.assign(native.providerInvocationValidate(options), {
       revision: require('../chat/provider-attempt-runtime').createProviderRevision,
-      policy: require('../chat/model-request-policy').resolveModelRequestPolicy,
+      policy: resolveModelRequestPolicy,
       proof: require('../chat/turn-request').createProviderRouteProof,
       nativeOpenCodeId: require('../providers/native-opencode').nativeOpenCodeId,
       nativeVendorOf: require('../providers/native-vendor').nativeVendorOf,
@@ -231,4 +265,6 @@ const codexBackground = {
 };
 module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
-  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome };
+  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
+  claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
+  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry };

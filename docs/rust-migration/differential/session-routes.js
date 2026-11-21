@@ -55,7 +55,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { main } = require('./lib');
+const assert = require('node:assert/strict');
+const { main, send, TOKEN } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-req-1' };
 const T0 = 1700000000000;
@@ -807,6 +808,26 @@ main({
     STUB_WORLD: worldPath,
     STUB_EFFECTS: effectsPath,
   }),
+  async ready(port) {
+    // Health belongs to the front door. Guarded preflight also needs the
+    // compatibility host listening before the measured corpus can begin.
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const response = await send(port, {
+        method: 'OPTIONS', url: '/api/sessions/readiness/memory',
+        headers: { Host: 'localhost', Authorization: 'Bearer ' + TOKEN },
+      });
+      if (response.status === 503
+          && JSON.parse(response.body.toString()).code === 'rust_backend_unavailable') {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        continue;
+      }
+      assert.equal(response.status, 200, 'session guard readiness');
+      assert.equal(response.headers.allow, 'GET,HEAD,PUT,DELETE');
+      assert.equal(response.body.toString(), 'GET,HEAD,PUT,DELETE');
+      return;
+    }
+    throw new Error('session guard host did not become ready');
+  },
   normalize,
   corpus,
   finalize({ work, views }) {

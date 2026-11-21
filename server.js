@@ -1,6 +1,5 @@
 'use strict';
 
-// Capture private gateway bootstrap before modules spawn any descendants.
 const { connectAuthControl, applySourceAddonEnv } = require('./src/gateway-child');
 applySourceAddonEnv(__dirname);
 
@@ -12,7 +11,6 @@ applySourceAddonEnv(__dirname);
   }
 }
 
-// Load .env file (lightweight, no dependencies)
 const _envPath = require('path').join(__dirname, '.env');
 try {
   require('fs').readFileSync(_envPath, 'utf8').split('\n').forEach(line => {
@@ -33,7 +31,6 @@ for (const k of [
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
 require('./src/task-shell/migration-gate').runAtBoot();
-// Outbound requests use the user's proxy (env/system), loopback/exceptions direct
 require('./src/network/global-proxy').installGlobalProxy();
 const express = require('express');
 const http = require('http');
@@ -83,6 +80,7 @@ const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-f
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
+const { synchronizeCodexProfileRoute } = require('./src/cli/switch-preparation');
 const { renderPrompt } = require('./src/message-composer');
 const {
   applyCuratedMemoryAction,
@@ -1568,7 +1566,7 @@ const cliSwitchRuntime = createCliSwitchRuntime({ clearReplay: chatReplay.clear,
   supportedClis: SUPPORTED_CHAT_CLIS,
   chatSessions,
   getProviderDefaults: () => providerDefaults, validProviderId: (...a) => validProviderId(...a), getProviders: () => providers,
-  codexDefaultReasoningLevel, synchronizeCodexSessionRoute: route => providers.synchronizeCodexSessionRoute(route),
+  codexDefaultReasoningLevel,
   getHistory: loadChatHistory,
   buildHandoffCheckpoint,
   activateCliState,
@@ -1609,6 +1607,8 @@ const { applySessionPatch, previewSessionPatch } = createSessionProfileRoutes({
   sessionPersistence,
   sessionPolicy,
   providers,
+  synchronizeCodexProfileRoute,
+  withConfigurationPreparation: cliSwitchRuntime.withConfigurationPreparation,
   providerRouterRuntime,
   // chatStream / providerRoutes are composed further down this file; resolve
   // them lazily or mounting would hit the const TDZ before boot finishes.

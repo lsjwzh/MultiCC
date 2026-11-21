@@ -29,8 +29,6 @@ const {
   claimDurableUsage,
   evaluatePostTurn,
   claimPostTurn,
-  CHAT_TURN_PORTS,
-  assertChatTurnPorts,
 } = require('../src/chat');
 const { createProviderBinding } = require('../src/providers/binding');
 const { redactProviderRouteCapability } = require('../src/observability');
@@ -1252,19 +1250,11 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
   assert.equal(routePostTurn({ turnId: 't4', sessionId: 'n', sessionType: 'normal' }).route, 'normal');
 });
 
-test('chat turn ports are narrow and pure modules import no runtime I/O dependencies', () => {
-  const calls = [];
-  const ports = {};
-  for (const [name, methods] of Object.entries(CHAT_TURN_PORTS)) {
-    ports[name] = Object.fromEntries(methods.map(method => [method, () => calls.push(`${name}.${method}`)]));
-  }
-  assert.equal(assertChatTurnPorts(ports), ports);
-  assert.throws(() => assertChatTurnPorts({}), /port missing/);
-
+test('chat core modules import no runtime I/O dependencies', () => {
   for (const file of [
     'turn-request.js', 'retry-policy.js', 'post-turn-router.js',
     'runtime-store.js', 'turn-lifecycle.js', 'finalize-plan.js',
-    'finalize-host.js', 'ports.js',
+    'finalize-host.js',
   ]) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', file), 'utf8');
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);

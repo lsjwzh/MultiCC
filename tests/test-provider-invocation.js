@@ -7,7 +7,7 @@ const {
   createProviderAttemptRuntime,
   createProviderRevision,
 } = require('../src/chat/provider-attempt-runtime');
-const { captureNativeSessionId } = require('../src/chat/native-session-state');
+const { captureNativeSessionId } = require('./helpers/legacy-native-session-state');
 const {
   createProviderInvocationFactory,
   providerRetryRouteOptions,
@@ -586,6 +586,8 @@ function frozenInvocationFactory() {
   const legacy = new Module(filename);
   legacy.filename = filename;
   legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  legacy.require = name => name === './model-request-policy'
+    ? require('./helpers/legacy-model-request-policy') : Module.prototype.require.call(legacy, name);
   legacy._compile(source, filename);
   return legacy.exports.createProviderInvocationFactory;
 }

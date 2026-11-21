@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { createPiAdapter, PI_THINKING_LEVELS } = require('../src/cli-adapters/pi');
-const { processSpawnArgs } = require('../src/chat/process-spawn-args');
+const { processSpawnArgs } = require('../src/native/runtime');
 const adapter = createPiAdapter({ cmd: '/bin/pi', routerMcpNode: process.execPath, routerMcpScript: '/router.js' });
 const envelope = overrides => ({ contextLayers: [], userText: 'Hello', suffix: '', systemPrompt: 'Role and image instructions',
   spawnOpts: { rawModel: 'openai/test', rawEffort: 'high' }, historyHandle: { isFirstTurn: true }, ...overrides });

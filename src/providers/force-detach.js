@@ -19,11 +19,10 @@
 // per-session patch body, the trimmed-Auto-pool decision
 // (`multicc_core::provider_registry::detach_keeps_auto` / `detach_max_attempts`),
 // the manual-fallback retry and the 200-unit error slice. See
-// `provider_detach_references` in native/addon/src/provider_registry.rs.
+// `provider_detach_request` in native/addon/src/provider_registry.rs.
 //
-// This file is the transport only. The session table and the patch/clear
-// effects stay in the Node process and are handed to the addon as callbacks, so
-// there is no second copy of the session state behind the front door.
+// The host executes the planned effects on the live session table and feeds
+// each settled response back to Rust before proceeding.
 //
 // Behaviour is pinned against the frozen pre-migration implementation in
 // tests/helpers/legacy-provider-force-detach.js, which the big providers
@@ -32,8 +31,53 @@
 const { getNative } = require('../native/runtime');
 const { desiredSession } = require('../session/pending-configuration');
 
-function detachProviderReferences(input = {}) {
-  return getNative().providerDetachReferences({ ...input, desiredSession });
+async function detachProviderReferences({
+  providerId, references, sessions, applySessionPatch, clearDefault, clearAuxProvider,
+  currentReferences,
+} = {}) {
+  const request = (op, input) => getNative().providerDetachRequest(op, input);
+  const planSession = sessionId => request('session', {
+    sessionId, session: sessions.get(sessionId), providerId, desiredSession,
+  });
+  const { effects, sessionIds } = request('scope', references);
+  const detached = [];
+  const failed = [];
+  let waited = false;
+  for (const effect of effects) {
+    if (effect.kind === 'default') clearDefault(effect.cli);
+    else clearAuxProvider(providerId);
+    detached.push(effect);
+  }
+  for (const sessionId of sessionIds) {
+    const plan = planSession(sessionId);
+    if (!plan) continue;
+    const { sessionName, patch, fallback } = plan;
+    let result = applySessionPatch(sessionId, patch);
+    if (typeof result?.then === 'function') {
+      waited = true;
+      result = await result;
+    }
+    let outcome = request('response', { sessionId, sessionName, result, fallback });
+    if (outcome.retry) {
+      result = applySessionPatch(sessionId, outcome.retry);
+      if (typeof result?.then === 'function') {
+        waited = true;
+        result = await result;
+      }
+      outcome = request('response', { sessionId, sessionName, result });
+    }
+    if (outcome.failed) failed.push(outcome.failed);
+    else detached.push(outcome.detached);
+  }
+  if (waited && !failed.length && currentReferences) {
+    // An unrelated route may have attached to this provider during the scan.
+    // The planner reads pending configuration when a live binding is deferred.
+    const remaining = request('scope', currentReferences());
+    if (remaining.effects.length || remaining.sessionIds.some(planSession)) {
+      throw new Error('provider references changed during detachment');
+    }
+  }
+  return { detached, failed };
 }
 
 module.exports = { detachProviderReferences };

@@ -1,6 +1,6 @@
 'use strict';
 
-const { classifyProviderError } = require('../provider-error');
+const { classifyProviderError } = require('../../src/provider-error');
 
 function opencodeProcessError(cli, raw, stderr) {
   // Keep raw evidence before truncation. A substantive RPC cause always wins.

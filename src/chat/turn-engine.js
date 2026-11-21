@@ -99,13 +99,12 @@ function claudeSettingsExtra(invocation, spawnOpts, binding, cli) {
 const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
-const { captureNativeSessionId } = require('./native-session-state');
 const { hasNativeHistory } = require('../cli-adapters/claude-exp-history');
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context-guard');
-const { opencodeProcessError } = require('../cli-adapters/opencode-error');
+const { opencodeProcessError } = require('../native/runtime');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
-const { processSpawnArgs } = require('./process-spawn-args');
+const { processSpawnArgs } = require('../native/runtime');
 const { isResident, isResidentSession } = require('../cli/cli-capability');
 
 // Message-admission progress (the frames that keep a delayed user message
@@ -1498,7 +1497,7 @@ function createChatTurnEngine(deps) {
       // the spawned process env, which silently hijacks per-session provider
       // routing. Mirror the final routing env into a per-session --settings
       // file (higher precedence) so the session provider stays authoritative
-      // (see src/providers/claude-settings-override.js).
+      // (see native/addon/src/claude_settings_override.rs).
       let finalSpawnArgs = spawnArgs;
       if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') {
         const settingsFile = providers.settingsOverrideFor(

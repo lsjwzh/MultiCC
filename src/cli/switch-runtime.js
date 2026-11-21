@@ -272,9 +272,16 @@ function createCliSwitchRuntime(options) {
     const changed = records.get(sessionId) !== session || JSON.stringify(session) !== signature;
     return call('preparedGate', { changed, busy: changed ? false : configurationBusy(sessionId) });
   }
+  function withConfigurationPreparation(sessionId, prepare) {
+    if (preparations.has(sessionId)) return null;
+    const operation = Promise.resolve().then(prepare);
+    preparations.set(sessionId, operation);
+    const clear = () => { if (preparations.get(sessionId) === operation) preparations.delete(sessionId); };
+    operation.then(clear, clear);
+    return operation;
+  }
   function applyTurnConfiguration(sessionId, turnOptions = {}, text = '') {
-    if (preparations.has(sessionId)) return Promise.resolve(false);
-    const operation = (async () => {
+    return withConfigurationPreparation(sessionId, async () => {
       if (await applyPendingConfiguration(sessionId, turnOptions) === false) return false;
       try { if (await autoSwitchCli(sessionId, turnOptions, text) === false) return false; }
       catch (error) {
@@ -287,11 +294,7 @@ function createCliSwitchRuntime(options) {
         return false;
       }
       return canContinueOnCurrentCli(sessionId);
-    })();
-    preparations.set(sessionId, operation);
-    const clear = () => { if (preparations.get(sessionId) === operation) preparations.delete(sessionId); };
-    operation.then(clear, clear);
-    return operation;
+    }) || Promise.resolve(false);
   }
   async function autoSwitchCli(sessionId, turnOptions, text) {
     const session = records.get(sessionId), pool = session?.providerSelection;
@@ -441,6 +444,7 @@ function createCliSwitchRuntime(options) {
     tools.mountRoutes(app, asyncHandler);
   }
   return Object.freeze({ mountRoutes, startUpdateWatch: tools.startUpdateWatch, cliSwitchDefaults, cliSwitchGitSnapshot,
-    cliSwitchBusyState, performCliSwitch, consumePendingCliHandoff, applyPendingConfiguration: applyTurnConfiguration });
+    cliSwitchBusyState, performCliSwitch, consumePendingCliHandoff, withConfigurationPreparation,
+    applyPendingConfiguration: applyTurnConfiguration });
 }
 module.exports = { cliHandoffSummary, createCliSwitchRuntime, OFFICIAL_INSTALL_SPECS };

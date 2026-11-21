@@ -118,6 +118,8 @@ pub mod voice_runtime_routes;
 pub mod windows_tools;
 pub mod workspace_release;
 pub mod worktree_sync;
+pub mod zcode_engine;
+pub mod zcode_session;
 
 pub mod claude_lane;
 pub mod claude_models;

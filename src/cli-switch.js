@@ -10,7 +10,7 @@
 // transport) and the vendor facts behind `routingSelection`.
 
 const { getNative } = require('./native/runtime');
-const { repairZcodeSessionState } = require('./cli-adapters/zcode-session');
+const { repairZcodeSessionState } = require('./native/runtime');
 const { isResidentSession, providerlessClis, isDeprecated } = require('./cli/cli-capability');
 const { nativeVendorOf } = require('./providers/native-vendor');
 const { nativeOpenCodeId } = require('./providers/native-opencode');

@@ -153,6 +153,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), modelRequestPolicyValue: undefined
   };`);
   assert.equal(probeAddon(staleBudget), false, 'a stale addon cannot bypass model request budgets');
+  const staleBudgetInputs = write(root, 'stale-model-budget-inputs.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), resolveModelRequestPolicy: undefined
+  };`);
+  assert.equal(probeAddon(staleBudgetInputs), false, 'a stale addon cannot bypass live model budget input handling');
   const staleRetry = write(root, 'stale-retry.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), retryPolicyValue: undefined
   };`);
@@ -181,10 +185,26 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), RustModelStreamProgress: undefined
   };`);
   assert.equal(probeAddon(staleProgress), false, 'a stale addon cannot bypass model stream progress');
+  const staleProgressReader = write(root, 'stale-model-progress-reader.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), createModelStreamProgress: undefined
+  };`);
+  assert.equal(probeAddon(staleProgressReader), false, 'a stale addon cannot bypass native progress reader creation');
+  for (const name of ['zcodeDefaultEngine', 'zcodeEngineCandidates', 'zcodeBuiltinProviderConfig', 'zcodeEngineEnv']) {
+    const staleEngine = write(root, `stale-${name}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
+    };`);
+    assert.equal(probeAddon(staleEngine), false, `missing ${name} must fail preflight`);
+  }
   const staleFence = write(root, 'stale-attempt-fence.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), RustProviderAttemptLifecycle: undefined
   };`);
   assert.equal(probeAddon(staleFence), false, 'a stale addon cannot bypass the provider replay fence');
+  for (const methods of ['', 'create() {}', 'resolve() {}']) {
+    const staleRegistry = write(root, `stale-cli-registry-${methods.length}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), RustCliProviderRegistryFactory: class { ${methods} }
+    };`);
+    assert.equal(probeAddon(staleRegistry), false, 'registry factory and both methods are required');
+  }
   for (const name of ['providerEventFence', 'providerHostTextEnvelope', 'chatOwnsCurrentRunner', 'chatAssignKillReason',
     'observeCodeFiles', 'RustWorkspaceRelease',
     'chatClearSucceededErrors', 'chatRecordResultEvent', 'chatRecordCloseResult', 'chatRecordPartialCheckpoint', 'chatHasPartialCheckpoint',

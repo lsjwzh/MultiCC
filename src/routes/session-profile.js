@@ -132,14 +132,21 @@ function createSessionProfileRoutes(rawDeps) {
   } = sessionPolicy;
 
   function mountRoutes(app) {
+    const busy = id => configurationBusy(id, {
+      getChatState, getChatStream, hasLiveBackgroundTasks, getPreparation: deps.getPreparation,
+    });
+
     // PATCH a session — supports display-name edits via label.
-    function patchSession(req, res, preview = null) {
+    function patchSession(req, res, preview = null, onRoute = null) {
       const s = preview || persistedSessions.get(req.params.id);
       const appendEvent = preview ? () => {} : deps.appendEvent;
       const workspaceBroadcast = preview ? () => {} : deps.workspaceBroadcast;
       const chatBroadcast = preview ? () => {} : deps.chatBroadcast;
       const closeStream = () => { if (!preview) chatStream().close(s.id); };
-      const synchronizeRoute = route => { if (!preview) providers.synchronizeCodexSessionRoute(route); };
+      const requirePreparedRoute = route => {
+        if (onRoute) onRoute(route);
+        else if (!preview) throw new Error('Codex route was not prepared');
+      };
       if (!s) return res.status(404).json({ error: 'session not found' });
       if (s.type === 'aux' || s.type === 'gateway') {
         return res.status(400).json({ error: 'system session cannot be renamed' });
@@ -151,9 +158,7 @@ function createSessionProfileRoutes(rawDeps) {
       }
       const routeMutation = ['model', 'effort', 'agent', 'rolePrompt', 'provider', 'providerSelection', 'subagent']
         .some(key => Object.prototype.hasOwnProperty.call(req.body || {}, key));
-      if (!preview && routeMutation && (s.pendingConfiguration || configurationBusy(s.id, {
-        getChatState, getChatStream, hasLiveBackgroundTasks, getPreparation: deps.getPreparation,
-      }))) {
+      if (!preview && routeMutation && (s.pendingConfiguration || busy(s.id))) {
         // Run the exact same validation on a detached desired-state draft. No
         // process, rollout, audit event or active route is touched by preview.
         const draft = desiredSession(s);
@@ -303,7 +308,7 @@ function createSessionProfileRoutes(rawDeps) {
         if (preparedPrimaryProvider && !hasProviderPatch) {
           if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId
               && s.provider !== preparedPrimaryProvider.providerId) {
-            synchronizeRoute({
+            requirePreparedRoute({
               logicalSessionId: s.id,
               nativeSessionId: s.cliSessionId,
               fromProviderId: s.provider,
@@ -386,7 +391,7 @@ function createSessionProfileRoutes(rawDeps) {
         // idle route boundary synchronize only the exact native rollout with
         // the canonical managed-session root before changing its authority.
         if ((s.cli === 'codex' || s.cli === 'codex-exp') && s.cliSessionId && prevProvider !== v.value) {
-          synchronizeRoute({
+          requirePreparedRoute({
             logicalSessionId: s.id,
             nativeSessionId: s.cliSessionId,
             fromProviderId: prevProvider,
@@ -474,7 +479,66 @@ function createSessionProfileRoutes(rawDeps) {
         throw error;
       }
     }
-    app.patch('/api/sessions/:id', (req, res) => patchSession(req, res));
+
+    function capturePatch(req, handler) {
+      const result = { status: 200, body: undefined };
+      const completion = handler(req, {
+        status(code) { result.status = code; return this; },
+        json(body) { result.body = body; return this; },
+      });
+      return completion && typeof completion.then === 'function'
+        ? completion.then(() => result) : result;
+    }
+
+    function planRoutePatch(req, session) {
+      let route;
+      const draft = desiredSession(session);
+      const result = capturePatch(req, (request, response) =>
+        patchSession(request, response, draft, planned => { route = planned; }));
+      return { result, route };
+    }
+
+    function patchWithPreparation(req, res) {
+      const session = persistedSessions.get(req.params.id);
+      if (!session?.cliSessionId || !['codex', 'codex-exp'].includes(session.cli)
+          || (req.body?.provider === undefined && req.body?.providerSelection === undefined)
+          || session.pendingConfiguration || busy(session.id)) {
+        return patchSession(req, res);
+      }
+      const { result, route } = planRoutePatch(req, session);
+      if (result.status !== 200) return res.status(result.status).json(result.body);
+      if (!route) return patchSession(req, res);
+      const signature = JSON.stringify(session);
+      const expected = JSON.stringify(route);
+      const conflict = () => res.status(409).json({ error: 'session configuration changed during Codex rollout preparation' });
+      const canApply = () => persistedSessions.get(session.id) === session
+        && JSON.stringify(session) === signature && !busy(session.id);
+      const prepare = () => {
+        if (!canApply()) return conflict();
+        const synchronize = deps.synchronizeCodexProfileRoute || providers.synchronizeCodexSessionRoute;
+        const prepared = synchronize(route);
+        const apply = () => {
+          if (!canApply()) return conflict();
+          const verified = planRoutePatch(req, session);
+          if (verified.result.status !== 200) return res.status(verified.result.status).json(verified.result.body);
+          if (JSON.stringify(verified.route) !== expected) return conflict();
+          return patchSession(req, res, null, actual => {
+            if (JSON.stringify(actual) !== expected) throw new Error('Codex route changed before persistence');
+          });
+        };
+        return prepared && typeof prepared.then === 'function' ? prepared.then(apply) : apply();
+      };
+      if (deps.withConfigurationPreparation) {
+        return deps.withConfigurationPreparation(session.id, prepare) || conflict();
+      }
+      return prepare();
+    }
+
+    app.patch('/api/sessions/:id', (req, res, next) => {
+      const result = patchWithPreparation(req, res);
+      if (result && typeof result.then === 'function' && next) return result.catch(next);
+      return result;
+    });
 
     // ── Session fork (Happier-parity: branch a session at any message) ──
     // Creates a NEW live session that inherits the source's provider/model/effort/
@@ -616,12 +680,7 @@ function createSessionProfileRoutes(rawDeps) {
     // In-process PATCH for host-side edits (provider force-delete unwiring its
     // references): same validation, staging and side effects as the HTTP route.
     function applySessionPatch(sessionId, body) {
-      let status = 200, result;
-      patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
-        status(code) { status = code; return this; },
-        json(value) { result = value; return this; },
-      });
-      return { status, body: result };
+      return capturePatch({ params: { id: sessionId }, body: body || {}, query: {} }, patchWithPreparation);
     }
 
     // Dry run of the same patch: validation runs against a detached

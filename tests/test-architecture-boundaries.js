@@ -22,8 +22,8 @@ test('session bounded-context core has no host or cross-context dependencies', (
       // node:-prefixed builtins carry no cross-context coupling, so IO modules
       // (persistence/hibernation) may use them; everything else must stay local.
       // The migrated transition, record table, history query-identity rule and
-      // the chat-runtime busy rule and hibernation path resolution reach Rust
-      // through the shared addon loader.
+      // chat-runtime busy and hibernation path resolution reach Rust through
+      // the shared addon loader.
       // This grants no other session module a host import.
       const nativeCorePort = (file === path.join('src/session', 'state-transition.js')
         || file === path.join('src/session', 'records.js')

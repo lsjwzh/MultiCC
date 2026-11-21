@@ -148,6 +148,7 @@ function probeAddon(file, node = process.execPath) {
     if(['quotaGuardRequestValue','RustQuotaGuard'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.quotaRejectionRequestValue!=='function') process.exit(1);
     if(typeof a.modelRequestPolicyValue!=='function') process.exit(1);
+    if(typeof a.resolveModelRequestPolicy!=='function') process.exit(1);
     if(typeof a.RustModelDefaults!=='function') process.exit(1);
     if(new a.RustModelDefaults(0).resolve({appType:'claude',models:['probe']},()=>[],()=>0)!=='probe') process.exit(1);
     if(typeof a.retryPolicyValue!=='function') process.exit(1);
@@ -164,6 +165,10 @@ function probeAddon(file, node = process.execPath) {
     if(a.cprRequestLifecycleVersion?.()!==3 || typeof a.RustCprExchange!=='function'
       || ['startStreamWatch','stopStreamWatch','finishStreamWatch','noteStreamProgress','streamProgressed','streamTimeoutCode'].some(key=>typeof a.RustCprExchange.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustModelStreamProgress!=='function') process.exit(1);
+    if(typeof a.createModelStreamProgress!=='function') process.exit(1);
+    if(['zcodeDefaultEngine','zcodeEngineCandidates','zcodeBuiltinProviderConfig','zcodeEngineEnv'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.RustCliProviderRegistryFactory!=='function'
+      || ['create','resolve'].some(key=>typeof a.RustCliProviderRegistryFactory.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustProviderAttemptLifecycle!=='function') process.exit(1);
     if(typeof a.RustClaudeLane!=='function'
       || ['start','sendUser','interrupt','setModel','getTaskOutput','stopTask','respondControl','respondControlError','closeInput','kill','stderrTail'].some(key=>typeof a.RustClaudeLane.prototype[key]!=='function')) process.exit(1);

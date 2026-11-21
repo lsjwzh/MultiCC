@@ -691,7 +691,7 @@
     },
     {
       "path": "app/test/remote_host_actions_test.dart",
-      "tier": "flow",
+      "tier": "core",
       "lane": "flutter"
     },
     {
@@ -2890,6 +2890,11 @@
       "entrypoints": [
         "npm:test:core"
       ]
+    },
+    {
+      "path": "tests/test-claude-settings-override-differential.js",
+      "tier": "core",
+      "lane": "deterministic"
     },
     {
       "path": "tests/test-claude-settings-override.js",

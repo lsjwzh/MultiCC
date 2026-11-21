@@ -149,6 +149,92 @@ Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和�
 
 手动刷新和主动轮询沿用现有 Node 账号读取及请求回调，经 N-API 传入已解析的响应和观测时间。后续这些请求和凭据生命周期迁入 Rust 时，移除对应接线。工作树验证包括 45 项兼容回归、5 项网关适配定向回归、严格 Clippy，以及 1,445 组输入的 2,890 次旧版 JSON 字节对拍。证据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-rate-limit-windows`。下一模块处理 Codex 会话目录扫描，先把启动与配置调用接到异步边界。
 
+### 会话配置切换的异步目录准备
+
+Codex 配置切换复用 Rust 的 rollout 查找、歧义判断和原子复制，在 addon 工作线程完成准备后才进入会话持久化同步事务。配置准备与回合启动共用互斥槽，提交前重新核对会话身份、配置和忙状态，过期准备返回 409。同步事务内只执行已确认的路由变更。
+
+强制删除 Provider 的引用收集、逐会话解绑计划、手动回退和响应判定由 Rust 分步接口持有。兼容宿主执行回调，等待 Promise 落地后再提交响应进行判定，并在异步期间出现新引用时阻止删除。批量迁移会话同样按顺序等待异步 PATCH。Node 的最小保留范围为进程内会话表、既有验证与广播、Promise 和回调传输。会话配置所有权接入原生宿主后可移除这部分接线。
+
+会话路由字节对拍曾出现 12 项 OPTIONS 返回 503。单条请求在同一二进制和端口先返回 503，兼容宿主启动后返回 200，确认 harness 在前门健康检查通过后过早启动语料。补充会话守卫就绪检查后，响应与副作用顺序均为 126/126 一致。原始失败、主线复现、单条请求和修复后记录位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-profile-scan`，组合门禁位于 `codex-profile-scan-gates`。后续继续迁移 `src/codex/session-home.js` 的启动和重试调用边界。
+
+### Claude 启动配置覆盖
+
+删除 `src/providers/claude-settings-override.js`（86 行），配置环境键筛选、缺失路由键清空、会话文件名生成、私有目录与原子写入迁入 `native/addon/src/claude_settings_override.rs`。沿用共享 Rust `state_file` 写入器，保持文件 0600、目录 0700，以及 Provider 切换后重写配置的行为。生产 Node 代码净减 76 行。
+
+现有回合引擎与 Provider 宿主仍在 Node，因此 `src/native/runtime.js` 暂留同步 N-API 调用和家目录路径适配。Rust 通过 N-API 访问 V8 的 live 值、`encodeURIComponent` 与 `JSON.stringify`，以保留 getter 异常、键顺序、`toJSON`、孤立 UTF-16 代理项及非 JSON 值语义；未在 Node 增加配置业务规则。调用方迁入原生宿主后可删除这段兼容接线。
+
+冻结对照 `tests/helpers/legacy-claude-settings-override.js` 来自 `5ec8703f`。仓库差分测试覆盖 540 组输入的环境投影、文件名、JSON 字节和权限，另验证 getter 访问顺序、异常对象身份及序列化失败保留原文件。完整门禁与合并收据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/claude-settings-override-gates/`。兼容测试使用项目锁定的 SDK 0.3.325 oracle；首次自动发现本机 0.3.317 的失败日志保留，未放宽环境字节断言。
+
+### OpenCode 进程错误优先级
+
+删除 `src/cli-adapters/opencode-error.js`（12 行），优先保留实际 RPC 原因、仅在 `agent_exited` 或缺失原因时检查原始 stderr 的选择规则迁入 `native/addon/src/opencode_error.rs`。分类器继续使用既有 Rust core 实现，宿主只保留两行 N-API 与原有有界元数据分类回调接线；未增加 Node 业务规则。事件宿主与元数据适配迁入 Rust 后可一并删除回调。该小模块生产 Node 代码净减 10 行。
+
+冻结对照来自 `ae728cb3` 的原模块，只调整 helper 内的 require 相对路径。256 组输入验证错误形状、stderr 形状、其它 CLI 和继承属性；单独断言 getter 短路、异常对象身份、分类器只调用一次、两个回调参数同一对象及原始 stderr 对象身份。构建、测试及合并证据记录在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/opencode-process-error-gates/`。
+
+### 进程启动参数排序
+
+删除 `src/chat/process-spawn-args.js`（15 行），参数可迭代对象的复制、`--settings` 与提示词分隔符排序、原始 payload 追加迁入 `native/addon/src/process_spawn_args.rs`。回合引擎仅更换导入，`src/native/runtime.js` 保留一行 N-API 调用；生产 Node 代码净减 14 行。回合宿主迁入 Rust 后删除该桥。V8 的 live iterable、数组方法和异常仍经 N-API 访问，保留参数对象与 payload 身份，不引入 JSON 编解码。
+
+冻结旧模块的 384 组组合检查 argv 值与序列化字节，另验证自定义迭代器和 getter 顺序、异常身份、不修改输入以及非可迭代参数失败。完整构建、严格静态、回归与 HTTP 对拍证据记录在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/process-spawn-args-gates/`。
+
+约定门禁通过后补跑标准 `npm test`，在未修改的 `tests/test-fleet-sharing-routes.js` 两项共享并发检查失败（249 行创建结果未全部为 200；514 行访问次数耗尽后的 410 数量为 0、预期 4）。另建目标分支 `bf99c686` 的干净、独立工作树，仅运行该测试文件，使用与该基线源码指纹匹配的旧原生产物，57.707 秒后同两断言、同值失败；测试文件哈希一致，基线不含本批 Rust 模块且保留旧 Node 文件。按用户明确授权将其登记为基线既有／环境失败后交付 argv 小批。完整 `npm test` 仍为失败，未放宽断言、未声称已修复共享并发根因。复现及对比记录在上述证据目录的 `baseline-diagnosis/`。
+
+### 已迁移会话 ID 规则的旧副本
+
+`src/chat/native-session-state.js` 的生产消费者只剩 `turn-engine.js` 的未使用导入。实际事件路径已经由 `chatApplyAdapterEvent` 进入 `native/addon/src/chat_events.rs::accept_session_id`，并使用 core 的 `capture_session_id` 完成 fresh/resume 判定、严格赋值和持久化接线。本批删除该 27 行 Node 模块及一行闲置导入，生产 Node 净减 28 行，不增加任何兼容桥或 Rust 业务副本。
+
+原件完整冻结到 `tests/helpers/legacy-native-session-state.js`，仅供旧事件 reducer 和底层协议测试作独立 oracle；真实路径的差分测试继续直接调用 Rust 的 `chatApplyAdapterEvent`。既有用例覆盖 fresh 替换、resume ID 不匹配及事件／副作用顺序。验证和收据记录在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/native-session-state-gates/`。
+
+本批定向 57 项通过，缺少真实 Claude 捕获文件的一项按原条件跳过。首次并行 Rust 全量遇到 `subagent_defaults` 夹具 `EADDRINUSE`，同一测试隔离通过，再完整串行复跑 2730 项通过；未修改断言。其余约定门禁、HTTP 字节对拍和无 Node 冒烟通过。标准 `npm test` 仍只有上节已由干净基线确认的两项共享并发失败，同断言同值；共享实现及测试夹具未变，原失败记录及基线例外继续保留，未记作全绿。
+
+### 闲置的聊天端口声明
+
+删除 `src/chat/ports.js`（24 行）及聚合导出的一行，生产 Node 净减 25 行。该模块的 `CHAT_TURN_PORTS` 与 `assertChatTurnPorts` 只有聚合导出和模块自身测试引用，服务端解构、其他业务代码和插件均未消费；不增加替代业务实现或兼容桥。删除测试中仅针对该已删除接口的示例断言，仍保留同一用例对其余七个聊天核心模块的 I/O 依赖检查。完整验证及收据存放在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/chat-ports-gates/`。
+
+首次后台验证因 detached 宿主的 `umask 077` 使 Cargo 产物保留 0700，被现有打包可执行权限检查拒绝，导致三项 remote-screen 安全夹具失败。验证 runner 改为 `umask 022`，并仅对新构建的来源和复制品规范可执行文件 0755、addon 0644；原失败及诊断记录保留，未改断言或跳过原三项测试。完整重建复验的其余 23 道门禁均通过，HTTP 字节对拍为 67/67、126/126、203/203，无 Node 启动冒烟通过。标准 `npm test` 仍 exit 1，仅有上述两项共享并发基线失败，去除耗时及工作树路径后，完整断言报告与干净 `bf99c686` 基线逐字一致。其后被 `&&` 短路的 npm 阶段不记为通过；完整日志、独立门禁、权限与对拍明细保存在 `permission-fixed-rerun/`。
+
+### ZCode 会话身份与旧桥接标记修复
+
+删除 `src/cli-adapters/zcode-session.js`（29 行），原生会话 ID 和已知错误标记判定迁入 `native/core/src/zcode_session.rs`，状态修复由 N-API 直接读取、严格赋值于宿主原对象。仅清空已证实的旧桥接标记，保留未知厂商 ID、其他 CLI、历史与配置；每次读取 `cliStates` 的顺序、setter 副作用与部分写入后的异常沿用旧行为。三个消费点仅更换导入，生产 Node 净减 27 行。
+
+Node 事件和 CLI 切换宿主暂留两行原生调用桥；不增加业务规则、JSON 拷贝或扫描。桥接子进程原先已通过 background-hold 使用相同原生模块；本批继续验证其首次启动、resident/legacy、取消与独立宿主启动恢复。待对应进程和状态宿主迁入 Rust 后删除这两行。冻结 `7e57fd99` 原模块作为测试 oracle，新增完整 UTF-16 单字符后缀及 1,600 组状态字节对拍，并检查类型短路、代理与重入、异常身份和严格赋值失败。门禁日志及收据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/zcode-session-gates/`。
+
+完整 26 道门禁中，其余 25 道退出码为 0：包括串行 Rust 2,732 项、ZCode 定向 59 项、隔离启动重复恢复、严格 Clippy、安全、HTTP 字节对拍 67/67、126/126、203/203 和无 Node 启动冒烟。标准 `npm test` 仍 exit 1，仅复现上述两项共享并发基线失败；完整断言报告去除耗时与工作树路径后与干净 `bf99c686` 基线逐字一致，后续被短路的 npm 阶段不记为通过。runner 继续使用 `umask 022` 和来源产物权限规范，原三项 remote-screen 安全测试完整通过，未放宽断言。
+
+### 模型请求预算的宿主参数提取
+
+删除 `src/chat/model-request-policy.js`（22 行），会话 effort、路由模式、环境预算键的读取顺序、BigInt 十进制传递及结果冻结迁入现有 Rust addon 模块。继续调用同一 core 超时规则，不改变计时器或代理请求生命周期。生产入口在 `src/native/runtime.js` 的 Provider invocation 装配处；仅保留一行 N-API 调用和默认宿主环境适配，生产 Node 净减 20 行。请求宿主移入 Rust 后删除该调用桥。
+
+旧 wrapper 冻结为测试 oracle，仅调整 native/runtime 的相对路径；Provider invocation 冻结夹具仍保留原始文本与哈希，通过测试专用 require 接线读取该 oracle。新增 1,024 组值与 JSON 字节对拍，以及惰性 getter、代理、重入、原异常身份、非法宿主形状和冻结结果检查。启动探针新增原生入口必需条件，保留旧预算接口缺失检查，并增加新入口缺失时拒绝启动的断言。完整门禁及收据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/model-request-policy-gates/`。
+
+完整 28 道门禁中，其余 27 道退出码为 0，包括串行 Rust 2,732 项、模型预算与调用装配定向 64 项、启动来源探针 15 项、严格 Clippy、安全、三组 HTTP 字节对拍与无 Node 启动冒烟。标准 `npm test` 仍 exit 1，仅复现上述两项共享并发基线失败，完整归一化断言报告与干净 `bf99c686` 基线逐字一致；被短路的后续 npm 阶段不记为通过。runner 的 `umask 022`、来源及复制品权限有独立记录，原三项 remote-screen 安全用例完整通过，未改断言。
+
+### 模型流进度读取回调
+
+删除 `src/providers/model-stream-progress.js`（12 行），读取回调和每个 reader 的状态生命周期迁入现有 Rust addon，继续使用同一 core SSE 解码器与进度判定。Rust 调用当前宿主的 `Buffer.from` 保留非字符串输入的转换与异常，转换完成后才借用可变状态，允许 `valueOf` 在转换过程中重入。传输字节与代理请求生命周期不变；Node 仅保留一行工厂调用桥，生产 Node 净减 11 行。代理响应宿主迁入 Rust 后可删除该桥及宿主 Buffer 适配。
+
+原 wrapper 冻结为独立 oracle，仅调整 native/runtime 相对路径。新增所有 UTF-8 切分点与混合 chunk 类型对拍、超长帧和 reader 隔离、Buffer 转换及异常身份、转换时重入和异常后的状态连续性检查；独立带 GC 的子进程同时验证旧、新 callback 与自引用环可回收且不保活进程。启动探针保留旧解码器缺失断言，并增加新工厂缺失时拒绝启动的检查。完整门禁及收据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/model-stream-progress-gates/`。
+
+首次构建因遗漏 `ToNapiValue` trait 导入触发 E0599，原始日志和停止收据保留。补齐导入及格式化后，只有该 Rust 文件变化，测试未改；在 `trait-import-rerun/` 完整复验 28 道门禁，其余 27 道退出码为 0，包括串行 Rust 2,732 项、定向 68 项、来源启动探针 15 项、三组 HTTP 字节对拍与无 Node 启动冒烟。标准 `npm test` 仍 exit 1，仅有上述两项共享并发基线失败，完整归一化断言报告与干净 `bf99c686` 基线逐字一致。后续被短路的 npm 阶段不记为通过；`umask 022` 和来源及复制品权限规范继续生效，原三项 remote-screen 安全测试完整通过。
+
+### ZCode 引擎路径与内置配置环境
+
+删除 `src/cli-adapters/zcode-engine.js`（33 行），默认引擎位置和脚本后缀规则迁入 Rust core；候选路径、内置配置文件的单次 metadata 探测、环境短路与复制迁入 Rust addon。四个生产消费点仅更换导入，生产 Node 净减 27 行。宿主仅保留惰性的默认值 getter、路径原语和环境输入的 N-API 接线；不扫描目录，保留现有同步启动契约。CLI 与进程启动宿主移入 Rust 后可删除该接线。
+
+构建脚本不加载 CLI 命令解析器，公开启动器先构建、探测原生模块，再创建宿主子进程；默认引擎读取继续保持惰性。冻结旧模块作为独立 oracle，新增 72 组候选参数差分，以及文件、目录、符号链接、缺失路径、UTF-16 路径字节、环境对象身份、属性顺序、代理、getter 与异常短路检查。启动探针要求四个新入口均存在，旧检查与断言保留。完整门禁及收据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/zcode-engine-gates/`。
+
+完整复验 29 道门禁，其余 28 道退出码为 0，包括串行 Rust 2,734 项、ZCode 定向 63 项、模型流定向 68 项、来源启动探针 15 项、命令解析、三组 HTTP 字节对拍与无 Node 启动冒烟。标准 `npm test` 仍 exit 1，仅有上述第 249、514 行两项共享并发基线失败，完整归一化断言报告与干净 `bf99c686` 基线逐字一致；被短路的后续 npm 阶段不记为通过。已逐项核对全部日志、独立门禁记录及哈希，归档三组 HTTP 详情；继续保留 `umask 022`、来源及复制品可执行文件 0755、addon 0644，原三项 remote-screen 安全用例均通过。整体 Node 后端清零尚未完成，服务未重启。
+
+### CLI 适配器注册、回退与停用规则
+
+删除 `src/cli-adapters/core.js`（34 行），注册过滤、必需方法校验、重复名称替换、默认回退和 Gemini 停用规则迁入 Rust addon，生产 Node 净减 22 行。冻结旧模块作为无生产依赖的独立 oracle；差分覆盖 170 组查找、对象及 Symbol 键、属性顺序、快照与查找隔离、getter、迭代器关闭、同步重入、异常身份，以及已停用适配器的冻结与共享身份。子进程检查保留的查找闭包、引用环回收与自然退出。
+
+Node 仅保留现有原生模块的惰性实例引用与调用闭包；Rust 通过宿主 Map 原语保留任意键及适配器身份，注册表状态由 JavaScript 引擎追踪，避免原生强引用形成不可回收的适配器环。原生工厂只持有不捕获宿主值的停用适配器，不持有各注册表。CLI 宿主整体迁出后可移除这段实例与回调接线。启动探针要求工厂及 `create`、`resolve` 两个方法齐备；旧门禁与断言保留，另加注册表定向门禁。证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/cli-provider-registry-gates/`，不能据此宣称整体 Node 后端清零。
+
+首次严格 Clippy 因新增的未使用 `JsValue` 导入失败；仅移除该导入后通过，但完整复验在 `state` 的隔离服务就绪检查失败。原失败日志与收据均保留，首次启动失败的根因未确定，不将它列为基线例外。夹具现把子进程、stdout/stderr 和退出状态传给原等待器，并在失败时将诊断持久保存到临时数据目录之外；断言、超时、就绪条件和清理逻辑均保持原样。受控子进程以 23 退出时，原测试仍以 1 退出，两个输出流和状态完整保存为 0600 日志，证明该修正只增加可观测性。
+
+最终在 `state-fixture-rerun/` 完整执行 30 道门禁，29 道退出码为 0，包括串行 Rust 2,734 项、注册表/ACP 定向 21 项、来源探针 15 项、原隔离 SIGTERM 与开放 WebSocket 检查、三组 HTTP 字节对拍及无 Node 启动冒烟。标准 `npm test` 仍 exit 1，仅有上述第 249、514 行两项共享并发基线失败，完整归一化断言报告与干净 `bf99c686` 基线逐字一致；被短路的后续 npm 阶段不记为通过。全部日志、独立记录、哈希及 HTTP 详情已核对归档。继续保留 `umask 022`、来源与复制品可执行文件 0755、addon 0644，原三项 remote-screen 安全用例均通过。整体 Node 后端清零尚未完成，服务未重启。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。
