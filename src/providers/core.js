@@ -85,14 +85,14 @@ function enableUnifiedOfficialProviders() {
       const previous = records.find(p => p.appType === type && p.id === defaults[type]);
       selection[type] = require('../official-accounts').officialAccountIdFromProvider(previous) || 'global';
     }
-    require('./native-credentials').credential({ operation: 'writeJson', file: selectionFile, data: selection });
+    require('../native/runtime').providerCredentials.credential({ operation: 'writeJson', file: selectionFile, data: selection });
   }
   officialCatalog = require('./official-catalog').createOfficialCatalog({
     readRecords: loadStore,
     readSelection() {
-      return require('./native-credentials').credential({ operation: 'readStateJson', file: selectionFile }) || {};
+      return require('../native/runtime').providerCredentials.credential({ operation: 'readStateJson', file: selectionFile }) || {};
     },
-    writeSelection: selection => require('./native-credentials').credential({ operation: 'writeJson', file: selectionFile, data: selection }),
+    writeSelection: selection => require('../native/runtime').providerCredentials.credential({ operation: 'writeJson', file: selectionFile, data: selection }),
     ...(() => {
       const store = require('../official-accounts').createOfficialAccountStore();
       return {
