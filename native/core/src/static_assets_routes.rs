@@ -262,7 +262,6 @@ pub fn air_planner_redirect(query: &QueryView) -> Option<String> {
         .then(|| overview_redirect(query, &["dir", "task", "token", "external"]))
 }
 
-
 /// `/\.(apk|ipa)$/i`.
 fn has_binary_suffix(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
@@ -338,10 +337,25 @@ pub const TASK_ENTRY_FILE: &str = "task-entry.html";
 
 /// JS `\s`.
 fn is_js_space(value: char) -> bool {
-    matches!(value,
-        '\u{9}' | '\u{a}' | '\u{b}' | '\u{c}' | '\u{d}' | '\u{20}' | '\u{a0}' | '\u{1680}'
-        | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}'
-        | '\u{3000}' | '\u{feff}')
+    matches!(
+        value,
+        '\u{9}'
+            | '\u{a}'
+            | '\u{b}'
+            | '\u{c}'
+            | '\u{d}'
+            | '\u{20}'
+            | '\u{a0}'
+            | '\u{1680}'
+            | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
+    )
 }
 
 /// The attribute prefix `((?:src|href)\s*=\s*["'])`, matched at `start`.
@@ -541,10 +555,7 @@ mod tests {
                 r#"<script src="unknown.js">"#,
             ),
             // No word boundary: `data-src` matches at its `src`.
-            (
-                r#"<div data-src="a.js">"#,
-                r#"<div data-src="a.js?v=222">"#,
-            ),
+            (r#"<div data-src="a.js">"#, r#"<div data-src="a.js?v=222">"#),
             // The quotes need not match each other.
             (r#"<script src="a.js'>"#, r#"<script src="a.js?v=222'>"#),
             // `[^"'?#]+\.` needs a character before the dot.
@@ -578,12 +589,29 @@ mod tests {
     #[test]
     fn versioned_plan_follows_the_retired_middleware() {
         let plan = |target: &str| versioned_plan(path_of(target), &QueryView::new(target));
-        assert_eq!(plan("/"), VersionedPlan::Candidate { relative: "index.html".to_string() });
-        assert_eq!(plan("/air"), VersionedPlan::Candidate { relative: "air.html".to_string() });
-        assert_eq!(plan("/air.html"), VersionedPlan::Candidate { relative: "air.html".to_string() });
+        assert_eq!(
+            plan("/"),
+            VersionedPlan::Candidate {
+                relative: "index.html".to_string()
+            }
+        );
+        assert_eq!(
+            plan("/air"),
+            VersionedPlan::Candidate {
+                relative: "air.html".to_string()
+            }
+        );
+        assert_eq!(
+            plan("/air.html"),
+            VersionedPlan::Candidate {
+                relative: "air.html".to_string()
+            }
+        );
         assert_eq!(
             plan("/docs/guide"),
-            VersionedPlan::Candidate { relative: "docs/guide.html".to_string() }
+            VersionedPlan::Candidate {
+                relative: "docs/guide.html".to_string()
+            }
         );
         // The chat/task-shell hop, and the one `?air=1` exception to it.
         assert_eq!(plan("/chat"), VersionedPlan::TaskEntry);
@@ -595,11 +623,15 @@ mod tests {
         assert_eq!(plan("/chat.html?air=0&task=t1"), VersionedPlan::TaskEntry);
         assert_eq!(
             plan("/chat.html?air=1&task=t1"),
-            VersionedPlan::Candidate { relative: "chat.html".to_string() }
+            VersionedPlan::Candidate {
+                relative: "chat.html".to_string()
+            }
         );
         assert_eq!(
             plan("/chat?air=1&session=s1"),
-            VersionedPlan::Candidate { relative: "chat.html".to_string() }
+            VersionedPlan::Candidate {
+                relative: "chat.html".to_string()
+            }
         );
         // An array `air` is not the string '1'; the hop stands.
         assert_eq!(plan("/chat?air=1&air=1&task=t1"), VersionedPlan::TaskEntry);
@@ -610,7 +642,9 @@ mod tests {
         // Leading slashes are stripped, not normalised away.
         assert_eq!(
             plan("//air"),
-            VersionedPlan::Candidate { relative: "air.html".to_string() }
+            VersionedPlan::Candidate {
+                relative: "air.html".to_string()
+            }
         );
     }
 

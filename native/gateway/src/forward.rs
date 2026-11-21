@@ -350,19 +350,17 @@ async fn dispatch(
     }
     if let Some(route) = crate::app::claim_uri(request.method(), request.uri()) {
         let host = upstream.state.port.load(Ordering::SeqCst);
-        return crate::app::handle(app, route, request, upstream.state.client, host, upstream).await;
+        return crate::app::handle(app, route, request, upstream.state.client, host, upstream)
+            .await;
     }
     // The `public/` static web root is claimed last and only when the two
     // retired layers actually resolve a response, because `serve-static`'s
     // `fallthrough: true` turned everything else into a plain `next()` that
     // still has to reach Node. The resolution rides the request so the
     // filesystem is read once.
-    if let Some(resolved) = crate::app::static_web_root::claim(
-        &app,
-        request.method(),
-        request.uri(),
-        request.headers(),
-    ) {
+    if let Some(resolved) =
+        crate::app::static_web_root::claim(&app, request.method(), request.uri(), request.headers())
+    {
         let host = upstream.state.port.load(Ordering::SeqCst);
         request.extensions_mut().insert(resolved);
         return crate::app::handle(

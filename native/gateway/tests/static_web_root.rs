@@ -264,7 +264,6 @@ impl Drop for Gateway {
     }
 }
 
-
 /// The tree every test shares. `index.html` and `air.css` exist so the rewrite
 /// has something to stamp; `docs/` has an index and `empty/` does not.
 fn seed_public(root: &PathBuf) {
@@ -618,7 +617,10 @@ fn the_chat_and_task_shell_documents_hop_to_task_entry() {
     for url in ["/chat", "/chat.html", "/task-shell", "/task-shell.html"] {
         let response = gateway.get(url);
         assert_eq!(response.status, 200, "{url}: {}", gateway.log());
-        assert!(response.body.starts_with("<link href=\"air.css?v="), "{url}");
+        assert!(
+            response.body.starts_with("<link href=\"air.css?v="),
+            "{url}"
+        );
         assert_eq!(
             response.header("cache-control"),
             Some("no-store, no-cache, must-revalidate"),
@@ -691,10 +693,7 @@ fn an_unreadable_document_is_an_empty_500() {
         assert_eq!(direct.status, 500, "{}", gateway.log());
         assert_eq!(direct.header("accept-ranges"), Some("bytes"));
         assert_eq!(direct.header("cache-control"), Some("public, max-age=0"));
-        assert_eq!(
-            direct.header("etag"),
-            Some(file_etag(&asset).as_str())
-        );
+        assert_eq!(direct.header("etag"), Some(file_etag(&asset).as_str()));
         let body: Value = serde_json::from_str(&direct.body).unwrap();
         assert_eq!(body["error"], "internal_error");
         assert_eq!(body["code"], "EACCES");
