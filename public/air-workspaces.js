@@ -246,6 +246,12 @@
         budget: String(sweep.budget?.hibernated || 0),
       });
       status.className = 'air-ws-status ok';
+      // Keep the original controls disabled until the overview refresh has
+      // finished, so a second sweep cannot be overwritten by this redraw.
+      const done = status.textContent;
+      await load();
+      const after = el('air-ws-sweep-status');
+      if (after) { after.textContent = done; after.className = 'air-ws-status ok'; }
     } catch (error) {
       status.textContent = t('airWorkspacesSweepFailed', { message: error?.message || String(error) });
       status.className = 'air-ws-status err';
@@ -253,12 +259,6 @@
     } finally {
       for (const button of buttons) button.disabled = false;
     }
-    // 成功之后必须复读：刚休眠掉的会话就在这四块里，不复读等于让人看着过期的数字。
-    // 但 renderSummary 会重建整条按钮行，所以那句结果要在重画之后补回去。
-    const done = status.textContent;
-    await load();
-    const after = el('air-ws-sweep-status');
-    if (after) { after.textContent = done; after.className = 'air-ws-status ok'; }
   }
 
   function render(host, ctx) {

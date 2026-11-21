@@ -47,9 +47,12 @@ test('the Air workspaces panel is native: one overview read, guarded sweep, hone
       { path: '/projects/multicc/.wt/b', branch: null, ahead: 3, dirty: true, removed: false }] },
   };
   // 清扫要能演「跑得慢（按住按钮的那一段）」和「真失败」两条路。
-  let sweepDelay = 0, sweepError = '';
+  let sweepDelay = 0, sweepError = '', overviewDelay = 0;
   const sweepCalls = [];
-  routes['/api/workspaces/overview'] = () => json(overview);
+  routes['/api/workspaces/overview'] = async () => {
+    if (overviewDelay) await new Promise(resolve => setTimeout(resolve, overviewDelay));
+    return json(overview);
+  };
   routes['POST /api/workspaces/sweep'] = async ({ url }) => {
     sweepCalls.push(url.pathname + url.search); // 记全 query：orphans=1 带没带上是一条断言
     if (sweepDelay) await new Promise(resolve => setTimeout(resolve, sweepDelay));
@@ -150,10 +153,13 @@ test('the Air workspaces panel is native: one overview read, guarded sweep, hone
 
     // 「清扫＋孤儿对账」是另一条路：同一支接口，多一个 orphans=1。
     sweepDelay = 0;
+    overviewDelay = 300;
     await page.evaluate(`document.getElementById('air-ws-sweep-orphans').click()`);
     await settle(sweepCalls, 2);
     assert.ok(sweepCalls[1].includes('orphans=1'), '「清扫＋孤儿对账」要把 orphans=1 带上，否则跟上一颗没区别');
+    assert.equal(await page.evaluate(`document.getElementById('air-ws-sweep').disabled`), true, '刷新概览期间仍禁止重入');
     assert.ok(await page.waitFor(`document.getElementById('air-ws-sweep')?.disabled === false`), '对账完成后才开始下一次清扫');
+    overviewDelay = 0;
 
     // ── ⑦ 清扫失败：那句话必须留着并染红，而且不复读 ──────────────────────
     sweepError = 'hibernation runtime not ready';
