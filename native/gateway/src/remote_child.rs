@@ -1006,6 +1006,9 @@ mod tests {
     #[test]
     fn exit_text_keeps_node_spelling() {
         assert_eq!(exit_text(Some(3), None), "exited code=3");
+        #[cfg(unix)]
         assert_eq!(exit_text(None, Some(9)), "exited code=null signal=SIGKILL");
+        #[cfg(not(unix))]
+        assert_eq!(exit_text(None, Some(9)), "exited code=null");
     }
 }

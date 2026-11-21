@@ -58,10 +58,18 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 fn child(tag: &str, env: &[(&str, &str)]) -> Arc<RemoteChild> {
+    child_with_ready_timeout(tag, env, Duration::from_millis(2000))
+}
+
+fn child_with_ready_timeout(
+    tag: &str,
+    env: &[(&str, &str)],
+    ready_timeout: Duration,
+) -> Arc<RemoteChild> {
     let dir = temp_dir(tag);
     let mut config = Config::new(dir.join("remote-screen"));
     config.binary = Some(fixture());
-    config.ready_timeout = Duration::from_millis(2000);
+    config.ready_timeout = ready_timeout;
     config.restart_base = Duration::from_millis(20);
     config.restart_max = Duration::from_millis(200);
     config.stable_reset = Duration::from_millis(200);
@@ -430,18 +438,19 @@ async fn wait_for_line(path: &str, limit: Duration) -> Option<String> {
 
 #[tokio::test]
 async fn pre_upstream_queue_overflows_at_one_mib() {
-    // A one-second ready delay keeps the upstream from opening while the
-    // client floods frames, so the queue ceiling is what decides the close.
+    // The silent fixture cannot become ready while frames are queued; its
+    // longer timeout leaves the queue limit, rather than startup timing, in control.
     let app = app("remote-screen-token");
-    let screen = Arc::new(RemoteScreenWs::new(child(
+    let screen = Arc::new(RemoteScreenWs::new(child_with_ready_timeout(
         "overflow",
-        &[("FIXTURE_WS", "echo"), ("FIXTURE_READY_DELAY_MS", "1200")],
+        &[("FIXTURE_MODE", "silent")],
+        Duration::from_secs(20),
     )));
     let addr = serve(screen, app, LOCAL).await;
     let mut ws = connect(addr, "").await;
 
-    // 24 * 64 KiB = 1.5 MiB, past the 1 MiB ceiling; sends past the close fail.
-    for _ in 0..24 {
+    // Exactly one frame over 1 MiB, avoiding extra writes after the close.
+    for _ in 0..17 {
         if ws
             .send(Message::Binary(vec![b'x'; 64 * 1024].into()))
             .await

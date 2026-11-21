@@ -36,9 +36,10 @@ fn node_binary() -> String {
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
+        .parent()
+        .and_then(Path::parent)
         .expect("repository root")
+        .to_path_buf()
 }
 
 fn free_port() -> u16 {
