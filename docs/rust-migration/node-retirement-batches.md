@@ -141,7 +141,13 @@ Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和�
 
 标准 Codex 对累积快照计算逐回合用量，使用线程私有基线防止重复累加，旧历史按回合投影。Web 和 Flutter 依赖的即时发送 ACK、状态通知、单个结果帧、模型归属、用量、时间线和历史回放均有针对性断言。两种 CLI 的首轮与重连已进行 4 组原始帧采集及逐字段契约对拍。直发时 Node 生成的临时任务及投递状态、重复广播、运行时标识与时间戳的裁定保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-managed-ws/wire-contract`。
 
-原生托管线路支持固定 Provider。多候选自动路由、旧有 rollout 根目录迁移与手动切换时的 rollout 同步仍由带 Node 的兼容路径承担。本批退出这些原生入口上的兼容宿主调用，生产 Node 文件删除数和净减行数均为 0。下一模块继续迁移 Node 的 Codex 会话目录所有权。
+原生托管线路支持固定 Provider。多候选自动路由、旧有 rollout 根目录迁移与手动切换时的 rollout 同步仍由带 Node 的兼容路径承担。本批退出这些原生入口上的兼容宿主调用，生产 Node 文件删除数和净减行数均为 0。
+
+### Codex 配额窗口
+
+`native/core/src/usage_limit_poll.rs` 统一按周期长度识别 Codex 的 5 小时、每周和每月窗口，计算重置时间，并根据利用率最高的窗口决定配额提示。Rust 网关、手动刷新和后台轮询共用这份规则。删除 `src/codex/rate-limit-windows.js`（73 行），本模块生产 Node 代码净减 96 行。
+
+手动刷新和主动轮询沿用现有 Node 账号读取及请求回调，经 N-API 传入已解析的响应和观测时间。后续这些请求和凭据生命周期迁入 Rust 时，移除对应接线。工作树验证包括 45 项兼容回归、5 项网关适配定向回归、严格 Clippy，以及 1,445 组输入的 2,890 次旧版 JSON 字节对拍。证据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-rate-limit-windows`。下一模块处理 Codex 会话目录扫描，先把启动与配置调用接到异步边界。
 
 ## 每批验收与最后停用条件
 
