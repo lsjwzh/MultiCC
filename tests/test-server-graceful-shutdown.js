@@ -42,6 +42,14 @@ function openMetaSocket(port) {
 (async () => {
   const port = await freePort();
   let output = '';
+  let failureLog = null;
+  const capture = chunk => {
+    output += chunk.toString();
+    if (failureLog) {
+      try { fs.appendFileSync(failureLog, chunk); }
+      catch (error) { console.error(`shutdown diagnostic append failed: ${error.message}`); }
+    }
+  };
   const child = spawn(process.execPath, ['server.js'], {
     cwd: ROOT,
     env: {
@@ -53,13 +61,17 @@ function openMetaSocket(port) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', chunk => { output += chunk.toString(); });
-  child.stderr.on('data', chunk => { output += chunk.toString(); });
+  child.stdout.on('data', capture);
+  child.stderr.on('data', capture);
+  child.once('error', error => capture(`\n[child error] ${error.stack || error}\n`));
+  child.once('exit', (code, signal) => capture(`\n[child exit] code=${code} signal=${signal}\n`));
+  const childStatus = () => `[child status] pid=${child.pid} exitCode=${child.exitCode} signalCode=${child.signalCode}`;
 
   let ws = null;
   try {
     await waitServerReady(`http://127.0.0.1:${port}`, { attempts: 150,
-      message: 'isolated shutdown server did not become ready' });
+      message: 'isolated shutdown server did not become ready',
+      child, output: () => `${childStatus()}\n${output}` });
     ws = await openMetaSocket(port);
     const wsClosed = new Promise(resolve => ws.once('close', (code) => resolve(code)));
     const startedAt = Date.now();
@@ -81,6 +93,19 @@ function openMetaSocket(port) {
     assert.ok(closeCode === 1012 || closeCode === 1006 || closeCode === 1001,
       `unexpected WebSocket close code: ${closeCode}`);
     console.log('server graceful shutdown: SIGTERM + open WebSocket passed');
+  } catch (error) {
+    try {
+      const logDir = process.env.MULTICC_TEST_DIAGNOSTICS_DIR || path.join(os.tmpdir(), 'multicc-test-diagnostics');
+      fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+      const file = path.join(logDir, `server-graceful-shutdown-${process.pid}-${Date.now()}.log`);
+      fs.writeFileSync(file, `${childStatus()}\n${error.stack || error}\n\n[child stdout/stderr]\n${output}`,
+        { flag: 'wx', mode: 0o600 });
+      failureLog = file;
+      console.error(`shutdown startup diagnostics: ${file}`);
+    } catch (logError) {
+      console.error(`shutdown diagnostic save failed: ${logError.message}\n${childStatus()}\n${output}`);
+    }
+    throw error;
   } finally {
     try { ws?.terminate(); } catch (_) {}
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');

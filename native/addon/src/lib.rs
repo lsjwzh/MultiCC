@@ -36,6 +36,7 @@ pub mod claude_lane;
 pub mod claude_settings_override;
 pub mod cli_capability;
 pub mod cli_completion;
+pub mod cli_provider_registry;
 pub mod cli_switch;
 pub mod cli_switch_runtime;
 pub mod cli_tools_runtime;
