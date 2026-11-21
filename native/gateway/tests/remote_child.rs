@@ -411,41 +411,111 @@ async fn shutdown_closes_stdin_and_the_child_exits() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_waits_for_exit_cleanup_before_returning() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Condvar;
+    use std::sync::mpsc;
+    use std::task::{Context, Wake, Waker};
+
+    // Observe a premature completion wake without blocking the exit task's
+    // log callback (which can also own the runtime's timer driver).
+    struct CleanupWake {
+        parent: Waker,
+        entered: Arc<AtomicBool>,
+        early: Arc<AtomicBool>,
+    }
+    impl Wake for CleanupWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            if !self.entered.load(Ordering::SeqCst) {
+                self.early.store(true, Ordering::SeqCst);
+            }
+            self.parent.wake_by_ref();
+        }
+    }
 
     let entered = Arc::new(AtomicBool::new(false));
-    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let early = Arc::new(AtomicBool::new(false));
+    let overflow = Arc::new(AtomicBool::new(false));
+    let (logs, buffered) = mpsc::sync_channel(8);
     let h = harness_with("shutdown-cleanup", &[], |config| {
         config.shutdown_grace = Duration::from_secs(5);
         let entered = Arc::clone(&entered);
-        let release = Arc::clone(&release);
+        let overflow = Arc::clone(&overflow);
         config.log = Some(Arc::new(move |line| {
+            if logs
+                .try_send(line.chars().take(1024).collect::<String>())
+                .is_err()
+            {
+                overflow.store(true, Ordering::SeqCst);
+            }
             if line == "remote_screen_stopped" {
                 entered.store(true, Ordering::SeqCst);
-                let (lock, wake) = &*release;
-                let guard = lock.lock().expect("release lock");
-                let _guard = wake
-                    .wait_while(guard, |released| !*released)
-                    .expect("release wait");
             }
         }));
     });
     h.child.ensure().await.expect("ready");
+    let mut exits = h.child.subscribe_exits();
     let child = Arc::clone(&h.child);
-    let shutdown = tokio::spawn(async move { child.shutdown().await });
-    let reached_cleanup =
-        wait_until(Duration::from_secs(3), || entered.load(Ordering::SeqCst)).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let returned_early = shutdown.is_finished();
-    let (lock, wake) = &*release;
-    *lock.lock().expect("release lock") = true;
-    wake.notify_all();
-    shutdown.await.expect("shutdown task");
+    let mut shutdown = Box::pin(async move { child.shutdown().await });
+    std::future::poll_fn(|cx| {
+        let wake = Waker::from(Arc::new(CleanupWake {
+            parent: cx.waker().clone(),
+            entered: Arc::clone(&entered),
+            early: Arc::clone(&early),
+        }));
+        let result = std::future::Future::poll(shutdown.as_mut(), &mut Context::from_waker(&wake));
+        if result.is_ready() && !entered.load(Ordering::SeqCst) {
+            early.store(true, Ordering::SeqCst);
+        }
+        result
+    })
+    .await;
+    let reached_cleanup = entered.load(Ordering::SeqCst);
+    let returned_early = early.load(Ordering::SeqCst);
+
+    // Flush only after child exit, outside the non-blocking callback. Keep the
+    // evidence outside the child's temporary directory just like Node fixtures.
+    let dir = std::env::var_os("MULTICC_TEST_DIAGNOSTICS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| temp_dir("shutdown-cleanup-logs"))
+        .join("remote-child");
+    std::fs::create_dir_all(&dir).expect("diagnostic directory");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("diagnostic clock")
+        .as_nanos();
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(dir.join(format!("shutdown-{}-{stamp}.log", std::process::id())))
+        .expect("diagnostic file");
+    use std::io::Write;
+    for line in buffered.try_iter() {
+        writeln!(file, "{line}").expect("buffered diagnostic write");
+    }
+    writeln!(file, "cleanup={reached_cleanup} early={returned_early}")
+        .expect("shutdown diagnostic write");
+    file.flush().expect("shutdown diagnostic flush");
     assert!(reached_cleanup, "exit cleanup was not reached");
     assert!(
         !returned_early,
         "shutdown returned before exit cleanup completed"
     );
+    assert!(
+        !overflow.load(Ordering::SeqCst),
+        "diagnostic buffer overflow"
+    );
+    let notice = exits
+        .try_recv()
+        .expect("exit notice precedes shutdown return");
+    assert!(notice.stopping);
+    assert_eq!(notice.code, Some(0));
+    assert!(h.child.snapshot().pid.is_none());
 }
 
 #[cfg(unix)]
