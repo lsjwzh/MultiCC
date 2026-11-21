@@ -30,7 +30,6 @@ const crypto = require('crypto');
 const { publicTransportError } = require('./upstream-error');
 const providers = require('./providers/core');
 const { checkEgressIpAllowed } = require('./providers/egress-ip-policy');
-const { codexRateLimitWindows, headlineWindow } = require('./codex/rate-limit-windows');
 
 const POLL_TIMEOUT_MS = 6000;
 // 借道余量透传：出借方收到查询后自己触发对厂商的真实余量查询（可能比本机
@@ -40,12 +39,12 @@ function keyHash(apiKey) {
   return crypto.createHash('sha256').update(String(apiKey || '')).digest('hex').slice(0, 16);
 }
 
-function normalizeResponse(op, body) {
+function normalizeResponse(op, body, now) {
   const native = getNative();
   if (native.limitCacheRecorderRequestValue('cachePolicyVersion', {}) !== 1) {
     throw new Error('[usage-limit] Rust quota policy version mismatch; rebuild the native module');
   }
-  return native.limitCacheRecorderRequestValue(op, { body });
+  return native.limitCacheRecorderRequestValue(op, now === undefined ? { body } : { body, now });
 }
 
 // ── Adapters: fetch + normalize. Each returns a DTO on success, null when the
@@ -133,41 +132,18 @@ async function pollDeepseekBalance(target, nowMs, timeoutMs = POLL_TIMEOUT_MS) {
 // bearer + ChatGPT-Account-Id. This is a read (no messages consumed). Every
 // window the plan has is surfaced — Plus meters a 5h window AND a weekly one,
 // and the 5h one is usually what stops a session first; prolite has only the
-// week. Windows are classified by length (src/codex/rate-limit-windows.js).
-function codexUsageDto(body, nowMs) {
-  const rl = body && typeof body === 'object' ? body.rate_limit : null;
-  if (!rl || typeof rl !== 'object') return null;
-  const windows = codexRateLimitWindows(rl, nowMs);
-  const headline = headlineWindow(windows);
-  if (!headline) return null; // no window exposed → show nothing
-  // The account is blocked by whichever cycle runs out first, so the status
-  // reads the tightest window, not just the headline one.
-  const worst = Math.max(...windows.map((w) => w.usedPercent));
-  const rejected = rl.limit_reached === true || worst >= 100;
-  return {
-    kind: 'window',
-    provider: 'codex',
-    // The headline window keeps the single-window DTO fields meaningful for
-    // readers that predate `windows` (a 借道 borrower on an older build).
-    rateLimitType: headline.window === '5h' ? 'five_hour' : 'weekly',
-    status: rejected ? 'rejected' : (worst >= 80 ? 'allowed_warning' : 'allowed'),
-    utilization: Math.max(0, Math.min(1, headline.usedPercent / 100)),
-    // reset_at is epoch SECONDS (front-end multiplies ×1000, like Claude's resetsAt).
-    resetsAt: headline.resetsAt,
-    tier: typeof body.plan_type === 'string' ? body.plan_type : null,
-    // Every cycle (usedPercent 0..100): the bar shows them all, and the quota
-    // cache keeps them so Auto steers off an account before any one runs dry.
-    windows: windows.map((w) => ({ window: w.window, label: w.label, usedPercent: w.usedPercent, resetMs: w.resetMs })),
-  };
-}
-
+// week. Rust classifies windows by duration for both quota readers.
 async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAuth = null) {
   const reader = readAuth
     || (target && target.authFile ? () => readCodexAuth(target.authFile) : readCodexAuth);
+  const poll = async auth => {
+    const body = await readJson(signal => requestCodexUsage(auth, { signal }), timeoutMs);
+    return normalizeResponse('pollCodex', body, nowMs === undefined ? Date.now() : nowMs);
+  };
   let auth = reader();
   if (!auth) return null;
   try {
-    return codexUsageDto(await readJson(signal => requestCodexUsage(auth, { signal }), timeoutMs), nowMs);
+    return await poll(auth);
   } catch (error) {
     // An expired token is repairable: offer the injected refresher one shot,
     // then retry the read once with whatever auth.json now holds. Any other
@@ -176,7 +152,7 @@ async function pollCodexUsage(target, nowMs, timeoutMs = POLL_TIMEOUT_MS, readAu
     if (!(await runCodexAuthRefresh({ authFile: (target && target.authFile) || null }))) throw error;
     auth = reader();
     if (!auth) return null;
-    return codexUsageDto(await readJson(signal => requestCodexUsage(auth, { signal }), timeoutMs), nowMs);
+    return poll(auth);
   }
 }
 

@@ -37,14 +37,6 @@ fn finite(value: Option<&Value>) -> Option<f64> {
     number.is_finite().then_some(number)
 }
 
-fn strict_finite(value: Option<&Value>) -> Option<f64> {
-    let value = value?;
-    if value.is_null() || value.as_str() == Some("") {
-        return None;
-    }
-    finite(Some(value))
-}
-
 fn status(percent: f64) -> &'static str {
     if percent >= 100.0 {
         "rejected"
@@ -353,47 +345,9 @@ fn relay_dto(body: &Value) -> Result<Option<Value>, String> {
 }
 
 fn codex_dto(body: &Value, now_ms: i64) -> Option<Value> {
-    let limit = &body["rate_limit"];
-    let mut windows = Vec::new();
-    for key in ["primary_window", "secondary_window"] {
-        let window = &limit[key];
-        let (Some(used), Some(seconds)) = (
-            strict_finite(window.get("used_percent")),
-            strict_finite(window.get("limit_window_seconds")),
-        ) else {
-            continue;
-        };
-        if seconds <= 0.0 {
-            continue;
-        }
-        let resets = strict_finite(window.get("reset_at")).or_else(|| {
-            strict_finite(window.get("reset_after_seconds"))
-                .map(|after| (now_ms / 1000) as f64 + after)
-        });
-        let label = if seconds >= 28.0 * 86400.0 {
-            "1m"
-        } else if seconds >= 86400.0 {
-            "1wk"
-        } else {
-            "5h"
-        };
-        windows.push((seconds, json!({"window":label,"label":label,"usedPercent":used,"resetMs":resets.map(|n|n*1000.0)}), resets));
-    }
-    windows.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let headline = windows
-        .iter()
-        .find(|(_, window, _)| window["window"] == "1wk")
-        .or_else(|| windows.last())?;
-    let worst = windows
-        .iter()
-        .map(|(_, w, _)| w["usedPercent"].as_f64().unwrap_or(0.0))
-        .fold(f64::NEG_INFINITY, f64::max);
-    Some(json!({"kind":"window","provider":"codex",
-        "rateLimitType":if headline.1["window"] == "5h" {"five_hour"} else {"weekly"},
-        "status":if limit["limit_reached"] == true {"rejected"} else {status(worst)},
-        "utilization":(headline.1["usedPercent"].as_f64().unwrap_or(0.0)/100.0).clamp(0.0,1.0),
-        "resetsAt":headline.2,"tier":body["plan_type"].as_str(),
-        "windows":windows.iter().map(|(_,w,_)|w).collect::<Vec<_>>()}))
+    let dto =
+        multicc_core::usage_limit_poll::codex(&multicc_core::js::from_serde(body), now_ms as f64);
+    (!dto.is_nullish()).then(|| multicc_core::js::to_serde(&dto))
 }
 
 fn claude_dto(body: &Value) -> Option<Value> {
