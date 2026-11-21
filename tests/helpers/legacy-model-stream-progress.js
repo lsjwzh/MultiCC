@@ -1,6 +1,6 @@
 'use strict';
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../src/native/runtime');
 
 // The response still belongs to Node. Rust owns the incremental decoder,
 // framing and decision about which SSE events count as model progress.
