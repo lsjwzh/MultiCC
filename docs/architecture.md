@@ -58,7 +58,6 @@ multicc/
 │   ├── bridges/                  # IM gateways
 │   │   ├── gateway-core.js       # Shared gateway session + reply flow
 │   │   ├── wechat-ilink.js       # WeChat bridge (iLink API — current default)
-│   │   ├── wechat-bridge.js      # WeChat bridge (legacy MCP variant)
 │   │   ├── feishu-bridge.js      # Feishu/Lark long-connection bridge
 │   │   ├── telegram-bridge.js    # Telegram bot bridge
 │   │   ├── discord-bridge.js     # Discord bot bridge
