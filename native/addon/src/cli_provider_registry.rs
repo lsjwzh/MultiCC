@@ -2,7 +2,7 @@
 //! Per-registry state is traced by the host closure, including adapter cycles.
 use crate::js_live::LiveValue as L;
 use multicc_core::js::JsValue as V;
-use napi::bindgen_prelude::{ToNapiValue, Unknown};
+use napi::bindgen_prelude::Unknown;
 use napi::{sys, Env, Result};
 use napi_derive::napi;
 
