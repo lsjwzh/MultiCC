@@ -8,7 +8,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 const { ensureCliStates } = require('../src/cli-switch');
-const { captureNativeSessionId } = require('../src/chat/native-session-state');
+const { captureNativeSessionId } = require('./helpers/legacy-native-session-state');
 
 const BRIDGE = path.join(__dirname, '..', 'src', 'cli-adapters', 'zcode-bridge.cjs');
 const TERMINAL_BRIDGE = path.join(__dirname, '..', 'src', 'cli-adapters', 'zcode-terminal.cjs');

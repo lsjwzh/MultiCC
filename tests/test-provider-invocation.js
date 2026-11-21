@@ -7,7 +7,7 @@ const {
   createProviderAttemptRuntime,
   createProviderRevision,
 } = require('../src/chat/provider-attempt-runtime');
-const { captureNativeSessionId } = require('../src/chat/native-session-state');
+const { captureNativeSessionId } = require('./helpers/legacy-native-session-state');
 const {
   createProviderInvocationFactory,
   providerRetryRouteOptions,
