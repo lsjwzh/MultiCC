@@ -14,5 +14,4 @@ module.exports = {
   ...require('./host-runtime'),
   ...require('./finalize-plan'),
   ...require('./finalize-host'),
-  ...require('./ports'),
 };
