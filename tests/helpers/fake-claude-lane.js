@@ -17,6 +17,15 @@ const sessionArg = args.find(value => value.startsWith('--session-id='))
 const sessionId = sessionArg ? sessionArg.slice(sessionArg.indexOf('=') + 1) : 'fake-session';
 const emit = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 if (logFile) fs.appendFileSync(logFile, `${JSON.stringify({ __fake: 'spawn', pid: process.pid, argv: args, env: process.env })}\n`);
+// Which child of this fixture we are: `session-id-collision` locks only the
+// first spawn so the rotated replay has to succeed.
+let spawnIndex = 1;
+if (logFile) {
+  try {
+    spawnIndex = fs.readFileSync(logFile, 'utf8').split('\n')
+      .filter(line => line.includes('"__fake":"spawn"')).length;
+  } catch (_) { spawnIndex = 1; }
+}
 if (args.includes('--version')) { process.stdout.write('fake-claude 9.9.9\n'); process.exit(0); }
 const success = request => ({ type: 'control_response',
   response: { subtype: 'success', request_id: request.request_id, response: {} } });
@@ -202,6 +211,15 @@ input.on('line', line => {
   if (request.subtype === 'initialize') {
     if (scenario === 'unresponsive-initialize') {
       process.on('SIGTERM', () => {});
+      return;
+    }
+    if (scenario === 'session-id-collision' && spawnIndex === 1) {
+      // The real CLI completes the handshake, then dies on the id another live
+      // process still holds, reporting it on stdout AND stderr.
+      process.stderr.write(`Error: Session ID ${sessionId} is already in use.\n`);
+      emit({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 0,
+        session_id: sessionId, errors: [`Error: Session ID ${sessionId} is already in use.`] });
+      setTimeout(() => process.exit(1), 10);
       return;
     }
     emit({ type: 'control_response', response: { subtype: 'success',

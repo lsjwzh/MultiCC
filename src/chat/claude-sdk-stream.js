@@ -39,7 +39,21 @@ const safe = (fn, ...args) => { try { return fn?.(...args); } catch (_) {} };
 // bookkeeping the host receives again from any replacement child — exactly as
 // a normal process recycle re-delivers it — so it must not block a replay.
 const carriesTurnOutput = event => /^(assistant|stream_event|user|result)$/.test(event?.type || '');
+// How many stream-end healings (missing-resume rotation or session-id collision
+// rotation) one user message may buy before the failure is surfaced.
+const STREAM_END_RECOVERY_MAX = 2;
 const safeTail = run => { try { return run.lane?.stderrTail?.() || run.stderr || ''; } catch (_) { return run.stderr || ''; } };
+// Where the CLI puts a refusal notice: `errors[]`, `error` or `result`.
+function resultNotice(event) {
+  const parts = [];
+  if (typeof event.result === 'string') parts.push(event.result);
+  if (typeof event.error === 'string') parts.push(event.error);
+  else if (event.error && typeof event.error.message === 'string') parts.push(event.error.message);
+  if (Array.isArray(event.errors)) {
+    for (const value of event.errors) if (typeof value === 'string') parts.push(value);
+  }
+  return parts.join('\n');
+}
 
 // One RustClaudeLane (one `claude` child) per native conversation. Host send()
 // promises end at main result boundaries; the process stays alive between them.
@@ -240,6 +254,18 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
             forwardedEventCount: item.eventCount || 0,
             attempt: item.resumeRecoveryAttempt || 0 });
           if (decision.action === 'rotate') { await rotateMissingResume(s, run, item, decision); return; }
+          // A spawn collision ("Session ID … is already in use") is the CLI's
+          // first and only word: nothing of this turn reached the host yet, so
+          // rotating the native id and replaying cannot duplicate output. The
+          // legacy lane heals the same stderr on exit; the SDK lane must heal
+          // it here, before the refusal is forwarded and counted as output.
+          if (event.is_error === true && (item.eventCount || 0) === 0
+              && (item.resumeRecoveryAttempt || 0) < STREAM_END_RECOVERY_MAX
+              && /already in use/i.test(resultNotice(event))) {
+            console.warn('[multicc/claude-sdk-stream] native session id in use; rotating and replaying');
+            await rotateMissingResume(s, run, item, { action: 'rotate', nextSessionId: randomUUID() });
+            return;
+          }
         }
         if (!live) continue;
         if (!item.firstByte) { item.firstByte = true; safe(item.onTiming, 'firstByte'); }
@@ -270,6 +296,32 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
     if (!run.stderr) run.stderr = safeTail(run);
     if (run.stderr?.trim()) {
       failure = Object.assign(new Error(`${failure.message}\n${run.stderr.trim()}`), { code: failure.code });
+    }
+    // A spawn the CLI refused ("Session ID … is already in use") or a missing
+    // resume notice whose result event lost the race with the exit event ends
+    // the stream with nothing forwarded: heal it exactly where the legacy lane
+    // heals it on exit — rotate the native id and replay the same message.
+    const stranded = s.current;
+    if (stranded && !stranded.cancelled && (stranded.eventCount || 0) === 0
+        && (stranded.resumeRecoveryAttempt || 0) < STREAM_END_RECOVERY_MAX) {
+      const tail = (run.stderr || '').trim();
+      if (tail) {
+        const attempt = stranded.resumeRecoveryAttempt || 0;
+        let decision = null;
+        try {
+          decision = decideMissingResume({ event: { type: 'result', is_error: true, errors: [tail] },
+            lastSpawnWasResume: s.cfg.resume === true, forwardedEventCount: 0, attempt });
+        } catch (_) { decision = null; }
+        if (decision?.action === 'rotate') {
+          await rotateMissingResume(s, run, stranded, decision);
+          return;
+        }
+        if (/already in use/i.test(tail)) {
+          console.warn('[multicc/claude-sdk-stream] native session id in use; rotating and replaying');
+          await rotateMissingResume(s, run, stranded, { action: 'rotate', nextSessionId: randomUUID() });
+          return;
+        }
+      }
     }
     await stop(s);
     if (s.current) settle(s, s.current, failure);
