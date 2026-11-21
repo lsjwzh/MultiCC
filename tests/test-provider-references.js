@@ -7,7 +7,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { findProviderReferences } = require('../src/providers/references');
+const { findProviderReferences } = require('../src/native/runtime');
 const legacy = require('./helpers/legacy-provider-references');
 
 

@@ -35,6 +35,10 @@ const pathSafety = {
   isHomeOrAbove: value => getNative().pathSafetyHomeOrAbove(value, require('node:fs'), path, require('node:os')),
 };
 
+function findProviderReferences(input = {}) {
+  return getNative().providerFindReferences(input);
+}
+
 function gatewayPath() {
   return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
@@ -316,7 +320,7 @@ const codexBackground = {
       setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
   },
 };
-module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { addonPath, gatewayPath, getNative, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

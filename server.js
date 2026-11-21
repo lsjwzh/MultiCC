@@ -72,8 +72,8 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative, messageComposer, bootstrapState } = require('./src/native/runtime');
-const { findProviderReferences } = require('./src/providers/references'); const { createCliAdapters } = require('./src/cli-adapters');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative, findProviderReferences, messageComposer, bootstrapState } = require('./src/native/runtime');
+const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');

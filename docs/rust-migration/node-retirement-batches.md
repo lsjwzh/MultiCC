@@ -394,6 +394,29 @@ set 且无 get/has，移除后仍按原参数身份、接收者和顺序准入�
 冲突或不安全依赖均封存停止，不自动修复、重跑或合入。证据保存于主仓
 `data/rust-migration/2026-11-22/service-registry-retirement-gates/`。
 
+### 默认启动中的供应商引用转发门面（候选，待完整验收）
+
+以已交付 `5b177d73`（581 文件、136,606 行）为基线，退休
+`src/providers/references.js`（22 行）。它只有 server.js 一个生产导入，全部
+引用判定早已由 Rust provider_registry 持有；原 findProviderReferences 函数
+逐字移到既有 src/native/runtime.js 并复用该文件的 getNative，不复制业务规则。
+server 和两处既有测试仅更新导入；冻结的旧规则 oracle 不改。
+
+这是必要的 Node 原生绑定桥接例外：现有进程中的会话、默认值与 Aux 对象继续
+按原身份交给 addon，保留默认空对象、每次调用的惰性 getNative、原接收者、
+同步结果/异常身份和函数声明形状。原函数完整保留为4行（含分隔空行），没有
+新增 Node 业务逻辑；Rust 源码、默认启动脚本和依赖均不改。宿主对象不再需要
+通过 Node/N-API 传输时可删除这一桥接。保留19个直接运行依赖，不宣称依赖退休。
+
+旧门面完整冻结在持久验收目录 baseline/src/providers/references.js，SHA-256
+`03a57a7161c8a2ce4be3c3999cf3b47679062ea790f4304625babb20c73035c4`。
+引用/重分配/供应商路由基线51/51、零跳过。本批只新增外部定向检查，不新增
+core文件或修改测试数量守卫。保留原43项门禁，追加本批定向共44项，仅运行一次。
+按授权先独立提交、无冲突rebase并冻结已提交树，验证后不再次创建topic提交。
+仅允许既有两项npm精确基线FAIL，其余新失败/冲突/证据异常立即封存停止，
+不修复、不重跑、不合入。证据保存于主仓
+`data/rust-migration/2026-11-22/provider-references-retirement-gates/`。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。
