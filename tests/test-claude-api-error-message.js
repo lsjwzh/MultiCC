@@ -10,7 +10,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
-const { createClaudeAdapter } = require('../src/cli-adapters/claude');
+const { createClaudeAdapter } = require('../src/native/runtime');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createBackgroundHold } = require('../src/chat/background-hold');
 const { isMainResult } = require('../src/cli-adapters/result-completion');

@@ -69,6 +69,25 @@ WebSocket 从壳内会话按游标向同壳的已登记执行投递。预约收�
 
 第二批整体仍有任务关系、归属操作、分离、独立继续和定时消费者的接线待退出。`src/task-shell/runtime.js`、`src/task-shell/host.js`、`src/session-work/scheduler.js` 继续承接现有 CLI 回合、进程内会话记录、广播及这些任务操作的兼容接线。保留范围由当前 Node CLI 宿主和尚待迁移的操作决定，后续批次迁走这些调用方后再整文件删除，并移除兼容端口 `/api/__host/task-shell`。本轮零 Node 隔离验收覆盖现有原生 Claude 路径与新增任务壳 HTTP 路径，其他 CLI 的执行适配继续列入第三批。
 
+## 第三批进度
+
+2026-11-21 从 `b20db311` 重新盘点。服务端源码、启动器与插件后端候选共 612 个 JS/CJS/MJS 文件、139,099 个物理行，静态可从 `server.js` 到达 595 个。完整文件、行数、条件入口说明和静态调用方见 [迁移前文件清单](node-runtime-files-batch3.md)。Node 依赖包、前端、Electron 客户端及测试夹具不混入该计数。
+
+先完成以下三个独立模块；每个模块均独立通过工作区构建、严格 Clippy、整个 gateway 包测试、任务壳套件、HTTP 逐字节对拍及无 Node 隔离验收后提交。
+
+| 模块 | Rust 所有者及消费点 | 退出的生产文件 | 原行数 |
+| --- | --- | --- | ---: |
+| 物理尝试准备 | `native/addon/src/provider_invocation.rs` 推进路由解析、模型、复用指纹、证明及失败清理；复用 core 的身份与预算规则，所有调用方通过共享原生入口访问 | `src/chat/provider-invocation.js` | 226 |
+| 选择身份 | 直接调用已有 Rust 选择键所有者，删除中间专用桥，迁完四个生产消费点 | `src/chat/auto-provider-selection-key.js` | 10 |
+| 续跑交接 | `native/core/src/auto_provider_handoff.rs` 与 addon 同名适配器持有去重、容量与清理状态，裁决异步入队和日志异常 | `src/chat/auto-provider-handoff.js` | 91 |
+| Claude 执行适配 | `native/addon/src/claude_adapter.rs` 负责终端参数、SDK 参数与事件解码；`native/core/src/claude_adapter.rs` 在工作线程清理历史，兼容 SDK 和原生网关均等待清理后启动子进程 | `src/cli-adapters/claude.js` | 138 |
+
+四个专用生产文件合计 465 行，连同调用方改动，`src/**/*.js` 后端净减 409 行。冻结旧实现只留在测试夹具。各模块的运行日志、字节对拍、原始失败证明、产物和提交收据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/module1`、`module2`、`module3`。
+
+物理尝试定向回归 165/165，交接定向 83/83，Claude 定向 108/108、流回归 50/50；每个模块的全 gateway 包均为 1,036 项通过，任务壳 304/304、HTTP 67/67 且副作用顺序一致。四份原生 Claude 隔离进程树内 Node 数均为 0。新增故障对拍覆盖模型列表 getter、证明失败清理、异步入队 getter、日志异常、并发去重、容量淘汰和 UTF-16；原生聊天还用子进程启动检查确认历史已完成清理，并继续验证多轮、重连与取消。
+
+必要的 Node 范围为 `src/native/runtime.js` 中闭包、Promise 等待和现有 CLI/SDK 回调传输；回调接通当前会话宿主，Rust 负责上述模块的决定和状态。尚未迁出的 Provider 路由端口、账号与凭据装配、Codex/其它 CLI 进程协议及 Node 会话宿主继续列入第三、四批，不能据此宣称第三批整体完成。下一步接 Codex 执行链路，SDK 或平台专用端口随各消费点迁移逐项退出。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

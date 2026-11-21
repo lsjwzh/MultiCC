@@ -33,7 +33,7 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 const providers = require('../src/providers/core.js');
 const { createProviderBinding } = require('../src/providers/binding');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-const { createProviderInvocationFactory } = require('../src/chat/provider-invocation');
+const { createProviderInvocationFactory } = require('../src/native/runtime').providerInvocation;
 const { normalizeTurnRequest, createTurnLifecycle } = require('../src/chat');
 const { createKimiAdapter } = require('../src/cli-adapters/kimi');
 

@@ -25,7 +25,7 @@ test('the retired claude-exp id shows as "Claude" with the engine line "Claude A
   assert.equal(providerCatalog.cliEngine('claude'), 'Claude Agent SDK');
   assert.equal(providerCatalog.cliShortMark('claude-exp'), 'C');
   // 页面不再各持一份标签表：这些文件里不该再出现 claude-exp 的字面标签。
-  const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'src/cli-adapters/claude.js', 'src/cli/switch-runtime.js'];
+  const anyUi = ['public/chat.js', 'public/air-task-settings.js', 'native/addon/src/claude_adapter.rs', 'src/cli/switch-runtime.js'];
   for (const file of anyUi) {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
     assert.ok(!source.includes('Claude Exp'), `${file} still says "Claude Exp"`);

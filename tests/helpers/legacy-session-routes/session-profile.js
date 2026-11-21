@@ -9,7 +9,7 @@ const crypto = require('crypto');
 const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../../../src/session/pending-configuration');
 const { normalizeSubagentInput, withSubagentSource } = require('../../../src/session/subagent');
 const { forkConfiguration } = require('../../../src/session/fork-configuration');
-const { selectionKey } = require('../../../src/chat/auto-provider-selection-key');
+const { selectionKey } = require('../../../src/providers/auto-provider-config');
 const fs = require('fs');
 const path = require('path');
 

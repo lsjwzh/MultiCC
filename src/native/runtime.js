@@ -84,5 +84,57 @@ const taskShellContext = {
   snapshotHistory: (taskId, history, { activeTurnId = null, maxBytes = 12000 } = {}) =>
     reference('snapshot', { taskId, history, activeTurnId, maxBytes }),
 };
+// Compatibility closures keep the existing CLI/SDK callbacks alive. Rust owns
+// preparation and all routing decisions; no Provider policy is reimplemented here.
+const providerInvocation = {
+  createProviderInvocationFactory(options = {}) {
+    const native = getNative();
+    const ports = Object.assign(native.providerInvocationValidate(options), {
+      revision: require('../chat/provider-attempt-runtime').createProviderRevision,
+      policy: require('../chat/model-request-policy').resolveModelRequestPolicy,
+      proof: require('../chat/turn-request').createProviderRouteProof,
+      nativeOpenCodeId: require('../providers/native-opencode').nativeOpenCodeId,
+      nativeVendorOf: require('../providers/native-vendor').nativeVendorOf,
+    });
+    return Object.freeze({ prepare: (input = {}) => native.providerInvocationPrepare(input, ports) });
+  },
+  protocolFor: (cli, summary) => getNative().providerInvocationProtocol(cli, summary),
+  providerRetryRouteOptions: attempt => getNative().providerRetryRouteOptions(attempt),
+};
+function createAutoProviderHandoff(options = {}) {
+  const native = getNative(), ports = native.autoProviderHandoffPorts(options), inject = ports.inject;
+  const owner = new native.RustAutoProviderHandoff();
+  return Object.freeze({
+    async schedule(input = {}) {
+      const plan = owner.prepare(input, ports);
+      if (plan.done) return plan.result;
+      let admitted, fault, caught = false;
+      try { admitted = await inject(...plan.args); }
+      catch (error) { fault = error; caught = true; }
+      return owner.finish(plan, admitted, fault, caught, ports);
+    },
+    clearSession: sessionId => owner.clearSession(sessionId),
+  });
+}
+function createClaudeAdapter(deps = {}) {
+  const native = getNative();
+  const ports = Object.assign(native.claudeAdapterPorts(deps,
+    path.join(__dirname, '../cli-adapters/claude-agent-sdk-bridge.mjs'), process.execPath), {
+    renderPrompt: require('../message-composer').renderPrompt,
+    isMainResult: require('../cli-adapters/result-completion').isMainResult,
+    displayNameOf: require('../cli/cli-capability').displayNameOf,
+  });
+  return {
+    name: 'claude',
+    createCompletionTracker: require('../cli-adapters/result-completion').createResultCompletionTracker,
+    cmd: ports.cmd,
+    buildTerminalCmd: session => native.claudeAdapterTerminal(session, ports),
+    buildInvocation: envelope => native.claudeAdapterInvocation(envelope, ports),
+    decodeEvent: event => native.claudeAdapterDecode(event, ports),
+    prepareSpawn: ({ sessionId }) => native.claudeAdapterPrepareSpawn(sessionId, require('node:os').homedir),
+    needsAsyncSessionIdCapture: false,
+  };
+}
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
-  staticVersionedHtml, decodeRecoveryEvents, taskShellContext };
+  staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  createClaudeAdapter };

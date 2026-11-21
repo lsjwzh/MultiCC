@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { createClaudeAdapter } = require('../src/cli-adapters/claude');
+const { createClaudeAdapter } = require('../src/native/runtime');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');

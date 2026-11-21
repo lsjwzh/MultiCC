@@ -1500,6 +1500,29 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     assert_eq!(init["subtype"], "init");
     assert_eq!(init["session_id"], "native");
     assert_eq!(init["is_streaming"], false);
+    let records = multicc_core::js::to_serde(
+        &multicc_core::durable_state::load_or_recover(&gateway.state.join("sessions.json"))
+            .unwrap()
+            .unwrap(),
+    );
+    let native_id = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "native")
+        .unwrap()["cliSessionId"]
+        .as_str()
+        .unwrap();
+    let history = gateway
+        .state
+        .join(".claude/projects/fixture")
+        .join(format!("{native_id}.jsonl"));
+    fs::create_dir_all(history.parent().unwrap()).unwrap();
+    fs::write(&history, "{\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\" \"},{\"type\":\"text\",\"text\":\"kept\"}]}}\n").unwrap();
+    let binary = gateway.dir.join("claude-fixture");
+    let script = fs::read_to_string(&binary).unwrap();
+    let guard = format!("if /usr/bin/grep -q '\"thinking\"' \"$HOME/.claude/projects/fixture/{native_id}.jsonl\"; then exit 91; fi\nread_configuration=no");
+    fs::write(binary, script.replacen("read_configuration=no", &guard, 1)).unwrap();
     text(
         &mut socket,
         r#"{"type":"background_tasks","tasks":[],"apiVersion":"v1"}"#,
@@ -1516,6 +1539,10 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     )
     .await;
     native_turn(&mut socket, "first", "首次回复").await;
+    assert_eq!(
+        fs::read_to_string(&history).unwrap(),
+        "{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"kept\"}]}}\n"
+    );
     native_turn(&mut socket, "second", "沿用上下文").await;
     drop(socket);
     let mut socket = gateway.connect_with(path, &[]).await;
