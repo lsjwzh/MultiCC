@@ -15,7 +15,7 @@ const { isAbnormalLetter, isGoalState } = require('../../src/classify/vocab');
 const { createAirPinRuntime } = require('../../src/workspace/pins');
 const { createAirTodoRuntime } = require('../../src/workspace/todos');
 const { createAirTodoIgnoreRuntime } = require('../../src/workspace/todo-ignores');
-const { pendingAttention } = require('../../src/task-board/attention');
+const { pendingAttention } = require('./legacy-task-attention');
 const { createAirCardCache } = require('../../src/workspace/air-card-cache');
 
 // 旧 App 的完整快照与按需详情继续支持 ETag/304。生产快照正文按摘要版本复用；

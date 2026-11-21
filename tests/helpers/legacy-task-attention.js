@@ -1,5 +1,5 @@
 'use strict';
-const { taskDomain, replace } = require('../native/task-domain');
+const { taskDomain, replace } = require('../../src/native/task-domain');
 const call = (action, args = {}) => taskDomain({ op: 'attention', action, ...args });
 function mutate(action, task, args) {
   const out = call(action, { task, ...args });
