@@ -12,7 +12,8 @@
 
 'use strict';
 
-const { createSessionQueryService, createWorkspaceService } = require('../../src/session');
+const { createSessionQueryService } = require('../../src/session/query-service');
+const { createWorkspaceService } = require('../../src/session/workspace-service');
 const { isTerminalLetter, isSettledLetter, classifyDisplay, GOAL_STATES } = require('../../src/classify/vocab');
 const { taskShortCode } = require('../../src/classify/task-short-code');
 const { auxVerdictStaleness } = require('../../src/classify/aux-verdict-health');

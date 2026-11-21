@@ -209,7 +209,7 @@ const { createProviderLogWatchdog } = require('./src/chat/provider-log-watchdog'
 const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
 const { createPushRuntime } = require('./src/push/runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
-const { createChatHistoryFileRepository } = require('./src/session');
+const{createChatHistoryFileRepository } = require('./src/session/adapters/chat-history-file-repository');
 const { TurnProgressHeartbeat, createTurnProgress } = require('./src/chat/turn-progress');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
@@ -2696,7 +2696,7 @@ bus.on('chat:run', (sessionName, text, opts) => {
   });
 });
 
-// Delivery into a held Claude turn.
+
 // Rust decides eligibility; chat streams own writes.
 // See src/chat/held-turn-injection.js.
 const heldTurnInjection = require('./src/chat/held-turn-injection').createHeldTurnInjection({

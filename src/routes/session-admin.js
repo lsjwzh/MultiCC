@@ -1,6 +1,7 @@
 'use strict';
 
-const { createSessionQueryService, createWorkspaceService } = require('../session');
+const { createSessionQueryService } = require('../session/query-service');
+const { createWorkspaceService } = require('../session/workspace-service');
 const { classifyDisplay } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
