@@ -15,11 +15,16 @@ pub(super) struct Route {
 
 impl Route {
     pub fn model_attribution(&self) -> V {
+        let model = if self.protocol == "openai_responses" && self.model.is_nullish() {
+            V::Undefined
+        } else {
+            self.model.clone()
+        };
         V::object(vec![
             ("cli", property(&self.scope, "cli")),
             ("providerId", property(&self.scope, "providerId")),
             ("providerName", self.provider_name.clone()),
-            ("model", self.model.clone()),
+            ("model", model),
         ])
     }
 
@@ -32,8 +37,12 @@ impl Route {
         provider: Option<&Provider>,
     ) -> Self {
         let cli = super::store::cli(record);
-        let (protocol, native_id, native_name) = if super::store::is_codex_app(record) {
-            ("openai_responses", "_default_", "Codex")
+        let (protocol, native_id, native_name) = if super::store::is_codex(record) {
+            (
+                "openai_responses",
+                super::codex::DEFAULT_PROVIDER_ID,
+                super::codex::DEFAULT_PROVIDER_NAME,
+            )
         } else {
             ("anthropic", "claude-official", "Claude")
         };
@@ -87,6 +96,11 @@ impl Route {
 
     pub fn event(&self, session: &str, phase: &str, fence: &str) -> V {
         let field = |name| property(&self.scope, name);
+        let model = if self.protocol == "openai_responses" && self.model.is_nullish() {
+            V::from("_default_")
+        } else {
+            self.model.clone()
+        };
         V::object(vec![
             ("type", V::from("provider_route_event")),
             ("version", V::Number(1.0)),
@@ -103,7 +117,7 @@ impl Route {
             ("providerId", field("providerId")),
             ("providerName", self.provider_name.clone()),
             ("protocol", V::from(self.protocol)),
-            ("model", self.model.clone()),
+            ("model", model),
             ("providerRevision", field("providerRevision")),
             ("replayFence", V::from(fence)),
             ("safeToReplay", V::Bool(fence == "none")),

@@ -166,6 +166,50 @@ fn parse_config(raw: &str) -> Result<DocumentMut, String> {
         .map_err(|_| "CODEX_PROVIDER_CONFIG_INVALID".into())
 }
 
+pub fn configured_model(raw: &str) -> Option<String> {
+    parse_config(raw)
+        .ok()?
+        .get("model")?
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+pub fn reasoning_level(effort: &str, model: Option<&str>) -> Option<String> {
+    let level = effort.trim().to_ascii_lowercase();
+    match level.as_str() {
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => Some(level),
+        "max" | "ultra" => {
+            static MODEL: LazyLock<Regex> = LazyLock::new(|| {
+                Regex::new(r"^gpt[-_.]?5\.6(?:$|[-_.])").expect("Codex model prefix")
+            });
+            let name = model.unwrap_or("").trim().to_ascii_lowercase();
+            let name = name
+                .split('[')
+                .next()
+                .unwrap_or("")
+                .rsplit('/')
+                .next()
+                .unwrap_or("");
+            Some(if MODEL.is_match(name) {
+                level
+            } else {
+                "xhigh".into()
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn home_reasoning_level(home: &Path) -> Option<String> {
+    let bytes = read(&home.join("config.toml")).ok()??;
+    let config = parse_config(std::str::from_utf8(&bytes).ok()?).ok()?;
+    reasoning_level(
+        config.get("model_reasoning_effort")?.as_str()?,
+        config.get("model").and_then(Item::as_str),
+    )
+}
+
 pub fn materialize_official(home: &Path, provider_id: &str, config: &str) -> Result<(), String> {
     let mut document = parse_config(config)?;
     document["model_provider"] = value(OFFICIAL_RELAY);

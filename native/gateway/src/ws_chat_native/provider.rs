@@ -1,4 +1,4 @@
-//! A Claude child gets a scoped loopback capability. The gateway alone reads
+//! Each managed child gets a scoped loopback capability. The gateway alone reads
 //! the selected provider and uses the shared CPR request and streaming code.
 use axum::{
     body::{to_bytes, Body, Bytes},
@@ -39,6 +39,8 @@ pub(super) struct Provider {
     pub revision: String,
     provider: Value,
     env: Value,
+    codex_credential: Option<Value>,
+    protocol: &'static str,
 }
 
 impl Provider {
@@ -140,15 +142,103 @@ impl Provider {
             revision,
             provider,
             env,
+            codex_credential: None,
+            protocol: "claude",
+        })
+    }
+
+    pub async fn load_codex(root: &Path, home: &Path, record: &V) -> Result<Option<Self>, String> {
+        let Some(id) = super::optional_text(record, "provider").filter(|id| id != "_default_")
+        else {
+            return Ok(None);
+        };
+        let root = root.to_owned();
+        let home = home.to_owned();
+        let model = super::optional_text(record, "model");
+        tokio::task::spawn_blocking(move || {
+            let list = catalog(&root)?;
+            let provider = list
+                .into_iter()
+                .find(|provider| provider["id"] == id && provider["appType"] == "codex")
+                .ok_or("provider_not_found")?;
+            Self::configured_codex(provider, id, model, &home).map(Some)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+
+    fn configured_codex(
+        mut provider: Value,
+        id: String,
+        model: Option<String>,
+        home: &Path,
+    ) -> Result<Self, String> {
+        if let Some(raw) = provider["settingsConfig"].as_str() {
+            provider["settingsConfig"] =
+                serde_json::from_str(raw).map_err(|_| "provider_invalid_settings")?;
+        }
+        let config = &provider["settingsConfig"];
+        let model = model.or_else(|| {
+            multicc_core::codex_provider_home::configured_model(config["config"].as_str()?)
+        });
+        let route = plan::Route {
+            protocol: "codex".into(),
+            provider_id: id.clone(),
+            main_provider_id: id.clone(),
+            session_id: String::new(),
+            role: "main".into(),
+            agent_role: String::new(),
+            route_name: "main".into(),
+            model: model.clone().unwrap_or_default(),
+            api_path: "/responses".into(),
+            query: String::new(),
+            is_stream: true,
+        };
+        let mut input = json!({"provider":provider,"route":route,"method":"POST",
+            "body":json!({"model":model,"stream":true}).to_string()});
+        let mut planned = plan::prepare(input.clone())?;
+        let codex_credential = if let Some(request) = planned.get("credentialRequest") {
+            let account = request["accountId"].as_str().unwrap_or("");
+            let file = multicc_core::account_subscription::codex_auth_file(home, account);
+            let current = provider_store::read(&file)?.unwrap_or(Value::Null);
+            let credential = multicc_core::provider_credentials::codex_credential(
+                &current,
+                auth_runtime::now_ms(),
+            );
+            if credential["ok"] != true {
+                return Err(credential["reason"]
+                    .as_str()
+                    .unwrap_or("provider_credential_unavailable")
+                    .into());
+            }
+            input["codexCredential"] = credential.clone();
+            planned = plan::prepare(input)?;
+            Some(credential)
+        } else {
+            None
+        };
+        let base = planned["plan"]["url"]
+            .as_str()
+            .ok_or("provider_invalid_address")?;
+        let revision =
+            provider_attempt_identity::provider_revision(&JsString::from_rust_str(&format!(
+                "codex:openai_responses:{id}:{base}:{}",
+                model.as_deref().unwrap_or("")
+            )));
+        let name = provider["name"].as_str().unwrap_or(&id).to_owned();
+        Ok(Self {
+            id,
+            name,
+            model,
+            revision,
+            provider,
+            env: Value::Null,
+            codex_credential,
+            protocol: "codex",
         })
     }
 
     pub async fn open(self, launch: &mut LaunchInput, session: &str) -> io::Result<Proxy> {
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let endpoint = listener.local_addr()?;
-        let token = random_id::prefixed_id("proxy-route").map_err(io::Error::other)?;
-        let (stop, stopped) = watch::channel(false);
-        let mut shutdown = stopped.clone();
         // Authentication and upstream selection are fixed by the persisted
         // provider for the turn. The child never receives its credentials.
         launch.env.retain(|key, _| !key.starts_with("ANTHROPIC_"));
@@ -168,13 +258,6 @@ impl Provider {
         ] {
             launch.env.insert(key.into(), json!(""));
         }
-        launch.env.insert(
-            "ANTHROPIC_BASE_URL".into(),
-            json!(format!("http://{endpoint}/{token}")),
-        );
-        launch
-            .env
-            .insert("ANTHROPIC_AUTH_TOKEN".into(), json!(token));
         for key in ["NO_PROXY", "no_proxy"] {
             let previous = launch.env.get(key).and_then(Value::as_str).unwrap_or("");
             launch
@@ -182,11 +265,28 @@ impl Provider {
                 .insert(key.into(), json!(format!("127.0.0.1,{previous}")));
         }
         launch.model = self.model.clone();
+        let (proxy, endpoint, token) = self.start_proxy(session).await?;
+        launch.env.insert(
+            "ANTHROPIC_BASE_URL".into(),
+            json!(format!("{endpoint}/{token}")),
+        );
+        launch
+            .env
+            .insert("ANTHROPIC_AUTH_TOKEN".into(), json!(token));
+        Ok(proxy)
+    }
+
+    pub async fn start_proxy(self, session: &str) -> io::Result<(Proxy, String, String)> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let token = random_id::prefixed_id("proxy-route").map_err(io::Error::other)?;
+        let (stop, stopped) = watch::channel(false);
+        let mut shutdown = stopped.clone();
         let app = Router::new()
             .fallback(forward)
             .with_state(Arc::new(ProxyState {
                 provider: self,
-                token,
+                token: token.clone(),
                 stopped,
                 session: session.into(),
             }));
@@ -197,7 +297,25 @@ impl Provider {
                 })
                 .await;
         });
-        Ok(Proxy { stop, server })
+        Ok((Proxy { stop, server }, endpoint, token))
+    }
+
+    fn secrets(&self) -> impl Iterator<Item = JsString> + '_ {
+        let config = &self.provider["settingsConfig"];
+        let credential = self.codex_credential.as_ref().unwrap_or(&Value::Null);
+        keys(&self.env).chain(
+            [
+                &config["proxyTarget"]["apiKey"],
+                &config["auth"]["OPENAI_API_KEY"],
+                &config["auth"]["tokens"]["access_token"],
+                &credential["accessToken"],
+                &credential["accountId"],
+            ]
+            .into_iter()
+            .filter_map(Value::as_str)
+            .filter(|secret| !secret.is_empty())
+            .map(JsString::from_rust_str),
+        )
     }
 }
 
@@ -378,16 +496,28 @@ fn keys(env: &Value) -> impl Iterator<Item = JsString> + '_ {
 
 async fn forward(State(state): State<Arc<ProxyState>>, req: Request) -> Response {
     let (head, body) = req.into_parts();
-    let Some((capability, path)) = head
-        .uri
-        .path()
-        .trim_start_matches('/')
-        .split_once('/')
-        .or_else(|| {
-            (head.method == Method::HEAD).then_some((head.uri.path().trim_start_matches('/'), ""))
-        })
-    else {
-        return StatusCode::NOT_FOUND.into_response();
+    let (capability, path) = if state.provider.protocol == "codex" {
+        let capability = head
+            .headers
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .unwrap_or("");
+        (capability, head.uri.path().trim_start_matches('/'))
+    } else {
+        let Some(route) = head
+            .uri
+            .path()
+            .trim_start_matches('/')
+            .split_once('/')
+            .or_else(|| {
+                (head.method == Method::HEAD)
+                    .then_some((head.uri.path().trim_start_matches('/'), ""))
+            })
+        else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        route
     };
     if !timing_safe_equal_text(capability, &state.token) {
         return StatusCode::NOT_FOUND.into_response();
@@ -396,8 +526,10 @@ async fn forward(State(state): State<Arc<ProxyState>>, req: Request) -> Response
         return StatusCode::OK.into_response();
     }
     if !matches!(
-        (head.method.as_str(), path),
-        ("POST", "v1/messages" | "v1/messages/count_tokens") | ("GET", "v1/models")
+        (state.provider.protocol, head.method.as_str(), path),
+        ("claude", "POST", "v1/messages" | "v1/messages/count_tokens")
+            | ("claude", "GET", "v1/models")
+            | ("codex", "POST", "responses")
     ) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -417,7 +549,7 @@ async fn forward(State(state): State<Arc<ProxyState>>, req: Request) -> Response
     };
     let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
     let route = plan::Route {
-        protocol: "claude".into(),
+        protocol: state.provider.protocol.into(),
         provider_id: state.provider.id.clone(),
         main_provider_id: state.provider.id.clone(),
         session_id: state.session.clone(),
@@ -438,7 +570,7 @@ async fn forward(State(state): State<Arc<ProxyState>>, req: Request) -> Response
         .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.as_str(), value)))
         .collect::<std::collections::BTreeMap<_, _>>();
     let planned = match plan::prepare(json!({"route":route,"provider":state.provider.provider,
-        "body":raw,"headers":headers,"method":head.method.as_str()}))
+        "body":raw,"headers":headers,"method":head.method.as_str(),"codexCredential":state.provider.codex_credential}))
     {
         Ok(plan) => plan,
         Err(error) => return upstream_error(error),
@@ -468,12 +600,12 @@ async fn forward(State(state): State<Arc<ProxyState>>, req: Request) -> Response
     {
         return upstream_error("UPSTREAM_ENCODING_UNSUPPORTED".into());
     }
-    let secrets = normalize_secrets(keys(&state.provider.env));
+    let secrets = normalize_secrets(state.provider.secrets());
     let source = ProviderBody {
         exchange,
         stopped,
         decoder: Utf8Decoder::default(),
-        redactor: StreamRedactor::new(keys(&state.provider.env)),
+        redactor: StreamRedactor::new(state.provider.secrets()),
         done: false,
     };
     let mut response = (
