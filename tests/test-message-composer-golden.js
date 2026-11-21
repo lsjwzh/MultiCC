@@ -22,7 +22,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 const { composeMessage, renderPrompt, buildAutoCommitStatusPrompt, normalizeVoiceInput } = require('../src/message-composer');
-const { createCodexAdapter } = require('../src/cli-adapters/codex');
+const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 

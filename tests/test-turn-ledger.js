@@ -281,7 +281,7 @@ test('runtime: prepareTerminal injects env/settings and sweep ingests the spool'
 
 test('adapters: terminal commands carry the injected hook flags', () => {
   const { createClaudeAdapter } = require('../src/native/runtime');
-  const { createCodexAdapter } = require('../src/cli-adapters/codex');
+  const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
   const claude = createClaudeAdapter({
     cmd: 'claude', resolveSessionWireModel: m => m, claudeDefaultModel: () => null,
     cliEffortLevel: () => null, normalizeEffort: e => (e ? String(e).trim().toLowerCase() : null),

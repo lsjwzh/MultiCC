@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const { createClaudeAdapter } = require('../src/native/runtime');
-const { createCodexAdapter } = require('../src/cli-adapters/codex');
+const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
 const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');

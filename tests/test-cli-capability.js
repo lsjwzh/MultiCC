@@ -257,9 +257,9 @@ test('an adapter error label follows the display table, and the parsers accept e
   // "Codex"），三处按前缀解析的地方必须同时认旧拼法和新拼法 —— 只认一种，瞬时重连
   // 会被当成真错误画进对话，错误信封会被当成正文留在记录里。
   const source = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
-  assert.match(source('src/cli-adapters/codex.js'), /label:\s*displayNameOf\('codex'\)/);
+  assert.match(source('native/addon/src/codex_adapter/events.rs'), /c"label",\s*port\(ports, c"displayNameOf", &\[text\(event, "codex"\)\?\]\)\?/);
   assert.match(source('src/cli-adapters/codex-exp.js'), /label:\s*displayNameOf\('codex-exp'\)/);
-  assert.doesNotMatch(source('src/cli-adapters/codex.js'), /label:\s*'Codex'/);
+  assert.doesNotMatch(source('native/addon/src/codex_adapter/events.rs'), /c"label",\s*text\([^,]+,\s*"Codex"/);
   // 正文里不能再自称一个界面上已经不存在的名字。
   assert.doesNotMatch(source('src/cli-adapters/codex-exp.js'), /Codex Exp v1 does not support/);
   assert.match(source('src/cli-adapters/codex-exp.js'), /message:\s*'Codex v1 does not support/);

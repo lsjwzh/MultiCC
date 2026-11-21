@@ -135,6 +135,28 @@ function createClaudeAdapter(deps = {}) {
     needsAsyncSessionIdCapture: false,
   };
 }
+const codexAdapter = {
+  createCodexAdapter(deps) {
+    const native = getNative(), ports = Object.assign(native.codexAdapterPorts(deps), {
+      renderPrompt: require('../message-composer').renderPrompt,
+      extractUpstreamError: require('../upstream-error').extractUpstreamError,
+      displayNameOf: require('../cli/cli-capability').displayNameOf,
+    });
+    return {
+      name: 'codex',
+      createCompletionTracker: () => require('../cli-adapters/completion').createProtocolCompletionTracker('codex'),
+      cmd: ports.cmd,
+      buildTerminalCmd: value => native.codexAdapterCall('terminal', value, ports),
+      buildInvocation: value => native.codexAdapterCall('invocation', value, ports),
+      decodeEvent: value => native.codexAdapterCall('decode', value, ports),
+      needsAsyncSessionIdCapture: true,
+    };
+  },
+  normalizeCodexUsage: value => getNative().codexAdapterCall('usage', value, undefined),
+  mcpResultText: value => getNative().codexAdapterCall('mcp-text', value, undefined),
+  isCodexInternalNoise: value => getNative().codexAdapterCall('noise', value, undefined),
+  routerMcpConfigArgs: (node, script) => getNative().codexAdapterCall('router', [node, script], undefined),
+};
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
-  createClaudeAdapter };
+  createClaudeAdapter, codexAdapter };
