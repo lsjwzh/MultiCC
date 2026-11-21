@@ -7,7 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { addUsage, appServerUsage, createCodexExpAdapter, isReconnectProgress, requestUserInputEvent } = require('../src/cli-adapters/codex-exp');
+const { addUsage, appServerUsage, createCodexExpAdapter, isReconnectProgress, requestUserInputEvent } = require('../src/native/runtime').codexAppAdapter;
 const { appendAdapterAssistantText } = require('../src/chat/turn-engine');
 const { createSessionRecordFactory } = require('../src/session/create-record');
 const { isResidentSession } = require('../src/cli/cli-capability');
@@ -152,8 +152,8 @@ if(m.method==='thread/resume')process.stdout.write(JSON.stringify({id:m.id,resul
 if(m.method==='turn/start'){process.stdout.write(JSON.stringify({id:m.id,result:{turn:{id:'turn-live'}}})+'\\n');process.stdout.write(JSON.stringify({method:'item/agentMessage/delta',params:{itemId:'a',delta:'OK'}})+'\\n');process.stdout.write(JSON.stringify({method:'turn/completed',params:{turn:{id:'turn-live',status:'completed'}}})+'\\n');}});
 setInterval(()=>{},1000);
 `, { mode: 0o755 });
-    const result = spawnSync(process.execPath, [
-      path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'),
+    const result = spawnSync(require('../src/native/runtime').gatewayPath(), [
+      'codex-app-bridge',
       '--codex-bin', fakeCodex, '--', 'hello bridge',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile }, encoding: 'utf8', timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -163,8 +163,8 @@ setInterval(()=>{},1000);
     assert.deepEqual(requests.filter(item => item.id).map(item => item.method), ['initialize', 'thread/start', 'turn/start']);
     assert.equal(requests.find(item => item.method === 'turn/start').params.input[0].text, 'hello bridge');
 
-    const resumed = spawnSync(process.execPath, [
-      path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'),
+    const resumed = spawnSync(require('../src/native/runtime').gatewayPath(), [
+      'codex-app-bridge',
       '--codex-bin', fakeCodex, '--thread-id', 'thread-live', '--', 'hello again',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile }, encoding: 'utf8', timeout: 10_000 });
     assert.equal(resumed.status, 0, resumed.stderr);
@@ -173,8 +173,8 @@ setInterval(()=>{},1000);
     assert.equal(resume.params.threadId, 'thread-live');
     assert.equal(resume.params.excludeTurns, true);
 
-    const unsupported = spawnSync(process.execPath, [
-      path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'),
+    const unsupported = spawnSync(require('../src/native/runtime').gatewayPath(), [
+      'codex-app-bridge',
       '--codex-bin', fakeCodex, '--', 'old version',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile, FAKE_CODEX_VERSION: '0.153.9' }, encoding: 'utf8', timeout: 10_000 });
     assert.notEqual(unsupported.status, 0);
@@ -189,4 +189,262 @@ test('历史缺失恢复通知携带旧线程身份', () => {
   assert.deepEqual(createCodexExpAdapter().decodeEvent({
     method: 'multicc/native_session_missing', params: { threadId: 'old-thread' },
   }), [{ type: 'native_session_missing', sessionId: 'old-thread' }]);
+});
+
+function frozenCodexAdapter() {
+  const Module = require('node:module'), crypto = require('node:crypto');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-codex-adapter.js.txt'), 'utf8');
+  assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '9f94b4cd6348e411e32fb09b77fdc5d0a75d48a5dfb6b7ce74eff821bf4cfecd');
+  const filename = path.resolve(__dirname, '../src/cli-adapters/codex.js');
+  const legacy = new Module(filename); legacy.filename = filename;
+  legacy.paths = Module._nodeModulePaths(path.dirname(filename)); legacy._compile(source, filename);
+  return legacy.exports;
+}
+
+test('Rust Codex exec adapter matches frozen terminal, invocation, usage and shared MCP helpers', () => {
+  const native = require('../src/native/runtime').codexAdapter, oracle = frozenCodexAdapter();
+  for (const first of [false, true]) for (const effort of [null, 'high']) for (const hints of [false, true]) {
+    const run = make => {
+      const trace = [];
+      const instance = make({ cmd: 'codex', args: ['--verbose'],
+        codexReasoningConfigArg: session => { trace.push(['effort', session.effort]); return session.effort && `reasoning="${session.effort}"`; },
+        codexModelConfigArg: session => { trace.push(['model', session.model]); return session.model && `model="${session.model}"`; },
+        ...(hints ? { envConstraint: 'constraint', stayAlivePrompt: 'stay', multiccImgHint: 'images', routerMcpNode: '/node', routerMcpScript: '/router.js' } : {}) });
+      const value = envelope({ first, threadId: 'thread-1' });
+      Object.assign(value.spawnOpts, { rawEffort: effort, rawModel: 'model-1', effectiveModel: 'default' });
+      return { invocation: instance.buildInvocation(value), terminal: instance.buildTerminalCmd({ model: 'model-1', effort, cliSessionId: 'thread-1', turnHookConfigArgs: ['hook=true'] }), trace };
+    };
+    assert.deepEqual(run(native.createCodexAdapter), run(oracle.createCodexAdapter), JSON.stringify({ first, effort, hints }));
+  }
+  for (const usage of [undefined, null, {}, { input_tokens: 50, cached_input_tokens: 20 }, { input_tokens: '20', cache_read_input_tokens: 7 }, { input_tokens: '-0' }, { input_tokens: 'bad' }, { input_tokens: Infinity, cached_input_tokens: Infinity }]) {
+    assert.deepEqual(native.normalizeCodexUsage(usage), oracle.normalizeCodexUsage(usage));
+  }
+  for (const value of [null, {}, { result: { content: [{ type: 'text', text: '中文😀' }, { type: 'image', text: 'ignored' }] } }, { error: { code: 'upstream' } }, { result: 0 }, { result: 1n }]) {
+    assert.deepEqual(native.mcpResultText(value), oracle.mcpResultText(value));
+  }
+  assert.deepEqual(native.routerMcpConfigArgs('/node', '/router.js'), oracle.routerMcpConfigArgs('/node', '/router.js'));
+});
+
+test('Rust Codex decoder matches every frozen event branch and preserves opaque tool arguments', () => {
+  const native = require('../src/native/runtime').codexAdapter, oracle = frozenCodexAdapter();
+  const options = { cmd: 'codex', isResponseCompletedDisconnect: text => /response-disconnect/.test(text), isTransportDisconnect: text => /transport-disconnect/.test(text) };
+  const current = native.createCodexAdapter(options), legacy = oracle.createCodexAdapter(options);
+  const items = [
+    { type: 'mcp_tool_call', id: 'm', tool: 'search', arguments: '{"query":"x"}', result: { content: [{ type: 'text', text: 'found' }] } },
+    { type: 'collab_tool_call', id: 'a', tool: 'wait', receiver_thread_ids: [], agents_states: { child: { status: 'completed', message: 'done' } } },
+    { type: 'collab_tool_call', id: 'b', tool: 'spawn_agent', prompt: 'review', receiver_thread_ids: ['child'] },
+    { type: 'function_call', call_id: 'f', name: 'exec', arguments: '1', output: 'done' },
+    { type: 'custom_tool_call', call_id: 'c', name: 'custom', arguments: 'raw' },
+    { type: 'command_execution', id: 'cmd', command: 'pwd', aggregated_output: '/work', exit_code: '0' },
+    { type: 'function_call', id: 'q', name: 'AskUserQuestion', arguments: JSON.stringify({ questions: [{ header: '目录', question: '选哪个？', options: [{ label: '本地', description: '当前机器' }, 'remote'] }] }) },
+    { type: 'function_call', id: 'bad', name: 'request_user_input', arguments: 'not json' },
+    { type: 'agent_message', text: '答案' }, { type: 'reasoning', id: 'reason', text: '思考' }, { type: 'other' },
+  ];
+  const events = [null, 1, { type: 'thread.started', thread_id: 'thread' }, { type: 'thread.started' }, { type: 'turn.started' },
+    ...['item.started', 'item.completed'].flatMap(type => items.map(item => ({ type, item }))),
+    { type: 'turn.completed', usage: { input_tokens: 20, cached_input_tokens: 3 } },
+    ...['error', 'turn.failed'].flatMap(type => ['HTTP 429: limited', 'failed to load skill', 'response-disconnect', 'transport-disconnect', 'raw {"error":{"message":"拒绝","code":"bad","status_code":401,"request_id":"request","param":"model"}}'].map(message => ({ type, message }))),
+  ];
+  for (const event of events) assert.deepEqual(current.decodeEvent(event), legacy.decodeEvent(event), JSON.stringify(event));
+  const opaque = { command: 'x' };
+  const event = { type: 'item.started', item: { type: 'mcp_tool_call', arguments: opaque } };
+  assert.equal(current.decodeEvent(event)[0].input, opaque);
+});
+
+test('Rust shared MCP text keeps filter and text getter ordering', () => {
+  const run = api => {
+    const trace = [];
+    const content = ['a', 'b'].map(value => ({ get type() { trace.push(`type:${value}`); return 'text'; }, get text() { trace.push(`text:${value}`); return value; } }));
+    const output = api.mcpResultText({ result: { content } });
+    return { output, trace };
+  };
+  assert.deepEqual(run(require('../src/native/runtime').codexAdapter), run(frozenCodexAdapter()));
+});
+
+function frozenCodexAppAdapter() {
+  const Module = require('node:module'), crypto = require('node:crypto');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-codex-app-adapter.js.txt'), 'utf8');
+  assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '93cd19f3a09e1a818bd739a6acf0824cece4882af0e3444c1bdbf03bc6fe78f5');
+  const filename = path.resolve(__dirname, '../src/cli-adapters/codex-exp.js');
+  const legacy = new Module(filename); legacy.filename = filename;
+  legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  const originalRequire = legacy.require.bind(legacy);
+  legacy.require = name => name === '../native/runtime' ? { codexAdapter: frozenCodexAdapter() } : originalRequire(name);
+  legacy._compile(source, filename);
+  return legacy.exports;
+}
+
+test('Rust app-server 调用与纯函数逐项匹配冻结版本，保留实时依赖和方法接收者', () => {
+  const oracle = frozenCodexAppAdapter(), native = require('../src/native/runtime').codexAppAdapter;
+  for (const first of [false, true]) for (const effort of [null, 'high']) for (const hints of [false, true]) {
+    const run = api => {
+      const trace = [], deps = { bridge: '/bridge', codexCmd: '/codex', tag: 'live',
+        codexReasoningLevel(session) { assert.equal(this, deps); trace.push(['level', this.tag, session]); return effort; },
+        codexReasoningConfigArg(session) { assert.equal(this, deps); trace.push(['reasoning', session]); return effort && 'effort=high'; },
+        codexModelConfigArg(session) { assert.equal(this, deps); trace.push(['model', session]); return 'model=gpt'; },
+        ...(hints ? { multiccImgHint: '图片', envConstraint: '环境', routerMcpNode: '/node', routerMcpScript: '/router' } : {}) };
+      const adapter = api.createCodexExpAdapter(deps);
+      deps.codexCmd = '/codex-new'; deps.tag = 'changed';
+      const env = envelope({ first, threadId: 'thread' }); env.subagentHint = '代理';
+      return { invocation: adapter.buildInvocation(env), terminal: adapter.buildTerminalCmd(), trace };
+    };
+    assert.deepEqual(run(native), run(oracle));
+  }
+  for (const value of [undefined, null, {}, { last: {} }, { total: { inputTokens: '20', cachedInputTokens: 5n } },
+    { last: { inputTokens: NaN, cachedInputTokens: Infinity, outputTokens: -0 }, modelContextWindow: 0 }]) {
+    assert.deepEqual(native.appServerUsage(value), oracle.appServerUsage(value));
+  }
+  for (const current of [undefined, {}, { input_tokens: '4', output_tokens: 1n, model_context_window: 200 }]) {
+    for (const next of [undefined, {}, { input_tokens: -0, output_tokens: Infinity, model_context_window: 0 }]) {
+      assert.deepEqual(native.addUsage(current, next), oracle.addUsage(current, next));
+    }
+  }
+  assert.throws(() => native.addUsage(null, {}));
+  assert.throws(() => oracle.addUsage(null, {}));
+  for (const value of ['', null, undefined, ' Reconnecting... 1/5 (网络) ', 'Reconnecting... 1/5\nterminal', 123, Symbol('x')]) {
+    assert.equal(native.isReconnectProgress(value), oracle.isReconnectProgress(value));
+  }
+  const sparse = []; sparse[2] = { label: '末项' };
+  for (const value of [null, {}, { questions: [] }, { questions: [{}] }, { questions: [{ header: '选择', question: '哪项', options: sparse }] },
+    { questions: [{ header: '一', question: '甲', options: [{ label: 'A', description: '说明' }] }, { question: '乙', options: [] }] }]) {
+    assert.deepEqual(native.requestUserInputEvent(value), oracle.requestUserInputEvent(value));
+  }
+  for (const value of [{ questions: [{ options: [null] }] }, { questions: [{}, null] }]) {
+    assert.throws(() => native.requestUserInputEvent(value)); assert.throws(() => oracle.requestUserInputEvent(value));
+  }
+});
+
+test('Rust app-server 覆盖所有事件分支并保留不透明工具输入引用', () => {
+  const current = createCodexExpAdapter(), legacy = frozenCodexAppAdapter().createCodexExpAdapter();
+  const items = [
+    ...['spawnAgent', 'wait', 'sendInput', 'closeAgent', 'followupTask', 'sendMessage', 'resumeAgent', 'interruptAgent', 'listAgents', 'other', 'toString'].map(tool => ({ type: 'collabAgentToolCall', id: 'child', tool, prompt: '检查', receiverThreadIds: ['a'], agentsStates: { a: { status: 'completed', message: '好' }, b: null } })),
+    ...[0, undefined, '1', null, 2n].map(exitCode => ({ type: 'commandExecution', id: 'cmd', command: 'pwd', cwd: '/work', exitCode, aggregatedOutput: '结果' })),
+    { type: 'mcpToolCall', id: 'm', tool: 'search', arguments: { q: '查找' }, result: { content: [null, { type: 'image' }, { type: 'text', text: '甲' }, { type: 'text', text: 2 }] } },
+    { type: 'mcpToolCall', id: 'm2', error: { message: '失败' } },
+    { type: 'agentMessage', id: 'text', text: '快照' }, { type: 'reasoning', id: 'r', summary: ['想', '好'], content: ['后备'] },
+    { type: 'reasoning', id: 'r', summary: [], content: ['内容'] }, { type: 'unknown' },
+  ];
+  const events = [null, {}, { method: 'unknown' }, { method: 'item/tool/requestUserInput', params: { questions: [{ question: '选哪项' }] } },
+    { method: 'item/tool/requestUserInput' }, { id: 0, method: 'item/command/requestApproval' }, { method: 'item/command/requestApproval' },
+    { method: 'multicc/native_session_missing', params: { threadId: 'old' } }, { method: 'thread/started', params: { thread: { sessionId: 's' } } },
+    ...['idle', 'busy', undefined].map(type => ({ method: 'thread/status/changed', params: { status: { type } } })),
+    ...items.flatMap(item => ['item/started', 'item/completed'].map(method => ({ method, params: { item } }))),
+    { method: 'item/commandExecution/outputDelta', params: { itemId: 'cmd', delta: '行' } },
+    { method: 'item/mcpToolCall/progress', params: { message: '进度' } },
+    ...['completed', 'failed', 'interrupted', undefined].map(status => ({ method: 'turn/completed', params: { turn: { id: 't', status } } })),
+    ...['Reconnecting... 2/5', '真实错误'].map(message => ({ method: 'error', params: { error: { message } } })),
+    ...['warning', 'configWarning', 'deprecationNotice'].map(method => ({ method, params: { summary: '提示' } })),
+  ];
+  for (const event of events) assert.deepEqual(current.decodeEvent(event), legacy.decodeEvent(event), JSON.stringify(event, (_, value) => typeof value === 'bigint' ? String(value) : value));
+  const input = { self: null }; input.self = input;
+  assert.equal(current.decodeEvent({ method: 'item/started', params: { item: { type: 'mcpToolCall', arguments: input } } })[0].input, input);
+});
+
+test('Rust app-server 多轮交错、键身份、回放去重、失败清理与状态槽复用均匹配冻结版本', () => {
+  const current = createCodexExpAdapter(), legacy = frozenCodexAppAdapter().createCodexExpAdapter();
+  const compare = event => assert.deepEqual(current.decodeEvent(event), legacy.decodeEvent(event));
+  const objectKey = {}, otherKey = {};
+  const keys = [undefined, null, NaN, 0, -0, 1, '1', false, '', objectKey, otherKey];
+  for (let round = 0; round < 30; round++) {
+    for (const id of keys) {
+      compare({ method: 'thread/tokenUsage/updated', params: { turnId: id, tokenUsage: { last: { inputTokens: 9000 } } } });
+      compare({ method: 'turn/started', params: { turn: { id } } });
+      compare({ method: 'item/agentMessage/delta', params: { itemId: id, delta: '中文😀' } });
+      compare({ method: 'item/reasoning/textDelta', params: { itemId: id, delta: '思' } });
+      compare({ method: 'item/reasoning/summaryTextDelta', params: { itemId: id, delta: '考' } });
+      for (const inputTokens of [5, 3]) compare({ method: 'thread/tokenUsage/updated', params: { turnId: id, tokenUsage: { last: { inputTokens, cachedInputTokens: 1, outputTokens: 2 } } } });
+    }
+    for (const [index, id] of keys.entries()) {
+      compare({ method: 'item/completed', params: { item: { type: 'agentMessage', id, text: '不重复' } } });
+      compare({ method: 'item/completed', params: { item: { type: 'agentMessage', id, text: '下一次快照' } } });
+      compare({ method: 'item/completed', params: { item: { type: 'reasoning', id } } });
+      compare({ method: 'item/completed', params: { item: { type: 'reasoning', id } } });
+      compare({ method: 'turn/completed', params: { turn: { id, status: ['completed', 'failed', 'interrupted'][index % 3] } } });
+      compare({ method: 'thread/tokenUsage/updated', params: { turnId: id, tokenUsage: { last: { inputTokens: 9000 } } } });
+      compare({ method: 'turn/completed', params: { turn: { id, status: 'completed' } } });
+    }
+  }
+});
+
+test('Rust app-server 保留 getter 顺序、异常后的状态与重入安全', () => {
+  const run = make => {
+    const adapter = make(), trace = [];
+    const content = ['甲', '乙'].map(value => ({ get type() { trace.push(`type:${value}`); return 'text'; }, get text() { trace.push(`text:${value}`); return value; } }));
+    const output = adapter.decodeEvent({ method: 'item/completed', params: { item: { type: 'mcpToolCall', result: { content } } } });
+    const fault = new Error('getter 故障');
+    assert.throws(() => adapter.decodeEvent({ method: 'item/agentMessage/delta', params: { itemId: 'x', get delta() { throw fault; } } }), error => error === fault);
+    const afterFault = adapter.decodeEvent({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'x', text: '已标记' } } });
+    adapter.decodeEvent({ method: 'item/reasoning/textDelta', params: { itemId: 'r', delta: '原' } });
+    const reentrant = adapter.decodeEvent({ method: 'item/reasoning/textDelta', params: { itemId: 'r', get delta() {
+      trace.push('reenter'); adapter.decodeEvent({ method: 'item/completed', params: { item: { type: 'reasoning', id: 'r' } } }); return '后';
+    } } });
+    return { output, trace, afterFault, reentrant };
+  };
+  assert.deepEqual(run(createCodexExpAdapter), run(frozenCodexAppAdapter().createCodexExpAdapter));
+});
+
+test('Rust app-server 事件属性读取顺序与冻结版本一致', () => {
+  const seeds = [
+    { method: 'item/started', params: { item: { type: 'collabAgentToolCall', id: 'x', tool: 'wait', prompt: 'p' } } },
+    { method: 'item/started', params: { item: { type: 'commandExecution', id: 'x', command: 'pwd' } } },
+    { method: 'item/started', params: { item: { type: 'mcpToolCall', id: 'x', tool: 'search' } } },
+    ...['collabAgentToolCall', 'agentMessage', 'reasoning', 'commandExecution', 'mcpToolCall', 'unknown'].map(type => ({ method: 'item/completed', params: { item: { type, id: 'x', text: '正文', command: 'pwd', status: 'failed' } } })),
+    { method: 'turn/completed', params: { turn: { id: 'x', status: 'failed' } } },
+    { method: 'thread/started', params: { thread: { id: 's' } } },
+  ];
+  for (const seed of seeds) {
+    const run = make => {
+      const trace = [];
+      const wrap = (value, prefix) => value && typeof value === 'object' && !Array.isArray(value) ? new Proxy(value, { get(target, key) {
+        trace.push(`${prefix}.${String(key)}`); return wrap(Reflect.get(target, key), `${prefix}.${String(key)}`);
+      } }) : value;
+      const output = make().decodeEvent(wrap(seed, 'event'));
+      return { output, trace: [...trace] };
+    };
+    assert.deepEqual(run(createCodexExpAdapter), run(frozenCodexAppAdapter().createCodexExpAdapter), seed.method);
+  }
+});
+
+function legacyBridgeCommand(root) {
+  const Module = require('node:module');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-codex-app-server-bridge.cjs.txt'), 'utf8');
+  assert.equal(require('node:crypto').createHash('sha256').update(source).digest('hex'), '476e2fbb25a2b171afb1090e8665c81d220a8f1e71758d0d4dc6712b7f338004');
+  const filename = path.resolve(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs');
+  const launcher = path.join(root, 'legacy-bridge.cjs');
+  // Compile the frozen source under its original directory so only transport
+  // imports need no path rewrites. The frozen background owner is independent.
+  fs.writeFileSync(launcher, `const Module=require('node:module');const fs=require('node:fs');const path=require('node:path');
+const filename=${JSON.stringify(filename)},source=${JSON.stringify(source)};
+const legacy=new Module(filename);legacy.filename=filename;legacy.paths=Module._nodeModulePaths(path.dirname(filename));
+const req=legacy.require.bind(legacy);legacy.require=name=>{
+ if(name!=='./codex-background-events.cjs')return req(name);
+ const bgFile=path.join(path.dirname(filename),'codex-background-events.cjs');const bg=new Module(bgFile);
+ bg.filename=bgFile;bg.paths=Module._nodeModulePaths(path.dirname(bgFile));bg._compile(fs.readFileSync(${JSON.stringify(path.join(__dirname, 'helpers/legacy-codex-background-events.cjs.txt'))},'utf8'),bgFile);return bg.exports;
+};legacy._compile(source,filename);`);
+  return { cmd: process.execPath, args: [launcher] };
+}
+
+test('Rust 进程桥与冻结 Node 桥的通知原始字节及 RPC 副作用一致', { timeout: 20_000 }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-bridge-parity-'));
+  try {
+    const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
+    const binary = writeFakeAppServer(root), legacy = legacyBridgeCommand(root);
+    const rust = { cmd: require('../src/native/runtime').gatewayPath(), args: ['codex-app-bridge'] };
+    for (const scenario of [
+      {}, { prompt: '--help' }, { prompt: '--version' }, { args: ['--thread-id', 'saved'] }, { env: { FAKE_CODEX_REJECT: 'thread/start' } },
+      { env: { FAKE_CODEX_VERSION: '0.153.9' } },
+      { args: ['--thread-id', 'old'], env: { FAKE_CODEX_REJECT: 'thread/resume', FAKE_CODEX_REJECT_MESSAGE: 'no rollout found for thread id' } },
+      { args: ['--thread-id', 'old'], env: { FAKE_CODEX_REJECT: 'thread/resume', FAKE_CODEX_REJECT_MESSAGE: 'HTTP 401: unauthorized' } },
+    ]) {
+      const run = (command, tag) => {
+        const logFile = path.join(root, `${tag}.jsonl`); fs.writeFileSync(logFile, '');
+        const result = spawnSync(command.cmd, [...command.args, '--codex-bin', binary, ...(scenario.args || []), '--', scenario.prompt || '中文😀'], {
+          cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile, ...scenario.env }, encoding: 'utf8', timeout: 6000,
+        });
+        assert.equal(result.error, undefined);
+        return { status: result.status, stdout: result.stdout, stderr: result.stderr, requests: fs.readFileSync(logFile, 'utf8') };
+      };
+      assert.deepEqual(run(rust, 'rust'), run(legacy, 'legacy'), JSON.stringify(scenario));
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -88,6 +88,35 @@ WebSocket 从壳内会话按游标向同壳的已登记执行投递。预约收�
 
 必要的 Node 范围为 `src/native/runtime.js` 中闭包、Promise 等待和现有 CLI/SDK 回调传输；回调接通当前会话宿主，Rust 负责上述模块的决定和状态。尚未迁出的 Provider 路由端口、账号与凭据装配、Codex/其它 CLI 进程协议及 Node 会话宿主继续列入第三、四批，不能据此宣称第三批整体完成。下一步接 Codex 执行链路，SDK 或平台专用端口随各消费点迁移逐项退出。
 
+### Codex 子批：执行适配、后台状态与原生进程桥
+
+继续完成四个模块，每个模块通过指定门禁后单独提交。
+
+| 模块 | 提交 | Rust 所有者 | 退出的生产文件 | 原行数 | 后端净减行数 |
+| --- | --- | --- | --- | ---: | ---: |
+| Codex JSON 执行适配 | `ba828f58` | `native/addon/src/codex_adapter.rs` 及 `codex_adapter/events.rs` | `src/cli-adapters/codex.js` | 366 | 344 |
+| Codex app-server 适配状态 | `11a76fdc` | `native/addon/src/codex_app_adapter.rs` 及其事件、调用子模块 | `src/cli-adapters/codex-exp.js` | 265 | 242 |
+| 子线程后台事件和定时决策 | `8c49fa53` | `native/core/src/codex_background.rs`，addon 接入同一所有者 | `src/cli-adapters/codex-background-events.cjs` | 275 | 246 |
+| Codex app-server 进程桥 | `e0bdb521` | `native/gateway/src/codex_bridge.rs`，复用上述后台所有者 | `src/cli-adapters/codex-app-server-bridge.cjs` | 343 | 340 |
+
+本子批退出四个文件、1,249 个原物理行，后端净减 1,172 行。与先前三个模块合计，第三批已退出八个专用生产文件、1,714 个原物理行；新增和修改兼容接线后，后端 JS/CJS/MJS 累计净减 **1,581 行**。同一盘点口径剩余 **604 个文件、137,518 行**。Rust、冻结对照夹具和测试的新增行不混入后端减行数。迁移后的逐文件清单保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/node-files-after-codex-sub-batch.json`。
+
+默认 Codex app-server 调用现在启动相邻预编译产物中的 `multicc-gateway codex-app-bridge`。该模式不监听 HTTP、不启动 Node；通过 JSON-RPC 管道执行 initialize、线程创建及恢复、串行多轮、审批拒绝、请求超时、信号及 EOF 回收。后台子线程隔离、接入、进度节流、心跳和终态也由 Rust 决定。适配器中的增量去重、思考文本和按回合用量状态由 Rust 持有，保留数字、字符串、NaN、缺省和不透明对象键的区分，并在完成时释放状态槽。
+
+Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和异步回调传输。调用者显式传入 `deps.bridge` 时，保留原有自定义 Node 桥覆盖；这是现有测试和自定义传输端口的兼容范围，默认路径不使用它。该覆盖端口统一采用 Rust 可执行接口后可以移除。Codex 会话常驻宿主 `src/chat/codex-app-stream.js`、账号和凭据装配以及其它 CLI 线路继续保留在后续迁移清单。
+
+模块四、五、六的 gateway 包分别为 1,036 项通过；模块七增加 RPC 超时和孤立 UTF-16 单元线协议检查后为 1,038 项通过。各模块任务壳均为 304/304、HTTP 原始字节对拍 67/67 且副作用顺序一致；构建及严格 Clippy 通过。定向回归分别为 87、120、30、112 项通过。冻结旧桥的八个场景直接对比 stdout、stderr、退出码及 RPC 原始字节，无动态字段归一化。真实 Codex 连接本地模拟模型上游，通过两个子线程执行及独立完成验证，没有使用真实账号或外部模型请求。
+
+四份 `--no-node` Claude 网关进程树及新增的 Codex 原生桥两轮执行进程树内 Node 数均为 0；Codex 桥还在无法解析 Node 的 PATH 下启动。**这不代表 Codex 已接入 `--no-node` 的 `/ws/chat` 回合宿主**：原生网关聊天回合仍只支持已验收的 Claude 线路。Codex 的会话、账号及凭据接线迁出后，仍须补齐该入口的独立端到端验收。
+
+本轮逐项审计的允许差异为：默认启动命令由 Node+CJS 改为 Rust 子命令；回合中显式切换线程排到前一回合结束之后，防止恢复操作提前改变主线程身份；原生管道错误日志保留系统原因，运行时堆栈文本可以不同。线程切换、等待 RPC 时关闭 stdin、关闭输出管道后的子进程回收均有专门断言。普通与恢复协议的八个冻结对拍场景，以及 HTTP 67 个场景，仍要求逐字节相同。
+
+合并前复验重复检出了订阅缓存测试超时。已用先前主线网关产物复现同一失败，路由、缓存实现和原测试断言均与主线一致。根因是并行夹具仅用进程号与系统时间戳命名目录；本机时间戳会重复，夹具互相清理目录。新增四线程、4,000 次目录名生成回归，旧实现只产生 965 个唯一目录而失败；改为额外附加原子序号后，回归和两个原订阅测试 3/3 通过，未修改原断开连接断言。此测试修复独立于生产迁移，最终 gateway 包增加到 1,039 项。原始超时、主线产物对照、碰撞红证和修复日志均保存在 `codex-sub-batch` 证据目录。
+
+合并前组合自动回归为 375/375，CLI 适配契约为 29/29。扩展组合时误纳入的 `tests/test-chat-stream.js` 是需要真实 Claude 的手工账号探针，因 `spawn claude ENOENT` 失败；原文件未改，未产生供应商请求，失败另存 `manual-claude-probe-result.json`，未将其计作自动门禁通过。自动组合继续使用既有隔离流测试。严格 Clippy 初次检出的代码写法问题已修正，未增加 lint 豁免。各模块及最终复验的构建产物、日志和收据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/module4` 至 `module7`、`codex-sub-batch`。
+
+第三批整体继续进行。下一块仍须迁移 Provider 账号及凭据决策、Codex 会话宿主和其余在册 CLI 执行链路。`src/task-shell/runtime.js`（712 行）、`src/task-shell/host.js`（553 行）、`src/session-work/scheduler.js`（908 行）仍由这些宿主和第四批会话状态消费；本轮没有删除它们，也没有把它们计入减行数。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

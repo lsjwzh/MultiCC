@@ -8,7 +8,7 @@ const {
 } = require('../src/chat/host-coordinator');
 const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint } = require('../src/chat/host-prompts');
 const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
-const { createCodexAdapter } = require('../src/cli-adapters/codex');
+const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
 
 function fixture(options = {}) {
   const states = new Map([['chat-1', {

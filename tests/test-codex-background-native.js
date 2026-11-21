@@ -86,8 +86,8 @@ async function main() {
     'features.multi_agent=true',
   ];
   stream.ensure('real-probe', {
-    cmd: process.execPath, cwd: root, streamBackend: 'app-server',
-    baseArgs: [path.join(repo, 'src/cli-adapters/codex-app-server-bridge.cjs'), '--codex-bin', 'codex',
+    cmd: require('../src/native/runtime').gatewayPath(), cwd: root, streamBackend: 'app-server',
+    baseArgs: ['codex-app-bridge', '--codex-bin', 'codex',
       '--resident', ...configs.flatMap(config => ['--config', config])],
     env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: home },
     onBackgroundEvent(event) {

@@ -14,6 +14,23 @@ server.js、ecosystem.config.js、scripts/start-gateway.js、src/ 和 plugins/ �
 | `src/task-shell/host.js` | 553 | `server.js` |
 | `src/session-work/scheduler.js` | 908 | `src/orchestration/runtime.js`, `src/routes/task-board.js`, `src/session-work/host.js` |
 
+## Codex 子批后的同口径盘点
+
+七个独立模块完成后，候选文件剩余 **604 个、137,518 行**，相对基线净减八个文件、1,581 行。后面的分目录和完整表仍是迁移前的固定基线，用于核对删除来源；迁移后的完整 JSON 清单、最新行数和静态调用方在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/node-files-after-codex-sub-batch.json`，随 Codex 子批收据登记。
+
+| 已退出的生产文件 | 基线行数 |
+| --- | ---: |
+| `src/chat/provider-invocation.js` | 226 |
+| `src/chat/auto-provider-selection-key.js` | 10 |
+| `src/chat/auto-provider-handoff.js` | 91 |
+| `src/cli-adapters/claude.js` | 138 |
+| `src/cli-adapters/codex.js` | 366 |
+| `src/cli-adapters/codex-exp.js` | 265 |
+| `src/cli-adapters/codex-background-events.cjs` | 275 |
+| `src/cli-adapters/codex-app-server-bridge.cjs` | 343 |
+
+以上原文件合计 1,714 行；必要兼容接线净增加 133 行，因此后端净减为 1,581 行。旧实现仅保留在测试路径作为冻结对照，不作为生产入口。关键保留文件及调用方与上表一致：任务壳 runtime、host 和 session-work scheduler 分别仍为 712、553、908 行。
+
 ## 分目录统计
 
 | 目录 | 文件数 | 行数 |

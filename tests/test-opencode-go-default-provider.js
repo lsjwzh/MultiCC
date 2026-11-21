@@ -293,8 +293,8 @@ test('Codex provider switch with a blank model pins the new default before resum
     assert.equal(res.body.effectiveModel, 'gpt-5.4');
     assert.equal(session.cliSessionId, 'native-ds', 'keep conversation history');
     const adapter = cli === 'codex'
-      ? require('../src/cli-adapters/codex').createCodexAdapter({ cmd: 'codex', ...sessionPolicy })
-      : require('../src/cli-adapters/codex-exp').createCodexExpAdapter(sessionPolicy);
+      ? require('../src/native/runtime').codexAdapter.createCodexAdapter({ cmd: 'codex', ...sessionPolicy })
+      : require('../src/native/runtime').codexAppAdapter.createCodexExpAdapter(sessionPolicy);
     const invocation = adapter.buildInvocation({ spawnOpts: { rawModel: session.model },
       historyHandle: { isFirstTurn: false, cliSessionId: session.cliSessionId },
       contextLayers: [], userText: 'continue', suffix: '' });
