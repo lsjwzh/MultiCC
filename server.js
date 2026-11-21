@@ -83,6 +83,7 @@ const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-f
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
+const { synchronizeCodexProfileRoute } = require('./src/cli/switch-preparation');
 const { renderPrompt } = require('./src/message-composer');
 const {
   applyCuratedMemoryAction,
@@ -1568,7 +1569,7 @@ const cliSwitchRuntime = createCliSwitchRuntime({ clearReplay: chatReplay.clear,
   supportedClis: SUPPORTED_CHAT_CLIS,
   chatSessions,
   getProviderDefaults: () => providerDefaults, validProviderId: (...a) => validProviderId(...a), getProviders: () => providers,
-  codexDefaultReasoningLevel, synchronizeCodexSessionRoute: route => providers.synchronizeCodexSessionRoute(route),
+  codexDefaultReasoningLevel,
   getHistory: loadChatHistory,
   buildHandoffCheckpoint,
   activateCliState,
@@ -1609,6 +1610,8 @@ const { applySessionPatch, previewSessionPatch } = createSessionProfileRoutes({
   sessionPersistence,
   sessionPolicy,
   providers,
+  synchronizeCodexProfileRoute,
+  withConfigurationPreparation: cliSwitchRuntime.withConfigurationPreparation,
   providerRouterRuntime,
   // chatStream / providerRoutes are composed further down this file; resolve
   // them lazily or mounting would hit the const TDZ before boot finishes.

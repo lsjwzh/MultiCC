@@ -535,54 +535,47 @@ fn session_detach_plan<'a>(
     Ok((body, fallback))
 }
 
-/// Unwire every reference to a provider before its record goes away, so nothing
-/// is left pointing at an id that no longer resolves. A session that cannot be
-/// detached is reported as failed and the caller does NOT delete the provider.
-///
-/// Rust owns the walk, the per-session plan, the fallback retry and the result
-/// classification. The effects stay in the Node process behind the caller's
-/// `applySessionPatch` / `clearDefault` / `clearAuxProvider`, and are invoked in
-/// the retired handler's order: defaults and Aux first, in reference order, then
-/// each distinct session once, in first-appearance order.
+/// Plan each effect on the Node-owned session table. The host applies effects
+/// in order and feeds the settled PATCH response back before advancing.
 #[napi]
-pub fn provider_detach_references(env: Env, input: Unknown<'_>) -> Result<sys::napi_value> {
+pub fn provider_detach_request(
+    env: Env,
+    op: String,
+    input: Unknown<'_>,
+) -> Result<sys::napi_value> {
     let input = L::new(&env, input);
-    let provider_id = input.get(c"providerId")?;
-    let sessions = input.get(c"sessions")?;
-    let apply = input.get(c"applySessionPatch")?;
-    let clear_default = input.get(c"clearDefault")?;
-    let clear_aux = input.get(c"clearAuxProvider")?;
-    let desired_session = input.get(c"desiredSession")?;
-    let string = input.global()?.get(c"String")?;
+    let result = match op.as_str() {
+        "scope" => detach_scope(input)?,
+        "session" => detach_session(input)?,
+        "response" => detach_response(input)?,
+        _ => {
+            return Err(napi::Error::from_reason(
+                "invalid provider detach operation",
+            ))
+        }
+    };
+    Ok(result.raw())
+}
 
-    let detached = input.from_value(&V::Array(vec![]))?;
-    let failed = input.from_value(&V::Array(vec![]))?;
-    let detached_push = detached.get(c"push")?;
-    let failed_push = failed.get(c"push")?;
-
-    // A Set, so a provider referenced twice by one session is patched once and
-    // the order is first appearance.
+fn detach_scope(input: L<'_>) -> Result<L<'_>> {
+    let effects = input.from_value(&V::Array(vec![]))?;
+    let effect_push = effects.get(c"push")?;
+    let ordered = input.from_value(&V::Array(vec![]))?;
+    let ordered_push = ordered.get(c"push")?;
     let session_ids = input.global()?.get(c"Set")?.construct(&[])?;
     let has = session_ids.get(c"has")?;
     let add = session_ids.get(c"add")?;
-    let ordered = input.from_value(&V::Array(vec![]))?;
-    let ordered_push = ordered.get(c"push")?;
-
-    input.get(c"references")?.for_each(|reference| {
+    input.for_each(|reference| {
         let kind = reference.get(c"kind")?;
-        if kind.is_string("default")? {
-            let cli = reference.get(c"cli")?;
-            clear_default.call_plain(&[cli])?;
+        if kind.is_string("default")? || kind.is_string("aux")? {
             let row = input.from_value(&V::Object(vec![]))?;
-            row.set(c"kind", input.from_value(&V::string("default"))?)?;
-            row.set(c"cli", cli)?;
-            detached_push.call(detached, &[row])?;
-        } else if kind.is_string("aux")? {
-            clear_aux.call_plain(&[provider_id])?;
-            let row = input.from_value(&V::Object(vec![]))?;
-            row.set(c"kind", input.from_value(&V::string("aux"))?)?;
-            row.set(c"protocol", reference.get(c"protocol")?)?;
-            detached_push.call(detached, &[row])?;
+            row.set(c"kind", kind)?;
+            if kind.is_string("default")? {
+                row.set(c"cli", reference.get(c"cli")?)?;
+            } else {
+                row.set(c"protocol", reference.get(c"protocol")?)?;
+            }
+            effect_push.call(effects, &[row])?;
         } else {
             let session_id = reference.get(c"sessionId")?;
             if session_id.truthy()? && !has.call(session_ids, &[session_id])?.truthy()? {
@@ -592,88 +585,91 @@ pub fn provider_detach_references(env: Env, input: Unknown<'_>) -> Result<sys::n
         }
         Ok(())
     })?;
-
-    let count = ordered.get(c"length")?.number()? as u32;
-    for index in 0..count {
-        let session_id = ordered.element(index)?;
-        let session = sessions.get(c"get")?.call(sessions, &[session_id])?;
-        // Computed before the missing-session check, exactly as the retired
-        // code did: `name || label` then the id itself.
-        let mut shown = input.from_value(&V::Undefined)?;
-        if session.truthy()? {
-            shown = session.get(c"name")?;
-            if !shown.truthy()? {
-                shown = session.get(c"label")?;
-            }
-        }
-        if !shown.truthy()? {
-            shown = session_id;
-        }
-        let session_name = string.call_plain(&[shown])?;
-        if !session.truthy()? {
-            // Deleted meanwhile -- nothing left to unwire.
-            continue;
-        }
-        let (body, fallback) = session_detach_plan(input, desired_session, session, provider_id)?;
-        let keys = input.global()?.get(c"Object")?.get(c"keys")?;
-        if !keys.call_plain(&[body])?.get(c"length")?.truthy()? {
-            continue;
-        }
-        let mut result = apply.call_plain(&[session_id, body])?;
-        if !result.get(c"status")?.is_number(200.0)? && fallback.truthy()? {
-            let retry = input.from_value(&V::Object(vec![]))?;
-            retry.spread_from(fallback)?;
-            // The subagent clear is not part of the manual fallback body, so it
-            // is re-applied here or it would be silently dropped.
-            if body.get(c"subagent")?.kind()? == sys::ValueType::napi_null {
-                retry.set(c"subagent", input.from_value(&V::Null)?)?;
-            }
-            result = apply.call_plain(&[session_id, retry])?;
-        }
-        let result_body = result.get(c"body")?;
-        if result.get(c"status")?.is_number(200.0)? {
-            let row = input.from_value(&V::Object(vec![]))?;
-            row.set(c"kind", input.from_value(&V::string("session"))?)?;
-            row.set(c"sessionId", session_id)?;
-            row.set(c"sessionName", session_name)?;
-            let deferred = result_body.truthy()? && result_body.get(c"deferred")?.truthy()?;
-            row.set(c"deferred", input.from_value(&V::Bool(deferred))?)?;
-            detached_push.call(detached, &[row])?;
-        } else {
-            let reported = if result_body.truthy()? && result_body.get(c"error")?.truthy()? {
-                result_body.get(c"error")?
-            } else {
-                let status = string.call_plain(&[result.get(c"status")?])?;
-                let text = format!(
-                    "HTTP {}",
-                    status
-                        .string()?
-                        .map(|value| value.to_string_lossy())
-                        .unwrap_or_default()
-                );
-                input.from_value(&V::string(&text))?
-            };
-            let text = string.call_plain(&[reported])?;
-            let sliced = text.get(c"slice")?.call(
-                text,
-                &[
-                    input.from_value(&V::Number(0.0))?,
-                    input.from_value(&V::Number(
-                        multicc_core::provider_registry::DETACH_ERROR_LIMIT,
-                    ))?,
-                ],
-            )?;
-            let row = input.from_value(&V::Object(vec![]))?;
-            row.set(c"kind", input.from_value(&V::string("session"))?)?;
-            row.set(c"sessionId", session_id)?;
-            row.set(c"sessionName", session_name)?;
-            row.set(c"error", sliced)?;
-            failed_push.call(failed, &[row])?;
-        }
-    }
-
     let result = input.from_value(&V::Object(vec![]))?;
-    result.set(c"detached", detached)?;
-    result.set(c"failed", failed)?;
-    Ok(result.raw())
+    result.set(c"effects", effects)?;
+    result.set(c"sessionIds", ordered)?;
+    Ok(result)
+}
+
+fn detach_session(input: L<'_>) -> Result<L<'_>> {
+    let session = input.get(c"session")?;
+    if !session.truthy()? {
+        return input.from_value(&V::Null);
+    }
+    let mut shown = session.get(c"name")?;
+    if !shown.truthy()? {
+        shown = session.get(c"label")?;
+    }
+    if !shown.truthy()? {
+        shown = input.get(c"sessionId")?;
+    }
+    let name = input.global()?.get(c"String")?.call_plain(&[shown])?;
+    let (patch, fallback) = session_detach_plan(
+        input,
+        input.get(c"desiredSession")?,
+        session,
+        input.get(c"providerId")?,
+    )?;
+    let keys = input.global()?.get(c"Object")?.get(c"keys")?;
+    if !keys.call_plain(&[patch])?.get(c"length")?.truthy()? {
+        return input.from_value(&V::Null);
+    }
+    if fallback.truthy()? && patch.get(c"subagent")?.kind()? == sys::ValueType::napi_null {
+        fallback.set(c"subagent", input.from_value(&V::Null)?)?;
+    }
+    let result = input.from_value(&V::Object(vec![]))?;
+    result.set(c"sessionName", name)?;
+    result.set(c"patch", patch)?;
+    result.set(c"fallback", fallback)?;
+    Ok(result)
+}
+
+fn detach_response(input: L<'_>) -> Result<L<'_>> {
+    let result = input.get(c"result")?;
+    let status = result.get(c"status")?;
+    let fallback = input.get(c"fallback")?;
+    let succeeded = status.is_number(200.0)?;
+    let response = input.from_value(&V::Object(vec![]))?;
+    if !succeeded && fallback.truthy()? {
+        response.set(c"retry", fallback)?;
+        return Ok(response);
+    }
+    let body = result.get(c"body")?;
+    let row = input.from_value(&V::Object(vec![]))?;
+    row.set(c"kind", input.from_value(&V::string("session"))?)?;
+    row.set(c"sessionId", input.get(c"sessionId")?)?;
+    row.set(c"sessionName", input.get(c"sessionName")?)?;
+    if succeeded {
+        let deferred = body.truthy()? && body.get(c"deferred")?.truthy()?;
+        row.set(c"deferred", input.from_value(&V::Bool(deferred))?)?;
+        response.set(c"detached", row)?;
+    } else {
+        let string = input.global()?.get(c"String")?;
+        let reported = if body.truthy()? && body.get(c"error")?.truthy()? {
+            body.get(c"error")?
+        } else {
+            let status = string.call_plain(&[status])?;
+            let text = format!(
+                "HTTP {}",
+                status
+                    .string()?
+                    .map(|value| value.to_string_lossy())
+                    .unwrap_or_default(),
+            );
+            input.from_value(&V::string(&text))?
+        };
+        let text = string.call_plain(&[reported])?;
+        let sliced = text.get(c"slice")?.call(
+            text,
+            &[
+                input.from_value(&V::Number(0.0))?,
+                input.from_value(&V::Number(
+                    multicc_core::provider_registry::DETACH_ERROR_LIMIT,
+                ))?,
+            ],
+        )?;
+        row.set(c"error", sliced)?;
+        response.set(c"failed", row)?;
+    }
+    Ok(response)
 }

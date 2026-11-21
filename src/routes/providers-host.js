@@ -255,13 +255,17 @@ function mountProvidersHostRoute(app, options = {}) {
       try {
         let detached = [];
         if (references.length) {
-          const result = detachProviderReferences({
+          const result = await detachProviderReferences({
             providerId,
             references,
             sessions: deps.persistedSessions,
             applySessionPatch: deps.applySessionPatch,
             clearDefault: (cli) => { if (deps.providerDefaults[cli] === providerId) { deps.providerDefaults[cli] = null; deps.saveProviderDefaults(); } },
             clearAuxProvider: deps.clearAuxProvider,
+            currentReferences: () => deps.findProviderReferences({
+              appType, providerId, sessions: deps.persistedSessions,
+              defaults: deps.providerDefaults, aux: deps.getAuxConfig(),
+            }),
           });
           if (result.failed.length) {
             return { ok: true, deleteOk: false, detached: result.detached, failed: result.failed };
@@ -341,7 +345,7 @@ function mountProvidersHostRoute(app, options = {}) {
         return { ok: false, error: { message: 'session patch runtime unavailable' } };
       }
       try {
-        const result = reassignProviderSessions({
+        const result = await reassignProviderSessions({
           appType,
           providerId,
           sourceProvider,

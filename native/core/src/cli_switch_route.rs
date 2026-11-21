@@ -363,8 +363,32 @@ pub fn prepare(input: &Input) -> Result<Prepared, String> {
 }
 
 pub fn request(input: &str) -> Result<String, String> {
-    let input: Input = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
-    serde_json::to_string(&prepare(&input)?).map_err(|e| e.to_string())
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Request {
+        #[serde(flatten)]
+        route: Input,
+        #[serde(default)]
+        synchronize_profile: bool,
+    }
+    let request: Request = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
+    let prepared = prepare(&request.route)?;
+    if request.synchronize_profile && prepared.native_session_exists != Some(true) {
+        let managed = request
+            .route
+            .from_provider_id
+            .as_deref()
+            .is_some_and(|provider| !provider.trim().is_empty());
+        return Err(failure(
+            if managed {
+                "CODEX_SESSION_ROLLOUT_NOT_FOUND"
+            } else {
+                "CODEX_SESSION_ROUTE_SOURCE_NOT_FOUND"
+            },
+            "Codex native session rollout was not found",
+        ));
+    }
+    serde_json::to_string(&prepared).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

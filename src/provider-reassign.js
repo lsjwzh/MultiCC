@@ -170,31 +170,35 @@ function moveOne(session, deps) {
   const result = deps.dryRun
     ? deps.previewSessionPatch(sessionId, patch)
     : deps.applySessionPatch(sessionId, patch);
-  if (!result || result.status !== 200) {
+  return typeof result?.then === 'function' ? result.then(settled) : settled(result);
+
+  function settled(result) {
+    if (!result || result.status !== 200) {
+      return Object.freeze({
+        ...base,
+        status: 'skipped',
+        reason: REASON.PATCH_REJECTED,
+        detail: sanitizePublicText(result && result.body && result.body.error, 'session patch rejected'),
+        modelBefore,
+      });
+    }
+    const applied = (result.body && typeof result.body === 'object') ? result.body : {};
+    const modelAfter = cleanModel(applied.model);
+    // Busy sessions: the single-session PATCH stages the change for the next turn
+    // and answers `deferred`. A dry run cannot ask the runtime, so it reports the
+    // one case that is knowable offline — an already-staged configuration.
+    const deferred = deps.dryRun
+      ? !!session.pendingConfiguration
+      : applied.deferred === true;
     return Object.freeze({
       ...base,
-      status: 'skipped',
-      reason: REASON.PATCH_REJECTED,
-      detail: sanitizePublicText(result && result.body && result.body.error, 'session patch rejected'),
+      status: 'switched',
+      deferred,
       modelBefore,
+      modelAfter,
+      modelReset: modelBefore !== modelAfter,
     });
   }
-  const applied = (result.body && typeof result.body === 'object') ? result.body : {};
-  const modelAfter = cleanModel(applied.model);
-  // Busy sessions: the single-session PATCH stages the change for the next turn
-  // and answers `deferred`. A dry run cannot ask the runtime, so it reports the
-  // one case that is knowable offline — an already-staged configuration.
-  const deferred = deps.dryRun
-    ? !!session.pendingConfiguration
-    : applied.deferred === true;
-  return Object.freeze({
-    ...base,
-    status: 'switched',
-    deferred,
-    modelBefore,
-    modelAfter,
-    modelReset: modelBefore !== modelAfter,
-  });
 }
 
 /**
@@ -209,7 +213,7 @@ function moveOne(session, deps) {
  * @param {object|null} input.targetProvider target provider summary
  * @param {Function} input.listProviders    () => provider summaries (all pools)
  * @param {Function} input.validProviderId  (cli, id) => {ok, value}
- * @param {Function} input.applySessionPatch  (sessionId, body) => {status, body}
+ * @param {Function} input.applySessionPatch  (sessionId, body) => {status, body} or Promise
  * @param {Function} input.previewSessionPatch (sessionId, body) => {status, body}
  */
 function reassignProviderSessions(input) {
@@ -264,25 +268,38 @@ function reassignProviderSessions(input) {
     name: cleanLabel(deps.targetProvider && deps.targetProvider.name, deps.targetProviderId),
   };
   const results = [];
-  for (const session of bound.slice(0, MAX_RESULTS)) {
-    results.push(moveOne(session, {
-      dryRun: !!deps.dryRun,
-      targetProviderId: deps.targetProviderId,
-      validProviderId: deps.validProviderId,
-      applySessionPatch: deps.applySessionPatch,
-      previewSessionPatch: deps.previewSessionPatch,
-    }));
-  }
-  const switched = results.filter(item => item.status === 'switched');
-  return {
-    ...base,
-    target,
-    switched: switched.length,
-    skipped: results.length - switched.length,
-    deferred: switched.filter(item => item.deferred === true).length,
-    truncated: bound.length > results.length,
-    results,
+  const eligible = bound.slice(0, MAX_RESULTS);
+  const ports = {
+    dryRun: !!deps.dryRun,
+    targetProviderId: deps.targetProviderId,
+    validProviderId: deps.validProviderId,
+    applySessionPatch: deps.applySessionPatch,
+    previewSessionPatch: deps.previewSessionPatch,
   };
+  return moveFrom(0);
+
+  function moveFrom(index) {
+    for (let i = index; i < eligible.length; i++) {
+      const result = moveOne(eligible[i], ports);
+      if (typeof result?.then === 'function') {
+        return result.then(settled => {
+          results.push(settled);
+          return moveFrom(i + 1);
+        });
+      }
+      results.push(result);
+    }
+    const switched = results.filter(item => item.status === 'switched');
+    return {
+      ...base,
+      target,
+      switched: switched.length,
+      skipped: results.length - switched.length,
+      deferred: switched.filter(item => item.deferred === true).length,
+      truncated: bound.length > results.length,
+      results,
+    };
+  }
 }
 
 module.exports = {

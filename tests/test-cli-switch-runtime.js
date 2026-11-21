@@ -16,6 +16,7 @@ const {
   buildHandoffCheckpoint,
 } = require('../src/cli-switch');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('../src/cli/switch-runtime');
+const { synchronizeCodexProfileRoute } = require('../src/cli/switch-preparation');
 const { getNative } = require('../src/native/runtime');
 const { recordsOf } = require('./helpers/session-records');
 
@@ -1351,6 +1352,30 @@ test('real Rust preparation retains and migrates an existing thread before a def
   const canonical = createCodexSessionHomeRuntime({ sessionHomesDir: path.join(home, '.multicc/codex-session-homes') }).codexSessionHome('s1');
   assert.equal(fs.readFileSync(path.join(canonical, 'sessions/2026/11/07/rollout-now-thread-1.jsonl'), 'utf8'), 'original history');
   assert.equal(fs.readFileSync(source, 'utf8'), 'original history');
+});
+
+test('Codex profile preparation copies the requested rollout on the Rust worker', async t => {
+  const { home } = nativeRouteHarness(t);
+  const source = path.join(home, '.codex/sessions/2026/11/07/rollout-now-thread-1.jsonl');
+  fs.mkdirSync(path.dirname(source), { recursive: true });
+  fs.writeFileSync(source, 'first turn');
+  const input = { homeDir: home, logicalSessionId: 's1', nativeSessionId: 'thread-1' };
+  const prepared = await synchronizeCodexProfileRoute({
+    ...input, fromProviderId: null, toProviderId: 'managed',
+  });
+  assert.equal(prepared.synchronized, true);
+  const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
+  const canonical = createCodexSessionHomeRuntime({
+    sessionHomesDir: path.join(home, '.multicc/codex-session-homes'),
+  }).codexSessionHome('s1');
+  const managed = path.join(canonical, 'sessions/2026/11/07/rollout-now-thread-1.jsonl');
+  assert.equal(fs.readFileSync(managed, 'utf8'), 'first turn');
+  fs.appendFileSync(managed, '\nsecond turn');
+  await synchronizeCodexProfileRoute({ ...input, fromProviderId: 'managed', toProviderId: null });
+  assert.equal(fs.readFileSync(source, 'utf8'), 'first turn\nsecond turn');
+  await assert.rejects(synchronizeCodexProfileRoute({
+    ...input, nativeSessionId: 'missing', fromProviderId: null, toProviderId: 'managed',
+  }), { code: 'CODEX_SESSION_ROUTE_SOURCE_NOT_FOUND' });
 });
 
 test('ambiguous Rust history preserves the pending choice and a later retry consumes it once', async t => {

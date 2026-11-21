@@ -39,8 +39,8 @@ function invoke(handler, { params = {}, body = {} } = {}) {
     status(code) { response.statusCode = code; return this; },
     json(value) { response.body = value; return this; },
   };
-  handler({ params, body }, res);
-  return response;
+  const completion = handler({ params, body }, res);
+  return typeof completion?.then === 'function' ? completion.then(() => response) : response;
 }
 
 function fixture(session, {
@@ -310,8 +310,9 @@ test('idle Codex route changes synchronize the exact native rollout before autho
       provider: fromProviderId, model: 'model-a', cliSessionId: 'native-a',
     };
     const calls = [];
-    const { handler } = fixture(session, {
+    const { handler, effects } = fixture(session, {
       synchronizeCodexSessionRoute: input => {
+        assert.deepEqual(effects, []);
         calls.push({ ...input, providerAtCall: session.provider });
         return { synchronized: true };
       },
@@ -326,6 +327,44 @@ test('idle Codex route changes synchronize the exact native rollout before autho
       fromProviderId, toProviderId, providerAtCall: fromProviderId,
     }]);
   }
+});
+
+test('Codex awaits rollout preparation before opening persistence', async () => {
+  const session = {
+    id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat',
+    provider: 'managed-a', cliSessionId: 'native-a',
+  };
+  let finishScan;
+  const { applySessionPatch, effects } = fixture(session, {
+    synchronizeCodexSessionRoute: () => new Promise(resolve => { finishScan = resolve; }),
+  });
+  const pending = applySessionPatch('s1', { provider: null });
+  assert.equal(session.provider, 'managed-a');
+  assert.deepEqual(effects, []);
+  finishScan({ synchronized: true });
+  const result = await pending;
+  assert.equal(result.status, 200);
+  assert.equal(session.provider, null);
+  assert.deepEqual(effects, ['persistence-begin']);
+});
+
+test('Codex refuses a stale rollout preparation before opening persistence', async () => {
+  const session = {
+    id: 's1', dirId: 'd1', cli: 'codex', kind: 'chat',
+    provider: 'managed-a', cliSessionId: 'old-native',
+  };
+  let finishScan;
+  const { applySessionPatch, effects } = fixture(session, {
+    synchronizeCodexSessionRoute: () => new Promise(resolve => { finishScan = resolve; }),
+  });
+  const pending = applySessionPatch('s1', { provider: null });
+  session.cliSessionId = 'new-native';
+  finishScan({ synchronized: true });
+  const result = await pending;
+  assert.equal(result.status, 409);
+  assert.equal(session.provider, 'managed-a');
+  assert.equal(session.cliSessionId, 'new-native');
+  assert.deepEqual(effects, []);
 });
 
 test('server composition gives profile routes the live chat-state reader', () => {
