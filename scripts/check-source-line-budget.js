@@ -169,6 +169,7 @@ const MIGRATION_DEBT = Object.freeze({
   // measured 3377 lines / 172087 bytes, ratchet up. The model-field
   // extraction target is unchanged.
   // 2026-11-21 Move subagent sync summaries to run-config-controls.js.
+  // Merge with the latest main further reduced this to 3332 lines / 169269 bytes.
   'public/run-config.js': Object.freeze({
     ceiling: 3332,
     byteCeiling: 169269,
@@ -819,8 +820,6 @@ function evaluateLineBudgets(entries, {
   const observed = new Map(entries.map(entry => [entry.file, entry.lines]));
 
   for (const entry of entries) {
-    // server.js is a retiring migration bridge; its size no longer gates CI.
-    if (entry.file === 'server.js') continue;
     const exemption = exemptions[entry.file];
     const bytes = Number.isInteger(entry.bytes) ? entry.bytes : 0;
     if (exemption) {
