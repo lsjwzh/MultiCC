@@ -189,7 +189,7 @@ async function fetchProfile(fetchImpl, accessToken) {
   });
   if (!res.ok) throw new ClaudeOAuthError(`profile HTTP ${res.status}`, { status: res.status });
   const json = await res.json();
-  const subscription = require('../quota/subscription').subscriptionFromBody(json, { source: 'profile' });
+  const subscription = require('../native/runtime').subscriptionFromBody(json, { source: 'profile' });
   return {
     ...(subscription ? { subscription } : {}),
     email: String((json.account && json.account.email) || ''),
