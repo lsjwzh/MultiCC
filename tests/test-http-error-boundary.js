@@ -3,16 +3,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const {
-  DOMAIN_KINDS,
-  DomainError,
-  InfrastructureError,
-  HttpError,
-  asyncRoute,
-  mapError,
-  presentDiagnosticResult,
-  presentError,
-} = require('../src/http');
+const { DOMAIN_KINDS, DomainError, InfrastructureError } = require('../src/http/domain-error');
+const { HttpError } = require('../src/http/http-error');
+const { mapError } = require('../src/http/error-map');
+const { presentError } = require('../src/http/error-presenter');
+const { asyncRoute } = require('../src/http/async-route');
+const { presentDiagnosticResult } = require('../src/http/diagnostic-result');
 const { safeErrorHandler } = require('../src/http-errors');
 
 const REQUEST_CONTEXT = Object.freeze({

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { presentError } = require('../src/http');
+const { presentError } = require('../src/http/error-presenter');
 const {
   MEMO_MAX_BYTES,
   createMemoController,
