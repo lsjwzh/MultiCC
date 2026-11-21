@@ -116,8 +116,12 @@ test('the handoff dialogs work in a real browser', async t => {
     assert.equal(full.get('scopes'), 'session,shared,task,cli,machine');
     assert.equal(full.get('skillsMode'), 'auto');
     assert.equal(full.has('git'), false, '界面上不许长出 git 设置');
-    const saved = fs.readdirSync(downloadDir);
-    assert.ok(saved.includes(ZIP_NAME), `真下载要落盘：${saved.join(', ') || '(空)'}`);
+    // The success message follows anchor.click(), while Chrome completes the
+    // download asynchronously. Still require the actual file and its bytes.
+    const downloaded = path.join(downloadDir, ZIP_NAME);
+    assert.ok(await waitFor(() => fs.existsSync(downloaded)),
+      `真下载要落盘：${fs.readdirSync(downloadDir).join(', ') || '(空)'}`);
+    assert.deepEqual(fs.readFileSync(downloaded), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00]));
 
     // 「只导执行环境」是唯一的开关，它一次关掉上下文层与代码层。
     await page.evaluate(`${role('envonly')}.checked = true; ${role('go')}.click()`);
