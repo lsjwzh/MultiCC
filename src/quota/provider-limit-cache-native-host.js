@@ -133,4 +133,6 @@ function createNativeProviderLimitCache({ file, legacyJsonFile = null, now = Dat
   });
 }
 
-module.exports = { createNativeProviderLimitCache };
+const STALE_MS_DEFAULT = 10 * 60 * 1000;
+const DATABASE_SCHEMA_VERSION = 1;
+module.exports = { createNativeProviderLimitCache, createProviderLimitCache: createNativeProviderLimitCache, STALE_MS_DEFAULT, DATABASE_SCHEMA_VERSION };

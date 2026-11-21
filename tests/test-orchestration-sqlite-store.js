@@ -1242,23 +1242,23 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   assert.doesNotMatch(host, /new native\.RustOrchestrationStore\(/,
     'the production host must never open the orchestration database in-process');
 
-  // The quota compatibility facade delegates to a Node lifecycle adapter, but
-  // the adapter must submit storage operations to the Rust-owned store. Keep
-  // both dependency boundaries explicit so a Node SQLite fallback cannot hide
-  // behind either module.
-  const quotaFacade = fs.readFileSync(path.join(root, 'src/quota/provider-limit-cache.js'), 'utf8');
+  // The retired quota facade must stay absent. The lifecycle adapter retains
+  // its compatibility aliases and submits storage to Rust; a Node SQLite
+  // fallback must not hide behind its exports.
+  assert.equal(fs.existsSync(path.join(root, 'src/quota/provider-limit-cache.js')), false);
   const quotaHost = fs.readFileSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js'), 'utf8');
   const dependencies = source => [...source.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)]
     .map(match => match[1]);
-  assert.deepEqual(dependencies(quotaFacade), ['./provider-limit-cache-native-host']);
   assert.deepEqual(dependencies(quotaHost), ['../native/runtime']);
-  assert.equal(require('../src/quota/provider-limit-cache').createProviderLimitCache,
-    require('../src/quota/provider-limit-cache-native-host').createNativeProviderLimitCache);
+  const quotaExports = require('../src/quota/provider-limit-cache-native-host');
+  assert.equal(quotaExports.createProviderLimitCache, quotaExports.createNativeProviderLimitCache);
+  assert.equal(quotaExports.STALE_MS_DEFAULT, 10 * 60 * 1000);
+  assert.equal(quotaExports.DATABASE_SCHEMA_VERSION, 1);
   assert.match(quotaHost, /new\s+addon\.RustProviderLimitStore\s*\(/);
   assert.match(quotaHost, /handle\.requestAsync\s*\(\s*op\s*,\s*input\s*\)/);
-  for (const source of [quotaFacade, quotaHost]) {
+  for (const source of [quotaHost]) {
     assert.doesNotMatch(source, /(?:node:sqlite|better-sqlite3|sqlite\/driver)/,
-      'quota facade and host must not use a Node SQLite driver');
+      'quota host must not use a Node SQLite driver');
   }
   const quotaAddon = fs.readFileSync(path.join(root, 'native/addon/src/provider_limit_store.rs'), 'utf8');
   const quotaCore = fs.readFileSync(path.join(root, 'native/core/src/provider_limit_store.rs'), 'utf8');

@@ -1,7 +1,7 @@
 'use strict';
 
 const { providerLimitBar } = require('./quota-bar-view');
-const { STALE_MS_DEFAULT } = require('./provider-limit-cache');
+const { STALE_MS_DEFAULT } = require('./provider-limit-cache-native-host');
 
 // 只投影展示字段；不把原始响应、错误详情或凭据放进跨会话事件。
 function providerLimitSnapshot(entry, now = Date.now()) {
