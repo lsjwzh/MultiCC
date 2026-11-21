@@ -29,13 +29,15 @@ pub mod chat_turn_effects;
 pub mod chat_turn_lifecycle;
 pub mod chat_ws_control;
 pub mod classify_vocab;
-pub mod claude_lane;
 pub mod claude_adapter;
+pub mod claude_lane;
+pub mod claude_settings_override;
 pub mod cli_capability;
 pub mod cli_completion;
 pub mod cli_switch;
 pub mod cli_switch_runtime;
 pub mod cli_tools_runtime;
+pub mod codex_provider_home;
 pub mod cpr;
 pub mod events;
 pub mod exact_secret;
@@ -57,13 +59,12 @@ pub mod orchestration_owner;
 pub mod orchestration_store;
 pub mod provider_attempt_creation;
 pub mod provider_attempt_identity;
-pub mod provider_invocation;
 pub mod provider_attempt_lifecycle;
 pub mod provider_attempt_route;
 pub mod provider_authorization;
 pub mod provider_claude_proxy_policy;
-pub mod codex_provider_home;
 pub mod provider_event_policy;
+pub mod provider_invocation;
 pub mod provider_outcome;
 pub mod provider_producers;
 pub mod provider_registry;
@@ -205,10 +206,10 @@ pub fn compute_usage(input: String) -> AsyncTask<Usage> {
 }
 
 pub mod claude_refresh;
-pub mod codex_models;
 pub mod codex_adapter;
 pub mod codex_app_adapter;
 pub mod codex_background;
+pub mod codex_models;
 
 pub mod provider_host;
 

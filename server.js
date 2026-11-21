@@ -1,6 +1,5 @@
 'use strict';
 
-// Capture private gateway bootstrap before modules spawn any descendants.
 const { connectAuthControl, applySourceAddonEnv } = require('./src/gateway-child');
 applySourceAddonEnv(__dirname);
 
@@ -12,7 +11,6 @@ applySourceAddonEnv(__dirname);
   }
 }
 
-// Load .env file (lightweight, no dependencies)
 const _envPath = require('path').join(__dirname, '.env');
 try {
   require('fs').readFileSync(_envPath, 'utf8').split('\n').forEach(line => {
@@ -33,7 +31,6 @@ for (const k of [
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
 require('./src/task-shell/migration-gate').runAtBoot();
-// Outbound requests use the user's proxy (env/system), loopback/exceptions direct
 require('./src/network/global-proxy').installGlobalProxy();
 const express = require('express');
 const http = require('http');

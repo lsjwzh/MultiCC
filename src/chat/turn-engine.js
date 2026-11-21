@@ -1498,7 +1498,7 @@ function createChatTurnEngine(deps) {
       // the spawned process env, which silently hijacks per-session provider
       // routing. Mirror the final routing env into a per-session --settings
       // file (higher precedence) so the session provider stays authoritative
-      // (see src/providers/claude-settings-override.js).
+      // (see native/addon/src/claude_settings_override.rs).
       let finalSpawnArgs = spawnArgs;
       if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') {
         const settingsFile = providers.settingsOverrideFor(

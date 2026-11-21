@@ -72,6 +72,15 @@ const codexProviderHome = {
   assertProxyConfigApplied: options => getNative().assertCodexProxyConfigApplied(options),
 };
 
+const settingsOverridesDir = path.join(require('node:os').homedir(), '.multicc', 'claude-settings-overrides');
+const claudeSettingsOverride = {
+  OVERRIDE_DIR: settingsOverridesDir,
+  ROUTING_KEY_RE: /^(?:ANTHROPIC_|CLAUDE_CODE_)/,
+  routingEnvOf: env => getNative().claudeRoutingEnv(env),
+  settingsOverrideFor: (session, env, extra) =>
+    getNative().claudeSettingsOverride(settingsOverridesDir, session, env, extra),
+};
+
 // 原生任务共用 libuv 工作池。只限制并行数，避免搜索突发占满文件 I/O 线程；排满时
 // 等待而不拒绝：Air 刷新与任务板落盘也走这条队列，拒绝就是一次失败的刷新或保存。
 let active = 0;
@@ -231,4 +240,5 @@ const codexBackground = {
 };
 module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
-  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome };
+  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
+  claudeSettingsOverride };

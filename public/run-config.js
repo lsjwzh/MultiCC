@@ -1,21 +1,10 @@
 'use strict';
 
-// 「运行配置」：任务顶栏那一颗胶囊 + 它点开的那个对话框。它替掉了从前分开的
-// CLI / 模型 / 推理强度三颗按钮，也替掉了 air-task-settings.js 那套「先选 CLI，
-// 再到 Auto Provider 里再选一次 CLI」的三步表单 —— 一处选完 CLI、线路、模型。
-//
-// 两种运行方式画在同一层：
-//   固定一条  一个 CLI + 一条线路 + 一个模型
-//   自动挑选  一个线路池，池里每一行是「CLI · 线路 · 模型」的完整组合
-//     按顺序  一直用第 1 条，额度用完或报错才往下换（cliSwitch=failover）
-//     按难度  每条消息先让 Jev 判断难易，再挑线路和模型（cliSwitch=routing）
-//
-// 这个文件只负责「运行配置」这一件事：协议兼容矩阵、线格式映射、胶囊文案都是纯
-// 函数（不需要 DOM，tests/test-run-config.js 直接调），真正的 DOM 只出现在 open()
-// 与它下面那几个 render 函数里。复用的是邻居那份能力，不是它的皮：
-//   · MultiCCProviderCatalog  车道/线路目录（显示名、短标记、协议、compatibleClis）
-//   · MultiCCChatAiConfig     模型候选、effort 档位、OpenCode 原生线路、子任务判定
-//   · MultiCCAutoProviderEditor  协议常量、Jev 网关表、跨信任域判定、预设存取
+// 运行配置胶囊统一选择 CLI、线路、模型与推理强度，替代旧三步表单。
+// 固定模式选一条线路；自动模式的池每行包含 CLI、线路与模型。
+// 自动按顺序失败切换（failover），或由 Jev 按消息难度选择（routing）。
+// 协议、线格式和文案为纯函数（test-run-config）；DOM 只在 open/render 中。
+// 目录、模型与预设分别复用 MultiCCProviderCatalog、MultiCCChatAiConfig、MultiCCAutoProviderEditor。
 (function initRunConfig(root, factory) {
   const api = factory();
   if (typeof module === 'object' && module.exports) module.exports = api;

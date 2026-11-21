@@ -52,7 +52,7 @@ const TARGETS = {
 const MODULE_PATHS = {
   src: {
     pricing: '../src/chat/auto-provider-pricing',
-    selectionKey: '../src/chat/auto-provider-selection-key',
+    selectionKey: '../src/providers/auto-provider-config',
     routing: '../src/chat/auto-provider-routing',
     runtime: '../src/chat/auto-provider-runtime',
   },

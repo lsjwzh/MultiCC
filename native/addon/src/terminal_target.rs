@@ -34,10 +34,7 @@ fn text_or_empty(value: LiveValue<'_>) -> Result<JsString> {
 /// wins, and the legacy `-gw-chat` id is still computed unconditionally
 /// afterwards, exactly as the host's `||` did, so the reads a hostile record
 /// observes do not change with the branch taken.
-fn terminal_for_record<'a>(
-    records: LiveValue<'a>,
-    record: LiveValue<'a>,
-) -> Result<LiveValue<'a>> {
+fn terminal_for_record<'a>(records: LiveValue<'a>, record: LiveValue<'a>) -> Result<LiveValue<'a>> {
     let null = record.from_value(&JsValue::Null)?;
     if !record.truthy()? || !records.truthy()? {
         return Ok(null);
@@ -52,13 +49,12 @@ fn terminal_for_record<'a>(
     // The legacy id is computed unconditionally, exactly as the host's `||`
     // did, so the reads a hostile record observes do not change with the
     // branch that wins.
-    let legacy_id = if record.get(c"kind")?.is_string("chat")?
-        && record.get(c"ephemeral")?.is_true()?
-    {
-        legacy_gateway_terminal_id(&text_or_empty(record.get(c"id")?)?).unwrap_or_default()
-    } else {
-        JsString::new()
-    };
+    let legacy_id =
+        if record.get(c"kind")?.is_string("chat")? && record.get(c"ephemeral")?.is_true()? {
+            legacy_gateway_terminal_id(&text_or_empty(record.get(c"id")?)?).unwrap_or_default()
+        } else {
+            JsString::new()
+        };
     let terminal_id = if explicit_id.is_empty() {
         legacy_id
     } else {
