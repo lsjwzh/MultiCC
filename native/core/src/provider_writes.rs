@@ -633,7 +633,7 @@ fn parse_config(value: Option<&Value>) -> Value {
 }
 
 /// `tomlValue(toml, key)`: the first `key = "…"` on a line of its own.
-fn toml_value(toml: Option<&Value>, key: &str) -> String {
+pub(crate) fn toml_value(toml: Option<&Value>, key: &str) -> String {
     let Some(Value::String(text)) = toml else {
         return String::new();
     };

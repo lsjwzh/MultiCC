@@ -62,6 +62,7 @@ pub mod provider_attempt_lifecycle;
 pub mod provider_attempt_route;
 pub mod provider_authorization;
 pub mod provider_claude_proxy_policy;
+pub mod codex_provider_home;
 pub mod provider_event_policy;
 pub mod provider_outcome;
 pub mod provider_producers;
