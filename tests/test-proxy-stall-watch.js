@@ -706,7 +706,7 @@ function virtualClock() {
   };
 }
 
-const { resolveModelRequestPolicy } = require('../src/chat/model-request-policy');
+const { resolveModelRequestPolicy } = require('../src/native/runtime');
 // The retired `auto-stall-timeout` host entry point only forwarded here, so
 // the stall budget is read straight off the Rust-owned policy value.
 const stallBudget = (session, env) => resolveModelRequestPolicy(session, env).stallTimeoutMs;
@@ -1129,4 +1129,70 @@ test('子请求在二次供应商解析后不继承主请求的重试截止时�
   clock.tick(230);
   assert.equal(res.destroyed, true);
   assert.equal(clock.size(), 0);
+});
+
+// The former wrapper from 0d14dfec remains an independent input/transport oracle.
+const legacyModelRequestPolicy = require('./helpers/legacy-model-request-policy').resolveModelRequestPolicy;
+
+test('Rust live budget inputs match 1024 frozen projections, bytes and frozen results', () => {
+  const efforts = [undefined, null, false, 'low', 'high', 'ULTRACODE', 123n, ['high']];
+  const modes = [undefined, 'manual', 'auto', 1n];
+  const values = [undefined, null, false, 0, -0, '', '  ', '15000.9', '-1', 'Infinity', NaN, Infinity,
+    50000n, 99999999999999999999999n, ['90000'], { a: 1 }];
+  let count = 0;
+  for (const effort of efforts) for (const mode of modes) for (const value of values) for (const inherit of [false, true]) {
+    const session = { effort, providerSelection: { mode } };
+    const env = { MULTICC_AUTO_STALL_TIMEOUT_MS: value, MULTICC_MODEL_IDLE_TIMEOUT_MS: inherit ? undefined : value,
+      MULTICC_MODEL_REQUEST_TIMEOUT_MS: value, MULTICC_MODEL_CONNECT_TIMEOUT_MS: value };
+    const old = legacyModelRequestPolicy(session, env), actual = resolveModelRequestPolicy(session, env);
+    assert.deepEqual(actual, old);
+    assert.equal(JSON.stringify(actual), JSON.stringify(old));
+    assert.ok(Object.isFrozen(actual));
+    assert.throws(() => { actual.stallTimeoutMs = 1; }, TypeError);
+    count++;
+  }
+  assert.equal(count, 1024);
+});
+
+test('Rust live budget inputs preserve lazy reads, reentrancy and original getter exceptions', () => {
+  function exercise(resolve, failing, mode = 'auto') {
+    const trace = [], thrown = { fixture: 'getter exception' };
+    const wrap = (name, target) => new Proxy(target, {
+      get(object, key, receiver) {
+        trace.push(`${name}.${String(key)}`);
+        if (`${name}.${String(key)}` === failing) throw thrown;
+        return Reflect.get(object, key, receiver);
+      },
+      ownKeys() { throw new Error('must not enumerate host records'); },
+    });
+    const env = wrap('env', { MULTICC_AUTO_STALL_TIMEOUT_MS: 45000n, MULTICC_MODEL_IDLE_TIMEOUT_MS: null,
+      MULTICC_MODEL_REQUEST_TIMEOUT_MS: 100000n, MULTICC_MODEL_CONNECT_TIMEOUT_MS: 60000n });
+    const session = wrap('session', { effort: 'high', providerSelection: wrap('selection', { mode }) });
+    try { return { trace, result: resolve(session, env) }; }
+    catch (error) { assert.equal(error, thrown); return { trace, threwOriginal: true }; }
+  }
+  for (const failing of [undefined, 'session.effort', 'session.providerSelection', 'selection.mode',
+    'env.MULTICC_AUTO_STALL_TIMEOUT_MS', 'env.MULTICC_MODEL_IDLE_TIMEOUT_MS',
+    'env.MULTICC_MODEL_REQUEST_TIMEOUT_MS', 'env.MULTICC_MODEL_CONNECT_TIMEOUT_MS']) {
+    assert.deepEqual(exercise(resolveModelRequestPolicy, failing), exercise(legacyModelRequestPolicy, failing), failing);
+  }
+  assert.deepEqual(exercise(resolveModelRequestPolicy, 'env.MULTICC_AUTO_STALL_TIMEOUT_MS', 'manual'),
+    exercise(legacyModelRequestPolicy, 'env.MULTICC_AUTO_STALL_TIMEOUT_MS', 'manual'));
+  function reentrant(resolve) {
+    const env = { MULTICC_MODEL_IDLE_TIMEOUT_MS: 16000 };
+    const session = { get effort() { env.MULTICC_MODEL_REQUEST_TIMEOUT_MS = 40000; return 'high'; },
+      get providerSelection() { env.MULTICC_MODEL_CONNECT_TIMEOUT_MS = 7000; return { mode: 'manual' }; } };
+    return resolve(session, env);
+  }
+  assert.deepEqual(reentrant(resolveModelRequestPolicy), reentrant(legacyModelRequestPolicy));
+});
+
+test('Rust live budget entry keeps primitive/default inputs and invalid host shape failures', () => {
+  for (const session of [undefined, false, 0, '', 'session', [], { providerSelection: null }, { providerSelection: 0 }]) {
+    assert.deepEqual(resolveModelRequestPolicy(session, {}), legacyModelRequestPolicy(session, {}));
+  }
+  for (const [session, env] of [[null, {}], [{}, null], [{ providerSelection: { mode: 'auto' } }, null]]) {
+    assert.throws(() => legacyModelRequestPolicy(session, env), TypeError);
+    assert.throws(() => resolveModelRequestPolicy(session, env), TypeError);
+  }
 });

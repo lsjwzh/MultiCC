@@ -201,6 +201,14 @@ Node 事件和 CLI 切换宿主暂留两行原生调用桥；不增加业务规�
 
 完整 26 道门禁中，其余 25 道退出码为 0：包括串行 Rust 2,732 项、ZCode 定向 59 项、隔离启动重复恢复、严格 Clippy、安全、HTTP 字节对拍 67/67、126/126、203/203 和无 Node 启动冒烟。标准 `npm test` 仍 exit 1，仅复现上述两项共享并发基线失败；完整断言报告去除耗时与工作树路径后与干净 `bf99c686` 基线逐字一致，后续被短路的 npm 阶段不记为通过。runner 继续使用 `umask 022` 和来源产物权限规范，原三项 remote-screen 安全测试完整通过，未放宽断言。
 
+### 模型请求预算的宿主参数提取
+
+删除 `src/chat/model-request-policy.js`（22 行），会话 effort、路由模式、环境预算键的读取顺序、BigInt 十进制传递及结果冻结迁入现有 Rust addon 模块。继续调用同一 core 超时规则，不改变计时器或代理请求生命周期。生产入口在 `src/native/runtime.js` 的 Provider invocation 装配处；仅保留一行 N-API 调用和默认宿主环境适配，生产 Node 净减 20 行。请求宿主移入 Rust 后删除该调用桥。
+
+旧 wrapper 冻结为测试 oracle，仅调整 native/runtime 的相对路径；Provider invocation 冻结夹具仍保留原始文本与哈希，通过测试专用 require 接线读取该 oracle。新增 1,024 组值与 JSON 字节对拍，以及惰性 getter、代理、重入、原异常身份、非法宿主形状和冻结结果检查。启动探针新增原生入口必需条件，保留旧预算接口缺失检查，并增加新入口缺失时拒绝启动的断言。完整门禁及收据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/model-request-policy-gates/`。
+
+完整 28 道门禁中，其余 27 道退出码为 0，包括串行 Rust 2,732 项、模型预算与调用装配定向 64 项、启动来源探针 15 项、严格 Clippy、安全、三组 HTTP 字节对拍与无 Node 启动冒烟。标准 `npm test` 仍 exit 1，仅复现上述两项共享并发基线失败，完整归一化断言报告与干净 `bf99c686` 基线逐字一致；被短路的后续 npm 阶段不记为通过。runner 的 `umask 022`、来源及复制品权限有独立记录，原三项 remote-screen 安全用例完整通过，未改断言。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

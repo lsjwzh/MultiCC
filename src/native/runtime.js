@@ -85,6 +85,7 @@ const opencodeProcessError = (cli, raw, stderr) =>
 const processSpawnArgs = (invocation, settings = null) => getNative().processSpawnArgs(invocation, settings);
 const isZcodeSessionId = value => getNative().isZcodeSessionId(value);
 const repairZcodeSessionState = session => getNative().repairZcodeSessionState(session);
+const resolveModelRequestPolicy = (session = {}, env = process.env) => getNative().resolveModelRequestPolicy(session, env);
 
 // 原生任务共用 libuv 工作池。只限制并行数，避免搜索突发占满文件 I/O 线程；排满时
 // 等待而不拒绝：Air 刷新与任务板落盘也走这条队列，拒绝就是一次失败的刷新或保存。
@@ -125,7 +126,7 @@ const providerInvocation = {
     const native = getNative();
     const ports = Object.assign(native.providerInvocationValidate(options), {
       revision: require('../chat/provider-attempt-runtime').createProviderRevision,
-      policy: require('../chat/model-request-policy').resolveModelRequestPolicy,
+      policy: resolveModelRequestPolicy,
       proof: require('../chat/turn-request').createProviderRouteProof,
       nativeOpenCodeId: require('../providers/native-opencode').nativeOpenCodeId,
       nativeVendorOf: require('../providers/native-vendor').nativeVendorOf,
@@ -246,4 +247,5 @@ const codexBackground = {
 module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
-  claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState };
+  claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
+  resolveModelRequestPolicy };

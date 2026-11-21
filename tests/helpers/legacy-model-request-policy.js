@@ -2,7 +2,7 @@
 
 // The host supplies only the request budget inputs; Rust owns the policy.
 // Timers remain in Node until the request lifecycle itself moves to Rust.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../src/native/runtime');
 // The shared bridge cannot carry BigInt; its decimal spelling preserves the
 // policy's String/Number coercions without losing integer precision in transit.
 const bridgeValue = value => typeof value === 'bigint' ? value.toString() : value;
