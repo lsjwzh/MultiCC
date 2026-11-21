@@ -101,5 +101,20 @@ const providerInvocation = {
   protocolFor: (cli, summary) => getNative().providerInvocationProtocol(cli, summary),
   providerRetryRouteOptions: attempt => getNative().providerRetryRouteOptions(attempt),
 };
+function createAutoProviderHandoff(options = {}) {
+  const native = getNative(), ports = native.autoProviderHandoffPorts(options), inject = ports.inject;
+  const owner = new native.RustAutoProviderHandoff();
+  return Object.freeze({
+    async schedule(input = {}) {
+      const plan = owner.prepare(input, ports);
+      if (plan.done) return plan.result;
+      let admitted, fault, caught = false;
+      try { admitted = await inject(...plan.args); }
+      catch (error) { fault = error; caught = true; }
+      return owner.finish(plan, admitted, fault, caught, ports);
+    },
+    clearSession: sessionId => owner.clearSession(sessionId),
+  });
+}
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
-  staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation };
+  staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff };

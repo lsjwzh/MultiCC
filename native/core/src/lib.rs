@@ -3,6 +3,7 @@ pub mod account_subscription;
 pub mod active_turns;
 pub mod api_error_policy;
 pub mod auto_provider_config;
+pub mod auto_provider_handoff;
 pub mod auto_provider_policy;
 pub mod auto_provider_pricing;
 pub mod auto_provider_routing;

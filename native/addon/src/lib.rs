@@ -6,6 +6,7 @@ pub mod api_error_policy;
 pub mod api_error_text;
 pub mod auth_security;
 pub mod auto_provider_config;
+pub mod auto_provider_handoff;
 pub mod auto_provider_policy;
 pub mod auto_provider_pricing;
 pub mod auto_provider_routing;
