@@ -38,7 +38,12 @@ function load(name) {
   const source = fs.readFileSync(file, 'utf8');
   const rewritten = source.replace(
     /require\((['"])(\.{1,2}\/[^'"]+)\1\)/g,
-    (_, __, rel) => `require(${JSON.stringify(path.resolve(base, rel))})`,
+    (_, __, rel) => {
+      const target = path.resolve(base, rel);
+      const dependency = target === path.join(SRC, 'quota', 'provider-limit-cache')
+        ? path.join(FROZEN, '..', 'legacy-provider-limit-cache-entry') : target;
+      return `require(${JSON.stringify(dependency)})`;
+    },
   );
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-orchestration-'));
   const out = path.join(dir, path.basename(file));

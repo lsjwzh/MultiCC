@@ -34,7 +34,7 @@ const {
 const { createAutoProviderRouting } = require('./legacy-auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('./legacy-auto-provider-pricing');
 const { createRoutingAdmissionPhase } = require('../../src/chat/admission-progress');
-const { STALE_MS_DEFAULT } = require('../../src/quota/provider-limit-cache');
+const { STALE_MS_DEFAULT } = require('./legacy-provider-limit-cache-entry');
 const { selectionKey } = require('./legacy-auto-provider-selection-key');
 
 const UNSAFE_HANDOFF_REASONS = new Set([

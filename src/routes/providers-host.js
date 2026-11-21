@@ -21,7 +21,7 @@
 
 const { isLocalRequest } = require('../request-locality');
 const { safeCode, sanitizePublicText } = require('../http/public-safety');
-const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache');
+const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
 const { providerLimitBar } = require('../quota/quota-bar-view');
 const { detachProviderReferences } = require('../providers/force-detach');
 const { reassignProviderSessions } = require('../provider-reassign');
