@@ -136,6 +136,9 @@ async function frontDoor({ capability = CAPABILITY, prove = true } = {}) {
   let session = null;
   const ready = new Promise(resolve => { session = resolve; });
   const server = net.createServer(socket => {
+    // Match the real front door: do not hold the first Open frame behind the
+    // handshake's delayed TCP acknowledgement.
+    socket.setNoDelay(true);
     opened.sockets.add(socket);
     let buffered = Buffer.alloc(0);
     let phase = 'proof';

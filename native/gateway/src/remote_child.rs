@@ -433,7 +433,6 @@ async fn start_process(inner: &Arc<Inner>, flight: &Arc<Flight>) {
     // flag Windows would give the child a visible one.
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }

@@ -23,16 +23,6 @@ pub fn fixture() -> PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
         let exe = std::env::current_exe().expect("test executable path");
-        let profile_dir = exe
-            .parent()
-            .and_then(|deps| deps.parent())
-            .expect("target/<profile>/deps/<test>")
-            .to_path_buf();
-        let name = if cfg!(windows) {
-            "remote_child_fixture.exe"
-        } else {
-            "remote_child_fixture"
-        };
         let mut cargo =
             std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
         cargo
@@ -42,18 +32,34 @@ pub fn fixture() -> PathBuf {
                 "multicc-gateway",
                 "--example",
                 "remote_child_fixture",
+                "--message-format=json-render-diagnostics",
             ])
             .current_dir(env!("CARGO_MANIFEST_DIR"));
         // Build into the profile the tests themselves run under.
-        if profile_dir.file_name().is_some_and(|n| n == "release") {
+        if exe
+            .ancestors()
+            .any(|part| part.file_name().is_some_and(|n| n == "release"))
+        {
             cargo.arg("--release");
         }
         if let Some(target) = std::env::var_os("CARGO_TARGET_DIR") {
             cargo.env("CARGO_TARGET_DIR", target);
         }
-        let status = cargo.status().expect("run cargo to build the fixture");
-        assert!(status.success(), "building remote_child_fixture failed");
-        let path = profile_dir.join("examples").join(name);
+        let output = cargo.output().expect("run cargo to build the fixture");
+        assert!(
+            output.status.success(),
+            "building remote_child_fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let path = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|message| {
+                message["reason"] == "compiler-artifact"
+                    && message["target"]["name"] == "remote_child_fixture"
+            })
+            .and_then(|message| message["executable"].as_str().map(PathBuf::from))
+            .expect("cargo did not report the remote_child_fixture executable");
         assert!(path.exists(), "{} was not produced", path.display());
         path
     })

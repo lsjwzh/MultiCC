@@ -690,6 +690,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_host_actions_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/remote_lan_resolver_test.dart",
       "tier": "core",
       "lane": "flutter"
@@ -740,6 +745,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/remote_screen_shell_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/remote_screen_wire_golden_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -747,11 +757,6 @@
     {
       "path": "app/test/remote_touch_controller_test.dart",
       "tier": "core",
-      "lane": "flutter"
-    },
-    {
-      "path": "app/test/remote_wheel_rail_test.dart",
-      "tier": "flow",
       "lane": "flutter"
     },
     {
@@ -5229,24 +5234,6 @@
       "path": "tests/test-remote-screen-h264-fixture.js",
       "tier": "flow",
       "lane": "deterministic",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
-      "path": "tests/test-remote-screen-h264.js",
-      "tier": "other",
-      "lane": "deterministic",
-      "owner": "npm:test:security",
-      "entrypoints": [
-        "npm:test:security"
-      ]
-    },
-    {
-      "path": "tests/test-remote-screen-probe.js",
-      "tier": "flow",
-      "lane": "isolated",
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
