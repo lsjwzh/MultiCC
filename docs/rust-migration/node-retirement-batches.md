@@ -111,7 +111,9 @@ Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和�
 
 本轮逐项审计的允许差异为：默认启动命令由 Node+CJS 改为 Rust 子命令；回合中显式切换线程排到前一回合结束之后，防止恢复操作提前改变主线程身份；原生管道错误日志保留系统原因，运行时堆栈文本可以不同。线程切换、等待 RPC 时关闭 stdin、关闭输出管道后的子进程回收均有专门断言。普通与恢复协议的八个冻结对拍场景，以及 HTTP 67 个场景，仍要求逐字节相同。
 
-模块六曾出现一次订阅缓存等待 30 秒超时。对应路由、缓存实现和测试与 `main` 无差异；未修改断言，单项 2/2 与整个 gateway 包随后复验通过。原始失败和复验日志分别留在 `module6/gateway-cache-timeout-red.log`、`module6/account-recheck.log` 与 `module6/gateway.log`。严格 Clippy 初次检出的代码写法问题已经修正，未增加 lint 豁免。所有模块的构建产物、日志和收据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/module4` 至 `module7`。
+合并前复验重复检出了订阅缓存测试超时。已用先前主线网关产物复现同一失败，路由、缓存实现和原测试断言均与主线一致。根因是并行夹具仅用进程号与系统时间戳命名目录；本机时间戳会重复，夹具互相清理目录。新增四线程、4,000 次目录名生成回归，旧实现只产生 965 个唯一目录而失败；改为额外附加原子序号后，回归和两个原订阅测试 3/3 通过，未修改原断开连接断言。此测试修复独立于生产迁移，最终 gateway 包增加到 1,039 项。原始超时、主线产物对照、碰撞红证和修复日志均保存在 `codex-sub-batch` 证据目录。
+
+合并前组合自动回归为 375/375，CLI 适配契约为 29/29。扩展组合时误纳入的 `tests/test-chat-stream.js` 是需要真实 Claude 的手工账号探针，因 `spawn claude ENOENT` 失败；原文件未改，未产生供应商请求，失败另存 `manual-claude-probe-result.json`，未将其计作自动门禁通过。自动组合继续使用既有隔离流测试。严格 Clippy 初次检出的代码写法问题已修正，未增加 lint 豁免。各模块及最终复验的构建产物、日志和收据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/module4` 至 `module7`、`codex-sub-batch`。
 
 第三批整体继续进行。下一块仍须迁移 Provider 账号及凭据决策、Codex 会话宿主和其余在册 CLI 执行链路。`src/task-shell/runtime.js`（712 行）、`src/task-shell/host.js`（553 行）、`src/session-work/scheduler.js`（908 行）仍由这些宿主和第四批会话状态消费；本轮没有删除它们，也没有把它们计入减行数。
 
