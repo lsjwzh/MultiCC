@@ -544,6 +544,38 @@ test('deleteExec keeps the provider when a reference cannot be detached', async 
   assert.deepEqual(harness.deleted, []);
 });
 
+test('deleteExec waits for an asynchronous session PATCH before reading status and deleting', async () => {
+  const session = { id: 's1', label: 'One', cli: 'codex', provider: 'codex-one' };
+  const references = [{ kind: 'main', sessionId: 's1', sessionName: 'One' }];
+  let releasePatch;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const harness = createHarness({
+    persistedSessions: new Map([['s1', session]]),
+    findProviderReferences: () => session.provider ? references : [],
+    applySessionPatch(sessionId, body) {
+      assert.equal(sessionId, 's1');
+      assert.deepEqual(body, { provider: null });
+      return new Promise(resolve => {
+        releasePatch = () => {
+          session.provider = null;
+          resolve({ status: 200, body: {} });
+        };
+        markStarted();
+      });
+    },
+  });
+  const response = host(harness.app, { op: 'deleteExec', appType: 'codex', id: 'codex-one', references });
+  await started;
+  assert.deepEqual(harness.deleted, []);
+  releasePatch();
+  const { body } = await response;
+  assert.equal(body.deleteOk, true);
+  assert.deepEqual(body.detached, [{ kind: 'session', sessionId: 's1', sessionName: 'One', deferred: false }]);
+  assert.deepEqual(body.failed, []);
+  assert.deepEqual(harness.deleted, [{ appType: 'codex', id: 'codex-one' }]);
+});
+
 test('deleteExec revokes all relay credentials scoped to the deleted provider', async () => {
   const harness = createHarness({ findProviderReferences: () => [] });
   const response = await host(harness.app, { op: 'deleteExec', appType: 'claude', id: 'claude-one', references: [] });
