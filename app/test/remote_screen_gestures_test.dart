@@ -467,10 +467,15 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
       expect(ageShown(tester), '10');
       service.frames.add(null);
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 30)),
-      );
       await tester.pump();
+      // Image decoding finishes asynchronously; wait for the actual frame
+      // rather than assuming a fixed real-time delay is enough under CI load.
+      for (var i = 0; i < 40 && ageShown(tester) != null; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 25)),
+        );
+        await tester.pump();
+      }
       expect(ageShown(tester), isNull);
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 1));
