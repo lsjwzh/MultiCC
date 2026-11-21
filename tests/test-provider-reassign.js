@@ -33,7 +33,7 @@ const providers = require('../src/providers/core.js');
 const { createSessionPolicy } = require('../src/cli/session-policy.js');
 const { createSessionProfileRoutes } = require('../src/routes/session-profile.js');
 const { createProviderRoutes } = require('../src/routes/providers.js');
-const { findProviderReferences } = require('../src/providers/references.js');
+const { findProviderReferences } = require('../src/native/runtime');
 const { reassignProviderSessions } = require('../src/provider-reassign.js');
 
 // ── Pure module: the planner, with no route or session runtime in the way ────
