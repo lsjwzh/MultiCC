@@ -8,6 +8,19 @@ const assert = require('node:assert/strict');
 
 const run = require('../public/run-config');
 
+test('browser scripts load the extracted subagent summaries before run config', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  const window = {};
+  const context = vm.createContext({ window });
+  for (const name of ['provider-catalog.js', 'run-config-controls.js', 'run-config.js']) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../public', name), 'utf8'), context, { filename: name });
+  }
+  assert.equal(window.MultiCCRunConfig.syncSummary({ state: 'loading' }).text, '正在检查要更新的任务…');
+  assert.match(window.MultiCCRunConfig.clearSummary({ family: 'codex', counts: { applied: 1 } }), /1 个.*Codex/);
+});
+
 // 显示名/短标记在三端只有一份（public/provider-catalog.js）。这里挂一个最小目录，
 // 让 pillModel 走真实分支，而不是它自己的 clean(cli) 兜底。
 function withCatalog(fn) {

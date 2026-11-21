@@ -402,13 +402,13 @@
     {
       "id": "claude-native-transcripts",
       "classification": "external-owner",
-      "owner": "Claude CLI adapter",
+      "owner": "Rust Claude CLI adapter",
       "rationale": "Resume cleanup edits Claude-owned JSONL transcripts and cannot be redirected to MultiCC's data root.",
       "migrationStrategy": "Keep the adapter bounded to a supplied native-session location and add upstream-format characterization tests before changing behavior.",
       "sources": [
         {
-          "file": "src/cli-adapters/claude.js",
-          "anchor": "if (cleaned > 0) fs.writeFileSync(jsonlPath, output.join('\\n'));"
+          "file": "native/core/src/claude_adapter.rs",
+          "anchor": "fs::write(file, output.join(\"\\n\"))?;"
         }
       ]
     },

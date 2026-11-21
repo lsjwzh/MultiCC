@@ -168,9 +168,10 @@ const MIGRATION_DEBT = Object.freeze({
   // Code / Codex) and the lane switch now announces inherited-route changes;
   // measured 3377 lines / 172087 bytes, ratchet up. The model-field
   // extraction target is unchanged.
+  // 2026-11-21 Move subagent sync summaries to run-config-controls.js.
   'public/run-config.js': Object.freeze({
-    ceiling: 3377,
-    byteCeiling: 172087,
+    ceiling: 3343,
+    byteCeiling: 170123,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),
