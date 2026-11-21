@@ -205,7 +205,7 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     };`);
     assert.equal(probeAddon(staleRegistry), false, 'registry factory and both methods are required');
   }
-  for (const name of ['providerEventFence', 'providerHostTextEnvelope', 'chatOwnsCurrentRunner', 'chatAssignKillReason',
+  for (const name of ['taskDirectoryCapacityLimit', 'taskDirectoryCapacity', 'providerEventFence', 'providerHostTextEnvelope', 'chatOwnsCurrentRunner', 'chatAssignKillReason',
     'observeCodeFiles', 'RustWorkspaceRelease',
     'chatClearSucceededErrors', 'chatRecordResultEvent', 'chatRecordCloseResult', 'chatRecordPartialCheckpoint', 'chatHasPartialCheckpoint',
     'providerRequiredIdentity', 'providerPositiveInteger', 'providerTimeoutBudget', 'providerAttemptFields',

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
-const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/task-shell/capacity');
+const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/native/runtime').taskShellCapacity;
 const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/native/runtime').taskShellContext;
 const { createTaskShellHost } = require('../src/task-shell/host');
 const { displayMessages, displayTask } = require('../src/task-display-attribution');
@@ -734,4 +734,103 @@ test('P1: mounting the host enforces the attribution retention window', async t 
   host.mountRoutes({ get: () => {}, post: () => {}, put: () => {}, delete: () => {}, use: () => {} });
   assert.deepEqual(host.taskOperations().list('sh_1').map(row => row.clientMsgId), ['fresh'],
     'the mount sweep keeps only the rows still inside the retention window');
+});
+
+// Frozen from c880608a, with only the taskDomain import path adapted.
+const legacyCapacity = require('./helpers/legacy-task-shell-capacity');
+const nativeCapacity = require('../src/native/runtime').taskShellCapacity;
+
+test('Rust capacity entry preserves 80 frozen fallback projections around the directory limit', () => {
+  assert.equal(nativeCapacity.MAX_TASKS_PER_DIRECTORY, legacyCapacity.MAX_TASKS_PER_DIRECTORY);
+  let comparisons = 0;
+  for (const count of [0, 1, 1023, 1024, 1025]) {
+    const tasks = Array.from({ length: count }, (_, i) => ({ id: `seed-${i}`, dirId: 'd1' }));
+    tasks.push({ id: 'other', dirId: 'd2' }, { id: 'absent-dir' });
+    for (const dirId of ['d1', 'd2', 'missing', undefined, null, 0, '0', { id: 'd1' }]) {
+      for (const key of ['directoryTaskCount', 'directoryAtCapacity']) {
+        const store = { list(kind) { assert.equal(this, store); assert.equal(kind, 'task'); return tasks; } };
+        assert.equal(nativeCapacity[key](store, dirId), legacyCapacity[key](store, dirId));
+        comparisons++;
+      }
+    }
+  }
+  assert.equal(comparisons, 80);
+});
+
+test('Rust capacity rule path retains raw return identity, directory identity and method receiver', () => {
+  const marker = { fixture: 'identity' }, cycle = {}; cycle.self = cycle;
+  const values = [undefined, null, false, true, 0, 1024, NaN, '', marker, cycle, Symbol('return'), Promise.resolve(marker)];
+  for (const value of values) for (const key of ['directoryTaskCount', 'directoryAtCapacity']) {
+    const dirId = { fixture: 'opaque directory' };
+    const store = {
+      rule(input) {
+        assert.equal(this, store); assert.equal(input.dirId, dirId);
+        assert.deepEqual(Reflect.ownKeys(input), ['action', 'dirId']);
+        assert.equal(input.action, key === 'directoryTaskCount' ? 'directoryCount' : 'directoryCapacity');
+        return value;
+      },
+      get list() { assert.fail('rule path enumerated task records'); },
+    };
+    assert.equal(nativeCapacity[key](store, dirId), value);
+    assert.equal(legacyCapacity[key](store, dirId), value);
+  }
+});
+
+test('Rust capacity getters, nested calls, short circuits and thrown objects match the frozen entry', () => {
+  function exercise(api, key, ruleEnabled, fail) {
+    const trace = [], fault = { fixture: 'capacity port failure' }, marker = { fixture: 'capacity result' };
+    const store = {
+      get rule() {
+        trace.push('get rule');
+        if (fail === 'rule getter') throw fault;
+        if (!ruleEnabled) return false;
+        assert.equal(api.directoryTaskCount({ rule() { return 7; } }, 'nested'), 7);
+        return function(input) {
+          trace.push(`rule ${input.action}`); assert.equal(this, store);
+          if (fail === 'rule call') throw fault;
+          return marker;
+        };
+      },
+      get list() {
+        trace.push('get list');
+        if (fail === 'list getter') throw fault;
+        return function(kind) {
+          trace.push(`list ${kind}`); assert.equal(this, store);
+          if (fail === 'list call') throw fault;
+          return [{ dirId: 'd1' }];
+        };
+      },
+    };
+    try { return { trace, value: api[key](store, 'd1') }; }
+    catch (error) { assert.equal(error, fault); return { trace, threw: true }; }
+  }
+  for (const key of ['directoryTaskCount', 'directoryAtCapacity']) {
+    for (const ruleEnabled of [false, true]) {
+      for (const fail of [undefined, 'rule getter', 'rule call', 'list getter', 'list call']) {
+        assert.deepEqual(exercise(nativeCapacity, key, ruleEnabled, fail),
+          exercise(legacyCapacity, key, ruleEnabled, fail));
+      }
+    }
+  }
+});
+
+test('Rust capacity retains changing rule getters and JSON serialization failures', () => {
+  for (const api of [legacyCapacity, nativeCapacity]) {
+    for (const key of ['directoryTaskCount', 'directoryAtCapacity']) {
+      let reads = 0;
+      const store = { get rule() {
+        reads++;
+        return reads === 1 ? () => assert.fail('first getter result was invoked') : () => 'second getter';
+      } };
+      assert.equal(api[key](store, 'd1'), 'second getter');
+      assert.equal(reads, 2);
+      const fault = { fixture: 'task JSON conversion' };
+      assert.throws(() => api[key]({ list() { return [{ toJSON() { throw fault; } }]; } }, 'd1'),
+        error => error === fault);
+      for (const invalid of [{ rule: 1 }, { list: 1 }]) {
+        const expectedMessage = invalid.rule ? 'store.rule is not a function' : 'store.list is not a function';
+        assert.throws(() => api[key](invalid, 'd1'), error => error instanceof TypeError && error.message === expectedMessage);
+      }
+    }
+  }
 });

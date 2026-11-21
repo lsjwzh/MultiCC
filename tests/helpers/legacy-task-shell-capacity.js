@@ -1,5 +1,5 @@
 'use strict';
-const { taskDomain } = require('../native/task-domain');
+const { taskDomain } = require('../../src/native/task-domain');
 const MAX_TASKS_PER_DIRECTORY = 1024;
 function directoryTaskCount(store, dirId) {
   return store.rule ? store.rule({ action: 'directoryCount', dirId })

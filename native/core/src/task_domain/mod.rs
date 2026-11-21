@@ -14,6 +14,7 @@ pub mod retention;
 pub mod routing;
 pub mod view;
 use serde_json::{json, Value};
+pub const MAX_TASKS_PER_DIRECTORY: usize = 1024;
 pub fn text(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
@@ -157,7 +158,7 @@ fn run_value(v: &Value) -> Result<Value, String> {
                 .iter()
                 .filter(|t| t["dirId"] == v["dirId"])
                 .count();
-            json!({"count":count,"limit":1024,"atCapacity":count>=1024})
+            json!({"count":count,"limit":MAX_TASKS_PER_DIRECTORY,"atCapacity":count>=MAX_TASKS_PER_DIRECTORY})
         }
         _ => return Err("invalid_task_domain_command".into()),
     };
