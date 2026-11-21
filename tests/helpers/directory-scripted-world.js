@@ -26,7 +26,7 @@ const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 
-const { realPathOf, isHomeOrAbove } = require('../../src/path-safety');
+const { realPathOf, isHomeOrAbove } = require('./legacy-path-safety');
 const { friendlyDirReason, dirReasonFix } = require('../../src/directories');
 const { directoryPushState, pushDirectory, invalidate } = require('../../plugins/utils/git-push');
 
