@@ -73,7 +73,7 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative, messageComposer } = require('./src/native/runtime');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative, messageComposer, bootstrapState } = require('./src/native/runtime');
 const { findProviderReferences } = require('./src/providers/references'); const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
@@ -103,7 +103,6 @@ const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlia
 // MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
-const { bootstrapState } = require('./src/bootstrap/state');
 const { createSessionPersistence } = require('./src/session/persistence');
 const { createSessionRecords } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');

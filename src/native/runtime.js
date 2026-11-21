@@ -20,6 +20,15 @@ const messageComposer = {
   buildVoiceInputPrompt: (voice, text) => getNative().messageVoicePrompt(voice, text),
 };
 
+// Startup decisions remain native; these forward existing synchronous host ports.
+const stateBootstrap = {
+  isNewSchema: records => getNative().stateIsNewSchema(records),
+  hasMigratableOldSessions: records => getNative().stateHasMigratableOldSessions(records),
+  migrateOldSchema: (records, options) => getNative().stateMigrateOldSchema(records, options, require('node:crypto')),
+  bootstrapState: options => getNative().stateBootstrap(options, require('node:fs'), require('node:crypto')),
+};
+const bootstrapState = stateBootstrap.bootstrapState;
+
 function gatewayPath() {
   return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
@@ -305,4 +314,4 @@ module.exports = { addonPath, gatewayPath, getNative, record, status, runNative,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription };
+  stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription };

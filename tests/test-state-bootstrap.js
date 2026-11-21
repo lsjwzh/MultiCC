@@ -11,7 +11,7 @@ const {
   hasMigratableOldSessions,
   migrateOldSchema,
   bootstrapState,
-} = require('../src/bootstrap/state');
+} = require('../src/native/runtime').stateBootstrap;
 
 function createHarness(t, overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-state-bootstrap-'));
@@ -236,4 +236,151 @@ test('production composition delegates state loading and removes legacy host hel
     'the default workspace must still be created when it does not exist');
   assert.match(source, /then\(ensureFirstRunDirectory\)\.then\(initWorktrees\)/,
     'readiness must create the default directory before worktrees are initialized');
+});
+
+// The complete pre-migration implementation remains an independent oracle.
+const legacyBootstrap = require('./helpers/legacy-bootstrap-state');
+const nativeBootstrap = { isNewSchema, hasMigratableOldSessions, migrateOldSchema, bootstrapState };
+const frozenBootstrap = fs.readFileSync(path.join(__dirname, 'helpers/legacy-bootstrap-state.js'));
+const OPAQUE_UUID = Object.freeze({ uuid: 'opaque', fn() {} });
+
+test('bootstrap oracle is byte-frozen and the production file is retired', () => {
+  assert.equal(require('node:crypto').createHash('sha256').update(frozenBootstrap).digest('hex'),
+    'dd4d45eedc4fe5ca92e61f7e763ac697251466166542c2a107f6d4c862d14c99');
+  assert.equal(fs.existsSync(path.join(__dirname, '../src/bootstrap/state.js')), false);
+});
+
+function differentialBootstrap(api, config = {}, failAt) {
+  const trace = [];
+  const marker = { message: 'port error \ud800', marker: true };
+  const wrap = (name, value) => new Proxy(value, {
+    get(target, key, receiver) {
+      trace.push(['get', name, String(key)]);
+      if (failAt === `${name}.${String(key)}`) throw marker;
+      return Reflect.get(target, key, receiver);
+    },
+    ownKeys() { throw new Error('startup input must not be cloned'); },
+  });
+  const raw = config.records || [{ id: 'old\ud800', cwd: '/fake/project', createdAt: 'then',
+    claudeSessionId: 'terminal', chatClaudeSessionId: 'chat' }, { id: '__aux__', type: 'aux' }];
+  const records = raw.map((r, i) => wrap(`record${i}`, r));
+  const source = wrap('records', records);
+  const sessions = wrap('sessions', { present: config.sessionsPresent !== false,
+    recovered: !!config.recovered, recoveredFrom: 'sessions.bak', data: source });
+  const directories = wrap('directories', { present: config.directoriesPresent !== false,
+    recovered: !!config.recovered, recoveredFrom: 'directories.bak', size: 2 });
+  const replay = wrap('replay', { replayed: 1, skipped: 2, messages: ['replayed-detail'] });
+  const paths = wrap('paths', { sessionsFile: '/fake/sessions.json', directoriesFile: '/fake/directories.json', journalDir: '/fake/journal' });
+  let owner;
+  owner = wrap('owner', {
+    replayJournals() { trace.push(['replay', this === owner]); return replay; },
+    loadSessions() { trace.push(['loadSessions', this === owner]); if (config.loadSessionsError) throw marker; return sessions; },
+    loadDirectories() { trace.push(['loadDirectories', this === owner]); if (config.loadDirectoriesError) throw marker; return directories; },
+    initDirectories(entries) { trace.push(['initialize', this === owner, [...entries]]); },
+  });
+  let history;
+  history = wrap('history', {
+    renameSession(from, to) { trace.push(['rename', this === history, from, to]); if (config.renameError) throw marker; },
+  });
+  let filesystem;
+  filesystem = wrap('fs', {
+    copyFileSync(...args) { trace.push(['copy', this === filesystem, ...args]); if (config.copyError) throw marker; },
+  });
+  let logger;
+  logger = wrap('logger', {
+    log(value) { trace.push(['log', this === logger, value]); },
+    warn(value) { trace.push(['warn', this === logger, value]); if (config.warningError) throw marker; },
+    error(value) { trace.push(['error', this === logger, value]); },
+  });
+  let sequence = 0;
+  const uuid = function () {
+    trace.push(['uuid', this === undefined]);
+    if (config.uuidError) throw marker;
+    return config.opaqueUuid ? OPAQUE_UUID : `dir-${++sequence}`;
+  };
+  const options = wrap('options', { stateOwner: owner, paths, chatHistoryRepository: history,
+    fs: filesystem, randomUUID: uuid, logger });
+  try {
+    const result = api.bootstrapState(options);
+    assert.equal(Object.isFrozen(result), true);
+    const entries = [...result.state.persistedSessions.entries()].map(([id, value]) => {
+      if (records.includes(value)) return [id, { originalIdentity: records.indexOf(value) }];
+      return [id, value];
+    });
+    return { entries, needsSave: result.state.needsSave, needsDefaultDirectory: result.state.needsDefaultDirectory, trace };
+  } catch (error) {
+    assert.equal(error, marker, 'host failure identity is preserved');
+    return { thrown: true, trace };
+  }
+}
+
+test('startup differential preserves live getter/callback order, identity and recovery logs', () => {
+  for (const records of [[], [{ id: '__aux__', type: 'aux' }],
+    [{ id: 'new', dirId: 'd', kind: 'chat' }],
+    [{ id: 'old\ud800', cwd: '/fake/project', chatClaudeSessionId: 'chat' }, { id: '__aux__', type: 'aux' }],
+    [{ id: 'one' }, { id: 'two', chatClaudeSessionId: 'chat2' }]]) {
+    for (const recovered of [false, true]) for (const directoriesPresent of [false, true]) {
+      const config = { records, recovered, directoriesPresent };
+      assert.deepEqual(differentialBootstrap(nativeBootstrap, config), differentialBootstrap(legacyBootstrap, config));
+    }
+  }
+});
+
+test('rename and backup failures keep their original best-effort boundaries', () => {
+  for (const config of [{ renameError: true }, { copyError: true }, { renameError: true, copyError: true },
+    { opaqueUuid: true }, { sessionsPresent: false }, { warningError: true, recovered: true }]) {
+    assert.deepEqual(differentialBootstrap(nativeBootstrap, config), differentialBootstrap(legacyBootstrap, config));
+  }
+});
+
+test('startup failures retain exception identity and stop at the same effect', () => {
+  for (const config of [{ loadSessionsError: true }, { loadDirectoriesError: true }, { uuidError: true }]) {
+    assert.deepEqual(differentialBootstrap(nativeBootstrap, config), differentialBootstrap(legacyBootstrap, config));
+  }
+  for (const failAt of ['options.stateOwner', 'owner.replayJournals', 'owner.loadSessions',
+    'owner.loadDirectories', 'owner.initDirectories', 'paths.sessionsFile', 'options.fs',
+    'options.randomUUID', 'options.logger', 'history.renameSession', 'logger.log', 'fs.copyFileSync',
+    'record0.cwd', 'record0.chatClaudeSessionId']) {
+    assert.deepEqual(differentialBootstrap(nativeBootstrap, {}, failAt), differentialBootstrap(legacyBootstrap, {}, failAt), failAt);
+  }
+});
+
+test('schema predicates retain Array.some short circuiting, holes and live reads', () => {
+  for (const name of ['isNewSchema', 'hasMigratableOldSessions']) {
+    const run = api => {
+      const trace = [];
+      const record = new Proxy({ id: '__aux__', type: 'aux', dirId: undefined, kind: undefined }, {
+        get(target, key) { trace.push(key); return target[key]; },
+      });
+      const records = [record, , { dirId: null }];
+      return { value: api[name](records), trace };
+    };
+    assert.deepEqual(run(nativeBootstrap), run(legacyBootstrap));
+    assert.throws(() => nativeBootstrap[name]([null]), TypeError);
+  }
+});
+
+test('legacy migration preserves duplicate Map keys and closes an iterable on UUID failure', () => {
+  const run = api => {
+    const trace = [];
+    const records = [{ id: 'same', chatClaudeSessionId: 'c1' }, { id: 'same', chatClaudeSessionId: 'c2' }];
+    let n = 0;
+    const result = api.migrateOldSchema(records, { randomUUID: () => `d-${++n}` });
+    const marker = {};
+    const iterable = { *[Symbol.iterator]() { try { yield { id: 'a' }; yield { id: 'b' }; } finally { trace.push('closed'); } } };
+    assert.throws(() => api.migrateOldSchema(iterable, { randomUUID() { trace.push('uuid'); throw marker; } }), e => e === marker);
+    return { result, trace };
+  };
+  assert.deepEqual(run(nativeBootstrap), run(legacyBootstrap));
+});
+
+test('boot validation errors are unchanged and do not touch storage', () => {
+  for (const options of [undefined, null, false, 1, () => {}, {}, { stateOwner: {} },
+    { stateOwner: { replayJournals() {}, loadSessions() {}, loadDirectories() {}, initDirectories() {} } }]) {
+    const outcome = api => {
+      try { api.bootstrapState(options); return null; }
+      catch (error) { return [error.name, error.message]; }
+    };
+    assert.deepEqual(outcome(nativeBootstrap), outcome(legacyBootstrap));
+  }
 });
