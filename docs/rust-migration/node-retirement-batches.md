@@ -255,7 +255,13 @@ Node 仅保留现有原生模块的惰性实例引用与调用闭包；Rust 通�
 
 删除 `src/cli/model-default.js`（12 行），将具名工厂正文原样集中到共享原生绑定，唯一生产消费点和现有会话策略测试只更换导入，生产 Node 净减 8 行。模型选择、历史快照、严格 TTL 和查询缓存原本已由 `RustModelDefaults` 持有，本批不宣称新增这些策略的 Rust 迁移。Node 只保留持有原生所有者及历史、时钟回调的闭包；CLI 会话策略宿主退出后即可删除。
 
-Rust 源码、原有工厂和 `resolve` 启动探针保持不变，既有模型与 TTL、时钟、线路身份、回调异常及重入断言不变。完整验收尚在进行，证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/model-default-entry-gates/`。整体 Node 后端清零尚未完成。
+Rust 源码、原有工厂和 `resolve` 启动探针保持不变，既有模型与 TTL、时钟、线路身份、回调异常及重入断言不变。首次完整验收停在慢读客户端用例 `ResetWithoutClosingHandshake`，保留原 Rust exit 101 和 npm 未运行记录；原树隔离运行 10/10 通过后，只完整复验一次。33 道门禁中 32 道退出 0，包括串行 Rust 2,736 项、会话策略 24 项、三组 HTTP 对拍及无 Node 启动冒烟；标准 `npm test` exit 1，仅有上述第 249、514 行两项基线失败，完整归一化断言报告与干净 `bf99c686` 逐字一致，被短路的后续 npm 阶段不记为通过。来源及复制品权限、持久夹具日志、外部线程采样和退出状态均已核对。验收树 `39d3082b` 原样提交为 `f2607b46`，合入 `cd9ddf12` 后主仓与任务工作区干净且为 0/0；证据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/model-default-entry-gates/isolated-pass-rerun/`。该结果不代表竞态已修复，整体 Node 后端清零尚未完成，服务未重启。
+
+### 已有 Rust Claude 额度解析器的观测入口
+
+删除 `src/quota/claude-header-quota.js`（12 行），将具名函数正文原样集中到共享原生绑定，两个生产消费点与现有测试只更换导入，生产 Node 净减 7 行。头部解析、窗口身份、过期和合并策略原本已在 Rust，本批仅退休独立 Node 兼容入口。Node 保留 JSON 编解码与吞掉观测错误的绑定边界，防止额度读取打断流；宿主调用协议迁出 Node 后即可删除。
+
+旧版缓存记录器和额度渲染器改为依赖独立冻结的原入口，仅调整导入路径；原函数的展开、JSON 求值顺序与 `catch` 边界以及既有窗口、账号隔离、渲染、缓存断言均保留。Rust 实现与 `cprClaudeQuota` 启动探针不变。完整验收尚在进行，证据目录为主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/claude-header-quota-entry-gates/`。整体 Node 后端清零尚未完成。
 
 ## 每批验收与最后停用条件
 

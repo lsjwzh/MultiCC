@@ -28,7 +28,7 @@ const {
   arkWindowLabel,
 } = require('./legacy-quota-bar-view');
 const { accountProviderId, accountIdOfProviderId } = require('../../src/providers/official-catalog');
-const { claudeQuota } = require('../../src/quota/claude-header-quota');
+const { claudeQuota } = require('./legacy-claude-header-quota');
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;
 // A 429 clears itself once the window rolls over, so a short cooldown is enough

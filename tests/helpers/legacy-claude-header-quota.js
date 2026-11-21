@@ -1,7 +1,7 @@
 'use strict';
 
 // Parsing, window identity, expiry and merging live in Rust.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../src/native/runtime');
 
 function claudeQuota(op, input) {
   try {
