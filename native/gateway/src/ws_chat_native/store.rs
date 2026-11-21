@@ -337,3 +337,7 @@ pub fn is_claude(record: &V) -> bool {
 pub fn is_codex_app(record: &V) -> bool {
     record.get("cli") == Some(&V::from("codex-exp"))
 }
+
+pub fn is_codex(record: &V) -> bool {
+    is_codex_app(record) || record.get("cli") == Some(&V::from("codex"))
+}

@@ -2,7 +2,15 @@
 //! runtime. The WebSocket host owns the turn and checkpoints its thread ID.
 use multicc_core::chat_turn_host::{Outcome, RunResult};
 use serde_json::{json, Value};
-use std::{collections::HashSet, ffi::OsString, io, path::PathBuf, process::Stdio, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashSet,
+    ffi::OsString,
+    fs, io,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
@@ -15,13 +23,23 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_FRAME: u64 = 4 * 1024 * 1024;
 const TAIL_BYTES: usize = 8192;
+pub(super) const DEFAULT_PROVIDER_ID: &str = "codex-official";
+pub(super) const DEFAULT_PROVIDER_NAME: &str = "同 Codex 终端";
 
 pub(super) struct Launch {
+    pub app_server: bool,
     pub cwd: PathBuf,
     pub home: PathBuf,
     pub thread: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub proxy: Option<Managed>,
+}
+
+pub(super) struct Managed {
+    pub home: PathBuf,
+    pub endpoint: String,
+    pub token: String,
 }
 
 pub(super) enum Event {
@@ -31,6 +49,7 @@ pub(super) enum Event {
 
 pub(super) fn binary() -> OsString {
     std::env::var_os("CODEX_BIN")
+        .or_else(|| std::env::var_os("CODEX_CMD"))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| if cfg!(windows) { "codex.exe" } else { "codex" }.into())
 }
@@ -43,17 +62,89 @@ pub(super) fn valid_thread(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
 }
 
+pub(super) async fn managed_home(home: &Path, session: &str) -> Result<PathBuf, String> {
+    let prefix = session
+        .to_ascii_lowercase()
+        .trim_matches('-')
+        .chars()
+        .take(48)
+        .collect::<String>();
+    let prefix = if prefix.is_empty() {
+        "session"
+    } else {
+        &prefix
+    };
+    let hash = format!("{:x}", Sha256::digest(session.as_bytes()));
+    let home = home
+        .join(".multicc")
+        .join("codex-session-homes")
+        .join(format!("{prefix}-{}", &hash[..20]));
+    super::shell::blocking(move || {
+        for path in [&home, &home.join("sessions")] {
+            match fs::symlink_metadata(path) {
+                Ok(metadata) if !metadata.is_dir() => {
+                    return Err("codex_session_home_invalid".into())
+                }
+                Ok(_) => (),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    fs::create_dir_all(path).map_err(|error| error.to_string())?
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        for file in ["auth.json", "config.toml"] {
+            match fs::symlink_metadata(home.join(file)) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Ok(_) => return Err("codex_session_home_contains_provider_configuration".into()),
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(home)
+    })
+    .await
+}
+
 impl Launch {
     fn spawn(&self) -> io::Result<Child> {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = if self.app_server {
+            let mut command = Command::new(std::env::current_exe()?);
+            command
+                .args([
+                    "codex-app-bridge",
+                    "--resident",
+                    "--chat-host",
+                    "--codex-bin",
+                ])
+                .arg(binary());
+            if let Some(thread) = &self.thread {
+                command.arg("--thread-id").arg(thread);
+            }
+            if let Some(effort) = &self.effort {
+                command.arg("--effort").arg(effort);
+            }
+            command
+        } else {
+            let mut command = Command::new(binary());
+            command.args([
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ]);
+            if let Some(effort) = &self.effort {
+                command
+                    .arg("-c")
+                    .arg(format!("model_reasoning_effort={}", json!(effort)));
+            }
+            command
+        };
         command
-            .args([
-                "codex-app-bridge",
-                "--resident",
-                "--chat-host",
-                "--codex-bin",
-            ])
-            .arg(binary())
             .current_dir(&self.cwd)
             .env_clear()
             .env("HOME", &self.home)
@@ -84,14 +175,38 @@ impl Launch {
                 command.env(key, value);
             }
         }
-        for (flag, value) in [
-            ("--thread-id", &self.thread),
-            ("--model", &self.model),
-            ("--effort", &self.effort),
-        ] {
-            if let Some(value) = value {
-                command.arg(flag).arg(value);
+        if let Some(model) = &self.model {
+            command.arg("--model").arg(model);
+        }
+        if let Some(proxy) = &self.proxy {
+            let flag = if self.app_server { "--config" } else { "-c" };
+            for setting in [
+                "model_provider=\"multicc_native\"".to_owned(),
+                "model_providers.multicc_native.name=\"MultiCC\"".to_owned(),
+                format!(
+                    "model_providers.multicc_native.base_url={}",
+                    json!(proxy.endpoint)
+                ),
+                "model_providers.multicc_native.wire_api=\"responses\"".to_owned(),
+                "model_providers.multicc_native.env_key=\"MULTICC_CODEX_ROUTE_KEY\"".to_owned(),
+                "model_providers.multicc_native.requires_openai_auth=false".to_owned(),
+                "cli_auth_credentials_store=\"file\"".to_owned(),
+            ] {
+                command.arg(flag).arg(setting);
             }
+            command
+                .env("CODEX_HOME", &proxy.home)
+                .env("MULTICC_CODEX_ROUTE_KEY", &proxy.token);
+            for key in ["NO_PROXY", "no_proxy"] {
+                let inherited = std::env::var(key).unwrap_or_default();
+                command.env(key, format!("127.0.0.1,{inherited}"));
+            }
+        }
+        if !self.app_server {
+            if let Some(thread) = &self.thread {
+                command.arg("resume").arg(thread);
+            }
+            command.arg("-");
         }
         #[cfg(unix)]
         command.process_group(0);
@@ -169,14 +284,24 @@ where
             }
         }
     };
-    let mut input = child.stdin.take().expect("piped stdin");
+    let input = child.stdin.take().expect("piped stdin");
     let mut output = BufReader::new(child.stdout.take().expect("piped stdout"));
     let mut stderr = tokio::spawn(stderr_tail(child.stderr.take().expect("piped stderr")));
-    let request = json!({"text":prompt}).to_string() + "\n";
+    let app_server = launch.app_server;
+    let request = if app_server {
+        json!({"text":prompt}).to_string() + "\n"
+    } else {
+        prompt.to_owned()
+    };
     let mut decoder = Decoder::default();
     let mut line = Vec::new();
+    let mut resident_input = None;
     let mut outcome = {
-        let write = input.write_all(request.as_bytes());
+        let write = async move {
+            let mut input = input;
+            input.write_all(request.as_bytes()).await?;
+            Ok::<_, io::Error>(app_server.then_some(input))
+        };
         tokio::pin!(write);
         let mut sent = false;
         let startup = tokio::time::sleep(START_TIMEOUT);
@@ -187,9 +312,9 @@ where
                 biased;
                 _ = &mut cancel => break Outcome::Cancelled,
                 _ = &mut startup, if !sent => break Outcome::Failed("Codex app-server startup timed out".into()),
-                result = &mut write, if decoder.ready && !sent => {
+                result = &mut write, if (decoder.ready || !app_server) && !sent => {
                     match result {
-                        Ok(()) => { sent = true; continue; }
+                        Ok(input) => { resident_input = input; sent = true; continue; }
                         Err(error) => break Outcome::Failed(format!("Codex bridge stdin failed: {error}")),
                     }
                 }
@@ -221,7 +346,12 @@ where
             let Ok(frame) = frame else {
                 break Outcome::Failed("Codex bridge returned an invalid event".into());
             };
-            match decoder.decode(frame) {
+            let event = if launch.app_server {
+                decoder.decode(frame)
+            } else {
+                decoder.decode_exec(frame, launch.thread.as_deref())
+            };
+            match event {
                 Ok(Some(event)) => {
                     if let Err(error) = emit(event).await {
                         break Outcome::Failed(error);
@@ -234,7 +364,7 @@ where
     };
     // Closing the resident bridge input asks it to stop the app-server and
     // flush the native rollout before the host can admit the next turn.
-    drop(input);
+    drop(resident_input);
     drop(output);
     let writer_stopped = stop(&mut child).await;
     match timeout(Duration::from_secs(1), &mut stderr).await {
@@ -253,6 +383,9 @@ where
     }
     if !writer_stopped && matches!(outcome, Outcome::Result(_)) {
         outcome = Outcome::Failed("Codex process did not release the native thread".into());
+    }
+    if let (Some(proxy), Outcome::Failed(error)) = (&launch.proxy, &mut outcome) {
+        *error = error.replace(&proxy.token, "[redacted]");
     }
     RunResult {
         outcome,
@@ -310,15 +443,9 @@ impl Decoder {
                 }
                 text_frame(&item["text"])
             }
-            "item/started" if item["type"] == "commandExecution" => {
-                json!({"type":"assistant","message":{"content":[{
-                    "type":"tool_use","id":item["id"],"name":"Bash","input":{"command":item["command"]}
-                }]}})
-            }
+            "item/started" if item["type"] == "commandExecution" => command_frame(item),
             "item/completed" if item["type"] == "commandExecution" => {
-                json!({"type":"user","message":{"content":[{
-                    "type":"tool_result","tool_use_id":item["id"],"content":item["aggregatedOutput"],"is_error":item["status"] == "failed" || item["exitCode"].as_i64().is_some_and(|code| code != 0)
-                }]}})
+                command_result(item, "aggregatedOutput", "exitCode")
             }
             "thread/tokenUsage/updated"
                 if self
@@ -338,10 +465,7 @@ impl Decoder {
             }
             "turn/completed" if self.turn_id.as_deref().is_some_and(|id| turn["id"] == id) => {
                 return Err(match turn["status"].as_str() {
-                    Some("completed") => Outcome::Result(
-                        json!({"type":"result","subtype":"success","is_error":false,
-                    "usage": self.usage.as_object().cloned().unwrap_or_default()}),
-                    ),
+                    Some("completed") => completion(self.usage.take()),
                     Some("interrupted") => Outcome::Cancelled,
                     status => Outcome::Failed(
                         turn["error"]["message"]
@@ -382,8 +506,111 @@ impl Decoder {
             self.usage["model_context_window"] = usage["modelContextWindow"].clone();
         }
     }
+
+    fn decode_exec(
+        &mut self,
+        frame: Value,
+        expected: Option<&str>,
+    ) -> Result<Option<Event>, Outcome> {
+        let item = &frame["item"];
+        let event = match frame["type"].as_str().unwrap_or("") {
+            "thread.started" => {
+                let id = frame["thread_id"]
+                    .as_str()
+                    .filter(|id| valid_thread(id))
+                    .ok_or_else(|| {
+                        Outcome::Failed("Codex exec returned an invalid thread ID".into())
+                    })?;
+                if expected.is_some_and(|expected| expected != id) {
+                    return Err(Outcome::Failed(
+                        "Codex exec opened a different native thread".into(),
+                    ));
+                }
+                self.ready = true;
+                return Ok(Some(Event::Thread(id.into())));
+            }
+            "item.completed" if self.ready && item["type"] == "agent_message" => {
+                text_frame(&item["text"])
+            }
+            "item.started" if self.ready && item["type"] == "command_execution" => {
+                command_frame(item)
+            }
+            "item.completed" if self.ready && item["type"] == "command_execution" => {
+                command_result(item, "aggregated_output", "exit_code")
+            }
+            "turn.completed" if self.ready => {
+                let usage = &frame["usage"];
+                let cached = usage["cached_input_tokens"].as_u64().unwrap_or(0);
+                let input = usage["input_tokens"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_sub(cached);
+                let mut usage = usage.as_object().cloned().unwrap_or_default();
+                usage.insert("input_tokens".into(), json!(input));
+                usage.insert("cache_read_input_tokens".into(), json!(cached));
+                return Err(completion(Value::Object(usage)));
+            }
+            "turn.failed" | "error" => {
+                let message = frame["error"]["message"]
+                    .as_str()
+                    .or_else(|| frame["message"].as_str())
+                    .map(String::from);
+                if frame["type"] == "turn.failed" {
+                    return Err(Outcome::Failed(
+                        message
+                            .or_else(|| self.error.take())
+                            .unwrap_or_else(|| "Codex exec turn failed".into()),
+                    ));
+                }
+                self.error = message;
+                return Ok(None);
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Event::Frame(event)))
+    }
 }
 
 fn text_frame(text: &Value) -> Value {
     json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}})
+}
+
+fn completion(mut usage: Value) -> Outcome {
+    if !usage.is_object() {
+        usage = json!({});
+    }
+    if !usage.as_object().expect("usage object").is_empty() {
+        for key in ["cache_creation_input_tokens", "reasoning_output_tokens"] {
+            if usage.get(key).is_none() {
+                usage[key] = json!(0);
+            }
+        }
+        if usage.get("total_tokens").is_none() {
+            let total = [
+                "input_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "output_tokens",
+            ]
+            .into_iter()
+            .fold(0_u64, |sum, key| {
+                sum.saturating_add(usage[key].as_u64().unwrap_or(0))
+            });
+            usage["total_tokens"] = json!(total);
+        }
+    }
+    Outcome::Result(json!({"type":"result","subtype":"success","is_error":false,"usage":usage}))
+}
+
+fn command_frame(item: &Value) -> Value {
+    json!({"type":"assistant","message":{"content":[{
+        "type":"tool_use","id":item["id"],"name":"Bash","input":{"command":item["command"]}
+    }]}})
+}
+
+fn command_result(item: &Value, output: &str, exit: &str) -> Value {
+    json!({"type":"user","message":{"content":[{
+        "type":"tool_result","tool_use_id":item["id"],"content":item[output],
+        "is_error":item["status"]=="failed" || item[exit].as_i64().is_some_and(|code| code != 0)
+    }]}})
 }

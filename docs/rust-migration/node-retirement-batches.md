@@ -133,7 +133,15 @@ Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和�
 
 这一入口的运行进程树已退出 Node WebSocket 桥和 `src/chat/codex-app-stream.js` 的调用路径。带 Node 的兼容启动继续使用原宿主，继续承接托管 Provider、标准 `codex` 和其余 Codex 会话能力。本阶段的 Node 生产文件删除数与净减行数均为 0。
 
-工作树验证覆盖多轮、网关重启后的线程恢复、重连回放、取消后的进程回收、旧线程缺失及上游错误。隔离 app-server 夹具的进程树内 Node 数为 0。构建、严格 Clippy、网关 1,040 项、WebSocket 定向 32 项、任务壳 304 项、桥接与凭据兼容 63 项、任务壳 HTTP 字节对拍 67 项通过。证据位于 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-native-ws`。托管 Provider、标准 `codex` 与原生 WebSocket 原始帧对拍仍待完成。
+工作树验证覆盖多轮、网关重启后的线程恢复、重连回放、取消后的进程回收、旧线程缺失及上游错误。隔离 app-server 夹具的进程树内 Node 数为 0。构建、严格 Clippy、网关 1,040 项、WebSocket 定向 32 项、任务壳 304 项、桥接与凭据兼容 63 项、任务壳 HTTP 字节对拍 67 项通过。证据位于 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-native-ws`。
+
+### 固定托管 Provider 与标准 Codex
+
+`--no-node` 的 `/ws/chat` 接入标准 `codex exec` 及固定托管 Provider。原生进程解析与持久化线程 ID，支持同线程续轮、连接恢复和取消。固定托管线路由 Rust 解析配置并创建回环代理，CLI 使用仅用于该回合的路由凭据，上游凭据保留在代理内，响应写回 CLI 前脱敏。
+
+标准 Codex 对累积快照计算逐回合用量，使用线程私有基线防止重复累加，旧历史按回合投影。Web 和 Flutter 依赖的即时发送 ACK、状态通知、单个结果帧、模型归属、用量、时间线和历史回放均有针对性断言。两种 CLI 的首轮与重连已进行 4 组原始帧采集及逐字段契约对拍。直发时 Node 生成的临时任务及投递状态、重复广播、运行时标识与时间戳的裁定保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-managed-ws/wire-contract`。
+
+原生托管线路支持固定 Provider。多候选自动路由、旧有 rollout 根目录迁移与手动切换时的 rollout 同步仍由带 Node 的兼容路径承担。本批退出这些原生入口上的兼容宿主调用，生产 Node 文件删除数和净减行数均为 0。下一模块继续迁移 Node 的 Codex 会话目录所有权。
 
 ## 每批验收与最后停用条件
 
