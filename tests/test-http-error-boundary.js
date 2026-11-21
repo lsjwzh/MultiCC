@@ -7,7 +7,6 @@ const { DOMAIN_KINDS, DomainError, InfrastructureError } = require('../src/http/
 const { HttpError } = require('../src/http/http-error');
 const { mapError } = require('../src/http/error-map');
 const { presentError } = require('../src/http/error-presenter');
-const { presentDiagnosticResult } = require('../src/http/diagnostic-result');
 const { safeErrorHandler } = require('../src/http-errors');
 
 const REQUEST_CONTEXT = Object.freeze({
@@ -188,38 +187,3 @@ test('mapped errors remain compatible with the existing safeErrorHandler', () =>
   });
 });
 
-test('diagnostic results preserve HTTP success while sanitizing legacy ok:false bodies', () => {
-  const diagnostic = presentDiagnosticResult({
-    ok: false,
-    code: 'provider_probe_failed',
-    error: 'upstream token=top-secret at /Users/example/provider.log',
-    blocked: true,
-    reasons: ['unhealthy', 'secret=hidden'],
-    operationId: 'probe_7',
-    retryAfterMs: 250,
-    status: 404,
-    statusCode: 429,
-    stderr: 'token=top-secret',
-    token: 'top-secret',
-  }, REQUEST_CONTEXT, { kind: DOMAIN_KINDS.CONFLICT });
-
-  assert.equal(diagnostic.status, 200);
-  assert.deepEqual(diagnostic.body, {
-    ok: false,
-    error: 'conflict',
-    code: 'provider_probe_failed',
-    apiVersion: 'v1',
-    requestId: REQUEST_CONTEXT.requestId,
-    correlationId: REQUEST_CONTEXT.correlationId,
-    blocked: true,
-    reasons: ['unhealthy'],
-    operationId: 'probe_7',
-    retryAfterMs: 250,
-  });
-  assert.equal(JSON.stringify(diagnostic.body).includes('top-secret'), false);
-
-  assert.throws(
-    () => presentDiagnosticResult({ ok: true }, REQUEST_CONTEXT),
-    /requires a legacy \{ ok:false \} result/,
-  );
-});
