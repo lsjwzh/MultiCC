@@ -179,6 +179,14 @@ Codex 配置切换复用 Rust 的 rollout 查找、歧义判断和原子复制�
 
 约定门禁通过后补跑标准 `npm test`，在未修改的 `tests/test-fleet-sharing-routes.js` 两项共享并发检查失败（249 行创建结果未全部为 200；514 行访问次数耗尽后的 410 数量为 0、预期 4）。另建目标分支 `bf99c686` 的干净、独立工作树，仅运行该测试文件，使用与该基线源码指纹匹配的旧原生产物，57.707 秒后同两断言、同值失败；测试文件哈希一致，基线不含本批 Rust 模块且保留旧 Node 文件。按用户明确授权将其登记为基线既有／环境失败后交付 argv 小批。完整 `npm test` 仍为失败，未放宽断言、未声称已修复共享并发根因。复现及对比记录在上述证据目录的 `baseline-diagnosis/`。
 
+### 已迁移会话 ID 规则的旧副本
+
+`src/chat/native-session-state.js` 的生产消费者只剩 `turn-engine.js` 的未使用导入。实际事件路径已经由 `chatApplyAdapterEvent` 进入 `native/addon/src/chat_events.rs::accept_session_id`，并使用 core 的 `capture_session_id` 完成 fresh/resume 判定、严格赋值和持久化接线。本批删除该 27 行 Node 模块及一行闲置导入，生产 Node 净减 28 行，不增加任何兼容桥或 Rust 业务副本。
+
+原件完整冻结到 `tests/helpers/legacy-native-session-state.js`，仅供旧事件 reducer 和底层协议测试作独立 oracle；真实路径的差分测试继续直接调用 Rust 的 `chatApplyAdapterEvent`。既有用例覆盖 fresh 替换、resume ID 不匹配及事件／副作用顺序。验证和收据记录在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/native-session-state-gates/`。
+
+本批定向 57 项通过，缺少真实 Claude 捕获文件的一项按原条件跳过。首次并行 Rust 全量遇到 `subagent_defaults` 夹具 `EADDRINUSE`，同一测试隔离通过，再完整串行复跑 2730 项通过；未修改断言。其余约定门禁、HTTP 字节对拍和无 Node 冒烟通过。标准 `npm test` 仍只有上节已由干净基线确认的两项共享并发失败，同断言同值；共享实现及测试夹具未变，原失败记录及基线例外继续保留，未记作全绿。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。
