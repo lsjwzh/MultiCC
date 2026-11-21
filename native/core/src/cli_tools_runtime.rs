@@ -85,6 +85,7 @@ fn cmd_env(cli: &str) -> Option<&'static str> {
         "qoder" => Some("QODER_CMD"),
         "codebuddy" => Some("CODEBUDDY_CMD"),
         "dsh" => Some("DSH_CMD"),
+        "gemini" => Some("GEMINI_CMD"),
         "grok" => Some("GROK_CMD"),
         "agy" => Some("AGY_CMD"),
         "commandcode" => Some("COMMAND_CODE_CMD"),

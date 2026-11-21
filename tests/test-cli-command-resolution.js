@@ -91,6 +91,7 @@ try {
     KIMI_CMD: '/custom/kimi',
     CODEBUDDY_CMD: '/custom/codebuddy',
     DSH_CMD: '/custom/dsh',
+    GEMINI_CMD: '/custom/gemini',
     GROK_CMD: '/custom/grok',
     AGY_CMD: '/custom/agy',
     COMMAND_CODE_CMD: '/custom/command-code',
@@ -111,6 +112,7 @@ try {
     kimi: '/custom/kimi',
     codebuddy: '/custom/codebuddy',
     dsh: '/custom/dsh',
+    gemini: '/custom/gemini',
     grok: '/custom/grok',
     agy: '/custom/agy',
     commandcode: '/custom/command-code',
@@ -156,7 +158,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude', codex: 'codex', 'codex-exp': 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn', kimi: 'kimi', codebuddy: 'codebuddy', dsh: 'dsh', grok: 'grok', agy: 'agy', commandcode: 'command-code', pi: 'pi',
+    claude: 'claude', codex: 'codex', 'codex-exp': 'codex', opencode: 'opencode', zcode: 'zcode', qoder: 'qoderclicn', kimi: 'kimi', codebuddy: 'codebuddy', dsh: 'dsh', gemini: 'gemini', grok: 'grok', agy: 'agy', commandcode: 'command-code', pi: 'pi',
   }, 'POSIX fallback names remain stable when no executable exists');
   assert.deepStrictEqual(resolveCliCommands({
     isWindows: true,
@@ -165,7 +167,7 @@ try {
     homeDir: path.join(root, 'missing-home'),
     logger: silentLogger(),
   }), {
-    claude: 'claude.exe',  codex: 'codex.exe', 'codex-exp': 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe', codebuddy: 'codebuddy.exe', dsh: 'dsh.exe', grok: 'grok.cmd', agy: 'agy.exe', commandcode: 'command-code.cmd', pi: 'pi.cmd',
+    claude: 'claude.exe',  codex: 'codex.exe', 'codex-exp': 'codex.exe', opencode: 'opencode.exe', zcode: 'zcode.exe', qoder: 'qoderclicn.exe', kimi: 'kimi.exe', codebuddy: 'codebuddy.exe', dsh: 'dsh.exe', gemini: 'gemini.cmd', grok: 'grok.cmd', agy: 'agy.exe', commandcode: 'command-code.cmd', pi: 'pi.cmd',
   }, 'Windows fallback names remain stable when no executable exists');
 
   // resolveCodex 的候选顺序是策略而不是随手排的: 官方 curl 安装脚本(BIN_DIR 默认

@@ -79,7 +79,7 @@ const VAULT_NAME_PATTERN: &str = r"^[A-Za-z0-9_.-]{1,64}$";
 const DEFAULT_ROUTING_TIMEOUT_MS: i64 = 2_500;
 const MIN_ROUTING_TIMEOUT_MS: i64 = 250;
 const MAX_ROUTING_TIMEOUT_MS: i64 = 10_000;
-const AUTO_CLIS: [&str; 14] = [
+const AUTO_CLIS: [&str; 15] = [
     "claude",
     "claude-exp",
     "codex",
@@ -91,6 +91,7 @@ const AUTO_CLIS: [&str; 14] = [
     "grok",
     "qoder",
     "codebuddy",
+    "gemini",
     "agy",
     "pi",
     "commandcode",

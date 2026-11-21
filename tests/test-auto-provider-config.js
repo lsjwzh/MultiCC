@@ -651,7 +651,7 @@ test('a Command Code native candidate is validated structurally, without the ven
 
 test('every vendor-native lane validates its own line, including WorkBuddy and Qoder', () => {
   const providers = catalog();
-  for (const cli of ['qoder', 'codebuddy', 'agy', 'pi', 'commandcode', 'dsh', 'grok']) {
+  for (const cli of ['qoder', 'codebuddy', 'gemini', 'agy', 'pi', 'commandcode', 'dsh', 'grok']) {
     const pool = validateProviderSelection({
       version: 1, mode: 'auto', maxAttempts: 2,
       candidates: [

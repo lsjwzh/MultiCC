@@ -11,10 +11,11 @@ import 'package:multicc_app/widgets/run_config/run_config_lanes.dart';
 // 的一致性由 tests/test-cli-display-parity.js 在 node 侧锁；这个文件守 App 自己的两条
 // 规矩：未知 id 不冒充别的产品，以及每个枚举档位都能在这张表里查到。
 void main() {
-  test('Antigravity is available in automatic routing and Gemini is retired', () {
+  test('Antigravity and Gemini are both available in automatic routing', () {
     expect(kAutoLanes, contains('agy'));
-    expect(kAutoLanes, isNot(contains('gemini')));
+    expect(kAutoLanes, contains('gemini'));
     expect(kLaneProtocols['agy'], containsAll(['anthropic', 'openai_responses']));
+    expect(kLaneProtocols['gemini'], containsAll(['anthropic', 'openai_responses']));
   });
 
   test('every SessionCli tier resolves through the shared display table', () {
@@ -116,20 +117,20 @@ void main() {
     expect(kCliDisplays['claude']!.offersIn('terminal'), isTrue);
   });
 
-  test('retired Gemini and the one-shot Codex lane report their replacements', () {
+  test('only the one-shot Codex lane reports a replacement', () {
     // 与 Web / 服务端同一条事实（src/cli/cli-capability.js DISPLAY 的 deprecated 列），
     // 由 tests/test-cli-display-parity.js 钉住三端一致。
     expect(cliDeprecated('codex'), isTrue);
     expect(cliReplacedBy('codex'), 'codex-exp');
     expect(cliDeprecated('codex-exp'), isFalse);
     expect(cliReplacedBy('codex-exp'), isNull);
-    expect(cliDeprecated('gemini'), isTrue);
-    expect(cliReplacedBy('gemini'), 'agy');
-    expect(cliOffersIn('gemini', 'chat'), isFalse);
-    expect(cliOffersIn('gemini', 'terminal'), isFalse);
+    expect(cliDeprecated('gemini'), isFalse);
+    expect(cliReplacedBy('gemini'), isNull);
+    expect(cliOffersIn('gemini', 'chat'), isTrue);
+    expect(cliOffersIn('gemini', 'terminal'), isTrue);
     expect(cliOffersIn('agy', 'chat'), isTrue);
     expect(cliOffersIn('agy', 'terminal'), isTrue);
-    for (final id in kCliDisplays.keys.where((id) => id != 'codex' && id != 'gemini')) {
+    for (final id in kCliDisplays.keys.where((id) => id != 'codex')) {
       expect(cliDeprecated(id), isFalse, reason: '$id is not on the way out');
       expect(cliReplacedBy(id), isNull);
     }
@@ -211,8 +212,8 @@ void main() {
     expect(cliUpdateOf('zcode')!.auto, isFalse);
     expect(cliUpdateOf('zcode')!.manual, isNotEmpty);
     expect(cliUpdateOf('mystery-cli'), isNull);
-    expect(cliUpdateOf('gemini'), isNull);
-    expect(cliUpdateSpecs().keys.toSet(), kCliFamilies.keys.where((id) => id != 'gemini').toSet());
+    expect(cliUpdateOf('gemini')!.package, '@google/gemini-cli');
+    expect(cliUpdateSpecs().keys.toSet(), kCliFamilies.keys.toSet());
     expect(cliIsBundled('claude-exp'), isTrue);
     expect(cliIsBundled('claude'), isTrue);
     expect(cliHasOwnArtifact('claude'), isTrue, reason: 'claude 还有终端制品');

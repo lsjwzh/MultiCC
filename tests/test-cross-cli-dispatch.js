@@ -486,7 +486,7 @@ function validEffortForCli(cli, effort) {
   // ''/null/缺省不再是非法输入：task-first 创建路径 `cli || 'claude'` 把它们
   // 落到 claude（见 routes/session-create.js），未知 CLI 仍被 createSessionRecord
   // 的 SUPPORTED_CHAT_CLIS 校验拒绝。
-  const illegalCLIs = ['gemini', 'foo', 'cursor', 'CLAUDE'];
+  const illegalCLIs = ['foo', 'cursor', 'CLAUDE'];
   for (const cli of illegalCLIs) {
     const label = String(cli);
     const res = await post(`/api/directories/${dirId}/sessions`, { kind: 'chat', cli });

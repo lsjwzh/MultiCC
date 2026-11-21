@@ -51,7 +51,7 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     // 打开，好让下面直接量到 codex 的线路。
     lastRuntime: { cli: 'codex', provider: null, providerName: null, providerSelection: null, model: null, effort: null, subagent: null },
     // 实验车道跟着快照一起给：断的是界面不把它们当常规终端选项。
-    clis: ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'agy'],
+    clis: ['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'gemini', 'agy'],
     sessions: [
       // 三种状态各一条：状态点、那两句提示、「多久没动」都只翻译服务端折好的
       // state / lastActivityAt，客户端不再自己推 —— 所以 fixture 给的就是最终事实。
@@ -212,7 +212,7 @@ test('目录里的 Chat / Terminal 切换与「新建终端」选 CLI', async t 
     // 终端只展示适用的产品卡片，后台仍保留 chat 引擎元数据。
     // 未安装的产品保留提示，默认落在最近用过的 codex。
     const choices = await page.evaluate(`[...document.querySelectorAll('.air-config-dialog[open] .air-cli-option')].map(b=>b.dataset.cli).sort()`);
-    assert.deepEqual(choices, ['agy', 'claude', 'codebuddy', 'codex', 'commandcode', 'dsh', 'grok', 'kimi', 'opencode', 'pi', 'qoder', 'zcode'], 'CLI 卡片只展示终端适用的产品：' + JSON.stringify(choices));
+    assert.deepEqual(choices, ['agy', 'claude', 'codebuddy', 'codex', 'commandcode', 'dsh', 'gemini', 'grok', 'kimi', 'opencode', 'pi', 'qoder', 'zcode'], 'CLI 卡片只展示终端适用的产品：' + JSON.stringify(choices));
     assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-cli-option.selected').dataset.cli`), 'codex', '默认落在最近用过的那套');
     assert.ok(await page.evaluate(`document.querySelector('.air-config-dialog[open] select[aria-label="模型"]').options.length > 1`), '模型也跟着这条线路给出来');
     // 子 agent 线路是任务轮次的东西，终端的创建接口不收它 —— 整节子 agent 不摆出来。
