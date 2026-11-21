@@ -77,7 +77,7 @@ pub(super) fn matches(value: L<'_>, pattern: &str, flags: &str) -> Result<bool> 
     regex.get(c"test")?.call(regex, &[value])?.truthy()
 }
 
-fn usage(input: L<'_>) -> Result<L<'_>> {
+pub(super) fn usage(input: L<'_>) -> Result<L<'_>> {
     let source = or(input, || object(input, &[]))?;
     let cached = property(source, c"cached_input_tokens", || {
         property(source, c"cache_read_input_tokens", || {
@@ -159,7 +159,7 @@ fn mcp_text(item: L<'_>) -> Result<L<'_>> {
         None => string(result),
     }
 }
-fn router<'a>(anchor: L<'a>, node: L<'a>, script: L<'a>) -> Result<L<'a>> {
+pub(super) fn router<'a>(anchor: L<'a>, node: L<'a>, script: L<'a>) -> Result<L<'a>> {
     let out = array(anchor)?;
     if !node.truthy()? || !script.truthy()? {
         return Ok(out);

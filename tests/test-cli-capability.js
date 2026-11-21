@@ -258,11 +258,12 @@ test('an adapter error label follows the display table, and the parsers accept e
   // 会被当成真错误画进对话，错误信封会被当成正文留在记录里。
   const source = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
   assert.match(source('native/addon/src/codex_adapter/events.rs'), /c"label",\s*port\(ports, c"displayNameOf", &\[text\(event, "codex"\)\?\]\)\?/);
-  assert.match(source('src/cli-adapters/codex-exp.js'), /label:\s*displayNameOf\('codex-exp'\)/);
+  assert.match(source('native/addon/src/codex_app_adapter/events.rs'), /c"label",\s*label\(ports\)\?/);
+  assert.match(source('native/addon/src/codex_app_adapter/events.rs'), /c"displayNameOf", &\[text\(ports, "codex-exp"\)\?\]/);
   assert.doesNotMatch(source('native/addon/src/codex_adapter/events.rs'), /c"label",\s*text\([^,]+,\s*"Codex"/);
   // 正文里不能再自称一个界面上已经不存在的名字。
-  assert.doesNotMatch(source('src/cli-adapters/codex-exp.js'), /Codex Exp v1 does not support/);
-  assert.match(source('src/cli-adapters/codex-exp.js'), /message:\s*'Codex v1 does not support/);
+  assert.doesNotMatch(source('native/addon/src/codex_app_adapter/events.rs'), /Codex Exp v1 does not support/);
+  assert.match(source('native/addon/src/codex_app_adapter/events.rs'), /c"message",\s*text\(event, "Codex v1 does not support/);
   // 三个解析点：重连抑制在 web 与 App 各一份，错误信封词表在服务端。
   assert.match(source('public/chat-event-controller.js'), /\(\?:Codex\|Codex Exp\|Codex Exec\) 出错：Reconnecting/);
   assert.match(source('app/lib/providers/chat_provider.dart'), /\(\?:Codex\|Codex Exp\|Codex Exec\) 出错：Reconnecting/);

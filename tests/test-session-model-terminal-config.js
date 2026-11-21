@@ -55,7 +55,7 @@ require('../src/providers/core').enableUnifiedOfficialProviders();
 const { createSessionPolicy } = require('../src/cli/session-policy');
 const { createClaudeAdapter } = require('../src/native/runtime');
 const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
-const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
+const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
 const { settingsOverrideFor } = require('../src/providers/claude-settings-override');
 const { claudeSettingsExtra } = require('../src/chat/turn-engine');
 const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/claude-models');

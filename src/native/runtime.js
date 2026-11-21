@@ -157,6 +157,29 @@ const codexAdapter = {
   isCodexInternalNoise: value => getNative().codexAdapterCall('noise', value, undefined),
   routerMcpConfigArgs: (node, script) => getNative().codexAdapterCall('router', [node, script], undefined),
 };
+const codexAppAdapter = {
+  createCodexExpAdapter(deps = {}) {
+    const native = getNative();
+    const ports = Object.assign(native.codexAppAdapterPorts(deps,
+      path.join(__dirname, '../cli-adapters/codex-app-server-bridge.cjs'), process.execPath), {
+      renderPrompt: require('../message-composer').renderPrompt,
+      displayNameOf: require('../cli/cli-capability').displayNameOf,
+    });
+    const owner = new native.RustCodexAppAdapter();
+    return {
+      name: 'codex-exp', cmd: process.execPath,
+      createCompletionTracker: () => require('../cli-adapters/completion').createProtocolCompletionTracker('codex-exp'),
+      buildTerminalCmd: () => native.codexAppAdapterValue('terminal', deps, undefined),
+      buildInvocation: value => owner.invocation(value, ports),
+      decodeEvent: value => owner.decode(value, ports),
+      needsAsyncSessionIdCapture: true,
+    };
+  },
+  appServerUsage: value => getNative().codexAppAdapterValue('usage', value, undefined),
+  addUsage: (current = {}, next = {}) => getNative().codexAppAdapterValue('add', current, next),
+  isReconnectProgress: value => getNative().codexAppAdapterValue('reconnect', value, undefined),
+  requestUserInputEvent: value => getNative().codexAppAdapterValue('question', value, undefined),
+};
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
-  createClaudeAdapter, codexAdapter };
+  createClaudeAdapter, codexAdapter, codexAppAdapter };

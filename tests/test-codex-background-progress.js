@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createCodexBackgroundEvents, safeText } = require('../src/cli-adapters/codex-background-events.cjs');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
-const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
+const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
 
 function fixture(overrides = {}) {
   let time = 0;

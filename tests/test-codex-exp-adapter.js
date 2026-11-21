@@ -7,7 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { addUsage, appServerUsage, createCodexExpAdapter, isReconnectProgress, requestUserInputEvent } = require('../src/cli-adapters/codex-exp');
+const { addUsage, appServerUsage, createCodexExpAdapter, isReconnectProgress, requestUserInputEvent } = require('../src/native/runtime').codexAppAdapter;
 const { appendAdapterAssistantText } = require('../src/chat/turn-engine');
 const { createSessionRecordFactory } = require('../src/session/create-record');
 const { isResidentSession } = require('../src/cli/cli-capability');
@@ -259,4 +259,148 @@ test('Rust shared MCP text keeps filter and text getter ordering', () => {
     return { output, trace };
   };
   assert.deepEqual(run(require('../src/native/runtime').codexAdapter), run(frozenCodexAdapter()));
+});
+
+function frozenCodexAppAdapter() {
+  const Module = require('node:module'), crypto = require('node:crypto');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-codex-app-adapter.js.txt'), 'utf8');
+  assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '93cd19f3a09e1a818bd739a6acf0824cece4882af0e3444c1bdbf03bc6fe78f5');
+  const filename = path.resolve(__dirname, '../src/cli-adapters/codex-exp.js');
+  const legacy = new Module(filename); legacy.filename = filename;
+  legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  const originalRequire = legacy.require.bind(legacy);
+  legacy.require = name => name === '../native/runtime' ? { codexAdapter: frozenCodexAdapter() } : originalRequire(name);
+  legacy._compile(source, filename);
+  return legacy.exports;
+}
+
+test('Rust app-server 调用与纯函数逐项匹配冻结版本，保留实时依赖和方法接收者', () => {
+  const oracle = frozenCodexAppAdapter(), native = require('../src/native/runtime').codexAppAdapter;
+  for (const first of [false, true]) for (const effort of [null, 'high']) for (const hints of [false, true]) {
+    const run = api => {
+      const trace = [], deps = { bridge: '/bridge', codexCmd: '/codex', tag: 'live',
+        codexReasoningLevel(session) { assert.equal(this, deps); trace.push(['level', this.tag, session]); return effort; },
+        codexReasoningConfigArg(session) { assert.equal(this, deps); trace.push(['reasoning', session]); return effort && 'effort=high'; },
+        codexModelConfigArg(session) { assert.equal(this, deps); trace.push(['model', session]); return 'model=gpt'; },
+        ...(hints ? { multiccImgHint: '图片', envConstraint: '环境', routerMcpNode: '/node', routerMcpScript: '/router' } : {}) };
+      const adapter = api.createCodexExpAdapter(deps);
+      deps.codexCmd = '/codex-new'; deps.tag = 'changed';
+      const env = envelope({ first, threadId: 'thread' }); env.subagentHint = '代理';
+      return { invocation: adapter.buildInvocation(env), terminal: adapter.buildTerminalCmd(), trace };
+    };
+    assert.deepEqual(run(native), run(oracle));
+  }
+  for (const value of [undefined, null, {}, { last: {} }, { total: { inputTokens: '20', cachedInputTokens: 5n } },
+    { last: { inputTokens: NaN, cachedInputTokens: Infinity, outputTokens: -0 }, modelContextWindow: 0 }]) {
+    assert.deepEqual(native.appServerUsage(value), oracle.appServerUsage(value));
+  }
+  for (const current of [undefined, {}, { input_tokens: '4', output_tokens: 1n, model_context_window: 200 }]) {
+    for (const next of [undefined, {}, { input_tokens: -0, output_tokens: Infinity, model_context_window: 0 }]) {
+      assert.deepEqual(native.addUsage(current, next), oracle.addUsage(current, next));
+    }
+  }
+  assert.throws(() => native.addUsage(null, {}));
+  assert.throws(() => oracle.addUsage(null, {}));
+  for (const value of ['', null, undefined, ' Reconnecting... 1/5 (网络) ', 'Reconnecting... 1/5\nterminal', 123, Symbol('x')]) {
+    assert.equal(native.isReconnectProgress(value), oracle.isReconnectProgress(value));
+  }
+  const sparse = []; sparse[2] = { label: '末项' };
+  for (const value of [null, {}, { questions: [] }, { questions: [{}] }, { questions: [{ header: '选择', question: '哪项', options: sparse }] },
+    { questions: [{ header: '一', question: '甲', options: [{ label: 'A', description: '说明' }] }, { question: '乙', options: [] }] }]) {
+    assert.deepEqual(native.requestUserInputEvent(value), oracle.requestUserInputEvent(value));
+  }
+  for (const value of [{ questions: [{ options: [null] }] }, { questions: [{}, null] }]) {
+    assert.throws(() => native.requestUserInputEvent(value)); assert.throws(() => oracle.requestUserInputEvent(value));
+  }
+});
+
+test('Rust app-server 覆盖所有事件分支并保留不透明工具输入引用', () => {
+  const current = createCodexExpAdapter(), legacy = frozenCodexAppAdapter().createCodexExpAdapter();
+  const items = [
+    ...['spawnAgent', 'wait', 'sendInput', 'closeAgent', 'followupTask', 'sendMessage', 'resumeAgent', 'interruptAgent', 'listAgents', 'other', 'toString'].map(tool => ({ type: 'collabAgentToolCall', id: 'child', tool, prompt: '检查', receiverThreadIds: ['a'], agentsStates: { a: { status: 'completed', message: '好' }, b: null } })),
+    ...[0, undefined, '1', null, 2n].map(exitCode => ({ type: 'commandExecution', id: 'cmd', command: 'pwd', cwd: '/work', exitCode, aggregatedOutput: '结果' })),
+    { type: 'mcpToolCall', id: 'm', tool: 'search', arguments: { q: '查找' }, result: { content: [null, { type: 'image' }, { type: 'text', text: '甲' }, { type: 'text', text: 2 }] } },
+    { type: 'mcpToolCall', id: 'm2', error: { message: '失败' } },
+    { type: 'agentMessage', id: 'text', text: '快照' }, { type: 'reasoning', id: 'r', summary: ['想', '好'], content: ['后备'] },
+    { type: 'reasoning', id: 'r', summary: [], content: ['内容'] }, { type: 'unknown' },
+  ];
+  const events = [null, {}, { method: 'unknown' }, { method: 'item/tool/requestUserInput', params: { questions: [{ question: '选哪项' }] } },
+    { method: 'item/tool/requestUserInput' }, { id: 0, method: 'item/command/requestApproval' }, { method: 'item/command/requestApproval' },
+    { method: 'multicc/native_session_missing', params: { threadId: 'old' } }, { method: 'thread/started', params: { thread: { sessionId: 's' } } },
+    ...['idle', 'busy', undefined].map(type => ({ method: 'thread/status/changed', params: { status: { type } } })),
+    ...items.flatMap(item => ['item/started', 'item/completed'].map(method => ({ method, params: { item } }))),
+    { method: 'item/commandExecution/outputDelta', params: { itemId: 'cmd', delta: '行' } },
+    { method: 'item/mcpToolCall/progress', params: { message: '进度' } },
+    ...['completed', 'failed', 'interrupted', undefined].map(status => ({ method: 'turn/completed', params: { turn: { id: 't', status } } })),
+    ...['Reconnecting... 2/5', '真实错误'].map(message => ({ method: 'error', params: { error: { message } } })),
+    ...['warning', 'configWarning', 'deprecationNotice'].map(method => ({ method, params: { summary: '提示' } })),
+  ];
+  for (const event of events) assert.deepEqual(current.decodeEvent(event), legacy.decodeEvent(event), JSON.stringify(event, (_, value) => typeof value === 'bigint' ? String(value) : value));
+  const input = { self: null }; input.self = input;
+  assert.equal(current.decodeEvent({ method: 'item/started', params: { item: { type: 'mcpToolCall', arguments: input } } })[0].input, input);
+});
+
+test('Rust app-server 多轮交错、键身份、回放去重、失败清理与状态槽复用均匹配冻结版本', () => {
+  const current = createCodexExpAdapter(), legacy = frozenCodexAppAdapter().createCodexExpAdapter();
+  const compare = event => assert.deepEqual(current.decodeEvent(event), legacy.decodeEvent(event));
+  const objectKey = {}, otherKey = {};
+  const keys = [undefined, null, NaN, 0, -0, 1, '1', false, '', objectKey, otherKey];
+  for (let round = 0; round < 30; round++) {
+    for (const id of keys) {
+      compare({ method: 'thread/tokenUsage/updated', params: { turnId: id, tokenUsage: { last: { inputTokens: 9000 } } } });
+      compare({ method: 'turn/started', params: { turn: { id } } });
+      compare({ method: 'item/agentMessage/delta', params: { itemId: id, delta: '中文😀' } });
+      compare({ method: 'item/reasoning/textDelta', params: { itemId: id, delta: '思' } });
+      compare({ method: 'item/reasoning/summaryTextDelta', params: { itemId: id, delta: '考' } });
+      for (const inputTokens of [5, 3]) compare({ method: 'thread/tokenUsage/updated', params: { turnId: id, tokenUsage: { last: { inputTokens, cachedInputTokens: 1, outputTokens: 2 } } } });
+    }
+    for (const [index, id] of keys.entries()) {
+      compare({ method: 'item/completed', params: { item: { type: 'agentMessage', id, text: '不重复' } } });
+      compare({ method: 'item/completed', params: { item: { type: 'agentMessage', id, text: '下一次快照' } } });
+      compare({ method: 'item/completed', params: { item: { type: 'reasoning', id } } });
+      compare({ method: 'item/completed', params: { item: { type: 'reasoning', id } } });
+      compare({ method: 'turn/completed', params: { turn: { id, status: ['completed', 'failed', 'interrupted'][index % 3] } } });
+      compare({ method: 'thread/tokenUsage/updated', params: { turnId: id, tokenUsage: { last: { inputTokens: 9000 } } } });
+      compare({ method: 'turn/completed', params: { turn: { id, status: 'completed' } } });
+    }
+  }
+});
+
+test('Rust app-server 保留 getter 顺序、异常后的状态与重入安全', () => {
+  const run = make => {
+    const adapter = make(), trace = [];
+    const content = ['甲', '乙'].map(value => ({ get type() { trace.push(`type:${value}`); return 'text'; }, get text() { trace.push(`text:${value}`); return value; } }));
+    const output = adapter.decodeEvent({ method: 'item/completed', params: { item: { type: 'mcpToolCall', result: { content } } } });
+    const fault = new Error('getter 故障');
+    assert.throws(() => adapter.decodeEvent({ method: 'item/agentMessage/delta', params: { itemId: 'x', get delta() { throw fault; } } }), error => error === fault);
+    const afterFault = adapter.decodeEvent({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'x', text: '已标记' } } });
+    adapter.decodeEvent({ method: 'item/reasoning/textDelta', params: { itemId: 'r', delta: '原' } });
+    const reentrant = adapter.decodeEvent({ method: 'item/reasoning/textDelta', params: { itemId: 'r', get delta() {
+      trace.push('reenter'); adapter.decodeEvent({ method: 'item/completed', params: { item: { type: 'reasoning', id: 'r' } } }); return '后';
+    } } });
+    return { output, trace, afterFault, reentrant };
+  };
+  assert.deepEqual(run(createCodexExpAdapter), run(frozenCodexAppAdapter().createCodexExpAdapter));
+});
+
+test('Rust app-server 事件属性读取顺序与冻结版本一致', () => {
+  const seeds = [
+    { method: 'item/started', params: { item: { type: 'collabAgentToolCall', id: 'x', tool: 'wait', prompt: 'p' } } },
+    { method: 'item/started', params: { item: { type: 'commandExecution', id: 'x', command: 'pwd' } } },
+    { method: 'item/started', params: { item: { type: 'mcpToolCall', id: 'x', tool: 'search' } } },
+    ...['collabAgentToolCall', 'agentMessage', 'reasoning', 'commandExecution', 'mcpToolCall', 'unknown'].map(type => ({ method: 'item/completed', params: { item: { type, id: 'x', text: '正文', command: 'pwd', status: 'failed' } } })),
+    { method: 'turn/completed', params: { turn: { id: 'x', status: 'failed' } } },
+    { method: 'thread/started', params: { thread: { id: 's' } } },
+  ];
+  for (const seed of seeds) {
+    const run = make => {
+      const trace = [];
+      const wrap = (value, prefix) => value && typeof value === 'object' && !Array.isArray(value) ? new Proxy(value, { get(target, key) {
+        trace.push(`${prefix}.${String(key)}`); return wrap(Reflect.get(target, key), `${prefix}.${String(key)}`);
+      } }) : value;
+      const output = make().decodeEvent(wrap(seed, 'event'));
+      return { output, trace: [...trace] };
+    };
+    assert.deepEqual(run(createCodexExpAdapter), run(frozenCodexAppAdapter().createCodexExpAdapter), seed.method);
+  }
 });
