@@ -80,6 +80,8 @@ const claudeSettingsOverride = {
   settingsOverrideFor: (session, env, extra) =>
     getNative().claudeSettingsOverride(settingsOverridesDir, session, env, extra),
 };
+const opencodeProcessError = (cli, raw, stderr) =>
+  getNative().opencodeProcessError(cli, raw, stderr, require('../provider-error').classifyProviderError);
 
 // 原生任务共用 libuv 工作池。只限制并行数，避免搜索突发占满文件 I/O 线程；排满时
 // 等待而不拒绝：Air 刷新与任务板落盘也走这条队列，拒绝就是一次失败的刷新或保存。
@@ -241,4 +243,4 @@ const codexBackground = {
 module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
-  claudeSettingsOverride };
+  claudeSettingsOverride, opencodeProcessError };

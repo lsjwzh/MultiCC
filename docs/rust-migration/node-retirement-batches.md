@@ -165,6 +165,12 @@ Codex 配置切换复用 Rust 的 rollout 查找、歧义判断和原子复制�
 
 冻结对照 `tests/helpers/legacy-claude-settings-override.js` 来自 `5ec8703f`。仓库差分测试覆盖 540 组输入的环境投影、文件名、JSON 字节和权限，另验证 getter 访问顺序、异常对象身份及序列化失败保留原文件。完整门禁与合并收据保存在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/claude-settings-override-gates/`。兼容测试使用项目锁定的 SDK 0.3.325 oracle；首次自动发现本机 0.3.317 的失败日志保留，未放宽环境字节断言。
 
+### OpenCode 进程错误优先级
+
+删除 `src/cli-adapters/opencode-error.js`（12 行），优先保留实际 RPC 原因、仅在 `agent_exited` 或缺失原因时检查原始 stderr 的选择规则迁入 `native/addon/src/opencode_error.rs`。分类器继续使用既有 Rust core 实现，宿主只保留两行 N-API 与原有有界元数据分类回调接线；未增加 Node 业务规则。事件宿主与元数据适配迁入 Rust 后可一并删除回调。该小模块生产 Node 代码净减 10 行。
+
+冻结对照来自 `ae728cb3` 的原模块，只调整 helper 内的 require 相对路径。256 组输入验证错误形状、stderr 形状、其它 CLI 和继承属性；单独断言 getter 短路、异常对象身份、分类器只调用一次、两个回调参数同一对象及原始 stderr 对象身份。构建、测试及合并证据记录在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/opencode-process-error-gates/`。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

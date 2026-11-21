@@ -66,7 +66,7 @@ test('OpenCode compaction overflow is permanent even inside an internal-error en
 });
 
 test('OpenCode process stderr preserves overflow before truncation and respects RPC error precedence', () => {
-  const { opencodeProcessError } = require('../src/cli-adapters/opencode-error');
+  const { opencodeProcessError } = require('../src/native/runtime');
   const stderr = 'Error: Conversation history too large to compact - exceeds model context limit'
     + '\nstack frame'.repeat(100);
   assert.doesNotMatch(stderr.slice(-300), /context limit/);
@@ -82,6 +82,51 @@ test('OpenCode process stderr preserves overflow before truncation and respects 
   assert.equal(opencodeProcessError('opencode', null, 'Internal error: database unavailable'), null);
   assert.equal(opencodeProcessError('opencode', null,
     'prompt: [{ message: "Conversation history too large to compact" }]'), null);
+});
+
+test('OpenCode process error matches the frozen module across error and stderr shapes', () => {
+  const legacy = require('./helpers/legacy-opencode-error');
+  const { opencodeProcessError } = require('../src/native/runtime');
+  let count = 0;
+  for (const cli of ['opencode', 'gemini', null, { toString() { return 'opencode'; } }]) {
+    for (const raw of [undefined, null, false, 0, {}, { code: 'agent_exited' },
+      { code: 'unauthorized' }, Object.create({ code: 'agent_exited' })]) {
+      for (const stderr of [undefined, null, '', 'Internal error: database unavailable',
+        'Conversation history too large to compact - exceeds model context limit',
+        'prompt: [{ message: "Conversation history too large to compact" }]',
+        'HTTP 401 Unauthorized', { message: 'context limit' }]) {
+        assert.deepEqual(opencodeProcessError(cli, raw, stderr), legacy.opencodeProcessError(cli, raw, stderr));
+        count++;
+      }
+    }
+  }
+  assert.equal(count, 256);
+  const error = new Error('raw code getter');
+  const raw = { get code() { throw error; } };
+  assert.equal(opencodeProcessError('gemini', raw, 'fixture'), null);
+  assert.throws(() => opencodeProcessError('opencode', raw, 'fixture'), thrown => thrown === error);
+  assert.equal(opencodeProcessError(), null);
+});
+
+test('OpenCode process error preserves classifier call identity and short circuiting', () => {
+  const { getNative } = require('../src/native/runtime');
+  const native = getNative();
+  const stderr = { raw: 'fixture' };
+  for (const answer of [null, false, 0, {}, true]) {
+    const calls = [];
+    const result = native.opencodeProcessError('opencode', null, stderr, (raw, options) => {
+      calls.push([raw, options]); return answer;
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], calls[0][1]);
+    assert.equal(calls[0][0].message, stderr);
+    assert.equal(result, answer ? calls[0][0] : null);
+  }
+  const error = new Error('classifier fixture');
+  const classify = () => { throw error; };
+  assert.equal(native.opencodeProcessError('gemini', null, stderr, classify), null);
+  assert.equal(native.opencodeProcessError('opencode', { code: 'unauthorized' }, stderr, classify), null);
+  assert.throws(() => native.opencodeProcessError('opencode', null, stderr, classify), thrown => thrown === error);
 });
 
 test('结构化错误优先于文案，RPC 码和证据保留各自含义', () => {
