@@ -149,6 +149,7 @@ function probeAddon(file, node = process.execPath) {
     if(typeof a.quotaRejectionRequestValue!=='function') process.exit(1);
     if(typeof a.modelRequestPolicyValue!=='function') process.exit(1);
     if(typeof a.resolveModelRequestPolicy!=='function') process.exit(1);
+    if(['messageCompose','messageRenderPrompt','messageValidateEnvelope','messageAutoCommitPrompt','messageNormalizeVoice','messageVoicePrompt'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustModelDefaults!=='function') process.exit(1);
     if(new a.RustModelDefaults(0).resolve({appType:'claude',models:['probe']},()=>[],()=>0)!=='probe') process.exit(1);
     if(typeof a.retryPolicyValue!=='function') process.exit(1);

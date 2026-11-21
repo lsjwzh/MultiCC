@@ -2,7 +2,7 @@
 
 const { createResultCompletionTracker, isMainResult } = require('./result-completion');
 
-const { renderPrompt } = require('../message-composer');
+const { renderPrompt } = require('../native/runtime').messageComposer;
 const { claudeLikeMcpArgs } = require('./router-mcp');
 
 /**

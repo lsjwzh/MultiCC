@@ -49,6 +49,7 @@ pub mod http_entry;
 pub mod js_bridge;
 mod js_live;
 pub mod machines;
+pub mod message_composer;
 pub mod missing_resume_recovery;
 pub mod model_default;
 pub mod model_request_policy;

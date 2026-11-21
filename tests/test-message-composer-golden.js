@@ -21,7 +21,8 @@
 // does not weaken byte-level regression coverage.
 // ═══════════════════════════════════════════════════════════════════════
 
-const { composeMessage, renderPrompt, buildAutoCommitStatusPrompt, normalizeVoiceInput } = require('../src/message-composer');
+const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../src/native/runtime').messageComposer;
+const { buildAutoCommitStatusPrompt } = require('./helpers/legacy-message-composer');
 const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');

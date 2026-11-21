@@ -1,6 +1,6 @@
 'use strict';
 
-const { renderPrompt } = require('../message-composer');
+const { renderPrompt } = require('../native/runtime').messageComposer;
 const { errorFields } = require('../provider-error');
 const { createStepCompletionTracker } = require('./step-completion');
 

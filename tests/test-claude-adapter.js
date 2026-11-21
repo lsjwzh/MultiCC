@@ -365,7 +365,12 @@ function frozenClaudeAdapter() {
   assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '8fa206f6674e9cae6c135452b5b47a331dfca31cad60eb0e1ba79085f7769e7b');
   const filename = path.resolve(__dirname, '../src/cli-adapters/claude.js');
   const legacy = new Module(filename); legacy.filename = filename;
-  legacy.paths = Module._nodeModulePaths(path.dirname(filename)); legacy._compile(source, filename);
+  legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  legacy.require = function (id) {
+    if (id === '../message-composer') return require('./helpers/legacy-message-composer');
+    return Module.prototype.require.call(this, id);
+  };
+  legacy._compile(source, filename);
   return legacy.exports.createClaudeAdapter;
 }
 

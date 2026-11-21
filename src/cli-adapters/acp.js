@@ -11,7 +11,7 @@
 const path = require('node:path');
 const { errorFields } = require('../provider-error');
 const { createProtocolCompletionTracker } = require('./completion');
-const { renderPrompt } = require('../message-composer');
+const { renderPrompt } = require('../native/runtime').messageComposer;
 
 const BRIDGE = path.join(__dirname, 'acp-bridge.cjs');
 

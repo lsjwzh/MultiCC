@@ -4302,6 +4302,15 @@
       ]
     },
     {
+      "path": "tests/test-message-composer-native.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-migrated-command-ownership.js",
       "tier": "core",
       "lane": "deterministic",

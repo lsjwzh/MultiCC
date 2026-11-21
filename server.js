@@ -73,7 +73,7 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative } = require('./src/native/runtime');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative, messageComposer } = require('./src/native/runtime');
 const { findProviderReferences } = require('./src/providers/references'); const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
@@ -81,7 +81,7 @@ const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/s
 const { isResidentSession, displayNameOf } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { synchronizeCodexProfileRoute } = require('./src/cli/switch-preparation');
-const { renderPrompt } = require('./src/message-composer');
+const { renderPrompt } = messageComposer;
 const {
   applyCuratedMemoryAction,
   atomicWrite: atomicWriteMemoryFile,

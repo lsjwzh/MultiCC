@@ -1,5 +1,5 @@
 'use strict';
-const { renderPrompt } = require('../message-composer');
+const { renderPrompt } = require('../native/runtime').messageComposer;
 function prepareManagedContext({ host, memory, sessionName, persisted, turn, opts, text, isFirstTurn }) {
   const input = { receiptId: opts.taskShellReceiptId, turnId: turn.turnId, text,
     isFirstTurn, fallback: opts.taskContextSeed, memory };
