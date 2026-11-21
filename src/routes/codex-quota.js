@@ -11,7 +11,7 @@
 //   no_auth           — ~/.codex/auth.json missing / unreadable (not logged in)
 //   unavailable       — API error / unexpected shape
 
-const { codexRateLimitWindows } = require('../codex/rate-limit-windows');
+const { getNative } = require('../native/runtime');
 const { requestCodexUsage, readCodexAuth } = require('../quota/codex-usage-request');
 
 const TIMEOUT_MS = 10000;
@@ -72,7 +72,8 @@ async function fetchCodexUsage(nowMs = Date.now(), options = {}) {
   const rl = body && typeof body === 'object' ? body.rate_limit : null;
   if (!rl || typeof rl !== 'object') return { status: 'unavailable', error: 'rate_limit missing' };
 
-  const windows = codexRateLimitWindows(rl, nowMs).map((w) => ({
+  const rateLimitWindows = getNative().limitCacheRecorderRequestValue('codexRateLimitWindows', { body: rl, now: nowMs });
+  const windows = rateLimitWindows.map((w) => ({
     window: w.window,
     usedPercent: w.usedPercent,
     remainingPercent: Math.max(0, 100 - w.usedPercent),

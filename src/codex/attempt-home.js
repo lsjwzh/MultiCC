@@ -564,7 +564,9 @@ function createCodexAttemptHome(sourceHomeInput, options = {}) {
       path.join(attemptHome, 'config.toml'),
       { required: options.configRequired !== false },
     );
-    copyPrivateFile(path.join(sourceHome, 'auth.json'), path.join(attemptHome, 'auth.json'));
+    if (options.copyAuth !== false) {
+      copyPrivateFile(path.join(sourceHome, 'auth.json'), path.join(attemptHome, 'auth.json'));
+    }
     copyPrivateFile(path.join(sourceHome, 'AGENTS.md'), path.join(attemptHome, 'AGENTS.md'));
     ensurePrivateDir(path.join(attemptHome, 'agents'));
     // Native conversation state is logical-session-scoped when sessionsDir is

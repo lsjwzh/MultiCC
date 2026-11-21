@@ -99,6 +99,150 @@ fn number_or_null(value: &JsValue) -> JsValue {
     finite(value).map_or(JsValue::Null, JsValue::Number)
 }
 
+struct CodexWindow {
+    label: &'static str,
+    percent: f64,
+    seconds: f64,
+    resets_at: Option<f64>,
+}
+
+impl CodexWindow {
+    fn fields(&self) -> Vec<(&'static str, JsValue)> {
+        vec![
+            ("window", self.label.into()),
+            ("label", self.label.into()),
+            ("usedPercent", self.percent.into()),
+        ]
+    }
+
+    fn reset_ms(&self) -> JsValue {
+        self.resets_at
+            .map_or(JsValue::Null, |value| (value * 1000.0).into())
+    }
+}
+
+fn codex_windows(limit: &JsValue, now_ms: f64) -> Vec<CodexWindow> {
+    let provided = |value: &JsValue| {
+        if value.is_nullish() || value == &JsValue::from("") {
+            None
+        } else {
+            finite(value)
+        }
+    };
+    let mut windows: Vec<_> = ["primary_window", "secondary_window"]
+        .into_iter()
+        .filter_map(|key| {
+            let window = prop(limit, key);
+            let percent = provided(prop(window, "used_percent"))?;
+            let seconds =
+                provided(prop(window, "limit_window_seconds")).filter(|seconds| *seconds > 0.0)?;
+            let resets_at = provided(prop(window, "reset_at")).or_else(|| {
+                provided(prop(window, "reset_after_seconds"))
+                    .map(|after| (now_ms / 1000.0).trunc() + after)
+            });
+            // API slot names vary by plan. The cycle length is authoritative.
+            let label = if seconds >= 28.0 * 86_400.0 {
+                "1m"
+            } else if seconds >= 86_400.0 {
+                "1wk"
+            } else {
+                "5h"
+            };
+            Some(CodexWindow {
+                label,
+                percent,
+                seconds,
+                resets_at,
+            })
+        })
+        .collect();
+    windows.sort_by(|a, b| a.seconds.total_cmp(&b.seconds));
+    windows
+}
+
+pub fn codex_rate_limit_windows(limit: &JsValue, now_ms: f64) -> JsValue {
+    JsValue::Array(
+        codex_windows(limit, now_ms)
+            .iter()
+            .map(|window| {
+                let mut fields = window.fields();
+                fields.extend([
+                    ("windowSeconds", window.seconds.into()),
+                    (
+                        "resetsAt",
+                        window.resets_at.map_or(JsValue::Null, JsValue::Number),
+                    ),
+                    ("resetMs", window.reset_ms()),
+                ]);
+                object(fields)
+            })
+            .collect(),
+    )
+}
+
+pub fn codex(body: &JsValue, now_ms: f64) -> JsValue {
+    let limit = prop(body, "rate_limit");
+    let windows = codex_windows(limit, now_ms);
+    let Some(headline) = windows
+        .iter()
+        .find(|window| window.label == "1wk")
+        .or_else(|| windows.last())
+    else {
+        return JsValue::Null;
+    };
+    let worst = windows
+        .iter()
+        .map(|window| window.percent)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let status = if prop(limit, "limit_reached") == &JsValue::Bool(true) || worst >= 100.0 {
+        "rejected"
+    } else if worst >= 80.0 {
+        "allowed_warning"
+    } else {
+        "allowed"
+    };
+    let tier = match prop(body, "plan_type") {
+        JsValue::String(value) => JsValue::String(value.clone()),
+        _ => JsValue::Null,
+    };
+    object(vec![
+        ("kind", "window".into()),
+        ("provider", "codex".into()),
+        (
+            "rateLimitType",
+            if headline.label == "5h" {
+                "five_hour"
+            } else {
+                "weekly"
+            }
+            .into(),
+        ),
+        ("status", status.into()),
+        (
+            "utilization",
+            (headline.percent / 100.0).clamp(0.0, 1.0).into(),
+        ),
+        (
+            "resetsAt",
+            headline.resets_at.map_or(JsValue::Null, JsValue::Number),
+        ),
+        ("tier", tier),
+        (
+            "windows",
+            JsValue::Array(
+                windows
+                    .iter()
+                    .map(|window| {
+                        let mut fields = window.fields();
+                        fields.push(("resetMs", window.reset_ms()));
+                        object(fields)
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
 pub fn glm(body: &JsValue) -> JsValue {
     let data = prop(body, "data");
     let JsValue::Array(limits) = prop(data, "limits") else {

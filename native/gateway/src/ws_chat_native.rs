@@ -2,6 +2,7 @@
 //! durable transcript writes, replay snapshots and live fan-out. Provider IO
 //! runs outside this lock, and connection loss does not abandon a turn.
 mod auth;
+mod codex;
 mod frames;
 mod launch;
 mod provider;
@@ -10,6 +11,7 @@ mod route;
 mod shell;
 mod shell_http;
 mod store;
+mod usage;
 
 pub use auth::ConnectionRequest;
 
@@ -55,6 +57,7 @@ pub struct Host {
     hub: Arc<ChatHub>,
     sessions: Mutex<HashMap<String, SessionCell>>,
     records: Mutex<()>,
+    usage_lock: Mutex<()>,
     epoch: OnceLock<String>,
     route_generation: AtomicU64,
 }
@@ -84,6 +87,7 @@ struct Active {
     tools: Vec<Value>,
     tools_bytes: usize,
     error: Option<String>,
+    timeline: Option<multicc_core::turn_progress::timeline::Timeline>,
 }
 
 impl Host {
@@ -722,6 +726,11 @@ async fn admit(
         .cloned();
     let replayed_answer = if let Some(row) = previous {
         if answer.is_none() && row.get("userInputRequestId").is_none() {
+            if store::is_codex(&state.stored.record) {
+                if let Some(ack) = codex_input_ack(app, id, &row).await {
+                    app.native_chat.send(connection, ack);
+                }
+            }
             app.native_chat.send(connection, metadata(&row));
             return Ok(());
         }
@@ -758,10 +767,17 @@ async fn admit(
         ));
     }
     let record = &state.stored.record;
-    if !store::is_claude(record) {
+    let codex = store::is_codex(record);
+    if !store::is_claude(record) && !codex {
         return Err((
             "chat_provider_unavailable",
             "The native chat host requires a Claude session".into(),
+        ));
+    }
+    if codex && (codex_requires_provider_host(record) || answer.is_some()) {
+        return Err((
+            "chat_route_unavailable",
+            "This Codex session requires the configured provider or question host".into(),
         ));
     }
     if [
@@ -811,13 +827,24 @@ async fn admit(
 }
 
 struct RunningTurn {
-    options: multicc_core::claude_process::StartInput,
+    runner: TurnRunner,
     reference_seed: String,
     turn_id: String,
     attempt_id: String,
     prompt_uuid: String,
     cancelled: oneshot::Receiver<()>,
     provider_proxy: Option<provider::Proxy>,
+}
+
+enum TurnRunner {
+    Claude(Box<multicc_core::claude_process::StartInput>),
+    Codex(codex::Launch),
+}
+
+fn codex_requires_provider_host(record: &V) -> bool {
+    let provider = record.get("provider");
+    (js::truthy_opt(provider) && !matches!(provider, Some(V::String(_))))
+        || js::truthy_opt(record.get("providerSelection"))
 }
 
 enum TurnInput<'a> {
@@ -872,29 +899,99 @@ async fn prepare_turn(
         new_id("m")?,
         random_id::random_uuid_v4().map_err(|error| ("internal_error", error.to_string()))?,
     );
-    let mut options = launch::launch_options(state);
-    let reference_seed = match delivery {
-        Some(delivery) => delivery
-            .reference_seed(!options.launch.resume)
-            .await
-            .map_err(|error| ("task_shell_context_unavailable", error))?,
-        None => String::new(),
+    let (mut runner, reference_seed) = if store::is_codex(&state.stored.record) {
+        let thread = &state.stored.native_id;
+        if !thread.is_empty() && !codex::valid_thread(thread) {
+            return Err((
+                "chat_provider_unavailable",
+                "Invalid saved Codex thread ID".into(),
+            ));
+        }
+        let options = codex::Launch {
+            app_server: store::is_codex_app(&state.stored.record),
+            cwd: state.stored.cwd.clone(),
+            home: app.home_dir.clone(),
+            thread: (!thread.is_empty()).then(|| thread.clone()),
+            model: optional_text(&state.stored.record, "model"),
+            effort: optional_text(&state.stored.record, "effort"),
+            proxy: None,
+        };
+        let role = optional_text(&state.stored.record, "rolePrompt");
+        let context = match role.filter(|_| thread.is_empty()) {
+            Some(role) => format!("[Role prompt]\n{role}\n[End of role prompt]\n\n"),
+            None => String::new(),
+        };
+        (TurnRunner::Codex(options), context)
+    } else {
+        let mut options = launch::launch_options(state);
+        let reference = match delivery {
+            Some(delivery) => {
+                if let Some(role) = delivery.role_prompt.as_ref() {
+                    options.launch.system_prompt_append = Some(role.to_owned());
+                }
+                delivery
+                    .reference_seed(!options.launch.resume)
+                    .await
+                    .map_err(|error| ("task_shell_context_unavailable", error))?
+            }
+            None => String::new(),
+        };
+        (TurnRunner::Claude(Box::new(options)), reference)
     };
-    let provider = provider::Provider::load(&app.data_root, &state.stored.record)
-        .await
-        .map_err(|error| ("chat_provider_unavailable", error))?;
+    let provider = match runner {
+        TurnRunner::Claude(_) => {
+            provider::Provider::load(&app.data_root, &state.stored.record).await
+        }
+        TurnRunner::Codex(_) => {
+            provider::Provider::load_codex(&app.data_root, &app.home_dir, &state.stored.record)
+                .await
+        }
+    }
+    .map_err(|error| ("chat_provider_unavailable", error))?;
     let route = app
         .native_chat
         .route(&turn_id, &state.stored.record, provider.as_ref())?;
-    let provider_proxy = match provider {
-        Some(provider) => Some(
+    let provider_proxy = match (provider, &mut runner) {
+        (Some(provider), TurnRunner::Claude(options)) => Some(
             provider
                 .open(&mut options.launch, id)
                 .await
                 .map_err(|error| ("chat_provider_unavailable", error.to_string()))?,
         ),
-        None => None,
+        (Some(provider), TurnRunner::Codex(options)) => {
+            let home = codex::managed_home(&app.home_dir, id)
+                .await
+                .map_err(|error| ("chat_provider_unavailable", error))?;
+            options.model = provider.model.clone();
+            let (proxy, endpoint, token) = provider
+                .start_proxy(id)
+                .await
+                .map_err(|error| ("chat_provider_unavailable", error.to_string()))?;
+            options.proxy = Some(codex::Managed {
+                home,
+                endpoint,
+                token,
+            });
+            Some(proxy)
+        }
+        _ => None,
     };
+    if let TurnRunner::Codex(options) = &mut runner {
+        let home = app.home_dir.clone();
+        let effort = options.effort.clone();
+        let model = options.model.clone();
+        options.effort = Some(
+            shell::blocking(move || {
+                Ok(launch::codex_effort(
+                    &home,
+                    effort.as_deref(),
+                    model.as_deref(),
+                ))
+            })
+            .await
+            .map_err(|error| ("chat_provider_unavailable", error))?,
+        );
+    }
     let mut user = value(
         json!({"role":"user", "content":prompt, "ts":auth_runtime::now_ms(), "turnId":turn_id}),
     );
@@ -907,9 +1004,6 @@ async fn prepare_turn(
         quota_guard::set(&mut user, "taskStart", V::Bool(!delivery.answer));
         quota_guard::set(&mut user, "taskSource", V::from("task-shell"));
         quota_guard::set(&mut user, "taskText", V::from(prompt));
-        if let Some(role) = delivery.role_prompt.as_ref() {
-            options.launch.system_prompt_append = Some(role.to_owned());
-        }
     }
     quota_guard::set(&mut user, "id", V::from(message_id));
     if let Some(answer) = answer {
@@ -948,6 +1042,12 @@ async fn prepare_turn(
     if question.notification != V::Null {
         host.publish(id, question.notification, false);
     }
+    let codex = store::is_codex(&state.stored.record);
+    if codex {
+        if let Some(ack) = codex_input_ack(app, id, &user).await {
+            host.publish(id, ack, false);
+        }
+    }
     host.publish(id, metadata(&user), false);
     let (cancel, cancelled) = oneshot::channel();
     let mut selected = route.event(id, "selected", "none");
@@ -965,11 +1065,14 @@ async fn prepare_turn(
         tools: Vec::new(),
         tools_bytes: 0,
         error: None,
+        timeline: codex
+            .then(|| multicc_core::turn_progress::timeline::Timeline::new(auth_runtime::now_ms())),
     });
     host.hub.clear_replay(id);
     let turn = state.active.as_ref().expect("installed turn");
-    if turn.task.is_some() {
-        host.publish(id, turn.attribute(frames::notify("running", prompt)), false);
+    if turn.task.is_some() || codex {
+        let goal = if turn.task.is_some() { prompt } else { "" };
+        host.publish(id, turn.attribute(frames::notify("running", goal)), false);
     }
     host.publish(
         id,
@@ -978,7 +1081,7 @@ async fn prepare_turn(
     );
     host.publish(id, turn.attribute(selected), false);
     Ok(RunningTurn {
-        options,
+        runner,
         reference_seed,
         turn_id,
         attempt_id,
@@ -988,46 +1091,87 @@ async fn prepare_turn(
     })
 }
 
+async fn codex_input_ack(app: &App, id: &str, row: &V) -> Option<V> {
+    let client = optional_text(row, "clientMsgId")?;
+    let root = app.data_root.clone();
+    let id = id.to_owned();
+    let snapshot = shell::blocking(move || {
+        multicc_core::orchestration_store::chat_queue_snapshot(
+            &root.join("orchestration.sqlite"),
+            &id,
+        )
+    })
+    .await;
+    let mut frame = snapshot
+        .unwrap_or_else(|_| value(json!({"type":"session_queue","state":"idle","items":[]})));
+    quota_guard::set(&mut frame, "event", V::from("queued"));
+    quota_guard::set(&mut frame, "queued", V::Bool(false));
+    quota_guard::set(&mut frame, "clientMsgId", V::from(client));
+    quota_guard::set(&mut frame, "message", property(row, "content"));
+    Some(frame)
+}
+
 async fn run_turn(
     app: &App,
     id: &str,
     session: &Arc<Mutex<Session>>,
-    mut launched: RunningTurn,
+    launched: RunningTurn,
     prompt: &str,
     scheduled: Option<(&shell::Writer, &shell::Delivery)>,
 ) -> TurnEnd {
     let host = &app.native_chat;
     let turn_id = launched.turn_id.as_str();
     let attempt_id = launched.attempt_id.as_str();
-    launch::prepare_history(app, &launched.options).await;
-    let question_tool =
-        question::open(&mut launched.options.launch, app, session, id, turn_id).await;
     let provider_prompt = if launched.reference_seed.is_empty() {
         std::borrow::Cow::Borrowed(prompt)
     } else {
         std::borrow::Cow::Owned(format!("{}{prompt}", launched.reference_seed))
     };
-    let result = match question_tool {
-        Ok(_tool) => {
-            chat_turn_host::run(
-                launched.options,
+    let result = match launched.runner {
+        TurnRunner::Claude(mut options) => {
+            launch::prepare_history(app, &options).await;
+            match question::open(&mut options.launch, app, session, id, turn_id).await {
+                Ok(_tool) => {
+                    chat_turn_host::run(
+                        *options,
+                        &provider_prompt,
+                        &launched.prompt_uuid,
+                        launched.cancelled,
+                        |event| observe(host, id, session, turn_id, event),
+                        |pid| async move {
+                            if let Some((writer, delivery)) = scheduled {
+                                writer.started(pid, turn_id, attempt_id, delivery).await?;
+                            }
+                            Ok(())
+                        },
+                    )
+                    .await
+                }
+                Err(error) => chat_turn_host::RunResult {
+                    outcome: chat_turn_host::Outcome::Failed(error),
+                    writer_stopped: true,
+                },
+            }
+        }
+        TurnRunner::Codex(options) => {
+            codex::run(
+                options,
                 &provider_prompt,
-                &launched.prompt_uuid,
                 launched.cancelled,
-                |event| observe(host, id, session, turn_id, event),
-                |pid| async move {
-                    if let Some((writer, delivery)) = scheduled {
-                        writer.started(pid, turn_id, attempt_id, delivery).await?;
+                |event| async move {
+                    match event {
+                        codex::Event::Thread(thread) => {
+                            remember_codex_thread(app, id, session, turn_id, thread).await
+                        }
+                        codex::Event::Frame(frame) => {
+                            observe(host, id, session, turn_id, frame).await;
+                            Ok(())
+                        }
                     }
-                    Ok(())
                 },
             )
             .await
         }
-        Err(error) => chat_turn_host::RunResult {
-            outcome: chat_turn_host::Outcome::Failed(error),
-            writer_stopped: true,
-        },
     };
     drop(launched.provider_proxy);
     let usage_durable = matches!(&result.outcome, chat_turn_host::Outcome::Result(event) if event["usage"].is_object());
@@ -1040,6 +1184,34 @@ async fn run_turn(
         stopped: result.writer_stopped,
         usage_durable: usage_durable && phase == "succeeded",
     }
+}
+
+async fn remember_codex_thread(
+    app: &App,
+    id: &str,
+    session: &Mutex<Session>,
+    turn_id: &str,
+    thread: String,
+) -> Result<(), String> {
+    let mut state = session.lock().await;
+    if !state.active.as_ref().is_some_and(|turn| turn.id == turn_id) {
+        return Err("Codex thread arrived after its turn closed".into());
+    }
+    if state.stored.native_id != thread {
+        let _records = app.native_chat.records.lock().await;
+        let root = app.data_root.clone();
+        let id = id.to_owned();
+        let native_id = thread.clone();
+        state.stored.record = shell::blocking(move || {
+            store::update_record(&root, &id, |record| {
+                quota_guard::set(record, "cliSessionId", V::from(native_id));
+            })
+        })
+        .await?;
+        state.stored.native_id = thread;
+    }
+    state.native_started = true;
+    Ok(())
 }
 
 struct TurnEnd {
@@ -1122,6 +1294,16 @@ impl Active {
     fn attempt_frame(&self, frame: V) -> V {
         self.attribute(self.route.tag(frame))
     }
+
+    fn timeline_frame(&self) -> Option<V> {
+        let snapshot = self.timeline.as_ref()?.snapshot(auth_runtime::now_ms())?;
+        let spans = snapshot
+            .spans
+            .iter()
+            .map(|span| json!({"k":span.k.as_str(),"s":span.s,"e":span.e}))
+            .collect::<Vec<_>>();
+        Some(value(json!({"origin":snapshot.origin,"spans":spans})))
+    }
 }
 
 async fn observe(host: &Host, id: &str, session: &Mutex<Session>, turn_id: &str, mut event: Value) {
@@ -1133,6 +1315,20 @@ async fn observe(host: &Host, id: &str, session: &Mutex<Session>, turn_id: &str,
     else {
         return;
     };
+    if let Some(timeline) = &mut turn.timeline {
+        let now = auth_runtime::now_ms();
+        if event["type"] == "assistant" {
+            for block in event["message"]["content"].as_array().into_iter().flatten() {
+                let normalized = match block["type"].as_str() {
+                    Some("text") => json!({"type":"assistant_text","text":block["text"]}),
+                    Some("thinking") => json!({"type":"thinking"}),
+                    _ => continue,
+                };
+                timeline.observe_adapter(&value(normalized), &V::Undefined, false, now);
+            }
+        }
+        timeline.observe_claude(&value(event.clone()), now);
+    }
     match event["type"].as_str() {
         Some("system") if event["subtype"] == "init" => return,
         Some("assistant") => {
@@ -1208,12 +1404,16 @@ async fn finish(
         return ("failed", None);
     }
     let mut turn = state.active.take().expect("owned turn");
+    let codex = store::is_codex(&state.stored.record);
     let outcome = if turn.cancel.is_none() {
         Outcome::Cancelled
     } else {
         outcome
     };
-    if !state.native_started && !matches!(outcome, Outcome::Result(_)) {
+    if store::is_claude(&state.stored.record)
+        && !state.native_started
+        && !matches!(outcome, Outcome::Result(_))
+    {
         let native_id = state.stored.native_id.clone();
         state.native_started = tokio::task::spawn_blocking(move || {
             multicc_core::missing_resume_recovery::has_native_transcript(&native_id)
@@ -1242,10 +1442,16 @@ async fn finish(
             let cost = event
                 .get("total_cost_usd")
                 .and_then(Value::as_f64)
-                .map_or(V::Undefined, V::Number);
-            let usage = event
-                .get("usage")
-                .map_or_else(|| value(json!({})), js::from_serde);
+                .map_or(if codex { V::Null } else { V::Undefined }, V::Number);
+            let raw_usage = event.get("usage").cloned().unwrap_or_else(|| json!({}));
+            let (event_usage, cumulative, epoch) =
+                if codex && !store::is_codex_app(&state.stored.record) {
+                    usage::exec_turn(&raw_usage, &state.stored.messages, &state.stored.native_id)
+                } else {
+                    (raw_usage, V::Undefined, V::Undefined)
+                };
+            let usage = js::from_serde(&event_usage);
+            let previous_count = state.stored.messages.len();
             match save_assistant(
                 host,
                 id,
@@ -1253,32 +1459,38 @@ async fn finish(
                 &mut turn,
                 content,
                 Some((&cost, &usage)),
+                (&cumulative, &epoch),
             )
             .await
             {
                 Ok(()) => {
+                    if codex && state.stored.messages.len() > previous_count {
+                        publish_codex_usage(app, id, &mut state, &turn, &event_usage).await;
+                    }
                     let count = state
                         .stored
                         .messages
                         .iter()
                         .filter(|message| is_role(message, "assistant"))
                         .count();
-                    host.publish(
-                        id,
-                        turn.attempt_frame(V::object(vec![
-                            ("type", V::from("result")),
-                            ("total_cost_usd", cost),
-                            ("usage", usage),
-                            (
-                                "durationMs",
-                                V::Number(turn.start.elapsed().as_millis() as f64),
-                            ),
-                            ("num_turns", V::Number(count as f64)),
-                            ("modelAttribution", turn.route.model_attribution()),
-                        ])),
-                        false,
-                    );
-                    host.publish(id, turn.attempt_frame(value(event)), false);
+                    let mut result = V::object(vec![
+                        ("type", V::from("result")),
+                        ("total_cost_usd", cost),
+                        ("usage", usage),
+                        (
+                            "durationMs",
+                            V::Number(turn.start.elapsed().as_millis() as f64),
+                        ),
+                        ("num_turns", V::Number(count as f64)),
+                        ("modelAttribution", turn.route.model_attribution()),
+                    ]);
+                    if let Some(timeline) = turn.timeline_frame() {
+                        quota_guard::set(&mut result, "timeline", timeline);
+                    }
+                    host.publish(id, turn.attempt_frame(result), false);
+                    if !codex {
+                        host.publish(id, turn.attempt_frame(value(event)), false);
+                    }
                     "succeeded"
                 }
                 Err(error) => {
@@ -1337,7 +1549,16 @@ async fn finish(
             "failed"
         }
         Outcome::Cancelled => {
-            if let Err(error) = save_assistant(host, id, &mut state, &mut turn, content, None).await
+            if let Err(error) = save_assistant(
+                host,
+                id,
+                &mut state,
+                &mut turn,
+                content,
+                None,
+                (&V::Undefined, &V::Undefined),
+            )
+            .await
             {
                 host.publish(id, error_frame("chat_result_not_durable", &error), false);
             }
@@ -1431,7 +1652,7 @@ async fn finish(
     );
     quota_guard::set(&mut route_event, "reasonCode", V::from("finalize"));
     host.publish(id, turn.attribute(route_event), false);
-    if turn.task.is_some() && phase != "failed" {
+    if (turn.task.is_some() || codex) && phase != "failed" {
         let goal = state
             .stored
             .record
@@ -1459,6 +1680,61 @@ async fn finish(
     (phase, awaiting)
 }
 
+async fn publish_codex_usage(
+    app: &App,
+    id: &str,
+    state: &mut Session,
+    turn: &Active,
+    event_usage: &Value,
+) {
+    let provider = store::text(&turn.route.scope, "providerId");
+    let name = js::js_to_string(&turn.route.provider_name).to_string_lossy();
+    let model = if turn.route.model.is_nullish() {
+        json!("_default_")
+    } else {
+        js::to_serde(&turn.route.model)
+    };
+    let Some(role) = usage::role(event_usage, &provider, &name, &model) else {
+        return;
+    };
+    let host = &app.native_chat;
+    let _serial = host.usage_lock.lock().await;
+    let root = app.data_root.clone();
+    let session = id.to_owned();
+    let usage = event_usage.clone();
+    let saved = shell::blocking(move || {
+        let totals = usage::record(&root, &session, &provider, &usage)?;
+        let windows = usage::windows(&root, &session, &provider);
+        Ok((totals, windows))
+    })
+    .await;
+    match saved {
+        Ok((totals, windows)) => {
+            if let Some(totals) = totals {
+                state.stored.token_usage = value(totals);
+            }
+            match windows {
+                Ok(windows) => host.publish(
+                    id,
+                    turn.attempt_frame(value(
+                        json!({"type":"provider_token_stats","windows":windows}),
+                    )),
+                    false,
+                ),
+                Err(error) => {
+                    eprintln!("[multicc-gateway] native Codex usage windows failed: {error}")
+                }
+            }
+        }
+        Err(error) => eprintln!("[multicc-gateway] native Codex usage write failed: {error}"),
+    }
+    host.publish(
+        id,
+        turn.attribute(value(json!({"type":"role_token_stats","role":role}))),
+        false,
+    );
+}
+
 async fn save_assistant(
     host: &Host,
     id: &str,
@@ -1466,6 +1742,7 @@ async fn save_assistant(
     turn: &mut Active,
     content: String,
     result: Option<(&V, &V)>,
+    (cumulative, epoch): (&V, &V),
 ) -> Result<(), String> {
     if content.is_empty() && turn.tools.is_empty() && (result.is_none() || turn.delivery.is_none())
     {
@@ -1490,7 +1767,21 @@ async fn save_assistant(
             },
         );
         quota_guard::set(&mut row, "usage", usage.clone());
+        if !cumulative.is_nullish() {
+            quota_guard::set(&mut row, "usageCumulative", cumulative.clone());
+            quota_guard::set(&mut row, "usageEpoch", epoch.clone());
+        }
         quota_guard::set(&mut row, "modelAttribution", turn.route.model_attribution());
+        if turn.timeline.is_some() {
+            quota_guard::set(
+                &mut row,
+                "durationMs",
+                V::Number(turn.start.elapsed().as_millis() as f64),
+            );
+            if let Some(timeline) = turn.timeline_frame() {
+                quota_guard::set(&mut row, "timeline", timeline);
+            }
+        }
     } else {
         quota_guard::set(&mut row, "partial", V::Bool(true));
         quota_guard::set(&mut row, "cancelled", V::Bool(true));

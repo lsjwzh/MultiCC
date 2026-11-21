@@ -604,6 +604,13 @@ pub fn request(op: &str, input: &JsValue) -> JsValue {
         "cacheIsLate" => crate::provider_limit_policy::is_late(input).into(),
         "pollGlm" => crate::usage_limit_poll::glm(prop(input, "body")),
         "pollDeepseek" => crate::usage_limit_poll::deepseek(prop(input, "body")),
+        "pollCodex" => {
+            crate::usage_limit_poll::codex(prop(input, "body"), js_to_number(prop(input, "now")))
+        }
+        "codexRateLimitWindows" => crate::usage_limit_poll::codex_rate_limit_windows(
+            prop(input, "body"),
+            js_to_number(prop(input, "now")),
+        ),
         "pollRelay" => crate::usage_limit_poll::relay(prop(input, "body")),
         "isRevokedCategory" => revoked(prop(input, "category")).into(),
         "constants" => object(vec![

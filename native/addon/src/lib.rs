@@ -36,6 +36,7 @@ pub mod cli_completion;
 pub mod cli_switch;
 pub mod cli_switch_runtime;
 pub mod cli_tools_runtime;
+pub mod codex_provider_home;
 pub mod cpr;
 pub mod events;
 pub mod exact_secret;

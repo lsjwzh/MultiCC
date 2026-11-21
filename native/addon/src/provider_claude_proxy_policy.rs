@@ -9,7 +9,7 @@ use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 use std::ptr;
 
-fn assign_error_code<'a>(error: LiveValue<'a>, code: LiveValue<'a>) -> Result<()> {
+pub(crate) fn assign_error_code<'a>(error: LiveValue<'a>, code: LiveValue<'a>) -> Result<()> {
     // Match strict assignment even for a patched Error constructor returning a
     // proxy or an object with a non-writable code property.
     let source = error.from_value(&JsValue::string(

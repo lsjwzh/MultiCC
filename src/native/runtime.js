@@ -55,6 +55,23 @@ function nativeCode(error) {
   return error;
 }
 
+// Preserve the synchronous spawn-port contracts while Rust owns file writes
+// and credential selection. Only key names cross the env cleanup boundary.
+const codexProviderHome = {
+  materialize(home, settings, authOnly = false) {
+    const globalAuth = path.join(require('node:os').homedir(), '.codex', 'auth.json');
+    const result = getNative().codexProviderMaterialize(home, globalAuth, JSON.stringify(settings ?? {}), authOnly);
+    return authOnly ? result : JSON.parse(result);
+  },
+  materializeOfficial: (home, id, config) => getNative().codexProviderOfficialHome(home, id, config),
+  sanitizeOfficial: (home, proxyPath) => getNative().codexProviderSanitizeHome(home, proxyPath),
+  stripOfficialEnv(env) {
+    for (const key of getNative().codexProviderOfficialEnvKeys(Object.keys(env))) delete env[key];
+  },
+  proxyConfigRequired: options => getNative().codexProxyConfigRequired(options),
+  assertProxyConfigApplied: options => getNative().assertCodexProxyConfigApplied(options),
+};
+
 // 原生任务共用 libuv 工作池。只限制并行数，避免搜索突发占满文件 I/O 线程；排满时
 // 等待而不拒绝：Air 刷新与任务板落盘也走这条队列，拒绝就是一次失败的刷新或保存。
 let active = 0;
@@ -214,4 +231,4 @@ const codexBackground = {
 };
 module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
-  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground };
+  createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome };

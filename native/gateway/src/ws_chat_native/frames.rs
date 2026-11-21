@@ -11,7 +11,7 @@ use multicc_core::{
     js::{self, JsValue as V},
     provider_error, quota_guard,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub(super) async fn initial_frames(
     app: &App,
@@ -48,6 +48,7 @@ pub(super) async fn initial_frames(
     let last_route = provider_selection
         .as_ref()
         .and_then(|_| provider::last_route(record));
+    let codex = store::is_codex(record);
     let provider_id = active_route
         .and_then(|route| optional_text(&route.scope, "providerId"))
         .or_else(|| {
@@ -55,9 +56,15 @@ pub(super) async fn initial_frames(
                 .as_ref()
                 .and_then(|route| route["providerId"].as_str().map(ToOwned::to_owned))
         })
-        .or_else(|| optional_text(record, "provider"));
+        .or_else(|| optional_text(record, "provider").filter(|id| !codex || id != "_default_"))
+        .or_else(|| (cli == "codex").then(|| super::codex::DEFAULT_PROVIDER_ID.into()));
     let record = record.clone();
-    let provider = if store::is_claude(&record) && provider_id.is_some() {
+    let provider = if codex && active_route.is_none() {
+        Provider::load_codex(&app.data_root, &app.home_dir, &record)
+            .await
+            .ok()
+            .flatten()
+    } else if store::is_claude(&record) && provider_id.is_some() {
         Provider::load_fixed(&app.data_root, &record)
             .await
             .ok()
@@ -72,7 +79,11 @@ pub(super) async fn initial_frames(
                 .as_ref()
                 .map(|route| route["providerName"].clone())
         })
-        .or_else(|| provider.as_ref().map(|provider| json!(provider.name)));
+        .or_else(|| provider.as_ref().map(|provider| json!(provider.name)))
+        .or_else(|| {
+            (codex && provider_id.as_deref() == Some(super::codex::DEFAULT_PROVIDER_ID))
+                .then(|| json!(super::codex::DEFAULT_PROVIDER_NAME))
+        });
     let effective_model = active_route
         .and_then(|route| match &route.model {
             V::String(model) => Some(model.to_string_lossy()),
@@ -80,12 +91,41 @@ pub(super) async fn initial_frames(
         })
         .or_else(|| provider.and_then(|provider| provider.model))
         .or_else(|| optional_text(&record, "model"));
-    let (effective_effort, cli_availability) = super::launch::init_facts(app, &record).await;
+    let (effective_effort, cli_availability) =
+        super::launch::init_facts(app, &record, effective_model.as_deref()).await;
     let clis = event_routes::client_clis();
+    let raw = js::to_serde(&record);
+    let mut remembered = raw["cliStates"].clone();
+    if codex {
+        if !remembered.is_object() {
+            remembered = json!({});
+        }
+        let mut active = remembered[&cli].clone();
+        if !active.is_object() {
+            active = json!({});
+        }
+        active["cliSessionId"] = json!(stored.native_id);
+        active["provider"] = json!(provider_id);
+        for key in ["model", "effort", "agent"] {
+            active[key] = raw[key].clone();
+        }
+        remembered[&cli] = active;
+    }
     let cli_states = cli_switch::state_summary(&json!({
-        "cliStates":js::to_serde(&record)["cliStates"],
+        "cliStates":remembered,
         "providerlessClis":clis.iter().filter(|cli| cli_capability::is_providerless(cli)).collect::<Vec<_>>()
     })).unwrap_or_else(|_| json!({}));
+    let windows = match provider_id.as_ref().filter(|_| codex) {
+        Some(provider) => {
+            let root = app.data_root.clone();
+            let id = id.to_owned();
+            let provider = provider.clone();
+            super::shell::blocking(move || super::usage::windows(&root, &id, &provider))
+                .await
+                .unwrap_or(Value::Null)
+        }
+        None => Value::Null,
+    };
     let mut frames = vec![value(json!({
         "type":"system", "subtype":"init", "cwd":stored.cwd, "session":id, "session_id":id,
         "cli":cli, "is_streaming":streaming, "taskShell":task_shell, "turnId":turn_id,
@@ -94,21 +134,48 @@ pub(super) async fn initial_frames(
         "agent":optional_text(&record,"agent"), "providerRouteProtocolVersion":1,
         "providerRoute":route, "providerId":provider_id, "providerName":provider_name,
         "providerSelection":provider_selection, "autoProvider":last_route,
-        "providerTokenWindows":null,
+        "providerTokenWindows":windows,
         "cliStates":cli_states, "cliAvailability":cli_availability, "pendingCliHandoff":null,
     }))];
+    let mut token_usage = stored.token_usage.clone();
     let (mut page, has_more, scoped) = match shell_history {
         Some(mut history) => {
             let start = history.len().saturating_sub(HISTORY_PAGE);
             (history.split_off(start), start > 0, true)
         }
         None => {
-            let mut visible = stored.messages.iter().rev().filter(|row| {
+            let is_visible = |row: &V| {
                 archive
                     || !matches!(row.get("id"), Some(V::String(id)) if stored.hidden.contains(id))
-            });
-            let mut page: Vec<_> = visible.by_ref().take(HISTORY_PAGE).cloned().collect();
+            };
+            let mut visible = stored
+                .messages
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, row)| is_visible(row));
+            let mut page: Vec<_> = visible
+                .by_ref()
+                .take(HISTORY_PAGE)
+                .map(|(index, row)| (index, row.clone()))
+                .collect();
             page.reverse();
+            if codex {
+                let per_turn = store::is_codex_app(&record);
+                let mut usage = super::usage::History::default();
+                let mut page_rows = page.iter_mut().peekable();
+                for (index, row) in stored.messages.iter().enumerate() {
+                    let projected = usage.observe(row, per_turn);
+                    if page_rows.peek().is_some_and(|entry| entry.0 == index) {
+                        let (_, row) = page_rows.next().expect("visible history row");
+                        super::usage::wire_row(row, projected);
+                    }
+                }
+                if !per_turn {
+                    token_usage = usage.total();
+                }
+            }
+            let page = page.into_iter().map(|(_, row)| row).collect();
             (page, visible.next().is_some(), false)
         }
     };
@@ -150,7 +217,7 @@ pub(super) async fn initial_frames(
                 .is_some_and(|row| is_role(row, "assistant")),
         is_streaming: streaming,
         buffered_events: attached.replay.len(),
-        has_token_usage: !stored.token_usage.is_nullish(),
+        has_token_usage: !token_usage.is_nullish(),
         has_task_state_seed: seed.is_some(),
     };
     let mut burst = false;
@@ -159,7 +226,7 @@ pub(super) async fn initial_frames(
             chat_connect_replay::Step::ChatHistory => frames.push(V::object(vec![
                 ("type", V::from("chat_history")),
                 ("messages", V::Array(fitted.messages.clone())),
-                ("tokenUsage", stored.token_usage.clone()),
+                ("tokenUsage", token_usage.clone()),
                 ("hasMore", V::Bool(fitted.has_more)),
             ])),
             chat_connect_replay::Step::ClearBuffer => app.native_chat.hub.clear_replay(id),

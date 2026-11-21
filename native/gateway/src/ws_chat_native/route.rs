@@ -10,15 +10,21 @@ pub(super) struct Route {
     pub scope: V,
     pub model: V,
     pub provider_name: V,
+    protocol: &'static str,
 }
 
 impl Route {
     pub fn model_attribution(&self) -> V {
+        let model = if self.protocol == "openai_responses" && self.model.is_nullish() {
+            V::Undefined
+        } else {
+            self.model.clone()
+        };
         V::object(vec![
             ("cli", property(&self.scope, "cli")),
             ("providerId", property(&self.scope, "providerId")),
             ("providerName", self.provider_name.clone()),
-            ("model", self.model.clone()),
+            ("model", model),
         ])
     }
 
@@ -31,6 +37,15 @@ impl Route {
         provider: Option<&Provider>,
     ) -> Self {
         let cli = super::store::cli(record);
+        let (protocol, native_id, native_name) = if super::store::is_codex(record) {
+            (
+                "openai_responses",
+                super::codex::DEFAULT_PROVIDER_ID,
+                super::codex::DEFAULT_PROVIDER_NAME,
+            )
+        } else {
+            ("anthropic", "claude-official", "Claude")
+        };
         let (provider_id, provider_name, model, revision) = match provider {
             Some(provider) => (
                 provider.id.as_str(),
@@ -42,11 +57,11 @@ impl Route {
                 let model = optional_text(record, "model");
                 let revision = provider_attempt_identity::provider_revision(
                     &JsString::from_rust_str(&format!(
-                        "{cli}:anthropic:claude-official:{}",
+                        "{cli}:{protocol}:{native_id}:{}",
                         model.as_deref().unwrap_or_default(),
                     )),
                 );
-                ("claude-official", "Claude", model, revision)
+                (native_id, native_name, model, revision)
             }
         };
         let scope = V::object(vec![
@@ -66,6 +81,7 @@ impl Route {
             scope,
             model: model.map_or(V::Null, V::from),
             provider_name: V::from(provider_name),
+            protocol,
         }
     }
 
@@ -80,6 +96,11 @@ impl Route {
 
     pub fn event(&self, session: &str, phase: &str, fence: &str) -> V {
         let field = |name| property(&self.scope, name);
+        let model = if self.protocol == "openai_responses" && self.model.is_nullish() {
+            V::from("_default_")
+        } else {
+            self.model.clone()
+        };
         V::object(vec![
             ("type", V::from("provider_route_event")),
             ("version", V::Number(1.0)),
@@ -95,8 +116,8 @@ impl Route {
             ("attemptNo", field("attemptNo")),
             ("providerId", field("providerId")),
             ("providerName", self.provider_name.clone()),
-            ("protocol", V::from("anthropic")),
-            ("model", self.model.clone()),
+            ("protocol", V::from(self.protocol)),
+            ("model", model),
             ("providerRevision", field("providerRevision")),
             ("replayFence", V::from(fence)),
             ("safeToReplay", V::Bool(fence == "none")),

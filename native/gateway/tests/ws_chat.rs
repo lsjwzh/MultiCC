@@ -825,6 +825,7 @@ impl Gateway {
             .env("HOME", &state)
             .env("MULTICC_DATA_DIR", &state)
             .env("MULTICC_CLAUDE_BIN", &binary)
+            .env("CODEX_BIN", dir.join("codex-fixture"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
@@ -1630,6 +1631,476 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     let mut internal = gateway.connect_with("/ws/chat?session=internal", &[]).await;
     text(&mut internal,r#"{"type":"error","error":"Session does not exist.","data":"Session does not exist.\r\n","apiVersion":"v1"}"#).await;
     assert_eq!(next_data(&mut internal).await, Message::Close(None));
+}
+
+#[cfg(unix)]
+const NATIVE_CODEX: &str = r#"#!/bin/sh
+[ -z "${ACCESS_TOKEN:-}" ] || exit 91
+printf '%s\n' "$$" > "$HOME/codex-fixture.pid"
+if [ "$1" = exec ]; then
+    resume=no
+    for arg in "$@"; do [ "$arg" = resume ] && resume=yes; done
+    IFS= read -r prompt
+    printf '%s\n' '{"type":"thread.started","thread_id":"codex-fixture-exec"}'
+    if [ "$resume" = yes ]; then
+        reply='标准续轮'; input=16; cache=6; output=4
+    else
+        reply='标准首轮'; input=8; cache=3; output=2
+    fi
+    printf '{"type":"item.completed","item":{"id":"reply","type":"agent_message","text":"%s"}}\n' "$reply"
+    printf '{"type":"turn.completed","usage":{"input_tokens":%s,"cached_input_tokens":%s,"output_tokens":%s}}\n' "$input" "$cache" "$output"
+    exit 0
+fi
+[ "$1 $2 $3" = 'app-server --listen stdio://' ] || exit 90
+endpoint=
+for arg in "$@"; do
+    case "$arg" in
+        model_providers.multicc_native.base_url=*)
+            endpoint=$(printf '%s\n' "$arg" | /usr/bin/sed -n 's/^[^=]*="\([^"]*\)"$/\1/p') ;;
+    esac
+done
+resume=no
+while IFS= read -r line; do
+    id=$(printf '%s\n' "$line" | /usr/bin/sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+    case "$line" in
+        *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"codex/0.164.0"}}\n' "$id" ;;
+        *'"method":"thread/start"'*)
+            printf '{"id":%s,"result":{"thread":{"id":"codex-fixture-thread"}}}\n' "$id" ;;
+        *'"method":"thread/resume"'*'"threadId":"codex-fixture-thread"'*)
+            resume=yes
+            printf '{"id":%s,"result":{"thread":{"id":"codex-fixture-thread"}}}\n' "$id" ;;
+        *'"method":"thread/resume"'*)
+            printf '{"id":%s,"error":{"message":"no rollout found for thread id"}}\n' "$id" ;;
+        *'"method":"turn/start"'*)
+            /usr/bin/grep -q '"cliSessionId"[[:space:]]*:[[:space:]]*"codex-fixture-thread"' "$HOME/sessions.json" || exit 92
+            printf '{"id":%s,"result":{"turn":{"id":"turn-fixture"}}}\n' "$id"
+            printf '%s\n' '{"method":"turn/started","params":{"threadId":"codex-fixture-thread","turn":{"id":"turn-fixture"}}}'
+            case "$line" in
+                *'"text":"hold"'*) reply='等待取消'; complete=no ;;
+                *'"text":"managed"'*)
+                    [ -n "$endpoint" ] && [ -n "$MULTICC_CODEX_ROUTE_KEY" ] && [ ! -e "$CODEX_HOME/auth.json" ] || exit 93
+                    response=$(/usr/bin/curl --noproxy '*' --silent --show-error --max-time 5 -H "Authorization: Bearer $MULTICC_CODEX_ROUTE_KEY" -H 'Content-Type: application/json' -d '{"model":"fixture-model","input":[],"stream":false}' "$endpoint/responses")
+                    [ "$response" = '{"echo":"[REDACTED_PROVIDER_ROUTE]","text":"ok"}' ] || exit 94
+                    reply='已走托管代理'; complete=yes ;;
+                *'"text":"fail"'*)
+                    printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-fixture-thread","turn":{"id":"turn-fixture","status":"failed","error":{"message":"fixture Codex upstream timeout"}}}}'
+                    continue ;;
+                *) complete=yes; if [ "$resume" = yes ]; then reply='沿用上下文'; else reply='首次回复'; fi ;;
+            esac
+            printf '{"method":"item/agentMessage/delta","params":{"threadId":"codex-fixture-thread","itemId":"msg","delta":"%s"}}\n' "$reply"
+            [ "$complete" = yes ] || continue
+            printf '{"method":"item/completed","params":{"threadId":"codex-fixture-thread","item":{"id":"msg","type":"agentMessage","text":"%s"}}}\n' "$reply"
+            printf '%s\n' '{"method":"thread/tokenUsage/updated","params":{"threadId":"codex-fixture-thread","turnId":"turn-fixture","tokenUsage":{"last":{"inputTokens":8,"cachedInputTokens":3,"outputTokens":2}}}}'
+            printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-fixture-thread","turn":{"id":"turn-fixture","status":"completed"}}}'
+            ;;
+    esac
+done
+"#;
+
+#[cfg(unix)]
+async fn native_codex_turn(
+    socket: &mut Ws,
+    prompt: &str,
+    expected: &str,
+    provider: &str,
+    model: &str,
+) {
+    send_text(
+        socket,
+        &serde_json::json!({"type":"user_message","text":prompt,"clientMsgId":prompt}).to_string(),
+    )
+    .await;
+    let ack = native_frame(socket, "session_queue").await;
+    assert_eq!(ack["event"], "queued");
+    assert_eq!(ack["queued"], false);
+    assert_eq!(ack["clientMsgId"], prompt);
+    assert_eq!(ack["message"], prompt);
+    assert_eq!(ack["items"], serde_json::json!([]));
+    let meta = native_frame(socket, "chat_msg_meta").await;
+    assert_eq!(meta["clientMsgId"], prompt);
+    assert_eq!(meta["message"]["content"], prompt);
+    assert_eq!(native_frame(socket, "notify").await["state"], "running");
+    let start = native_frame(socket, "stream_start").await;
+    assert_eq!(meta["message"]["turnId"], start["turnId"]);
+    let route = native_frame(socket, "provider_route_event").await;
+    assert_eq!(route["routePhase"], "selected");
+    assert_eq!(route["protocol"], "openai_responses");
+    assert_eq!(route["providerId"], provider);
+    assert_eq!(route["model"], model);
+    assert_eq!(route["turnId"], start["turnId"]);
+    let answer = native_frame(socket, "assistant").await;
+    assert_eq!(answer["message"]["content"][0]["text"], expected);
+    assert_eq!(answer["routeAttemptId"], route["routeAttemptId"]);
+    assert_eq!(
+        native_frame(socket, "chat_msg_meta").await["role"],
+        "assistant"
+    );
+    let windows = native_frame(socket, "provider_token_stats").await;
+    assert_eq!(windows["routeAttemptId"], route["routeAttemptId"]);
+    assert!(windows["windows"]["today"]["turnCount"].as_u64().unwrap() > 0);
+    let role = native_frame(socket, "role_token_stats").await;
+    assert_eq!(role["role"]["main"]["inputTokens"], 5);
+    assert_eq!(role["role"]["mainByProvider"][0]["providerId"], provider);
+    assert_eq!(role["role"]["mainByProvider"][0]["model"], model);
+    let result = native_frame(socket, "result").await;
+    assert_eq!(result["routeAttemptId"], route["routeAttemptId"]);
+    assert_eq!(result["usage"]["total_tokens"], 10);
+    assert_eq!(result.get("total_cost_usd"), Some(&Value::Null));
+    assert_eq!(result["modelAttribution"]["providerId"], provider);
+    assert!(result["durationMs"].is_number());
+    assert!(result["timeline"]["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|span| span["k"] == "output"));
+    assert_eq!(
+        native_frame(socket, "provider_route_event").await["routePhase"],
+        "succeeded"
+    );
+    assert_eq!(native_frame(socket, "notify").await["state"], "succeeded");
+    native_frame(socket, "stream_end").await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_codex_chat_persists_the_thread_reconnects_and_cancels_without_node() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut gateway = Gateway::start_native();
+    let binary = gateway.dir.join("codex-fixture");
+    fs::write(&binary, NATIVE_CODEX).unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let record = |id: &str| {
+        serde_json::json!({"id":id,"kind":"chat","type":"gateway",
+        "cwd":gateway.dir.join("work"),"cli":"codex-exp"})
+    };
+    add_native_record(&gateway, record("codex-native"));
+    let mut managed = record("codex-managed");
+    managed["provider"] = Value::from("fixture-provider");
+    add_native_record(&gateway, managed);
+    let mut missing = record("codex-missing");
+    missing["cliSessionId"] = Value::from("missing-fixture-thread");
+    add_native_record(&gateway, missing);
+
+    let path = "/ws/chat?session=codex-native";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    let init = native_frame(&mut socket, "system").await;
+    assert_eq!(init["cli"], "codex-exp");
+    assert_eq!(init["cliAvailability"]["codex-exp"]["available"], true);
+    assert_eq!(init["providerId"], Value::Null);
+    assert_eq!(init["providerName"], Value::Null);
+    assert_eq!(init["effectiveEffort"], "xhigh");
+    for frame in ["background_tasks", "unattended_state", "session_queue"] {
+        native_frame(&mut socket, frame).await;
+    }
+    native_codex_turn(
+        &mut socket,
+        "first",
+        "首次回复",
+        "codex-official",
+        "_default_",
+    )
+    .await;
+    drop(socket);
+    gateway.restart_native();
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(
+        native_frame(&mut socket, "system").await["is_streaming"],
+        false
+    );
+    let page = native_frame(&mut socket, "chat_history").await;
+    assert_eq!(page["messages"][1]["content"], "首次回复");
+    assert_eq!(page["messages"][1]["usage"]["input_tokens"], 5);
+    assert_eq!(page["messages"][1]["usage"]["cache_read_input_tokens"], 3);
+    assert!(page["messages"][1]["durationMs"].is_number());
+    assert!(page["messages"][1]["timeline"]["spans"].is_array());
+    assert_eq!(page["tokenUsage"]["consumedInputTokens"], 8);
+    for frame in ["background_tasks", "unattended_state", "session_queue"] {
+        native_frame(&mut socket, frame).await;
+    }
+    native_codex_turn(
+        &mut socket,
+        "second",
+        "沿用上下文",
+        "codex-official",
+        "_default_",
+    )
+    .await;
+
+    send_text(&mut socket, r#"{"type":"user_message","text":"hold"}"#).await;
+    native_frame(&mut socket, "chat_msg_meta").await;
+    assert_eq!(
+        native_frame(&mut socket, "notify").await["state"],
+        "running"
+    );
+    native_frame(&mut socket, "stream_start").await;
+    let selected = native_frame(&mut socket, "provider_route_event").await;
+    assert_eq!(selected["protocol"], "openai_responses");
+    let active = native_frame(&mut socket, "assistant").await;
+    assert_eq!(active["message"]["content"][0]["text"], "等待取消");
+    let child_pid: i32 = fs::read_to_string(gateway.state.join("codex-fixture.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    gateway.assert_native_process_tree();
+    drop(socket);
+
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(
+        native_frame(&mut socket, "system").await["is_streaming"],
+        true
+    );
+    let history = native_frame(&mut socket, "chat_history").await;
+    let messages = history["messages"].as_array().unwrap();
+    assert_eq!(messages.last().unwrap()["content"], "等待取消");
+    for frame in ["background_tasks", "unattended_state", "session_queue"] {
+        native_frame(&mut socket, frame).await;
+    }
+    send_text(
+        &mut socket,
+        r#"{"type":"cancel","operationId":"cancel-codex"}"#,
+    )
+    .await;
+    assert_eq!(
+        native_frame(&mut socket, "chat_msg_meta").await["role"],
+        "assistant"
+    );
+    assert_eq!(
+        native_frame(&mut socket, "provider_route_event").await["routePhase"],
+        "released"
+    );
+    assert_eq!(
+        native_frame(&mut socket, "notify").await["state"],
+        "cancelled"
+    );
+    native_frame(&mut socket, "stream_end").await;
+    assert_eq!(unsafe { libc::kill(child_pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+
+    send_text(&mut socket, r#"{"type":"user_message","text":"fail"}"#).await;
+    native_frame(&mut socket, "chat_msg_meta").await;
+    assert_eq!(
+        native_frame(&mut socket, "notify").await["state"],
+        "running"
+    );
+    native_frame(&mut socket, "stream_start").await;
+    native_frame(&mut socket, "provider_route_event").await;
+    let error = native_frame(&mut socket, "error").await;
+    assert_eq!(error["code"], "chat_provider_error");
+    assert_eq!(error["error"], "fixture Codex upstream timeout");
+    assert_eq!(
+        native_frame(&mut socket, "provider_route_event").await["routePhase"],
+        "failed"
+    );
+    native_frame(&mut socket, "stream_end").await;
+
+    let mut managed = gateway
+        .connect_with("/ws/chat?session=codex-managed", &[])
+        .await;
+    for frame in [
+        "system",
+        "background_tasks",
+        "unattended_state",
+        "session_queue",
+    ] {
+        native_frame(&mut managed, frame).await;
+    }
+    send_text(
+        &mut managed,
+        r#"{"type":"user_message","text":"do not start"}"#,
+    )
+    .await;
+    assert_eq!(
+        native_frame(&mut managed, "error").await["code"],
+        "chat_provider_unavailable"
+    );
+
+    let mut missing = gateway
+        .connect_with("/ws/chat?session=codex-missing", &[])
+        .await;
+    for frame in [
+        "system",
+        "background_tasks",
+        "unattended_state",
+        "session_queue",
+    ] {
+        native_frame(&mut missing, frame).await;
+    }
+    send_text(
+        &mut missing,
+        r#"{"type":"user_message","text":"resume existing thread"}"#,
+    )
+    .await;
+    for frame in [
+        "chat_msg_meta",
+        "notify",
+        "stream_start",
+        "provider_route_event",
+    ] {
+        native_frame(&mut missing, frame).await;
+    }
+    let error = native_frame(&mut missing, "error").await;
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("no rollout found for thread id"));
+    assert_eq!(
+        native_frame(&mut missing, "provider_route_event").await["routePhase"],
+        "failed"
+    );
+    native_frame(&mut missing, "stream_end").await;
+    let records =
+        multicc_core::durable_state::load_or_recover(&gateway.state.join("sessions.json"))
+            .unwrap()
+            .unwrap();
+    let records = multicc_core::js::to_serde(&records);
+    let stored = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == "codex-missing")
+        .unwrap();
+    assert_eq!(stored["cliSessionId"], "missing-fixture-thread");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_codex_exec_and_fixed_provider_run_through_real_websocket() {
+    use axum::{http::HeaderMap, routing::post, Router};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    const KEY: &str = "fixture-unshared-provider-credential";
+    let requests = Arc::new(AtomicUsize::new(0));
+    let upstream_count = requests.clone();
+    let upstream = Router::new().route(
+        "/v1/responses",
+        post(
+            move |headers: HeaderMap, axum::Json(body): axum::Json<Value>| {
+                let requests = upstream_count.clone();
+                async move {
+                    assert_eq!(headers["authorization"], format!("Bearer {KEY}"));
+                    assert_eq!(body["model"], "fixture-model");
+                    requests.fetch_add(1, Ordering::Relaxed);
+                    (
+                        [("content-type", "application/json")],
+                        format!("{{\"echo\":\"{KEY}\",\"text\":\"ok\"}}"),
+                    )
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let gateway = Gateway::start_native();
+    let binary = gateway.dir.join("codex-fixture");
+    fs::write(&binary, NATIVE_CODEX).unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let row = |id: &str, cli: &str, provider: Value| {
+        serde_json::json!({
+            "id":id,"kind":"chat","type":"gateway","cwd":gateway.dir.join("work"),"cli":cli,"provider":provider
+        })
+    };
+    add_native_record(&gateway, row("codex-exec", "codex", Value::Null));
+    add_native_record(&gateway, row("codex-legacy", "codex", Value::Null));
+    add_native_record(
+        &gateway,
+        row("codex-fixed", "codex-exp", Value::from("provider-fixture")),
+    );
+    fs::write(gateway.state.join("providers.json"), serde_json::json!([{
+        "id":"provider-fixture","appType":"codex","name":"托管线路","settingsConfig":{
+            "auth":{"OPENAI_API_KEY":KEY},
+            "config":format!("model = \"fixture-model\"\nmodel_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"http://{endpoint}/v1\"\nwire_api = \"responses\"\n")
+        }
+    }]).to_string()).unwrap();
+
+    let mut socket = gateway
+        .connect_with("/ws/chat?session=codex-exec", &[])
+        .await;
+    let init = native_frame(&mut socket, "system").await;
+    assert_eq!(init["cli"], "codex");
+    assert_eq!(init["providerId"], "codex-official");
+    let empty = native_frame(&mut socket, "chat_history").await;
+    assert_eq!(empty["tokenUsage"]["turnCount"], 0);
+    for frame in ["background_tasks", "unattended_state", "session_queue"] {
+        native_frame(&mut socket, frame).await;
+    }
+    native_codex_turn(
+        &mut socket,
+        "first",
+        "标准首轮",
+        "codex-official",
+        "_default_",
+    )
+    .await;
+    native_codex_turn(
+        &mut socket,
+        "second",
+        "标准续轮",
+        "codex-official",
+        "_default_",
+    )
+    .await;
+    let mut reopened = gateway
+        .connect_with("/ws/chat?session=codex-exec", &[])
+        .await;
+    let init = native_frame(&mut reopened, "system").await;
+    assert_eq!(init["providerTokenWindows"]["all"]["turnCount"], 2);
+    let history = native_frame(&mut reopened, "chat_history").await;
+    assert_eq!(history["tokenUsage"]["turnCount"], 2);
+    assert_eq!(history["tokenUsage"]["inputTokens"], 16);
+    assert_eq!(history["messages"][3]["usage"]["total_tokens"], 10);
+    assert!(history["messages"][3].get("usageCumulative").is_none());
+    let saved = multicc_core::chat_history_file::read_transcript(
+        &gateway.state.join("chat_history/codex-exec.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        multicc_core::js::to_serde(&saved[3])["usageCumulative"]["total_tokens"],
+        20
+    );
+
+    fs::write(
+        gateway.state.join("chat_history/codex-legacy.json"),
+        serde_json::json!([
+            {"role":"assistant","content":"旧首轮","usage":{"input_tokens":8,"cached_input_tokens":3,"output_tokens":2}},
+            {"role":"assistant","content":"旧续轮","usage":{"input_tokens":16,"cached_input_tokens":6,"output_tokens":4}},
+        ]).to_string(),
+    ).unwrap();
+    let mut legacy = gateway
+        .connect_with("/ws/chat?session=codex-legacy", &[])
+        .await;
+    native_frame(&mut legacy, "system").await;
+    let history = native_frame(&mut legacy, "chat_history").await;
+    assert_eq!(history["tokenUsage"]["inputTokens"], 16);
+    assert_eq!(history["messages"][1]["usage"]["total_tokens"], 10);
+
+    let mut routed = gateway
+        .connect_with("/ws/chat?session=codex-fixed", &[])
+        .await;
+    let init = native_frame(&mut routed, "system").await;
+    assert_eq!(init["providerName"], "托管线路");
+    assert_eq!(init["effectiveModel"], "fixture-model");
+    until(&mut routed, "session_queue").await;
+    native_codex_turn(
+        &mut routed,
+        "managed",
+        "已走托管代理",
+        "provider-fixture",
+        "fixture-model",
+    )
+    .await;
+    assert_eq!(requests.load(Ordering::Relaxed), 1);
+    let history = fs::read_to_string(gateway.state.join("chat_history/codex-fixed.json")).unwrap();
+    assert!(history.contains("已走托管代理"));
+    assert!(!history.contains(KEY));
+    upstream.abort();
 }
 
 #[cfg(unix)]

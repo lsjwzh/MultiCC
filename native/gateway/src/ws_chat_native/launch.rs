@@ -81,9 +81,12 @@ fn claude_binary() -> String {
 pub(super) async fn init_facts(
     app: &App,
     record: &multicc_core::js::JsValue,
+    effective_model: Option<&str>,
 ) -> (Option<String>, Value) {
     let effort = optional_text(record, "effort");
+    let model = effective_model.map(str::to_owned);
     let claude = super::store::is_claude(record);
+    let codex = super::store::is_codex(record);
     let home = app.home_dir.clone();
     tokio::task::spawn_blocking(move || {
         let effort = if claude {
@@ -104,20 +107,43 @@ pub(super) async fn init_facts(
                         })
                 })
                 .or_else(|| Some("medium".into()))
+        } else if codex {
+            Some(codex_effort(&home, effort.as_deref(), model.as_deref()))
         } else {
             effort
         };
-        let binary = claude_binary();
-        let path = Path::new(&binary);
-        let available = if path.components().count() > 1 {
-            path.is_file()
-        } else {
-            std::env::var_os("PATH").is_some_and(|paths| {
-                std::env::split_paths(&paths).any(|entry: PathBuf| entry.join(path).is_file())
-            })
-        };
-        (effort, json!({"claude":{"available":available}}))
+        let mut availability =
+            json!({"claude":{"available":available(Path::new(&claude_binary()))}});
+        if codex {
+            let available = available(Path::new(&super::codex::binary()));
+            availability["codex-exp"] = json!({"available":available});
+            availability["codex"] = json!({"available":available});
+        }
+        (effort, availability)
     })
     .await
     .unwrap_or_default()
+}
+
+pub(super) fn codex_effort(home: &Path, effort: Option<&str>, model: Option<&str>) -> String {
+    use multicc_core::codex_provider_home::{home_reasoning_level, reasoning_level};
+    effort
+        .and_then(|effort| reasoning_level(effort, model))
+        .or_else(|| {
+            std::env::var_os("CODEX_HOME")
+                .filter(|path| !path.is_empty())
+                .and_then(|path| home_reasoning_level(Path::new(&path)))
+        })
+        .or_else(|| home_reasoning_level(&home.join(".codex")))
+        .unwrap_or_else(|| "xhigh".into())
+}
+
+fn available(path: &Path) -> bool {
+    if path.components().count() > 1 {
+        path.is_file()
+    } else {
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|entry: PathBuf| entry.join(path).is_file())
+        })
+    }
 }
