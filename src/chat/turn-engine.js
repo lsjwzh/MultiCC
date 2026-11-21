@@ -2254,10 +2254,14 @@ function createChatTurnEngine(deps) {
         const cleaned = typeof provider.prepareSpawn === 'function'
           ? provider.prepareSpawn({ sessionId })
           : 0;
-        if (cleaned > 0) {
-          getChatHistoryService().invalidate(sessionName);
-          console.log(`[multicc/chat] [${sessionName}] sanitized ${cleaned} empty thinking block(s) from session JSONL`);
-        }
+        const invalidate = count => {
+          if (count > 0) {
+            getChatHistoryService().invalidate(sessionName);
+            console.log(`[multicc/chat] [${sessionName}] sanitized ${count} empty thinking block(s) from session JSONL`);
+          }
+        };
+        if (cleaned && typeof cleaned.then === 'function') return cleaned.then(invalidate);
+        invalidate(cleaned);
       },
       env: childEnv,
       onWorkspaceActivity: () => getWorkspaceAdmission?.()?.recordWriterActivity?.(sessionName, 'stream'),

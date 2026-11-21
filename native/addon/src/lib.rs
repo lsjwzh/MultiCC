@@ -30,6 +30,7 @@ pub mod chat_turn_lifecycle;
 pub mod chat_ws_control;
 pub mod classify_vocab;
 pub mod claude_lane;
+pub mod claude_adapter;
 pub mod cli_capability;
 pub mod cli_completion;
 pub mod cli_switch;

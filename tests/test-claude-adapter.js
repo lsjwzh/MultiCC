@@ -7,7 +7,7 @@ const os = require('node:os');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { createClaudeAdapter } = require('../src/cli-adapters/claude');
+const { createClaudeAdapter } = require('../src/native/runtime');
 const { processSpawnArgs } = require('../src/chat/process-spawn-args');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
@@ -302,4 +302,68 @@ test('a pending new target resumes after SDK history exists; unknown/reused hist
   assert.equal(hasNativeHistory({ ...record, cli: 'codex' }, { configDir }), true);
   assert.equal(hasNativeHistory({ ...record, cliSessionId: null }, { configDir }), false);
   assert.equal(hasNativeHistory({ ...record, cliSessionId: 'not-a-uuid' }, { configDir }), true);
+});
+
+function frozenClaudeAdapter() {
+  const Module = require('node:module'), crypto = require('node:crypto');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-claude-adapter.js.txt'), 'utf8');
+  assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '8fa206f6674e9cae6c135452b5b47a331dfca31cad60eb0e1ba79085f7769e7b');
+  const filename = path.resolve(__dirname, '../src/cli-adapters/claude.js');
+  const legacy = new Module(filename); legacy.filename = filename;
+  legacy.paths = Module._nodeModulePaths(path.dirname(filename)); legacy._compile(source, filename);
+  return legacy.exports.createClaudeAdapter;
+}
+
+test('Rust Claude adapter matches frozen argv, SDK settings, debug calls and event identities', () => {
+  const frozen = frozenClaudeAdapter();
+  for (const first of [false, true]) for (const effort of [undefined, 'high', 'ultracode']) for (const tools of [[], ['WebSearch']]) {
+    const run = make => {
+      const trace = [];
+      const instance = make({ cmd: '/opt/claude', args: ['--verbose'], bridge: '/bridge.mjs', chatDisallowedTools: tools,
+        resolveSessionWireModel: (model, options) => { trace.push(['model', model, options]); return model; },
+        cliEffortLevel: value => value.effort, normalizeEffort: value => value,
+        debugLogClaudeInvoke: (...args) => trace.push(['debug', ...args]), routerMcpNode: '/node', routerMcpScript: '/router.js' });
+      const input = envelope({ first, effort }); input.spawnOpts.rawEffort = effort;
+      const invocation = instance.buildInvocation(input);
+      const terminal = instance.buildTerminalCmd({ model: 'opus', agent: 'reviewer', effort, cliSessionId: SESSION_UUID });
+      const events = [{ type: 'system', subtype: 'init', model: 'opus' }, { type: 'system', subtype: 'sdk_error', error: 'upstream failed' },
+        { type: 'result', subtype: 'success', is_error: false }, { type: 'result', subtype: 'success', is_error: false, parent_tool_use_id: 'child' }, null];
+      const decoded = events.map(event => instance.decodeEvent(event));
+      assert.equal(decoded[0][0].raw, events[0], 'raw event identity survives the native boundary');
+      return { invocation, terminal, decoded, trace };
+    };
+    assert.deepEqual(run(createClaudeAdapter), run(frozen), JSON.stringify({ first, effort, tools }));
+  }
+});
+
+test('Rust startup cleanup matches frozen bytes and completes before the SDK child starts', async t => {
+  const { getNative } = require('../src/native/runtime');
+  const legacyFactory = frozenClaudeAdapter();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-claude-cleanup-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const cases = [
+    '{"message":{"content":[{"type":"thinking","thinking":"  \\ufeff"},{"type":"text","text":"中文😀"}]}}\n',
+    '{"message":{"content":[{"type":"thinking","thinking":""},null]}}\n',
+    '{"message":{"content":[{"type":"thinking","thinking":0},{"type":"thinking","thinking":"kept"}]}}\n',
+    '  null \nnot json\n  \n{"message":{"content":[{"type":"thinking","thinking":false}]},"2":"b","1":"a"}\n',
+  ];
+  const originalHome = os.homedir;
+  for (let i = 0; i < cases.length; i++) {
+    const homes = ['oracle', 'rust'].map(name => path.join(dir, `${i}-${name}`));
+    const files = homes.map(home => path.join(home, '.claude/projects/project', `${SESSION_UUID}.jsonl`));
+    for (const file of files) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, cases[i]); }
+    let oldCount;
+    try { os.homedir = () => homes[0]; oldCount = legacyFactory({}).prepareSpawn({ sessionId: SESSION_UUID }); }
+    finally { os.homedir = originalHome; }
+    let ticked = false;
+    const scheduled = getNative().claudeAdapterPrepareSpawn(SESSION_UUID, () => homes[1]);
+    Promise.resolve().then(() => { ticked = true; });
+    assert.equal(await scheduled, oldCount, `count ${i}`);
+    assert.equal(ticked, true, 'file work yields the host event loop');
+    assert.deepEqual(fs.readFileSync(files[1]), fs.readFileSync(files[0]), `bytes ${i}`);
+  }
+  const source = fs.readFileSync(path.join(__dirname, '../src/chat/claude-sdk-stream.js'), 'utf8');
+  assert.match(source, /await cfg\.beforeSpawn\?\./, 'SDK startup waits for the asynchronous preparation port');
+  const host = fs.readFileSync(path.join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
+  assert.match(host, /return cleaned\.then\(invalidate\)/, 'the host propagates completion of the native cleanup');
 });

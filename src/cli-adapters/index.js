@@ -3,7 +3,7 @@
 const path = require('path');
 const { resolveCliCommands, createCommandResolver } = require('./commands');
 const { createCliProviderRegistry } = require('./core');
-const { createClaudeAdapter } = require('./claude');
+const { createClaudeAdapter } = require('../native/runtime');
 const { createCodexAdapter } = require('./codex');
 const { createCodexExpAdapter } = require('./codex-exp');
 const { createOpencodeAdapter } = require('./opencode');

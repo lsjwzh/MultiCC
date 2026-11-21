@@ -53,7 +53,7 @@ fs.writeFileSync(path.join(HOME, '.codex', 'config.toml'),
 require('../src/providers/core').enableUnifiedOfficialProviders();
 
 const { createSessionPolicy } = require('../src/cli/session-policy');
-const { createClaudeAdapter } = require('../src/cli-adapters/claude');
+const { createClaudeAdapter } = require('../src/native/runtime');
 const { createCodexAdapter } = require('../src/cli-adapters/codex');
 const { createCodexExpAdapter } = require('../src/cli-adapters/codex-exp');
 const { settingsOverrideFor } = require('../src/providers/claude-settings-override');

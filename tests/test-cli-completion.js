@@ -16,7 +16,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const adapters = [
-  require('../src/cli-adapters/claude').createClaudeAdapter({}),
+  require('../src/native/runtime').createClaudeAdapter({}),
   require('../src/cli-adapters/codex').createCodexAdapter({}),
   require('../src/cli-adapters/codex-exp').createCodexExpAdapter({}),
   // Legacy JSON lane; the default ACP lane's completion is covered by test-acp-adapter.js.

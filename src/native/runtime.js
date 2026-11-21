@@ -116,5 +116,25 @@ function createAutoProviderHandoff(options = {}) {
     clearSession: sessionId => owner.clearSession(sessionId),
   });
 }
+function createClaudeAdapter(deps = {}) {
+  const native = getNative();
+  const ports = Object.assign(native.claudeAdapterPorts(deps,
+    path.join(__dirname, '../cli-adapters/claude-agent-sdk-bridge.mjs'), process.execPath), {
+    renderPrompt: require('../message-composer').renderPrompt,
+    isMainResult: require('../cli-adapters/result-completion').isMainResult,
+    displayNameOf: require('../cli/cli-capability').displayNameOf,
+  });
+  return {
+    name: 'claude',
+    createCompletionTracker: require('../cli-adapters/result-completion').createResultCompletionTracker,
+    cmd: ports.cmd,
+    buildTerminalCmd: session => native.claudeAdapterTerminal(session, ports),
+    buildInvocation: envelope => native.claudeAdapterInvocation(envelope, ports),
+    decodeEvent: event => native.claudeAdapterDecode(event, ports),
+    prepareSpawn: ({ sessionId }) => native.claudeAdapterPrepareSpawn(sessionId, require('node:os').homedir),
+    needsAsyncSessionIdCapture: false,
+  };
+}
 module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
-  staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff };
+  staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  createClaudeAdapter };

@@ -55,6 +55,15 @@ pub(super) fn launch_options(state: &Session) -> StartInput {
     }
 }
 
+pub(super) async fn prepare_history(app: &App, options: &StartInput) {
+    let home = app.home_dir.clone();
+    let session = options.launch.session_id.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        multicc_core::claude_adapter::sanitize_history(&home, &session)
+    })
+    .await;
+}
+
 fn claude_binary() -> String {
     if let Ok(command) = std::env::var("MULTICC_CLAUDE_BIN") {
         if !command.trim().is_empty() {

@@ -351,7 +351,10 @@ test('vault rule is injected only for lanes without the host system prompt', asy
   assert.ok(ids('opencode').includes('builtin:shared-files'));
   assert.ok(ids('claude').includes('builtin:docs-registry'));
   for (const cli of SYSTEM_PROMPT_SECRET_RULE_CLIS) {
-    const source = fs.readFileSync(path.join(__dirname, '../src/cli-adapters', `${cli}.js`), 'utf8');
+    const owner = cli === 'claude'
+      ? path.join(__dirname, '../native/addon/src/claude_adapter.rs')
+      : path.join(__dirname, '../src/cli-adapters', `${cli}.js`);
+    const source = fs.readFileSync(owner, 'utf8');
     assert.match(source, /systemPrompt|multiccImgHint/, `${cli} must actually carry the host system prompt`);
   }
 });

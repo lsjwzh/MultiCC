@@ -999,6 +999,7 @@ async fn run_turn(
     let host = &app.native_chat;
     let turn_id = launched.turn_id.as_str();
     let attempt_id = launched.attempt_id.as_str();
+    launch::prepare_history(app, &launched.options).await;
     let question_tool =
         question::open(&mut launched.options.launch, app, session, id, turn_id).await;
     let provider_prompt = if launched.reference_seed.is_empty() {
