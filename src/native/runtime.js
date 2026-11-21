@@ -98,6 +98,13 @@ function claudeQuota(op, input) {
     return JSON.parse(getNative().cprClaudeQuota(JSON.stringify({ ...input, op })));
   } catch (_) { return undefined; } // Quota observations must never break a stream.
 }
+function subscriptionFromBody(body, { source = 'account', observedAt = Date.now() } = {}) {
+  return JSON.parse(getNative().parseAccountSubscription(JSON.stringify({ body, source, observedAt })));
+}
+
+function codexAuthSubscription(auth) {
+  return require('../native/runtime').providerCredentials.credential({ operation: 'codexSubscription', auth });
+}
 function credential(input) {
   return JSON.parse(getNative().providerCredential(JSON.stringify(input)));
 }
@@ -288,4 +295,4 @@ module.exports = { addonPath, gatewayPath, getNative, record, status, runNative,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota };
+  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription };
