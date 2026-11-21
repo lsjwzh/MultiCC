@@ -117,6 +117,16 @@ Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和�
 
 第三批整体继续进行。下一块仍须迁移 Provider 账号及凭据决策、Codex 会话宿主和其余在册 CLI 执行链路。`src/task-shell/runtime.js`（712 行）、`src/task-shell/host.js`（553 行）、`src/session-work/scheduler.js`（908 行）仍由这些宿主和第四批会话状态消费；本轮没有删除它们，也没有把它们计入减行数。
 
+### Codex 凭据装配
+
+`native/core/src/codex_provider_home.rs` 接管直连凭据来源选择、私有文件原子写入、旧版配置的 `env_key` 补全，以及官方 OAuth 启动目录与尝试目录的凭据清理。官方路由的托管校验和 `OPENAI_*` 环境键筛选在 Rust addon 执行。常驻 Codex 用同一份尝试目录的 OAuth 状态清理实际子进程环境，首次启动和复用均覆盖。官方路由清理失败时阻止启动，避免回退到环境里的其它登录。
+
+相对本轮基线 `dd1d43d6`，删除 `src/codex/proxy-policy.js`（32 行），生产 Node 代码净减 83 行。定向验证覆盖常驻路由的官方子代理、清理失败、旧版直连导入，以及宿主登录与 Provider 凭据的分流。七组直连配置与认证文件对拍一致，包含 CRLF、文件权限及启动环境。对应网关、addon、构建日志、任务壳 HTTP 逐字节对拍和隔离进程树记录位于 `data/rust-migration/2026-11-21/provider-cli-batch3/module8`。
+
+工作树验证通过 `cargo build --workspace`、严格 Clippy、gateway 1,039 项、任务壳 304 项、定向回归 197 项、子代理 8 项和任务壳 HTTP 67 项。四份原生回合的网关进程树内 Node 数均为 0。同步端口最多读取 16 MiB 的配置或认证文件，并拒绝非普通文件。
+
+兼容宿主保留同步 N-API 接线、会话和尝试目录的生命周期，以及 npm CPR 的角色与代理配置写入。这些调用仍由现有 Codex 常驻宿主使用，待原生 `/ws/chat` 接管、配置和历史回放完成对拍后继续迁移。隔离进程树的零 Node 记录覆盖现有原生 Claude 回合。Codex `/ws/chat`、其余 Provider 账号装配、后续 Node 宿主及合并复验仍待完成。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

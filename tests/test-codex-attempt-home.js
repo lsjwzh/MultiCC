@@ -10,9 +10,9 @@ const {
   createCodexAttemptHome,
 } = require('../src/codex/attempt-home');
 const {
-  assertCodexProxyConfigApplied,
-  codexProxyConfigRequired,
-} = require('../src/codex/proxy-policy');
+  assertProxyConfigApplied: assertCodexProxyConfigApplied,
+  proxyConfigRequired: codexProxyConfigRequired,
+} = require('../src/native/runtime').codexProviderHome;
 const { createProviderRouterRuntime } = require('../src/providers/router-runtime');
 const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
 
@@ -114,6 +114,27 @@ test('Codex proxy requirement matrix requires every managed provider, including 
     'a stale non-default route must not fall through to native CODEX_HOME');
   assert.equal(codexProxyConfigRequired({ providerId: null }), false,
     'the provider-less native route remains backward compatible');
+});
+
+test('an imported direct Codex home preserves CRLF while adding its missing env_key', () => {
+  const id = 'codex-crlf-import';
+  const config = 'model_provider = "custom"\r\n[model_providers.custom]\r\n\r\nbase_url = "https://crlf.example/v1"\r\n';
+  const line = { id, name: 'CRLF fixture', appType: 'codex', apiFormat: 'openai_responses',
+    settingsConfig: { auth: { OPENAI_API_KEY: 'fixture-key' }, config } };
+  const file = path.join(process.env.MULTICC_DATA_DIR, 'providers.json');
+  const previous = fs.existsSync(file) ? fs.readFileSync(file) : null;
+  const document = previous ? JSON.parse(previous) : [];
+  (Array.isArray(document) ? document : document.providers).push(line);
+  fs.writeFileSync(file, JSON.stringify(document));
+  try {
+    const { env } = providers.buildChildEnv({}, { cli: 'codex', provider: id });
+    assert.equal(env.OPENAI_API_KEY, 'fixture-key');
+    assert.equal(fs.readFileSync(path.join(env.CODEX_HOME, 'config.toml'), 'utf8'),
+      config.replace('\nbase_url', '\nenv_key = "OPENAI_API_KEY"\nbase_url'));
+  } finally {
+    if (previous) fs.writeFileSync(file, previous);
+    else fs.rmSync(file, { force: true });
+  }
 });
 
 test('provider metadata classifies custom, stale, and OAuth Codex routes conservatively', () => {
@@ -262,6 +283,15 @@ test('CPR resolves and builds Official homes credential-free before any attempt 
   assert.equal(fs.existsSync(path.join(built.env.CODEX_HOME, 'auth.json')), false);
   assert.equal(treeText(built.env.CODEX_HOME).includes('official-early-token-must-never-land'), false);
   assert.equal(treeText(built.env.CODEX_HOME).includes('inherited-must-not-land'), false);
+
+  const blockedAuth = path.join(built.env.CODEX_HOME, 'auth.json');
+  fs.mkdirSync(blockedAuth);
+  try {
+    assert.throws(() => runtime.buildChildEnv({ CODEX_HOME: 'unrelated-login' }, session),
+      'an official home that could not be sanitized must abort before spawn');
+  } finally {
+    fs.rmdirSync(blockedAuth);
+  }
 });
 
 test('canonical Codex sessions preserve one native thread across managed and Official routes', () => {
@@ -327,6 +357,26 @@ test('canonical Codex sessions preserve one native thread across managed and Off
   assert.match(routedConfig, new RegExp(`/codex-proxy/${official.id}/pr1\\.canonical\\.managed-attempt/sub`));
   providers.releaseCodexProxyConfig(managedAgain);
   assert.equal(fs.existsSync(legacyRollout), true, 'legacy source remains recoverable');
+
+  const resident = {
+    cli: 'codex-exp', providerId: managed.id, logicalSessionId, nativeSessionId,
+    sessionId: 'pr1.canonical.resident-attempt', port: 3000,
+    subagent: { providerId: official.id, model: 'gpt-5.6-sol' },
+  };
+  try {
+    for (const ambient of ['initial-resident-launch', 'resident-route-reused']) {
+      const { env } = providers.buildChildEnv({ OPENAI_BASE_URL: ambient }, {
+        id: logicalSessionId, cli: 'codex-exp', provider: managed.id, model: 'gpt-managed',
+      });
+      assert.ok(env.OPENAI_API_KEY, 'custom main starts with its own isolated key');
+      assert.equal(providers.prepareResidentChildEnv(env, resident), true);
+      assert.equal(env.OPENAI_API_KEY, undefined);
+      assert.equal(env.OPENAI_BASE_URL, undefined);
+      assert.equal(fs.existsSync(path.join(env.CODEX_HOME, 'auth.json')), false);
+    }
+  } finally {
+    providers.releaseResidentRoute(logicalSessionId);
+  }
 });
 
 test('ambiguous legacy Codex rollouts fail closed without deleting either source', () => {

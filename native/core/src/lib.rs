@@ -126,6 +126,7 @@ pub mod claude_refresh;
 pub mod cli_completion;
 pub mod codex_models;
 pub mod codex_background;
+pub mod codex_provider_home;
 pub mod js;
 pub mod json_lenient;
 pub mod selection;

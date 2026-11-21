@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const { protocolFamilyOf } = require('../cli/cli-capability');
-const { assertCodexProxyConfigApplied, codexProxyConfigRequired } = require('./proxy-policy');
+const { codexProviderHome } = require('../native/runtime');
 
 // A resident lane keeps ONE child warm across turns, so its managed provider
 // route has to outlive a single turn. Claude's route lives in ANTHROPIC_* and the
@@ -99,6 +99,7 @@ function createCodexResidentRoutes({ providers, logger = console } = {}) {
       homes.set(logicalSessionId, entry);
       entries.set(holder.CODEX_HOME, entry);
     }
+    providers.applyCodexLeaseEnv?.(childEnv, entry.holder);
     childEnv.CODEX_HOME = entry.holder.CODEX_HOME;
     return true;
   }
@@ -127,8 +128,8 @@ function createCodexResidentRoutes({ providers, logger = console } = {}) {
     // this reports is the physical outcome, not the policy's verdict — a session
     // allowed to stay on its native home is not a routed child at all.
     const applied = prepareCodex(childEnv, options);
-    assertCodexProxyConfigApplied({
-      required: codexProxyConfigRequired({
+    codexProviderHome.assertProxyConfigApplied({
+      required: codexProviderHome.proxyConfigRequired({
         providerId: options.providerId,
         // The policy reads the sub-provider separately: a session with no
         // provider of its own still needs a managed route when its subagent

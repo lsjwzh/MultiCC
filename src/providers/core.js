@@ -40,11 +40,11 @@ const {
 } = require('../codex/resident-route');
 const { codexAccountAuthFilePath } = require('../official-accounts');
 const { relayRouteFromBaseUrl } = require('./relay-share-store');
-const { getNative } = require('../native/runtime');
+const { getNative, nativeCode, codexProviderHome } = require('../native/runtime');
 const {
-  assertCodexProxyConfigApplied,
-  codexProxyConfigRequired: evaluateCodexProxyConfigRequired,
-} = require('../codex/proxy-policy');
+  assertProxyConfigApplied: assertCodexProxyConfigApplied,
+  proxyConfigRequired: evaluateCodexProxyConfigRequired,
+} = codexProviderHome;
 const assertClaudeProxyEnvApplied = (...args) => getNative().assertClaudeProxyEnvApplied(...args);
 const claudeProxyEnvRequired = (...args) => getNative().claudeProxyEnvRequired(...args);
 
@@ -124,7 +124,6 @@ const codexSessionHomeRuntime = createCodexSessionHomeRuntime({
 const {
   codexSessionHome, prepareCodexSessionHome, synchronizeCodexSessionRoute,
 } = codexSessionHomeRuntime;
-const CODEX_OFFICIAL_ROUTE_PROVIDER = 'multicc_official_relay';
 // ZCode 0.15.x advertises --settings but its parser rejects the flag. Provider
 // overrides therefore run the ZCode child with HOME pointed at a private home
 // containing a native ~/.zcode/cli/config.json. The native/default route keeps
@@ -410,21 +409,6 @@ function replaceTomlString(config, key, value) {
   const pattern = new RegExp(`(^|\\n)\\s*${key}\\s*=\\s*"[^"]*"`);
   if (pattern.test(config || '')) return String(config).replace(pattern, `$1${line}`);
   return `${line}\n${config || ''}`;
-}
-
-// codex 0.15x attaches credentials for custom providers only via
-// env_key + env var. Configs from cc-switch imports or pre-2026-09-12 rows
-// predate that, so patch env_key into the active [model_providers.<id>]
-// section at materialization time (single choke point for every codex spawn).
-function ensureCodexEnvKey(toml) {
-  const text = String(toml || '');
-  if (/(^|\n)\s*env_key\s*=/.test(text)) return text;
-  const active = text.match(/model_provider\s*=\s*"([^"]+)"/);
-  const id = (active ? active[1] : 'custom').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // cc-switch 写裸 key，TOML 序列化器写带引号 key，两种都认。
-  const re = new RegExp(`^\\[model_providers\\.(?:"${id}"|${id})\\]\\s*$`, 'm');
-  if (!re.test(text)) return text;
-  return text.replace(re, match => `${match}\nenv_key = "OPENAI_API_KEY"`);
 }
 
 function effectiveCodexSettings(provider) {
@@ -1157,9 +1141,7 @@ function buildChildEnv(base, session, extra = {}) {
     // Official OAuth belongs exclusively to the host relay. A shell-level or
     // caller-supplied OPENAI_* override would otherwise let the child bypass
     // its attempt route even though CODEX_HOME contains no upstream credential.
-    for (const key of Object.keys(env)) {
-      if (/^OPENAI_[A-Z0-9_]*$/.test(key)) delete env[key];
-    }
+    codexProviderHome.stripOfficialEnv(env);
   }
   return {
     env,
@@ -1177,54 +1159,11 @@ function buildChildEnv(base, session, extra = {}) {
 }
 
 function materializeCodexAuth(home, cfg) {
-  const result = cliProviderRouter.materializeCodexAuth(home, cfg);
-  secureFile(path.join(home, 'auth.json'));
-  return result;
+  return codexProviderHome.materialize(home, cfg, true);
 }
 
 function materializeCodexOfficialRelayHome(home, provider, cfg) {
-  let config = {};
-  if (cfg && String(cfg.config || '').trim()) config = TOML.parse(String(cfg.config));
-  config.model_providers = config.model_providers && typeof config.model_providers === 'object'
-    ? config.model_providers : {};
-  config.model_provider = CODEX_OFFICIAL_ROUTE_PROVIDER;
-  config.model_providers[CODEX_OFFICIAL_ROUTE_PROVIDER] = {
-    name: 'OpenAI Official via MultiCC host relay',
-    // Deliberately unreachable until applyCodexProxyConfig rewrites this copy in
-    // an attempt-private overlay. The shared provider home is never callable.
-    base_url: `http://127.0.0.1:1/codex-proxy/${encodeURIComponent(provider.id)}/inactive/main`,
-    wire_api: 'responses',
-    requires_openai_auth: false,
-  };
-  const configFile = path.join(home, 'config.toml');
-  atomicWriteText(configFile, TOML.stringify(config));
-  secureFile(configFile);
-  // Old versions copied ~/.codex/auth.json here. Remove that durable OAuth
-  // snapshot before any attempt overlay is created from this source home.
-  fs.rmSync(path.join(home, 'auth.json'), { force: true });
-}
-
-function sanitizeCodexOfficialAttemptHome(home, options = {}) {
-  const configFile = path.join(home, 'config.toml');
-  const config = TOML.parse(fs.readFileSync(configFile, 'utf8'));
-  const proxyPath = '/' + String(options.codexProxyPath || options.mountPath || '/codex-proxy')
-    .replace(/^\/+|\/+$/g, '');
-  for (const entry of Object.values(config.model_providers || {})) {
-    if (!entry || typeof entry !== 'object') continue;
-    let localProxy = false;
-    try {
-      const target = new URL(String(entry.base_url || ''));
-      localProxy = /^(?:127\.0\.0\.1|localhost)$/i.test(target.hostname)
-        && (target.pathname === proxyPath || target.pathname.startsWith(`${proxyPath}/`));
-    } catch (_) {}
-    if (!localProxy) continue;
-    entry.requires_openai_auth = false;
-    delete entry.experimental_bearer_token;
-    delete entry.env_key;
-  }
-  atomicWriteText(configFile, TOML.stringify(config));
-  secureFile(configFile);
-  fs.rmSync(path.join(home, 'auth.json'), { force: true });
+  codexProviderHome.materializeOfficial(home, String(provider.id), String(cfg?.config || ''));
 }
 
 function opencodeProviderId(provider) {
@@ -1691,28 +1630,13 @@ function resolveSpawnEnv(session) {
     return { env, skipDefaultModel: !!env.ANTHROPIC_BASE_URL, aliasOnly: !!env.ANTHROPIC_BASE_URL && !src.ANTHROPIC_MODEL, providerModel, providerModels, providerName: p.name, tools: src.MULTICC_TOOLS };
   }
 
+  const officialOAuth = isOfficialCodexOAuthProvider(p);
   try {
     const home = path.join(CODEX_HOMES_DIR, providerId);
     ensurePrivateDir(home);
     ensurePrivateDir(path.join(home, 'sessions'));
-    const officialOAuth = isOfficialCodexOAuthProvider(p);
-    if (officialOAuth) {
-      materializeCodexOfficialRelayHome(home, p, cfg);
-    } else {
-      materializeCodexAuth(home, cfg);
-    }
-    if (!officialOAuth && cfg.config) {
-      // cc-switch 导入的 config 可能带 model_catalog_json 指向 cc-switch 自己目录里的
-      // 文件（codex home 里没有），导致 codex 启动时 "config could not be loaded" → exit 1。
-      // 同时折叠 [model_providers] 空表头 + [model_providers.custom] 子表的写法。
-      let toml = cfg.config;
-      toml = toml.replace(/^model_catalog_json\s*=.*$/gm, '').replace(/\n{3,}/g, '\n\n');
-      toml = toml.replace(/\[model_providers\]\s*\n\[model_providers\.custom\]/, '[model_providers.custom]');
-      // 带 API key 的直连 provider 需要 env_key 才能让 codex 附带 Authorization。
-      if (cfg.auth && cfg.auth.OPENAI_API_KEY) toml = ensureCodexEnvKey(toml);
-      const configFile = path.join(home, 'config.toml');
-      atomicWriteText(configFile, toml);
-    }
+    const credentials = officialOAuth ? {} : codexProviderHome.materialize(home, cfg);
+    if (officialOAuth) materializeCodexOfficialRelayHome(home, p, cfg);
     // Per-provider codex reads skills from $CODEX_HOME/skills, but
     // syncSharedSkills only populates the global ~/.codex/skills, so mirror it
     // via a symlink. Codex auto-seeds skills/.system here on first run
@@ -1741,9 +1665,8 @@ function resolveSpawnEnv(session) {
     // buildChildEnv 会从继承环境里删掉 OPENAI_API_KEY，所以这里必须随
     // CODEX_HOME 一起重新导出，否则 config.toml 里的 env_key 找不到变量、
     // codex 依旧不带 Authorization（DeepSeek 网关回 401 governor）。
-    const apiKey = !officialOAuth && cfg.auth && cfg.auth.OPENAI_API_KEY;
     return {
-      env: { CODEX_HOME: home, ...(apiKey ? { OPENAI_API_KEY: apiKey } : {}) },
+      env: { CODEX_HOME: home, ...credentials },
       skipDefaultModel: false,
       aliasOnly: false,
       providerModel: null,
@@ -1752,7 +1675,8 @@ function resolveSpawnEnv(session) {
       codexHome: home,
       codexOfficialRelay: officialOAuth,
     };
-  } catch (_) {
+  } catch (error) {
+    if (officialOAuth) throw nativeCode(error);
     return { env: {}, skipDefaultModel: false, aliasOnly: false, providerModel: null, providerModels: [], providerName: p.name };
   }
 }
@@ -2280,6 +2204,10 @@ const materializeCodexRoutingHome = cliProviderRouter.materializeCodexRoutingHom
 
 const codexProxyLeases = new WeakMap();
 
+function applyCodexLeaseEnv(env, holder) {
+  if (codexProxyLeases.get(holder)?.containsOfficial) codexProviderHome.stripOfficialEnv(env);
+}
+
 function releaseCodexProxyConfig(env) {
   if (!env || typeof env !== 'object') return false;
   const lease = codexProxyLeases.get(env);
@@ -2323,11 +2251,7 @@ function applyCodexProxyConfig(env, options) {
     // provider's imported OAuth snapshot before the host applies its physical
     // attempt capability. Rebuild that source into the same credential-free,
     // fail-closed relay shape used by the legacy adapter before cloning it.
-    if (containsOfficial) {
-      for (const key of Object.keys(env)) {
-        if (/^OPENAI_[A-Z0-9_]*$/.test(key)) delete env[key];
-      }
-    }
+    if (containsOfficial) codexProviderHome.stripOfficialEnv(env);
     preparationStage = 'official-relay-home';
     if (mainOfficial) {
       materializeCodexOfficialRelayHome(
@@ -2341,6 +2265,7 @@ function applyCodexProxyConfig(env, options) {
       providerId,
       sessionId: options.sessionId,
       homesDir: CODEX_ATTEMPT_HOMES_DIR,
+      copyAuth: !containsOfficial,
       ...(canonical ? { sessionsDir: canonical.sessionsDir } : {}),
     });
     env.CODEX_HOME = lease.home;
@@ -2360,15 +2285,18 @@ function applyCodexProxyConfig(env, options) {
       subModel: explicitSubProviderId ? String(options.subagent.model || '').trim() : String(options.inheritModel || '').trim(),
     });
     preparationStage = 'sanitize-official-config';
-    if (applied && containsOfficial) sanitizeCodexOfficialAttemptHome(lease.home, options);
+    if (applied && containsOfficial) {
+      codexProviderHome.sanitizeOfficial(lease.home, String(options.codexProxyPath || options.mountPath || '/codex-proxy'));
+    }
     if (!applied) {
       restore();
       lease.release();
       return false;
     }
-    codexProxyLeases.set(env, Object.freeze({ restoreHome, release: lease.release }));
+    codexProxyLeases.set(env, Object.freeze({ restoreHome, release: lease.release, containsOfficial }));
     return true;
   } catch (error) {
+    nativeCode(error);
     restore();
     if (lease) {
       try { lease.release(); }
@@ -2421,6 +2349,7 @@ module.exports = {
   assertClaudeProxyEnvApplied,
   claudeProxyEnvRequired,
   applyCodexProxyConfig,
+  applyCodexLeaseEnv,
   assertCodexProxyConfigApplied,
   codexProxyConfigRequired,
   releaseCodexProxyConfig,
