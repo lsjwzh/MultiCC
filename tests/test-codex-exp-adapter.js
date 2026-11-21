@@ -152,8 +152,8 @@ if(m.method==='thread/resume')process.stdout.write(JSON.stringify({id:m.id,resul
 if(m.method==='turn/start'){process.stdout.write(JSON.stringify({id:m.id,result:{turn:{id:'turn-live'}}})+'\\n');process.stdout.write(JSON.stringify({method:'item/agentMessage/delta',params:{itemId:'a',delta:'OK'}})+'\\n');process.stdout.write(JSON.stringify({method:'turn/completed',params:{turn:{id:'turn-live',status:'completed'}}})+'\\n');}});
 setInterval(()=>{},1000);
 `, { mode: 0o755 });
-    const result = spawnSync(process.execPath, [
-      path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'),
+    const result = spawnSync(require('../src/native/runtime').gatewayPath(), [
+      'codex-app-bridge',
       '--codex-bin', fakeCodex, '--', 'hello bridge',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile }, encoding: 'utf8', timeout: 10_000 });
     assert.equal(result.status, 0, result.stderr);
@@ -163,8 +163,8 @@ setInterval(()=>{},1000);
     assert.deepEqual(requests.filter(item => item.id).map(item => item.method), ['initialize', 'thread/start', 'turn/start']);
     assert.equal(requests.find(item => item.method === 'turn/start').params.input[0].text, 'hello bridge');
 
-    const resumed = spawnSync(process.execPath, [
-      path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'),
+    const resumed = spawnSync(require('../src/native/runtime').gatewayPath(), [
+      'codex-app-bridge',
       '--codex-bin', fakeCodex, '--thread-id', 'thread-live', '--', 'hello again',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile }, encoding: 'utf8', timeout: 10_000 });
     assert.equal(resumed.status, 0, resumed.stderr);
@@ -173,8 +173,8 @@ setInterval(()=>{},1000);
     assert.equal(resume.params.threadId, 'thread-live');
     assert.equal(resume.params.excludeTurns, true);
 
-    const unsupported = spawnSync(process.execPath, [
-      path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'),
+    const unsupported = spawnSync(require('../src/native/runtime').gatewayPath(), [
+      'codex-app-bridge',
       '--codex-bin', fakeCodex, '--', 'old version',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile, FAKE_CODEX_VERSION: '0.153.9' }, encoding: 'utf8', timeout: 10_000 });
     assert.notEqual(unsupported.status, 0);
@@ -403,4 +403,48 @@ test('Rust app-server 事件属性读取顺序与冻结版本一致', () => {
     };
     assert.deepEqual(run(createCodexExpAdapter), run(frozenCodexAppAdapter().createCodexExpAdapter), seed.method);
   }
+});
+
+function legacyBridgeCommand(root) {
+  const Module = require('node:module');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-codex-app-server-bridge.cjs.txt'), 'utf8');
+  assert.equal(require('node:crypto').createHash('sha256').update(source).digest('hex'), '476e2fbb25a2b171afb1090e8665c81d220a8f1e71758d0d4dc6712b7f338004');
+  const filename = path.resolve(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs');
+  const launcher = path.join(root, 'legacy-bridge.cjs');
+  // Compile the frozen source under its original directory so only transport
+  // imports need no path rewrites. The frozen background owner is independent.
+  fs.writeFileSync(launcher, `const Module=require('node:module');const fs=require('node:fs');const path=require('node:path');
+const filename=${JSON.stringify(filename)},source=${JSON.stringify(source)};
+const legacy=new Module(filename);legacy.filename=filename;legacy.paths=Module._nodeModulePaths(path.dirname(filename));
+const req=legacy.require.bind(legacy);legacy.require=name=>{
+ if(name!=='./codex-background-events.cjs')return req(name);
+ const bgFile=path.join(path.dirname(filename),'codex-background-events.cjs');const bg=new Module(bgFile);
+ bg.filename=bgFile;bg.paths=Module._nodeModulePaths(path.dirname(bgFile));bg._compile(fs.readFileSync(${JSON.stringify(path.join(__dirname, 'helpers/legacy-codex-background-events.cjs.txt'))},'utf8'),bgFile);return bg.exports;
+};legacy._compile(source,filename);`);
+  return { cmd: process.execPath, args: [launcher] };
+}
+
+test('Rust 进程桥与冻结 Node 桥的通知原始字节及 RPC 副作用一致', { timeout: 20_000 }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-codex-bridge-parity-'));
+  try {
+    const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
+    const binary = writeFakeAppServer(root), legacy = legacyBridgeCommand(root);
+    const rust = { cmd: require('../src/native/runtime').gatewayPath(), args: ['codex-app-bridge'] };
+    for (const scenario of [
+      {}, { prompt: '--help' }, { prompt: '--version' }, { args: ['--thread-id', 'saved'] }, { env: { FAKE_CODEX_REJECT: 'thread/start' } },
+      { env: { FAKE_CODEX_VERSION: '0.153.9' } },
+      { args: ['--thread-id', 'old'], env: { FAKE_CODEX_REJECT: 'thread/resume', FAKE_CODEX_REJECT_MESSAGE: 'no rollout found for thread id' } },
+      { args: ['--thread-id', 'old'], env: { FAKE_CODEX_REJECT: 'thread/resume', FAKE_CODEX_REJECT_MESSAGE: 'HTTP 401: unauthorized' } },
+    ]) {
+      const run = (command, tag) => {
+        const logFile = path.join(root, `${tag}.jsonl`); fs.writeFileSync(logFile, '');
+        const result = spawnSync(command.cmd, [...command.args, '--codex-bin', binary, ...(scenario.args || []), '--', scenario.prompt || '中文😀'], {
+          cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile, ...scenario.env }, encoding: 'utf8', timeout: 6000,
+        });
+        assert.equal(result.error, undefined);
+        return { status: result.status, stdout: result.stdout, stderr: result.stderr, requests: fs.readFileSync(logFile, 'utf8') };
+      };
+      assert.deepEqual(run(rust, 'rust'), run(legacy, 'legacy'), JSON.stringify(scenario));
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

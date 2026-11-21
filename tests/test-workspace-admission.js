@@ -144,8 +144,8 @@ test('admission releases the turn lease while fencing and reusing its resident c
     for (let i = 1; i <= 2; i++) {
       const d = f.descriptor(`message-${i}`), guard = await f.host.beforeDeliver(d);
       f.host.bindTurn(id, d.opts, `turn-${i}`); f.host.starting(id, d.opts);
-      stream.ensure(id, { cmd: process.execPath, cwd: f.record.worktreePath, streamBackend: 'app-server',
-        baseArgs: [path.resolve(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs'), '--codex-bin', bin, '--resident'],
+      stream.ensure(id, { cmd: require('../src/native/runtime').gatewayPath(), cwd: f.record.worktreePath, streamBackend: 'app-server',
+        baseArgs: ['codex-app-bridge', '--codex-bin', bin, '--resident'],
         env: { PATH: process.env.PATH, FAKE_CODEX_LOG: path.join(f.dir, 'requests.jsonl') } });
       await stream.send(id, 'hello', () => {});
       const currentPid = stream.status(id).pid;

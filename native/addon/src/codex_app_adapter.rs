@@ -141,16 +141,20 @@ pub fn codex_app_adapter_ports(
     deps: Unknown<'_>,
     default_bridge: String,
     executable: String,
+    custom_executable: String,
 ) -> Result<sys::napi_value> {
     let deps = L::new(&env, deps);
+    let bridge = deps.get(c"bridge")?;
+    let executable = if bridge.truthy()? {
+        custom_executable
+    } else {
+        executable
+    };
     Ok(object(
         deps,
         &[
             (c"deps", deps),
-            (
-                c"bridge",
-                or(deps.get(c"bridge")?, || text(deps, &default_bridge))?,
-            ),
+            (c"bridge", or(bridge, || text(deps, &default_bridge))?),
             (c"executable", text(deps, &executable)?),
             (c"storage", array(deps)?),
         ],

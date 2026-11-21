@@ -19,7 +19,7 @@
 
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
-const { createCodexBackgroundEvents } = require('../native/runtime').codexBackground;
+const { createCodexBackgroundEvents } = require('./codex-background-events.cjs');
 
 const MIN_CODEX_VERSION = Object.freeze([0, 154, 0]);
 const REQUEST_TIMEOUT_MS = 30_000;

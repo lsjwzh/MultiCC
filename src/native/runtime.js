@@ -8,6 +8,9 @@ let deliveryOwner = null;
 let deliveryAddon = null;
 const counts = { search: 0, usage: 0 };
 
+function gatewayPath() {
+  return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
 function addonPath() {
   return process.env.MULTICC_RUST_ADDON || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.resolve(__dirname, '../../native/prebuilt'),
     `${process.platform}-${process.arch}`, 'multicc_core.node');
@@ -161,13 +164,13 @@ const codexAppAdapter = {
   createCodexExpAdapter(deps = {}) {
     const native = getNative();
     const ports = Object.assign(native.codexAppAdapterPorts(deps,
-      path.join(__dirname, '../cli-adapters/codex-app-server-bridge.cjs'), process.execPath), {
+      'codex-app-bridge', gatewayPath(), process.execPath), {
       renderPrompt: require('../message-composer').renderPrompt,
       displayNameOf: require('../cli/cli-capability').displayNameOf,
     });
     const owner = new native.RustCodexAppAdapter();
     return {
-      name: 'codex-exp', cmd: process.execPath,
+      name: 'codex-exp', cmd: ports.executable,
       createCompletionTracker: () => require('../cli-adapters/completion').createProtocolCompletionTracker('codex-exp'),
       buildTerminalCmd: () => native.codexAppAdapterValue('terminal', deps, undefined),
       buildInvocation: value => owner.invocation(value, ports),
@@ -209,6 +212,6 @@ const codexBackground = {
       setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
   },
 };
-module.exports = { addonPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { addonPath, gatewayPath, getNative, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground };

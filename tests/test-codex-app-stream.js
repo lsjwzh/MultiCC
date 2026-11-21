@@ -15,7 +15,8 @@ const test = require('node:test');
 const { createCodexAppStream } = require('../src/chat/codex-app-stream');
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
-const BRIDGE = path.join(__dirname, '../src/cli-adapters/codex-app-server-bridge.cjs');
+const BRIDGE = 'codex-app-bridge';
+const BRIDGE_CMD = require('../src/native/runtime').gatewayPath();
 
 function createFixture(name, env = {}, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `multicc-codex-stream-${name}-`));
@@ -25,7 +26,7 @@ function createFixture(name, env = {}, options = {}) {
   const stream = createCodexAppStream();
   const childEnv = { ...process.env, FAKE_CODEX_LOG: logFile, ...env };
   stream.ensure(name, {
-    cmd: process.execPath,
+    cmd: BRIDGE_CMD,
     cwd: root,
     baseArgs: [BRIDGE, '--codex-bin', bin, '--resident'],
     env: childEnv,
@@ -154,7 +155,7 @@ test('an ensured session re-attaches to an existing thread instead of forking on
   const { stream } = fixture;
   t.after(() => { stream.close('resume'); });
   stream.ensure('resume', {
-    cmd: process.execPath,
+    cmd: BRIDGE_CMD,
     cwd: path.dirname(fixture.logFile),
     baseArgs: [BRIDGE, '--codex-bin', fixture.bin, '--resident'],
     sessionId: 'thread-from-disk',
