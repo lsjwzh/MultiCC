@@ -408,6 +408,46 @@ async fn shutdown_closes_stdin_and_the_child_exits() {
     assert_eq!(error.code, "stopping");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_waits_for_exit_cleanup_before_returning() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Condvar;
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let h = harness_with("shutdown-cleanup", &[], |config| {
+        config.shutdown_grace = Duration::from_secs(5);
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        config.log = Some(Arc::new(move |line| {
+            if line == "remote_screen_stopped" {
+                entered.store(true, Ordering::SeqCst);
+                let (lock, wake) = &*release;
+                let guard = lock.lock().expect("release lock");
+                let _guard = wake
+                    .wait_while(guard, |released| !*released)
+                    .expect("release wait");
+            }
+        }));
+    });
+    h.child.ensure().await.expect("ready");
+    let child = Arc::clone(&h.child);
+    let shutdown = tokio::spawn(async move { child.shutdown().await });
+    let reached_cleanup =
+        wait_until(Duration::from_secs(3), || entered.load(Ordering::SeqCst)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let returned_early = shutdown.is_finished();
+    let (lock, wake) = &*release;
+    *lock.lock().expect("release lock") = true;
+    wake.notify_all();
+    shutdown.await.expect("shutdown task");
+    assert!(reached_cleanup, "exit cleanup was not reached");
+    assert!(
+        !returned_early,
+        "shutdown returned before exit cleanup completed"
+    );
+}
+
 #[cfg(unix)]
 fn process_alive(pid: libc::pid_t) -> bool {
     // 0 = alive (or an unreaped zombie), ESRCH = gone, EPERM = alive but not

@@ -679,8 +679,10 @@ async fn watch_exit(
             }
         }
     };
-    let _ = process.exited.send(true);
     finish_exit(&inner, &flight, &process, status);
+    // Shutdown must not return until exit state, logging, and notices are done.
+    // Retain the value even if shutdown has not subscribed yet.
+    process.exited.send_replace(true);
 }
 
 fn finish_exit(
