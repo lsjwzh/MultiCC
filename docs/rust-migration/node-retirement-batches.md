@@ -171,6 +171,14 @@ Codex 配置切换复用 Rust 的 rollout 查找、歧义判断和原子复制�
 
 冻结对照来自 `ae728cb3` 的原模块，只调整 helper 内的 require 相对路径。256 组输入验证错误形状、stderr 形状、其它 CLI 和继承属性；单独断言 getter 短路、异常对象身份、分类器只调用一次、两个回调参数同一对象及原始 stderr 对象身份。构建、测试及合并证据记录在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/opencode-process-error-gates/`。
 
+### 进程启动参数排序
+
+删除 `src/chat/process-spawn-args.js`（15 行），参数可迭代对象的复制、`--settings` 与提示词分隔符排序、原始 payload 追加迁入 `native/addon/src/process_spawn_args.rs`。回合引擎仅更换导入，`src/native/runtime.js` 保留一行 N-API 调用；生产 Node 代码净减 14 行。回合宿主迁入 Rust 后删除该桥。V8 的 live iterable、数组方法和异常仍经 N-API 访问，保留参数对象与 payload 身份，不引入 JSON 编解码。
+
+冻结旧模块的 384 组组合检查 argv 值与序列化字节，另验证自定义迭代器和 getter 顺序、异常身份、不修改输入以及非可迭代参数失败。完整构建、严格静态、回归与 HTTP 对拍证据记录在主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/process-spawn-args-gates/`。
+
+约定门禁通过后补跑标准 `npm test`，在未修改的 `tests/test-fleet-sharing-routes.js` 两项共享并发检查失败（249 行创建结果未全部为 200；514 行访问次数耗尽后的 410 数量为 0、预期 4）。另建目标分支 `bf99c686` 的干净、独立工作树，仅运行该测试文件，使用与该基线源码指纹匹配的旧原生产物，57.707 秒后同两断言、同值失败；测试文件哈希一致，基线不含本批 Rust 模块且保留旧 Node 文件。按用户明确授权将其登记为基线既有／环境失败后交付 argv 小批。完整 `npm test` 仍为失败，未放宽断言、未声称已修复共享并发根因。复现及对比记录在上述证据目录的 `baseline-diagnosis/`。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

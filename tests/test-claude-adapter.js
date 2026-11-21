@@ -8,7 +8,7 @@ const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createClaudeAdapter } = require('../src/native/runtime');
-const { processSpawnArgs } = require('../src/chat/process-spawn-args');
+const { processSpawnArgs } = require('../src/native/runtime');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
 const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
 const prepareTurn = require('./helpers/claude-turn');
@@ -108,6 +108,61 @@ test('turn spawn keeps settings before the prompt separator for claude', () => {
   }, '/tmp/settings.json'), [
     '--print', '--output-format', 'stream-json', '--settings', '/tmp/settings.json', 'hello',
   ]);
+});
+
+test('Rust spawn argv preserves 384 frozen iterable/settings/payload combinations', () => {
+  const legacy = require('./helpers/legacy-process-spawn-args').processSpawnArgs;
+  const sources = [() => [], () => ['--'], () => ['-p', '--'], () => ['--', 'literal'],
+    () => new Array(2), () => '中😀', () => new Set(['--verbose', '--']),
+    () => ({ *[Symbol.iterator]() { yield 'first'; yield '--'; } })];
+  const payloadObject = Object.freeze({ text: 'identity' });
+  const payloads = ['hello', '--help', '中文\ud800', undefined, null, payloadObject];
+  const settingsValues = [undefined, null, false, 0, '', '/private/settings.json', {}, Symbol('settings')];
+  let count = 0;
+  for (const makeArgs of sources) for (const settings of settingsValues) for (const payload of payloads) {
+    const invocation = { args: makeArgs(), payload };
+    const result = processSpawnArgs(invocation, settings);
+    const expected = legacy({ args: makeArgs(), payload }, settings);
+    assert.deepEqual(result, expected);
+    assert.equal(result.at(-1), payload);
+    if (typeof settings !== 'symbol') assert.equal(JSON.stringify(result), JSON.stringify(expected));
+    count++;
+  }
+  assert.equal(count, 384);
+});
+
+test('Rust spawn argv preserves iterator/getter order, exception identity and source immutability', () => {
+  const legacy = require('./helpers/legacy-process-spawn-args').processSpawnArgs;
+  function run(build, fail) {
+    const calls = [];
+    const error = new Error('iterator failure');
+    const invocation = {
+      get args() {
+        calls.push('args');
+        return { [Symbol.iterator]() {
+          calls.push('iterator'); let index = 0;
+          return { next() {
+            calls.push(`next:${index}`);
+            if (fail && index === 1) throw error;
+            return index++ === 0 ? { done: false, value: '--' } : { done: true };
+          }, return() { calls.push('return'); return {}; } };
+        } };
+      },
+      get payload() { calls.push('payload'); return 'literal'; },
+    };
+    if (fail) assert.throws(() => build(invocation, '/settings'), thrown => thrown === error);
+    else assert.deepEqual(build(invocation, '/settings'), ['--settings', '/settings', '--', 'literal']);
+    return calls;
+  }
+  for (const fail of [false, true]) assert.deepEqual(run(processSpawnArgs, fail), run(legacy, fail));
+  const original = Object.freeze(['--']);
+  assert.deepEqual(processSpawnArgs({ args: original, payload: 'prompt' }, '/settings'),
+    ['--settings', '/settings', '--', 'prompt']);
+  assert.deepEqual(original, ['--']);
+  for (const args of [null, undefined, 12, {}]) {
+    assert.throws(() => legacy({ args, payload: 'prompt' }), TypeError);
+    assert.throws(() => processSpawnArgs({ args, payload: 'prompt' }), TypeError);
+  }
 });
 
 test('claude preserves Claude stream-json event and completion semantics', () => {

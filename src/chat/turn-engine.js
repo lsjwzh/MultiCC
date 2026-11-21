@@ -105,7 +105,7 @@ const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('.
 const { opencodeProcessError } = require('../native/runtime');
 const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
-const { processSpawnArgs } = require('./process-spawn-args');
+const { processSpawnArgs } = require('../native/runtime');
 const { isResident, isResidentSession } = require('../cli/cli-capability');
 
 // Message-admission progress (the frames that keep a delayed user message
