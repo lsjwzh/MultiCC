@@ -1,75 +1,56 @@
-# Node 后端残留审计（2026-11-21）
+# Node 后端残留审计：提醒入口交付后（2026-11-21）
 
-订阅入口批次合入 `a04f0565` 后，按下述固定口径仍有 **586 个 Node 后端候选文件、137,250 行**。默认启动、后台宿主、SDK 适配及发布包仍依赖 Node。Rust 已持有多项业务和存储规则，独立兼容入口的退出不等于整块宿主退出；整体 Node 后端清零尚未完成。
+提醒入口以验收树 `2b63c501` 原样提交为 `92b917df`，经授权会话 API 合入 `2803ab1b`。主仓与本工作区均干净，双方相对 main 为 0/0。当前统计仍有 **585 个 Node 后端候选文件、137,248 行**；默认启动、运行时依赖和发布包仍需要 Node，整体迁移尚未完成。
 
-## 快照与计数口径
-
-统计 Git 跟踪的 `server.js`、`ecosystem.config.js`、`scripts/start-gateway.js`，以及 `src/`、`plugins/` 下 JS/CJS/MJS；排除插件的 test/tests/extension/ui 路径。按 LF 物理行计数，包含注释、空行及兼容绑定，未以换行结尾的最后一行计入。前端、测试、其余构建工具和依赖包不计入后端源文件总数；构建和发布入口另行检查。
-
-| 快照 | 文件 | 物理行 | 相对基线净减行 |
-| --- | ---: | ---: | ---: |
-| 同口径基线 `b20db311` | 612 | 139,099 | — |
-| 已验收并合入的订阅批次 `a04f0565`，树 `8724e574` | 586 | 137,250 | 1,849（1.329%） |
-| 任务提醒入口工作树，待完整验收 | 585 | 137,248 | 1,851（1.331%） |
-
-基线逐个 Git blob 重算，未使用旧报告的估计数字。已交付区间退出 26 个文件、2,182 行，存量文件合计增加 333 行，新增候选文件为 0，净减 1,849 行。此数字覆盖整个基线区间，不能全归于订阅批次，也不能当作迁移完成率。
-
-订阅批次删除原 15 行入口，向共享原生绑定增加原函数正文，生产 Node 净减 8 行。随后任务提醒批次删除原 15 行入口，向共享任务域增加 13 行绑定，净减 2 行；后一批当前仅完成定向验证，未合入，不能计入已交付减行数。
-
-## 已交付树的主要残留
-
-| 目录或入口 | 文件 | 行数 | 后续需退出的职责 |
+| 同口径快照 | 文件 | 物理行 | 相对上一交付态 |
 | --- | ---: | ---: | --- |
-| `src/routes/` | 95 | 24,609 | 路由组合、宿主端口与副作用 |
-| `src/` 根目录文件 | 88 | 20,584 | 服务组合、进程和配置宿主 |
-| `src/chat/` | 60 | 14,020 | 回合、流、会话与后台通知 |
-| `src/providers/` | 28 | 7,150 | 供应商路由、SDK 与执行适配 |
-| `src/voice/` | 17 | 5,274 | 语音服务、SDK 与进程生命周期 |
-| `src/cli-adapters/` | 29 | 4,995 | 在册 CLI 的启动、流和停止 |
-| `src/task-shell/` | 24 | 4,542 | 任务壳宿主与运行协议 |
-| `src/orchestration/` | 6 | 3,690 | 编排宿主、调度与回调 |
-| `server.js` | 1 | 3,080 | 主服务组合和剩余消费者 |
-| `src/session-work/` | 2 | 2,268 | 会话工作宿主和队列 |
+| 原始 Git 基线 b20db311 | 612 | 139,099 | — |
+| 用户指定的订阅已交付基线 a04f0565 | 586 | 137,250 | — |
+| 当前提醒入口已交付 2803ab1b | 585 | 137,248 | 净减 1 文件、2 行 |
 
-最大的残留文件包括 `server.js` 3,080 行、`src/chat/turn-engine.js` 2,988 行、`src/providers/core.js` 2,390 行、`src/routes/task-board.js` 1,854 行、`src/classify/state-machine.js` 1,765 行、`src/orchestration/runtime.js` 1,690 行、`src/unattended/host.js` 1,379 行及 `src/session-work/host.js` 1,360 行。完整文件、SHA-256、依赖和调用方见机器可读快照。
+整个 b20db311 区间共退出 27 个文件、2,197 行，存量文件净增 346 行，无新增候选文件，合计净减 1,851 行（1.331%）。这是源码净变化，不是迁移完成率，也不能全归因本批。提醒入口删除原 15 行文件，在共享原生绑定增加 13 行，实际净减 2 行；策略原本已由 Rust 持有。
 
-这些文件包含业务、平台/SDK 宿主和薄绑定，不能只按文件行数判断可删范围。后续新增业务仍应放在 Rust；保留 Node 的原因应落在必要 SDK、进程或迁移协议，并随对应调用方一起退出。
+## 统计范围与残留
 
-## 运行入口、依赖与发布链路
+范围为 Git 跟踪的 server.js、ecosystem.config.js、scripts/start-gateway.js，以及 src/、plugins/ 下 JS/CJS/MJS，排除插件 test/tests/extension/ui。按 LF 物理行统计，包含注释、空行与绑定；末行非空且无换行也计一行。基线已逐 Git blob 重算。前端、测试和其它构建工具未计入后端源文件总数，但启动与发布入口另行核对。
 
-| 核查项 | 当前证据与结论 |
-| --- | --- |
-| npm | `package.json` 的 main 为 `server.js`，Node 引擎为 `>=22.16.0`；`start` 与 `start:gateway` 均执行 `node scripts/start-gateway.js`。 |
-| 网关启动 | `scripts/start-gateway.js:37` 显式传入 `--node process.execPath` 和 `server.js`；Rust 前门仍监督 Node 子进程。 |
-| shell / 服务 | `multicc` 的启动与服务安装路径仍传 `--node "$NODE"`；`ecosystem.config.js` 使用同一 Node 启动器。 |
-| 桌面包 | `scripts/desktop-bundle-server.js` 打包 `server.js`、`src/` 和 `plugins/`，生成的后端启动脚本仍使用 Node。 |
-| standalone | `scripts/standalone-bundle.js` 与 `scripts/standalone-launcher.js` 仍分发、选择 Node runtime 并启动 Node 宿主。 |
-| 运行时依赖 | package.json 有 19 个直接运行时依赖，包括 Express、ws、Claude/ACP SDK、CPR、飞书/Slack/Discord/Telegram SDK、语音及推送库；devDependencies 为 better-sqlite3、werift。这些是直接声明数，不是传递依赖数。 |
-| SQLite | 当前统计范围未发现直接加载 `node:sqlite` 或 `better-sqlite3` 的字面量导入；`src/sqlite/driver.js` 加载 RustDatabase N-API。仍有 Node 同步回调、错误映射及生命周期，不能据此宣称存储调用方已退出 Node。 |
+主要残留仍包括 routes 95 文件/24,609 行、src 根目录 88/20,584、chat 60/14,020、providers 28/7,150、voice 17/5,274、cli-adapters 29/4,995、task-shell 24/4,542、orchestration 6/3,690。server.js 为 3,080 行，turn-engine 为 2,988 行，providers/core 为 2,390 行。这些代码混合业务、SDK/进程宿主和薄绑定，不能按行数直接判断可删范围。
 
-发现旧说明残留：`scripts/desktop-bundle-server.js` 的注释/日志和 `scripts/standalone-launcher.js` 的说明仍称存储为 `node:sqlite`，与当前 Rust 驱动不符。本轮仅记录，未将其混入入口退休源码改动。
+从 server.js 沿字面量相对依赖保守扫描可达 569 个文件，有 8 个动态加载候选、311 个静态 HTTP/中间件注册候选、35 个不同的 /api/__host/* 路径字面量。它们是静态候选数，不是实时路由或活跃宿主数；注释、条件分支、局部同名函数可能误报，计算型导入可能漏报。本轮没有重启生产或捕获完整条件插件运行路径。
 
-## 路由与动态入口的证据边界
+## 启动、依赖与发布仍包含 Node
 
-已交付树从 `server.js` 沿字面量相对依赖保守扫描可达 570 个候选文件，有 8 个非行注释动态加载候选、311 个静态 HTTP/中间件注册候选，以及 35 个不同的 `/api/__host/*` 路径字面量。提醒入口工作树对应可达文件为 569，其余候选数相同。
+- package.json 的 main 为 server.js，Node 引擎要求 >=22.16.0；npm start 和 start:gateway 仍运行 node scripts/start-gateway.js。
+- 启动器显式把 --node process.execPath 和 server.js 交给 Rust 网关；multicc shell、服务安装和 PM2 配置也保留 Node 宿主路径。
+- 桌面包仍打包 server.js/src/plugins；standalone 仍分发并启动 Node runtime。发布入口没有整体退出 Node。
+- package.json 有 19 个直接运行时依赖，包含 Express、ws、Claude/ACP SDK、CPR、飞书/Slack/Discord/Telegram SDK、语音及推送库；这不是传递依赖数。better-sqlite3 与 werift 仍为开发依赖。
+- 当前范围未见直接加载 node:sqlite 或 better-sqlite3 的字面量导入；src/sqlite/driver.js 实际加载 RustDatabase N-API。Node 仍持有调用回调、错误映射及生命周期。打包脚本中残留“storage is node:sqlite”的旧注释/日志，本轮仅记录未改动。
+- no-node 冒烟包含 Node 所有者、鉴权快照和 metrics 返回 503 node_runtime_absent 的断言；PASS 不证明完整产品可无 Node 运行。
 
-这是源码候选扫描，未启动生产服务做本轮路由捕获。条件分支、注释、局部同名函数、字符串中的代码可能产生误报，计算型加载可能漏报；原始 npm 导入候选同样需要人工核对，以 package.json 的直接依赖声明为可靠计数。311 不是实时路由总数，35 也不是当前活跃宿主端口总数。可达既不证明实际运行，也不授权删除。
+## 本批验证及补证限制
 
-`scripts/smoke-no-node-gateway.sh` 的 PASS 包含对 Node 所有者、鉴权快照和 metrics 返回 503 `node_runtime_absent` 的明确断言。它证明 Rust 前门可独立启动并正确拒绝缺失宿主的路径，不代表完整产品功能已在无 Node 时可用。
+完整 38 门禁仅运行一次：37 项退出 0，Rust 2,736 项、提醒 62/62 零跳过及四组 HTTP 对拍通过。npm test 仍如实记录 FAIL，完整归一化失败报告仅有干净 bf99c686 已证明的 fleet-sharing-routes 第 249 行 false/true、第 514 行 0/4；短路阶段未记作通过。
 
-## 验证状态与下一步
+原父进程采样被观察器 5 秒等待截断，历史样本缺失记录保留。用户授权单点补采后，仅单独运行同一个慢读用例一次，父进程 sample 命令退出 0，生成有效调用图；与原运行的网关/Node 样本构成三份有效证据，来源逐项区分，不声称来自同一次进程树。补采包装器的附加进程观察器因缺少 pathlib 导入而报错，包装器退出 1 的原记录保留；这次 Node 退出事件未由该辅助观察器捕获，原完整运行的子进程退出证据仍完整。
 
-订阅批次完整 37 门禁中 36 项退出 0，订阅与官方账号 80/80、零跳过，Rust 2,736 项及四组 HTTP 对拍通过。标准 npm test 如实为 FAIL，完整归一化报告只包含干净 `bf99c686` 已证明的 fleet-sharing-routes 第 249 行 false/true 与第 514 行 0/4；短路后的阶段未记为通过。原始编排启动竞态和慢读失败证据继续保留，不增加基线例外。已通过授权会话 API 合入；合入时主仓与本工作区干净，双方相对 main 为 0/0。后续提醒入口工作树属于尚未验收的新批次。
+原冻结验收脚本没有被改动，也不声称原严格历史采样检查通过。新增补证验收保留源码树、冻结 oracle、产品断言、所有门禁、权限、HTTP 副作用和 npm 精确基线检查，只用经授权补采的调用图满足缺失的父进程诊断要求。没有新增产品失败基线例外；源码和启动探针未变，服务未重启。
 
-任务提醒入口已保留原 `call`、`mutate`、默认时钟、原生异常和 Proxy 写回，旧任务板/Air 对拍独立冻结原入口；现有四文件定向测试 62/62、零跳过。下一次完整门禁须保留前 37 项，只增加该定向项；完整结果出来前不作合入结论。
+## 下一模块仅做只读预检
 
-继续按业务所有者切换调用方和副作用，核销默认/条件挂载、动态插件、HTTP 宿主、WS/SSE 与后台进程；最后用真实发布入口的隔离安装包验证完整功能和进程树、监听端口、升级与回退。当前没有完成上述最终闭环，也没有切换生产配置或重启服务。
+候选为 11 行 src/network/official-fetch.js，唯一生产消费点为 Codex 官方中继。相关 11 个源码/测试文件哈希在当前合入树重新核对一致，没有实施或测试下一模块。
 
-## 证据位置
+验证计划先锁定默认 fetch 惰性获取、模块缓存与替身装载时点，保持共享函数别名、两个原函数体、close/取消、NO_PROXY、代理发现刷新和请求不重放。若这些边界不能仅靠原样绑定保留，就暂缓该候选，再评估 19 行 task-board/repository.js 工厂。后续实施须保留全部 38 门禁并增加独立定向验证；本轮只交付候选和计划。
 
-- [订阅合入收据](/artifacts/cb22793be35ae2cf/subscription-entry-merge-receipt.json)
-- [37 门禁验收收据](/artifacts/dcd9731389b7aed6/subscription-entry-verification-receipt.json)
-- [37 门禁完整证据](/artifacts/94bb939138375e65/subscription-entry-full-evidence.zip)
-- [编排启动竞态诊断](/artifacts/285e74387c8fe0ac/orchestration-startup-diagnosis.md)
+## 收据与证据
 
-持久原始证据位于主仓 `data/rust-migration/2026-11-21/provider-cli-batch3/`。订阅交付态快照与审计工具在 `subscription-entry-gates/repository-audit/`；提醒待验收快照、逐项证明和后续完整门禁在 `attention-entry-gates/`。本报告是正式仓库文档；登记预览和下载产物为临时副本。
+- [验收与合入、双方 clean0/0 收据](/artifacts/f29a447441bafefb/attention-entry-merge-receipt.json)
+- [补证验收收据](/artifacts/af159301faee9630/attention-entry-supplemented-verification-receipt.json)
+- [完整 38 门禁与单点补采证据](/artifacts/2ef91326712fce50/attention-entry-supplemented-full-evidence.zip)
+- [采样超时诊断及工具错误说明](/artifacts/2a5f95328ec0f82a/attention-parent-sampling-diagnosis.md)
+- [原阻塞收据，保留不覆盖](/artifacts/c611611045f18ed1/attention-entry-incomplete-diagnostics-receipt.json)
+
+本次交付态 JSON、完整文件/依赖/调用方/哈希表和审计工具位于主仓 data/rust-migration/2026-11-21/provider-cli-batch3/attention-entry-gates/post-merge/。本文件更新 official-fetch 验收前的已交付基线，未改写之前验收树。最终默认/条件入口、动态插件、WS/SSE、后台进程及真实安装包的无 Node 闭环仍未完成。
+
+## official-fetch 本批候选（待完整验收）
+
+退休 11 行门面，现有 SDK 适配器增加 12 行惰性捕获，生产 Node 净增 1 行、少 1 文件；候选 584 文件/137,249 行，尚未交付。唯一生产消费点只改导入。两个函数仅统一缩进，原工厂/Dispatcher/代理策略及 Rust/启动探针未变。Node 例外仅为 Undici/proxy-agent SDK 适配与装载桥接，无新增业务策略。87/87 定向零跳过和旧门面缓存对拍已通过，完整门禁尚待验收。没有把减少文件数宣称为整体 Node 退休。

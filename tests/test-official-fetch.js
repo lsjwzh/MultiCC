@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createOfficialFetch, parseMacProxy } = require('../src/network/official-fetch');
+const { createOfficialFetch, parseMacProxy } = require('../src/network/outbound').official;
 
 test('macOS system HTTP proxies are parsed only when explicitly enabled', () => {
   assert.deepEqual(parseMacProxy('<dictionary> {\n HTTPSProxy : 127.0.0.1\n HTTPSPort : 7897\n HTTPSEnable : 1\n HTTPEnable : 0\n HTTPProxy : ignored\n HTTPPort : 8\n}'), { httpProxy: '', httpsProxy: 'http://127.0.0.1:7897' });
@@ -65,3 +65,16 @@ test('unsupported proxy scheme and discovery failure never silently bypass confi
   await assert.rejects(g('https://chatgpt.com'), e => e.multiccProxyMode === 'proxy-discovery');
   assert.equal(calls, 0);
 });
+
+for (const scenario of ['sticky', 'undefined', 'failed-load']) {
+  test(`official entry retains first-use capture and CommonJS cache semantics: ${scenario}`, () => {
+    const { spawnSync } = require('node:child_process');
+    const child = require.resolve('./helpers/official-fetch-boundary-child');
+    const run = mode => {
+      const result = spawnSync(process.execPath, [child, mode, scenario], { encoding: 'utf8', timeout: 15000 });
+      assert.equal(result.status, 0, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    assert.deepEqual(run('live'), run('legacy'));
+  });
+}

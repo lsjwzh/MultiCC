@@ -93,3 +93,15 @@ function createOutbound(options = {}) {
 }
 const shared = createOutbound();
 module.exports = { ...shared, createOutbound, RoutingDispatcher };
+// Capture the same SDK exports on first official use, after injected-fetch selection.
+Object.defineProperty(module.exports, 'official', { configurable: true, get() {
+  const { createOutbound, outboundFetch } = module.exports;
+  const { parseMacSystemProxy } = require('./proxy-policy');
+  function parseMacProxy(text) {
+    const { httpProxy, httpsProxy } = parseMacSystemProxy(text);
+    return { httpProxy, httpsProxy };
+  }
+  function createOfficialFetch(options) { return createOutbound(options).outboundFetch; }
+  const value = { parseMacProxy, createOfficialFetch, officialFetch: outboundFetch };
+  return Object.defineProperty(module.exports, 'official', { value, writable: true }).official;
+}});
