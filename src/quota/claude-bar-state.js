@@ -25,7 +25,7 @@
 
 const { claudeBar } = require('./quota-bar-view');
 const { claudeUsageKey, readClaudeUsage } = require('./claude-usage-queue');
-const { claudeQuota } = require('./claude-header-quota');
+const { claudeQuota } = require('../native/runtime');
 
 const liveByKey = new Map();
 

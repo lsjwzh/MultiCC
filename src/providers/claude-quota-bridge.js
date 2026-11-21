@@ -1,7 +1,7 @@
 'use strict';
 
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { claudeQuota } = require('../quota/claude-header-quota');
+const { claudeQuota } = require('../native/runtime');
 
 // The pinned Node CPR only exposes its 5h DTO. Observe forwarded response headers
 // at the host boundary, so both transports use the same Rust parser without

@@ -47,7 +47,7 @@ const COLOR = Object.freeze({
   yellow: '#d29922',
   blue: '#58a6ff',
 });
-const { claudeQuota } = require('../../src/quota/claude-header-quota');
+const { claudeQuota } = require('./legacy-claude-header-quota');
 
 function finiteNumber(value) {
   if (value === null || value === '' || typeof value === 'boolean') return null;
