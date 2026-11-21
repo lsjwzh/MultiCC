@@ -39,12 +39,15 @@ const GOLDEN: &str = include_str!("fixtures/account-subscription.json");
 const TOKEN: &str = "secret-token-1";
 
 fn unique(tag: &str) -> PathBuf {
+    // macOS clock ticks may repeat across concurrent fixtures in this process.
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!(
-        "multicc-gateway-account-subscription-{}-{tag}-{nanos}",
+        "multicc-gateway-account-subscription-{}-{tag}-{nanos}-{sequence}",
         std::process::id()
     ))
 }
@@ -714,5 +717,30 @@ fn account_subscription_survives_client_disconnect() {
         1,
         "the surviving waiter must share the single upstream query: {rows}\n{}",
         gateway.log()
+    );
+}
+
+#[test]
+fn parallel_fixture_roots_survive_repeated_clock_ticks() {
+    let barrier = Arc::new(std::sync::Barrier::new(4));
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                (0..1000)
+                    .map(|_| unique("collision-check"))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let paths: std::collections::HashSet<_> = threads
+        .into_iter()
+        .flat_map(|thread| thread.join().unwrap())
+        .collect();
+    assert_eq!(
+        paths.len(),
+        4000,
+        "parallel fixtures must never share a directory"
     );
 }
