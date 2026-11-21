@@ -2,6 +2,7 @@
 //! durable transcript writes, replay snapshots and live fan-out. Provider IO
 //! runs outside this lock, and connection loss does not abandon a turn.
 mod auth;
+mod codex;
 mod frames;
 mod launch;
 mod provider;
@@ -758,10 +759,17 @@ async fn admit(
         ));
     }
     let record = &state.stored.record;
-    if !store::is_claude(record) {
+    let codex = store::is_codex_app(record);
+    if !store::is_claude(record) && !codex {
         return Err((
             "chat_provider_unavailable",
             "The native chat host requires a Claude session".into(),
+        ));
+    }
+    if codex && (codex_requires_provider_host(record) || answer.is_some()) {
+        return Err((
+            "chat_route_unavailable",
+            "This Codex session requires the configured provider or question host".into(),
         ));
     }
     if [
@@ -811,13 +819,24 @@ async fn admit(
 }
 
 struct RunningTurn {
-    options: multicc_core::claude_process::StartInput,
+    runner: TurnRunner,
     reference_seed: String,
     turn_id: String,
     attempt_id: String,
     prompt_uuid: String,
     cancelled: oneshot::Receiver<()>,
     provider_proxy: Option<provider::Proxy>,
+}
+
+enum TurnRunner {
+    Claude(Box<multicc_core::claude_process::StartInput>),
+    Codex(codex::Launch),
+}
+
+fn codex_requires_provider_host(record: &V) -> bool {
+    let provider = record.get("provider");
+    (js::truthy_opt(provider) && provider != Some(&V::from("_default_")))
+        || js::truthy_opt(record.get("providerSelection"))
 }
 
 enum TurnInput<'a> {
@@ -872,28 +891,61 @@ async fn prepare_turn(
         new_id("m")?,
         random_id::random_uuid_v4().map_err(|error| ("internal_error", error.to_string()))?,
     );
-    let mut options = launch::launch_options(state);
-    let reference_seed = match delivery {
-        Some(delivery) => delivery
-            .reference_seed(!options.launch.resume)
-            .await
-            .map_err(|error| ("task_shell_context_unavailable", error))?,
-        None => String::new(),
+    let (mut runner, reference_seed) = if store::is_codex_app(&state.stored.record) {
+        let thread = &state.stored.native_id;
+        if !thread.is_empty() && !codex::valid_thread(thread) {
+            return Err((
+                "chat_provider_unavailable",
+                "Invalid saved Codex thread ID".into(),
+            ));
+        }
+        let options = codex::Launch {
+            cwd: state.stored.cwd.clone(),
+            home: app.home_dir.clone(),
+            thread: (!thread.is_empty()).then(|| thread.clone()),
+            model: optional_text(&state.stored.record, "model"),
+            effort: optional_text(&state.stored.record, "effort"),
+        };
+        let role = optional_text(&state.stored.record, "rolePrompt");
+        let context = match role.filter(|_| thread.is_empty()) {
+            Some(role) => format!("[Role prompt]\n{role}\n[End of role prompt]\n\n"),
+            None => String::new(),
+        };
+        (TurnRunner::Codex(options), context)
+    } else {
+        let mut options = launch::launch_options(state);
+        let reference = match delivery {
+            Some(delivery) => {
+                if let Some(role) = delivery.role_prompt.as_ref() {
+                    options.launch.system_prompt_append = Some(role.to_owned());
+                }
+                delivery
+                    .reference_seed(!options.launch.resume)
+                    .await
+                    .map_err(|error| ("task_shell_context_unavailable", error))?
+            }
+            None => String::new(),
+        };
+        (TurnRunner::Claude(Box::new(options)), reference)
     };
-    let provider = provider::Provider::load(&app.data_root, &state.stored.record)
-        .await
-        .map_err(|error| ("chat_provider_unavailable", error))?;
+    let provider = if matches!(runner, TurnRunner::Claude(_)) {
+        provider::Provider::load(&app.data_root, &state.stored.record)
+            .await
+            .map_err(|error| ("chat_provider_unavailable", error))?
+    } else {
+        None
+    };
     let route = app
         .native_chat
         .route(&turn_id, &state.stored.record, provider.as_ref())?;
-    let provider_proxy = match provider {
-        Some(provider) => Some(
+    let provider_proxy = match (provider, &mut runner) {
+        (Some(provider), TurnRunner::Claude(options)) => Some(
             provider
                 .open(&mut options.launch, id)
                 .await
                 .map_err(|error| ("chat_provider_unavailable", error.to_string()))?,
         ),
-        None => None,
+        _ => None,
     };
     let mut user = value(
         json!({"role":"user", "content":prompt, "ts":auth_runtime::now_ms(), "turnId":turn_id}),
@@ -907,9 +959,6 @@ async fn prepare_turn(
         quota_guard::set(&mut user, "taskStart", V::Bool(!delivery.answer));
         quota_guard::set(&mut user, "taskSource", V::from("task-shell"));
         quota_guard::set(&mut user, "taskText", V::from(prompt));
-        if let Some(role) = delivery.role_prompt.as_ref() {
-            options.launch.system_prompt_append = Some(role.to_owned());
-        }
     }
     quota_guard::set(&mut user, "id", V::from(message_id));
     if let Some(answer) = answer {
@@ -978,7 +1027,7 @@ async fn prepare_turn(
     );
     host.publish(id, turn.attribute(selected), false);
     Ok(RunningTurn {
-        options,
+        runner,
         reference_seed,
         turn_id,
         attempt_id,
@@ -992,42 +1041,63 @@ async fn run_turn(
     app: &App,
     id: &str,
     session: &Arc<Mutex<Session>>,
-    mut launched: RunningTurn,
+    launched: RunningTurn,
     prompt: &str,
     scheduled: Option<(&shell::Writer, &shell::Delivery)>,
 ) -> TurnEnd {
     let host = &app.native_chat;
     let turn_id = launched.turn_id.as_str();
     let attempt_id = launched.attempt_id.as_str();
-    launch::prepare_history(app, &launched.options).await;
-    let question_tool =
-        question::open(&mut launched.options.launch, app, session, id, turn_id).await;
     let provider_prompt = if launched.reference_seed.is_empty() {
         std::borrow::Cow::Borrowed(prompt)
     } else {
         std::borrow::Cow::Owned(format!("{}{prompt}", launched.reference_seed))
     };
-    let result = match question_tool {
-        Ok(_tool) => {
-            chat_turn_host::run(
-                launched.options,
+    let result = match launched.runner {
+        TurnRunner::Claude(mut options) => {
+            launch::prepare_history(app, &options).await;
+            match question::open(&mut options.launch, app, session, id, turn_id).await {
+                Ok(_tool) => {
+                    chat_turn_host::run(
+                        *options,
+                        &provider_prompt,
+                        &launched.prompt_uuid,
+                        launched.cancelled,
+                        |event| observe(host, id, session, turn_id, event),
+                        |pid| async move {
+                            if let Some((writer, delivery)) = scheduled {
+                                writer.started(pid, turn_id, attempt_id, delivery).await?;
+                            }
+                            Ok(())
+                        },
+                    )
+                    .await
+                }
+                Err(error) => chat_turn_host::RunResult {
+                    outcome: chat_turn_host::Outcome::Failed(error),
+                    writer_stopped: true,
+                },
+            }
+        }
+        TurnRunner::Codex(options) => {
+            codex::run(
+                options,
                 &provider_prompt,
-                &launched.prompt_uuid,
                 launched.cancelled,
-                |event| observe(host, id, session, turn_id, event),
-                |pid| async move {
-                    if let Some((writer, delivery)) = scheduled {
-                        writer.started(pid, turn_id, attempt_id, delivery).await?;
+                |event| async move {
+                    match event {
+                        codex::Event::Thread(thread) => {
+                            remember_codex_thread(app, id, session, turn_id, thread).await
+                        }
+                        codex::Event::Frame(frame) => {
+                            observe(host, id, session, turn_id, frame).await;
+                            Ok(())
+                        }
                     }
-                    Ok(())
                 },
             )
             .await
         }
-        Err(error) => chat_turn_host::RunResult {
-            outcome: chat_turn_host::Outcome::Failed(error),
-            writer_stopped: true,
-        },
     };
     drop(launched.provider_proxy);
     let usage_durable = matches!(&result.outcome, chat_turn_host::Outcome::Result(event) if event["usage"].is_object());
@@ -1040,6 +1110,34 @@ async fn run_turn(
         stopped: result.writer_stopped,
         usage_durable: usage_durable && phase == "succeeded",
     }
+}
+
+async fn remember_codex_thread(
+    app: &App,
+    id: &str,
+    session: &Mutex<Session>,
+    turn_id: &str,
+    thread: String,
+) -> Result<(), String> {
+    let mut state = session.lock().await;
+    if !state.active.as_ref().is_some_and(|turn| turn.id == turn_id) {
+        return Err("Codex thread arrived after its turn closed".into());
+    }
+    if state.stored.native_id != thread {
+        let _records = app.native_chat.records.lock().await;
+        let root = app.data_root.clone();
+        let id = id.to_owned();
+        let native_id = thread.clone();
+        state.stored.record = shell::blocking(move || {
+            store::update_record(&root, &id, |record| {
+                quota_guard::set(record, "cliSessionId", V::from(native_id));
+            })
+        })
+        .await?;
+        state.stored.native_id = thread;
+    }
+    state.native_started = true;
+    Ok(())
 }
 
 struct TurnEnd {
@@ -1213,7 +1311,10 @@ async fn finish(
     } else {
         outcome
     };
-    if !state.native_started && !matches!(outcome, Outcome::Result(_)) {
+    if store::is_claude(&state.stored.record)
+        && !state.native_started
+        && !matches!(outcome, Outcome::Result(_))
+    {
         let native_id = state.stored.native_id.clone();
         state.native_started = tokio::task::spawn_blocking(move || {
             multicc_core::missing_resume_recovery::has_native_transcript(&native_id)

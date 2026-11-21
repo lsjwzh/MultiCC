@@ -107,7 +107,7 @@ Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和�
 
 模块四、五、六的 gateway 包分别为 1,036 项通过；模块七增加 RPC 超时和孤立 UTF-16 单元线协议检查后为 1,038 项通过。各模块任务壳均为 304/304、HTTP 原始字节对拍 67/67 且副作用顺序一致；构建及严格 Clippy 通过。定向回归分别为 87、120、30、112 项通过。冻结旧桥的八个场景直接对比 stdout、stderr、退出码及 RPC 原始字节，无动态字段归一化。真实 Codex 连接本地模拟模型上游，通过两个子线程执行及独立完成验证，没有使用真实账号或外部模型请求。
 
-四份 `--no-node` Claude 网关进程树及新增的 Codex 原生桥两轮执行进程树内 Node 数均为 0；Codex 桥还在无法解析 Node 的 PATH 下启动。**这不代表 Codex 已接入 `--no-node` 的 `/ws/chat` 回合宿主**：原生网关聊天回合仍只支持已验收的 Claude 线路。Codex 的会话、账号及凭据接线迁出后，仍须补齐该入口的独立端到端验收。
+当时验收覆盖四份 `--no-node` Claude 网关进程树和 Codex 原生桥的两轮执行，进程树内 Node 数均为 0。Codex 桥还在无法解析 Node 的 PATH 下启动。`/ws/chat` 的独立验收见后续 Codex 原生聊天条目。
 
 本轮逐项审计的允许差异为：默认启动命令由 Node+CJS 改为 Rust 子命令；回合中显式切换线程排到前一回合结束之后，防止恢复操作提前改变主线程身份；原生管道错误日志保留系统原因，运行时堆栈文本可以不同。线程切换、等待 RPC 时关闭 stdin、关闭输出管道后的子进程回收均有专门断言。普通与恢复协议的八个冻结对拍场景，以及 HTTP 67 个场景，仍要求逐字节相同。
 
@@ -125,7 +125,15 @@ Node 仍只在 `src/native/runtime.js` 提供闭包、SDK 端口、定时器和�
 
 工作树验证通过 `cargo build --workspace`、严格 Clippy、gateway 1,039 项、任务壳 304 项、定向回归 197 项、子代理 8 项和任务壳 HTTP 67 项。四份原生回合的网关进程树内 Node 数均为 0。同步端口最多读取 16 MiB 的配置或认证文件，并拒绝非普通文件。
 
-兼容宿主保留同步 N-API 接线、会话和尝试目录的生命周期，以及 npm CPR 的角色与代理配置写入。这些调用仍由现有 Codex 常驻宿主使用，待原生 `/ws/chat` 接管、配置和历史回放完成对拍后继续迁移。隔离进程树的零 Node 记录覆盖现有原生 Claude 回合。Codex `/ws/chat`、其余 Provider 账号装配、后续 Node 宿主及合并复验仍待完成。
+兼容宿主保留同步 N-API 接线、会话和尝试目录的生命周期，以及 npm CPR 的角色与代理配置写入。这些调用仍由现有 Codex 常驻宿主使用，待原生 `/ws/chat` 接管、配置和历史回放完成对拍后继续迁移。凭据装配子批在 `41aa3356` 合入，变基后的验收记录位于 `data/rust-migration/2026-11-21/provider-cli-batch3/module8-post-rebase`。
+
+### Codex 原生聊天
+
+`--no-node` 的 `/ws/chat` 已接管未绑定托管 Provider 的 `codex-exp` 会话。Rust 网关通过原生 app-server 桥发送消息，在放行提示词前持久化已确认的线程 ID，并处理增量、使用量、取消和启动失败。恢复要求 app-server 确认同一个线程。原生线程缺失时返回原始原因并保留已保存的 ID。Rust 网关通过关闭桥接输入结束回合，并等待子进程退出。
+
+这一入口的运行进程树已退出 Node WebSocket 桥和 `src/chat/codex-app-stream.js` 的调用路径。带 Node 的兼容启动继续使用原宿主，继续承接托管 Provider、标准 `codex` 和其余 Codex 会话能力。本阶段的 Node 生产文件删除数与净减行数均为 0。
+
+工作树验证覆盖多轮、网关重启后的线程恢复、重连回放、取消后的进程回收、旧线程缺失及上游错误。隔离 app-server 夹具的进程树内 Node 数为 0。构建、严格 Clippy、网关 1,040 项、WebSocket 定向 32 项、任务壳 304 项、桥接与凭据兼容 63 项、任务壳 HTTP 字节对拍 67 项通过。证据位于 `data/rust-migration/2026-11-21/provider-cli-batch3/codex-native-ws`。托管 Provider、标准 `codex` 与原生 WebSocket 原始帧对拍仍待完成。
 
 ## 每批验收与最后停用条件
 

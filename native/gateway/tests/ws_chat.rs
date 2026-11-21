@@ -824,6 +824,7 @@ impl Gateway {
             .env("HOME", &state)
             .env("MULTICC_DATA_DIR", &state)
             .env("MULTICC_CLAUDE_BIN", &binary)
+            .env("CODEX_BIN", dir.join("codex-fixture"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
@@ -1628,6 +1629,212 @@ async fn production_no_node_chat_runs_replays_and_cancels_real_provider_processe
     let mut internal = gateway.connect_with("/ws/chat?session=internal", &[]).await;
     text(&mut internal,r#"{"type":"error","error":"Session does not exist.","data":"Session does not exist.\r\n","apiVersion":"v1"}"#).await;
     assert_eq!(next_data(&mut internal).await, Message::Close(None));
+}
+
+#[cfg(unix)]
+const NATIVE_CODEX: &str = r#"#!/bin/sh
+[ "$1 $2 $3" = 'app-server --listen stdio://' ] || exit 90
+[ -z "${ACCESS_TOKEN:-}" ] || exit 91
+printf '%s\n' "$$" > "$HOME/codex-fixture.pid"
+resume=no
+while IFS= read -r line; do
+    id=$(printf '%s\n' "$line" | /usr/bin/sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+    case "$line" in
+        *'"method":"initialize"'*) printf '{"id":%s,"result":{"userAgent":"codex/0.164.0"}}\n' "$id" ;;
+        *'"method":"thread/start"'*)
+            printf '{"id":%s,"result":{"thread":{"id":"codex-fixture-thread"}}}\n' "$id" ;;
+        *'"method":"thread/resume"'*'"threadId":"codex-fixture-thread"'*)
+            resume=yes
+            printf '{"id":%s,"result":{"thread":{"id":"codex-fixture-thread"}}}\n' "$id" ;;
+        *'"method":"thread/resume"'*)
+            printf '{"id":%s,"error":{"message":"no rollout found for thread id"}}\n' "$id" ;;
+        *'"method":"turn/start"'*)
+            /usr/bin/grep -q '"cliSessionId"[[:space:]]*:[[:space:]]*"codex-fixture-thread"' "$HOME/sessions.json" || exit 92
+            printf '{"id":%s,"result":{"turn":{"id":"turn-fixture"}}}\n' "$id"
+            printf '%s\n' '{"method":"turn/started","params":{"threadId":"codex-fixture-thread","turn":{"id":"turn-fixture"}}}'
+            case "$line" in
+                *'"text":"hold"'*) reply='等待取消'; complete=no ;;
+                *'"text":"fail"'*)
+                    printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-fixture-thread","turn":{"id":"turn-fixture","status":"failed","error":{"message":"fixture Codex upstream timeout"}}}}'
+                    continue ;;
+                *) complete=yes; if [ "$resume" = yes ]; then reply='沿用上下文'; else reply='首次回复'; fi ;;
+            esac
+            printf '{"method":"item/agentMessage/delta","params":{"threadId":"codex-fixture-thread","itemId":"msg","delta":"%s"}}\n' "$reply"
+            [ "$complete" = yes ] || continue
+            printf '{"method":"item/completed","params":{"threadId":"codex-fixture-thread","item":{"id":"msg","type":"agentMessage","text":"%s"}}}\n' "$reply"
+            printf '%s\n' '{"method":"thread/tokenUsage/updated","params":{"threadId":"codex-fixture-thread","turnId":"turn-fixture","tokenUsage":{"last":{"inputTokens":8,"cachedInputTokens":3,"outputTokens":2}}}}'
+            printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-fixture-thread","turn":{"id":"turn-fixture","status":"completed"}}}'
+            ;;
+    esac
+done
+"#;
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_codex_chat_persists_the_thread_reconnects_and_cancels_without_node() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut gateway = Gateway::start_native();
+    let binary = gateway.dir.join("codex-fixture");
+    fs::write(&binary, NATIVE_CODEX).unwrap();
+    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    let record = |id: &str| {
+        serde_json::json!({"id":id,"kind":"chat","type":"gateway",
+        "cwd":gateway.dir.join("work"),"cli":"codex-exp"})
+    };
+    add_native_record(&gateway, record("codex-native"));
+    let mut managed = record("codex-managed");
+    managed["provider"] = Value::from("fixture-provider");
+    add_native_record(&gateway, managed);
+    let mut missing = record("codex-missing");
+    missing["cliSessionId"] = Value::from("missing-fixture-thread");
+    add_native_record(&gateway, missing);
+
+    let path = "/ws/chat?session=codex-native";
+    let mut socket = gateway.connect_with(path, &[]).await;
+    let init = native_frame(&mut socket, "system").await;
+    assert_eq!(init["cli"], "codex-exp");
+    assert_eq!(init["cliAvailability"]["codex-exp"]["available"], true);
+    for frame in ["background_tasks", "unattended_state", "session_queue"] {
+        native_frame(&mut socket, frame).await;
+    }
+    native_turn(&mut socket, "first", "首次回复").await;
+    drop(socket);
+    gateway.restart_native();
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(
+        native_frame(&mut socket, "system").await["is_streaming"],
+        false
+    );
+    let page = native_frame(&mut socket, "chat_history").await;
+    assert_eq!(page["messages"][1]["content"], "首次回复");
+    assert_eq!(page["messages"][1]["usage"]["input_tokens"], 5);
+    assert_eq!(page["messages"][1]["usage"]["cache_read_input_tokens"], 3);
+    for frame in ["background_tasks", "unattended_state", "session_queue"] {
+        native_frame(&mut socket, frame).await;
+    }
+    native_turn(&mut socket, "second", "沿用上下文").await;
+
+    send_text(&mut socket, r#"{"type":"user_message","text":"hold"}"#).await;
+    native_frame(&mut socket, "chat_msg_meta").await;
+    native_frame(&mut socket, "stream_start").await;
+    let selected = native_frame(&mut socket, "provider_route_event").await;
+    assert_eq!(selected["protocol"], "openai_responses");
+    let active = native_frame(&mut socket, "assistant").await;
+    assert_eq!(active["message"]["content"][0]["text"], "等待取消");
+    let child_pid: i32 = fs::read_to_string(gateway.state.join("codex-fixture.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    gateway.assert_native_process_tree();
+    drop(socket);
+
+    let mut socket = gateway.connect_with(path, &[]).await;
+    assert_eq!(
+        native_frame(&mut socket, "system").await["is_streaming"],
+        true
+    );
+    let history = native_frame(&mut socket, "chat_history").await;
+    let messages = history["messages"].as_array().unwrap();
+    assert_eq!(messages.last().unwrap()["content"], "等待取消");
+    for frame in ["background_tasks", "unattended_state", "session_queue"] {
+        native_frame(&mut socket, frame).await;
+    }
+    send_text(
+        &mut socket,
+        r#"{"type":"cancel","operationId":"cancel-codex"}"#,
+    )
+    .await;
+    assert_eq!(
+        native_frame(&mut socket, "chat_msg_meta").await["role"],
+        "assistant"
+    );
+    assert_eq!(
+        native_frame(&mut socket, "provider_route_event").await["routePhase"],
+        "released"
+    );
+    native_frame(&mut socket, "stream_end").await;
+    assert_eq!(unsafe { libc::kill(child_pid, 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    );
+
+    send_text(&mut socket, r#"{"type":"user_message","text":"fail"}"#).await;
+    native_frame(&mut socket, "chat_msg_meta").await;
+    native_frame(&mut socket, "stream_start").await;
+    native_frame(&mut socket, "provider_route_event").await;
+    let error = native_frame(&mut socket, "error").await;
+    assert_eq!(error["code"], "chat_provider_error");
+    assert_eq!(error["error"], "fixture Codex upstream timeout");
+    assert_eq!(
+        native_frame(&mut socket, "provider_route_event").await["routePhase"],
+        "failed"
+    );
+    native_frame(&mut socket, "stream_end").await;
+
+    let mut managed = gateway
+        .connect_with("/ws/chat?session=codex-managed", &[])
+        .await;
+    for frame in [
+        "system",
+        "background_tasks",
+        "unattended_state",
+        "session_queue",
+    ] {
+        native_frame(&mut managed, frame).await;
+    }
+    send_text(
+        &mut managed,
+        r#"{"type":"user_message","text":"do not start"}"#,
+    )
+    .await;
+    assert_eq!(
+        native_frame(&mut managed, "error").await["code"],
+        "chat_route_unavailable"
+    );
+
+    let mut missing = gateway
+        .connect_with("/ws/chat?session=codex-missing", &[])
+        .await;
+    for frame in [
+        "system",
+        "background_tasks",
+        "unattended_state",
+        "session_queue",
+    ] {
+        native_frame(&mut missing, frame).await;
+    }
+    send_text(
+        &mut missing,
+        r#"{"type":"user_message","text":"resume existing thread"}"#,
+    )
+    .await;
+    for frame in ["chat_msg_meta", "stream_start", "provider_route_event"] {
+        native_frame(&mut missing, frame).await;
+    }
+    let error = native_frame(&mut missing, "error").await;
+    assert!(error["error"]
+        .as_str()
+        .unwrap()
+        .contains("no rollout found for thread id"));
+    assert_eq!(
+        native_frame(&mut missing, "provider_route_event").await["routePhase"],
+        "failed"
+    );
+    native_frame(&mut missing, "stream_end").await;
+    let records =
+        multicc_core::durable_state::load_or_recover(&gateway.state.join("sessions.json"))
+            .unwrap()
+            .unwrap();
+    let records = multicc_core::js::to_serde(&records);
+    let stored = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|record| record["id"] == "codex-missing")
+        .unwrap();
+    assert_eq!(stored["cliSessionId"], "missing-fixture-thread");
 }
 
 #[cfg(unix)]

@@ -10,6 +10,7 @@ pub(super) struct Route {
     pub scope: V,
     pub model: V,
     pub provider_name: V,
+    protocol: &'static str,
 }
 
 impl Route {
@@ -31,6 +32,11 @@ impl Route {
         provider: Option<&Provider>,
     ) -> Self {
         let cli = super::store::cli(record);
+        let (protocol, native_id, native_name) = if super::store::is_codex_app(record) {
+            ("openai_responses", "_default_", "Codex")
+        } else {
+            ("anthropic", "claude-official", "Claude")
+        };
         let (provider_id, provider_name, model, revision) = match provider {
             Some(provider) => (
                 provider.id.as_str(),
@@ -42,11 +48,11 @@ impl Route {
                 let model = optional_text(record, "model");
                 let revision = provider_attempt_identity::provider_revision(
                     &JsString::from_rust_str(&format!(
-                        "{cli}:anthropic:claude-official:{}",
+                        "{cli}:{protocol}:{native_id}:{}",
                         model.as_deref().unwrap_or_default(),
                     )),
                 );
-                ("claude-official", "Claude", model, revision)
+                (native_id, native_name, model, revision)
             }
         };
         let scope = V::object(vec![
@@ -66,6 +72,7 @@ impl Route {
             scope,
             model: model.map_or(V::Null, V::from),
             provider_name: V::from(provider_name),
+            protocol,
         }
     }
 
@@ -95,7 +102,7 @@ impl Route {
             ("attemptNo", field("attemptNo")),
             ("providerId", field("providerId")),
             ("providerName", self.provider_name.clone()),
-            ("protocol", V::from("anthropic")),
+            ("protocol", V::from(self.protocol)),
             ("model", self.model.clone()),
             ("providerRevision", field("providerRevision")),
             ("replayFence", V::from(fence)),
