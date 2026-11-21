@@ -9,6 +9,7 @@ const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createAcpAdapter } = require('../src/cli-adapters/acp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
+const { createGeminiAdapter } = require('../src/cli-adapters/gemini');
 const { createGrokAdapter } = require('../src/cli-adapters/grok');
 const { createAgyAdapter } = require('../src/cli-adapters/agy');
 const { pickPermissionOption, routerMcpServers } = require('../src/cli-adapters/acp-bridge.cjs');
@@ -297,6 +298,14 @@ test('opencode defaults to ACP and grok launches its ACP server', () => {
   assert.equal(opencode.buildTerminalCmd({ model: 'p/m', effort: 'max', agent: 'build', cliSessionId: 'ses_1' }),
     '/bin/opencode --model p/m --variant max --agent build --session ses_1');
 
+  const gemini = createGeminiAdapter({ cmd: 'gemini' });
+  const geminiArgs = gemini.buildInvocation(envelope({ model: 'gemini-2.5-pro', effort: 'high' })).args;
+  assert.deepEqual(geminiArgs.slice(1), [
+    '--agent-bin', 'gemini', '--label', 'Gemini', '--agent-arg', '--experimental-acp', '--agent-arg', '--yolo',
+    '--agent-arg', '-m', '--agent-arg', 'gemini-2.5-pro', '--',
+  ]);
+  assert.match(gemini.buildInvocation(envelope()).payload, /^\[Role prompt\]\nreviewer/);
+
   const grok = createGrokAdapter({ cmd: 'grok' });
   const grokArgs = grok.buildInvocation(envelope({ model: 'grok-4.6', effort: 'high' })).args;
   const agentArgv = grokArgs.filter((_, index) => grokArgs[index - 1] === '--agent-arg');
@@ -344,13 +353,15 @@ test('non-success stop reasons surface as errors', () => {
 });
 
 
-test('retired Gemini records cannot launch an agent or fall back to Claude', () => {
+test('Gemini resolves to its real adapter when registered', () => {
   const { createCliProviderRegistry } = require('../src/native/runtime');
   const fallback = { name: 'claude', buildInvocation: () => ({ cmd: 'claude' }), decodeEvent: () => [] };
-  const registry = createCliProviderRegistry([fallback]);
+  const gemini = createGeminiAdapter({ cmd: 'gemini' });
+  const registry = createCliProviderRegistry([fallback, gemini]);
   assert.equal(registry.get('gemini').name, 'gemini');
-  assert.throws(() => registry.get(' GEMINI ').buildInvocation({}), /Gemini CLI 已停用/);
-  assert.doesNotMatch(registry.get('gemini').buildTerminalCmd(), /gemini --experimental-acp/);
+  assert.match(registry.get('gemini').buildTerminalCmd({}), /^gemini/);
+  // An unregistered lane still falls back — the registry never invents an adapter.
+  assert.equal(createCliProviderRegistry([fallback]).get('gemini').name, 'claude');
 });
 
 // Byte-identical oracle from 83c714ba; it imports no production modules.
@@ -450,27 +461,23 @@ test('Rust CLI registry matches iterable closing, lazy getters, reentry and thro
   }
 });
 
-test('Rust retired CLI adapter is frozen, shared across registries and never launches the fallback', () => {
+test('Rust registry matches the legacy lookup for registered and unregistered lanes', () => {
   const fallback = registryAdapter('claude');
   const old = legacyRegistry([fallback]), actual = nativeRegistry([fallback]);
-  const retired = actual.get('gemini');
-  assert.equal(retired, nativeRegistry([registryAdapter('other')], 'other').get(' GEMINI '));
-  assert.equal(Object.isFrozen(retired), true);
-  assert.deepEqual(Reflect.ownKeys(retired), Reflect.ownKeys(old.get('gemini')));
-  for (const name of ['gemini', ' GEMINI ', '\ufeffGeMiNi\u2029', { toString: () => 'Gemini' }]) {
-    assert.equal(actual.get(name), retired);
+  for (const name of ['gemini', 'some-unknown', '', null]) {
+    assert.equal(actual.get(name).name, old.get(name).name, String(name));
     assert.deepEqual(registryOutcome(() => actual.get(name).buildInvocation({})),
       registryOutcome(() => old.get(name).buildInvocation({})));
-    assert.equal(actual.get(name).buildTerminalCmd(), old.get(name).buildTerminalCmd());
-    assert.deepEqual(actual.get(name).decodeEvent({}), []);
   }
-  assert.notEqual(retired.decodeEvent({}), retired.decodeEvent({}), 'each decode returns a fresh array');
+  // A registered Gemini now resolves to that adapter in both registries.
+  const gemini = registryAdapter('gemini');
+  assert.equal(nativeRegistry([fallback, gemini]).get('gemini'), gemini);
+  assert.equal(legacyRegistry([fallback, gemini]).get('gemini'), gemini);
   const fault = { kind: 'query coercion' };
   for (const registry of [old, actual]) {
-    assert.throws(() => registry.get({ toString() { throw fault; } }), error => error === fault);
+    assert.equal(registry.get({ toString() { throw fault; } }), fallback);
     assert.equal(registry.get(Symbol('unregistered')), fallback);
   }
-  assert.equal(nativeRegistry([fallback, registryAdapter('gemini')]).get('gemini'), retired);
 });
 
 test('Rust CLI registry closures retain live adapters, release cycles and do not keep a child alive', async () => {

@@ -229,9 +229,10 @@ const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
   'dsh': CliFamily('DSH', AppColors.dsh, mark: 'D',
       update: CliUpdate(package: '@deepseek-ai/dsh', command: 'npm install -g @deepseek-ai/dsh')),
   'gemini': CliFamily('Gemini', AppColors.gemini, mark: 'G', providerless: true,
+      update: CliUpdate(package: '@google/gemini-cli', command: 'npm install -g @google/gemini-cli'),
       lanes: <String, List<CliLane>>{
-        'chat': <CliLane>[CliLane('gemini', engine: 'gemini acp', offered: false, deprecated: true, replacedBy: 'agy')],
-        'terminal': <CliLane>[CliLane('gemini', offered: false, deprecated: true, replacedBy: 'agy')],
+        'chat': <CliLane>[CliLane('gemini', engine: 'gemini acp')],
+        'terminal': <CliLane>[CliLane('gemini')],
       }),
   'pi': CliFamily('Pi', AppColors.pi, mark: 'P', providerless: true,
       update: CliUpdate(package: '@earendil-works/pi-coding-agent', command: 'npm install -g @earendil-works/pi-coding-agent'),

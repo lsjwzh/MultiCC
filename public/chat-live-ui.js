@@ -1617,9 +1617,7 @@
         title.textContent = '切换 CLI';
         const description = doc.createElement('div');
         description.style.cssText = 'font-size:12px;color:var(--chat-muted);line-height:1.65;margin-bottom:14px;';
-        description.textContent = current === 'gemini'
-          ? 'Gemini CLI 已停用，请切换至 Antigravity。原对话会保留，切换后将开始新的原生会话。'
-          : '切换后，目标 CLI 会接着当前任务继续工作。每个 CLI 的原对话都会单独保留。';
+        description.textContent = '切换后，目标 CLI 会接着当前任务继续工作。每个 CLI 的原对话都会单独保留。';
         const select = doc.createElement('select');
         select.style.cssText = 'width:100%;background:var(--chat-canvas);border:1px solid var(--chat-line);border-radius:7px;color:var(--chat-text);font-size:14px;padding:9px 10px;outline:none;margin-bottom:10px;';
         // 兜底车道的标记由 cliMeta 带进来（catalog 从服务端 DISPLAY 的 deprecated 列
@@ -1653,7 +1651,7 @@
         }
         // Retired ids are never offered again, but a persisted session may still
         // carry one: preselect the lane that replaced it (claude-exp -> claude).
-        select.value = current === 'gemini' ? 'agy' : (current === 'codex' ? 'codex-exp' : (current === 'claude-exp' ? 'claude' : current));
+        select.value = current === 'codex' ? 'codex-exp' : (current === 'claude-exp' ? 'claude' : current);
         const targetInfo = doc.createElement('div');
         targetInfo.style.cssText = 'min-height:34px;font-size:12px;color:var(--chat-muted);line-height:1.5;margin-bottom:8px;';
         const resetRow = doc.createElement('label');

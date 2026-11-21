@@ -683,7 +683,7 @@ test('Command Code 的厂商原生线路只归 commandcode 车道', () => {
 });
 
 test('WorkBuddy / Qoder 的厂商原生线路只归自己的车道', () => {
-  for (const cli of ['qoder', 'codebuddy', 'agy', 'pi', 'commandcode', 'dsh', 'grok']) {
+  for (const cli of ['qoder', 'codebuddy', 'gemini', 'agy', 'pi', 'commandcode', 'dsh', 'grok']) {
     const native = run.lineShape(`${cli}-native:${cli}`);
     assert.equal(native.native, true, cli);
     assert.deepEqual(run.cliLineVerdict(cli, native), { ok: true }, cli);

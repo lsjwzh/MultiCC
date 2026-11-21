@@ -110,20 +110,18 @@ void main() {
     return SettingsService.getInstance();
   }
 
-  testWidgets('旧 Gemini 会话提示停用并可切换到 Antigravity', (tester) async {
+  testWidgets('Gemini 与 Antigravity 并列可选，切到 Antigravity 显示其自有账号', (tester) async {
     final out = _Captured();
     await _open(tester, const RunConfigSheet(
       cli: SessionCli.gemini,
       providers: [], provider: '', model: '', effort: '',
       cliAvailability: {SessionCli.agy: true},
     ), out);
-    expect(find.byKey(const Key('run-cli-option-gemini')), findsNothing);
-    expect(find.byKey(const Key('run-gemini-retired-note')), findsOneWidget);
+    expect(find.byKey(const Key('run-cli-option-gemini')), findsOneWidget);
     final agy = find.byKey(const Key('run-cli-option-agy'));
     expect(agy, findsOneWidget);
     await tester.tap(agy);
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('run-gemini-retired-note')), findsNothing);
     expect(find.byKey(const Key('run-providerless-note')), findsOneWidget);
     expect(tester.widget<Text>(find.byKey(const Key('run-providerless-note'))).data, '使用 Antigravity 自己的账号');
   });

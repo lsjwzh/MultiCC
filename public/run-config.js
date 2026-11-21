@@ -12,7 +12,7 @@
 })(typeof window !== 'undefined' ? window : null, function createRunConfigApi() {
   const scope = () => (typeof window !== 'undefined' ? window : null);
 
-  // ── 常量 ──────────────────────────────────────────────────────────────────
+  // ── 常量 ──────────────────────────────────────────────────────
   const MODE_FIXED = 'fixed';
   const MODE_AUTO = 'auto';
   const PICK_ORDER = 'order';
@@ -34,11 +34,11 @@
   // 厂商原生线路：CLI 自己管账号和模型目录，MultiCC provider 表里没有条目。
   // OpenCode 会有多条（Zen / Go / auth login），Command Code 只有一条。
   const VENDOR_NATIVE_SUFFIX = '-native:';
-  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'pi', 'commandcode', 'dsh', 'grok', 'agy']);
+  const VENDOR_NATIVE_CLIS = Object.freeze(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'dsh', 'grok', 'agy']);
   const VENDOR_NATIVE_SET = new Set(VENDOR_NATIVE_CLIS);
   // Lanes that have no managed provider pool at all: their only line is the
   // vendor catalog. dsh/grok are managed-capable and therefore absent here.
-  const VENDOR_ONLY_CLIS = new Set(['qoder', 'codebuddy', 'pi', 'commandcode', 'agy']);
+  const VENDOR_ONLY_CLIS = new Set(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'agy']);
   // 用 API Key 认证的车道（Command Code、OpenCode 的 opencode.ai 线路）：会话可以给
   // 每条车道各挑一个账户（服务端 src/cli-key-accounts.js），留空 = 用 CLI 自己的登录。
   const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);
@@ -61,7 +61,7 @@
     // （见 cliLineVerdict 的 VENDOR_ONLY_CLIS 分支）。
     qoder: 'both',
     codebuddy: 'both',
-    agy: 'both',
+    gemini: 'both', agy: 'both',
     pi: 'both',
     commandcode: 'both',
     dsh: 'anthropic',

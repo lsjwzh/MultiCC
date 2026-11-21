@@ -243,7 +243,6 @@ test('the upgrade unit is the family, so a lane cannot own an install spec', () 
   assert.equal(updateOf('zcode').auto, false);
   assert.ok(updateOf('zcode').manual);
   for (const cli of Object.keys(CAPABILITIES)) {
-    if (cli === 'gemini') { assert.equal(updateOf(cli), null); continue; }
     const spec = updateOf(cli);
     assert.ok(spec, `${cli} has no upgrade fact`);
     if (!spec.auto) assert.ok(spec.manual, `${cli}: nothing to install and nothing to say`);

@@ -522,7 +522,7 @@ mod tests {
             !clis.iter().any(|cli| cli == "claude-exp"),
             "aliases are filtered"
         );
-        assert_eq!(clis.len(), 13);
+        assert_eq!(clis.len(), 14);
     }
 
     #[test]
