@@ -325,3 +325,97 @@ require('readline').createInterface({ input: process.stdin }).on('line', line =>
   assert.ok(events.some(e => e.type === 'text' && /hi/.test(e.part && e.part.text)), res.stdout + res.stderr);
   assert.ok(events.some(e => e.type === 'step_finish' && e.part.reason === 'stop'), res.stdout + res.stderr);
 });
+
+// Frozen from 7e57fd99 before the Rust migration; this oracle is test-only.
+const legacyZcodeSession = require('./helpers/legacy-zcode-session');
+const nativeZcodeSession = require('../src/native/runtime');
+
+test('Rust ZCode identity predicate matches every UTF-16 suffix and preserves type guards', () => {
+  for (let unit = 0; unit <= 0xffff; unit++) {
+    const value = 'sess_' + String.fromCharCode(unit);
+    assert.equal(nativeZcodeSession.isZcodeSessionId(value), legacyZcodeSession.isZcodeSessionId(value), `unit ${unit}`);
+  }
+  for (const value of [undefined, null, false, 0, 1n, Symbol('id'), {}, [], new String('sess_a'),
+    'sess_', 'sess_Az09_-', 'sess_a\n', 'sess_a\r\n', 'sess_a\u2028', 'sess_a\u2029',
+    'sess_a\0', ' sess_a', 'sess_a/b', '\ud800', 'zcode-123']) {
+    assert.equal(nativeZcodeSession.isZcodeSessionId(value), legacyZcodeSession.isZcodeSessionId(value));
+  }
+  const coercionTrap = { toString() { throw new Error('must not coerce'); } };
+  assert.equal(nativeZcodeSession.isZcodeSessionId(coercionTrap), false);
+});
+
+test('Rust ZCode repair matches frozen mutations and JSON bytes without replacing state objects', () => {
+  const ids = [undefined, null, false, 0, 123, '', 'sess_existing', 'zcode-settings', 'zcode-err',
+    'zcode-no-engine', 'zcode-parse', 'zcode-0', 'zcode-1788653210000', 'zcode-', 'zcode--1',
+    'zcode-1\n', 'zcode-１２', 'zcode-future', 'future-native-format', '\ud800'];
+  let count = 0;
+  for (const cli of ['zcode', 'codex', undefined, null]) for (const a of ids) for (const b of ids) {
+    const make = () => ({ cli, cliSessionId: a, _streamSessionId: b, provider: 'keep', history: ['keep'],
+      cliStates: { zcode: { cliSessionId: b, streamSessionId: a }, codex: { cliSessionId: 'thread-keep' } } });
+    const old = make(), actual = make(), states = actual.cliStates, zcode = states.zcode, history = actual.history;
+    assert.equal(nativeZcodeSession.repairZcodeSessionState(actual), legacyZcodeSession.repairZcodeSessionState(old));
+    assert.equal(JSON.stringify(actual), JSON.stringify(old));
+    assert.equal(actual.cliStates, states); assert.equal(states.zcode, zcode); assert.equal(actual.history, history);
+    assert.equal(nativeZcodeSession.repairZcodeSessionState(actual), false, 'repair is idempotent');
+    count++;
+  }
+  assert.equal(count, 1600);
+  for (const cliStates of [undefined, null, false, 0, '', {}, { zcode: null }, { zcode: false }, { zcode: 0 }]) {
+    const a = { cli: 'zcode', cliStates }, b = { cli: 'zcode', cliStates };
+    assert.equal(nativeZcodeSession.repairZcodeSessionState(a), legacyZcodeSession.repairZcodeSessionState(b));
+  }
+});
+
+test('Rust ZCode repair preserves accessor, proxy and reentrant mutation order', () => {
+  function exercise(repair) {
+    const trace = [];
+    const observe = (label, value) => new Proxy(value, {
+      get(target, key, receiver) { trace.push(`get ${label}.${String(key)}`); return Reflect.get(target, key, receiver); },
+      set(target, key, value, receiver) { trace.push(`set ${label}.${String(key)}=${value}`); return Reflect.set(target, key, value, receiver); },
+    });
+    const later = observe('later', { cliSessionId: 'sess_keep', streamSessionId: 'zcode-123' });
+    let active;
+    const first = observe('first', {
+      get cliSessionId() { trace.push('getter first'); return 'zcode-err'; },
+      set cliSessionId(value) { trace.push(`setter first=${value}`); active = later; },
+    });
+    active = first;
+    const session = observe('session', { cli: 'zcode', cliSessionId: 'zcode-settings', _streamSessionId: 'sess_keep',
+      get cliStates() { trace.push('getter cliStates'); return observe('states', { zcode: active }); },
+    });
+    const changed = repair(session);
+    return { trace, changed, final: [session.cliSessionId, session._streamSessionId, later.streamSessionId] };
+  }
+  assert.deepEqual(exercise(nativeZcodeSession.repairZcodeSessionState), exercise(legacyZcodeSession.repairZcodeSessionState));
+});
+
+test('Rust ZCode repair preserves thrown identities, partial writes and strict assignment failures', () => {
+  const thrown = { fixture: 'original exception' };
+  for (const failing of ['cli', 'cliSessionId', '_streamSessionId', 'cliStates', 'zcode', 'streamSessionId', 'setter']) {
+    function exercise(repair) {
+      const saved = { cliSessionId: 'zcode-err', streamSessionId: 'zcode-123' };
+      const record = { cli: 'zcode', cliSessionId: 'zcode-settings', _streamSessionId: 'zcode-parse', cliStates: { zcode: saved } };
+      const target = failing === 'zcode' ? record.cliStates : failing === 'streamSessionId' ? saved : record;
+      if (failing === 'setter') Object.defineProperty(record, 'cliSessionId', {
+        get: () => 'zcode-settings', set: () => { throw thrown; },
+      });
+      else Object.defineProperty(target, failing, { get() { throw thrown; } });
+      assert.throws(() => repair(record), error => error === thrown);
+      return [Object.getOwnPropertyDescriptor(record, 'cliSessionId').value,
+        Object.getOwnPropertyDescriptor(record, '_streamSessionId').value, saved.cliSessionId];
+    }
+    assert.deepEqual(exercise(nativeZcodeSession.repairZcodeSessionState), exercise(legacyZcodeSession.repairZcodeSessionState), failing);
+  }
+  for (const make of [
+    () => Object.freeze({ cli: 'zcode', cliSessionId: 'zcode-err' }),
+    () => ({ cli: 'codex', cliStates: { zcode: Object.freeze({ cliSessionId: 'zcode-err' }) } }),
+    () => new Proxy({ cli: 'zcode', cliSessionId: 'zcode-err' }, { set: () => false }),
+  ]) {
+    assert.throws(() => legacyZcodeSession.repairZcodeSessionState(make()), TypeError);
+    assert.throws(() => nativeZcodeSession.repairZcodeSessionState(make()), TypeError);
+  }
+  for (const value of [undefined, null]) {
+    assert.throws(() => legacyZcodeSession.repairZcodeSessionState(value), TypeError);
+    assert.throws(() => nativeZcodeSession.repairZcodeSessionState(value), TypeError);
+  }
+});

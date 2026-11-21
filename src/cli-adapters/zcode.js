@@ -14,7 +14,7 @@ const { createStepCompletionTracker } = require('./step-completion');
 
 const path = require('path');
 const { renderPrompt } = require('../message-composer');
-const { isZcodeSessionId } = require('./zcode-session');
+const { isZcodeSessionId } = require('../native/runtime');
 
 const BRIDGE = path.join(__dirname, 'zcode-bridge.cjs');
 const TERMINAL_BRIDGE = path.join(__dirname, 'zcode-terminal.cjs');
