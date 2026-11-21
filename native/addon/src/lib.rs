@@ -89,6 +89,7 @@ pub mod search_diversity;
 pub mod secret_audit;
 pub mod session_work_selection;
 pub mod sqlite;
+pub mod state_bootstrap;
 pub mod static_assets_routes;
 pub mod subagent_defaults;
 pub mod task_board;
