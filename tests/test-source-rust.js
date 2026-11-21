@@ -189,6 +189,12 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), createModelStreamProgress: undefined
   };`);
   assert.equal(probeAddon(staleProgressReader), false, 'a stale addon cannot bypass native progress reader creation');
+  for (const name of ['zcodeDefaultEngine', 'zcodeEngineCandidates', 'zcodeBuiltinProviderConfig', 'zcodeEngineEnv']) {
+    const staleEngine = write(root, `stale-${name}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
+    };`);
+    assert.equal(probeAddon(staleEngine), false, `missing ${name} must fail preflight`);
+  }
   const staleFence = write(root, 'stale-attempt-fence.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), RustProviderAttemptLifecycle: undefined
   };`);

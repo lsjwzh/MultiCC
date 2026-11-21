@@ -261,7 +261,7 @@ test('bridge preserves unknown and failed native endings instead of inventing st
 });
 
 test('engine env points 0.16.9+ at the desktop bundle builtin provider config', () => {
-  const { zcodeEngineEnv } = require('../src/cli-adapters/zcode-engine');
+  const { zcodeEngineEnv } = require('../src/native/runtime').zcodeEngine;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-builtin-'));
   const engine = path.join(root, 'Resources', 'glm', 'zcode.cjs');
   fs.mkdirSync(path.dirname(engine), { recursive: true });
@@ -417,5 +417,132 @@ test('Rust ZCode repair preserves thrown identities, partial writes and strict a
   for (const value of [undefined, null]) {
     assert.throws(() => legacyZcodeSession.repairZcodeSessionState(value), TypeError);
     assert.throws(() => nativeZcodeSession.repairZcodeSessionState(value), TypeError);
+  }
+});
+
+// Frozen from aef30f9f; no relative imports or production routing dependencies.
+const legacyZcodeEngine = require('./helpers/legacy-zcode-engine');
+const nativeZcodeEngine = require('../src/native/runtime').zcodeEngine;
+
+function engineOutcome(run) {
+  try { return { value: run() }; }
+  catch (error) { return { name: error.name, code: error.code, message: error.message }; }
+}
+
+function engineFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-engine-native-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const resources = path.join(root, 'Resources');
+  const config = path.join(resources, 'config', 'provider', 'zcode-builtin.json');
+  fs.mkdirSync(path.dirname(config), { recursive: true });
+  fs.mkdirSync(path.join(resources, 'glm'), { recursive: true });
+  fs.writeFileSync(config, 'not parsed by this probe');
+  return { root, resources, config, engine: path.join(resources, 'glm', 'zcode.cjs') };
+}
+
+test('Rust ZCode candidates match frozen defaults, host paths, types and getter order', () => {
+  assert.equal(nativeZcodeEngine.DEFAULT_ZCODE_ENGINE, legacyZcodeEngine.DEFAULT_ZCODE_ENGINE);
+  let cases = 0;
+  for (const isWindows of [undefined, false, true, 0, 1, '', 'windows', null]) {
+    for (const homeDir of [undefined, null, '', '/home/user', '/space home/../user', 'C:\\Users\\test', 123, {}, new String('home')]) {
+      assert.deepEqual(engineOutcome(() => nativeZcodeEngine.zcodeEngineCandidates({ isWindows, homeDir })),
+        engineOutcome(() => legacyZcodeEngine.zcodeEngineCandidates({ isWindows, homeDir })));
+      cases++;
+    }
+  }
+  assert.equal(cases, 72);
+  for (const isWindows of [true, false, undefined]) {
+    function exercise(api, fail) {
+      const trace = [], thrown = { fixture: 'options getter' };
+      const options = new Proxy({ isWindows, homeDir: '/test/home' }, { get(target, key) {
+        trace.push(key); if (key === fail) throw thrown; return target[key];
+      } });
+      try { return { trace, value: api.zcodeEngineCandidates(options) }; }
+      catch (error) { assert.equal(error, thrown); return { trace, threw: true }; }
+    }
+    for (const fail of [undefined, 'isWindows', 'homeDir']) {
+      assert.deepEqual(exercise(nativeZcodeEngine, fail), exercise(legacyZcodeEngine, fail));
+    }
+  }
+  assert.throws(() => nativeZcodeEngine.zcodeEngineCandidates(null), TypeError);
+  assert.throws(() => legacyZcodeEngine.zcodeEngineCandidates(null), TypeError);
+});
+
+test('Rust ZCode metadata probe matches files, directories, symlinks and path bytes', t => {
+  const { root, config, engine } = engineFixture(t);
+  const engines = [engine, path.relative(process.cwd(), engine), engine.replace('.cjs', '.JS'), engine.replace('.cjs', '.CJS'),
+    engine.replace('.cjs', '.mjs'), engine + '\n', engine + '\0', 'zcode', undefined, null, false, 0, 10,
+    1n, {}, [], new String(engine), { toString: () => engine }, Symbol('engine')];
+  const compare = () => {
+    for (const value of engines) {
+      const old = engineOutcome(() => legacyZcodeEngine.zcodeBuiltinProviderConfig(value));
+      const actual = engineOutcome(() => nativeZcodeEngine.zcodeBuiltinProviderConfig(value));
+      assert.deepEqual(actual, old); assert.equal(JSON.stringify(actual), JSON.stringify(old));
+    }
+  };
+  compare();
+  fs.chmodSync(config, 0o000); compare(); fs.chmodSync(config, 0o600);
+  fs.unlinkSync(config); compare();
+  fs.mkdirSync(config); compare(); fs.rmdirSync(config);
+  if (process.platform !== 'win32') {
+    const target = path.join(root, 'config-target'); fs.writeFileSync(target, 'fixture');
+    fs.symlinkSync(target, config); compare(); fs.unlinkSync(config);
+    fs.symlinkSync(root, config); compare(); fs.unlinkSync(config);
+    fs.symlinkSync(path.join(root, 'missing'), config); compare(); fs.unlinkSync(config);
+  }
+  const strange = path.join(root, 'surrogate-\ud800', 'Resources');
+  const strangeConfig = path.join(strange, 'config', 'provider', 'zcode-builtin.json');
+  fs.mkdirSync(path.dirname(strangeConfig), { recursive: true }); fs.writeFileSync(strangeConfig, 'fixture');
+  const strangeEngine = path.join(strange, 'glm', 'engine.js');
+  assert.equal(nativeZcodeEngine.zcodeBuiltinProviderConfig(strangeEngine), legacyZcodeEngine.zcodeBuiltinProviderConfig(strangeEngine));
+  assert.equal(JSON.stringify(nativeZcodeEngine.zcodeBuiltinProviderConfig(strangeEngine)), JSON.stringify(strangeConfig));
+});
+
+test('Rust ZCode env projection preserves fallback identity and ordered spread values', t => {
+  const { engine, config } = engineFixture(t);
+  const marker = Symbol('fixture');
+  const bases = [false, 0, '', 'env', 1n, Symbol('env'), {}, [],
+    { KEEP: 'value' }, { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: '' },
+    { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: false, KEEP: 'value' },
+    { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: '/explicit/config' },
+    Object.create({ ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: '/inherited/config' }),
+    Object.assign(Object.create({ INHERITED: 'omit' }), { KEEP: 'value', [marker]: 'symbol value' }),
+  ];
+  for (const base of bases) for (const file of [engine, 'bare-name', engine.replace('.cjs', '.mjs')]) {
+    const old = legacyZcodeEngine.zcodeEngineEnv(file, base), actual = nativeZcodeEngine.zcodeEngineEnv(file, base);
+    assert.deepEqual(actual, old);
+    assert.equal(actual === base, old === base, 'identity is retained on both fast paths');
+    if (typeof actual === 'object' && actual !== null) {
+      assert.deepEqual(Reflect.ownKeys(actual), Reflect.ownKeys(old));
+      assert.equal(JSON.stringify(actual), JSON.stringify(old));
+    }
+  }
+  assert.equal(nativeZcodeEngine.zcodeEngineEnv(engine, {}).ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, config);
+  assert.throws(() => nativeZcodeEngine.zcodeEngineEnv(engine, null), TypeError);
+  assert.throws(() => legacyZcodeEngine.zcodeEngineEnv(engine, null), TypeError);
+});
+
+test('Rust ZCode env getters, proxies, coercion failures and short circuits match the oracle', t => {
+  const { engine } = engineFixture(t);
+  function exercise(api, fail) {
+    const trace = [], thrown = { fixture: 'env trap' };
+    const base = new Proxy({ ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: '', KEEP: 'value' }, {
+      get(target, key, receiver) { trace.push(`get ${String(key)}`); if (key === fail) throw thrown; return Reflect.get(target, key, receiver); },
+      ownKeys(target) { trace.push('ownKeys'); if (fail === 'ownKeys') throw thrown; return Reflect.ownKeys(target); },
+      getOwnPropertyDescriptor(target, key) { trace.push(`descriptor ${String(key)}`); return Reflect.getOwnPropertyDescriptor(target, key); },
+    });
+    try { return { trace, value: api.zcodeEngineEnv(engine, base) }; }
+    catch (error) { assert.equal(error, thrown); return { trace, threw: true }; }
+  }
+  for (const fail of [undefined, 'ZCODE_BUILTIN_PROVIDER_CONFIG_FILE', 'KEEP', 'ownKeys']) {
+    assert.deepEqual(exercise(nativeZcodeEngine, fail), exercise(legacyZcodeEngine, fail));
+  }
+  const thrown = { fixture: 'engine coercion' };
+  for (const api of [legacyZcodeEngine, nativeZcodeEngine]) {
+    const value = { toString() { throw thrown; } };
+    assert.throws(() => api.zcodeBuiltinProviderConfig(value), error => error === thrown);
+    const base = { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: '/explicit/config' };
+    assert.equal(api.zcodeEngineEnv(value, base), base, 'override prevents any engine coercion');
+    assert.equal(api.zcodeEngineEnv(Symbol('unused'), base), base);
   }
 });
