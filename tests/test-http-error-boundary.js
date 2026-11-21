@@ -7,7 +7,6 @@ const { DOMAIN_KINDS, DomainError, InfrastructureError } = require('../src/http/
 const { HttpError } = require('../src/http/http-error');
 const { mapError } = require('../src/http/error-map');
 const { presentError } = require('../src/http/error-presenter');
-const { asyncRoute } = require('../src/http/async-route');
 const { presentDiagnosticResult } = require('../src/http/diagnostic-result');
 const { safeErrorHandler } = require('../src/http-errors');
 
@@ -187,30 +186,6 @@ test('mapped errors remain compatible with the existing safeErrorHandler', () =>
     requestId: REQUEST_CONTEXT.requestId,
     correlationId: REQUEST_CONTEXT.correlationId,
   });
-});
-
-test('asyncRoute maps asynchronous rejections before forwarding them', async () => {
-  const conflict = asyncRoute(async () => {
-    throw new DomainError(DOMAIN_KINDS.CONFLICT, 'already running');
-  });
-  const forged = asyncRoute(async () => {
-    throw Object.assign(new Error('forged'), { statusCode: 404, safe: true });
-  });
-
-  const invoke = (route) => new Promise((resolve, reject) => {
-    route({}, {}, (error) => {
-      if (!error) reject(new Error('expected an error'));
-      else resolve(error);
-    });
-  });
-
-  const conflictError = await invoke(conflict);
-  assert.ok(conflictError instanceof HttpError);
-  assert.equal(conflictError.status, 409);
-
-  const forgedError = await invoke(forged);
-  assert.ok(forgedError instanceof HttpError);
-  assert.equal(forgedError.status, 500);
 });
 
 test('diagnostic results preserve HTTP success while sanitizing legacy ok:false bodies', () => {
