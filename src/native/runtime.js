@@ -10,6 +10,16 @@ let cliRegistryOwner = null;
 let cliRegistryAddon = null;
 const counts = { search: 0, usage: 0 };
 
+// Native prompt policies retain live callback, getter and opaque value identity.
+const messageComposer = {
+  composeMessage: input => getNative().messageCompose(input, process.env, console),
+  renderPrompt: envelope => getNative().messageRenderPrompt(envelope),
+  validateEnvelope: envelope => getNative().messageValidateEnvelope(envelope, process.env, console),
+  buildAutoCommitStatusPrompt: persisted => getNative().messageAutoCommitPrompt(persisted),
+  normalizeVoiceInput: source => getNative().messageNormalizeVoice(source),
+  buildVoiceInputPrompt: (voice, text) => getNative().messageVoicePrompt(voice, text),
+};
+
 function gatewayPath() {
   return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
@@ -202,7 +212,7 @@ function createClaudeAdapter(deps = {}) {
   const native = getNative();
   const ports = Object.assign(native.claudeAdapterPorts(deps,
     path.join(__dirname, '../cli-adapters/claude-agent-sdk-bridge.mjs'), process.execPath), {
-    renderPrompt: require('../message-composer').renderPrompt,
+    renderPrompt: messageComposer.renderPrompt,
     isMainResult: require('../cli-adapters/result-completion').isMainResult,
     displayNameOf: require('../cli/cli-capability').displayNameOf,
   });
@@ -220,7 +230,7 @@ function createClaudeAdapter(deps = {}) {
 const codexAdapter = {
   createCodexAdapter(deps) {
     const native = getNative(), ports = Object.assign(native.codexAdapterPorts(deps), {
-      renderPrompt: require('../message-composer').renderPrompt,
+      renderPrompt: messageComposer.renderPrompt,
       extractUpstreamError: require('../upstream-error').extractUpstreamError,
       displayNameOf: require('../cli/cli-capability').displayNameOf,
     });
@@ -244,7 +254,7 @@ const codexAppAdapter = {
     const native = getNative();
     const ports = Object.assign(native.codexAppAdapterPorts(deps,
       'codex-app-bridge', gatewayPath(), process.execPath), {
-      renderPrompt: require('../message-composer').renderPrompt,
+      renderPrompt: messageComposer.renderPrompt,
       displayNameOf: require('../cli/cli-capability').displayNameOf,
     });
     const owner = new native.RustCodexAppAdapter();
@@ -295,4 +305,4 @@ module.exports = { addonPath, gatewayPath, getNative, record, status, runNative,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription };
+  messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription };

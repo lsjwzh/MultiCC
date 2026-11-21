@@ -20,7 +20,7 @@
 // Provider credentials ride kimi-code's documented env fallback
 // (KIMI_API_KEY / KIMI_BASE_URL), injected by buildKimiCodeRoute.
 
-const { renderPrompt } = require('../message-composer');
+const { renderPrompt } = require('../native/runtime').messageComposer;
 const { claudeLikeMcpArgs } = require('./router-mcp');
 const { createCompletionTracker } = require('./completion');
 const { getNative } = require('../native/runtime');

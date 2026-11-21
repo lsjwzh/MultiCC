@@ -197,7 +197,12 @@ function frozenCodexAdapter() {
   assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '9f94b4cd6348e411e32fb09b77fdc5d0a75d48a5dfb6b7ce74eff821bf4cfecd');
   const filename = path.resolve(__dirname, '../src/cli-adapters/codex.js');
   const legacy = new Module(filename); legacy.filename = filename;
-  legacy.paths = Module._nodeModulePaths(path.dirname(filename)); legacy._compile(source, filename);
+  legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  legacy.require = function (id) {
+    if (id === '../message-composer') return require('./helpers/legacy-message-composer');
+    return Module.prototype.require.call(this, id);
+  };
+  legacy._compile(source, filename);
   return legacy.exports;
 }
 
@@ -269,7 +274,8 @@ function frozenCodexAppAdapter() {
   const legacy = new Module(filename); legacy.filename = filename;
   legacy.paths = Module._nodeModulePaths(path.dirname(filename));
   const originalRequire = legacy.require.bind(legacy);
-  legacy.require = name => name === '../native/runtime' ? { codexAdapter: frozenCodexAdapter() } : originalRequire(name);
+  legacy.require = name => name === '../native/runtime' ? { codexAdapter: frozenCodexAdapter() }
+    : name === '../message-composer' ? require('./helpers/legacy-message-composer') : originalRequire(name);
   legacy._compile(source, filename);
   return legacy.exports;
 }

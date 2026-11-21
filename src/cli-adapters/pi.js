@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const { renderPrompt } = require('../message-composer');
+const { renderPrompt } = require('../native/runtime').messageComposer;
 const { createCompletionTracker } = require('./completion');
 const { getNative } = require('../native/runtime');
 const { extractUpstreamError } = require('../upstream-error');
