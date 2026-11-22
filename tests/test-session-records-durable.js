@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-const { createSessionPersistence, PersistenceError } = require('../src/session/persistence');
+const { createSessionPersistence, PersistenceError } = require('../src/native/runtime');
 const { createTaskStateStore } = require('../src/routes/task-state-store');
 const { createStore, CorruptedStateError } = require('../src/state/store');
 const { createStateOwner } = require('../src/state/owner');

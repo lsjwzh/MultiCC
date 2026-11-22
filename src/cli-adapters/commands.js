@@ -342,7 +342,7 @@ function resolveDsh(context) {
 }
 
 // Gemini CLI (@google/gemini-cli) and Grok Build (@xai-official/grok): both
-// are npm globals driven over ACP through acp-bridge.cjs.
+// are npm globals driven over ACP through the Rust gateway.
 function resolveNpmGlobal(context, binary, envName) {
   const { isWindows, env, homeDir } = context;
   if (env[envName]) return env[envName];

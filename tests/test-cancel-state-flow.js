@@ -33,7 +33,7 @@ const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-
 const { createOutbox } = require('../src/outbox');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 const { classifyDisplay } = require('../src/classify/vocab');
-const { createSessionPersistence } = require('../src/session/persistence');
+const { createSessionPersistence } = require('../src/native/runtime');
 const { recordsOf } = require('./helpers/session-records');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 

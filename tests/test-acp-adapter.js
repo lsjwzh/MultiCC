@@ -12,9 +12,10 @@ const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createGeminiAdapter } = require('../src/cli-adapters/gemini');
 const { createGrokAdapter } = require('../src/cli-adapters/grok');
 const { createAgyAdapter } = require('../src/cli-adapters/agy');
-const { pickPermissionOption, routerMcpServers } = require('../src/cli-adapters/acp-bridge.cjs');
+const { pickPermissionOption, routerMcpServers } = require('./helpers/native-acp-bridge');
+const { gatewayPath } = require('../src/native/runtime');
 
-const BRIDGE = path.join(__dirname, '..', 'src', 'cli-adapters', 'acp-bridge.cjs');
+const BRIDGE = 'acp-bridge';
 
 // A scripted ACP agent: enough of the protocol to drive the bridge through
 // handshake, config, one streamed turn with a permissioned tool, cancel and
@@ -104,7 +105,7 @@ function runBridge(args, { signalAfterMs = 0, nativeUsage = false } = {}) {
   }
   const [mode, ...rest] = args;
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BRIDGE, '--agent-bin', process.execPath,
+    const child = spawn(gatewayPath(), [BRIDGE, '--agent-bin', process.execPath,
       '--agent-arg', agent, '--agent-arg', mode, '--agent-arg', log, '--label', 'Fake', ...rest], { cwd: dir, env });
     let out = '';
     child.stdout.on('data', (chunk) => { out += chunk; });
@@ -306,7 +307,7 @@ test('permission and router MCP helpers', () => {
 test('opencode defaults to ACP and grok launches its ACP server', () => {
   const opencode = createOpencodeAdapter({ cmd: '/bin/opencode', routerMcpNode: '/n', routerMcpScript: '/r.js', userInputReminder: 'R' });
   const inv = opencode.buildInvocation(envelope({ first: false, sessionId: 'ses_1', model: 'p/m', effort: 'high', agent: 'plan' }));
-  assert.equal(inv.cmd, process.execPath);
+  assert.equal(inv.cmd, gatewayPath());
   assert.deepEqual(inv.args.slice(1), [
     '--agent-bin', '/bin/opencode', '--label', 'OpenCode', '--native-usage', 'opencode', '--agent-arg', 'acp', '--session-id', 'ses_1',
     '--model', 'p/m', '--effort', 'high', '--mode', 'plan', '--router-mcp', '/n', '/r.js', '--',

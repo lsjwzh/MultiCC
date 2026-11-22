@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const {
   PersistenceError,
   createSessionPersistence,
-} = require('../src/session/persistence');
+} = require('../src/native/runtime');
 const { recordsOf } = require('./helpers/session-records');
 
 test('required mutation saves a detached snapshot before retaining memory changes', () => {

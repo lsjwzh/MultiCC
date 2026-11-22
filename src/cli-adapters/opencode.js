@@ -4,8 +4,9 @@ const { createAcpAdapter } = require('./acp');
 const { createOpencodeLikeAdapter } = require('./opencode-like');
 const { validateOpenCodeModel } = require('../routes/opencode-models');
 const { classifyProviderError } = require('../provider-error');
+const { gatewayPath } = require('../native/runtime');
 
-// OpenCode runs over ACP (`opencode acp`) through acp-bridge.cjs: streamed
+// OpenCode runs over ACP (`opencode acp`) through the Rust ACP bridge: streamed
 // text/thinking, live tool cards, an authoritative stopReason and in-place
 // session/cancel. Session ids (ses_…) are the same ids `opencode run --session`
 // uses, so conversations started on the old JSON lane resume unchanged.
@@ -17,31 +18,15 @@ const LABEL = displayNameOf('opencode');
 // A model that is no longer in the live list is refused BEFORE the agent is
 // spawned. Throwing here would be swallowed by the turn preparation path and
 // retried every ~20s as a generic "preparation-exception"; instead we return a
-// throwaway Node process that emits one adapter-native error line on stdout.
+// short-lived native command that emits one adapter-native error line on stdout.
 // That travels through the adapter's existing event channel: the chat renders
 // it once as a user-visible error, and the structured `invalid_request_model`
 // category keeps the API-error policy from retrying it.
-function blockedModelInvocation(message, encode) {
-  const line = JSON.stringify(encode(message));
-  const script = `process.stdout.write(${JSON.stringify(`${line}\n`)});`;
-  return { cmd: process.execPath, args: ['-e', script], payload: '' };
+function blockedModelInvocation(model, suggestion, lane) {
+  return { cmd: gatewayPath(), args: ['acp-model-error', lane, model, suggestion || ''], payload: '' };
 }
 
-function modelUnavailableMessage(model, suggestion) {
-  const intro = `模型 ${model} 已不在可用列表中（可能已下架或改名）。`;
-  return suggestion ? `${intro}建议改用 ${suggestion}。` : intro;
-}
-
-const acpErrorLine = (message) => ({
-  method: 'multicc/error',
-  params: { message, code: 'invalid_request_model', category: 'invalid_request_model' },
-});
-const jsonErrorLine = (message) => ({
-  type: 'error',
-  error: { data: { message, code: 'invalid_request_model', category: 'invalid_request_model', statusCode: 404 } },
-});
-
-function withModelGuard(adapter, encode) {
+function withModelGuard(adapter, lane) {
   const build = adapter.buildInvocation.bind(adapter);
   return {
     ...adapter,
@@ -58,9 +43,7 @@ function withModelGuard(adapter, encode) {
       const rawModel = env && env.spawnOpts ? env.spawnOpts.rawModel : null;
       const verdict = validateOpenCodeModel(rawModel);
       if (verdict && verdict.valid === false) {
-        return blockedModelInvocation(
-          modelUnavailableMessage(String(rawModel).trim(), verdict.suggestion), encode,
-        );
+        return blockedModelInvocation(String(rawModel).trim(), verdict.suggestion, lane);
       }
       return build(env);
     },
@@ -75,7 +58,7 @@ function createOpencodeAdapter({
     return withModelGuard(createOpencodeLikeAdapter({
       name: 'opencode', label: LABEL, cmd, supportsAgentVariant: true,
       includeThinking: true, userInputReminder,
-    }), jsonErrorLine);
+    }), 'legacy');
   }
   return withModelGuard(createAcpAdapter({
     name: 'opencode', label: LABEL, cmd, agentArgs: ['acp'],
@@ -91,7 +74,7 @@ function createOpencodeAdapter({
       if (session.cliSessionId) command += ` --session ${session.cliSessionId}`;
       return command;
     },
-  }), acpErrorLine);
+  }), 'acp');
 }
 
 module.exports = { createOpencodeAdapter };

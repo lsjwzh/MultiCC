@@ -259,7 +259,17 @@ function probeAddon(file, node = process.execPath) {
       || ['isInternalExecutionSlot','createPublicSessionAccessGuard','mountPublicSessionAccessGuard'].some(key=>typeof pubApi[key]!=='function')
       || !a.sessionIsInternalExecutionSlot({taskExecutionSlot:true})
       || a.sessionIsInternalExecutionSlot({taskExecutionSlot:false})) process.exit(1);
-    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration','sessionLoginTerminalDisposer','sessionDeliveryApi','sessionHibernationReclaimerCreate'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration','sessionLoginTerminalDisposer','sessionDeliveryApi','sessionHibernationReclaimerCreate','sessionPersistenceCreate','sessionPersistenceErrorClass','sessionPersistenceJsonClone','acpBridgeKernel'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    const acpProbe=JSON.parse(a.acpBridgeKernel(JSON.stringify({operation:'pickPermissionOption',options:[{kind:'allow_once',optionId:'ok'}]})));
+    if(!acpProbe.ok || acpProbe.value.optionId!=='ok') process.exit(1);
+    if(a.sessionPersistenceJsonClone(undefined)!==undefined || a.sessionPersistenceJsonClone({x:1}).x!==1) process.exit(1);
+    const persistenceError=a.sessionPersistenceErrorClass();
+    if(typeof persistenceError!=='function' || a.sessionPersistenceErrorClass()!==persistenceError
+      || new persistenceError('probe').code!=='SESSION_PERSISTENCE_FAILED') process.exit(1);
+    let configured; const owner={configure(p){configured=p;},status(){return {dirty:false,retryAttempt:0,retryScheduled:false,lastFailure:null};},stop(){}};
+    const persistence=a.sessionPersistenceCreate(()=>owner,{records:new Map(),store:{save(){}}});
+    if(!Object.isFrozen(persistence) || typeof persistence.mutate!=='function' || persistence.status().dirty!==false
+      || typeof configured.storeSave!=='function') process.exit(1);
     const recordsPort={list(){},get(){}};
     if(a.sessionAssertSessionRecordsPort(recordsPort)!==recordsPort
       || a.taskHistoryRefusal({}).code!=='history_check_failed'

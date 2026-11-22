@@ -1,19 +1,18 @@
 'use strict';
 
 // Shared adapter for every CLI that speaks ACP (Agent Client Protocol). The
-// host spawns acp-bridge.cjs, which drives the agent's own `acp`/`stdio`
+// host starts the Rust gateway ACP bridge, which drives the agent's own `acp`/`stdio`
 // server and prints its `session/update` notifications plus the synthetic
 // multicc/* boundary events; this module turns that JSONL into the generic
 // turn-engine events. A CLI-specific adapter only supplies how to launch the
 // agent (agentArgs) and which argv carries the model when the agent cannot
 // switch it over ACP.
 
-const path = require('node:path');
 const { errorFields } = require('../provider-error');
 const { createProtocolCompletionTracker } = require('./completion');
-const { renderPrompt } = require('../native/runtime').messageComposer;
+const { gatewayPath, messageComposer: { renderPrompt } } = require('../native/runtime');
 
-const BRIDGE = path.join(__dirname, 'acp-bridge.cjs');
+const BRIDGE = 'acp-bridge';
 
 function contentText(content) {
   if (!content) return '';
@@ -183,7 +182,7 @@ function createAcpAdapter({
         : prompt;
       if (userInputReminder) payload = `${userInputReminder}\n\n${payload}`;
       // `--` ends the bridge flags; the spawn path appends the payload after it.
-      return { cmd: process.execPath, args: [...buildArgs(env), '--'], payload };
+      return { cmd: gatewayPath(), args: [...buildArgs(env), '--'], payload };
     },
     decodeEvent(event) {
       const method = event?.method;

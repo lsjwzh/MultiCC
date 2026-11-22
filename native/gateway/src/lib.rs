@@ -8,6 +8,7 @@
 //! child environment, PROXY line, forwarding, supervision) is
 //! `docs/gateway.md`.
 
+pub mod acp_bridge;
 pub mod app;
 pub mod args;
 pub mod auth_control;

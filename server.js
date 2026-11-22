@@ -102,7 +102,7 @@ const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlia
 // MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
-const { createSessionPersistence } = require('./src/session/persistence');
+const { createSessionPersistence } = require('./src/native/runtime');
 const { createSessionRecords } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');
 const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');

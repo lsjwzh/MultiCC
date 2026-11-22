@@ -756,16 +756,17 @@ test('core runner covers every selected path and expands declared variants', () 
   // Session login-terminal differential adds one deterministic entry and command.
   // Session delivery differential adds one deterministic entry and command.
   // Hibernation-reclaimer differential adds one deterministic entry and command.
+  // Session persistence and the two ACP differentials add deterministic entries and commands.
   // The agy account boundary test joins the provider-router lane as one
   // deterministic core entry; its lane command already existed.
   // All prior manifest entries, variants and commands are preserved.
-  assert.equal(core.length, 483, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 483);
+  assert.equal(core.length, 486, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 486);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 402);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 405);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 49);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 32,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -775,8 +776,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 454,
-    '451 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 457,
+    '454 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

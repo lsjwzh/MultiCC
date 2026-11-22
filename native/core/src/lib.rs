@@ -1,3 +1,6 @@
+pub mod acp_bridge;
+pub mod acp_transport;
+pub mod acp_session;
 pub mod account_routes;
 pub mod account_subscription;
 pub mod active_turns;
@@ -91,6 +94,7 @@ pub mod search;
 pub mod search_diversity;
 pub mod secret_audit;
 pub mod session_create_record;
+pub mod session_persistence;
 pub mod session_delivery;
 pub mod session_git;
 pub mod session_hibernation_reclaimer;

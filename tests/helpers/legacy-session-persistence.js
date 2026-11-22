@@ -14,7 +14,7 @@
 // changed memory and cannot safely throw into an EventEmitter/timer callback, so
 // failures mark the service dirty and schedule a bounded retry instead.
 
-const { sessionRecordsOwner } = require('../../src/session/records');
+const { sessionRecordsOwner } = require('./records');
 
 class PersistenceError extends Error {
   constructor(message, { source = 'unknown', cause } = {}) {

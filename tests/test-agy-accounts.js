@@ -172,7 +172,7 @@ test('the login terminal executor points HOME at the account it is given', async
 });
 
 test('the bridge no longer carries an account-home flag', () => {
-  const { parseArgs } = require('../src/cli-adapters/acp-bridge.cjs');
+  const { parseArgs } = require('./helpers/native-acp-bridge');
   // HOME 由父进程的 buildChildEnv 钉好，桥进程继承即可。
   const options = parseArgs(['--agent-bin', 'agy', '--', 'hi']);
   assert.equal('accountHome' in options, false);

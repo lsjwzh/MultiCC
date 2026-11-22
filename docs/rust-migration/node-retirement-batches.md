@@ -1081,3 +1081,119 @@ app/lib/providers/chat_provider.dart，与本批改动文件无交集）。
 | `src/wait/` | 2 |
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
+
+### 会话持久化适配器（迁移中）
+
+退役 `src/session/persistence.js`，原文件逐字节冻结至 `tests/helpers/legacy-session-persistence.js`；差分测试通过原路径解析其依赖。Rust 核心负责状态分类，addon 承接验证、事务门面、错误类型和 JSON 克隆；生产入口经 `src/native/runtime.js` 接入。
+
+迁移期仍需 Node 桥：runtime 从 `src/session/records.js` 取得 records 到原生 owner 的映射；宿主继续提供 store、计时器、回调和 JSON 接口以保持 JavaScript 行为。回调状态使用 V8 WeakMap 弱键关联，以便回调仍可调用且不将 owner/ports 循环永久根化。待记录表所有权、持久化消费者及定时/回调宿主迁入 Rust 且不再需要 V8 对象语义后，移除相应桥接。
+
+已知反射差异：`Function.prototype.toString.call(PersistenceError)` 对原生函数显示 `[native code]`，而旧类返回 JavaScript 源码；公开业务调用及测试不依赖该字符串。其他行为以差分测试覆盖范围为准，不能据此断言所有 JavaScript 反射边界完全一致。
+
+验证：`rustfmt --edition 2021 --check`、严格 Clippy、Rust 核心 1,554 项、addon/gateway 构建、治理检查通过；指纹 `914faeb2da024c30e719c959` 的定向 Node 回归 237 项（含 19 项持久化差分与回收测试）及来源探针 15 项通过。
+
+当前工作区清点 `src/` 中 `.js` / `.cjs` 共 **542** 个（未提交）：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 86 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli-adapters/` | 27 |
+| `src/cli/` | 9 |
+| `src/codex-auth/` | 1 |
+| `src/codex/` | 11 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 97 |
+| `src/search/` | 6 |
+| `src/session-work/` | 2 |
+| `src/session/` | 7 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |
+
+### ACP 车道原生进程（未提交）
+
+`src/cli-adapters/acp-bridge.cjs` 的原文件逐字节保存在 `tests/helpers/legacy-acp-bridge.cjs`。ACP 子进程、协议收发、权限响应、恢复、配置、取消和用量处理迁入 Rust 核心及 gateway；OpenCode 模型不可用提示也由原生进程输出。
+
+迁移期 Node 范围：`src/cli-adapters/acp.js` 仍负责宿主适配器接线和 ACP 事件投影；其他 Node 调用点仍使用 `src/provider-error.js` 与 `src/chat/opencode-context.js`，因此不能随本批删除。待对应宿主投影和其余调用点转入 Rust 后移除。
+
+验证：冻结样本与原文件逐字节一致；指纹 `03e6d554c8ec2f967f968e18` 的 Node 定向回归 176 项（含 ACP 进程差分 26 项及规则差分 5 项）和来源探针 15 项通过。Rust 核心 1,563 项、gateway 229 项、严格 Clippy、格式和治理检查通过。两处既有 agy 缓存类型仅提取别名以通过严格 Clippy。
+
+当前工作区清点 `src/` 下 `.js` / `.cjs` 共 **541** 个（未提交）：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 86 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli-adapters/` | 26 |
+| `src/cli/` | 9 |
+| `src/codex-auth/` | 1 |
+| `src/codex/` | 11 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 97 |
+| `src/search/` | 6 |
+| `src/session-work/` | 2 |
+| `src/session/` | 7 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |

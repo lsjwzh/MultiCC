@@ -487,7 +487,7 @@ function codexTask(subagent = null) {
 }
 
 test('手动切换落库失败时不关闭进程、不发布交接，也不清除自动预约', async () => {
-  const { createSessionPersistence } = require('../src/session/persistence');
+  const { createSessionPersistence } = require('../src/native/runtime');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', cliSessionId: 'original' };
   const records = recordsOf([['s1', session]]);
   let fail = true, cleared = 0;
@@ -1140,7 +1140,7 @@ test('cli/versions reports a per-cli error entry without failing the whole call'
 
 
 test('applying a pending switch publishes nothing when persistence fails and remains retryable', async () => {
-  const { createSessionPersistence } = require('../src/session/persistence');
+  const { createSessionPersistence } = require('../src/native/runtime');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', cliSessionId: 'original' };
   const records = recordsOf([['s1', session]]); let fail = false;
   const persistence = createSessionPersistence({ records, store: { save() { if (fail) throw Error('disk-full'); } } });
@@ -1190,7 +1190,7 @@ test('待生效自动池只在实际变更时清理线路，保存相同配置�
 
 test('待生效配置持久化失败会恢复自动池当前线路', async () => {
   const { stageConfiguration } = require('./helpers/native-session-pending-configuration');
-  const { createSessionPersistence } = require('../src/session/persistence');
+  const { createSessionPersistence } = require('../src/native/runtime');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
     providerSelection: { mode: 'auto', protocol: 'anthropic', candidates: [
       { providerId: 'relay-a' }, { providerId: 'relay-b' },

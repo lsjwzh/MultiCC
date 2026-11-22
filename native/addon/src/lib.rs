@@ -1,3 +1,4 @@
+pub mod acp_bridge;
 use multicc_core::{search::SearchIndex, usage};
 use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;
@@ -95,6 +96,7 @@ pub mod session_create_record;
 pub mod session_delivery;
 pub mod session_hibernation_reclaimer;
 pub mod session_login_terminal;
+pub mod session_persistence;
 pub mod session_pending_configuration;
 pub mod session_ports;
 pub mod session_subagent;

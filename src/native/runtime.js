@@ -342,8 +342,23 @@ const codexBackground = {
       setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
   },
 };
+// Session persistence adapter (former src/session/persistence.js). The native
+// record owner stays the single writer; the host only supplies the facade's
+// owner lookup, which the factory calls after its own Map check.
+function jsonClone(value) {
+  return getNative().sessionPersistenceJsonClone(value);
+}
+// `arguments[0]` keeps the legacy zero-length signature and the `= {}` default.
+function createSessionPersistence() {
+  return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
+}
 module.exports = { addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription };
+  pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
+// The stable PersistenceError class is created natively once per environment.
+Object.defineProperty(module.exports, 'PersistenceError', {
+  enumerable: true,
+  get: () => getNative().sessionPersistenceErrorClass(),
+});

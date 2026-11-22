@@ -1014,6 +1014,24 @@
       ]
     },
     {
+      "path": "tests/test-acp-bridge-kernel-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
+      "path": "tests/test-acp-bridge-process-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-agent-resources-host.js",
       "tier": "core",
       "lane": "deterministic",
@@ -5957,6 +5975,15 @@
       "owner": "npm:test:integration:isolated",
       "entrypoints": [
         "npm:test:integration:isolated"
+      ]
+    },
+    {
+      "path": "tests/test-session-persistence-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:state",
+      "entrypoints": [
+        "npm:test:state"
       ]
     },
     {

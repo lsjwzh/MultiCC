@@ -287,7 +287,7 @@ function envelopeFor(rawModel) {
 }
 
 function runBlockedInvocation(invocation) {
-  const stdout = execFileSync(process.execPath, [...invocation.args, invocation.payload], {
+  const stdout = execFileSync(invocation.cmd, [...invocation.args, invocation.payload], {
     encoding: 'utf8', timeout: 5000,
   });
   const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
@@ -299,8 +299,8 @@ test('ACP lane refuses a retired model before spawning the agent', () => {
   _setCacheForTest(Date.now(), LIVE_CACHE);
   const adapter = createOpencodeAdapter({ cmd: 'opencode', env: {} });
   const invocation = adapter.buildInvocation(envelopeFor('opencodego/deepseek-v4-flash'));
-  assert.equal(invocation.cmd, process.execPath);
-  assert.equal(invocation.args[0], '-e', 'a throwaway node process, not opencode acp');
+  assert.equal(invocation.cmd, require('../src/native/runtime').gatewayPath());
+  assert.equal(invocation.args[0], 'acp-model-error');
   assert.equal(invocation.payload, '');
 
   const raw = runBlockedInvocation(invocation);
@@ -332,8 +332,8 @@ test('ACP lane lets a live model spawn normally', () => {
   _setCacheForTest(Date.now(), LIVE_CACHE);
   const adapter = createOpencodeAdapter({ cmd: 'opencode', env: {} });
   const invocation = adapter.buildInvocation(envelopeFor('opencodego/deepseek-v4.1-flash'));
-  assert.equal(invocation.cmd, process.execPath);
-  assert.ok(String(invocation.args[0]).endsWith('acp-bridge.cjs'), 'the real ACP bridge is used');
+  assert.equal(invocation.cmd, require('../src/native/runtime').gatewayPath());
+  assert.equal(invocation.args[0], 'acp-bridge');
   assert.equal(invocation.payload, 'hello');
 });
 
@@ -341,14 +341,14 @@ test('cold cache never blocks a spawn', () => {
   _resetCacheForTest();
   const adapter = createOpencodeAdapter({ cmd: 'opencode', env: {} });
   const invocation = adapter.buildInvocation(envelopeFor('opencodego/deepseek-v4-flash'));
-  assert.ok(String(invocation.args[0]).endsWith('acp-bridge.cjs'));
+  assert.equal(invocation.args[0], 'acp-bridge');
 });
 
 test('legacy JSON lane refuses a retired model through its own error shape', () => {
   _setCacheForTest(Date.now(), LIVE_CACHE);
   const adapter = createOpencodeAdapter({ cmd: 'opencode', env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } });
   const invocation = adapter.buildInvocation(envelopeFor('opencodego/deepseek-v4-flash'));
-  assert.equal(invocation.args[0], '-e');
+  assert.equal(invocation.args[0], 'acp-model-error');
   const raw = runBlockedInvocation(invocation);
   const decoded = adapter.decodeEvent(raw);
   assert.equal(decoded.length, 1);

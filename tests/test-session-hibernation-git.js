@@ -385,7 +385,7 @@ test('生产任务清理删除已合并分支后，重启及唤醒保留会话�
   const { gitWorktreeRemove, gitMergeBack, gitWorktreeMergeState } = require('../src/git/service');
   const { defaultRepoActor } = require('../src/repo-actor');
   const { createTaskLifecycleHost } = require('../src/task-board/lifecycle-host');
-  const { createSessionPersistence } = require('../src/session/persistence');
+  const { createSessionPersistence } = require('../src/native/runtime');
   const { mkRuntime } = require('./helpers/task-board-runtime');
   const dirPath = repo();
   t.after(() => fs.rmSync(dirPath, { recursive: true, force: true }));
