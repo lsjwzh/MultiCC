@@ -934,10 +934,67 @@ getter、转换、异常身份、迭代器、异步顺序、循环回收及大�
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
 
-### 会话续接投递（下一批，基线阶段）
+### 会话续接投递（Rust 迁移，待验收）
 
-以 `9fd65485` 为基线，已将 `src/session/delivery.js` 原样冻结到
-`tests/helpers/legacy-session-delivery.js`。基线固定同步校验、参数转换、
-元数据 getter 顺序、调度拒绝与失败日志，以及对外暴露的可变种类 Set。
-当前生产仍使用原 Node 文件；原生工厂、调用点切换、真实原生差分和完整
-门禁均尚未完成。`src/` 的 `.js` / `.cjs` 数量仍为 543。
+以 `9fd65485` 为基线，退役 `src/session/delivery.js`，原文件逐字节冻结至
+`tests/helpers/legacy-session-delivery.js`。种类默认值与消息前缀判定位于
+`native/core/src/session_delivery.rs`；同步校验、活 Set、元数据展开与异步
+成功/失败流程位于 `native/addon/src/session_delivery.rs`。生产调用点经
+`src/native/runtime.js` 使用原生 API，探针检查导出及系统续接行为；差分覆盖
+默认参数、可变 Set、异常身份、Proxy 读取顺序、UTF-16 和异步日志失败。
+
+必要的 Node 兼容桥只在共享 runtime 中缓存每个 addon 的 API 对象，以保留
+CommonJS 单例和可变种类 Set 身份；`admit` 和 `log` 仍由 Node 宿主注入，
+供 Rust 编排调用，不承载新增业务规则。待消息调度与日志宿主迁至 Rust、
+消费者不再要求 V8 Set/Promise 对象身份，并完成并发及异常差分验证后，
+应移除 API 缓存和回调端口。分类、等待注入等 Node 模块读取原生前缀的调用
+也随这些宿主退休；本批不声称其他 Node 依赖已核销。
+
+当前 `src/` 有 542 个 `.js` / `.cjs` 文件，按文件所在目录统计：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 85 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli/` | 9 |
+| `src/cli-adapters/` | 27 |
+| `src/codex/` | 11 |
+| `src/codex-auth/` | 1 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 96 |
+| `src/search/` | 6 |
+| `src/session/` | 9 |
+| `src/session-work/` | 2 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |
