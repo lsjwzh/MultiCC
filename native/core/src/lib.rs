@@ -90,6 +90,7 @@ pub mod search;
 pub mod search_diversity;
 pub mod secret_audit;
 pub mod session_git;
+pub mod session_create_record;
 pub mod session_ports;
 pub mod session_routes;
 pub mod session_subagent;
