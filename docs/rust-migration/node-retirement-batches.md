@@ -719,3 +719,76 @@ Rust 源码缓存探针要求新工厂存在并执行早期验证，差分测试
 | `src/wait/` | 2 |
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
+
+### 会话运行忙状态端口（Rust 迁移，待验收）
+
+以 `6f31f2d8` 为基线，退役 `src/session/runtime-busy.js`。原有四轴和
+进程状态判定继续由 `native/core/src/active_turns.rs` 持有；新增 addon
+导出保留缺省参数语义，八个生产调用模块直接经 `src/native/runtime.js`
+调用。原文件逐字节冻结，差分测试比较值、异常和 getter 读取顺序。
+
+兼容旧 Node 宿主的必要范围是这些调用点对原生加载器的函数调用；它们不
+保存判定规则。待相应宿主迁入 Rust 后移除调用桥。本批不新增 Node 业务逻辑。
+
+当前 `src/` 有 545 个 `.js` / `.cjs` 文件，按文件所在目录统计：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 85 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli/` | 9 |
+| `src/cli-adapters/` | 27 |
+| `src/codex/` | 11 |
+| `src/codex-auth/` | 1 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 96 |
+| `src/search/` | 6 |
+| `src/session/` | 12 |
+| `src/session-work/` | 2 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |
+
+### 已识别的 Node 依赖桥接与后续退出条件
+
+这些桥接属于迁移队列，清单基于当前已核实的调用点；继续退休时须随审计
+补充，不代表其他 Node 依赖已经核销。
+
+| 桥接 | 当前保留原因和范围 | 原生替换条件 |
+| --- | --- | --- |
+| 会话创建的 Node `path` | `server.js` 向原生工厂注入 `path`，保留 join 的跨平台语义和错误合同。 | Rust 路径实现通过 POSIX、Windows、非法参数和字节/异常差分后移除注入。 |
+| `src/native/runtime.js` 的 path/fs/os 安全路径端口 | 路径祖先判定已在 Rust，Node 提供平台 `fs`、`path`、homedir。 | 原生文件系统和平台路径实现通过符号链接、缺失路径及跨平台差分后移除。 |
+| 启动状态的 Node fs/crypto 和宿主端口 | `stateBootstrap` 仍向 Rust 提供 Node 文件、随机标识和宿主回调，保持启动与恢复行为。 | Rust 启动所有者接管文件、标识、恢复及回调顺序并完成升级/回退验证后删除。 |
+| 会话与目录记录 Map 门面 | `src/session/records.js`、`src/directory/records.js` 和 `src/state/owner.js` 暂为已有宿主提供 Map、活对象身份与所有者组装。 | 原生门面保持迭代、对象身份、持久化和恢复合同，且消费者迁出 Node 后移除。 |
+| 聊天历史路径与失败报告 | Node 宿主计算路径并注入 `reportFailure`；文件 IO 与协议由 Rust 持有。 | 路径及报告所有者均迁入 Rust，错误字段、日志和调用顺序验证一致后移除。 |
+| `src/native/runtime.js` 的 addon/前门加载桥 | 兼容 Node 入口仍需定位 N-API 模块和 gateway。 | Node 兼容启动入口退休，Rust 进程负责生命周期并通过独立安装/升级验收后移除。 |
