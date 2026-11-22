@@ -150,3 +150,41 @@ test('factory validates its injected resident port synchronously', () => {
     });
   }
 });
+
+test('native callbacks release factory and pending-operation reference cycles', () => {
+  const { spawnSync } = require('node:child_process');
+  const addon = require('../src/native/runtime').addonPath();
+  const script = String.raw`
+    const addon = require(process.argv[1]);
+    const path = require('node:path');
+    function factoryCycle() {
+      let factory;
+      const deps = { isResidentSession() { return factory; } };
+      factory = addon.sessionCreateRecordFactory(deps, path);
+      return new WeakRef(factory);
+    }
+    function pendingCycle() {
+      const deps = {
+        isResidentSession() {}, SUPPORTED_CHAT_CLIS: ['claude'], cliForLoginFlow() {},
+        tuiChatMirrorEnabled() {}, validateExperimentalSession() { return { ok: true }; },
+        normalizeEffort() { return null; }, validEffortForCli() { return true; },
+        normalizeCliAgent() { return null; }, validateProviderSelection() { return { ok: true, value: null }; },
+        providers: { normalizeOfficialProviderId(_cli, id) { return id; } },
+        primaryProviderCandidate() {}, providerDefaults: {}, sanitizeLoginEnv() { return { ok: true }; },
+        allocateSessionId() { return 's'; }, persistedSessions: new Map(),
+        ensureDirGitReady() { return new Promise(() => {}); },
+      };
+      const input = { dir: { id: 'd', path: '/repo' }, cli: 'claude', kind: 'chat', ephemeral: true };
+      const pending = addon.sessionCreateRecordFactory(deps, path)(input);
+      input.pending = pending;
+      return new WeakRef(pending);
+    }
+    (async () => {
+      const refs = [factoryCycle(), pendingCycle()];
+      for (let i = 0; i < 30; i++) { await new Promise(resolve => setImmediate(resolve)); global.gc(); }
+      if (refs.some(ref => ref.deref() !== undefined)) throw new Error('native callback retained a cycle');
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `;
+  const child = spawnSync(process.execPath, ['--expose-gc', '-e', script, addon], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr || String(child.error));
+});

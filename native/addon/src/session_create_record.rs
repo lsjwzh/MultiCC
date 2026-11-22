@@ -8,6 +8,7 @@ use napi::{
 };
 use napi_derive::napi;
 use std::{
+    cell::Cell,
     ffi::{CStr, CString},
     ptr,
     rc::Rc,
@@ -91,6 +92,71 @@ impl Drop for Anchor {
     fn drop(&mut self) {
         unsafe {
             sys::napi_delete_reference(self.env, self.reference);
+        }
+    }
+}
+
+// WeakMap ephemeron capture so guard closures never root V8 cycles.
+struct Capture {
+    env: sys::napi_env,
+    map: sys::napi_ref,
+    key: Cell<sys::napi_ref>,
+}
+
+impl Capture {
+    fn new(anchor: L<'_>) -> Result<Rc<Self>> {
+        let map = anchor.global()?.get(c"WeakMap")?.construct(&[])?;
+        let mut reference = ptr::null_mut();
+        check_status!(unsafe {
+            sys::napi_create_reference(anchor.env(), map.raw(), 1, &mut reference)
+        })?;
+        Ok(Rc::new(Self {
+            env: anchor.env(),
+            map: reference,
+            key: Cell::new(ptr::null_mut()),
+        }))
+    }
+
+    fn map<'a>(&self, anchor: L<'a>) -> Result<L<'a>> {
+        let mut value = ptr::null_mut();
+        check_status!(unsafe { sys::napi_get_reference_value(self.env, self.map, &mut value) })?;
+        Ok(L::from_raw(anchor.env(), value))
+    }
+
+    fn bind(&self, function: L<'_>, value: L<'_>) -> Result<()> {
+        let mut reference = ptr::null_mut();
+        check_status!(unsafe {
+            sys::napi_create_reference(self.env, function.raw(), 0, &mut reference)
+        })?;
+        self.key.set(reference);
+        let map = self.map(function)?;
+        map.get(c"set")?.call(map, &[function, value])?;
+        Ok(())
+    }
+
+    fn read<'a>(&self, anchor: L<'a>) -> Result<L<'a>> {
+        let mut key = ptr::null_mut();
+        check_status!(unsafe {
+            sys::napi_get_reference_value(self.env, self.key.get(), &mut key)
+        })?;
+        if key.is_null() {
+            return Err(anchor.type_error("session creation callback state is unavailable"));
+        }
+        let map = self.map(anchor)?;
+        map.get(c"get")?
+            .call(map, &[L::from_raw(anchor.env(), key)])
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if !self.env.is_null() {
+            unsafe {
+                if !self.key.get().is_null() {
+                    sys::napi_delete_reference(self.env, self.key.get());
+                }
+                sys::napi_delete_reference(self.env, self.map);
+            }
         }
     }
 }
@@ -338,7 +404,8 @@ fn prepare<'a>(env: &'a Env, deps: L<'a>, input: L<'a>, path: L<'a>) -> Result<L
             let candidates = selected.get(c"candidates")?;
             let holder = obj(input)?;
             holder.set(c"validated", validated)?;
-            let captured = Anchor::new(holder)?;
+            let capture = Capture::new(holder)?;
+            let captured = Rc::clone(&capture);
             let predicate = env.create_function_from_closure::<Unknown<'_>, bool, _>(
                 "enabledCandidate",
                 move |ctx| {
@@ -352,10 +419,11 @@ fn prepare<'a>(env: &'a Env, deps: L<'a>, input: L<'a>, path: L<'a>) -> Result<L
                     Ok(candidate.get(c"enabled")?.truthy()?
                         && candidate
                             .get(c"providerId")?
-                            .equals(captured.value(env)?.get(c"validated")?.get(c"value")?)?)
+                            .equals(captured.read(absent)?.get(c"validated")?.get(c"value")?)?)
                 },
             )?;
             let predicate = L::from_raw(env.raw(), predicate.into_unknown(env)?.raw());
+            capture.bind(predicate, holder)?;
             let found = call(candidates, c"some", &[predicate])?.truthy()?;
             if !found {
                 early!(failure(
@@ -481,29 +549,34 @@ enum Stage {
     RollbackPersist,
 }
 fn bind<'a>(env: &'a Env, state: &Rc<Anchor>, stage: Stage) -> Result<L<'a>> {
-    let captured = Rc::clone(state);
+    let holder = state.value(env)?;
+    let capture = Capture::new(holder)?;
+    let captured = Rc::clone(&capture);
     let callback = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
         "sessionCreateContinuation",
         move |ctx| {
             let env: &Env = ctx.env;
-            let state = captured.value(env)?;
             let absent = L::new(env, ().into_unknown(env)?);
+            let state = captured.read(absent)?;
+            let anchor = Anchor::new(state)?;
             let arg = if ctx.length() > 0 {
                 L::new(env, ctx.get::<Unknown<'_>>(0)?)
             } else {
                 absent
             };
             let value = match stage {
-                Stage::Ready => after_ready(env, &captured, state, arg),
-                Stage::Added => after_added(env, &captured, state, arg),
-                Stage::AddFailed => worktree_error(env, &captured, state, arg),
+                Stage::Ready => after_ready(env, &anchor, state, arg),
+                Stage::Added => after_added(env, &anchor, state, arg),
+                Stage::AddFailed => worktree_error(env, &anchor, state, arg),
                 Stage::RollbackAdd => worktree_failure(state, state.get(c"caught")?),
                 Stage::RollbackPersist => Err(state.get(c"caught")?.throw_error()),
             }?;
             Ok(value.raw())
         },
     )?;
-    Ok(L::from_raw(env.raw(), callback.into_unknown(env)?.raw()))
+    let callback = L::from_raw(env.raw(), callback.into_unknown(env)?.raw());
+    capture.bind(callback, holder)?;
+    Ok(callback)
 }
 fn then<'a>(
     env: &'a Env,
@@ -714,13 +787,15 @@ fn after_added<'a>(
 }
 
 fn mutation_callback<'a>(env: &'a Env, state_ref: &Rc<Anchor>) -> Result<L<'a>> {
-    let captured = Rc::clone(state_ref);
+    let holder = state_ref.value(env)?;
+    let capture = Capture::new(holder)?;
+    let captured = Rc::clone(&capture);
     let cb = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
         "recordMutation",
         move |ctx| {
             let env: &Env = ctx.env;
-            let s = captured.value(env)?;
             let absent = L::new(env, ().into_unknown(env)?);
+            let s = captured.read(absent)?;
             let records = if ctx.length() > 0 {
                 L::new(env, ctx.get::<Unknown<'_>>(0)?)
             } else {
@@ -729,7 +804,9 @@ fn mutation_callback<'a>(env: &'a Env, state_ref: &Rc<Anchor>) -> Result<L<'a>> 
             Ok(call(records, c"set", &[s.get(c"sid")?, s.get(c"session")?])?.raw())
         },
     )?;
-    Ok(L::from_raw(env.raw(), cb.into_unknown(env)?.raw()))
+    let cb = L::from_raw(env.raw(), cb.into_unknown(env)?.raw());
+    capture.bind(cb, holder)?;
+    Ok(cb)
 }
 fn finish<'a>(env: &'a Env, state_ref: &Rc<Anchor>, state: L<'a>) -> Result<L<'a>> {
     let d = state.get(c"deps")?;
@@ -965,7 +1042,8 @@ pub fn session_create_record_factory(
     let holder = obj(d)?;
     holder.set(c"deps", snapshot)?;
     holder.set(c"path", L::new(&env, node_path))?;
-    let anchor = Anchor::new(holder)?;
+    let capture = Capture::new(holder)?;
+    let captured = Rc::clone(&capture);
     let callback = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
         "createSessionRecord",
         move |ctx| {
@@ -977,7 +1055,7 @@ pub fn session_create_record_factory(
                 absent
             };
             let body = (|| -> Result<L<'_>> {
-                let holder = anchor.value(env)?;
+                let holder = captured.read(absent)?;
                 start(env, holder.get(c"deps")?, input, holder.get(c"path")?)
             })();
             match body {
@@ -987,6 +1065,7 @@ pub fn session_create_record_factory(
         },
     )?;
     let value = L::from_raw(env.raw(), callback.into_unknown(&env)?.raw());
+    capture.bind(value, holder)?;
     let descriptor = sys::napi_property_descriptor {
         utf8name: c"length".as_ptr(),
         value: state_number(&env, 1.0)?,
