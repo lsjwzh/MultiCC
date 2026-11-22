@@ -179,7 +179,7 @@ fn setting_an_unknown_or_malformed_account_is_rejected() {
 #[test]
 fn list_accounts_is_oldest_first_and_marks_the_active_one() {
     let home = temp_home("list");
-    let older = create_account(&home, "旧号", "created").unwrap();
+    let _older = create_account(&home, "旧号", "created").unwrap();
     std::thread::sleep(std::time::Duration::from_millis(5));
     let newer = create_account(&home, "新号", "created").unwrap();
     set_active(&home, Some(newer["id"].as_str().unwrap())).unwrap();
