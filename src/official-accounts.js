@@ -334,10 +334,11 @@ function claudeAccountFilePath(id, root = DEFAULT_ROOT) {
   return resolveUnder(root, 'claude', `${assertAccountId(id)}.json`);
 }
 
-// Validate the extra env a login terminal may pin (e.g. CODEX_HOME pointing at
-// an official-account dir so `codex login` writes THAT account's auth.json).
-// Tight allowlist — this crosses into an interactive shell, nothing else may.
-const LOGIN_ENV_ALLOWLIST = Object.freeze(['CODEX_HOME']);
+// Validate the extra env a login terminal may pin: CODEX_HOME points at an
+// official-account dir so `codex login` writes THAT account's auth.json, and
+// HOME does the same for agy (its whole login is `$HOME/.gemini`). Tight
+// allowlist — this crosses into an interactive shell, nothing else may.
+const LOGIN_ENV_ALLOWLIST = Object.freeze(['CODEX_HOME', 'HOME']);
 
 function sanitizeLoginEnv(loginEnv, loginFlow) {
   if (loginEnv == null) return { ok: true, env: null };

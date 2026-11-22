@@ -795,8 +795,12 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // airUnattendedGoalRequired, runConfigGlobalFamilyNone/Route/Missing,
     // runConfigClearFamilyDone): the two sub-agent family rows and the lane
     // switch route-change notice. Regenerated: 10520 lines / 684175 bytes.
-    maxLines: 10520,
-    maxBytes: 684175,
+    // +17 bilingual keys (airOfficialAcctAgy*): the 反重力 (agy) multi-account
+    // section in the Provider panel — local-login row, create/import/sign-in
+    // buttons and their status/receipt copy. 中英各 17 行 = +34 行；countLines
+    // 口径实测 10660/691833，按真实高水位抬一格。
+    maxLines: 10660,
+    maxBytes: 691833,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

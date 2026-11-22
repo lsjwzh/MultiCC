@@ -78,8 +78,11 @@ function modelOptions(session) {
 // or empty catalog fails the probe.
 function fetchModels() {
   return new Promise((resolve, reject) => {
+    // 账号切换后，模型目录也要跟着走：agy 的登录全在 `$HOME/.gemini`。
+    const pin = require('../agy-accounts').accountEnv();
     const child = spawn(executable(), ['acp'], {
       stdio: ['pipe', 'pipe', 'ignore'],
+      ...(pin ? { env: { ...process.env, ...pin } } : {}),
     });
     const lines = readline.createInterface({
       input: child.stdout,

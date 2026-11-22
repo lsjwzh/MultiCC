@@ -10,6 +10,7 @@ pub mod accept;
 pub mod account_routes;
 pub mod account_subscription;
 pub mod agent_resources;
+mod agy_accounts;
 mod agy_catalog;
 mod agy_quota;
 pub mod air_routes;
@@ -223,6 +224,7 @@ pub enum Route {
     Push(push_routes::Route),
     Air(air_routes::Route),
     Quota(quota_routes::Route),
+    AgyAccounts(agy_accounts::Route),
     Account(account_routes::Route),
     Events(event_routes::Route),
     DocsMemory(docs_memory_routes::Route),
@@ -267,6 +269,7 @@ static OPTIONS_SOURCES: &[fn(&str) -> Option<String>] = &[
     providers::options_share,
     task_shell::options_share,
     quota_routes::options_share,
+    agy_accounts::options_share,
     account_routes::options_share,
     event_routes::options_share,
     docs_memory_routes::options_share,
@@ -449,6 +452,11 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if let Some(route) = air_routes::claim(method, path) {
         return Some(Route::Air(route));
+    }
+    // Antigravity account switching owns its own `/api/agy/accounts*`; no path
+    // overlaps another cluster.
+    if let Some(route) = agy_accounts::claim(method, path) {
+        return Some(Route::AgyAccounts(route));
     }
     if let Some(route) = quota_routes::claim(method, path) {
         return Some(Route::Quota(route));
@@ -1314,6 +1322,7 @@ pub async fn handle(
         }
         Route::Push(route) => return push_routes::handle(&app, route, &ctx, &body, host).await,
         Route::Air(route) => return air_routes::handle(&app, route, &ctx, &body, host).await,
+        Route::AgyAccounts(route) => return agy_accounts::handle(&ctx, route, &body).await,
         Route::Quota(route) => return quota_routes::handle(&app, route, &ctx, &body, host).await,
         Route::Account(route) => {
             return account_routes::handle(&app, route, &ctx, &body, host).await

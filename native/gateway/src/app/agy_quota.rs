@@ -103,7 +103,8 @@ fn render(data: &Value, now_ms: u64) -> Option<Value> {
 }
 
 async fn fetch() -> Option<Value> {
-    let mut child = Command::new(executable())
+    let mut command = Command::new(executable());
+    command
         .args([
             "-p",
             "/usage",
@@ -115,9 +116,14 @@ async fn fetch() -> Option<Value> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .ok()?;
+        .kill_on_drop(true);
+    // The quota belongs to the signed-in account, and agy reads its login from
+    // `$HOME/.gemini`, so a pinned account is served by pointing HOME at its
+    // mini-home. No pin leaves the real home untouched.
+    if let Some(home) = super::agy_accounts::home_override() {
+        command.env("HOME", home);
+    }
+    let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?.take(MAX_OUTPUT + 1);
     let mut bytes = Vec::new();
     stdout.read_to_end(&mut bytes).await.ok()?;
@@ -134,6 +140,14 @@ async fn fetch() -> Option<Value> {
 
 fn unavailable_bar() -> Value {
     json!({"status":"unavailable", "bar":{"text":"反重力额度查询失败 · 点击重试", "title":"无法读取 agy 账号额度，请确认已登录并检查网络。", "color":"#f85149", "action":"refresh"}})
+}
+
+/// The cached bar is the previous account's quota, so an account switch must
+/// drop it instead of waiting out the TTL.
+pub(super) async fn invalidate() {
+    if let Some(cache) = CACHE.get() {
+        *cache.lock().await = None;
+    }
 }
 
 pub async fn handle(ctx: &RequestCtx) -> Response<Body> {
