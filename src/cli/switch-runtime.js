@@ -4,7 +4,6 @@
 // identity, persistence transactions, process handles and asynchronous ports.
 const crypto = require('node:crypto');
 const { getNative } = require('../native/runtime');
-const { isChatStateBusy } = require('../session/runtime-busy');
 const { selectionKey } = require('../providers/auto-provider-config');
 const capability = require('./cli-capability');
 const { nativeSessionExists } = require('./native-session-exists');
@@ -80,7 +79,7 @@ function createCliSwitchRuntime(options) {
   function configurationBusy(sessionId) {
     try {
       const stream = options.getChatStream()?.status?.(sessionId);
-      return call('busy', { chatBusy: isChatStateBusy(chatSessions.get(sessionId)),
+      return call('busy', { chatBusy: getNative().sessionRuntimeIsChatStateBusy(chatSessions.get(sessionId)),
         streamBusy: stream?.busy, streamQueued: stream?.queued,
         phase: options.getPreparation?.(sessionId)?.phase,
         background: !!options.hasLiveBackgroundTasks(sessionId) });
@@ -88,7 +87,7 @@ function createCliSwitchRuntime(options) {
   }
   function cliSwitchBusyState(sessionId) {
     const cs = chatSessions.get(sessionId), stream = options.getChatStream().status(sessionId);
-    return { busy: call('busy', { chatBusy: isChatStateBusy(cs), streamBusy: stream?.busy,
+    return { busy: call('busy', { chatBusy: getNative().sessionRuntimeIsChatStateBusy(cs), streamBusy: stream?.busy,
       streamQueued: stream?.queued }), cs, stream };
   }
   // 返回继承路由的变化（{from,to,family} 或 null）：切换提示（switchNotice/switchEvent
@@ -336,7 +335,7 @@ function createCliSwitchRuntime(options) {
     const facts = { pending: !!pending, options: turnOptions };
     let gate = call('pendingGate', facts);
     if (gate.action === 'observe') {
-      Object.assign(facts, { observed: true, busy: configurationBusy(sessionId), chatBusy: isChatStateBusy(chatSessions.get(sessionId)) });
+      Object.assign(facts, { observed: true, busy: configurationBusy(sessionId), chatBusy: getNative().sessionRuntimeIsChatStateBusy(chatSessions.get(sessionId)) });
       gate = call('pendingGate', facts);
     }
     if (gate.action === 'observeAvailability') gate = call('pendingGate', { ...facts,

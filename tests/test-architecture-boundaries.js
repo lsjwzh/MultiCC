@@ -25,9 +25,10 @@ test('session bounded-context core has no host or cross-context dependencies', (
       // chat-runtime busy and hibernation path resolution reach Rust through
       // the shared addon loader.
       // This grants no other session module a host import.
-      const nativeCorePort = (file === path.join('src/session', 'records.js')
+      const nativeCorePort = (file === path.join('src/session', 'hibernation-composition.js')
+        || file === path.join('src/session', 'pending-configuration.js')
+        || file === path.join('src/session', 'records.js')
         || file === path.join('src/session', 'hibernation.js')
-        || file === path.join('src/session', 'runtime-busy.js')
         || file === path.join('src/session', 'chat-history-service.js')
         || file === path.join('src/session', 'workspace-service.js')
         || file === path.join('src/session', 'query-service.js'))

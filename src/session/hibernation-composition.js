@@ -5,7 +5,7 @@
 // host stays under its line budget; behavior is unchanged unless noted.
 
 const fs = require('node:fs');
-const { isChatStateBusy } = require('./runtime-busy');
+const { getNative } = require('../native/runtime');
 const { createSessionHibernationRuntime } = require('./hibernation');
 
 // Non-terminal orchestration rows older than this no longer pin a workspace
@@ -59,9 +59,9 @@ function createSessionHibernation(deps) {
       }
       try { if (getWorkspaceAdmission()?.hasActiveLease?.(id)) blockers.push('workspace_lease'); } catch (_) { blockers.push('workspace_lease_unknown'); }
       if (defaultRepoActor.isLeased(id)) blockers.push('repo_lease');
-      // 会话的 chat 运行时忙（唯一判定，见 src/session/runtime-busy.js）。下面的
+      // 会话的 chat 运行时忙（唯一判定，见 native/core/src/active_turns.rs）。下面的
       // active_stream / background_task 是另外两条独立的轴，各自成条 blocker。
-      if (isChatStateBusy(chat)) blockers.push('active_cli');
+      if (getNative().sessionRuntimeIsChatStateBusy(chat)) blockers.push('active_cli');
       if (stream?.busy || stream?.queued) blockers.push('active_stream');
       if ((backgroundTaskRuntime.hasProcessBackgroundTasks || backgroundTaskRuntime.hasLiveBackgroundTasks)(id)) blockers.push('background_task');
       if (waitInjector.hasWait(id)) blockers.push('pending_wait');

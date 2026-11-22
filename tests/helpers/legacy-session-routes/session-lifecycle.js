@@ -6,7 +6,7 @@
 // tests/helpers/session-routes-scripted-world.js.
 
 const { createCodexRolloutGuard } = require('../../../src/chat/codex-rollout-guard');
-const { isChatStateBusy } = require('../../../src/session/runtime-busy');
+const { isChatStateBusy } = require('../session-runtime-busy-oracle');
 
 // Single-session lifecycle routes: DELETE /api/sessions/:id (cascades through
 // the session's worktree, tmux pane and chat process), POST .../relocate

@@ -9,7 +9,6 @@ const zcodeAuth = require('../cli-adapters/zcode-auth');
 const kimiAuth = require('../cli-adapters/kimi-auth');
 const { redactProviderRouteCapability } = require('../observability');
 const { cancelStopsProcess, isResidentSession } = require('../cli/cli-capability');
-const { processAlive } = require('../session/runtime-busy');
 const { getNative } = require('../native/runtime');
 const { createQuestionOwner } = require('../orchestration/native-store-host');
 
@@ -786,16 +785,16 @@ function createSessionWorkHost(deps = {}) {
   // moment we signal (the close handler keys off `cs.claudeProc === proc` to know
   // the turn is no longer active), which made the old wait report "stopped" while
   // the CLI was still very much alive. The killed handle is kept separately and
-  // read directly via processAlive (shared: src/session/runtime-busy.js), and
+  // read directly via processAlive (shared: native/core/src/active_turns.rs), and
   // stopRunner clears the handle on its 'exit' event.
   function runnerStopped(sessionId) {
     const state = deps.getChatSession(sessionId);
     if (!state) return true;
     if (state.isStreaming) return false;
     if (state.claudeProc) return false;
-    if (processAlive(state._cancelledProc)) return false;
-    // Deliberately NOT the shared chat-runtime busy predicate (src/session/
-    // runtime-busy.js): a cancelled resident turn keeps `_activeRunner` until
+    if (getNative().sessionRuntimeProcessAlive(state._cancelledProc)) return false;
+    // Deliberately NOT the shared chat-runtime busy predicate (native/core/src/
+    // active_turns.rs): a cancelled resident turn keeps `_activeRunner` until
     // this very wait completes, so counting it would make the loop never
     // converge and every cancel would end in the timeout path.
     // Two ways a resident lane can still be running after a cancel: the child is
@@ -811,7 +810,7 @@ function createSessionWorkHost(deps = {}) {
   function forceKillRunner(sessionId) {
     const state = deps.getChatSession(sessionId);
     const proc = state && state._cancelledProc;
-    if (!processAlive(proc)) return false;
+    if (!getNative().sessionRuntimeProcessAlive(proc)) return false;
     log.warn?.('session_cancel_runner_force_kill', { sessionId, pid: proc.pid });
     try { proc.kill('SIGKILL'); } catch (_) {}
     return true;
@@ -997,7 +996,7 @@ function createSessionWorkHost(deps = {}) {
       if (chatStateBeforeCancel._activeRunner === runnerBeforeCancel) {
         chatStateBeforeCancel._activeRunner = null;
       }
-      if (!processAlive(chatStateBeforeCancel._cancelledProc)) {
+      if (!getNative().sessionRuntimeProcessAlive(chatStateBeforeCancel._cancelledProc)) {
         chatStateBeforeCancel._cancelledProc = null;
       }
     }

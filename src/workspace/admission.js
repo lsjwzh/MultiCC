@@ -11,7 +11,6 @@ const { createWriterEscalation } = require('./writer-escalation');
 const writerGroup = require('./writer-group');
 const { WORKTREE_SUBDIR } = require('../git/service');
 const { captureCodeRevision } = require('../task-routing/code-revision');
-const { isChatStateBusy } = require('../session/runtime-busy');
 const { getNative } = require('../native/runtime');
 const BACKPRESSURE_CODES = new Set([
   'workspace_busy',
@@ -104,11 +103,11 @@ function createWorkspaceAdmission(deps) {
     return workspace;
   }
   // 「这个会话还在写它自己的工作树吗」= chat 运行时忙（唯一判定，见
-  // src/session/runtime-busy.js）或有后台任务/常驻 stream 泵在跑。这三条是独立的轴，
+  // native/core/src/active_turns.rs）或有后台任务/常驻 stream 泵在跑。这三条是独立的轴，
   // 所以在这里 OR 起来而不是塞进那个判定里。
   function isLive(id) {
     const state = deps.getState(id);
-    return isChatStateBusy(state) || deps.hasBackground(id) || deps.streamBusy(id);
+    return getNative().sessionRuntimeIsChatStateBusy(state) || deps.hasBackground(id) || deps.streamBusy(id);
   }
   function hasActiveLease(id) {
     const workspace = identify(id);

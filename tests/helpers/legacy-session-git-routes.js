@@ -15,7 +15,7 @@ const path = require('path');
 const {
   classifyDisplay, isProcessingLetter, isBackgroundLetter,
 } = require("../../src/classify/vocab");
-const { isChatStateBusy } = require("../../src/session/runtime-busy");
+const { isChatStateBusy } = require("./session-runtime-busy-oracle");
 
 const LOADING_MERGE_STATE = Object.freeze({
   mergeReady: false,

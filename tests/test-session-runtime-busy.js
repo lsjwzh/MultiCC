@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const { isChatStateBusy, processAlive } = require('../src/session/runtime-busy');
+const { sessionRuntimeIsChatStateBusy: isChatStateBusy, sessionRuntimeProcessAlive: processAlive } = require('../src/native/runtime').getNative();
 const { createStateOwner } = require('../src/state/owner');
 const { createChatSessions } = require('../src/chat/sessions');
 
@@ -102,18 +102,13 @@ test('a reaped or nonexistent child is not busy', () => {
   assert.equal(isChatStateBusy({ claudeProc: exitedProc() }), false);
 });
 
-test('the Node port has no busy branch of its own', () => {
-  const port = read('src/session/runtime-busy.js');
-  // 只有委派：两个入口都在原生侧实现（native/core/src/active_turns.rs）。
-  assert.match(port, /getNative\(\)\.sessionChatStateBusy\(/);
-  assert.match(port, /getNative\(\)\.sessionProcAlive\(/);
-  // 四条痕迹的字面量不许再出现在 JS 判定里（注释里可以提到名字，但代码不能读）。
-  for (const trace of ['isStreaming', 'exitCode', 'signalCode', '_activeRunner', 'claudeProc', '_cancelledProc']) {
-    assert.doesNotMatch(port, new RegExp(`\\.${trace}\\b`),
-      `the port must not read ${trace} itself`);
-  }
-  assert.doesNotMatch(port, /function processAlive\(proc\) \{\s*if \(!proc\)/,
-    'the old processAlive body moved to active_turns.rs');
+test('the retired Node port delegates through the native owner', () => {
+  assert.equal(fs.existsSync(path.join(ROOT, 'src/session/runtime-busy.js')), false);
+  const native = require('../src/native/runtime').getNative();
+  assert.equal(typeof native.sessionRuntimeIsChatStateBusy, 'function');
+  assert.equal(typeof native.sessionRuntimeProcessAlive, 'function');
+  assert.match(read('native/core/src/active_turns.rs'), /fn chat_state_busy/);
+  assert.match(read('native/core/src/active_turns.rs'), /fn process_alive/);
 });
 
 test('every call site asks the one predicate', () => {
@@ -133,15 +128,14 @@ test('every call site asks the one predicate', () => {
   const handRolled = /(\w+)\??\.(?:isStreaming|claudeProc)\s*\|\|\s*\1\??\.(?:isStreaming|claudeProc)/;
   for (const file of callers) {
     const src = read(file);
-    assert.match(src, /require\('[^']*runtime-busy'\)/, `${file} must require the shared predicate`);
-    assert.match(src, /isChatStateBusy\(/, `${file} must ask isChatStateBusy()`);
+    assert.match(src, /getNative\(\)\.sessionRuntimeIsChatStateBusy\(/, `${file} must ask the native shared predicate`);
     assert.doesNotMatch(src, handRolled, `${file} still hand-rolls a two-trace busy test`);
   }
   // session-work/host.js 只用它的 processAlive 一半：停止等待刻意不算 _activeRunner
   // （见下一条），所以这里单独钉，不进上面的 isChatStateBusy 列表。
   const workHost = read('src/session-work/host.js');
-  assert.match(workHost, /require\('\.\.\/session\/runtime-busy'\)/);
-  assert.match(workHost, /processAlive\(state\._cancelledProc\)/);
+  assert.match(workHost, /getNative\(\)\.sessionRuntimeProcessAlive\(/);
+  assert.match(workHost, /sessionRuntimeProcessAlive\(state\._cancelledProc\)/);
   assert.doesNotMatch(workHost, /function processAlive\(proc\) \{/,
     'the repo keeps one processAlive, in native/core/src/active_turns.rs');
 });
