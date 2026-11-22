@@ -753,7 +753,7 @@ test('core runner covers every selected path and expands declared variants', () 
   // Chat-history file repository and session creation differential each add one deterministic entry and command.
   // Session runtime-busy differential adds one deterministic entry and command.
   // Session pending-configuration differential adds one deterministic entry and command.
-  // Session login-terminal baseline adds one deterministic entry and command.
+  // Session login-terminal differential adds one deterministic entry and command.
   // All prior manifest entries, variants and commands are preserved.
   assert.equal(core.length, 480, 'the reviewed core set changed; re-audit the release tier');
   assert.equal(plan.entries.length, 480);

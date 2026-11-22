@@ -5900,7 +5900,7 @@
       ]
     },
     {
-      "path": "tests/test-session-login-terminal-baseline.js",
+      "path": "tests/test-session-login-terminal-differential.js",
       "tier": "core",
       "lane": "deterministic"
     },
