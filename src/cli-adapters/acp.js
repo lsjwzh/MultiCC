@@ -56,9 +56,6 @@ function createAcpAdapter({
   routerMcpNode = null, routerMcpScript = null, userInputReminder = '',
   terminalCmd = null,
   nativeUsage = null,
-  // CLIs that keep their login in a per-account HOME (agy): the bridge then
-  // injects the active account's home into the child's environment.
-  accountHomeCli = null,
 }) {
   // Per-adapter decode state, keyed by the agent's own ids so concurrent
   // sessions of the same CLI never share an entry.
@@ -166,7 +163,6 @@ function createAcpAdapter({
     if (so.rawEffort && effortViaConfig && !effortViaArgv) args.push('--effort', so.rawEffort);
     if (so.rawAgent && agentViaMode) args.push('--mode', so.rawAgent);
     if (routerMcpNode && routerMcpScript) args.push('--router-mcp', routerMcpNode, routerMcpScript);
-    if (accountHomeCli) args.push('--account-home', accountHomeCli);
     return args;
   }
 

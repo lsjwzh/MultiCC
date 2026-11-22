@@ -96,9 +96,10 @@ function mountSessionCreateRoutes(app, rawDeps) {
     return res.json(result.session);
   }));
 
-  // agy's per-account sign-in terminal: same dependencies as above, and it has
-  // to live in Node because the PTY does. Mounted here rather than in server.js
-  // to keep that file's ratcheted line budget untouched.
+  // agy's per-account sign-in terminal: the public route is Rust-owned, this
+  // mount only provides the PTY executor that the front door calls over the
+  // session-routes host port. Mounted here rather than in server.js to keep
+  // that file's ratcheted line budget untouched.
   mountAgyAccountRoutes(app, {
     directories: deps.directories,
     createSessionRecord: deps.createSessionRecord,

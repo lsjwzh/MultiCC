@@ -55,8 +55,7 @@ function parseArgs(argv) {
     else if (value === '--effort') options.effort = argv[++index];
     else if (value === '--router-mcp') {
       options.routerMcp = { command: argv[++index], script: argv[++index] };
-    } else if (value === '--account-home') options.accountHome = argv[++index];
-    else if (value === '--resident') options.resident = true;
+    } else if (value === '--resident') options.resident = true;
     else if (value === '--') { options.prompt = argv.slice(index + 1).join(' '); break; }
   }
   if (!options.agentBin) throw new Error('missing --agent-bin');
@@ -108,18 +107,9 @@ function normalizeUsage(usage) {
   };
 }
 
-/// The environment the agent child inherits. agy keeps its whole login in
-/// `$HOME/.gemini`, so a pinned account is served by pointing HOME at that
-/// account's mini-home; `--account-home agy` is set by the adapter
-/// (`src/cli-adapters/agy.js`). No pin leaves the real HOME untouched.
-function childEnv(options, env) {
-  if (!options.accountHome) return env;
-  const patch = require('../agy-accounts').accountEnv();
-  return patch ? { ...env, ...patch } : env;
-}
-
 function createBridge(options, { env = process.env, spawnFn = spawn } = {}) {
-  env = childEnv(options, env);
+  // agy 的账号 HOME 已经在父进程算好（buildChildEnv → withAgyAccountEnv），
+  // 本进程继承到的 `process.env.HOME` 就是活动账号；桥不再自己读账号状态。
   // OpenCode 的 ACP 用量字段为可选；用原生消息游标限定本轮，避免重复累计。
   const nativeUsage = options.nativeUsage === 'opencode'
     ? require('../chat/opencode-context').createOpencodeContextReader({ env }) : null;
@@ -488,4 +478,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { createBridge, childEnv, normalizeUsage, parseArgs, pickPermissionOption, routerMcpServers };
+module.exports = { createBridge, normalizeUsage, parseArgs, pickPermissionOption, routerMcpServers };

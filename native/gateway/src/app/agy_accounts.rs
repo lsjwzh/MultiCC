@@ -27,6 +27,7 @@ pub enum Route {
     ImportPost,
     DeactivatePost,
     ActivatePost,
+    LoginTerminal,
     Delete,
     Options,
 }
@@ -66,6 +67,11 @@ static LAYERS: &[Layer] = &[
         segs: &["agy", "accounts", ":id", "activate"],
         method: "POST",
         kind: Route::ActivatePost,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "login-terminal"],
+        method: "POST",
+        kind: Route::LoginTerminal,
     },
     Layer {
         segs: &["agy", "accounts", ":id"],
@@ -189,7 +195,7 @@ async fn invalidate_spawn_caches() {
     super::agy_quota::invalidate().await;
 }
 
-pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value) -> Response<Body> {
+pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Response<Body> {
     let Some(home) = home_dir() else {
         return express::json(
             ctx,
@@ -243,6 +249,36 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value) -> Response<Bo
             }
             Err(error) => failure(500, error),
         },
+        // 登录是厂商自带的交互 TUI（没有 `agy login` 子命令），PTY 与
+        // createSessionRecord 都在 Node；这里只做账号解析，然后把已校验的
+        // 账号目录交给 host 端口，公开契约仍由前门独占。
+        Route::LoginTerminal => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let Some(meta) = store::meta_file(&home, &id) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            if !meta.is_file() {
+                return failure(404, "unknown account".to_owned());
+            }
+            let Some(dir) = store::account_home(&home, &id) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            if let Err(error) = std::fs::create_dir_all(&dir) {
+                return failure(500, error.to_string());
+            }
+            let payload = json!({
+                "op": "agy-login-terminal",
+                "method": "POST",
+                "id": id,
+                "body": { "home": dir.to_string_lossy() },
+            });
+            match super::session_routes::call(ctx, host, payload).await {
+                Ok(answer) => super::session_routes::relay(ctx, answer),
+                Err(response) => response,
+            }
+        }
         Route::Delete => {
             let Some(id) = account_id(ctx) else {
                 return failure(400, "invalid account id".to_owned());
@@ -296,6 +332,14 @@ mod tests {
             Some(Route::ActivatePost)
         );
         assert_eq!(
+            claim(&Method::POST, "/api/agy/accounts/0123456789abcdef/login-terminal"),
+            Some(Route::LoginTerminal)
+        );
+        assert_eq!(
+            claim(&Method::GET, "/api/agy/accounts/0123456789abcdef/login-terminal"),
+            None
+        );
+        assert_eq!(
             claim(&Method::DELETE, "/api/agy/accounts/0123456789abcdef"),
             Some(Route::Delete)
         );
@@ -324,6 +368,10 @@ mod tests {
             options_share("/api/agy/accounts/0123456789abcdef").as_deref(),
             Some("DELETE")
         );
+        assert_eq!(
+            options_share("/api/agy/accounts/0123456789abcdef/login-terminal").as_deref(),
+            Some("POST")
+        );
         assert_eq!(options_share("/api/agy/quota"), None);
     }
 
@@ -335,6 +383,10 @@ mod tests {
         );
         assert_eq!(
             account_id_in("/api/agy/accounts/0123456789abcdef").as_deref(),
+            Some("0123456789abcdef")
+        );
+        assert_eq!(
+            account_id_in("/api/agy/accounts/0123456789abcdef/login-terminal").as_deref(),
             Some("0123456789abcdef")
         );
         assert_eq!(account_id_in("/api/agy/accounts"), None);

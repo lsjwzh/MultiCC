@@ -11,9 +11,6 @@ function createAgyAdapter({ cmd, routerMcpNode = null, routerMcpScript = null })
     name: 'agy', label: displayNameOf('agy'), cmd,
     agentArgs: ['acp', '--dangerously-skip-permissions'],
     routerMcpNode, routerMcpScript,
-    // agy keeps its login in `$HOME/.gemini`; the bridge points HOME at the
-    // active account's mini-home when one is pinned.
-    accountHomeCli: 'agy',
     terminalCmd(session) {
       let command = quote(cmd);
       if (session.model) command += ` --model ${quote(session.model)}`;

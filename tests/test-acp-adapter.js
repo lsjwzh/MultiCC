@@ -338,8 +338,8 @@ test('Antigravity uses ACP session resume and model configuration', () => {
     '--agent-bin', '/bin/agy', '--label', 'Antigravity', '--agent-arg', 'acp',
     '--agent-arg', '--dangerously-skip-permissions', '--session-id', 'session-1',
     '--model', 'gemini-4-argon', '--effort', 'low', '--router-mcp', '/node', '/router',
-    // agy 的登录在 `$HOME/.gemini`：桥接器按活动账号改写子进程 HOME。
-    '--account-home', 'agy', '--',
+    // agy 的账号 HOME 由父进程的 buildChildEnv 钉好，桥进程继承，不再走参数。
+    '--',
   ]);
   assert.equal(inv.payload, 'hello');
   assert.equal(adapter.buildTerminalCmd({ model: 'gemini-4-argon', cliSessionId: 'session-1' }),
