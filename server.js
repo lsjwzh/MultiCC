@@ -107,7 +107,8 @@ const { createSessionRecords } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');
 const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');
 const { createDirectoryTable } = require('./src/directory/records');
-const { mountPublicSessionAccessGuard } = require('./src/session/public-session-access');
+const mountPublicSessionAccessGuard = (app, options) =>
+  require('./src/native/runtime').getNative().sessionPublicAccessApi().mountPublicSessionAccessGuard(app, options);
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
 const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
 const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');

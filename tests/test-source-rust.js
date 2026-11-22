@@ -116,7 +116,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), sessionStateApi: undefined
   };`);
   assert.equal(probeAddon(staleSessionState), false, 'a stale addon cannot omit the session state service factory');
-  for (const name of ['handoffZipCreate', 'handoffZipRead', 'handoffZipLooksLike', 'handoffZipCrc32', 'handoffZipApi']) {
+  for (const name of ['handoffZipCreate', 'handoffZipRead', 'handoffZipLooksLike', 'handoffZipCrc32', 'handoffZipApi',
+    'sessionSubagentNormalize', 'sessionSubagentWithSource', 'sessionSubagentFamilyDefault',
+    'sessionForkConfiguration', 'sessionSubagentApi', 'sessionForkConfigurationApi',
+    'sessionIsInternalExecutionSlot', 'sessionPublicAccessApi']) {
     const staleZip = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);

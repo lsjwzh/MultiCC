@@ -20,7 +20,9 @@ const { HOST_PATH: PROVIDERS_HOST_PATH } = require('../src/routes/providers-host
 const { createProviderRoutes } = require('../src/routes/providers');
 const { createSessionRecordFactory } = require('../src/session/create-record');
 const { isResidentSession } = require('../src/cli/cli-capability');
-const { withSubagentSource } = require('../src/session/subagent');
+const { getNative } = require('../src/native/runtime');
+const withSubagentSource = (next, previous, inherited) =>
+  getNative().sessionSubagentWithSource(next, previous, inherited);
 
 const CLAUDE_ROUTE = Object.freeze({ providerId: 'sub-claude', model: 'claude-haiku-4-5' });
 const CODEX_ROUTE = Object.freeze({ providerId: 'sub-codex', model: 'gpt-5-codex' });
@@ -558,4 +560,100 @@ test('a default route without a configured key is simply no route', async () => 
   const created = await factory({ dir, cli: 'claude', kind: 'chat' });
   assert.equal(created.ok, true, created.error);
   assert.equal(created.session.subagent, undefined);
+});
+
+test('Rust subagent and fork-configuration match frozen legacy oracles across full matrix', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'src', 'session', 'subagent.js')), false);
+  assert.equal(fs.existsSync(path.join(__dirname, '..', 'src', 'session', 'fork-configuration.js')), false);
+
+  const legacySub = require('./helpers/legacy-session-subagent');
+  const legacyFork = require('./helpers/legacy-fork-configuration');
+  const rustSub = getNative().sessionSubagentApi();
+  const rustFork = getNative().sessionForkConfigurationApi();
+
+  const validIds = new Set(['claude:p1', 'claude:sub-c', 'codex:p2', 'codex:sub-x', 'codex:no-http']);
+  const validProviderId = (app, id) => (validIds.has(`${app}:${id}`) ? { ok: true, value: id } : { ok: false });
+  const providers = { codexProviderProxyable: id => id !== 'no-http' };
+  const validateProviderSelection = (sel, { cli }) => {
+    if (sel == null) return { ok: true, value: null };
+    if (sel.bad) return { ok: false };
+    return { ok: true, value: { ...sel, validatedFor: cli } };
+  };
+
+  // normalizeSubagentInput differential
+  const normCases = [
+    {},
+    { cli: 'claude', subagent: null },
+    { cli: 'claude', subagent: '' },
+    { cli: 'claude', subagent: {} },
+    { cli: 'opencode', subagent: { providerId: 'p1', model: 'm' } },
+    { cli: 'claude', subagent: 'not-an-obj' },
+    { cli: 'claude', subagent: { providerId: 'bad', model: 'm' } },
+    { cli: 'claude', subagent: { providerId: ' sub-c ', model: '   ' } },
+    { cli: 'claude', subagent: { providerId: ' sub-c ', model: ' claude-haiku ' } },
+    { cli: 'claude-exp', subagent: { providerId: 'sub-c', model: 'haiku' } },
+    { cli: 'codex', provider: null, subagent: { providerId: 'sub-x', model: 'gpt-mini' } },
+    { cli: 'codex', provider: 'p2', subagent: { providerId: 'no-http', model: 'gpt-mini' } },
+    { cli: 'codex-exp', provider: 'p2', subagent: { providerId: 'sub-x', model: 'gpt-mini' } },
+  ];
+  for (const input of normCases) {
+    const args = { ...input, validProviderId, providers };
+    assert.deepEqual(rustSub.normalizeSubagentInput(args), legacySub.normalizeSubagentInput(args));
+    assert.deepEqual(getNative().sessionSubagentNormalize(args), legacySub.normalizeSubagentInput(args));
+  }
+
+  // withSubagentSource differential + object identity
+  const route = { providerId: 'sub-c', model: 'haiku' };
+  assert.equal(rustSub.withSubagentSource(null, route, true), null);
+  assert.equal(rustSub.withSubagentSource(route, null, false), route, 'uninherited returns original object identity');
+  assert.deepEqual(
+    rustSub.withSubagentSource(route, { ...route, inherited: true }, false),
+    legacySub.withSubagentSource(route, { ...route, inherited: true }, false),
+  );
+  assert.deepEqual(
+    rustSub.withSubagentSource(route, { providerId: 'other', model: 'haiku', inherited: true }, false),
+    legacySub.withSubagentSource(route, { providerId: 'other', model: 'haiku', inherited: true }, false),
+  );
+  assert.deepEqual(
+    rustSub.withSubagentSource(route, null, true),
+    legacySub.withSubagentSource(route, null, true),
+  );
+
+  // familyDefaultSubagent differential
+  const defaults = { subagent: { claude: { providerId: 'sub-c', model: 'haiku' }, codex: { providerId: 'sub-x', model: 'gpt-mini' } } };
+  for (const [cli, provider] of [
+    ['claude', null], ['claude-exp', 'p1'], ['codex', null], ['codex', 'p2'], ['codex-exp', 'p2'], ['opencode', null],
+  ]) {
+    const args = { cli, provider, providerDefaults: defaults, validProviderId, providers };
+    assert.deepEqual(rustSub.familyDefaultSubagent(args), legacySub.familyDefaultSubagent(args));
+  }
+
+  // forkConfiguration differential (plain, pendingConfiguration overlay, invalid provider, invalid selection, invalid subagent)
+  const forkDeps = { validProviderId, validateProviderSelection, providers };
+  const forkRecords = [
+    { cli: 'claude', provider: 'p1', model: 'sonnet', effort: 'high', subagent: { providerId: 'sub-c', model: 'haiku' }, rolePrompt: 'hi' },
+    { cli: 'claude', provider: 'deleted', model: 'sonnet', subagent: { providerId: 'sub-c', model: 'haiku' } },
+    { cli: 'claude', provider: 'p1', providerSelection: { bad: true }, model: 'sonnet' },
+    { cli: 'claude', provider: 'p1', subagent: { providerId: 'deleted', model: 'haiku' } },
+    {
+      cli: 'claude', provider: 'p1', model: 'old',
+      pendingConfiguration: {
+        cli: 'codex',
+        profile: { provider: 'p2', providerSelection: { mode: 'manual' }, model: 'gpt-5', effort: 'medium', agent: null, subagent: { providerId: 'sub-x', model: 'gpt-mini' }, rolePrompt: null },
+      },
+    },
+    {
+      cli: 'claude', provider: 'p1',
+      pendingConfiguration: {
+        cli: 'codex',
+        profile: { provider: 'p2', providerSelection: null, model: 'gpt-5', effort: null, agent: null, subagent: { providerId: 'no-http', model: 'gpt-mini' }, rolePrompt: null },
+      },
+    },
+  ];
+  for (const rec of forkRecords) {
+    assert.deepEqual(rustFork.forkConfiguration(rec, forkDeps), legacyFork.forkConfiguration(rec, forkDeps));
+    assert.deepEqual(getNative().sessionForkConfiguration(rec, forkDeps), legacyFork.forkConfiguration(rec, forkDeps));
+  }
 });

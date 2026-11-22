@@ -576,6 +576,12 @@ SDK、平台、配置和数据格式不变；不重启服务，不推送。私�
 
 两个生产消费者（`src/plugins/installer.js`、`src/routes/session-bundle.js`）直接通过既有 `src/native/runtime.js` 调用原生导出，共享 runtime 不新增包装代码，生产 Node 代码净减 242 行。独立打包构建脚本 `scripts/zip-archive.js`（非后端运行时）内联 11 行 CRC32 表以保持无 addon 打包能力；原模块冻结至 `tests/helpers/legacy-handoff-zip.js` 仅供测试对拍与冻结路由夹具引用。`scripts/rust-source-cache.js` 与 `tests/test-source-rust.js` 新增原生 ZIP 导出与功能探针校验，拒绝旧版 addon。`tests/test-handoff-zip.js` 保留原全部 6 项核心用例并补充与冻结旧版双向互读、CRC32、Unix 权限位、错误消息一致性及服务工厂选项合并的差分测试。
 
+### 子任务路由、分叉配置与公开会话访问守卫（Rust 迁移）
+
+以 `a14ebc4f` 为基线，同批删除 3 个 `src/session/` 独立模块（共 140 行）：`src/session/subagent.js`（68 行）、`src/session/fork-configuration.js`（27 行）与 `src/session/public-session-access.js`（45 行），分别冻结至 `tests/helpers/legacy-session-subagent.js`、`tests/helpers/legacy-fork-configuration.js` 与 `tests/helpers/legacy-public-session-access.js` 作为测试对照样本。
+
+对应规则与 N-API 兼容表面迁入 `native/core/src/session_subagent.rs`、`native/core/src/public_session_access.rs` 与 `native/addon/src/session_subagent.rs`、`native/addon/src/public_session_access.rs`：保留 `normalizeSubagentInput` / `withSubagentSource` / `familyDefaultSubagent`、`forkConfiguration`（含 `pendingConfiguration` 叠层与配置字段克隆）以及 `isInternalExecutionSlot` / `createPublicSessionAccessGuard` / `mountPublicSessionAccessGuard`（含 WeakMap 弱引用闭环、Express `length === 3` 中间件 arity 与 `/api/v1/` 404 分流）。所有生产调用点直接通过 `src/native/runtime.js` 调用原生导出，不新增 Node 业务实现。`scripts/rust-source-cache.js` 与 `tests/test-source-rust.js` 新增 8 个原生导出与探针校验，`tests/test-public-session-access.js` 与 `tests/test-subagent-defaults.js` 补充与冻结旧版的全量差分测试。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

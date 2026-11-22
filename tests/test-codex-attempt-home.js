@@ -55,7 +55,7 @@ function treeText(directory) {
 test.after(restoreEnvironment);
 
 test('official follow-main subagent validates and materializes through the host relay', () => {
-  const { normalizeSubagentInput } = require('../src/session/subagent');
+  const { sessionSubagentNormalize: normalizeSubagentInput } = require('../src/native/runtime').getNative();
   const { resolveSubagent } = require('../public/chat-ai-config');
   const official = providers.createProvider({ appType: 'codex', name: 'Follow main official' });
   const validProviderId = (_cli, id) => ({ ok: !!providers.getProvider('codex', id), value: id });

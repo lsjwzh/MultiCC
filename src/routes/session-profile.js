@@ -2,8 +2,10 @@
 
 const crypto = require('crypto');
 const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
-const { normalizeSubagentInput, withSubagentSource } = require('../session/subagent');
-const { forkConfiguration } = require('../session/fork-configuration');
+const { getNative } = require('../native/runtime');
+const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
+const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
+const forkConfiguration = (record, deps) => getNative().sessionForkConfiguration(record, deps);
 const { selectionKey } = require('../providers/auto-provider-config');
 const fs = require('fs');
 const path = require('path');
