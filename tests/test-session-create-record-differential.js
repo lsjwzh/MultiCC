@@ -11,7 +11,7 @@ const frozen = new Module(filename, module);
 frozen.filename = filename;
 frozen.paths = Module._nodeModulePaths(path.dirname(filename));
 frozen._compile(fs.readFileSync(path.join(__dirname, 'helpers/legacy-session-create-record.js'), 'utf8'), filename);
-const candidate = require('../src/session/create-record');
+const candidate = { createSessionRecordFactory: deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, path) };
 
 function world(implementation, scenario) {
   const events = [];
@@ -24,9 +24,9 @@ function world(implementation, scenario) {
     validateExperimentalSession: () => ({ ok: true }), tuiChatMirrorEnabled: () => false,
     normalizeEffort: value => scenario.invalidEffort ? undefined : value, validEffortForCli: () => !scenario.invalidReasoning,
     codexDefaultReasoningLevel: () => 'medium', normalizeCliAgent: () => null,
-    validateProviderSelection: () => scenario.selectionError ? { ok: false, error: 'bad selection' } : ({ ok: true, value: null }),
+    validateProviderSelection: () => scenario.selectionError ? { ok: false, error: 'bad selection' } : ({ ok: true, value: scenario.selection || null }),
     providers: { normalizeOfficialProviderId: (_cli, id) => id },
-    primaryProviderCandidate: () => null, providerDefaults: {},
+    primaryProviderCandidate: () => scenario.primary || null, providerDefaults: scenario.providerDefaults || {},
     validProviderId: (_cli, id) => ({ ok: !scenario.invalidProvider, value: id }),
     allocateSessionId: () => 's1', persistedSessions: records,
     ensureDirGitReady: async () => { events.push(['ready']); return scenario.ready || { ok: true }; },
@@ -45,6 +45,8 @@ function normalize(value) {
 }
 const dir = { id: 'd1', path: '/repo', baseBranch: 'main' };
 const cases = [
+  ['missing argument', undefined, {}],
+  ['null argument', null, {}],
   ['missing directory', {}, {}],
   ['invalid cli', { dir, cli: 'invalid', kind: 'chat' }, {}],
   ['invalid kind', { dir, cli: 'claude', kind: 'other' }, {}],
@@ -55,6 +57,13 @@ const cases = [
   ['invalid reasoning', { dir, cli: 'claude', kind: 'chat' }, { invalidReasoning: true }],
   ['invalid provider selection', { dir, cli: 'claude', kind: 'chat' }, { selectionError: true }],
   ['invalid provider', { dir, cli: 'claude', kind: 'chat', provider: 'bad' }, { invalidProvider: true }],
+  ['selected provider allowed', { dir, cli: 'claude', kind: 'chat', provider: 'p1' }, { selection: { candidates: [{ providerId: 'p1', enabled: true }] } }],
+  ['selected provider rejected', { dir, cli: 'claude', kind: 'chat', provider: 'p1' }, { selection: { candidates: [{ providerId: 'p1', enabled: false }] } }],
+  ['sparse selected candidates', { dir, cli: 'claude', kind: 'chat', provider: 'p1' }, { selection: { candidates: [, { providerId: 'p1', enabled: true }] } }],
+  ['native vendor default', { dir, cli: 'claude', kind: 'chat' }, { primary: { providerId: 'gemini-native:gemini' }, providerDefaults: { claude: 'fallback' } }],
+  ['explicit subagent disabled', { dir, cli: 'claude', kind: 'chat', subagent: null }, {}],
+  ['account picks', { dir, cli: 'claude', kind: 'chat', cliAccounts: { claude: 'acct', codex: '', bad: 2 } }, {}],
+  ['worker flags', { dir, cli: 'claude', kind: 'chat', type: 'worker', taskExecutionSlot: true, ephemeral: true }, {}],
   ['invalid login', { dir, cli: 'claude', kind: 'chat', loginFlow: 'codex-login' }, {}],
   ['role prompt too long', { dir, cli: 'claude', kind: 'chat', rolePrompt: 'x'.repeat(40001) }, {}],
   ['validate only', { dir, cli: 'claude', kind: 'chat', validateOnly: true }, {}],
