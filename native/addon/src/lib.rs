@@ -45,6 +45,7 @@ pub mod cpr;
 pub mod events;
 pub mod exact_secret;
 pub mod guard;
+pub mod handoff_zip;
 pub mod http_entry;
 pub mod js_bridge;
 mod js_live;

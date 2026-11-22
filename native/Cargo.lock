@@ -1506,6 +1506,8 @@ dependencies = [
  "bytes",
  "chrono",
  "chrono-tz",
+ "crc32fast",
+ "flate2",
  "fs2",
  "futures-util",
  "getrandom 0.3.4",

@@ -18,7 +18,8 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createZip } = require('../src/session/handoff-zip');
+const { getNative } = require('../src/native/runtime');
+const createZip = (entries, opts) => getNative().handoffZipCreate(entries, opts);
 const { createPluginInstaller } = require('../src/plugins/installer');
 const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/routes/plugins');
 const { parseCatalog } = require('../src/plugins/catalog');

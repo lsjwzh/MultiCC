@@ -42,6 +42,7 @@ pub mod event_routes;
 pub mod events;
 pub mod exact_secret;
 pub mod git_history;
+pub mod handoff_zip;
 pub mod host_ops_routes;
 pub mod http_entry;
 pub mod http_gate;

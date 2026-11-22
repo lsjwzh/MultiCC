@@ -341,7 +341,7 @@ async function stopServer() {
   assert.equal((afterRestart.messages || []).length, 3, 'the source archive survives a restart read');
 
   // ── v3 zip transport: export real zip bytes → import-zip end-to-end ──
-  const { readZip } = require('../src/session/handoff-zip');
+  const { handoffZipRead: readZip } = require('../src/native/runtime').getNative();
   const zipResponse = await fetch(
     `${BASE}/api/sessions/${sourceId}/bundle.zip?passphrase=${encodeURIComponent(PASSPHRASE)}`,
     { headers: { Authorization: `Bearer ${TOKEN}` } });

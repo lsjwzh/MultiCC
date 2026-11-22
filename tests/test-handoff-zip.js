@@ -1,13 +1,24 @@
 'use strict';
 
-// Unit tests for src/session/handoff-zip.js — the zip container behind session
-// handoff bundle v3. Everything is in-memory; no filesystem, no network.
+// Unit + differential tests for the Rust ZIP container (former
+// src/session/handoff-zip.js) behind session handoff bundle v3 and plugin
+// package unpacking. Everything is in-memory; no filesystem, no network.
 
 const test = require('node:test');
 const assert = require('assert');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const zlib = require('zlib');
-const { createZip, readZip, looksLikeZip, crc32 } = require('../src/session/handoff-zip');
+
+const { getNative } = require('../src/native/runtime');
+const legacy = require('./helpers/legacy-handoff-zip');
+
+const api = () => getNative().handoffZipApi();
+const createZip = (entries, opts) => api().createZip(entries, opts);
+const readZip = (buf, opts) => api().readZip(buf, opts);
+const looksLikeZip = buf => api().looksLikeZip(buf);
+const crc32 = buf => api().crc32(buf);
 
 test('createZip/readZip round-trips text, binary, unicode names and empty files', () => {
   const entries = [
@@ -116,4 +127,120 @@ test('zip is deflated with raw streams so standard tools agree on the bytes', ()
   assert.equal(method, 8);
   const inflated = zlib.inflateRawSync(zip.slice(start, start + compSize));
   assert.equal(inflated.toString('utf8'), data.toString('utf8'));
+});
+
+test('Rust handoffZip matches frozen legacy Node oracle across formats, modes and errors', () => {
+  assert.equal(
+    fs.existsSync(path.join(__dirname, '..', 'src', 'session', 'handoff-zip.js')),
+    false,
+    'retired Node module must not exist under src/',
+  );
+
+  // CRC32 differential across empty, ASCII, UTF-8, and random binary inputs
+  for (const sample of [
+    Buffer.alloc(0),
+    Buffer.from('123456789'),
+    Buffer.from('你好，世界'),
+    Buffer.from([0x00, 0xff, 0x80, 0x7f, 0x01, 0xfe]),
+    crypto.randomBytes(1024),
+  ]) {
+    assert.equal(crc32(sample), legacy.crc32(sample));
+    assert.equal(getNative().handoffZipCrc32(sample), legacy.crc32(sample));
+  }
+
+  // Bidirectional interop: Rust writer ↔ legacy reader, legacy writer ↔ Rust reader
+  const corpus = [
+    { name: 'dir/', data: '' },
+    { name: 'dir/plugin.json', data: '{"id":"demo"}', mode: 0o100644 },
+    { name: 'dir/bin/run', data: '#!/bin/sh\necho hi\n', mode: 0o100755 },
+    { name: 'dir/no-mode.txt', data: 'plain text '.repeat(80) },
+    { name: 'dir/non-int-mode.txt', data: 'float', mode: 12.5 },
+    { name: 'dir/str-coerce.txt', data: 12345 },
+    { name: 'dir/raw.bin', data: crypto.randomBytes(512) },
+  ];
+
+  const rustZip = createZip(corpus);
+  const legacyZip = legacy.createZip(corpus);
+  assert.equal(looksLikeZip(rustZip), legacy.looksLikeZip(rustZip));
+  assert.equal(looksLikeZip(legacyZip), legacy.looksLikeZip(legacyZip));
+  for (const nonZip of [null, undefined, '', 'PK\x03\x04', 123, {}, Buffer.from('PK\x03')]) {
+    assert.equal(looksLikeZip(nonZip), legacy.looksLikeZip(nonZip));
+  }
+
+  const fromRustByLegacy = legacy.readZip(rustZip);
+  const fromRustByRust = readZip(rustZip);
+  const fromLegacyByRust = readZip(legacyZip);
+  const fromLegacyByLegacy = legacy.readZip(legacyZip);
+
+  assert.deepEqual(fromRustByRust, fromRustByLegacy);
+  assert.deepEqual(fromLegacyByRust, fromLegacyByLegacy);
+  assert.deepEqual(fromRustByRust, fromLegacyByLegacy);
+
+  // Error parity for unsafe names, control chars, drive letters, Zip64, bad dir, non-buffer
+  const badNames = [
+    '',
+    '../escape',
+    'a/../b',
+    '/root',
+    'C:drive.txt',
+    'z:drive.txt',
+    'a\\b',
+    'a\0b',
+    'a\x01b',
+    'a\x1fb',
+    'a\x7fb',
+    'a'.repeat(241),
+  ];
+  for (const bad of badNames) {
+    let legacyErr;
+    let rustErr;
+    try { legacy.createZip([{ name: bad, data: 'x' }]); } catch (e) { legacyErr = e.message; }
+    try { createZip([{ name: bad, data: 'x' }]); } catch (e) { rustErr = e.message; }
+    assert.ok(legacyErr, `legacy should reject ${JSON.stringify(bad)}`);
+    assert.equal(rustErr, legacyErr, `error message parity for ${JSON.stringify(bad)}`);
+  }
+
+  // Non-empty directory entry rejected identically
+  const badDirZip = legacy.createZip([{ name: 'dir/', data: 'non-empty' }]);
+  let legacyDirErr;
+  let rustDirErr;
+  try { legacy.readZip(badDirZip); } catch (e) { legacyDirErr = e.message; }
+  try { readZip(badDirZip); } catch (e) { rustDirErr = e.message; }
+  assert.equal(rustDirErr, legacyDirErr);
+
+  // Zip64 sentinel rejected identically
+  const zip64 = Buffer.from(legacyZip);
+  zip64.writeUInt16LE(0xffff, zip64.length - 12);
+  assert.throws(() => readZip(zip64), /zip64/);
+  assert.throws(() => legacy.readZip(zip64), /zip64/);
+
+  // Non-buffer input to readZip
+  for (const badBuf of [null, undefined, 'not-a-buffer', 42]) {
+    assert.throws(() => readZip(badBuf), /too short/);
+    assert.throws(() => legacy.readZip(badBuf), /too short/);
+  }
+});
+
+test('createHandoffZipService merges default and per-call options identically', () => {
+  const rustSvc = api().createHandoffZipService({ maxEntries: 2, maxTotalBytes: 20 });
+  const legacySvc = legacy.createHandoffZipService({ maxEntries: 2, maxTotalBytes: 20 });
+
+  const twoSmall = [{ name: 'a.txt', data: '12345' }, { name: 'b.txt', data: '67890' }];
+  const threeSmall = [...twoSmall, { name: 'c.txt', data: '1' }];
+  const twoBig = [{ name: 'a.txt', data: 'x'.repeat(25) }];
+
+  const z = rustSvc.createZip(twoSmall);
+  assert.equal(rustSvc.looksLikeZip(z), true);
+  assert.deepEqual(rustSvc.readZip(z), legacySvc.readZip(z));
+
+  assert.throws(() => rustSvc.createZip(threeSmall), /too many zip entries \(3 > 2\)/);
+  assert.throws(() => legacySvc.createZip(threeSmall), /too many zip entries \(3 > 2\)/);
+  assert.throws(() => rustSvc.createZip(twoBig), /total uncompressed/);
+  assert.throws(() => legacySvc.createZip(twoBig), /total uncompressed/);
+
+  // Per-call override raises cap
+  const z3 = rustSvc.createZip(threeSmall, { maxEntries: 5 });
+  assert.throws(() => rustSvc.readZip(z3), /too many zip entries \(3 > 2\)/);
+  assert.equal(rustSvc.readZip(z3, { maxEntries: 5 }).length, 3);
+  assert.equal(legacySvc.readZip(z3, { maxEntries: 5 }).length, 3);
 });

@@ -6,20 +6,34 @@
 //   - GNU tar cannot write zip at all, and the tar that answers to `tar` differs
 //     between Git Bash, macOS and Linux — so a cross-arch Windows build would
 //     work on one runner and fail on another;
-//   - the bundle holds >10k files, which rules out src/session/handoff-zip.js's
-//     in-memory writer (it caps entries and total bytes on purpose);
+//   - the bundle holds >10k files, which rules out the in-memory handoff zip
+//     writer (it caps entries and total bytes on purpose);
 //   - PowerShell's Compress-Archive is one more thing to keep working at a
 //     distance, and it changes nothing about what the user gets.
 //
 // Entries stream to disk one file at a time: peak memory is the largest single
 // file, not the archive. Method 0 (store) and 8 (deflate) only, zip32, UTF-8
-// names — the subset src/session/handoff-zip.js's reader accepts, which is what
+// names — the subset the Rust handoff-zip reader accepts, which is what
 // the round-trip test exercises.
 
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-const { crc32 } = require('../src/session/handoff-zip');
+
+// Standalone build-script CRC32 (IEEE 802.3) so packaging works without loading
+// the runtime native addon.
+const CRC_TABLE = new Int32Array(256);
+for (let n = 0; n < 256; n++) {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+  CRC_TABLE[n] = c;
+}
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
 
 const SIG_LOCAL = 0x04034b50;
 const SIG_CENTRAL = 0x02014b50;

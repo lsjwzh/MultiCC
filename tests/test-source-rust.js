@@ -116,6 +116,12 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     ...require(${JSON.stringify(path.resolve(addon))}), sessionStateApi: undefined
   };`);
   assert.equal(probeAddon(staleSessionState), false, 'a stale addon cannot omit the session state service factory');
+  for (const name of ['handoffZipCreate', 'handoffZipRead', 'handoffZipLooksLike', 'handoffZipCrc32', 'handoffZipApi']) {
+    const staleZip = write(root, `stale-${name}.js`, `module.exports = {
+      ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
+    };`);
+    assert.equal(probeAddon(staleZip), false, `a stale addon cannot omit ${name}`);
+  }
   assert.equal(probeAddon(wrapper), false, 'an exported function alone cannot pass preflight');
   const staleChatWs = write(root, 'stale-chat-ws.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), chatWsControlAction: undefined
