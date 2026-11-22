@@ -656,7 +656,7 @@ SDK、平台、配置和数据格式不变；不重启服务，不推送。私�
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
 
-### 会话记录创建（Rust 迁移，待最终验收）
+### 会话记录创建（Rust 迁移）
 
 以 `18c6095f` 为基线，退役 `src/session/create-record.js`；旧文件逐字节
 冻结到 `tests/helpers/legacy-session-create-record.js`。会话创建规则及异步
@@ -664,7 +664,12 @@ SDK、平台、配置和数据格式不变；不重启服务，不推送。私�
 `native/addon/src/session_create_record.rs` 拥有，生产入口通过
 `src/native/runtime.js` 的 N-API 工厂调用；注入 Node 原生 path 接口以保持跨平台路径行为。
 Rust 源码缓存探针要求新工厂存在并执行早期验证，差分测试对照冻结样本
-检查返回值、事件、持久记录及验证失败、共享工作区和分阶段回滚。
+检查返回值、事件、持久记录及验证失败、共享工作区和分阶段回滚；弱映射
+捕获避免工厂及未完成异步回调的循环引用阻止回收。
+
+验收：Rust 核心测试 1,529 项通过，rustfmt、严格 Clippy、addon 与 gateway
+构建及治理检查通过；指纹 `6b78bdb4f060ef6af2f85e70` 的产物通过探针，
+相关 Node 回归 112 项通过，其中创建工厂对拍和回收验证 40 项。
 
 当前 `src/` 有 546 个 `.js` / `.cjs` 文件，按文件所在目录统计：
 
