@@ -13,6 +13,7 @@ import '../services/manage_service.dart';
 import '../services/opencode_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../services/codebuddy_models_service.dart';
+import '../services/agy_models_service.dart';
 import '../services/commandcode_grok_models_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';

@@ -32,6 +32,7 @@ function createCliAdapters(deps) {
   console.log(`[multicc] Using kimi: ${commands.kimi}`);
   console.log(`[multicc] Using codebuddy: ${commands.codebuddy}`);
   console.log(`[multicc] Using dsh: ${commands.dsh}`);
+  console.log(`[multicc] Using agy: ${commands.agy}`);
 
   const buildRegistry = () => createCliProviderRegistry([
     createClaudeAdapter({

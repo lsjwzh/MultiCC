@@ -1,8 +1,8 @@
 //! Antigravity account quota from the official agy CLI. The subprocess is
 //! asynchronous, bounded, single-flight and never exposes its raw output.
 use super::{
+    agy_catalog::executable,
     express::{self, RequestCtx},
-    model_catalogs::agy_executable,
 };
 use axum::{body::Body, http::Response};
 use serde_json::{json, Value};
@@ -14,8 +14,11 @@ use std::{
 use tokio::{io::AsyncReadExt, process::Command, sync::Mutex};
 
 const TTL: Duration = Duration::from_secs(60);
+const FAIL_TTL: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: u64 = 1024 * 1024;
-static CACHE: OnceLock<Mutex<Option<(Instant, Value)>>> = OnceLock::new();
+/// `None` records a failed probe, so a signed-out or offline CLI is not spawned
+/// on every page load.
+static CACHE: OnceLock<Mutex<Option<(Instant, Option<Value>)>>> = OnceLock::new();
 
 fn render(data: &Value, now_ms: u64) -> Option<Value> {
     let groups = data.pointer("/command/data/groups")?.as_array()?;
@@ -23,19 +26,28 @@ fn render(data: &Value, now_ms: u64) -> Option<Value> {
     let mut details = Vec::new();
     let mut lowest = 100.0_f64;
     for group in groups {
-        let name = group.get("name")?.as_str()?;
+        // One malformed group or bucket must not blank the whole bar: skip what
+        // cannot be rendered and keep the rest.
+        let Some(name) = group.get("name").and_then(Value::as_str) else {
+            continue;
+        };
         if name.is_empty() || name.len() > 120 || name.chars().any(char::is_control) {
-            return None;
+            continue;
         }
         let group_name = match name {
             "Gemini Models" => "Gemini",
             "Claude and GPT models" => "Claude/GPT",
             other => other,
         };
-        for bucket in group.get("buckets")?.as_array()? {
-            let remaining = bucket.get("remaining_fraction")?.as_f64()?;
+        let Some(buckets) = group.get("buckets").and_then(Value::as_array) else {
+            continue;
+        };
+        for bucket in buckets {
+            let Some(remaining) = bucket.get("remaining_fraction").and_then(Value::as_f64) else {
+                continue;
+            };
             if !(0.0..=1.0).contains(&remaining) {
-                return None;
+                continue;
             }
             let window = bucket.get("window").and_then(Value::as_str).unwrap_or("");
             let label = match window {
@@ -44,7 +56,7 @@ fn render(data: &Value, now_ms: u64) -> Option<Value> {
                 _ => bucket.get("name").and_then(Value::as_str).unwrap_or("额度"),
             };
             if label.len() > 120 || label.chars().any(char::is_control) {
-                return None;
+                continue;
             }
             let pct = (remaining * 100.0).round();
             lowest = lowest.min(pct);
@@ -91,7 +103,7 @@ fn render(data: &Value, now_ms: u64) -> Option<Value> {
 }
 
 async fn fetch() -> Option<Value> {
-    let mut child = Command::new(agy_executable())
+    let mut child = Command::new(executable())
         .args([
             "-p",
             "/usage",
@@ -120,6 +132,10 @@ async fn fetch() -> Option<Value> {
     render(&data, now_ms)
 }
 
+fn unavailable_bar() -> Value {
+    json!({"status":"unavailable", "bar":{"text":"反重力额度查询失败 · 点击重试", "title":"无法读取 agy 账号额度，请确认已登录并检查网络。", "color":"#f85149", "action":"refresh"}})
+}
+
 pub async fn handle(ctx: &RequestCtx) -> Response<Body> {
     let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().await;
     let force = ctx
@@ -131,8 +147,10 @@ pub async fn handle(ctx: &RequestCtx) -> Response<Body> {
         .any(|part| part == "force=1");
     if !force {
         if let Some((when, value)) = cache.as_ref() {
-            if when.elapsed() < TTL {
-                return express::json(ctx, 200, value, &[("Cache-Control", "no-store")]);
+            let ttl = if value.is_some() { TTL } else { FAIL_TTL };
+            if when.elapsed() < ttl {
+                let body = value.clone().unwrap_or_else(unavailable_bar);
+                return express::json(ctx, 200, &body, &[("Cache-Control", "no-store")]);
             }
         }
     }
@@ -140,12 +158,8 @@ pub async fn handle(ctx: &RequestCtx) -> Response<Body> {
         .await
         .ok()
         .flatten();
-    let value = if let Some(result) = result {
-        *cache = Some((Instant::now(), result.clone()));
-        result
-    } else {
-        json!({"status":"unavailable", "bar":{"text":"反重力额度查询失败 · 点击重试", "title":"无法读取 agy 账号额度，请确认已登录并检查网络。", "color":"#f85149", "action":"refresh"}})
-    };
+    *cache = Some((Instant::now(), result.clone()));
+    let value = result.unwrap_or_else(unavailable_bar);
     express::json(ctx, 200, &value, &[("Cache-Control", "no-store")])
 }
 

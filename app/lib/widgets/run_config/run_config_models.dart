@@ -7,6 +7,7 @@ library;
 import '../../models/message.dart';
 import '../../services/claude_models_service.dart';
 import '../../services/codebuddy_models_service.dart';
+import '../../services/agy_models_service.dart';
 import '../../services/commandcode_grok_models_service.dart';
 import '../../services/codex_models_service.dart';
 import '../../services/opencode_models_service.dart';

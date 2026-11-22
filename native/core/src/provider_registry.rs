@@ -74,7 +74,7 @@ pub fn native_provider_line(
 
 /// Lanes that own a vendor catalog, so their native line id `<cli>-native:<id>`
 /// is structural. Mirrors `VENDOR_NATIVE_CLIS` in `src/providers/native-vendor.js`.
-pub const VENDOR_NATIVE_CLIS: [&str; 7] = [
+pub const VENDOR_NATIVE_CLIS: [&str; 8] = [
     "qoder",
     "codebuddy",
     "gemini",
@@ -82,6 +82,7 @@ pub const VENDOR_NATIVE_CLIS: [&str; 7] = [
     "commandcode",
     "dsh",
     "grok",
+    "agy",
 ];
 /// Mirrors `NATIVE_VENDOR_SUFFIX` in `src/providers/native-vendor.js`.
 pub const NATIVE_VENDOR_SUFFIX: &str = "-native:";
@@ -1706,6 +1707,16 @@ mod tests {
             .iter()
             .map(|cli| (*cli).to_string())
             .collect()
+    }
+
+    #[test]
+    fn vendor_native_clis_mirror_the_node_vendor_table() {
+        // Mirrors VENDOR_NATIVE_CLIS in src/providers/native-vendor.js; a vendor
+        // missing here makes PUT /api/provider-defaults reject its native id.
+        assert_eq!(
+            vendor_list(),
+            vec!["qoder", "codebuddy", "gemini", "pi", "commandcode", "dsh", "grok", "agy"]
+        );
     }
 
     fn claude_facts(api_format: &str) -> ProviderCliFacts {

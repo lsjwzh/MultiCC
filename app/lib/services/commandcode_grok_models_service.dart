@@ -65,19 +65,6 @@ class CommandCodeModelsService {
   Future<List<LiveModel>> load() => catalog.load(settings);
 }
 
-/// Antigravity logical model ids, discovered from its signed-in ACP session.
-class AgyModelsService {
-  AgyModelsService({required this.settings});
-  final SettingsService settings;
-  static final LiveModelCatalog catalog = LiveModelCatalog(path: '/api/agy/models');
-  static List<LiveModel> get cached => catalog.cached;
-  static List<MapEntry<String, String>> options() => [
-    const MapEntry('', '默认（跟随 Antigravity 配置）'),
-    for (final m in cached) MapEntry(m.id, m.label),
-  ];
-  Future<List<LiveModel>> load() => catalog.load(settings);
-}
-
 /// Grok Build's `grok models` list (GET /api/grok/models).
 class GrokModelsService {
   GrokModelsService({required this.settings});

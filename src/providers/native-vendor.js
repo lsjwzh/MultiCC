@@ -17,6 +17,7 @@ const { peekCommandcodeModels } = require('../routes/commandcode-models');
 const { peekQoderModels } = require('../routes/qoder-models');
 const { peekCodebuddyModels } = require('../routes/codebuddy-models');
 const { peekGrokModels } = require('../routes/grok-models');
+const { peekAgyModels } = require('../routes/agy-models');
 
 // Lanes that own a vendor catalog. dsh/grok are additionally managed-capable
 // (they can run MultiCC provider lines); their native line is still a valid
@@ -73,6 +74,7 @@ function nativeVendorModels(cli) {
     if (cli === 'qoder') return modelIds(peekQoderModels());
     if (cli === 'codebuddy') return modelIds(peekCodebuddyModels());
     if (cli === 'grok') return modelIds(peekGrokModels());
+    if (cli === 'agy') return modelIds(peekAgyModels());
   } catch (_) { /* a cold route must not break a turn */ }
   if (cli === 'dsh') return [...DSH_MODELS];
   if (cli === 'gemini') return [...GEMINI_MODELS];

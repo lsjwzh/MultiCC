@@ -19,6 +19,7 @@ import '../../models/provider_limit_label.dart';
 import '../../providers/session_manager.dart';
 import '../../services/auto_provider_routing.dart';
 import '../../services/codebuddy_models_service.dart';
+import '../../services/agy_models_service.dart';
 import '../../services/commandcode_grok_models_service.dart';
 import '../../services/native_vendor_service.dart';
 import '../../services/codex_models_service.dart';
