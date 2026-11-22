@@ -1003,3 +1003,81 @@ Set/Promise 身份及无 addon 加载，并完成并发、前缀与异常差分�
 | `src/wait/` | 2 |
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
+
+### 会话休眠回收（Rust 迁移）
+
+以 `4a9c88c1` 为基线，退役 `src/session/hibernation-reclaimer.js`（85 行），原文件
+逐字节冻结至 `tests/helpers/legacy-hibernation-reclaimer.js`。容量上限钳制、休眠结果
+分类、跳过发布闸与成功预算判定位于 `native/core/src/session_hibernation_reclaimer.rs`
+（6 项单测）；候选选择（排除集包装、idleMs 双重强制转换、跳过发布的短路读取顺序、
+localeCompare 平局、BigInt 差值）、顺序休眠循环（迭代器关闭语义、分类在 try 之外、
+await 对 thenable 的同化）与容量尾链串行化位于
+`native/addon/src/session_hibernation_reclaimer.rs`。唯一生产调用点
+`src/session/hibernation.js` 改经 `src/native/runtime.js` 使用原生
+`sessionHibernationReclaimerCreate`，探针核对导出与冻结形状；27 项差分对照冻结副本，
+覆盖解构顺序、迭代器协议（关闭与不关闭）、异常身份、强制转换次数、键顺序、微任务
+时序与容量串行。
+
+必要的 Node 兼容桥包括：注入端口（records/now/idleMs/batchSize/eligible/hibernate/
+publish/isStopped）仍由 Node 宿主提供并常驻 V8（强引用随工厂存续，与旧闭包同寿）；
+每次 runCandidates 的运行状态保存在 V8 对象中供待续体可达，settle 时释放；容量尾链
+直接复用全局 Promise 构造。移植中实测一个 Node 版本契约：napi_get_value_bigint_words
+的词数查询要求 sign_bit 与 words 同时为 NULL（Node 21 起），否则返回 napi_invalid_arg，
+与旧版「words 单独为 NULL 即可查询」不同，后续涉及 BigInt 的移植须沿用双 NULL 查询。
+待休眠宿主（records 所有权、hibernate 执行、publish 通道）迁入 Rust 后，应移除端口桥
+并让运行状态离开 V8。本批不声称其他 Node 依赖已核销。
+
+验收：rustfmt --edition 2021、严格 Clippy、Rust 核心 1,540 项、addon/gateway 构建及
+治理检查通过；指纹 `c1f9484f05e99f402eb71579` 产物通过来源与启动探针；差分 27 项、
+休眠家族 Node 回归 50 项、架构边界 12 项、来源探针 15 项及 test:architecture 其余全部
+通过（test-source-line-budget 三项为基线既有红，涉及 server.js、public/i18n-catalog.js、
+app/lib/providers/chat_provider.dart，与本批改动文件无交集）。
+
+当前 `src/` 有 541 个 `.js` / `.cjs` 文件，按文件所在目录统计：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 85 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli/` | 9 |
+| `src/cli-adapters/` | 27 |
+| `src/codex/` | 11 |
+| `src/codex-auth/` | 1 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 96 |
+| `src/search/` | 6 |
+| `src/session/` | 8 |
+| `src/session-work/` | 2 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |
