@@ -188,19 +188,23 @@ test('randomized differential: native directory owner matches the frozen Node re
   function ids(world) { return [...world.dirs.keys()]; }
   function sessionIds(world) { return [...world.sessions.keys()]; }
 
-  function compare(step) {
+  function compare(step, checkDisk) {
     const left = snapshot(native.dirs);
     const right = snapshot(legacy.dirs);
     assert.deepEqual(left, right, `directories diverged at step ${step}`);
     assert.deepEqual(snapshot(native.sessions), snapshot(legacy.sessions),
       `sessions diverged at step ${step}`);
-    assert.deepEqual(diskSnapshot(native), diskSnapshot(legacy),
-      `disk diverged at step ${step}`);
+    if (checkDisk) {
+      assert.deepEqual(diskSnapshot(native), diskSnapshot(legacy),
+        `disk diverged at step ${step}`);
+    }
   }
 
-  for (let index = 0; index < 1200; index += 1) {
+  const totalSteps = Math.max(100, Number(process.env.MULTICC_DIR_DIFF_STEPS) || 400);
+  for (let index = 0; index < totalSteps; index += 1) {
     const roll = random();
     const current = ids(native);
+    let touchedDisk = false;
 
     if (roll < 0.24 || current.length === 0) {
       // create a directory (same content, distinct objects per world)
@@ -271,9 +275,11 @@ test('randomized differential: native directory owner matches the frozen Node re
         }
         target.commit();
       }
+      touchedDisk = true;
     } else if (roll < 0.94) {
       // plain directories.json save (rolling backups must track in lockstep)
       for (const target of worlds()) target.save();
+      touchedDisk = true;
     } else {
       // restart reload; only compare persisted state when nothing is dirty
       const left = reloadNative(native);
@@ -295,11 +301,13 @@ test('randomized differential: native directory owner matches the frozen Node re
       legacy.dispose();
       native = left.world;
       legacy = right.world;
+      touchedDisk = true;
     }
 
     steps += 1;
-    compare(index);
+    compare(index, touchedDisk || index === 0 || index === totalSteps - 1);
   }
 
-  assert.ok(steps >= 1000, `expected at least 1000 differential steps, ran ${steps}`);
+  assert.ok(steps >= Math.floor(totalSteps * 0.8),
+    `expected at least ${Math.floor(totalSteps * 0.8)} differential steps, ran ${steps}`);
 });

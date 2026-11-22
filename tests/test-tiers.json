@@ -45,6 +45,11 @@
       "lane": "device"
     },
     {
+      "path": "app/test/agy_usage_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/air_console_test.dart",
       "tier": "other",
       "lane": "flutter"
@@ -1025,6 +1030,11 @@
       "entrypoints": [
         "npm:test:core"
       ]
+    },
+    {
+      "path": "tests/test-agy-models.js",
+      "tier": "flow",
+      "lane": "deterministic"
     },
     {
       "path": "tests/test-air-artifacts-page-cdp.js",
@@ -3668,9 +3678,9 @@
       "path": "tests/test-fleet-sharing-routes.js",
       "tier": "core",
       "lane": "isolated",
-      "owner": "npm:test:core",
+      "owner": "npm:test:fleet-sharing",
       "entrypoints": [
-        "npm:test:core"
+        "npm:test:fleet-sharing"
       ]
     },
     {
@@ -3686,9 +3696,9 @@
       "path": "tests/test-fleet-sharing.js",
       "tier": "other",
       "lane": "isolated",
-      "owner": "npm:test:core",
+      "owner": "npm:test:fleet-sharing",
       "entrypoints": [
-        "npm:test:core"
+        "npm:test:fleet-sharing"
       ]
     },
     {
@@ -4091,9 +4101,9 @@
       "path": "tests/test-macos-agent.js",
       "tier": "flow",
       "lane": "deterministic",
-      "owner": "npm:test:state",
+      "owner": "npm:test:macos-agent",
       "entrypoints": [
-        "npm:test:state"
+        "npm:test:macos-agent"
       ]
     },
     {
@@ -4191,9 +4201,9 @@
       "path": "tests/test-mbrowser-daemon.js",
       "tier": "flow",
       "lane": "isolated",
-      "owner": "npm:test:core",
+      "owner": "npm:test:mbrowser",
       "entrypoints": [
-        "npm:test:core"
+        "npm:test:mbrowser"
       ]
     },
     {
@@ -5230,9 +5240,9 @@
       "path": "tests/test-remote-screen-e2e-harness.js",
       "tier": "flow",
       "lane": "isolated",
-      "owner": "npm:test:security",
+      "owner": "npm:test:remote-screen",
       "entrypoints": [
-        "npm:test:security"
+        "npm:test:remote-screen"
       ]
     },
     {
@@ -5248,9 +5258,9 @@
       "path": "tests/test-remote-screen-h264-fixture.js",
       "tier": "flow",
       "lane": "deterministic",
-      "owner": "npm:test:security",
+      "owner": "npm:test:remote-screen",
       "entrypoints": [
-        "npm:test:security"
+        "npm:test:remote-screen"
       ]
     },
     {
@@ -7191,7 +7201,11 @@
     {
       "path": "tests/test-workspace-remote-native.js",
       "tier": "core",
-      "lane": "isolated"
+      "lane": "isolated",
+      "owner": "npm:test:fleet-sharing",
+      "entrypoints": [
+        "npm:test:fleet-sharing"
+      ]
     },
     {
       "path": "tests/test-workspace-residency.js",

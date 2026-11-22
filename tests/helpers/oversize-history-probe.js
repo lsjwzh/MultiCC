@@ -14,7 +14,7 @@ const v8 = require('node:v8');
 
 const { createChatHistoryFileRepository } = require('../../src/session/adapters/chat-history-file-repository');
 
-const [dataDir, sessionId, mode] = process.argv.slice(2);
+const [dataDir, sessionId, mode, rangeStartArg, rangeEndArg] = process.argv.slice(2);
 if (!dataDir || !sessionId) {
   console.error('usage: oversize-history-probe.js <dataDir> <sessionId>');
   process.exit(2);
@@ -31,7 +31,9 @@ if (mode === 'delivery') {
   });
 } else if (mode === 'physical') {
   const beforeKB = process.resourceUsage().maxRSS;
-  repository.readPhysicalRangeAsync(sessionId, 127, 129, 2 * 1024 * 1024).then(page => {
+  const start = Number.isInteger(Number(rangeStartArg)) ? Number(rangeStartArg) : 127;
+  const end = Number.isInteger(Number(rangeEndArg)) ? Number(rangeEndArg) : 129;
+  repository.readPhysicalRangeAsync(sessionId, start, end, 2 * 1024 * 1024).then(page => {
     process.stdout.write(JSON.stringify({ total: page.total, count: page.records.length,
       beforeKB, afterKB: process.resourceUsage().maxRSS }));
   }).catch(error => {
