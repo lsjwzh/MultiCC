@@ -3873,6 +3873,15 @@
       ]
     },
     {
+      "path": "tests/test-hibernation-reclaimer-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
       "path": "tests/test-history-frame-budget.js",
       "tier": "other",
       "lane": "deterministic",
