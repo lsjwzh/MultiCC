@@ -94,6 +94,13 @@ class RemoteScreenRfb with ScreenInputMixin implements ScreenSource {
   /// repaints when no update arrived.
   int frameVersion = 0;
 
+  /// True only after at least one update with real pixel rectangles arrived.
+  /// Handshake alone allocates a blank framebuffer and must not mark the
+  /// stream live (otherwise a wedged capture that drops before the first frame
+  /// looks like a live drop and loops reconnects instead of falling back to
+  /// JPEG polling).
+  bool hasFrame = false;
+
   /// Handshake, then the update loop. Completes with an error when the
   /// transport closes or the server violates the expected protocol.
   Future<void> run() async {
@@ -105,7 +112,6 @@ class RemoteScreenRfb with ScreenInputMixin implements ScreenSource {
     });
     try {
       await _handshake();
-      _onFrame?.call();
       final quality = _jpegQuality;
       if (quality != null) _setEncodings([7, -32 + quality.clamp(0, 9)]);
       requestUpdate(incremental: false);
@@ -142,8 +148,9 @@ class RemoteScreenRfb with ScreenInputMixin implements ScreenSource {
               fb.setRange(dst, dst + copyW * 4, pixels, row * w * 4);
             }
           }
+          if (rectCount > 0) hasFrame = true;
           frameVersion++;
-          _onFrame?.call();
+          if (hasFrame) _onFrame?.call();
         } else {
           // Geometry not established (handshake skipped); drain and ignore.
           for (var i = 0; i < rectCount; i++) {

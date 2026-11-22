@@ -797,6 +797,39 @@ void main() {
     expect(rig.decoders.length, 2, reason: '每次重连换一个新解码器');
   });
 
+  test('H.264 与 RFB 均不出首帧（RFB 仅握手后断开）→ 不误判 live，直接降级 JPEG 轮询', () async {
+    final rig = await _liveRig(
+      h264: true,
+      retryDelays: const [Duration.zero],
+      recoverWindow: const Duration(seconds: 30),
+    );
+    addTearDown(rig.close);
+    final service = rig.service;
+    final modes = <RemoteScreenMode>[];
+    final sub = service.onModeChange.listen((_) => modes.add(service.mode));
+    addTearDown(sub.cancel);
+
+    service.connectLive();
+    // 第 1 条 H.264 没出帧被服务端断开 → 切 RFB。
+    await _pumpUntil(() => rig.urls.length == 1);
+    expect(rig.urls[0].queryParameters['mode'], 'h264');
+    await rig.channels[0].close();
+
+    // 第 2 条 RFB 只完成握手（49 字节 ServerInit，0 个像素矩形）就被 Agent
+    // 首帧看门狗断开：绝不能误判成 live 进入 30 秒 H.264 重连死循环，应直接回退 JPEG。
+    await _pumpUntil(() => rig.urls.length == 2);
+    expect(rig.urls[1].queryParameters.containsKey('mode'), isFalse);
+    rig.channels[1].add(Uint8List.sublistView(_rfbHello, 0, 49));
+    await _pumpUntil(() => service.rfb?.width == 4);
+    expect(service.mode, RemoteScreenMode.connecting);
+    await rig.channels[1].close();
+
+    await _pumpUntil(() => service.mode == RemoteScreenMode.fallback);
+    await _pumpUntil(() => service.fallbackJpeg != null);
+    expect(modes, isNot(contains(RemoteScreenMode.live)));
+    expect(rig.urls.length, 2, reason: 'H.264 与 RFB 各试一次后即刻降级，不再循环重连');
+  });
+
   test('高清流反复重连都起不来（超过恢复窗口）→ 交给降级链退 RFB', () async {
     final rig = await _liveRig(
       h264: true,

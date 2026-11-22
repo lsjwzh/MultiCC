@@ -55,6 +55,7 @@ let H264_REFINE_DELAYS = [0.35, 1.2]  // seconds after the last change
 let H264_MIN_KBPS = 300             // floor of the adaptive range: below this text turns to mush
 let H264_SCALE_MIN_INTERVAL = 2.0   // seconds between two scale changes
 let H264_SCALE_UP_HOLD = 5.0        // seconds the upscale condition must hold
+let H264_FIRST_FRAME_TIMEOUT: TimeInterval = 4.0 // drop client if SCStream produces no key frame
 let H264_SCALES: [Double] = [1.0, 0.75, 0.5]
 
 func h264Message(_ type: UInt8, _ payload: Data) -> Data {
@@ -72,11 +73,13 @@ final class H264Client {
   private let lock = NSLock()
   private var pending = 0
   private var needKey = true
+  private var servedKey = false
   private var closed = false
   private var cap = 0   // kbps this client wants the shared encoder capped at; 0 = no cap
   init(_ fd: Int32) { self.fd = fd; input = RfbClient(fd); input.div = 1; input.hoverMoves = true }
 
   var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closed }
+  var hasServedKey: Bool { lock.lock(); defer { lock.unlock() }; return servedKey }
 
   /// This client's requested ceiling in kbps (0 = none).
   var capKbps: Int { lock.lock(); defer { lock.unlock() }; return cap }
@@ -100,7 +103,7 @@ final class H264Client {
       lock.unlock()
       return !starving
     }
-    if kind == H264_KEY { needKey = false }
+    if kind == H264_KEY { needKey = false; servedKey = true }
     pending += 1
     lock.unlock()
     queue.async { [self] in
@@ -113,7 +116,7 @@ final class H264Client {
 }
 
 @available(macOS 14.0, *)
-final class H264Screen: NSObject, SCStreamOutput {
+final class H264Screen: NSObject, SCStreamOutput, SCStreamDelegate {
   static let shared = H264Screen()
   private let lock = NSLock()
   private let encodeQueue = DispatchQueue(label: "multicc.h264.encode")
@@ -233,7 +236,7 @@ final class H264Screen: NSObject, SCStreamOutput {
     let kbps = effectiveKbps()
     guard let vt = makeSession(w, h, kbps: kbps) else { return "VTCompressionSessionCreate failed" }
     let cfg = streamConfiguration(w, h)
-    let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: nil)
+    let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: self)
     do { try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: encodeQueue) }
     catch { VTCompressionSessionInvalidate(vt); return "addStreamOutput: \(error.localizedDescription)" }
     var startErr: String?
@@ -244,6 +247,16 @@ final class H264Screen: NSObject, SCStreamOutput {
     lock.lock(); stream = s; session = vt; self.display = display; appliedKbps = kbps; lock.unlock()
     encodeQueue.async { [self] in scale = 1.0; lastScaleAt = Date() }
     return nil
+  }
+
+  func stream(_ stream: SCStream, didStopWithError error: Error) {
+    log("h264: stream stopped: \(error.localizedDescription)")
+    lock.lock()
+    let isCurrent = self.stream === stream
+    let cs = isCurrent ? clients : []
+    lock.unlock()
+    guard isCurrent else { return }
+    for c in cs { c.shutdown() }
   }
 
   private func releaseCapture() {
@@ -277,6 +290,14 @@ final class H264Screen: NSObject, SCStreamOutput {
     if let cfg { _ = c.send(cfg, kind: H264_CONFIG) }
     recomputeRate()
     requestKey()
+    // Mirror rfbSender's first-frame watchdog: if SCStream/replayd stalls and
+    // emits no key frame, drop the client promptly so it falls back instead of
+    // waiting out the full handshake timeout in silence.
+    DispatchQueue.global().asyncAfter(deadline: .now() + H264_FIRST_FRAME_TIMEOUT) { [weak c] in
+      guard let c, !c.isClosed, !c.hasServedKey else { return }
+      log("h264: no first key frame within \(Int(H264_FIRST_FRAME_TIMEOUT))s; dropping client")
+      c.shutdown()
+    }
     return true
   }
 

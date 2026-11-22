@@ -163,6 +163,17 @@ test('remote screen input: immediate press, live drag, and every exit path relea
   }
   // Hover is on for RFB clients too (contract: all client kinds).
   assert.match(src, /client\.hoverMoves = true/);
+  // SCStream must wire SCStreamDelegate + first-frame watchdogs so a wedged
+  // replayd/SCStream logs and drops clients cleanly instead of hanging silent.
+  assert.match(h264, /final class H264Screen: NSObject, SCStreamOutput, SCStreamDelegate/);
+  assert.match(h264, /SCStream\(filter:.*delegate: self\)/);
+  assert.match(h264, /func stream\(_ stream: SCStream, didStopWithError error: Error\)/);
+  assert.match(h264, /H264_FIRST_FRAME_TIMEOUT/);
+  assert.match(h264, /no first key frame within/);
+  assert.match(src, /final class RfbScreen: NSObject, SCStreamOutput, SCStreamDelegate/);
+  assert.match(src, /SCStream\(filter:.*delegate: self\)/);
+  assert.match(src, /func stream\(_ stream: SCStream, didStopWithError error: Error\)/);
+  assert.match(src, /no first frame within 4s; dropping client/);
 });
 
 test('HTTP fallback native pointer: immediate press, heartbeat, drag, wheel, middle/right, modifiers, refusal and teardown', { skip: !hasSwift, timeout: 60000 }, t => {
@@ -679,6 +690,7 @@ test('RFB native regressions: nested dirty regions cover latest pixels and fast 
   fs.writeFileSync(file, `import Foundation
 import CoreGraphics
 import Darwin
+func log(_ message: String) {}
 ${merge}
 ${data}
 ${client}
