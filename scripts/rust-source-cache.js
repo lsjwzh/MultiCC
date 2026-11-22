@@ -257,7 +257,7 @@ function probeAddon(file, node = process.execPath) {
       || ['isInternalExecutionSlot','createPublicSessionAccessGuard','mountPublicSessionAccessGuard'].some(key=>typeof pubApi[key]!=='function')
       || !a.sessionIsInternalExecutionSlot({taskExecutionSlot:true})
       || a.sessionIsInternalExecutionSlot({taskExecutionSlot:false})) process.exit(1);
-    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration','sessionLoginTerminalDisposer','sessionDeliveryApi'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration','sessionLoginTerminalDisposer','sessionDeliveryApi','sessionHibernationReclaimerCreate'].some(key=>typeof a[key]!=='function')) process.exit(1);
     const recordsPort={list(){},get(){}};
     if(a.sessionAssertSessionRecordsPort(recordsPort)!==recordsPort
       || a.taskHistoryRefusal({}).code!=='history_check_failed'
@@ -286,6 +286,10 @@ function probeAddon(file, node = process.execPath) {
     const historyFacade=a.chatHistoryFileRepositoryCreate({root:'/__multicc_probe__/chat_history',appendEnabled:false,reportFailure(){}});
     if(!Object.isFrozen(historyFacade) || historyFacade.root!=='/__multicc_probe__/chat_history' || historyFacade.writeAsync.length!==2
       || historyFacade.readStrict.length!==1 || historyFacade.readPhysicalRangeAsync.length!==4 || typeof historyFacade.hasPersistedDeliveryAsync!=='function') process.exit(1);
+    const reclaimer=a.sessionHibernationReclaimerCreate({records:new Map(),now:()=>0,idleMs:1,batchSize:1,eligible(){},hibernate(){},publish(){},isStopped(){}});
+    if(!Object.isFrozen(reclaimer) || Object.keys(reclaimer).join(',')!=='candidatesFor,pendingCapacity,reclaimForCapacity,runCandidates,settleCapacity'
+      || reclaimer.candidatesFor.length!==0 || reclaimer.runCandidates.length!==1 || reclaimer.pendingCapacity()!==0
+      || !Array.isArray(reclaimer.candidatesFor()) || typeof reclaimer.settleCapacity()?.then!=='function') process.exit(1);
     if(typeof a.RustSessionRecords!=='function' || a.sessionRecordsProtocolVersion?.()!==1 || typeof a.sessionRecordsTaskStateDefaults!=='function'
       || ['init','configure','get','set','has','delete','clear','size','entriesSnapshot','listByDir',
         'mutate','begin','commit','rollback','bestEffort','retryTick','status','stop',
