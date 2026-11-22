@@ -796,3 +796,67 @@ Rust 源码缓存探针要求新工厂存在并执行早期验证，差分测试
 | 会话与目录记录 Map 门面 | `src/session/records.js`、`src/directory/records.js` 和 `src/state/owner.js` 暂为已有宿主提供 Map、活对象身份与所有者组装。 | 原生门面保持迭代、对象身份、持久化和恢复合同，且消费者迁出 Node 后移除。 |
 | 聊天历史路径与失败报告 | Node 宿主计算路径并注入 `reportFailure`；文件 IO 与协议由 Rust 持有。 | 路径及报告所有者均迁入 Rust，错误字段、日志和调用顺序验证一致后移除。 |
 | `src/native/runtime.js` 的 addon/前门加载桥 | 兼容 Node 入口仍需定位 N-API 模块和 gateway。 | Node 兼容启动入口退休，Rust 进程负责生命周期并通过独立安装/升级验收后移除。 |
+
+### 会话待生效配置（Rust 迁移，待验收）
+
+以 `0dab5629` 为基线，退役 `src/session/pending-configuration.js`；旧文件
+逐字节冻结至 `tests/helpers/legacy-session-pending-configuration.js`。配置
+字段、复制、期望状态、忙状态和暂存流程迁入 `native/core/src/session_pending_configuration.rs`
+及 `native/addon/src/session_pending_configuration.rs`。生产消费者经
+`src/native/runtime.js` 调用原生入口；探针检查五个新导出，差分覆盖默认参数、
+JSON 方法和 getter 读取顺序、异常身份、强制转换、严格赋值及 Proxy。
+
+必要的 Node 例外仅包含两处宿主桥：通用 `assignHostProperty` 让 V8 保持严格
+赋值的 Proxy/setter 和异常字节；`pendingDesiredSession` 只适配现有提供商
+删除宿主所需的回调形态。业务判定、字段和执行顺序均由 Rust 持有。V8 对象
+消费者与提供商宿主迁入 Rust，或原生赋值接口经 Proxy、setter、异常身份及
+跨平台差分验证兼容后，应删除这两处桥接。
+
+当前 `src/` 有 544 个 `.js` / `.cjs` 文件，按文件所在目录统计：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 85 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli/` | 9 |
+| `src/cli-adapters/` | 27 |
+| `src/codex/` | 11 |
+| `src/codex-auth/` | 1 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 96 |
+| `src/search/` | 6 |
+| `src/session/` | 11 |
+| `src/session-work/` | 2 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |
