@@ -1,9 +1,8 @@
 //! "Is this chat session's runtime busy?" — the single rule, plus the active
 //! turn counter that the board/Air snapshot reads.
 //!
-//! This is the only implementation. `src/session/runtime-busy.js` is a thin
-//! port over the addon (`sessionChatStateBusy` / `sessionProcAlive`); every
-//! server call site asks that port and no Node copy of the four-axis test
+//! This is the only implementation. Production call sites use the addon
+//! through the shared native runtime; no Node copy of the four-axis test
 //! survives. The rule was extracted from the pre-migration
 //! `isChatStateBusy(cs)` / `processAlive(proc)` in that file; the
 //! pre-migration for-loop that counted active turns lived in `server.js`.

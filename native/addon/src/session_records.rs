@@ -2570,11 +2570,9 @@ pub fn session_records_task_state_defaults(env: Env) -> Result<sys::napi_value> 
     unsafe { crate::js_bridge::write_value(env.raw(), &task_state_defaults()) }
 }
 
-/// Pure value readers for `src/session/runtime-busy.js`. That module sits in the
-/// closed `src/session/` bounded context and may only reach Rust through
-/// `../native/runtime`, so it cannot hold a table owner; neither rule needs the
-/// table. They call the same `multicc_core::active_turns` functions as the owner
-/// methods above — there is no second implementation.
+/// Pure value readers retained for existing addon callers. Neither rule needs
+/// a table owner; both use the same `multicc_core::active_turns` functions as
+/// the owner methods above.
 #[napi]
 #[cfg_attr(test, allow(dead_code))]
 pub fn session_chat_state_busy(env: Env, value: Unknown<'_>) -> Result<bool> {
