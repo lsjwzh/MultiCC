@@ -7,6 +7,55 @@ import 'package:flutter/scheduler.dart';
 import '../i18n.dart';
 import '../theme.dart';
 
+/// 记录原生滚动活动：按住和空闲的 isScrollingNotifier 都是 false，只有真正
+/// 空闲才允许折叠动画校准底部，不能取消按住、拖动或惯性滚动。
+class ChatComposerScrollController extends ScrollController {
+  /// 用户是否正按住、拖动或处于手指甩出的惯性滚动中（不含程序 `animateTo`）。
+  bool get isUserActive {
+    if (!hasClients) return false;
+    final pos = position;
+    return pos is _ComposerScrollPosition && pos.isUserActive;
+  }
+
+  @override
+  ScrollPosition createScrollPosition(
+    ScrollPhysics physics,
+    ScrollContext context,
+    ScrollPosition? oldPosition,
+  ) => _ComposerScrollPosition(
+    physics: physics,
+    context: context,
+    initialPixels: initialScrollOffset,
+    keepScrollOffset: keepScrollOffset,
+    oldPosition: oldPosition,
+  );
+}
+
+class _ComposerScrollPosition extends ScrollPositionWithSingleContext {
+  _ComposerScrollPosition({
+    required super.physics,
+    required super.context,
+    required super.initialPixels,
+    required super.keepScrollOffset,
+    super.oldPosition,
+  });
+
+  bool canFollowComposer = false;
+  bool isUserActive = false;
+
+  @override
+  void beginActivity(ScrollActivity? newActivity) {
+    if (newActivity != null) {
+      canFollowComposer = newActivity is IdleScrollActivity;
+      isUserActive =
+          newActivity is HoldScrollActivity ||
+          newActivity is DragScrollActivity ||
+          newActivity is BallisticScrollActivity;
+    }
+    super.beginActivity(newActivity);
+  }
+}
+
 /// 手机上的输入区会随着往回翻聊天记录折起来 —— Web 侧是
 /// `public/chat-composer-collapse.js`，这里复刻同一套规则。
 ///
@@ -73,6 +122,13 @@ class _ChatComposerFoldState extends State<ChatComposerFold>
   double _measured = 0;
   bool _pinned = false;
   bool _live = false;
+  // 折叠增大列表视口，会把滚动位置夹到底部。到达底部后保持展开，直到再次
+  // 往历史里滚；否则展开缩小视口，又会被当成离开底部，形成反复折叠。
+  bool _bottomLock = false;
+  bool _followingBottom = false;
+  // 本次自动展开一旦被手势打断，松手后也不能恢复贴底、抹掉阅读位置。
+  bool _followInterrupted = false;
+  double? _lastPixels;
   Timer? _settleTimer;
   final _childKey = GlobalKey();
   late final Ticker _ticker;
@@ -92,8 +148,7 @@ class _ChatComposerFoldState extends State<ChatComposerFold>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // 窄了就折，宽了就原样还回去 —— 转屏和退出手机版式都不该留下半折的输入区。
-    final phone =
-        MediaQuery.sizeOf(context).width <= widget.phoneMaxWidth;
+    final phone = MediaQuery.sizeOf(context).width <= widget.phoneMaxWidth;
     if (phone == _live) return;
     _live = phone;
     if (!_live) {
@@ -101,6 +156,9 @@ class _ChatComposerFoldState extends State<ChatComposerFold>
       _ticker.stop();
       _p = 0;
       _snapTo = null;
+      _bottomLock = false;
+      _followInterrupted = false;
+      _lastPixels = null;
     } else {
       _kick();
     }
@@ -136,6 +194,22 @@ class _ChatComposerFoldState extends State<ChatComposerFold>
 
   void _onScroll() {
     if (!_live) return;
+    final position = _scrollOffset();
+    if (position == null) return;
+    final previous = _lastPixels ?? position.pixels;
+    if (!_followingBottom &&
+        position.pixels > previous + 0.01 &&
+        position.maxScrollExtent - position.pixels <= 2) {
+      _followInterrupted = false;
+    }
+    if (_bottomLock &&
+        !_followingBottom &&
+        position.pixels < previous - 0.01 &&
+        position.maxScrollExtent - position.pixels > 2) {
+      _bottomLock = false;
+    }
+    _lastPixels = position.pixels;
+    if (_bottomLock) return;
     _snapTo = null;
     _kick();
     _rest();
@@ -150,17 +224,22 @@ class _ChatComposerFoldState extends State<ChatComposerFold>
     return math.max(0.0, position.maxScrollExtent - position.pixels) + slack;
   }
 
-  ScrollPosition? _scrollOffset() =>
-      widget.scrollController.hasClients ? widget.scrollController.position : null;
+  ScrollPosition? _scrollOffset() => widget.scrollController.hasClients
+      ? widget.scrollController.position
+      : null;
 
   double _wanted() {
-    final snap = _snapTo;
-    if (snap != null) return snap;
     if (_pinned) return 0;
     final position = _scrollOffset();
     if (position == null) return 0;
     // 已经贴底就别折 —— 这时候任何折叠看起来都像是自己动了一下。
-    if (position.maxScrollExtent - position.pixels <= 2) return 0;
+    if (position.maxScrollExtent - position.pixels <= 2) {
+      _bottomLock = true;
+      _lastPixels = position.pixels;
+    }
+    if (_bottomLock) return 0;
+    final snap = _snapTo;
+    if (snap != null) return snap;
     return (_walked() / widget.foldAt).clamp(0.0, 1.0);
   }
 
@@ -173,7 +252,32 @@ class _ChatComposerFoldState extends State<ChatComposerFold>
     final to = _wanted();
     final next = _p + (to - _p) * _ease;
     final settled = (to - next).abs() < 0.004;
+    final followBottom = _bottomLock && _p > 0 && !_followInterrupted;
     setState(() => _p = settled ? to : next);
+    if (followBottom) {
+      // 展开会再次缩小列表视口，必须等本帧布局完成再跟随新的底部。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_live || !_bottomLock) return;
+        final position = _scrollOffset();
+        if (position == null) return;
+        // jumpTo 会取消手指拖动、按住和惯性滚动，只能在列表空闲时校准。
+        if (position is! _ComposerScrollPosition ||
+            !position.canFollowComposer) {
+          _followInterrupted = true;
+          return;
+        }
+        if (_followInterrupted) return;
+        _followingBottom = true;
+        try {
+          if ((position.maxScrollExtent - position.pixels).abs() > 0.5) {
+            position.jumpTo(position.maxScrollExtent);
+          }
+          _lastPixels = position.pixels;
+        } finally {
+          _followingBottom = false;
+        }
+      });
+    }
     if (settled) _ticker.stop();
   }
 
@@ -183,7 +287,7 @@ class _ChatComposerFoldState extends State<ChatComposerFold>
   void _rest() {
     _settleTimer?.cancel();
     _settleTimer = Timer(_settleDelay, () {
-      if (!mounted || !_live || _pinned) return;
+      if (!mounted || !_live || _pinned || _bottomLock) return;
       final at = (_walked() / widget.foldAt).clamp(0.0, 1.0);
       if (at > _settleLow && at < _settleHigh) {
         _snapTo = at > 0.5 ? 1.0 : 0.0;

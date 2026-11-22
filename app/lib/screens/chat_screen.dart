@@ -3,6 +3,7 @@ import '../services/chat_shell_view.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -116,7 +117,7 @@ class ChatView extends StatefulWidget {
 }
 
 class _ChatViewState extends State<ChatView> {
-  final _scrollCtrl = ScrollController();
+  final _scrollCtrl = ChatComposerScrollController();
 
   Future<void> _deleteBoundTask(ChatProvider provider) async {
     final taskId = provider.taskBoundTaskId;
@@ -2212,6 +2213,12 @@ class _MessageList extends StatefulWidget {
 class _MessageListState extends State<_MessageList> {
   bool _userScrolled = false;
   bool _loadingOlder = false;
+  String? _lastAutoScrollSignature;
+
+  bool get _isUserInteracting {
+    final ctrl = widget.scrollCtrl;
+    return ctrl is ChatComposerScrollController && ctrl.isUserActive;
+  }
 
   @override
   void initState() {
@@ -2219,14 +2226,23 @@ class _MessageListState extends State<_MessageList> {
     widget.scrollCtrl.addListener(_onScroll);
   }
 
+  @override
+  void dispose() {
+    widget.scrollCtrl.removeListener(_onScroll);
+    super.dispose();
+  }
+
   void _onScroll() {
     if (!widget.scrollCtrl.hasClients) return;
     final pos = widget.scrollCtrl.position;
     final atBottom = pos.pixels >= pos.maxScrollExtent - 60;
+    final strictlyAtBottom = pos.pixels >= pos.maxScrollExtent - 20;
     final settling =
         _scrollSettlingUntil != null &&
         DateTime.now().isBefore(_scrollSettlingUntil!);
-    if (atBottom && _userScrolled) {
+    final draggingToHistory =
+        pos.userScrollDirection == ScrollDirection.forward;
+    if (strictlyAtBottom && _userScrolled && !draggingToHistory) {
       setState(() => _userScrolled = false);
     } else if (!atBottom && !_userScrolled && !settling) {
       // Ignore "scrolled away" during a programmatic scroll-to-bottom.
@@ -2236,7 +2252,7 @@ class _MessageListState extends State<_MessageList> {
     // but skip while settling so initial positioning doesn't arm the pill.
     if (!settling) {
       final provider = context.read<ChatProvider>();
-      provider.onUserScroll(atBottom: atBottom);
+      provider.onUserScroll(atBottom: !_userScrolled && atBottom);
     }
     // Scroll near the top -> fetch one older page of history.
     if (pos.pixels <= 80) {
@@ -2274,24 +2290,40 @@ class _MessageListState extends State<_MessageList> {
   // scroll positions that would otherwise falsely arm the unread pill).
   DateTime? _scrollSettlingUntil;
 
-  void _scrollToBottom() {
+  String _autoScrollSignature(
+    List<ChatMessage> messages,
+    bool showThinking,
+    String? admissionProgress,
+    bool historyApplied,
+  ) {
+    final last = messages.isEmpty ? null : messages.last;
+    return '$historyApplied|${messages.length}|${last?.id ?? ''}|'
+        '${last?.content.length ?? 0}|${last?.isStreaming ?? false}|'
+        '${last?.toolCalls.length ?? 0}|$showThinking|'
+        '${admissionProgress ?? ''}';
+  }
+
+  void _scrollToBottom({bool force = false}) {
     // While a deep-link focus highlight is active, the focus owns the scroll
     // position (Scrollable.ensureVisible on the target message) - don't fight
     // it by yanking back to the bottom. No-op for the normal path, where
     // highlightId is always null.
     if (widget.highlightId != null) return;
-    if (!widget.scrollCtrl.hasClients || _userScrolled) return;
+    if (!widget.scrollCtrl.hasClients || (!force && _userScrolled)) return;
+    if (!force && _isUserInteracting) return;
     _scrollSettlingUntil = DateTime.now().add(
       const Duration(milliseconds: 350),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.scrollCtrl.hasClients) {
-        widget.scrollCtrl.animateTo(
-          widget.scrollCtrl.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 150),
-          curve: Curves.easeOut,
-        );
-      }
+      if (!mounted || !widget.scrollCtrl.hasClients) return;
+      if (!force && (_userScrolled || _isUserInteracting)) return;
+      final pos = widget.scrollCtrl.position;
+      if ((pos.maxScrollExtent - pos.pixels) <= 1.0) return;
+      widget.scrollCtrl.animateTo(
+        pos.maxScrollExtent,
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOut,
+      );
     });
   }
 
@@ -2330,7 +2362,16 @@ class _MessageListState extends State<_MessageList> {
     // 迟早会漂移，而漂移正好会让这个面板失去意义。
     final showThinking = provider.thinkingIndicatorVisible;
 
-    _scrollToBottom();
+    final sig = _autoScrollSignature(
+      messages,
+      showThinking,
+      admissionProgress,
+      provider.historyApplied,
+    );
+    if (sig != _lastAutoScrollSignature) {
+      _lastAutoScrollSignature = sig;
+      _scrollToBottom();
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -2345,38 +2386,55 @@ class _MessageListState extends State<_MessageList> {
 
         return Stack(
           children: [
-            ListView.builder(
-              controller: widget.scrollCtrl,
-              padding: EdgeInsets.fromLTRB(sidePadding, 12, sidePadding, 12),
-              itemCount: messages.length + (showThinking ? 1 : 0),
-              itemBuilder: (_, i) {
-                if (i == messages.length) {
-                  return ThinkingIndicator(
-                    label: admissionProgress ?? t('admissionProcessing'),
-                  );
+            NotificationListener<UserScrollNotification>(
+              onNotification: (notification) {
+                if (notification.direction == ScrollDirection.forward) {
+                  // 用户往历史方向拖动时立刻交出贴底控制权，不被折叠视口变化或
+                  // settling 窗口吞掉，也不再被自动滚底取消手势。
+                  _scrollSettlingUntil = null;
+                  if (!_userScrolled) {
+                    setState(() => _userScrolled = true);
+                  }
+                  context.read<ChatProvider>().onUserScroll(atBottom: false);
                 }
-                final msg = messages[i];
-                // WeChat-style time separator: show a centered time label only when
-                // this message is the first, or its gap from the previous message
-                // exceeds the threshold — so back-to-back turns stay uncluttered.
-                final prev = i > 0 ? messages[i - 1] : null;
-                final showTime =
-                    prev == null ||
-                    msg.timestamp.difference(prev.timestamp).inMinutes.abs() >=
-                        _timeSeparatorGapMinutes;
-                final bubble = _maybeHighlight(
-                  MessageBubble(message: msg),
-                  msg.id,
-                );
-                if (!showTime) return bubble;
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _TimeSeparator(time: msg.timestamp),
-                    bubble,
-                  ],
-                );
+                return false;
               },
+              child: ListView.builder(
+                controller: widget.scrollCtrl,
+                padding: EdgeInsets.fromLTRB(sidePadding, 12, sidePadding, 12),
+                itemCount: messages.length + (showThinking ? 1 : 0),
+                itemBuilder: (_, i) {
+                  if (i == messages.length) {
+                    return ThinkingIndicator(
+                      label: admissionProgress ?? t('admissionProcessing'),
+                    );
+                  }
+                  final msg = messages[i];
+                  // WeChat-style time separator: show a centered time label only when
+                  // this message is the first, or its gap from the previous message
+                  // exceeds the threshold — so back-to-back turns stay uncluttered.
+                  final prev = i > 0 ? messages[i - 1] : null;
+                  final showTime =
+                      prev == null ||
+                      msg.timestamp
+                              .difference(prev.timestamp)
+                              .inMinutes
+                              .abs() >=
+                          _timeSeparatorGapMinutes;
+                  final bubble = _maybeHighlight(
+                    MessageBubble(message: msg),
+                    msg.id,
+                  );
+                  if (!showTime) return bubble;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _TimeSeparator(time: msg.timestamp),
+                      bubble,
+                    ],
+                  );
+                },
+              ),
             ),
             // Lazy-history top hint: "loading older…" while fetching, or a
             // persistent "- earliest -" marker once everything is loaded.
@@ -2456,7 +2514,7 @@ class _MessageListState extends State<_MessageList> {
                     onTap: () {
                       provider.jumpToBottom();
                       setState(() => _userScrolled = false);
-                      _scrollToBottom();
+                      _scrollToBottom(force: true);
                     },
                     child: Container(
                       padding: const EdgeInsets.symmetric(
