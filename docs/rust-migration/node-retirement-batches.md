@@ -865,7 +865,7 @@ JSON 方法和 getter 读取顺序、异常身份、强制转换、严格赋值�
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
 
-### 登录终端清理（Rust 迁移，待验收）
+### 登录终端清理（Rust 迁移）
 
 以 `c2b17573` 为基线，退役 `src/session/login-terminal.js`，原文件逐字节
 冻结到 `tests/helpers/legacy-session-login-terminal.js`。筛选与保存决策迁入
@@ -880,6 +880,10 @@ getter、转换、异常身份、迭代器、异步顺序、循环回收及大�
 业务规则；会话表、tmux 和持久化所有者迁入 Rust，且快照、回调顺序及失败
 恢复通过差分与集成验证后，应删除这些宿主端口。V8 Promise、WeakMap 和活
 对象接口也随 Node 兼容宿主退出时一并退休。
+
+验收：rustfmt、严格 Clippy、Rust 核心 1,533 项、addon/gateway 构建与
+治理检查通过；指纹 `c603b460cd67de50f7ffe1e0` 产物通过来源与启动探针，
+相关 Node 回归 64 项通过。
 
 当前 `src/` 有 543 个 `.js` / `.cjs` 文件，按文件所在目录统计：
 
