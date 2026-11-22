@@ -933,3 +933,11 @@ getter、转换、异常身份、迭代器、异步顺序、循环回收及大�
 | `src/wait/` | 2 |
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
+
+### 会话续接投递（下一批，基线阶段）
+
+以 `9fd65485` 为基线，已将 `src/session/delivery.js` 原样冻结到
+`tests/helpers/legacy-session-delivery.js`。基线固定同步校验、参数转换、
+元数据 getter 顺序、调度拒绝与失败日志，以及对外暴露的可变种类 Set。
+当前生产仍使用原 Node 文件；原生工厂、调用点切换、真实原生差分和完整
+门禁均尚未完成。`src/` 的 `.js` / `.cjs` 数量仍为 543。

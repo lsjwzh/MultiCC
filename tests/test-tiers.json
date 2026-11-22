@@ -5837,6 +5837,11 @@
       ]
     },
     {
+      "path": "tests/test-session-delivery-baseline.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-session-delivery.js",
       "tier": "core",
       "lane": "deterministic",
