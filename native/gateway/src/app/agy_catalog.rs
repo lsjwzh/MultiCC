@@ -6,13 +6,13 @@
 //! catalog the front door spawns itself — it needs the account session, not a
 //! Node host op. The process cache and the single-flight lock live here; the
 //! route shape stays in `model_catalogs`.
+use serde_json::{json, Value};
 use std::{
     ffi::OsString,
     process::Stdio,
     sync::OnceLock,
     time::{Duration, Instant},
 };
-use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
@@ -35,7 +35,11 @@ pub(super) fn executable() -> OsString {
     let binary = if cfg!(windows) { "agy.exe" } else { "agy" };
     let mut candidates = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(std::path::PathBuf::from(home).join(".local/bin").join(binary));
+        candidates.push(
+            std::path::PathBuf::from(home)
+                .join(".local/bin")
+                .join(binary),
+        );
     }
     if cfg!(target_os = "macos") {
         // Mirrors resolveAgy() in src/cli-adapters/commands.js: Homebrew installs
@@ -116,7 +120,11 @@ async fn fetch() -> Result<Vec<Value>, ()> {
             let result = message.get("result").ok_or(())?;
             if id == 2 {
                 let models = model_options(result);
-                return if models.is_empty() { Err(()) } else { Ok(models) };
+                return if models.is_empty() {
+                    Err(())
+                } else {
+                    Ok(models)
+                };
             }
             break;
         }
