@@ -101,10 +101,9 @@ const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const { hasNativeHistory } = require('../cli-adapters/claude-exp-history');
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context-guard');
-const { opencodeProcessError } = require('../native/runtime');
-const { isInternalExecutionSlot } = require('../session/public-session-access');
+const { opencodeProcessError, processSpawnArgs } = require('../native/runtime');
+const isInternalExecutionSlot = record => getNative().sessionIsInternalExecutionSlot(record);
 const { providerSelectionDto } = require('../providers/auto-provider-config');
-const { processSpawnArgs } = require('../native/runtime');
 const { isResident, isResidentSession } = require('../cli/cli-capability');
 
 // Message-admission progress (the frames that keep a delayed user message

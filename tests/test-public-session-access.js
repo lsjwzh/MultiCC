@@ -8,10 +8,11 @@ const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
 const { createErrorDto, requestContext } = require('../src/api-contract');
-const {
-  isInternalExecutionSlot,
-  mountPublicSessionAccessGuard,
-} = require('../src/session/public-session-access');
+const { getNative } = require('../src/native/runtime');
+const legacyPublicAccess = require('./helpers/legacy-public-session-access');
+const publicAccessApi = () => getNative().sessionPublicAccessApi();
+const isInternalExecutionSlot = record => publicAccessApi().isInternalExecutionSlot(record);
+const mountPublicSessionAccessGuard = (app, options) => publicAccessApi().mountPublicSessionAccessGuard(app, options);
 const { mountWsConnectionRouter } = require('../src/ws/connection-router');
 
 function requestJson(server, pathname) {
@@ -215,4 +216,58 @@ test('server mounts the public-session guard before any session route surface', 
   assert.ok(Number.isInteger(firstSessionSurface));
   assert.ok(guardIndex < firstSessionSurface,
     'central guard must run before lifecycle/profile/admin session routes');
+});
+
+test('Rust public-session access guard matches frozen legacy oracle across inputs, errors and logger payloads', () => {
+  assert.equal(
+    fs.existsSync(path.join(__dirname, '..', 'src', 'session', 'public-session-access.js')),
+    false,
+    'retired src/session/public-session-access.js must not exist',
+  );
+  const rustApi = publicAccessApi();
+  for (const val of [null, undefined, 0, '', false, {}, { taskExecutionSlot: false }, { taskExecutionSlot: 1 }, { taskExecutionSlot: true }]) {
+    assert.equal(rustApi.isInternalExecutionSlot(val), legacyPublicAccess.isInternalExecutionSlot(val));
+    assert.equal(getNative().sessionIsInternalExecutionSlot(val), legacyPublicAccess.isInternalExecutionSlot(val));
+  }
+
+  assert.throws(() => rustApi.createPublicSessionAccessGuard({}), TypeError);
+  assert.throws(() => legacyPublicAccess.createPublicSessionAccessGuard({}), TypeError);
+  assert.throws(() => rustApi.mountPublicSessionAccessGuard(null, { records: new Map() }), TypeError);
+  assert.throws(() => legacyPublicAccess.mountPublicSessionAccessGuard(null, { records: new Map() }), TypeError);
+
+  const records = new Map([
+    ['pub', { id: 'pub' }],
+    ['slot', { id: 'slot', taskExecutionSlot: true }],
+  ]);
+
+  function runPair(req, withV1) {
+    const out = {};
+    for (const [label, api] of [['rust', rustApi], ['legacy', legacyPublicAccess]]) {
+      const logs = [];
+      let nextCalls = 0;
+      let v1Calls = 0;
+      let statusCode = null;
+      let jsonBody = null;
+      const guard = api.createPublicSessionAccessGuard({
+        records,
+        logger: { warn: (ev, meta) => logs.push([ev, meta]) },
+        v1NotFound: withV1 ? () => { v1Calls += 1; return 'v1-not-found'; } : null,
+      });
+      assert.equal(guard.length, 3, `${label} middleware must keep arity 3 for Express`);
+      const res = {
+        status(code) { statusCode = code; return this; },
+        json(body) { jsonBody = body; return 'json-sent'; },
+      };
+      const ret = guard(req, res, () => { nextCalls += 1; return 'next-called'; });
+      out[label] = { ret, nextCalls, v1Calls, statusCode, jsonBody, logs };
+    }
+    assert.deepEqual(out.rust, out.legacy);
+  }
+
+  runPair({ params: { id: 'pub' }, originalUrl: '/api/sessions/pub', method: 'GET' }, true);
+  runPair({ params: { id: 'missing' }, originalUrl: '/api/v1/sessions/missing', method: 'POST' }, true);
+  runPair({ params: { id: 'slot' }, originalUrl: '/api/sessions/slot', method: 'DELETE' }, true);
+  runPair({ params: { id: 'slot' }, originalUrl: '/api/v1/sessions/slot/waits', method: 'GET' }, true);
+  runPair({ params: { id: 'slot' }, originalUrl: '/api/v1/sessions/slot/waits', method: '' }, false);
+  runPair({ params: { id: 'slot' }, url: '/api/v1/sessions/slot' }, true);
 });

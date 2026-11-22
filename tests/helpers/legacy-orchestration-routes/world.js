@@ -394,7 +394,7 @@ function createWorld({ dir, controlFile, callsFile = null }) {
 
 /** The retired mounts in the order server.js registered them, on `app`. */
 function mountFrozen(app, frozen, world) {
-  const { createPublicSessionAccessGuard } = require('../../../src/session/public-session-access');
+  const { createPublicSessionAccessGuard } = require('../legacy-public-session-access');
   const guard = createPublicSessionAccessGuard({
     records: world.records,
     v1NotFound: (req, res) => world.orchestrationDeps.v1Error(req, res, 404, 'session not found', 'session_not_found'),

@@ -250,6 +250,13 @@ function probeAddon(file, node = process.execPath) {
     if(['createZip','readZip','looksLikeZip','crc32','createHandoffZipService'].some(key=>typeof zipApi[key]!=='function')
       || zipApi.crc32(Buffer.from('123456789'))!==0xcbf43926
       || !zipApi.looksLikeZip(zipApi.createZip([{name:'p.txt',data:'ok'}]))) process.exit(1);
+    if(['sessionSubagentNormalize','sessionSubagentWithSource','sessionSubagentFamilyDefault','sessionForkConfiguration','sessionSubagentApi','sessionForkConfigurationApi','sessionIsInternalExecutionSlot','sessionPublicAccessApi'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    const subApi=a.sessionSubagentApi(), forkApi=a.sessionForkConfigurationApi(), pubApi=a.sessionPublicAccessApi();
+    if(['normalizeSubagentInput','withSubagentSource','familyDefaultSubagent'].some(key=>typeof subApi[key]!=='function')
+      || typeof forkApi.forkConfiguration!=='function'
+      || ['isInternalExecutionSlot','createPublicSessionAccessGuard','mountPublicSessionAccessGuard'].some(key=>typeof pubApi[key]!=='function')
+      || !a.sessionIsInternalExecutionSlot({taskExecutionSlot:true})
+      || a.sessionIsInternalExecutionSlot({taskExecutionSlot:false})) process.exit(1);
     if(typeof a.RustSessionRecords!=='function' || a.sessionRecordsProtocolVersion?.()!==1 || typeof a.sessionRecordsTaskStateDefaults!=='function'
       || ['init','configure','get','set','has','delete','clear','size','entriesSnapshot','listByDir',
         'mutate','begin','commit','rollback','bestEffort','retryTick','status','stop',

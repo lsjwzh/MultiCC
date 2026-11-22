@@ -1,6 +1,9 @@
 'use strict';
 const path = require('node:path');
-const { normalizeSubagentInput, withSubagentSource, familyDefaultSubagent } = require('./subagent');
+const { getNative } = require('../native/runtime');
+const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
+const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
+const familyDefaultSubagent = input => getNative().sessionSubagentFamilyDefault(input);
 function createSessionRecordFactory(deps) {
   // Injected by the composition root. src/session is a bounded context and must
   // not reach into src/cli for the lane table (tests/test-architecture-boundaries.js).

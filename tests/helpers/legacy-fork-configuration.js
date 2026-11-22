@@ -1,7 +1,7 @@
 'use strict';
 
-const { desiredSession, readConfiguration } = require('./pending-configuration');
-const { normalizeSubagentInput } = require('./subagent');
+const { desiredSession, readConfiguration } = require('../../src/session/pending-configuration');
+const { normalizeSubagentInput } = require('./legacy-session-subagent');
 
 // Transcript provenance and the next run's settings are independent. A stale
 // saved route must not prevent copying history into a fresh, idle session.

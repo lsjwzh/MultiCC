@@ -4,9 +4,9 @@ const { randomUUID } = require('node:crypto');
 const { WebSocket } = require('ws');
 const { installNativeQueue } = require('./native-queue');
 const { createWsHost } = require('./ws-host');
-const { isInternalExecutionSlot } = require('../session/public-session-access');
 const { startChatBridge } = require('../gateway-child');
 const { getNative } = require('../native/runtime');
+const isInternalExecutionSlot = record => getNative().sessionIsInternalExecutionSlot(record);
 
 const WS_PING_INTERVAL_MS = 30_000;
 const SESSIONLESS_WS_PATHS = new Set([
