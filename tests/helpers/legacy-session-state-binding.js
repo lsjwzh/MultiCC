@@ -1,7 +1,8 @@
+// Frozen from fc9f286e:src/session/state-transition.js; only the relative import is rebased.
 'use strict';
 
 // Compatibility surface; the vocabulary and transition policy have one Rust owner.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../src/native/runtime');
 const native = getNative();
 const catalog = native.sessionStateCatalog();
 const RUNNING_STATUSES = new Set(catalog.runningStatuses);

@@ -749,13 +749,15 @@ test('core runner covers every selected path and expands declared variants', () 
   // entry: live-value/exception/UTF-16 checks, fixture-only state, no port or
   // network. Keep it in core and account for its one additional runner command.
   // 473 -> 474 entries, 392 -> 393 deterministic, 444 -> 445 commands.
-  assert.equal(core.length, 474, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 474);
+  // Session-state native API adds one deterministic Node entry and one command.
+  // All prior manifest entries, variants and commands are preserved.
+  assert.equal(core.length, 475, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 475);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 393);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 394);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 49);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 32,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -765,8 +767,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 445,
-    '442 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 446,
+    '443 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

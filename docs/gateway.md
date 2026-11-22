@@ -1095,10 +1095,13 @@ Rust 串行 core 421、CPR 9 单元+27 集成、gateway 30 单元+32 集成全�
 `native/core/src/workspace_state.rs` 接管每个 runtime 的 status/summary 表、运行状态
 词表与会话转换核心；`RustWorkspaceState` 接管初始化、状态发布及摘要副作用顺序。
 删除 `src/workspace/runtime.js` 中两张 Node Map、水合、转换和摘要写入编排，
-`src/session/state-transition.js` 仅保留原 API、默认参数和 clock/pendingWork 适配。
+原 `src/session/state-transition.js` 在此阶段保留 API、默认参数和 clock/pendingWork
+适配；2026-11-22 该兼容面进一步迁入 addon 的 `sessionStateApi()`，旧31行文件退休。
+真实 Set、默认参数、回调顺序和冻结服务对象均由 Rust/N-API 提供，原四个基础
+sessionState 原生接口继续保留；测试只改原生接口导入，不改原断言。
 原生 Store/RunState/Status/Summary 直接传值，不增加镜像表或内部 JSON 编解码。
-架构门禁仅允许已迁移的 state-transition 门面引用共享 native/runtime 加载器；
-其他 session 模块仍受原有依赖边界约束。
+架构门禁移除已退休 state-transition 门面的加载器例外；其他已列明的 session
+原生端口及其依赖边界保持，未新增 JavaScript 替代门面或全局预加载。
 
 保留运行段开始/结束、pendingWork 转 background、零时钟、Number(null)、相同状态
 仅更新时间不广播等边界。摘要仍按内存摘要、record.summary、setTaskState、

@@ -547,6 +547,29 @@ session-admin的查询与工作区工厂分别直接导入既有query-service和
 核对提交树=已测树=合入树与双方clean0/0，再重生成逐文件及逐依赖残留审计。
 持久证据：主仓 `data/rust-migration/2026-11-22/session-barrel-retirement-gates/`。
 
+### 会话状态服务兼容面（Rust 迁移候选，待完整验收）
+
+以已交付 `fc9f286e` 为基线（`af464ce5` 的后代），解除此前仅靠纯删除不能
+保持服务工厂和 Set 合同的边界。删除31行 `src/session/state-transition.js`，
+Rust addon 新增 `sessionStateApi()`：真实可变 Set、原函数默认参数、clock 与
+pendingWork 回调顺序、异常身份、重入和冻结服务/状态返回值均在原生边界适配。
+转换算法继续复用原 `session_state.rs` 和 `workspace_state.rs`，不改状态规则。
+
+会话领域和状态展示测试只重定位四处导入；原数值/状态893项差分、getter顺序和
+状态词表断言保留。新增兼容绑定差分、回调异常/重入及真实GC循环回收验证；
+冻结旧绑定只作为测试参考，产品端不导入该夹具，业务实现位于Rust。
+共享 `src/native/runtime.js` 不新增业务或预加载。构建探针检查新API，拒绝旧addon。
+`test:architecture` 仅追加本单元七项原生API回归，所有既有测试入口保留；package
+其余脚本、默认启动项及依赖声明不变。
+
+原架构依赖断言保留，仅删除已退休路径的无效允许项。默认Node入口、19项依赖、
+SDK、平台、配置和数据格式不变；不重启服务，不推送。私有外部深层导入仍未核销。
+冻结候选后按原43门禁加本批定向共44项验收；只有bf99c686两项完整归一化报告
+精确匹配的npm基线FAIL获准保留，后续短路阶段不记PASS。新失败/冲突/不安全
+删除则封存停止。通过后唯一提交、无冲突rebase到实际main、会话API合入并核对
+已测/提交/合入树一致和双方clean0/0，再发布逐文件和逐依赖审计。
+证据：主仓 `data/rust-migration/2026-11-22/session-state-service-rust-retirement/`。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

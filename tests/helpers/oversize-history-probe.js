@@ -12,6 +12,7 @@
 // heapUsed：进程内 heapUsed 受 GC 时机影响，阈值判断会间歇红。
 const v8 = require('node:v8');
 
+const { getNative } = require('../../src/native/runtime');
 const { createChatHistoryFileRepository } = require('../../src/session/adapters/chat-history-file-repository');
 
 const [dataDir, sessionId, mode, rangeStartArg, rangeEndArg] = process.argv.slice(2);
@@ -22,6 +23,9 @@ if (!dataDir || !sessionId) {
 
 const repository = createChatHistoryFileRepository({ dataDir });
 if (mode === 'delivery') {
+  // Load the native addon before taking the RSS baseline so dlopen of a large
+  // debug .node binary is not charged to the streaming file scan.
+  getNative();
   const beforeKB = process.resourceUsage().maxRSS;
   repository.hasPersistedDeliveryAsync(sessionId, 'proof-early').then(found => {
     process.stdout.write(JSON.stringify({ found, beforeKB, afterKB: process.resourceUsage().maxRSS }));
@@ -30,6 +34,7 @@ if (mode === 'delivery') {
     process.exitCode = 1;
   });
 } else if (mode === 'physical') {
+  getNative();
   const beforeKB = process.resourceUsage().maxRSS;
   const start = Number.isInteger(Number(rangeStartArg)) ? Number(rangeStartArg) : 127;
   const end = Number.isInteger(Number(rangeEndArg)) ? Number(rangeEndArg) : 129;

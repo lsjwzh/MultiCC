@@ -656,7 +656,7 @@ test('Flutter mirrors the web registry exactly', () => {
 // 集合就是「排队中 / 等后台任务」的任务在 App 上停不掉、而在 Web 上却能被合并的原因。
 
 test('isBusyStatus is the registry mirror of the server workspace-busy predicate', () => {
-  const { RUNNING_STATUSES, SESSION_STATUSES, isRunningStatus } = require('../src/session/state-transition.js');
+  const { RUNNING_STATUSES, SESSION_STATUSES, isRunningStatus } = require('../src/native/runtime').getNative().sessionStateApi();
   for (const status of SESSION_STATUSES) {
     assert.equal(SP.isBusyStatus(status), isRunningStatus(status),
       `the busy answer for session status ${status} differs from isRunningStatus`);
