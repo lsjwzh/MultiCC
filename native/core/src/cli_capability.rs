@@ -439,7 +439,7 @@ pub const CLIS: &[Family] = &[
         colour: Some("#6d5dfc"),
         mark: Some("A"),
         providerless: true,
-        update: Some(Update { package: None, command: None, manual: Some("Install and sign in to the official Antigravity CLI (agy).") }),
+        update: Some(Update { package: None, command: None, manual: Some("请安装并登录官方 Antigravity CLI（agy）") }),
         lanes: Some(&[
             ("chat", &[Lane { id: "agy", engine: Some("agy acp"), ..LANE }]),
             ("terminal", &[Lane { id: "agy", ..LANE }]),

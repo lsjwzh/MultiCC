@@ -470,7 +470,7 @@ pub fn routing_facts() -> Value {
         "nativeOpenCodeIdPattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
         "nativeOpenCodeIdIgnoreCase": true,
         "nativeVendorSuffix": "-native:",
-        "vendorNativeClis": ["qoder", "codebuddy", "gemini", "pi", "commandcode", "dsh", "grok"],
+        "vendorNativeClis": ["qoder", "codebuddy", "gemini", "pi", "commandcode", "dsh", "grok", "agy"],
         "nativeVendorIdPattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
         "nativeVendorIdIgnoreCase": true,
         "nativeVendorModelPattern": "^[A-Za-z0-9][A-Za-z0-9._:\\/-]{0,118}[A-Za-z0-9._/-]$",

@@ -18,6 +18,7 @@ import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/claude_models_service.dart';
 import '../services/codebuddy_models_service.dart';
+import '../services/agy_models_service.dart';
 import '../services/commandcode_grok_models_service.dart';
 import 'model_menu.dart';
 import '../services/codex_models_service.dart';
@@ -1072,6 +1073,19 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   });
                 },
               ),
+              if (_pickedCli == SessionCli.agy &&
+                  AgyModelsService.cached.isEmpty) ...[
+                const SizedBox(height: 6),
+                Text(
+                  AgyModelsService.emptyHint,
+                  key: const ValueKey('agy-model-diagnostic'),
+                  style: const TextStyle(
+                    color: Color(0xFF6f8096),
+                    fontSize: 11,
+                    height: 1.35,
+                  ),
+                ),
+              ],
               if (_isCodex &&
                   CodexModelsService.cached.diagnosticMessage.isNotEmpty) ...[
                 const SizedBox(height: 6),

@@ -235,7 +235,7 @@
     },
     agy: {
       name: 'Antigravity', colour: '#6d5dfc', mark: 'A', providerless: true,
-      update: { manual: 'Install and sign in to the official Antigravity CLI (agy).' },
+      update: { manual: '请安装并登录官方 Antigravity CLI（agy）' },
       lanes: { chat: [{ id: 'agy', engine: 'agy acp' }], terminal: [{ id: 'agy' }] },
     },
     grok: {

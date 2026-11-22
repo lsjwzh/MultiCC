@@ -247,7 +247,7 @@ const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
         'terminal': <CliLane>[CliLane('commandcode', engine: 'command-code')],
       }),
   'agy': CliFamily('Antigravity', AppColors.agy, mark: 'A', providerless: true,
-      update: CliUpdate(manual: 'Install and sign in to the official Antigravity CLI (agy).'),
+      update: CliUpdate(manual: '请安装并登录官方 Antigravity CLI（agy）'),
       lanes: <String, List<CliLane>>{
         'chat': <CliLane>[CliLane('agy', engine: 'agy acp')],
         'terminal': <CliLane>[CliLane('agy')],

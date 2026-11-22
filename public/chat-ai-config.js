@@ -170,6 +170,9 @@
     if (cli === 'zcode') return '';
     if (cli === 'pi') return value ? ({ off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' })[value] || value : '';
     if (cli === 'opencode') return value ? `Variant ${value}` : '';
+    if (cli === 'agy') {
+      return value ? ({ low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' })[value] || value : '';
+    }
     if (isCodexCli(cli) || cli === 'qoder' || cli === 'codebuddy') {
       return ({
         xhigh: 'Extra high', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High',
@@ -923,7 +926,7 @@
       if (state && state.cli === 'qoder') return localized(state, 'aiConfigDefaultFollowQoder', '默认（跟随 Qoder CN 设置）');
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
-      if (state && state.cli === 'agy') return '默认（跟随 Antigravity 配置）';
+      if (state && state.cli === 'agy') return localized(state, 'aiConfigDefaultFollowAgy', '默认（跟随 Antigravity 配置）');
       if (state && state.cli === 'pi') return localized(state, 'aiConfigDefaultFollowPi', '默认（跟随 Pi 配置）');
       if (state && state.cli === 'gemini') return localized(state, 'aiConfigDefaultFollowGemini', '默认（跟随 Gemini 配置）');
       if (state && state.cli === 'commandcode') return '默认（DeepSeek Flash）';

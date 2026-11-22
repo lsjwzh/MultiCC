@@ -6,6 +6,7 @@ library;
 import '../models/message.dart';
 import '../utils/cli_display.dart';
 import 'codebuddy_models_service.dart';
+import 'agy_models_service.dart';
 import 'commandcode_grok_models_service.dart';
 import 'qoder_models_service.dart';
 
@@ -20,27 +21,15 @@ const List<String> vendorNativeClis = <String>[
   'grok',
 ];
 
-const Set<String> _vendorNativeSet = {
-  'qoder',
-  'codebuddy',
-  'gemini',
-  'agy',
-  'pi',
-  'commandcode',
-  'dsh',
-  'grok',
-};
+final Set<String> _vendorNativeSet = vendorNativeClis.toSet();
+
+/// 有托管池的车道：既能跑 provider 线路，也仍有一条原生线路。
+const Set<String> _managedVendorClis = {'dsh', 'grok'};
 
 /// 没有 MultiCC provider 池的车道：它们的唯一线路就是自己的目录。
-/// dsh/grok 有托管池，因此不在这里。
-const Set<String> vendorOnlyClis = {
-  'qoder',
-  'codebuddy',
-  'gemini',
-  'agy',
-  'pi',
-  'commandcode',
-};
+final Set<String> vendorOnlyClis = vendorNativeClis
+    .where((cli) => !_managedVendorClis.contains(cli))
+    .toSet();
 
 String vendorNativeProviderId(String cli) => '$cli-native:$cli';
 

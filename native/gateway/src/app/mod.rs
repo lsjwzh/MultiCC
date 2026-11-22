@@ -10,6 +10,7 @@ pub mod accept;
 pub mod account_routes;
 pub mod account_subscription;
 pub mod agent_resources;
+mod agy_catalog;
 mod agy_quota;
 pub mod air_routes;
 pub mod artifacts;
