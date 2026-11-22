@@ -8,6 +8,8 @@ let deliveryOwner = null;
 let deliveryAddon = null;
 let cliRegistryOwner = null;
 let cliRegistryAddon = null;
+let sessionDeliveryAddon = null;
+let sessionDeliveryApi = null;
 const counts = { search: 0, usage: 0 };
 
 // V8 strict property assignment port: preserves Proxy/setter and TypeError
@@ -73,6 +75,15 @@ function getNative() {
   }
   if (!loaded) throw new Error('rust_backend_unavailable');
   return loaded;
+}
+// Preserve the CommonJS module's single live kind Set for all host callers.
+function getSessionDeliveryApi() {
+  const addon = getNative();
+  if (sessionDeliveryAddon !== addon) {
+    sessionDeliveryApi = addon.sessionDeliveryApi();
+    sessionDeliveryAddon = addon;
+  }
+  return sessionDeliveryApi;
 }
 // Shared instance preserves the original lookup identity for inherited accessors.
 function deliveryClassForItem(item) {
@@ -328,7 +339,7 @@ const codexBackground = {
       setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
   },
 };
-module.exports = { addonPath, gatewayPath, getNative, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { addonPath, gatewayPath, getNative, getSessionDeliveryApi, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

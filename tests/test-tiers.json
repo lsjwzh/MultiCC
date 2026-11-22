@@ -5837,7 +5837,7 @@
       ]
     },
     {
-      "path": "tests/test-session-delivery-baseline.js",
+      "path": "tests/test-session-delivery-differential.js",
       "tier": "core",
       "lane": "deterministic"
     },
