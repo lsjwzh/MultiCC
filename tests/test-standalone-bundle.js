@@ -811,7 +811,7 @@ test('every Windows script is written with CRLF line endings', () => {
 
 test('the Windows bundle is zipped by us, not by a platform-specific tool', async () => {
   const { createZipArchive, collectEntries } = require(path.join(ROOT, 'scripts', 'zip-archive.js'));
-  const { readZip } = require(path.join(ROOT, 'src', 'session', 'handoff-zip.js'));
+  const { handoffZipRead: readZip } = require(path.join(ROOT, 'src', 'native', 'runtime.js')).getNative();
   const scratch = tmpdir('multicc-zip-archive-');
   const root = path.join(scratch, 'multicc-standalone-1.0.0-win32-x64');
   fs.mkdirSync(path.join(root, 'Resources', 'empty'), { recursive: true });

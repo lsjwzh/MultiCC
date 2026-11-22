@@ -10,7 +10,7 @@ const { promisify } = require('util');
 
 const { gitExportSessionBundle, gitImportSessionBundle } = require('../git/service');
 const { createHandoffEnvService } = require('../session/handoff-env');
-const { createZip, readZip, looksLikeZip } = require('../session/handoff-zip');
+const { getNative } = require('../native/runtime');
 const { DOCS_REGISTRY_RULE } = require('../memory/builtin-rules');
 
 const execFileAsync = promisify(execFile);
@@ -705,7 +705,7 @@ function createSessionBundleRoutes(rawDeps) {
         }
         entries.push({ name: 'manifest.json', data: JSON.stringify(
           bundleEncrypt(passphrase, Buffer.from(JSON.stringify(zipPayload), 'utf8'))) });
-        const zip = createZip(entries, { maxEntries: ZIP_MAX_ENTRIES, maxTotalBytes: ZIP_MAX_TOTAL_BYTES });
+        const zip = getNative().handoffZipCreate(entries, { maxEntries: ZIP_MAX_ENTRIES, maxTotalBytes: ZIP_MAX_TOTAL_BYTES });
         appendEvent(s.dirId, 'session_bundled', `${s.label || s.id} → export (zip)`, s.id);
         res.set('Content-Type', 'application/zip');
         // The download name carries the export time, never the session id: a
@@ -727,7 +727,7 @@ function createSessionBundleRoutes(rawDeps) {
     app.post('/api/sessions/import-zip', express.raw({ type: () => true, limit: ZIP_BODY_LIMIT }),
       asyncHandler(async (req, res) => {
         const body = req.body;
-        if (!Buffer.isBuffer(body) || !body.length || !looksLikeZip(body)) {
+        if (!Buffer.isBuffer(body) || !body.length || !getNative().handoffZipLooksLike(body)) {
           return res.status(400).json({ error: 'body is not a zip bundle (POST the bundle.zip bytes with Content-Type: application/zip)' });
         }
         const passphrase = String(req.query.passphrase || '');
@@ -746,7 +746,7 @@ function createSessionBundleRoutes(rawDeps) {
 
         let payload;
         try {
-          const entries = readZip(body, { maxEntries: ZIP_MAX_ENTRIES, maxTotalBytes: ZIP_MAX_TOTAL_BYTES });
+          const entries = getNative().handoffZipRead(body, { maxEntries: ZIP_MAX_ENTRIES, maxTotalBytes: ZIP_MAX_TOTAL_BYTES });
           const byName = new Map(entries.map(e => [e.name, e.data]));
           const manifestEnc = byName.get('manifest.json');
           if (!manifestEnc) throw new Error('manifest.json entry missing');

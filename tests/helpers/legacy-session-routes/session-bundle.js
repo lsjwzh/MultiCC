@@ -15,7 +15,7 @@ const { promisify } = require('util');
 
 const { gitExportSessionBundle, gitImportSessionBundle } = require('../../../src/git/service');
 const { createHandoffEnvService } = require('../../../src/session/handoff-env');
-const { createZip, readZip, looksLikeZip } = require('../../../src/session/handoff-zip');
+const { createZip, readZip, looksLikeZip } = require('../legacy-handoff-zip');
 const { DOCS_REGISTRY_RULE } = require('../../../src/memory/builtin-rules');
 
 const execFileAsync = promisify(execFile);

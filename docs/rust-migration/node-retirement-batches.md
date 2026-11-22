@@ -570,6 +570,12 @@ SDK、平台、配置和数据格式不变；不重启服务，不推送。私�
 已测/提交/合入树一致和双方clean0/0，再发布逐文件和逐依赖审计。
 证据：主仓 `data/rust-migration/2026-11-22/session-state-service-rust-retirement/`。
 
+### 会话交接与插件解包 ZIP 容器（Rust 迁移）
+
+以 `35255209` 为基线，删除 242 行 `src/session/handoff-zip.js`，将 ZIP 容器读写、IEEE CRC32、文件名路径穿越/控制字符安全校验、目录条目处理、Zip64 拒绝、大小/条目上限及有界 inflate 防护迁入 `native/core/src/handoff_zip.rs` 与 `native/addon/src/handoff_zip.rs`。N-API 提供直接入口（`handoffZipCreate` / `handoffZipRead` / `handoffZipLooksLike` / `handoffZipCrc32`）以及完整命名空间 `handoffZipApi()`（含 `createHandoffZipService`）。
+
+两个生产消费者（`src/plugins/installer.js`、`src/routes/session-bundle.js`）直接通过既有 `src/native/runtime.js` 调用原生导出，共享 runtime 不新增包装代码，生产 Node 代码净减 242 行。独立打包构建脚本 `scripts/zip-archive.js`（非后端运行时）内联 11 行 CRC32 表以保持无 addon 打包能力；原模块冻结至 `tests/helpers/legacy-handoff-zip.js` 仅供测试对拍与冻结路由夹具引用。`scripts/rust-source-cache.js` 与 `tests/test-source-rust.js` 新增原生 ZIP 导出与功能探针校验，拒绝旧版 addon。`tests/test-handoff-zip.js` 保留原全部 6 项核心用例并补充与冻结旧版双向互读、CRC32、Unix 权限位、错误消息一致性及服务工厂选项合并的差分测试。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

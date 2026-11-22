@@ -245,6 +245,11 @@ function probeAddon(file, node = process.execPath) {
     const stateApi=a.sessionStateApi();
     if(!(stateApi.RUNNING_STATUSES instanceof Set) || !(stateApi.SESSION_STATUSES instanceof Set)
       || typeof stateApi.createSessionStateService!=='function' || !Object.isFrozen(stateApi.createSessionStateService())) process.exit(1);
+    if(['handoffZipCreate','handoffZipRead','handoffZipLooksLike','handoffZipCrc32','handoffZipApi'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    const zipApi=a.handoffZipApi();
+    if(['createZip','readZip','looksLikeZip','crc32','createHandoffZipService'].some(key=>typeof zipApi[key]!=='function')
+      || zipApi.crc32(Buffer.from('123456789'))!==0xcbf43926
+      || !zipApi.looksLikeZip(zipApi.createZip([{name:'p.txt',data:'ok'}]))) process.exit(1);
     if(typeof a.RustSessionRecords!=='function' || a.sessionRecordsProtocolVersion?.()!==1 || typeof a.sessionRecordsTaskStateDefaults!=='function'
       || ['init','configure','get','set','has','delete','clear','size','entriesSnapshot','listByDir',
         'mutate','begin','commit','rollback','bestEffort','retryTick','status','stop',

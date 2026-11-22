@@ -16,7 +16,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { readZip } = require('../session/handoff-zip');
+const { getNative } = require('../native/runtime');
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
@@ -59,7 +59,7 @@ function packageRoot(names) {
 function unpack(buffer, dest) {
   let entries;
   try {
-    entries = readZip(buffer);
+    entries = getNative().handoffZipRead(buffer);
   } catch (error) {
     throw new PluginInstallError('package', `not a usable zip: ${error.message}`);
   }
