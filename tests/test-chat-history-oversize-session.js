@@ -23,7 +23,7 @@ const path = require('node:path');
 
 const { DEFAULT_MAX_BYTES, fitHistoryFrame } = require('../src/chat/history-frame-budget');
 const { createChatHistoryRuntime } = require('../src/routes/chat-history');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 
 const PROBE = path.join(__dirname, 'helpers', 'oversize-history-probe.js');
 // 填充里混中文：纯 ASCII 会被 V8 存成单字节串，量不出真实事故里

@@ -122,7 +122,8 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     'sessionIsInternalExecutionSlot', 'sessionPublicAccessApi',
     'sessionAssertSessionRecordsPort', 'sessionAssertSessionRuntimePort', 'sessionAssertWorkspaceFactsPort',
     'sessionAssertDirectoryRecordsPort', 'sessionAssertChatHistoryPort', 'sessionPortsApi',
-    'createTaskHistoryRetention', 'taskHistoryRefusal', 'taskHistoryRetentionApi', 'claudeExpHasNativeHistory']) {
+    'createTaskHistoryRetention', 'taskHistoryRefusal', 'taskHistoryRetentionApi', 'claudeExpHasNativeHistory',
+    'chatHistoryFileRepositoryCreate']) {
     const staleZip = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);

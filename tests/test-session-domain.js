@@ -8,7 +8,7 @@ const test = require('node:test');
 
 const { assertTestDir } = require('../src/paths');
 const { createChatHistoryService } = require('../src/session/chat-history-service');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { createSessionQueryService } = require('../src/session/query-service');
 const { createSessionStateService, transitionSessionState } = require('../src/native/runtime').getNative().sessionStateApi();
 const { createWorkspaceService } = require('../src/session/workspace-service');

@@ -12,7 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createChatHistoryRuntime } = require('../src/routes/chat-history');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 
 function fixture(t) {
   const dataDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-tail-')));

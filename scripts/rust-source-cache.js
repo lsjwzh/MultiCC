@@ -257,12 +257,15 @@ function probeAddon(file, node = process.execPath) {
       || ['isInternalExecutionSlot','createPublicSessionAccessGuard','mountPublicSessionAccessGuard'].some(key=>typeof pubApi[key]!=='function')
       || !a.sessionIsInternalExecutionSlot({taskExecutionSlot:true})
       || a.sessionIsInternalExecutionSlot({taskExecutionSlot:false})) process.exit(1);
-    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate'].some(key=>typeof a[key]!=='function')) process.exit(1);
     const recordsPort={list(){},get(){}};
     if(a.sessionAssertSessionRecordsPort(recordsPort)!==recordsPort
       || a.taskHistoryRefusal({}).code!=='history_check_failed'
       || a.taskHistoryRefusal({}).blocked!==true
       || a.claudeExpHasNativeHistory({cli:'claude',cliSessionId:'x'})!==true) process.exit(1);
+    const historyFacade=a.chatHistoryFileRepositoryCreate({root:'/__multicc_probe__/chat_history',appendEnabled:false,reportFailure(){}});
+    if(!Object.isFrozen(historyFacade) || historyFacade.root!=='/__multicc_probe__/chat_history' || historyFacade.writeAsync.length!==2
+      || historyFacade.readStrict.length!==1 || historyFacade.readPhysicalRangeAsync.length!==4 || typeof historyFacade.hasPersistedDeliveryAsync!=='function') process.exit(1);
     if(typeof a.RustSessionRecords!=='function' || a.sessionRecordsProtocolVersion?.()!==1 || typeof a.sessionRecordsTaskStateDefaults!=='function'
       || ['init','configure','get','set','has','delete','clear','size','entriesSnapshot','listByDir',
         'mutate','begin','commit','rollback','bestEffort','retryTick','status','stop',

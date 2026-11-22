@@ -211,7 +211,6 @@ const { createProviderLogWatchdog } = require('./src/chat/provider-log-watchdog'
 const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
 const { createPushRuntime } = require('./src/push/runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
-const{createChatHistoryFileRepository } = require('./src/session/adapters/chat-history-file-repository');
 const { TurnProgressHeartbeat, createTurnProgress } = require('./src/chat/turn-progress');
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
@@ -263,7 +262,7 @@ const windowsEnv = require('./src/windows-env'); windowsEnv.prepare();
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
-const chatHistoryRepository = createChatHistoryFileRepository({ dataDir: MULTICC_PATHS.root });
+const chatHistoryRepository = getNative().chatHistoryFileRepositoryCreate({ root: MULTICC_PATHS.chatHistoryDir, reportFailure: stateStore.reportFailure });
 const turnEventJournal = sharedTurnEventJournal(MULTICC_PATHS); const turnLedgerRuntime = require('./src/turn-ledger/runtime').createTurnLedgerRuntime({ dataDir: MULTICC_PATHS.root, codexCmd: () => cliCommands.codex }).start(); // 终端轮次账本：hook→spool→TurnLedger，影子模式只观测不接管状态
 const auxRunLog = createAuxRunLog({ dir: MULTICC_PATHS.auxRunsDir, log: (event, detail) => console.warn(`[multicc/aux-run-log] ${event}`, detail) });
 // One native owner holds the live chat-session, persisted-session and directory

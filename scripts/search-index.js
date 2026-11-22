@@ -25,7 +25,8 @@ const path = require('node:path');
 const { resolveDataDir, createPaths } = require('../src/paths');
 const { createSearchIndex } = require('../src/search/index-store');
 const { createMessageCorpus, MESSAGE_SCOPE } = require('../src/search/message-corpus');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { getNative } = require('../src/native/runtime');
+const { reportFailure } = require('../src/state/store');
 
 function parseArgs(argv) {
   const positional = [];
@@ -79,7 +80,7 @@ function main(argv) {
     console.error('（FTS5 缺失时检索会退回任务板的内存 BM25，消息索引不启用。）');
     return 1;
   }
-  const history = createChatHistoryFileRepository({ dataDir });
+  const history = getNative().chatHistoryFileRepositoryCreate({ root: paths.chatHistoryDir, reportFailure });
   const corpus = createMessageCorpus({ index, history, logger });
 
   try {

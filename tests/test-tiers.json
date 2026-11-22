@@ -2254,6 +2254,11 @@
       ]
     },
     {
+      "path": "tests/test-chat-history-file-repository-differential.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-chat-history-ordering.js",
       "tier": "other",
       "lane": "deterministic",

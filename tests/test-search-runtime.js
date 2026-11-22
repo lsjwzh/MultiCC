@@ -24,7 +24,7 @@ const {
   resetSharedSearchRuntimes,
   DEFAULT_HITS,
 } = require('../src/search/runtime');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { createSliceRunner } = require('../src/search/slice-runner');
 
 const logger = { warn() {}, log() {}, info() {} };

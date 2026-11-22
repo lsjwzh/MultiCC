@@ -9,8 +9,15 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const legacy = require('./helpers/legacy-chat-history-file-repository');
-const native = require('../src/session/adapters/chat-history-file-repository');
+const { getNative } = require('../src/native/runtime');
+const { createPaths } = require('../src/paths');
 const stateStore = require('../src/state/store');
+const native = {
+  createChatHistoryFileRepository: ({ dataDir, appendEnabled } = {}) => getNative().chatHistoryFileRepositoryCreate({
+    root: createPaths({ dataDir }).chatHistoryDir, appendEnabled, reportFailure: stateStore.reportFailure,
+  }),
+  safeSessionName: value => getNative().chatHistorySafeSessionName(value),
+};
 
 const workingDirs = [];
 function tempDir(prefix) {

@@ -13,7 +13,7 @@
 const v8 = require('node:v8');
 
 const { getNative } = require('../../src/native/runtime');
-const { createChatHistoryFileRepository } = require('../../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./native-chat-history-repository');
 
 const [dataDir, sessionId, mode, rangeStartArg, rangeEndArg] = process.argv.slice(2);
 if (!dataDir || !sessionId) {

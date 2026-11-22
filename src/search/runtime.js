@@ -6,7 +6,8 @@ const { createSearchIndex, MAX_LIMIT } = require('./index-store');
 const { rerank } = require('./diversity');
 const { createMessageCorpus, MESSAGE_SCOPE } = require('./message-corpus');
 const { createSliceRunner, DEFAULT_SLICE_MS, DEFAULT_DUTY } = require('./slice-runner');
-const { createChatHistoryFileRepository } = require('../session/adapters/chat-history-file-repository');
+const { getNative } = require('../native/runtime');
+const { reportFailure } = require('../state/store');
 
 // The message index as a running service, rather than a CLI over a file.
 //
@@ -87,7 +88,7 @@ function createSearchRuntime({
 } = {}) {
   const paths = createPaths({ dataDir });
   const opened = index || createSearchIndex({ dbFile: dbFile || paths.searchIndexDbFile, logger });
-  const repo = history || createChatHistoryFileRepository({ dataDir });
+  const repo = history || getNative().chatHistoryFileRepositoryCreate({ root: paths.chatHistoryDir, reportFailure });
   const corpus = opened.available
     ? createMessageCorpus({
       index: opened, history: repo, logger, resolveDirId,

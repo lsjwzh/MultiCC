@@ -602,3 +602,56 @@ SDK、平台、配置和数据格式不变；不重启服务，不推送。私�
 - 用当前源码重建网关和需要的 addon，单批做定向回归，交付前对比 `main` 的已知失败。生产切换前跑 `cargo fmt --check`、严格 Clippy、Rust 工作区测试、Node 兼容、安全、状态、契约、架构与治理套件，以及网关和安装包相关回归。隔离数据夹具覆盖旧版 schema、事务中断重试和重启。
 - 每批记录运行时还剩哪些 Node 入口。最后逐项核销默认挂载、条件挂载、动态插件、HTTP 宿主端口、WS/SSE 入口和后台工作者。`scripts/capture-backend-routes.js` 的默认隔离快照须配合条件配置和协议验收。
 - 最终用实际发布入口启动隔离包，检查无 Node 可执行路径、无 Node 后端子进程、完整功能路径成功、进程树和监听端口可核验。用隔离副本演练升级和回退，先核对现有格式能否继续被旧版本读取，再确定恢复方式。验证通过的版本记录独立启动命令和用户手动切换流程。
+
+### 聊天历史文件仓储适配器（Rust 迁移，待验收）
+
+迁移前按当前 HEAD 树重建清单为 548 个 `.js` / `.cjs` 文件；当前工作区为 547 个。仅退役 `src/session/adapters/chat-history-file-repository.js`，旧文件逐字节冻结至 `tests/helpers/legacy-chat-history-file-repository-adapter.js`。文件 IO 和历史协议继续由既有 Rust 仓储负责，工厂与异步结果适配迁入 `native/core` / `native/addon`；生产调用点经 `src/native/runtime.js` 使用原生工厂。新导出已加入构建探针，差分测试比较旧工厂与新工厂的接口、结果、错误和文件状态。
+
+以下按文件所在目录统计当前工作区；迁移前差额仅为 `src/session/adapters/` 中该适配器 1 个文件。
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 85 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli/` | 9 |
+| `src/cli-adapters/` | 27 |
+| `src/codex/` | 11 |
+| `src/codex-auth/` | 1 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 96 |
+| `src/search/` | 6 |
+| `src/session/` | 14 |
+| `src/session-work/` | 2 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |

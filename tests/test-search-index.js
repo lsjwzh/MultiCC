@@ -25,7 +25,7 @@ const { createSearchIndex, hashOf, buildSnippet, escapeLike } = require('../src/
 const {
   MESSAGE_SCOPE, chunkText, createMessageCorpus, isSearchableSession, messageText, sessionChunkRows,
 } = require('../src/search/message-corpus');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { databaseConstructor } = require('../src/sqlite/driver');
 
 function tempDir() {

@@ -14,7 +14,7 @@ const path = require('node:path');
 
 const legacy = require('./helpers/legacy-chat-history-runtime');
 const native = require('../src/routes/chat-history');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 
 const tempDirs = [];
 function tempDir(label) {

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { buildReplayMessages, createChatHistoryRuntime } = require('../src/routes/chat-history');
 
 test('reconnect promotes a persisted interim into the one live streaming tail', () => {

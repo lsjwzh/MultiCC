@@ -20,7 +20,7 @@ const {
 } = require('../src/search/message-corpus');
 const { createSearchIndex, SCHEMA_VERSION } = require('../src/search/index-store');
 const { createSearchRuntime } = require('../src/search/runtime');
-const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { createTaskSearchRoutes } = require('../src/routes/task-search');
 const { databaseConstructor } = require('../src/sqlite/driver');
 

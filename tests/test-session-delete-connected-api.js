@@ -206,7 +206,7 @@ function waitForFrame(socket, type) {
   // Seed durable task evidence while this isolated server is stopped. Never
   // send a prompt: the fixture needs no native CLI or external AI provider.
   await stopServer();
-  const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
+  const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
   const history = createChatHistoryFileRepository({ dataDir });
   const original = [
     { id: 'task-user', role: 'user', taskId: 'retained-task', content: 'full requirement', ts: 1 },

@@ -13,22 +13,25 @@ use multicc_core::{
         transcript_path as history_path, visibility_path, visit_json_object, LegacyError,
         LineError, Row,
     },
+    chat_history_file_repository as facade_core,
     chat_history_index::{HistoryIndex, IndexError},
     js::{is_js_whitespace_char, json_parse, JsValue as J, JsValue as SemanticValue},
     state_file,
 };
 use napi::{
-    bindgen_prelude::{AsyncTask, Unknown},
-    sys, Env, Error, Result, Task,
+    bindgen_prelude::{AsyncTask, ToNapiValue, Unknown},
+    check_status, sys, Env, Error, JsValue, Result, Task,
 };
 use napi_derive::napi;
 use std::{
     cell::RefCell,
     collections::HashMap,
-    ffi::CStr,
+    ffi::{CStr, CString},
     fs::{self, File, OpenOptions},
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    ptr,
+    rc::Rc,
 };
 
 fn text<'a>(a: L<'a>, value: &str) -> Result<L<'a>> {
@@ -1787,4 +1790,774 @@ impl RustChatHistoryRepository {
 #[napi]
 pub fn chat_history_safe_session_name(env: Env, session: Unknown<'_>) -> Result<sys::napi_value> {
     Ok(safe_name(L::new(&env, session))?.raw())
+}
+
+// ---------------------------------------------------------------------------
+// Facade factory: former src/session/adapters/chat-history-file-repository.js
+//
+// The facade is a frozen JS object whose surface mirrors the retired adapter
+// byte-for-byte: ten synchronous forwards through `run`, `readOwned` and
+// `readStrict`, and five async wrappers that shape receipts, rebuild thrown
+// failures with their original JS constructors and report them through the
+// `reportFailure` port before rethrowing. Pure decisions live in
+// `multicc_core::chat_history_file_repository`. Closures capture the facade
+// via Rc. The anchor does not own callbacks, so the last callback finalizer
+// releases the strong anchor reference without forming a V8 cycle.
+struct HistoryFacade {
+    env: sys::napi_env,
+    owner: RustChatHistoryRepository,
+    anchor: sys::napi_ref,
+}
+
+impl HistoryFacade {
+    fn anchor_value<'a>(&self, env: &'a Env) -> Result<L<'a>> {
+        let mut value = ptr::null_mut();
+        check_status!(unsafe { sys::napi_get_reference_value(self.env, self.anchor, &mut value) })?;
+        if value.is_null() {
+            return Err(Error::from_reason("history repository anchor released"));
+        }
+        Ok(L::from_raw(env.raw(), value))
+    }
+
+    fn unknown<'a>(env: &'a Env, value: L<'a>) -> Unknown<'a> {
+        unsafe { Unknown::from_raw_unchecked(env.raw(), value.raw()) }
+    }
+
+    fn run<'a>(&self, env: &'a Env, action: &str, args: L<'a>) -> Result<L<'a>> {
+        let anchor = self.anchor_value(env)?;
+        let raw = self.owner.run(
+            *env,
+            Self::unknown(env, anchor),
+            action.to_string(),
+            Self::unknown(env, args),
+        )?;
+        Ok(L::from_raw(env.raw(), raw))
+    }
+}
+
+impl Drop for HistoryFacade {
+    fn drop(&mut self) {
+        unsafe {
+            sys::napi_delete_reference(self.env, self.anchor);
+        }
+    }
+}
+
+fn object(a: L<'_>) -> Result<L<'_>> {
+    a.from_value(&J::Object(vec![]))
+}
+
+fn arity(function: L<'_>, length: f64) -> Result<L<'_>> {
+    let value = function.from_value(&J::Number(length))?;
+    let descriptor = sys::napi_property_descriptor {
+        utf8name: c"length".as_ptr(),
+        value: value.raw(),
+        attributes: sys::PropertyAttributes::configurable,
+        ..unsafe { std::mem::zeroed() }
+    };
+    check_status!(unsafe {
+        sys::napi_define_properties(function.env(), function.raw(), 1, &descriptor)
+    })?;
+    Ok(function)
+}
+
+/// String(value): the global String call, which unlike a ToNumber-style
+/// coercion accepts symbols and propagates a throwing toString as-is.
+fn js_string(a: L<'_>, value: L<'_>) -> Result<String> {
+    let string_ctor = a.global()?.get(c"String")?;
+    let text = string_ctor.call_plain(&[value])?;
+    Ok(text
+        .string()?
+        .map(|text| text.to_string_lossy())
+        .unwrap_or_default())
+}
+
+fn js_or_empty<'a>(a: L<'a>, value: L<'a>) -> Result<L<'a>> {
+    if value.truthy()? {
+        Ok(value)
+    } else {
+        a.from_value(&J::string(""))
+    }
+}
+
+fn js_type_name(value: L<'_>) -> Result<&'static str> {
+    Ok(match value.kind()? {
+        sys::ValueType::napi_undefined => "Undefined",
+        sys::ValueType::napi_null => "Null",
+        sys::ValueType::napi_boolean => "Boolean",
+        sys::ValueType::napi_number => "Number",
+        sys::ValueType::napi_string => "String",
+        sys::ValueType::napi_symbol => "Symbol",
+        sys::ValueType::napi_object => "Object",
+        sys::ValueType::napi_function => "Function",
+        sys::ValueType::napi_bigint => "BigInt",
+        _ => "Unknown",
+    })
+}
+
+/// The strict f64 conversion the napi boundary applies to number parameters,
+/// message-compatible with `#[napi]` argument failures.
+fn f64_param(value: L<'_>) -> Result<f64> {
+    if value.kind()? == sys::ValueType::napi_number {
+        let mut result = 0.0;
+        check_status!(unsafe {
+            sys::napi_get_value_double(value.env(), value.raw(), &mut result)
+        })?;
+        Ok(result)
+    } else {
+        Err(Error::new(
+            napi::Status::NumberExpected,
+            format!(
+                "Failed to convert napi value {} into rust type `f64`",
+                js_type_name(value)?
+            ),
+        ))
+    }
+}
+
+fn history_index(value: f64) -> Result<u32> {
+    if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) || value.fract() != 0.0 {
+        return Err(Error::from_reason("HISTORY_INDEX_INVALID_RANGE"));
+    }
+    Ok(value as u32)
+}
+
+/// Async facade methods never throw synchronously: like an `async` function,
+/// every failure — including argument coercion — becomes a rejected promise.
+/// A pending JS exception is reused verbatim so the rejection reason keeps its
+/// original identity; plain Rust failures become `new Error(reason)`.
+fn reject_preserving(a: L<'_>, error: Error) -> Result<L<'_>> {
+    let exception = a.exception_value()?;
+    let promise = a.global()?.get(c"Promise")?;
+    let reason = match exception {
+        Some(exception) => exception,
+        None => {
+            let message = a.from_value(&J::string(&error.reason))?;
+            let failure = a.global()?.get(c"Error")?.construct(&[message])?;
+            failure.set(c"code", a.from_value(&J::string(error.status.as_ref()))?)?;
+            failure
+        }
+    };
+    promise.get(c"reject")?.call(promise, &[reason])
+}
+
+fn resolve_immediately<'a>(a: L<'a>, value: L<'a>) -> Result<L<'a>> {
+    let promise = a.global()?.get(c"Promise")?;
+    promise.get(c"resolve")?.call(promise, &[value])
+}
+
+fn nullish_default<'a>(a: L<'a>, value: L<'a>) -> Result<L<'a>> {
+    if value.nullish()? {
+        a.from_value(&J::Null)
+    } else {
+        Ok(value)
+    }
+}
+
+/// The retired adapter's `asyncFailure`: rebuild the recorded failure with its
+/// original constructor and transport fields. A recorded `SyntaxError` whose
+/// `jsonSource` is a string is re-parsed first — when the source is bogus the
+/// engine's own parse error replaces the recorded one, by design.
+fn build_failure<'a>(a: L<'a>, error: L<'a>) -> Result<L<'a>> {
+    let error_type = error.get(c"errorType")?;
+    let error_type_string = error_type.string()?.map(|text| text.to_string_lossy());
+    let json_source = error.get(c"jsonSource")?;
+    let json_source_is_string = json_source.string()?.is_some();
+    if facade_core::should_rethrow_json_parse(error_type_string.as_deref(), json_source_is_string) {
+        let parse = a.global()?.get(c"JSON")?.get(c"parse")?;
+        match parse.call_plain(&[json_source]) {
+            Ok(_) => {}
+            Err(parse_error) => {
+                if let Some(exception) = a.exception_value()? {
+                    return Err(exception.throw_error());
+                }
+                return Err(parse_error);
+            }
+        }
+    }
+    let constructor = match facade_core::failure_ctor(error_type_string.as_deref()) {
+        facade_core::FailureCtor::TypeError => c"TypeError",
+        facade_core::FailureCtor::SyntaxError => c"SyntaxError",
+        facade_core::FailureCtor::Error => c"Error",
+    };
+    let failure = a
+        .global()?
+        .get(constructor)?
+        .construct(&[error.get(c"message")?])?;
+    let code = error.get(c"code")?;
+    if code.truthy()? {
+        failure.set(c"code", code)?;
+    }
+    let errno = error.get(c"errno")?;
+    if !errno.nullish()? {
+        failure.set(c"errno", errno)?;
+    }
+    for field in [c"syscall", c"path", c"dest"] {
+        let value = error.get(field)?;
+        if value.truthy()? {
+            failure.set(field, value)?;
+        }
+    }
+    Ok(failure)
+}
+
+/// `reportFailure(failure, { operation, target: error.target || error.path || root })`
+/// — only when the failure carries an operation.
+fn report_async_failure(anchor: L<'_>, error: L<'_>, failure: L<'_>) -> Result<()> {
+    let operation = error.get(c"operation")?;
+    if !operation.truthy()? {
+        return Ok(());
+    }
+    let target = {
+        let recorded = error.get(c"target")?;
+        if recorded.truthy()? {
+            recorded
+        } else {
+            let path = error.get(c"path")?;
+            if path.truthy()? {
+                path
+            } else {
+                anchor.get(c"ports")?.get(c"root")?
+            }
+        }
+    };
+    let meta = object(anchor)?;
+    meta.set(c"operation", operation)?;
+    meta.set(c"target", target)?;
+    anchor
+        .get(c"ports")?
+        .get(c"reportFailure")?
+        .call_plain(&[failure, meta])?;
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum HistoryShapeKind {
+    Write,
+    Append,
+    Visibility,
+    Probe,
+    Page,
+}
+
+fn shape_result<'a>(
+    env: &'a Env,
+    facade: &Rc<HistoryFacade>,
+    kind: HistoryShapeKind,
+    result: L<'a>,
+) -> Result<L<'a>> {
+    let a = result;
+    if let HistoryShapeKind::Page = kind {
+        let out = object(a)?;
+        out.spread_from(result)?;
+        out.set(c"ledger", nullish_default(a, result.get(c"ledger")?)?)?;
+        return Ok(out);
+    }
+    let error = result.get(c"error")?;
+    if error.truthy()? {
+        let failure = build_failure(a, error)?;
+        if !matches!(kind, HistoryShapeKind::Probe) {
+            let anchor = facade.anchor_value(env)?;
+            report_async_failure(anchor, error, failure)?;
+        }
+        return Err(failure.throw_error());
+    }
+    match kind {
+        HistoryShapeKind::Write => {
+            let out = object(a)?;
+            out.set(c"bytes", nullish_default(a, result.get(c"bytes")?)?)?;
+            out.set(c"ends", nullish_default(a, result.get(c"ends")?)?)?;
+            out.set(c"full", a.from_value(&J::Bool(true))?)?;
+            Ok(out)
+        }
+        HistoryShapeKind::Append => {
+            let out = object(a)?;
+            out.set(
+                c"appended",
+                a.from_value(&J::Bool(result.get(c"appended")?.is_true()?))?,
+            )?;
+            out.set(
+                c"conflict",
+                a.from_value(&J::Bool(result.get(c"conflict")?.is_true()?))?,
+            )?;
+            out.set(c"bytes", nullish_default(a, result.get(c"bytes")?)?)?;
+            out.set(c"ends", nullish_default(a, result.get(c"ends")?)?)?;
+            out.set(c"full", a.from_value(&J::Bool(false))?)?;
+            Ok(out)
+        }
+        HistoryShapeKind::Probe => a.from_value(&J::Bool(result.get(c"found")?.is_true()?)),
+        HistoryShapeKind::Visibility => a.from_value(&J::Undefined),
+        HistoryShapeKind::Page => unreachable!(),
+    }
+}
+
+fn bind_shape<'a>(
+    env: &'a Env,
+    facade: &Rc<HistoryFacade>,
+    kind: HistoryShapeKind,
+) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function =
+        env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>("shape", move |ctx| {
+            let result = L::new(ctx.env, ctx.get::<Unknown<'_>>(0)?);
+            shape_result(ctx.env, &captured, kind, result).map(|value| value.raw())
+        })?;
+    Ok(L::from_raw(env.raw(), function.into_unknown(env)?.raw()))
+}
+
+/// `finally` semantics of the retired adapter: the write ledger is invalidated
+/// after every mutation attempt, and an invalidation failure is swallowed.
+fn bind_invalidate<'a>(env: &'a Env, facade: &Rc<HistoryFacade>, id: String) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
+        "invalidate",
+        move |ctx| {
+            let env: &Env = ctx.env;
+            let base = L::new(env, ().into_unknown(env)?);
+            let _ = base.catch(|| -> Result<()> {
+                let args = array(base)?;
+                args.set_element(0, base.from_value(&J::string(&id))?)?;
+                captured.run(env, "invalidateWrite", args)?;
+                Ok(())
+            });
+            Ok(base.from_value(&J::Undefined)?.raw())
+        },
+    )?;
+    Ok(L::from_raw(env.raw(), function.into_unknown(env)?.raw()))
+}
+
+fn invalidate_best_effort(env: &Env, facade: &Rc<HistoryFacade>, base: L<'_>, id: &str) {
+    let _ = base.catch(|| -> Result<()> {
+        let args = array(base)?;
+        args.set_element(0, base.from_value(&J::string(id))?)?;
+        facade.run(env, "invalidateWrite", args)?;
+        Ok(())
+    });
+}
+
+/// Shared skeleton of writeAsync/appendAsync/writeVisibilityAsync: the session
+/// id coercion sits outside the legacy try block (its failure skips the
+/// finally), everything else invalidates the ledger before the failure turns
+/// into a rejection.
+fn bind_mutation_async<'a>(
+    env: &'a Env,
+    facade: &Rc<HistoryFacade>,
+    name: &str,
+    kind: MutationKind,
+) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function =
+        env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(name, move |ctx| {
+            let env: &Env = ctx.env;
+            let base = L::new(env, ().into_unknown(env)?);
+            let facade = Rc::clone(&captured);
+            let arg = |index: usize| -> Result<L<'_>> {
+                if index < ctx.length() {
+                    Ok(L::new(env, ctx.get::<Unknown<'_>>(index)?))
+                } else {
+                    Ok(base)
+                }
+            };
+            let body = (|| -> Result<L<'_>> {
+                let id = js_string(base, arg(0)?)?;
+                let inner = (|| -> Result<L<'_>> {
+                    let raw = match kind {
+                        MutationKind::Write => {
+                            let json = js_string(base, arg(1)?)?;
+                            unsafe {
+                                ToNapiValue::to_napi_value(
+                                    env.raw(),
+                                    AsyncTask::new(HistoryWriteJob {
+                                        root: facade.owner.root.clone(),
+                                        session_id: id.clone(),
+                                        messages_json: json,
+                                        can_append: facade.owner.can_append,
+                                    }),
+                                )?
+                            }
+                        }
+                        MutationKind::Append => {
+                            let payload = arg(1)?;
+                            if payload.nullish()? {
+                                let kind = if payload.undefined()? {
+                                    "undefined"
+                                } else {
+                                    "null"
+                                };
+                                return Err(base.type_error(&format!(
+                                    "Cannot read properties of {kind} (reading 'tail')"
+                                )));
+                            }
+                            let tail = js_string(base, payload.get(c"tail")?)?;
+                            let keep_bytes = f64_param(payload.get(c"keepBytes")?)?;
+                            let expected_bytes = f64_param(payload.get(c"expectedBytes")?)?;
+                            unsafe {
+                                ToNapiValue::to_napi_value(
+                                    env.raw(),
+                                    AsyncTask::new(HistoryAppendJob {
+                                        root: facade.owner.root.clone(),
+                                        session_id: id.clone(),
+                                        tail_json: tail,
+                                        keep_bytes: keep_bytes as u64,
+                                        expected_bytes: expected_bytes as u64,
+                                    }),
+                                )?
+                            }
+                        }
+                        MutationKind::Visibility => {
+                            let json = js_string(base, arg(1)?)?;
+                            unsafe {
+                                ToNapiValue::to_napi_value(
+                                    env.raw(),
+                                    AsyncTask::new(VisibilityWriteJob {
+                                        root: facade.owner.root.clone(),
+                                        session_id: id.clone(),
+                                        state_json: json,
+                                    }),
+                                )?
+                            }
+                        }
+                    };
+                    let promise = L::from_raw(env.raw(), raw);
+                    let shape = bind_shape(
+                        env,
+                        &facade,
+                        match kind {
+                            MutationKind::Write => HistoryShapeKind::Write,
+                            MutationKind::Append => HistoryShapeKind::Append,
+                            MutationKind::Visibility => HistoryShapeKind::Visibility,
+                        },
+                    )?;
+                    let shaped = promise.get(c"then")?.call(promise, &[shape])?;
+                    let invalidate = bind_invalidate(env, &facade, id.clone())?;
+                    shaped.get(c"finally")?.call(shaped, &[invalidate])
+                })();
+                match inner {
+                    Ok(value) => Ok(value),
+                    Err(error) => {
+                        let exception = base.exception_value()?;
+                        invalidate_best_effort(env, &facade, base, &id);
+                        match exception {
+                            Some(exception) => Err(exception.throw_error()),
+                            None => Err(error),
+                        }
+                    }
+                }
+            })();
+            match body {
+                Ok(value) => Ok(value.raw()),
+                Err(error) => Ok(reject_preserving(base, error)?.raw()),
+            }
+        })?;
+    arity(
+        L::from_raw(env.raw(), function.into_unknown(env)?.raw()),
+        2.0,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum MutationKind {
+    Write,
+    Append,
+    Visibility,
+}
+
+fn bind_has_persisted_delivery_async<'a>(
+    env: &'a Env,
+    facade: &Rc<HistoryFacade>,
+) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
+        "hasPersistedDeliveryAsync",
+        move |ctx| {
+            let env: &Env = ctx.env;
+            let base = L::new(env, ().into_unknown(env)?);
+            let facade = Rc::clone(&captured);
+            let body = (|| -> Result<L<'_>> {
+                let identity = js_string(
+                    base,
+                    js_or_empty(
+                        base,
+                        if ctx.length() > 1 {
+                            L::new(env, ctx.get::<Unknown<'_>>(1)?)
+                        } else {
+                            base
+                        },
+                    )?,
+                )?;
+                if facade_core::delivery_probe_short_circuit(&identity) {
+                    return resolve_immediately(base, base.from_value(&J::Bool(false))?);
+                }
+                let session = js_string(
+                    base,
+                    if ctx.length() > 0 {
+                        L::new(env, ctx.get::<Unknown<'_>>(0)?)
+                    } else {
+                        base
+                    },
+                )?;
+                let raw = unsafe {
+                    ToNapiValue::to_napi_value(
+                        env.raw(),
+                        AsyncTask::new(DeliveryProbeJob {
+                            root: facade.owner.root.clone(),
+                            session_id: session,
+                            delivery_id: identity,
+                        }),
+                    )?
+                };
+                let promise = L::from_raw(env.raw(), raw);
+                let shape = bind_shape(env, &facade, HistoryShapeKind::Probe)?;
+                promise.get(c"then")?.call(promise, &[shape])
+            })();
+            match body {
+                Ok(value) => Ok(value.raw()),
+                Err(error) => Ok(reject_preserving(base, error)?.raw()),
+            }
+        },
+    )?;
+    arity(
+        L::from_raw(env.raw(), function.into_unknown(env)?.raw()),
+        2.0,
+    )
+}
+
+fn bind_read_physical_range_async<'a>(env: &'a Env, facade: &Rc<HistoryFacade>) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
+        "readPhysicalRangeAsync",
+        move |ctx| {
+            let env: &Env = ctx.env;
+            let base = L::new(env, ().into_unknown(env)?);
+            let facade = Rc::clone(&captured);
+            let body = (|| -> Result<L<'_>> {
+                let session = js_string(
+                    base,
+                    if ctx.length() > 0 {
+                        L::new(env, ctx.get::<Unknown<'_>>(0)?)
+                    } else {
+                        base
+                    },
+                )?;
+                // The napi boundary converts every numeric argument before the
+                // method body validates the range; keep that order.
+                let start = f64_param(if ctx.length() > 1 {
+                    L::new(env, ctx.get::<Unknown<'_>>(1)?)
+                } else {
+                    base
+                })?;
+                let end = f64_param(if ctx.length() > 2 {
+                    L::new(env, ctx.get::<Unknown<'_>>(2)?)
+                } else {
+                    base
+                })?;
+                let budget = f64_param(if ctx.length() > 3 {
+                    L::new(env, ctx.get::<Unknown<'_>>(3)?)
+                } else {
+                    base
+                })?;
+                let raw = unsafe {
+                    ToNapiValue::to_napi_value(
+                        env.raw(),
+                        AsyncTask::new(HistoryPhysicalPageJob {
+                            root: facade.owner.root.clone(),
+                            session_id: session,
+                            start: history_index(start)?,
+                            end: history_index(end)?,
+                            byte_budget: history_index(budget)?,
+                        }),
+                    )?
+                };
+                let promise = L::from_raw(env.raw(), raw);
+                let shape = bind_shape(env, &facade, HistoryShapeKind::Page)?;
+                promise.get(c"then")?.call(promise, &[shape])
+            })();
+            match body {
+                Ok(value) => Ok(value.raw()),
+                Err(error) => Ok(reject_preserving(base, error)?.raw()),
+            }
+        },
+    )?;
+    arity(
+        L::from_raw(env.raw(), function.into_unknown(env)?.raw()),
+        4.0,
+    )
+}
+
+fn bind_forward<'a>(env: &'a Env, facade: &Rc<HistoryFacade>, name: &'static str) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function =
+        env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(name, move |ctx| {
+            let env: &Env = ctx.env;
+            let base = L::new(env, ().into_unknown(env)?);
+            let args = array(base)?;
+            for index in 0..ctx.length() {
+                args.set_element(index as u32, L::new(env, ctx.get::<Unknown<'_>>(index)?))?;
+            }
+            Ok(captured.run(env, name, args)?.raw())
+        })?;
+    arity(
+        L::from_raw(env.raw(), function.into_unknown(env)?.raw()),
+        0.0,
+    )
+}
+
+fn bind_read_owned<'a>(env: &'a Env, facade: &Rc<HistoryFacade>) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
+        "readOwned",
+        move |ctx| {
+            let env: &Env = ctx.env;
+            let base = L::new(env, ().into_unknown(env)?);
+            let args = array(base)?;
+            args.set_element(
+                0,
+                if ctx.length() > 0 {
+                    L::new(env, ctx.get::<Unknown<'_>>(0)?)
+                } else {
+                    base
+                },
+            )?;
+            Ok(captured.run(env, "readOwned", args)?.raw())
+        },
+    )?;
+    arity(
+        L::from_raw(env.raw(), function.into_unknown(env)?.raw()),
+        1.0,
+    )
+}
+
+fn bind_read_strict<'a>(env: &'a Env, facade: &Rc<HistoryFacade>) -> Result<L<'a>> {
+    let captured = Rc::clone(facade);
+    let function = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
+        "readStrict",
+        move |ctx| {
+            let env: &Env = ctx.env;
+            let base = L::new(env, ().into_unknown(env)?);
+            let options = if ctx.length() > 1 {
+                L::new(env, ctx.get::<Unknown<'_>>(1)?)
+            } else {
+                base
+            };
+            let allow_empty = if options.undefined()? {
+                base.from_value(&J::Bool(false))?
+            } else if options.kind()? == sys::ValueType::napi_null {
+                return Err(
+                    base.type_error("Cannot read properties of null (reading 'allowEmpty')")
+                );
+            } else {
+                let value = options.get(c"allowEmpty")?;
+                if value.undefined()? {
+                    base.from_value(&J::Bool(false))?
+                } else {
+                    value
+                }
+            };
+            let args = array(base)?;
+            args.set_element(
+                0,
+                if ctx.length() > 0 {
+                    L::new(env, ctx.get::<Unknown<'_>>(0)?)
+                } else {
+                    base
+                },
+            )?;
+            args.set_element(1, allow_empty)?;
+            Ok(captured.run(env, "readStrict", args)?.raw())
+        },
+    )?;
+    arity(
+        L::from_raw(env.raw(), function.into_unknown(env)?.raw()),
+        1.0,
+    )
+}
+
+/// Factory for the frozen facade, replacing the retired adapter module.
+/// `options.root` is the caller-computed chat-history directory (paths stay
+/// with `src/paths.js`); `options.appendEnabled` falls back to
+/// `MULTICC_HISTORY_APPEND !== '0'`; `options.reportFailure` is the host's
+/// failure-report port, stored on the repository anchor exactly like the
+/// retired adapter stored it.
+#[napi]
+pub fn chat_history_file_repository_create(
+    env: Env,
+    options: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let options = L::new(&env, options);
+    let root = options
+        .get(c"root")?
+        .string()?
+        .ok_or_else(|| Error::from_reason("history repository root must be a string"))?
+        .to_string_lossy();
+    let append_value = options.get(c"appendEnabled")?;
+    let append_enabled = if append_value.undefined()? {
+        facade_core::append_enabled_default(std::env::var("MULTICC_HISTORY_APPEND").ok().as_deref())
+    } else {
+        append_value.truthy()?
+    };
+    let anchor = object(options)?;
+    let ports = object(options)?;
+    ports.set(c"root", options.from_value(&J::string(&root))?)?;
+    ports.set(
+        c"appendEnabled",
+        options.from_value(&J::Bool(append_enabled))?,
+    )?;
+    ports.set(c"reportFailure", options.get(c"reportFailure")?)?;
+    anchor.set(c"ports", ports)?;
+    let owner = RustChatHistoryRepository::new(env, HistoryFacade::unknown(&env, anchor))?;
+    let mut anchor_ref = ptr::null_mut();
+    check_status!(unsafe {
+        sys::napi_create_reference(env.raw(), anchor.raw(), 1, &mut anchor_ref)
+    })?;
+    let facade = Rc::new(HistoryFacade {
+        env: env.raw(),
+        owner,
+        anchor: anchor_ref,
+    });
+    let facade_object = object(options)?;
+    facade_object.set(c"root", options.from_value(&J::string(&root))?)?;
+    for name in [
+        "deleteSession",
+        "fileFor",
+        "hasPersistedDelivery",
+        "listSessionIds",
+        "read",
+        "readVisibility",
+        "renameSession",
+        "write",
+        "writeVisibility",
+        "visibilityFileFor",
+    ] {
+        let key = CString::new(name).expect("static method name");
+        facade_object.set(&key, bind_forward(&env, &facade, name)?)?;
+    }
+    facade_object.set(c"readOwned", bind_read_owned(&env, &facade)?)?;
+    facade_object.set(c"readStrict", bind_read_strict(&env, &facade)?)?;
+    facade_object.set(
+        c"writeAsync",
+        bind_mutation_async(&env, &facade, "writeAsync", MutationKind::Write)?,
+    )?;
+    facade_object.set(
+        c"appendAsync",
+        bind_mutation_async(&env, &facade, "appendAsync", MutationKind::Append)?,
+    )?;
+    facade_object.set(
+        c"writeVisibilityAsync",
+        bind_mutation_async(
+            &env,
+            &facade,
+            "writeVisibilityAsync",
+            MutationKind::Visibility,
+        )?,
+    )?;
+    facade_object.set(
+        c"hasPersistedDeliveryAsync",
+        bind_has_persisted_delivery_async(&env, &facade)?,
+    )?;
+    facade_object.set(
+        c"readPhysicalRangeAsync",
+        bind_read_physical_range_async(&env, &facade)?,
+    )?;
+    facade_object.freeze()?;
+    Ok(facade_object.raw())
 }

@@ -124,9 +124,21 @@ function setScene(root, scene) {
   }
 }
 
+// The retired Node adapter (src/session/adapters/chat-history-file-repository.js)
+// is gone from current trees; an older <repo> checkout may still carry it.
+function historyRepository(repo, dataDir) {
+  const R = rel => require(path.join(repo, rel));
+  if (fs.existsSync(path.join(repo, 'src/session/adapters/chat-history-file-repository.js'))) {
+    return R('src/session/adapters/chat-history-file-repository').createChatHistoryFileRepository({ dataDir });
+  }
+  return R('src/native/runtime').getNative().chatHistoryFileRepositoryCreate({
+    root: R('src/paths').createPaths({ dataDir }).chatHistoryDir,
+    reportFailure: R('src/state/store').reportFailure,
+  });
+}
+
 function buildWorld({ repo, dataRoot, rootDir, work, side, createChatHistoryRuntime, createIosUdid }) {
   const R = rel => require(path.join(repo, rel));
-  const { createChatHistoryFileRepository } = R('src/session/adapters/chat-history-file-repository');
   const { createApkDistribution } = R('src/apk-distribution');
   const { createIosOta } = R('src/ios-ota');
   const proj = projectDir(work);
@@ -139,7 +151,7 @@ function buildWorld({ repo, dataRoot, rootDir, work, side, createChatHistoryRunt
     ['internal1', { id: 'internal1', kind: 'chat', cli: 'claude', taskExecutionSlot: true }],
     ['a/b', { id: 'a/b', kind: 'chat', cli: 'claude', cwd: proj }],
   ]);
-  const history = createChatHistoryFileRepository({ dataDir: dataRoot });
+  const history = historyRepository(repo, dataRoot);
   const broadcastFile = path.join(work, `${side}-broadcast.jsonl`);
   let sequence = 0;
   const chat = createChatHistoryRuntime({
@@ -861,8 +873,7 @@ function main() {
       // writes) the real ~/.claude.
       const work = path.dirname(dir);
       process.env.HOME = path.join(work, 'home');
-      const { createChatHistoryFileRepository } = require(path.join(repo, 'src/session/adapters/chat-history-file-repository'));
-      const history = createChatHistoryFileRepository({ dataDir: dir });
+      const history = historyRepository(repo, dir);
       history.write('s1', messages());
       fs.mkdirSync(path.dirname(history.fileFor('bad')), { recursive: true });
       // A display-state path that is a directory: reading or writing the

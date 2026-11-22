@@ -356,7 +356,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   const workspaceRuntime = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'runtime.js'), 'utf8');
   const authRoutes = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'auth.js'), 'utf8');
   const voiceHost = fs.readFileSync(path.join(ROOT, 'src', 'voice', 'host.js'), 'utf8');
-  assert.ok(source.includes("createChatHistoryFileRepository } = require('./src/session/adapters/chat-history-file-repository')"));
+  assert.ok(source.includes('getNative().chatHistoryFileRepositoryCreate({ root: MULTICC_PATHS.chatHistoryDir'));
   assert.ok(source.includes("createWorkspaceRuntime } = require('./src/workspace/runtime')"));
   assert.ok(source.includes('const workspaceRuntime = createWorkspaceRuntime({'));
   assert.ok(workspaceRuntime.includes('getNative().RustWorkspaceState'));
