@@ -240,8 +240,11 @@ function probeAddon(file, node = process.execPath) {
     if(typeof a.RustChatRunnerLifecycle!=='function'
       || ['usageRecorded','setUsageRecorded','claimUsage','beginUsage','endUsage'].some(key=>typeof a.RustChatRunnerLifecycle.prototype[key]!=='function')) process.exit(1);
     if(typeof a.RustWorkspaceState!=='function'
-      || ['sessionStateCatalog','sessionStateInitial','sessionStateIsRunning','sessionStateTransition'].some(key=>typeof a[key]!=='function')
+      || ['sessionStateCatalog','sessionStateInitial','sessionStateIsRunning','sessionStateTransition','sessionStateApi'].some(key=>typeof a[key]!=='function')
       || ['status','summary','hydrate','setStatus','setSummary','delete'].some(key=>typeof a.RustWorkspaceState.prototype[key]!=='function')) process.exit(1);
+    const stateApi=a.sessionStateApi();
+    if(!(stateApi.RUNNING_STATUSES instanceof Set) || !(stateApi.SESSION_STATUSES instanceof Set)
+      || typeof stateApi.createSessionStateService!=='function' || !Object.isFrozen(stateApi.createSessionStateService())) process.exit(1);
     if(typeof a.RustSessionRecords!=='function' || a.sessionRecordsProtocolVersion?.()!==1 || typeof a.sessionRecordsTaskStateDefaults!=='function'
       || ['init','configure','get','set','has','delete','clear','size','entriesSnapshot','listByDir',
         'mutate','begin','commit','rollback','bestEffort','retryTick','status','stop',

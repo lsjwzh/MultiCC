@@ -10,7 +10,7 @@ const { assertTestDir } = require('../src/paths');
 const { createChatHistoryService } = require('../src/session/chat-history-service');
 const { createChatHistoryFileRepository } = require('../src/session/adapters/chat-history-file-repository');
 const { createSessionQueryService } = require('../src/session/query-service');
-const { createSessionStateService, transitionSessionState } = require('../src/session/state-transition');
+const { createSessionStateService, transitionSessionState } = require('../src/native/runtime').getNative().sessionStateApi();
 const { createWorkspaceService } = require('../src/session/workspace-service');
 
 function assertNoSensitiveKeys(value) {
@@ -727,7 +727,7 @@ test('native session transitions match the frozen policy over numeric and status
   Date.now = () => 1794182756492;
   t.after(() => { Date.now = realNow; });
   const old = require('./helpers/legacy-session-state-transition');
-  const next = require('../src/session/state-transition');
+  const next = require('../src/native/runtime').getNative().sessionStateApi();
   const statuses = [...old.SESSION_STATUSES, undefined, null, false, 4, '', 'unknown', '中文\ud800', 'a\0b', ['running'], Symbol('bad')];
   const numbers = [undefined, null, false, true, -0, 0, 1, -1, 3.5, NaN, Infinity, -Infinity, '', '2', 'bad', [], [3], 4n, new Date(50)];
   function outcome(fn) { try { const value = fn(); return { value, frozen: Object.isFrozen(value), stateFrozen: Object.isFrozen(value.state), keys: Object.keys(value.state) }; }
@@ -752,7 +752,7 @@ test('native session transitions match the frozen policy over numeric and status
 
 test('native session transition reads only selected fields in the original getter order', () => {
   const old = require('./helpers/legacy-session-state-transition');
-  const next = require('../src/session/state-transition');
+  const next = require('../src/native/runtime').getNative().sessionStateApi();
   function exercise(module, changedStatus) {
     const reads = []; let statusReads = 0;
     const previous = { get status() { reads.push('status'); return ++statusReads === 1 ? 'running' : changedStatus; },

@@ -2,7 +2,7 @@
 
 // 「这个会话的 chat 运行时现在忙不忙？」—— 服务端只有这一处定义。
 //
-// 位置说明：本文件刻意放在 src/session/（与 state-transition.js 的 isRunningStatus
+// 位置说明：本文件刻意放在 src/session/（与原生 sessionStateApi 的 isRunningStatus
 // 同一层），而不是 src/chat/ —— src/session/*.js 是被封住的 bounded context（只许
 // require node: / 同目录 / ../session-dto，外加 tests/test-architecture-boundaries.js
 // 白名单里的 ../native/runtime），而 hibernation-composition.js 与

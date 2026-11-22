@@ -245,6 +245,7 @@ pub mod schedule_note_queued_live;
 pub mod schedule_settle_live;
 mod session_records;
 mod session_state;
+mod session_state_service;
 pub mod usage_limit_poll;
 pub mod wait_cancel_live;
 pub mod wait_canonical;

@@ -112,6 +112,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     recordSecretAudit() { throw new Error('secret_audit_unavailable'); }
   };`);
   assert.equal(probeAddon(addon), true, 'the real addon must pass the durable audit probe');
+  const staleSessionState = write(root, 'stale-session-state.js', `module.exports = {
+    ...require(${JSON.stringify(path.resolve(addon))}), sessionStateApi: undefined
+  };`);
+  assert.equal(probeAddon(staleSessionState), false, 'a stale addon cannot omit the session state service factory');
   assert.equal(probeAddon(wrapper), false, 'an exported function alone cannot pass preflight');
   const staleChatWs = write(root, 'stale-chat-ws.js', `module.exports = {
     ...require(${JSON.stringify(path.resolve(addon))}), chatWsControlAction: undefined

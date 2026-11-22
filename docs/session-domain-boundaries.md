@@ -3,7 +3,7 @@
 Reviewed: 2026-07-18.
 
 The session bounded context under `src/session/` is host-independent. Its
-query and state-transition services are now composed into `server.js`; the
+query services are composed into the host; state transitions have a Rust owner. The
 bounded workspace projection is exposed through a versioned endpoint while
 the legacy workspace payload remains available during client migration.
 
@@ -20,8 +20,11 @@ the legacy workspace payload remains available during client migration.
   consecutive-assistant deduplication, trimming, pagination and deletion. Its
   repository is a port; `adapters/chat-history-file-repository.js` is the first
   data-root-backed adapter.
-- `state-transition.js` owns the session status state machine and run-segment
-  timestamps. Pending dispatched work converts resting states into `waiting`.
+- `native/core/src/workspace_state.rs` owns the session state machine and
+  run-segment timestamps. Pending dispatched work converts resting states into
+  `background`. The addon's `sessionStateApi()` supplies the compatibility
+  namespace, real `Set` values, defaults and callback-backed service factory;
+  the former `src/session/state-transition.js` binding has been retired.
 - `ports.js` is the dependency boundary. Core session modules do not require
   Express, `server.js`, directory/provider/git/orchestration contexts or the
   filesystem.
@@ -36,9 +39,10 @@ The following paths now use the bounded context:
 
 - `/api/v1/sessions` and `/api/v1/sessions/:id` use
   `createSessionQueryService()` through narrow records/runtime ports;
-- `setSessionStatus()` delegates run-segment and pending-work transitions to
-  `createSessionStateService()`, retaining only Map writes and broadcasts in
-  the host;
+- the workspace runtime delegates state and summary ownership to
+  `RustWorkspaceState`; the domain/status tests use the native
+  `sessionStateApi().createSessionStateService()` compatibility port, without
+  adding a JavaScript service facade;
 - `/api/v1/directories/:id/workspace` uses `createWorkspaceService()` and a
   versioned, path-free workspace contract;
 - `MULTICC_SESSION_DOMAIN_SHADOW=1` compares the legacy workspace snapshot

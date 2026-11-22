@@ -5961,6 +5961,15 @@
       ]
     },
     {
+      "path": "tests/test-session-state-native-api.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
+      ]
+    },
+    {
       "path": "tests/test-session-triggers.js",
       "tier": "flow",
       "lane": "deterministic",
