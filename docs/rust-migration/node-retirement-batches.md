@@ -797,7 +797,7 @@ Rust 源码缓存探针要求新工厂存在并执行早期验证，差分测试
 | 聊天历史路径与失败报告 | Node 宿主计算路径并注入 `reportFailure`；文件 IO 与协议由 Rust 持有。 | 路径及报告所有者均迁入 Rust，错误字段、日志和调用顺序验证一致后移除。 |
 | `src/native/runtime.js` 的 addon/前门加载桥 | 兼容 Node 入口仍需定位 N-API 模块和 gateway。 | Node 兼容启动入口退休，Rust 进程负责生命周期并通过独立安装/升级验收后移除。 |
 
-### 会话待生效配置（Rust 迁移，待验收）
+### 会话待生效配置（Rust 迁移）
 
 以 `0dab5629` 为基线，退役 `src/session/pending-configuration.js`；旧文件
 逐字节冻结至 `tests/helpers/legacy-session-pending-configuration.js`。配置
@@ -811,6 +811,10 @@ JSON 方法和 getter 读取顺序、异常身份、强制转换、严格赋值�
 删除宿主所需的回调形态。业务判定、字段和执行顺序均由 Rust 持有。V8 对象
 消费者与提供商宿主迁入 Rust，或原生赋值接口经 Proxy、setter、异常身份及
 跨平台差分验证兼容后，应删除这两处桥接。
+
+验收：rustfmt、严格 Clippy、Rust 核心 1,532 项、addon/gateway 构建和
+治理检查通过；指纹 `e0eaa6847e4d8cb7618de233` 产物通过来源及启动探针，
+相关 Node 回归 224 项通过。
 
 当前 `src/` 有 544 个 `.js` / `.cjs` 文件，按文件所在目录统计：
 
