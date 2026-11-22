@@ -5918,6 +5918,11 @@
       ]
     },
     {
+      "path": "tests/test-session-pending-configuration-differential.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-session-persistence-api.js",
       "tier": "core",
       "lane": "isolated",

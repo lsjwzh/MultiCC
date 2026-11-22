@@ -10,6 +10,11 @@ let cliRegistryOwner = null;
 let cliRegistryAddon = null;
 const counts = { search: 0, usage: 0 };
 
+// V8 strict property assignment port: preserves Proxy/setter and TypeError
+// semantics while native session configuration owns all policy and ordering.
+function assignHostProperty(target, key, value) { target[key] = value; }
+
+
 // Native prompt policies retain live callback, getter and opaque value identity.
 const messageComposer = {
   composeMessage: input => getNative().messageCompose(input, process.env, console),
@@ -320,7 +325,7 @@ const codexBackground = {
       setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
   },
 };
-module.exports = { addonPath, gatewayPath, getNative, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { addonPath, gatewayPath, getNative, assignHostProperty, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

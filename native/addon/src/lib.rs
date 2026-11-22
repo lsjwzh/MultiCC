@@ -91,6 +91,7 @@ pub mod schedule_recovery_live;
 pub mod search_diversity;
 pub mod secret_audit;
 pub mod session_create_record;
+pub mod session_pending_configuration;
 pub mod session_ports;
 pub mod session_subagent;
 pub mod session_work_selection;
