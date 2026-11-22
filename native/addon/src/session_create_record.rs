@@ -520,6 +520,39 @@ fn then<'a>(
         call(promise, c"then", &[success])
     }
 }
+// JavaScript string concatenation uses ToPrimitive with the default hint,
+// which tries valueOf before toString for ordinary objects.
+fn default_primitive(value: L<'_>) -> Result<L<'_>> {
+    let primitive = |v: L<'_>| -> Result<bool> {
+        Ok(!matches!(
+            v.kind()?,
+            sys::ValueType::napi_object | sys::ValueType::napi_function
+        ))
+    };
+    if primitive(value)? {
+        return Ok(value);
+    }
+    let symbol = value.global()?.get(c"Symbol")?.get(c"toPrimitive")?;
+    let exotic = value.get_key(symbol)?;
+    if !exotic.nullish()? {
+        let result = exotic.call(value, &[text(value, "default")?])?;
+        if primitive(result)? {
+            return Ok(result);
+        }
+        return Err(value.type_error("Cannot convert object to primitive value"));
+    }
+    for name in [c"valueOf", c"toString"] {
+        let method = value.get(name)?;
+        if method.kind()? == sys::ValueType::napi_function {
+            let result = method.call(value, &[])?;
+            if primitive(result)? {
+                return Ok(result);
+            }
+        }
+    }
+    Err(value.type_error("Cannot convert object to primitive value"))
+}
+
 fn worktree_failure<'a>(state: L<'a>, error: L<'a>) -> Result<L<'a>> {
     if error.nullish()? {
         let value = if error.undefined()? {
@@ -531,7 +564,7 @@ fn worktree_failure<'a>(state: L<'a>, error: L<'a>) -> Result<L<'a>> {
             "Cannot read properties of {value} (reading 'message')"
         )));
     }
-    let message = error.get(c"message")?.coerce_string()?;
+    let message = default_primitive(error.get(c"message")?)?.coerce_string()?;
     failure(
         state,
         &format!("worktree 创建失败: {}", message.to_string_lossy()),

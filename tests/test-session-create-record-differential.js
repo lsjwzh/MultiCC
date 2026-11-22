@@ -80,6 +80,7 @@ const cases = [
   ['worktree rollback', { dir, cli: 'claude', kind: 'chat' }, { addError: true }],
   ['worktree rejects null', { dir, cli: 'claude', kind: 'chat' }, { addError: true, addErrorValue: null }],
   ['worktree rejects symbol message', { dir, cli: 'claude', kind: 'chat' }, { addError: true, addErrorValue: { message: Symbol('failure') } }],
+  ['worktree error primitive hint', { dir, cli: 'claude', kind: 'chat' }, { addError: true, addErrorValue: { message: { valueOf() { return 'value'; }, toString() { return 'text'; } } } }],
   ['persistence rollback', { dir, cli: 'claude', kind: 'chat', persistence: 'required' }, { persistError: true }],
 ];
 for (const [name, input, scenario] of cases) {
