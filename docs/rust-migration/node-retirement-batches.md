@@ -720,7 +720,7 @@ Rust 源码缓存探针要求新工厂存在并执行早期验证，差分测试
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
 
-### 会话运行忙状态端口（Rust 迁移，待验收）
+### 会话运行忙状态端口（Rust 迁移）
 
 以 `6f31f2d8` 为基线，退役 `src/session/runtime-busy.js`。原有四轴和
 进程状态判定继续由 `native/core/src/active_turns.rs` 持有；新增 addon
@@ -729,6 +729,10 @@ Rust 源码缓存探针要求新工厂存在并执行早期验证，差分测试
 
 兼容旧 Node 宿主的必要范围是这些调用点对原生加载器的函数调用；它们不
 保存判定规则。待相应宿主迁入 Rust 后移除调用桥。本批不新增 Node 业务逻辑。
+
+验收：rustfmt、严格 Clippy、Rust 核心 1,530 项、addon 和 gateway 构建及
+治理检查通过；指纹 `dcb12fa77be2edc028c6a3ad` 产物通过来源与启动探针，
+相关 Node 回归 148 项通过。
 
 当前 `src/` 有 545 个 `.js` / `.cjs` 文件，按文件所在目录统计：
 
