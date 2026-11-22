@@ -18,7 +18,7 @@ const assert = require('node:assert/strict');
 const { mountSubagentDefaultsHostRoute, HOST_PATH } = require('../src/routes/subagent-defaults-host');
 const { HOST_PATH: PROVIDERS_HOST_PATH } = require('../src/routes/providers-host');
 const { createProviderRoutes } = require('../src/routes/providers');
-const { createSessionRecordFactory } = require('../src/session/create-record');
+const createSessionRecordFactory = deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, require('node:path'));
 const { isResidentSession } = require('../src/cli/cli-capability');
 const { getNative } = require('../src/native/runtime');
 const withSubagentSource = (next, previous, inherited) =>

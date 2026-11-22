@@ -29,7 +29,6 @@ test('session bounded-context core has no host or cross-context dependencies', (
         || file === path.join('src/session', 'hibernation.js')
         || file === path.join('src/session', 'runtime-busy.js')
         || file === path.join('src/session', 'chat-history-service.js')
-        || file === path.join('src/session', 'create-record.js')
         || file === path.join('src/session', 'workspace-service.js')
         || file === path.join('src/session', 'query-service.js'))
         && dependency === '../native/runtime';
@@ -187,4 +186,9 @@ test('liveness never becomes a display state and never completes work', () => {
   // directly and cannot manufacture TaskBoard lifecycle done.
   assert.match(runState, /return deps\.classifyDisplay\(classifyState\)\.cardStatus/);
   assert.doesNotMatch(runState, /\bdone\b|completed/);
+});
+
+test('session creation factory stays in the native addon', () => {
+  assert.equal(fs.existsSync('src/session/create-record.js'), false);
+  assert.ok(fs.readFileSync('server.js', 'utf8').includes('getNative().sessionCreateRecordFactory('));
 });

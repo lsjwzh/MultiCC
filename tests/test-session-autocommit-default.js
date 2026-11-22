@@ -7,7 +7,7 @@
 // create-record 的参数默认值里写，但「字段缺失怎么读」散在 Air 视图模型 / App
 // 的 Session 解析里（`!= false` = 缺键算开），两边必须一致。
 const test = require('node:test'), assert = require('node:assert/strict');
-const { createSessionRecordFactory } = require('../src/session/create-record');
+const createSessionRecordFactory = deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, require('node:path'));
 // src/session 不能 require 车道表（bounded context），所以由组合根注入；这里给真表，
 // 免得桩掉之后 streaming 这类字段在测试里和生产不一致。
 const { isResidentSession } = require('../src/cli/cli-capability');

@@ -656,12 +656,61 @@ SDK、平台、配置和数据格式不变；不重启服务，不推送。私�
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
 
-### 会话记录创建（迁移进行中，未切换）
+### 会话记录创建（Rust 迁移，待最终验收）
 
-以 `18c6095f` 为基线，`src/session/create-record.js` 目前仍由生产使用，
-因此 `src/` 的 `.js` / `.cjs` 总数仍为 547。旧文件已原样复制到
-`tests/helpers/legacy-session-create-record.js`；新增的测试暂时比较原文件与
-该冻结样本，固定验证、工作区和回滚顺序，不能作为原生迁移通过的证明。
-Rust core 已开始提取模型格式、实验 CLI、提供商线路、延迟工作区和默认
-子代理等规则；N-API 工厂、异步编排、调用点切换、原生差分验证和原文件
-退役均尚未完成。不得将本候选当成已完成批次提交合并。
+以 `18c6095f` 为基线，退役 `src/session/create-record.js`；旧文件逐字节
+冻结到 `tests/helpers/legacy-session-create-record.js`。会话创建规则及异步
+工作区和持久化编排由 `native/core/src/session_create_record.rs` 与
+`native/addon/src/session_create_record.rs` 拥有，生产入口通过
+`src/native/runtime.js` 的 N-API 工厂调用；注入 Node 原生 path 接口以保持跨平台路径行为。
+Rust 源码缓存探针要求新工厂存在并执行早期验证，差分测试对照冻结样本
+检查返回值、事件、持久记录及验证失败、共享工作区和分阶段回滚。
+
+当前 `src/` 有 546 个 `.js` / `.cjs` 文件，按文件所在目录统计：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 85 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli/` | 9 |
+| `src/cli-adapters/` | 27 |
+| `src/codex/` | 11 |
+| `src/codex-auth/` | 1 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 96 |
+| `src/search/` | 6 |
+| `src/session/` | 13 |
+| `src/session-work/` | 2 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |

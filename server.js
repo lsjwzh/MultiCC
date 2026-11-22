@@ -1526,10 +1526,10 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 // Create + persist an isolated session record (its own git worktree + branch).
 // Shared creation boundary; an explicit id creates or reuses a named session.
 function createSessionRecord(input) {
-  const created = require('./src/session/create-record').createSessionRecordFactory({
+  const created = getNative().sessionCreateRecordFactory({
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
     SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath: MULTICC_PATHS.loginWorkspacePath
-  })(input && typeof input === 'object' && input.cli != null ? { ...input, cli: canonicalCli(input.cli) } : input);
+  }, path)(input && typeof input === 'object' && input.cli != null ? { ...input, cli: canonicalCli(input.cli) } : input);
   // 会话创建/复用是清墓碑的唯一时机（判定仍由 Rust 持有）。固定 id 的辅助
   // 会话删除后重建时，这里让历史队列重新接受写入。
   const registered = value => {
