@@ -2,7 +2,7 @@
 
 const os = require('node:os');
 const path = require('node:path');
-const { probeTranscript } = require('../chat/missing-resume-recovery');
+const { probeTranscript } = require('../../src/chat/missing-resume-recovery');
 
 // A UUID reserved before the first SDK turn is not evidence of a conversation.
 // Older hosts allocated it on WebSocket connect, then counted the source CLI's

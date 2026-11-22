@@ -119,7 +119,10 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   for (const name of ['handoffZipCreate', 'handoffZipRead', 'handoffZipLooksLike', 'handoffZipCrc32', 'handoffZipApi',
     'sessionSubagentNormalize', 'sessionSubagentWithSource', 'sessionSubagentFamilyDefault',
     'sessionForkConfiguration', 'sessionSubagentApi', 'sessionForkConfigurationApi',
-    'sessionIsInternalExecutionSlot', 'sessionPublicAccessApi']) {
+    'sessionIsInternalExecutionSlot', 'sessionPublicAccessApi',
+    'sessionAssertSessionRecordsPort', 'sessionAssertSessionRuntimePort', 'sessionAssertWorkspaceFactsPort',
+    'sessionAssertDirectoryRecordsPort', 'sessionAssertChatHistoryPort', 'sessionPortsApi',
+    'createTaskHistoryRetention', 'taskHistoryRefusal', 'taskHistoryRetentionApi', 'claudeExpHasNativeHistory']) {
     const staleZip = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);

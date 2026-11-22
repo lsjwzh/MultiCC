@@ -295,6 +295,37 @@ pub fn has_native_transcript(session_id: &str) -> bool {
     probe_session(session_id, None) != Evidence::ProvenAbsent
 }
 
+/// Full `hasNativeHistory` check (former `src/cli-adapters/claude-exp-history.js`):
+/// only a pending NEW `claude-exp` handoff with a well-formed UUID triggers the
+/// on-disk transcript probe; every other shape fails closed (`true`) when an ID
+/// is present.
+pub fn claude_exp_has_native_history(
+    cli: Option<&str>,
+    cli_session_id: Option<&str>,
+    handoff_status: Option<&str>,
+    handoff_to_cli: Option<&str>,
+    handoff_reused_target: Option<bool>,
+    config_dir_override: Option<&str>,
+) -> bool {
+    let Some(id) = cli_session_id.filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    if cli != Some("claude-exp")
+        || handoff_status != Some("pending")
+        || handoff_to_cli != Some("claude-exp")
+        || handoff_reused_target != Some(false)
+    {
+        return true;
+    }
+    if !session_id_shape().is_match(id) {
+        return true;
+    }
+    let dir_val = config_dir_override
+        .filter(|s| !s.is_empty())
+        .map(|s| Value::String(s.to_string()));
+    probe_session(id, dir_val.as_ref()) != Evidence::ProvenAbsent
+}
+
 /// A truthy `sessionId` as text; empty/missing/non-truthy means "no id".
 fn session_id_of(input: &Value) -> Option<String> {
     match input.get("sessionId") {

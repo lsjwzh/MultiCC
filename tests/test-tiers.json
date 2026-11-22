@@ -2766,6 +2766,12 @@
       ]
     },
     {
+      "path": "tests/test-claude-exp-history-differential.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:rust"
+    },
+    {
       "path": "tests/test-claude-expired-refresh-native.js",
       "tier": "core",
       "lane": "isolated",
@@ -5929,6 +5935,12 @@
       ]
     },
     {
+      "path": "tests/test-session-ports-differential.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:rust"
+    },
+    {
       "path": "tests/test-session-records-differential.js",
       "tier": "core",
       "lane": "deterministic",
@@ -6399,6 +6411,12 @@
       "path": "tests/test-task-graph-routes.js",
       "tier": "core",
       "lane": "deterministic"
+    },
+    {
+      "path": "tests/test-task-history-retention-differential.js",
+      "tier": "flow",
+      "lane": "isolated",
+      "owner": "npm:test:rust"
     },
     {
       "path": "tests/test-task-history-retention.js",

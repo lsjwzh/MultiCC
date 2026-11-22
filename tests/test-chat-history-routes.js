@@ -1138,7 +1138,7 @@ test('legacy empty history remains deletable without weakening durable delivery 
   history.write('empty', []);
   assert.deepEqual(history.readStrict('empty', { allowEmpty: true }), []);
   assert.throws(() => history.hasPersistedDelivery('empty', 'receipt'), { code: 'CHAT_HISTORY_CORRUPT' });
-  const { createTaskHistoryRetention } = require('../src/session/task-history-retention');
+  const { createTaskHistoryRetention } = require('../src/native/runtime').getNative();
   const board = { tasks: {} };
   const policy = createTaskHistoryRetention({ getBoard: () => board, getRecord: () => null,
     loadHistory: id => history.readStrict(id, { allowEmpty: true }) });

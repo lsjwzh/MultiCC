@@ -1,7 +1,7 @@
 'use strict';
 
-const { assertChatHistoryPort } = require('./ports');
 const { getNative } = require('../native/runtime');
+const assertChatHistoryPort = port => getNative().sessionAssertChatHistoryPort(port);
 
 function jsonClone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));

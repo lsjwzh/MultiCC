@@ -9,7 +9,7 @@ const core = require('../src/task-board/core');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const { createTaskLifecycleHost } = require('../src/task-board/lifecycle-host');
 const { createTaskRetention, retentionCandidates, lastInteraction } = require('../src/task-board/retention');
-const { createTaskHistoryRetention } = require('../src/session/task-history-retention');
+const createTaskHistoryRetention = deps => require('../src/native/runtime').getNative().createTaskHistoryRetention(deps);
 const { createChatHistoryService } = require('../src/session/chat-history-service');
 const { recordsOf, resetTaskState } = require('./helpers/session-records');
 const { retiredRoutes } = require('./helpers/task-board-ports');

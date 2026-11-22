@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createTaskHistoryRetention, taskHistoryRefusal } = require('../src/session/task-history-retention');
+const { createTaskHistoryRetention, taskHistoryRefusal } = require('../src/native/runtime').getNative();
 const { createChatHistoryService } = require('../src/session/chat-history-service');
 
 test('all task references, including archived and merged tasks, must be removed before history disposal', () => {
