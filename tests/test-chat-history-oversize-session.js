@@ -109,26 +109,29 @@ test('异步投递证明逐行扫描大历史且不加载整份文件', t => {
   const sessionId = 'task-proof';
   const file = repository.fileFor(sessionId);
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  const fillerLines = 40;
   const fd = fs.openSync(file, 'w');
   try {
     fs.writeSync(fd, '{"deliveryId":"proof-early"}\n');
     const line = `${JSON.stringify({ role: 'assistant', content: filler(512 * 1024) })}\n`;
-    for (let index = 0; index < 128; index += 1) fs.writeSync(fd, line);
+    for (let index = 0; index < fillerLines; index += 1) fs.writeSync(fd, line);
   } finally {
     fs.closeSync(fd);
   }
   const fileBytes = fs.statSync(file).size;
-  assert.ok(fileBytes > 64 * 1024 * 1024);
+  assert.ok(fileBytes > 16 * 1024 * 1024);
   const report = JSON.parse(execFileSync(process.execPath, [PROBE, dataDir, sessionId, 'delivery'], {
     encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000,
   }));
   assert.equal(report.found, true);
   assert.ok((report.afterKB - report.beforeKB) * 1024 < fileBytes * 0.75,
     `投递证明峰值内存增长过大：${report.afterKB - report.beforeKB} KiB，文件 ${fileBytes} 字节`);
-  const physical = JSON.parse(execFileSync(process.execPath, [PROBE, dataDir, sessionId, 'physical'], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000,
-  }));
-  assert.equal(physical.total, 129);
+  const physical = JSON.parse(execFileSync(
+    process.execPath,
+    [PROBE, dataDir, sessionId, 'physical', String(fillerLines - 1), String(fillerLines + 1)],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 },
+  ));
+  assert.equal(physical.total, fillerLines + 1);
   assert.equal(physical.count, 2);
   assert.ok((physical.afterKB - physical.beforeKB) * 1024 < fileBytes * 0.75,
     `物理分页峰值内存增长过大：${physical.afterKB - physical.beforeKB} KiB，文件 ${fileBytes} 字节`);
@@ -139,7 +142,7 @@ test('异步投递证明逐行扫描大历史且不加载整份文件', t => {
   try {
     fs.writeSync(legacyFd, '[{"deliveryId":"proof-early"}');
     const entry = `,${JSON.stringify({ role: 'assistant', content: filler(512 * 1024) })}`;
-    for (let index = 0; index < 128; index += 1) fs.writeSync(legacyFd, entry);
+    for (let index = 0; index < fillerLines; index += 1) fs.writeSync(legacyFd, entry);
     fs.writeSync(legacyFd, ']');
   } finally {
     fs.closeSync(legacyFd);

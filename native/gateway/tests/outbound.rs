@@ -111,6 +111,12 @@ fn read_head(socket: &TcpStream) -> Option<String> {
         match reader.read(&mut byte) {
             Ok(0) | Err(_) => break,
             Ok(_) => {
+                if bytes.is_empty() && byte[0] == 0x16 {
+                    // TLS ClientHello sent to the plain-HTTP stub (e.g. over a
+                    // CONNECT tunnel): drop immediately instead of waiting for
+                    // the 5s client timeout.
+                    return None;
+                }
                 bytes.push(byte[0]);
                 if bytes.ends_with(b"\r\n\r\n") || bytes.ends_with(b"\n\n") {
                     break;

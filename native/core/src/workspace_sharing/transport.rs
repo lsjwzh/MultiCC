@@ -65,6 +65,11 @@ async fn client(plan: &Plan) -> Result<Client> {
         .redirect(Policy::none())
         .no_proxy()
         .resolve_to_addrs(hostname, &addresses);
+    if plan.url.scheme() == "http" {
+        // Redirects are disabled, so plain HTTP requests never speak TLS and do
+        // not need to reload the OS root certificate store on every exchange.
+        builder = builder.tls_built_in_native_certs(false);
+    }
     if let Some(path) = std::env::var_os("NODE_EXTRA_CA_CERTS").filter(|p| !p.is_empty()) {
         let certs = tokio::fs::read(path).await.map_err(|_| {
             remote::connection_error(

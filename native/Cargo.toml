@@ -2,6 +2,48 @@
 members = ["core", "addon", "cpr", "remote", "cdpd", "desktop-agent", "gateway", "writer-launcher"]
 resolver = "2"
 
+# Optimize CPU-bound crypto, TLS certificate parsing, and compression crates in
+# dev/test builds so scrypt password hashing and TLS handshakes run at native
+# speed without slowing down incremental compilation of workspace crates.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.aes-gcm]
+opt-level = 3
+[profile.dev.package.ghash]
+opt-level = 3
+[profile.dev.package.polyval]
+opt-level = 3
+[profile.dev.package.ctr]
+opt-level = 3
+[profile.dev.package.ring]
+opt-level = 3
+[profile.dev.package.rustls-webpki]
+opt-level = 3
+[profile.dev.package.x509-parser]
+opt-level = 3
+[profile.dev.package.der-parser]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+[profile.dev.package.serde_json]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 strip = "symbols"
