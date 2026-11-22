@@ -173,3 +173,33 @@ test('native factory cycles can be garbage collected', () => {
   const result=spawnSync(process.execPath,['--expose-gc','-e',script,addon],{encoding:'utf8',timeout:10000});
   assert.equal(result.status,0,result.stderr || String(result.error));
 });
+
+test('malformed iterables and iterator getters match the frozen spread behavior', async () => {
+  const scenarios = [
+    () => null, () => undefined, () => ({}), () => 1,
+    () => ({[Symbol.iterator]:1}),
+    () => ({[Symbol.iterator](){return 1;}}),
+    () => ({[Symbol.iterator](){return {next:1};}}),
+    () => ({[Symbol.iterator](){return {next(){return 1;}};}}),
+    () => ({[Symbol.iterator](){return {next(){return null;}};}}),
+  ];
+  for (const make of scenarios) {
+    const outcomes=[];
+    for (const implementation of implementations) {
+      const records={values:make,delete(){}};
+      try { outcomes.push({value:await implementation.createLoginTerminalDisposer({persistedSessions:records,tmuxKillSession(){}})('x')}); }
+      catch(error) {outcomes.push({name:error.name,message:error.message});}
+    }
+    assert.deepEqual(outcomes[1],outcomes[0]);
+  }
+  const traces=[];
+  for (const implementation of implementations) {
+    const trace=[];
+    const iterable={get [Symbol.iterator](){trace.push('get:iterator');return function(){trace.push('call:iterator');return {get next(){trace.push('get:next');return function(){trace.push('call:next');return {done:true};};}};};}};
+    const records={values(){trace.push('values');return iterable;},delete(){}};
+    assert.equal(await implementation.createLoginTerminalDisposer({persistedSessions:records,tmuxKillSession(){}})('x'),0);
+    traces.push(trace);
+  }
+  assert.deepEqual(traces[1],traces[0]);
+  assert.deepEqual(traces[0],['values','get:iterator','call:iterator','get:next','call:next']);
+});

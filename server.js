@@ -148,7 +148,6 @@ const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createSessionRoutesHost } = require('./src/routes/session-routes-host');
 const { createShareMachinesHost } = require('./src/routes/share-machines-host');
 const { createAccountRoutesHost } = require('./src/routes/account-routes-host');
-const { createLoginTerminalDisposer } = require('./src/session/login-terminal');
 const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes, mountZcodeAuthLoginRoute } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes, mountKimiAuthLoginRoute } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
@@ -1539,10 +1538,10 @@ function createSessionRecord(input) {
   return created && typeof created.then === 'function' ? created.then(registered) : registered(created);
 }
 
-// Login terminals are one-shot (src/session/login-terminal.js): each login
+// Login terminals are one-shot (native/addon/src/session_login_terminal.rs): each login
 // click disposes the flow's previous terminal — tmux pane included — so a saved
 // pane is never reattached, and the exit path drops the record.
-const disposeLoginTerminal = createLoginTerminalDisposer({
+const disposeLoginTerminal = getNative().sessionLoginTerminalDisposer({
   persistedSessions, tmuxKillSession, destroySessionCascade,
   saveSessions: savePersistedSessionsBestEffort,
 });

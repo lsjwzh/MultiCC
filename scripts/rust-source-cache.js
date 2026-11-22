@@ -257,7 +257,7 @@ function probeAddon(file, node = process.execPath) {
       || ['isInternalExecutionSlot','createPublicSessionAccessGuard','mountPublicSessionAccessGuard'].some(key=>typeof pubApi[key]!=='function')
       || !a.sessionIsInternalExecutionSlot({taskExecutionSlot:true})
       || a.sessionIsInternalExecutionSlot({taskExecutionSlot:false})) process.exit(1);
-    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration','sessionLoginTerminalDisposer'].some(key=>typeof a[key]!=='function')) process.exit(1);
     const recordsPort={list(){},get(){}};
     if(a.sessionAssertSessionRecordsPort(recordsPort)!==recordsPort
       || a.taskHistoryRefusal({}).code!=='history_check_failed'
@@ -272,6 +272,9 @@ function probeAddon(file, node = process.execPath) {
     if(!Object.isFrozen(pendingFields) || pendingFields.join(',')!=='provider,providerSelection,model,effort,agent,subagent,rolePrompt'
       || stagedTarget.pendingConfiguration!==staged || staged.cli!=='codex' || staged.profile.model!==null
       || a.sessionPendingDesiredSession(stagedTarget,strictSet).cli!=='codex') process.exit(1);
+    const loginRecords=new Map([['probe',{id:'probe',loginFlow:'probe'}]]);
+    const disposeLogin=a.sessionLoginTerminalDisposer({persistedSessions:loginRecords,tmuxKillSession(){}});
+    if(typeof disposeLogin!=='function' || disposeLogin.length!==1) process.exit(1);
     const createSession=a.sessionCreateRecordFactory({isResidentSession(){}},require('node:path'));
     if(typeof createSession!=='function' || createSession.length!==1) process.exit(1);
     const historyFacade=a.chatHistoryFileRepositoryCreate({root:'/__multicc_probe__/chat_history',appendEnabled:false,reportFailure(){}});
@@ -455,7 +458,8 @@ function probeAddon(file, node = process.execPath) {
         try { if(store) store.request('close',{}); } finally { fs.rmSync(dir,{recursive:true,force:true}); }
       }
     }
-    (async()=>{ const validation=await createSession({});
+    (async()=>{ if(await disposeLogin('probe')!==1 || loginRecords.size!==0) throw Error('login_terminal_protocol_mismatch');
+      const validation=await createSession({});
       if(validation.ok!==false || validation.error!=='directory not found') throw Error('session_create_protocol_mismatch');
       const model=new a.RustTaskReadModel();
       const run=async command=>JSON.parse((await model.run(JSON.stringify({op:'air',command}))).result);

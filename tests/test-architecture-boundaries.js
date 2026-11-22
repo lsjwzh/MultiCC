@@ -192,3 +192,9 @@ test('session creation factory stays in the native addon', () => {
   assert.equal(fs.existsSync('src/session/create-record.js'), false);
   assert.ok(fs.readFileSync('server.js', 'utf8').includes('getNative().sessionCreateRecordFactory('));
 });
+
+
+test('login-terminal disposer is owned by the native addon', () => {
+  assert.equal(fs.existsSync('src/session/login-terminal.js'), false);
+  assert.ok(fs.readFileSync('server.js', 'utf8').includes('getNative().sessionLoginTerminalDisposer('));
+});

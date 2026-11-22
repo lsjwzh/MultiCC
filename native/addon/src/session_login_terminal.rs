@@ -219,6 +219,56 @@ fn advance<'a>(env: &'a Env, state: L<'a>) -> Result<L<'a>> {
     }
     number(state, count)
 }
+/// Implements array spread over the values iterator. The iterator method and
+/// next are each fetched once, and malformed iterables keep V8's spread error.
+fn snapshot_values<'a>(anchor: L<'a>, values: L<'a>) -> Result<L<'a>> {
+    const NOT_ITERABLE: &str =
+        "persistedSessions.values is not a function or its return value is not iterable";
+    if values.nullish()? {
+        return Err(values.type_error(NOT_ITERABLE));
+    }
+    let symbol = anchor.global()?.get(c"Symbol")?.get(c"iterator")?;
+    let method = values.get_key(symbol)?;
+    if !callable(method)? {
+        return Err(values.type_error(NOT_ITERABLE));
+    }
+    let iterator = method.call(values, &[])?;
+    if !matches!(
+        iterator.kind()?,
+        sys::ValueType::napi_object | sys::ValueType::napi_function
+    ) {
+        return Err(iterator.type_error("Result of the Symbol.iterator method is not an object"));
+    }
+    let next = iterator.get(c"next")?;
+    if !callable(next)? {
+        return Err(iterator.type_error(NOT_ITERABLE));
+    }
+    let snapshot = anchor.from_value(&J::Array(vec![]))?;
+    let mut index = 0_u32;
+    loop {
+        let step = next.call(iterator, &[])?;
+        if !matches!(
+            step.kind()?,
+            sys::ValueType::napi_object | sys::ValueType::napi_function
+        ) {
+            let display = anchor.global()?.get(c"String")?.call_plain(&[step])?;
+            let message = format!(
+                "Iterator result {} is not an object",
+                display.coerce_string()?.to_string_lossy()
+            );
+            return Err(step.type_error(&message));
+        }
+        if step.get(c"done")?.truthy()? {
+            break;
+        }
+        let item = step.get(c"value")?;
+        snapshot.define_key(text(anchor, &index.to_string())?, item)?;
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| Error::from_reason("login terminal snapshot too large"))?;
+    }
+    Ok(snapshot)
+}
 fn start<'a>(env: &'a Env, ports: L<'a>, flow: L<'a>) -> Result<L<'a>> {
     let flow = if flow.truthy()? {
         flow
@@ -232,15 +282,7 @@ fn start<'a>(env: &'a Env, ports: L<'a>, flow: L<'a>) -> Result<L<'a>> {
     }
     let records = ports.get(c"persistedSessions")?;
     let values = call(records, c"values", &[])?;
-    let snapshot = ports.from_value(&J::Array(vec![]))?;
-    let mut count = 0_u32;
-    values.for_each(|item| {
-        snapshot.set_element(count, item)?;
-        count = count
-            .checked_add(1)
-            .ok_or_else(|| Error::from_reason("login terminal snapshot too large"))?;
-        Ok(())
-    })?;
+    let snapshot = snapshot_values(ports, values)?;
     let state = obj(ports)?;
     state.set(c"ports", ports)?;
     state.set(c"flow", flow)?;
