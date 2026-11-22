@@ -5900,6 +5900,11 @@
       ]
     },
     {
+      "path": "tests/test-session-login-terminal-baseline.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-session-memory-routes.js",
       "tier": "other",
       "lane": "deterministic",

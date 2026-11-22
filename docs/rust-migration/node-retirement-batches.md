@@ -864,3 +864,11 @@ JSON 方法和 getter 读取顺序、异常身份、强制转换、严格赋值�
 | `src/wait/` | 2 |
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
+
+### 登录终端清理（下一批，基线阶段）
+
+以 `c2b17573` 为基线，已将 `src/session/login-terminal.js` 原样冻结到
+`tests/helpers/legacy-session-login-terminal.js`，并固定匹配快照、逐条 cascade /
+tmux / 删除顺序、可忽略失败、删除或保存异常身份以及参数转换的基线。
+当前生产仍使用原 Node 文件；原生异步工厂、调用点切换、差分对拍与完整
+门禁尚未完成，尚不能视为退休。`src/` 的 `.js` / `.cjs` 数量仍为 544。
