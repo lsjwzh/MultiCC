@@ -11,6 +11,7 @@
 //   POST                 /api/sessions/:id/restart
 //   POST                 /api/sessions/:id/restart-spawn
 //   POST                 /api/sessions/:id/vendor-login-terminal  (session-create.js)
+//   POST                 /api/agy/accounts/:id/login-terminal     (agy-accounts.js)
 //   PUT                  /api/directories/:id/role-workers/:presetId
 //   POST                 /api/directories/:id/sessions
 //   POST                 /api/sessions/:id/notes      (session-meta.js)
@@ -56,6 +57,8 @@ const OPS = {
   'session-restart': { method: 'POST', path: '/api/sessions/:id/restart', params: ['id'] },
   'session-restart-spawn': { method: 'POST', path: '/api/sessions/:id/restart-spawn', params: ['id'] },
   'vendor-login-terminal': { method: 'POST', path: '/api/sessions/:id/vendor-login-terminal', params: ['id'] },
+  // agy 账号的登录终端：前门解析并校验账号目录，这里只负责起 PTY 会话。
+  'agy-login-terminal': { method: 'POST', path: '/api/agy/accounts/:id/login-terminal', params: ['id'] },
   'role-workers-put': {
     method: 'PUT', path: '/api/directories/:id/role-workers/:presetId', params: ['id', 'presetId'],
   },

@@ -464,6 +464,46 @@ fn vendor_login_terminal_relays_its_session() {
 // ── create ──────────────────────────────────────────────────────────────────
 
 #[test]
+fn agy_login_terminal_resolves_the_account_before_forwarding() {
+    let gateway = Gateway::start(
+        "agy-login-terminal",
+        world(json!({
+            "agy-login-terminal": relay(200, json!({"ok": true, "id": "agy-login", "url": "/?id=agy-login"}))
+        })),
+    );
+    // 账号存储只有 native/core 一份：这里直接按磁盘布局造状态。
+    let root = gateway.dir.join("home/.multicc/official-accounts/agy");
+    fs::create_dir_all(&root).unwrap();
+    let id = "0123456789abcdef";
+    let account = root.join(format!("{id}.home"));
+    fs::create_dir_all(account.join(".gemini")).unwrap();
+    fs::write(
+        root.join(format!("{id}.json")),
+        json!({"id": id, "label": "工作", "createdAt": 1, "source": "created"}).to_string(),
+    )
+    .unwrap();
+
+    let response = gateway.post(&format!("/api/agy/accounts/{id}/login-terminal"), &json!({}));
+    assert_eq!(response.status, 200);
+    assert_eq!(response.json()["id"], json!("agy-login"));
+    let call = gateway.calls().remove(0);
+    assert_eq!(call["op"], json!("agy-login-terminal"));
+    assert_eq!(call["method"], json!("POST"));
+    assert_eq!(call["id"], json!(id));
+    // 前门已经解析好账号目录，执行体只拿它起 PTY。
+    assert_eq!(call["body"]["home"], json!(account.to_string_lossy()));
+
+    // 未知账号与畸形 id 在前门就被拒，绝不落到宿主。
+    let unknown = gateway.post("/api/agy/accounts/ffffffffffffffff/login-terminal", &json!({}));
+    assert_eq!(unknown.status, 404);
+    assert_eq!(unknown.json()["error"], json!("unknown account"));
+    let bad = gateway.post("/api/agy/accounts/..%2Fetc/login-terminal", &json!({}));
+    assert_eq!(bad.status, 400);
+    assert_eq!(bad.json()["error"], json!("invalid account id"));
+    assert_eq!(gateway.calls().len(), 1, "refusals never reach the host");
+}
+
+#[test]
 fn role_workers_put_decodes_both_parameters() {
     let gateway = Gateway::start(
         "role-workers",

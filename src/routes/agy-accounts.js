@@ -1,20 +1,17 @@
 'use strict';
 
-// Signing in to agy is the vendor's own interactive TUI — there is no `agy
-// login` subcommand — and the PTY lives in Node. So this one route stays in
-// Node while the rest of `/api/agy/accounts*` (list/create/import/activate/
-// delete) is served by the Rust front door. Both sides touch the same on-disk
-// layout: src/agy-accounts.js and native/core/src/agy_accounts.rs.
+// agy 的登录终端执行体。公开路由 `POST /api/agy/accounts/:id/login-terminal`
+// 由 Rust 前门独占（native/gateway/src/app/agy_accounts.rs 的 LoginTerminal）：
+// 那里校验 id、确认账号存在并解析出账号目录，再把它交给这里。
 //
-// The login terminal gets `HOME=<id>.home`, so the OAuth flow writes THAT
-// account's `~/.gemini` and never the machine's own login. The env pin is
-// allowlisted by sanitizeLoginEnv (src/official-accounts.js) and applied when
-// the tmux session is created (server.js → tmuxCreateSession `-e`).
+// 这里只做 Rust 做不到的部分：节点 PTY 会话。登录是厂商自带的交互 TUI，没有
+// `agy login` 子命令，所以终端必须由 Node 起。账号目录随请求体传入，本文件
+// 不再自己读盘或校验收 id，存储规则只有 native/core/src/agy_accounts.rs 一份。
+//
+// 终端拿到 `HOME=<id>.home`，OAuth 只会写那个账号的 `~/.gemini`。该环境变量由
+// sanitizeLoginEnv（src/official-accounts.js）放行，并在会话创建时应用。
 
 const fs = require('node:fs');
-const os = require('node:os');
-
-const { accountHome, metaFile } = require('../agy-accounts');
 
 const AGY_LOGIN_FLOW = 'agy-login';
 const AGY_LOGIN_SESSION_ID = 'agy-login';
@@ -32,19 +29,12 @@ function mountAgyAccountRoutes(app, rawDeps) {
   const asyncHandler = typeof deps.asyncHandler === 'function' ? deps.asyncHandler : fn => fn;
   const disposeLoginTerminal = typeof deps.disposeLoginTerminal === 'function'
     ? deps.disposeLoginTerminal : async () => 0;
-  const homeDir = typeof deps.homeDir === 'function'
-    ? deps.homeDir : () => process.env.HOME || os.homedir();
 
   // One login terminal at a time: it is a human-driven OAuth flow, and a second
   // click must show a fresh prompt rather than replay a finished one.
   app.post('/api/agy/accounts/:id/login-terminal', asyncHandler(async (req, res) => {
-    const id = String((req.params && req.params.id) || '');
-    const home = homeDir();
-    const meta = home ? metaFile(home, id) : null;
-    if (!meta) return res.status(400).json({ error: 'invalid account id' });
-    if (!fs.existsSync(meta)) return res.status(404).json({ error: 'unknown account' });
-    const accountDir = accountHome(home, id);
-    if (!accountDir) return res.status(400).json({ error: 'invalid account id' });
+    const accountDir = String((req.body && req.body.home) || '');
+    if (!accountDir) return res.status(400).json({ error: 'account home required' });
     fs.mkdirSync(accountDir, { recursive: true, mode: 0o700 });
 
     const dirList = typeof directories.values === 'function' ? [...directories.values()] : [];

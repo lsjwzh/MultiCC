@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Instant};
 pub mod api_error_policy;
 pub mod api_error_text;
 pub mod auth_security;
+pub mod agy_accounts;
 pub mod auto_provider_config;
 pub mod auto_provider_handoff;
 pub mod auto_provider_policy;

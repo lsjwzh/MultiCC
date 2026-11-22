@@ -67,7 +67,10 @@ use crate::app::App;
 use crate::host_port;
 
 /// The host port the Node child serves (`src/routes/session-routes-host.js`).
-const HOST_PATH: &str = "/api/__host/session-routes";
+/// `super::` so the agy account cluster can reuse the same executor port for
+/// its login terminal: that op also creates a session record and needs the
+/// PTY-only dependencies Node holds.
+pub(super) const HOST_PATH: &str = "/api/__host/session-routes";
 
 /// The query keys any route in the cluster reads. Express parses the whole
 /// query string; sending only the keys the retired handlers touched keeps the
@@ -182,7 +185,11 @@ fn host_failed(ctx: &RequestCtx) -> Response<Body> {
 /// One host round trip carrying the op, the decoded parameters, the parsed
 /// query and body. The host answers `{ ok: true, value }`; `value` is the
 /// `{ status, body }` (or `{ threw, … }`) the retired handler produced.
-async fn call(ctx: &RequestCtx, host: u16, payload: Value) -> Result<Value, Response<Body>> {
+pub(super) async fn call(
+    ctx: &RequestCtx,
+    host: u16,
+    payload: Value,
+) -> Result<Value, Response<Body>> {
     match host_port::call(host, HOST_PATH, &payload).await {
         Ok(answer) if answer.get("ok") == Some(&Value::Bool(true)) => {
             Ok(answer.get("value").cloned().unwrap_or(Value::Null))
@@ -201,7 +208,7 @@ async fn call(ctx: &RequestCtx, host: u16, payload: Value) -> Result<Value, Resp
 /// Relay the `{ status, body }` the retired handler produced. A handler that
 /// threw (the old `safeErrorHandler` path) carries `threw:true` plus the DTO
 /// fields; the front door builds the same envelope with its own request ids.
-fn relay(ctx: &RequestCtx, answer: Value) -> Response<Body> {
+pub(super) fn relay(ctx: &RequestCtx, answer: Value) -> Response<Body> {
     if answer.get("threw") == Some(&Value::Bool(true)) {
         let status = answer.get("status").and_then(Value::as_u64).unwrap_or(500) as u16;
         let code = answer
