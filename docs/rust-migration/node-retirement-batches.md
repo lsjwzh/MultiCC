@@ -934,7 +934,7 @@ getter、转换、异常身份、迭代器、异步顺序、循环回收及大�
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
 
-### 会话续接投递（Rust 迁移，待验收）
+### 会话续接投递（Rust 迁移）
 
 以 `9fd65485` 为基线，退役 `src/session/delivery.js`，原文件逐字节冻结至
 `tests/helpers/legacy-session-delivery.js`。种类默认值与消息前缀判定位于
@@ -950,6 +950,10 @@ CommonJS 单例和可变种类 Set 身份；静态 `SESSION_DELIVERY_SYSTEM_PREF
 业务规则由 Rust 持有。待消息调度和日志宿主迁至 Rust、消费者不再依赖 V8
 Set/Promise 身份及无 addon 加载，并完成并发、前缀与异常差分验证后，应
 移除 API 缓存、静态前缀和回调端口。本批不声称其他 Node 依赖已核销。
+
+验收：rustfmt、严格 Clippy、Rust 核心 1,534 项、addon/gateway 构建及
+治理检查通过；指纹 `66d6bb8660c725a81f928790` 产物通过来源与启动探针，
+相关 Node 回归 140 项通过，等待注入脚本另通过 35 项断言。
 
 当前 `src/` 有 542 个 `.js` / `.cjs` 文件，按文件所在目录统计：
 
