@@ -137,7 +137,7 @@ test('host spawn paths apply CLI-specific proxies only after resolving the provi
 
 test('vendor login flows map each vendor-auth CLI to a whitelisted login terminal spec', () => {
   const { VENDOR_LOGIN, vendorLoginForCli, cliForLoginFlow, vendorLoginTerminalCmd } = require('../src/cli-adapters/vendor-login');
-  assert.deepEqual(Object.keys(VENDOR_LOGIN).sort(), ['codebuddy', 'commandcode', 'qoder']);
+  assert.deepEqual(Object.keys(VENDOR_LOGIN).sort(), ['agy', 'codebuddy', 'commandcode', 'qoder']);
   assert.equal(vendorLoginForCli('codebuddy').loginFlow, 'codebuddy-login');
   assert.equal(vendorLoginForCli('codebuddy').label, 'WorkBuddy');
   assert.equal(vendorLoginForCli('qoder').loginFlow, 'qoder-login');
@@ -149,6 +149,11 @@ test('vendor login flows map each vendor-auth CLI to a whitelisted login termina
   assert.equal(cliForLoginFlow('commandcode-login'), 'commandcode');
   assert.equal(vendorLoginForCli('commandcode').autoStart, true);
   assert.equal(vendorLoginTerminalCmd('commandcode-login', { commandcode: '/a path/command-code' }), "'/a path/command-code' login --no-auto-update");
+  assert.equal(vendorLoginForCli('agy').loginFlow, 'agy-login');
+  assert.equal(vendorLoginForCli('agy').loginCommand, 'agy', 'agy has no login subcommand; the TUI is the command');
+  assert.equal(cliForLoginFlow('agy-login'), 'agy');
+  assert.equal(vendorLoginTerminalCmd('agy-login', { agy: '/a path/agy' }), '/a path/agy',
+    'the agy login terminal launches the bare binary on the pinned account HOME');
   assert.equal(cliForLoginFlow('codex-login'), null, 'codex/claude login flows stay hardcoded in create-record');
   assert.equal(cliForLoginFlow('bogus'), null);
 });
