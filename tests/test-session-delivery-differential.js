@@ -112,6 +112,7 @@ test('logger failures preserve synchronous and asynchronous failure boundaries',
 test('native API is cached and callback cycles can be collected', () => {
   const runtime=require('../src/native/runtime');
   assert.equal(runtime.getSessionDeliveryApi(),runtime.getSessionDeliveryApi());
+  assert.equal(runtime.SESSION_DELIVERY_SYSTEM_PREFIX, runtime.getSessionDeliveryApi().SYSTEM_PREFIX);
   const {spawnSync}=require('node:child_process');
   const script=String.raw`
     const api=require(process.argv[1]).sessionDeliveryApi();
@@ -147,4 +148,12 @@ test('factory reads optional log getter twice and preserves a changing result', 
   }
   assert.deepEqual(results[1],results[0]);
   assert.deepEqual(results[0],{reads:2,outcome:{name:'TypeError',message:'log is not a function'}});
+});
+
+
+test('compatibility consumers load before an addon is available', () => {
+  const {spawnSync}=require('node:child_process');
+  const script="require('./src/wait/injector'); require('./src/task-context-host');";
+  const result=spawnSync(process.execPath,['-e',script],{cwd:require('node:path').resolve(__dirname,'..'),env:{...process.env,MULTICC_RUST_ADDON:'/__multicc_missing__/addon.node'},encoding:'utf8',timeout:10000});
+  assert.equal(result.status,0,result.stderr || String(result.error));
 });

@@ -11,6 +11,9 @@ let cliRegistryAddon = null;
 let sessionDeliveryAddon = null;
 let sessionDeliveryApi = null;
 const counts = { search: 0, usage: 0 };
+// Compatibility value for Node modules that must load before the addon; the
+// native delivery API is the policy owner and preflight verifies this marker.
+const SESSION_DELIVERY_SYSTEM_PREFIX = '🔇';
 
 // V8 strict property assignment port: preserves Proxy/setter and TypeError
 // semantics while native session configuration owns all policy and ordering.
@@ -339,7 +342,7 @@ const codexBackground = {
       setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
   },
 };
-module.exports = { addonPath, gatewayPath, getNative, getSessionDeliveryApi, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

@@ -943,12 +943,13 @@ getter、转换、异常身份、迭代器、异步顺序、循环回收及大�
 `src/native/runtime.js` 使用原生 API，探针检查导出及系统续接行为；差分覆盖
 默认参数、可变 Set、异常身份、Proxy 读取顺序、UTF-16 和异步日志失败。
 
-必要的 Node 兼容桥只在共享 runtime 中缓存每个 addon 的 API 对象，以保留
-CommonJS 单例和可变种类 Set 身份；`admit` 和 `log` 仍由 Node 宿主注入，
-供 Rust 编排调用，不承载新增业务规则。待消息调度与日志宿主迁至 Rust、
-消费者不再要求 V8 Set/Promise 对象身份，并完成并发及异常差分验证后，
-应移除 API 缓存和回调端口。分类、等待注入等 Node 模块读取原生前缀的调用
-也随这些宿主退休；本批不声称其他 Node 依赖已核销。
+必要的 Node 兼容桥包括：共享 runtime 按 addon 缓存 API 对象，以保留
+CommonJS 单例和可变种类 Set 身份；静态 `SESSION_DELIVERY_SYSTEM_PREFIX`
+保留等待与任务上下文模块在 addon 不可用时的原有加载能力，其值由原生
+探针和差分测试核对；`admit` 和 `log` 仍由 Node 宿主注入供 Rust 编排调用。
+业务规则由 Rust 持有。待消息调度和日志宿主迁至 Rust、消费者不再依赖 V8
+Set/Promise 身份及无 addon 加载，并完成并发、前缀与异常差分验证后，应
+移除 API 缓存、静态前缀和回调端口。本批不声称其他 Node 依赖已核销。
 
 当前 `src/` 有 542 个 `.js` / `.cjs` 文件，按文件所在目录统计：
 

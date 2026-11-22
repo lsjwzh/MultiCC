@@ -1,7 +1,7 @@
 'use strict';
 
 const { scopeHostProviderEvent } = require('./chat/provider-attempt-runtime');
-const { SYSTEM_PREFIX } = require('./native/runtime').getSessionDeliveryApi();
+const { SESSION_DELIVERY_SYSTEM_PREFIX: SYSTEM_PREFIX } = require('./native/runtime');
 const unattendedKernel = require('./unattended/kernel');
 const { getNative } = require('./native/runtime');
 

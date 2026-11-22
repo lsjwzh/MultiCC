@@ -1,6 +1,6 @@
 'use strict';
 
-const { SYSTEM_PREFIX } = require('../native/runtime').getSessionDeliveryApi();
+const { SESSION_DELIVERY_SYSTEM_PREFIX: SYSTEM_PREFIX } = require('../native/runtime');
 
 // Classify state machine: the unified classify loop that decides goal/phase and
 // the D/C/W/B/E/P letter for every chat session. Owns the turn-end hook, the
