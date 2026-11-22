@@ -4,6 +4,24 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
+## v2.21.2 - Native session runtime and multi-account routing (2026-11-23)
+
+- Give each anti-gravity (agy) account its own HOME. agy keeps its whole login inside `$HOME/.gemini` and honours `HOME`, so an account is simply a separate home directory under `~/.multicc/official-accounts/agy/`, with `active.json` naming the pinned one. The layout and validation live in Rust (`agyAccountHome`, exposed as the `agyAccountHome` native binding), and Node reads the pinned home once, at spawn, instead of parsing the store itself. The account layout is the shared contract with the agy routes and the gateway, which read the same paths with no FFI in between. Account ids are checked as 16 hex characters, a missing or malformed account falls back to the real `HOME` instead of failing the launch, and login status reports only whether a usable credential is present, never the token.
+
+- Move the remaining session runtime ports to Rust: session creation, runtime busy state, pending configuration, login-terminal cleanup, resume delivery, task-history retention, claude-exp history, the handoff-zip container, subagent and fork-configuration, and public-session access. Each port carries a frozen baseline and a differential check against the previous implementation, and the Node modules they replaced are retired rather than kept as fallbacks.
+
+- Port the session hibernation reclaimer to the native runtime and retire its Node module, preserving the same reclaim decisions and keeping the differential check against the frozen copy.
+
+- Move startup state bootstrap policies and physical path safety guards to Rust, so a path is validated by the same code whether it arrives over HTTP or from the host.
+
+- Retire dead Node runtime modules that no longer had a caller: the legacy unmounted WeChat MCP bridge, the unused HTTP diagnostic result and asyncRoute adapters, the provider reference transport facade, the official fetch compatibility entry, and the startup service registry alongside the single chat turn registration it held. No replacement logic is introduced and no direct runtime dependency is dropped.
+
+- Stop the app chat view from blocking scrolling while a message streams: auto-scroll no longer fights a manual drag, and the composer no longer expands over the history.
+
+- Keep the app remote-screen RFB transport, its service layer and their tests consistent with the current server contract.
+
+- Speed up the release test tier: the debug crypto and HTTP paths the suite exercises are cheaper, slow feature scripts are split so a single failure does not drag the rest, and the agy accounts boundary test is classified so the shared clippy gate stays green.
+
 ## v2.21.1 — Compatibility, routing, and reliability (2026-11-21)
 
 - Rework the app's screen-page interaction after review. The keyboard panel is no longer modal: the stage yields its height instead of being covered, so tapping a remote field while typing keeps working. Two fingers sliding together now scroll the remote on the stage itself, anchored on the midpoint between the fingers, which retires the scroll capsule and the stage scroll rail. The edge rail hides when a finger lands on the picture and returns after a pause instead of on a timer, its collapsed handle is a full-size touch target that also opens on an inward drag, and its seven items collapse to four with view, clipboard, host and status behind one sheet that opens from the bottom on phones. Control hand-over moves onto the pinned view-only status capsule, clipboard transfer keeps one primary paste action with set-without-paste on long press and a paste key beside the text field, and the magnifier scales relative to the current zoom and flips below the finger near the top edge. Clip remote clipboard reads by UTF-16 units in both the Rust route and the macOS agent, which the documented limit previously missed for astral characters, and localize two hard-coded strings.
