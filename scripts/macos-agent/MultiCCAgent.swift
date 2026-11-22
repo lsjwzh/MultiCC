@@ -2159,7 +2159,7 @@ func rfbCursorShape() -> (key: Int, rect: Data)? {
 }
 
 @available(macOS 14.0, *)
-final class RfbScreen: NSObject, SCStreamOutput {
+final class RfbScreen: NSObject, SCStreamOutput, SCStreamDelegate {
   static let shared = RfbScreen()
   // 1x1 fully transparent cursor: the viewer shows no local pointer while
   // the real one is baked into the frames.
@@ -2200,7 +2200,7 @@ final class RfbScreen: NSObject, SCStreamOutput {
     cfg.height = max(1, Int(display.height))
     cfg.minimumFrameInterval = CMTime(value: 1, timescale: 30)
     cfg.queueDepth = 3
-    let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: nil)
+    let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: self)
     do { try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "multicc.rfb.frames")) }
     catch { return "addStreamOutput: \(error.localizedDescription)" }
     var startErr: String?
@@ -2213,6 +2213,16 @@ final class RfbScreen: NSObject, SCStreamOutput {
     w = max(1, Int(display.width)); h = max(1, Int(display.height))
     lock.unlock()
     return nil
+  }
+
+  func stream(_ stream: SCStream, didStopWithError error: Error) {
+    log("rfb: stream stopped: \(error.localizedDescription)")
+    lock.lock()
+    let isCurrent = self.stream === stream
+    let cs = isCurrent ? clients : []
+    lock.unlock()
+    guard isCurrent else { return }
+    for c in cs { c.shutdown() }
   }
 
   private func releaseCapture() {
@@ -2585,14 +2595,18 @@ func rfbSender(_ c: RfbClient) {
     // the pending incremental request with an empty update (n=0 keepalive):
     // SCStream only emits on change, so idle requests would otherwise time out.
     var rects = RfbScreen.shared.takeUpdate(c)
-    var waitedMs = 0
+    let waitStart = Date()
     while rects == nil && !c.isClosed {
-      if Date().timeIntervalSince(c.connectedAt) > 10 && !c.servedAny { c.shutdown(); return }
-      if waitedMs >= 4000 {
-        if c.servedAny { rects = []; break }
+      if Date().timeIntervalSince(c.connectedAt) > 10 && !c.servedAny {
+        log("rfb: no first frame within 10s since connect; dropping client")
         c.shutdown(); return
       }
-      usleep(20_000); waitedMs += 20
+      if Date().timeIntervalSince(waitStart) >= 4.0 {
+        if c.servedAny { rects = []; break }
+        log("rfb: no first frame within 4s; dropping client")
+        c.shutdown(); return
+      }
+      usleep(20_000)
       rects = RfbScreen.shared.takeUpdate(c)
     }
     if c.isClosed { return }

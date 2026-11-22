@@ -377,6 +377,32 @@ void main() {
     near(13, 4, [255, 0, 0]); // 右半蓝
   });
 
+  test('仅握手无像素更新（含空保活）不触发 onFrame 且 hasFrame 保持 false', () async {
+    final sent = <Uint8List>[];
+    var frames = 0;
+    final made = makeRfb(sent, () => frames++);
+    final done = expectLater(made.rfb.run(), throwsStateError);
+
+    // 只送握手（49 字节）+ 一个空保活（rectCount=0），没有真实像素矩形。
+    made.incoming.add(Uint8List.sublistView(serverBytes, 0, 49));
+    await pumpUntil(() => made.rfb.width == 4);
+    expect(made.rfb.hasFrame, isFalse);
+    expect(frames, 0, reason: '握手分配的空缓冲不能当作已出画面');
+
+    made.incoming.add(Uint8List.fromList([0x00, 0x00, 0x00, 0x00]));
+    await pumpUntil(() => made.rfb.frameVersion >= 1);
+    expect(made.rfb.hasFrame, isFalse);
+    expect(frames, 0, reason: '首帧前收到空保活仍不算已出画面');
+
+    // 真正收到带像素的矩形后才标 hasFrame=true 并触发 onFrame。
+    made.incoming.add(Uint8List.sublistView(serverBytes, 49, 73));
+    await pumpUntil(() => made.rfb.hasFrame && frames == 1);
+    expect(made.rfb.framebuffer![frameAt(made.rfb.framebuffer!, 1, 1, 4)], 0x11);
+
+    await made.incoming.close();
+    await done;
+  });
+
   test('Tight JPEG 解不出来 → 会话切断交给上层，而不是卡住', () async {
     var closed = false;
     final incoming = StreamController<Uint8List>();

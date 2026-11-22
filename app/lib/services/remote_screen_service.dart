@@ -457,7 +457,10 @@ class RemoteScreenService {
 
   void _onRfbFrame() {
     final r = _rfb;
-    if (r != null && r.width > 0 && mode != RemoteScreenMode.live) {
+    if (r != null &&
+        r.width > 0 &&
+        r.hasFrame &&
+        mode != RemoteScreenMode.live) {
       _becomeLive();
     }
     _frames.add(null);
@@ -472,6 +475,8 @@ class RemoteScreenService {
   }
 
   void _becomeLive() {
+    _handshakeTimeout?.cancel();
+    _handshakeTimeout = null;
     _liveSince = DateTime.now();
     _recoverSince = null;
     _retryAttempt = 0;
