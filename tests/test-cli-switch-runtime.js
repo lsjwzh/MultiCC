@@ -1155,7 +1155,7 @@ test('applying a pending switch publishes nothing when persistence fails and rem
 });
 
 test('a pending profile applies once at an idle boundary; live steering retains the original route', async () => {
-  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const { stageConfiguration } = require('./helpers/native-session-pending-configuration');
   const h = createHarness();
   stageConfiguration(h.session, { ...h.session, model: 'next-model', provider: 'next-provider' });
   h.chat.isStreaming = true;
@@ -1168,7 +1168,7 @@ test('a pending profile applies once at an idle boundary; live steering retains 
 });
 
 test('待生效自动池只在实际变更时清理线路，保存相同配置保留线路', async () => {
-  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const { stageConfiguration } = require('./helpers/native-session-pending-configuration');
   for (const change of ['same', 'pool', 'manual']) {
     const h = createHarness();
     h.session.providerSelection = { mode: 'auto', protocol: 'anthropic', candidates: [
@@ -1189,7 +1189,7 @@ test('待生效自动池只在实际变更时清理线路，保存相同配置�
 });
 
 test('待生效配置持久化失败会恢复自动池当前线路', async () => {
-  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const { stageConfiguration } = require('./helpers/native-session-pending-configuration');
   const { createSessionPersistence } = require('../src/session/persistence');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
     providerSelection: { mode: 'auto', protocol: 'anthropic', candidates: [
@@ -2461,7 +2461,7 @@ test('安装代理准备失败不派生直连子进程', async () => {
 });
 
 test('a turn after a CLI switch waits until the old resident process has exited', async () => {
-  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const { stageConfiguration } = require('./helpers/native-session-pending-configuration');
   const h = createHarness();
   stageConfiguration(h.session, { ...h.session, cli: 'codex' });
   assert.equal(await h.runtime.applyPendingConfiguration('s1'), true);
@@ -2471,7 +2471,7 @@ test('a turn after a CLI switch waits until the old resident process has exited'
 });
 
 test('an unconfirmed exit of the old CLI process defers the turn instead of failing it', async () => {
-  const { stageConfiguration } = require('../src/session/pending-configuration');
+  const { stageConfiguration } = require('./helpers/native-session-pending-configuration');
   const busy = Object.assign(new Error('process exit unconfirmed'), { code: 'workspace_busy' });
   const h = createHarness({ settleError: busy });
   stageConfiguration(h.session, { ...h.session, cli: 'codex' });

@@ -4,7 +4,7 @@
 // （取自提交 0860ed62）。tests/helpers/legacy-provider-routes.js 这个 oracle
 // 必须用它，而不是活代码 —— 否则迁移之后 oracle 会跟着一起变，大对拍就变成
 // 「拿新实现和自己比」，永久失去辨别力。
-const { desiredSession } = require('../../src/session/pending-configuration');
+const { desiredSession } = require('./session-pending-configuration-oracle');
 
 // Force-delete support for DELETE /api/providers/:appType/:id?force=1.
 //

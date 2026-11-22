@@ -1,8 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session/pending-configuration');
-const { getNative } = require('../native/runtime');
+const { getNative, assignHostProperty } = require('../native/runtime');
 const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
 const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
 const forkConfiguration = (record, deps) => getNative().sessionForkConfiguration(record, deps);
@@ -134,7 +133,7 @@ function createSessionProfileRoutes(rawDeps) {
   } = sessionPolicy;
 
   function mountRoutes(app) {
-    const busy = id => configurationBusy(id, {
+    const busy = id => getNative().sessionPendingConfigurationBusy(id, {
       getChatState, getChatStream, hasLiveBackgroundTasks, getPreparation: deps.getPreparation,
     });
 
@@ -163,7 +162,7 @@ function createSessionProfileRoutes(rawDeps) {
       if (!preview && routeMutation && (s.pendingConfiguration || busy(s.id))) {
         // Run the exact same validation on a detached desired-state draft. No
         // process, rollout, audit event or active route is touched by preview.
-        const draft = desiredSession(s);
+        const draft = getNative().sessionPendingDesiredSession(s, assignHostProperty);
         let status = 200, result;
         patchSession(req, {
           status(code) { status = code; return this; },
@@ -174,13 +173,13 @@ function createSessionProfileRoutes(rawDeps) {
           for (const key of ['label', 'memory', 'autoContinue', 'autoCommit', 'cliAccounts']) {
             if (Object.prototype.hasOwnProperty.call(req.body, key)) s[key] = draft[key];
           }
-          stageConfiguration(s, draft, { fresh: s.pendingConfiguration?.fresh === true });
+          getNative().sessionPendingStageConfiguration(s, draft, { fresh: s.pendingConfiguration?.fresh === true }, assignHostProperty);
         });
         const event = { type: 'session_configuration_pending', sessionId: s.id,
           pendingConfiguration: s.pendingConfiguration };
         chatBroadcast(s.id, event); workspaceBroadcast(s.dirId, event);
         appendEvent(s.dirId, 'session_configuration_pending', 'AI 配置已保存，下一轮生效', s.id);
-        return res.json({ ...result, ...readConfiguration(s), cli: s.cli,
+        return res.json({ ...result, ...getNative().sessionPendingReadConfiguration(s), cli: s.cli,
           effectiveModel: effectiveSessionModel(s), effectiveEffort: effectiveSessionEffort(s),
           pendingConfiguration: s.pendingConfiguration,
           deferred: true, appliesOn: 'next_turn' });
@@ -494,7 +493,7 @@ function createSessionProfileRoutes(rawDeps) {
 
     function planRoutePatch(req, session) {
       let route;
-      const draft = desiredSession(session);
+      const draft = getNative().sessionPendingDesiredSession(session, assignHostProperty);
       const result = capturePatch(req, (request, response) =>
         patchSession(request, response, draft, planned => { route = planned; }));
       return { result, route };
@@ -693,7 +692,7 @@ function createSessionProfileRoutes(rawDeps) {
     function previewSessionPatch(sessionId, body) {
       const session = persistedSessions.get(sessionId);
       if (!session) return { status: 404, body: { error: 'session not found' } };
-      const draft = desiredSession(session);
+      const draft = getNative().sessionPendingDesiredSession(session, assignHostProperty);
       let status = 200, result;
       patchSession({ params: { id: sessionId }, body: body || {}, query: {} }, {
         status(code) { status = code; return this; },

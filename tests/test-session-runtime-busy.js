@@ -120,7 +120,6 @@ test('every call site asks the one predicate', () => {
     'src/routes/session-git.js',
     'src/routes/session-lifecycle.js',
     'src/session/hibernation-composition.js',
-    'src/session/pending-configuration.js',
     'src/task-shell/workspace.js',
     'src/workspace/admission.js',
   ];
@@ -131,6 +130,7 @@ test('every call site asks the one predicate', () => {
     assert.match(src, /getNative\(\)\.sessionRuntimeIsChatStateBusy\(/, `${file} must ask the native shared predicate`);
     assert.doesNotMatch(src, handRolled, `${file} still hand-rolls a two-trace busy test`);
   }
+  assert.match(read('native/addon/src/session_pending_configuration.rs'), /session_runtime_is_chat_state_busy/);
   // session-work/host.js 只用它的 processAlive 一半：停止等待刻意不算 _activeRunner
   // （见下一条），所以这里单独钉，不进上面的 isChatStateBusy 列表。
   const workHost = read('src/session-work/host.js');

@@ -6,7 +6,7 @@
 // tests/helpers/session-routes-scripted-world.js.
 
 const crypto = require('crypto');
-const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../../../src/session/pending-configuration');
+const { readConfiguration, desiredSession, configurationBusy, stageConfiguration } = require('../session-pending-configuration-oracle');
 const { normalizeSubagentInput, withSubagentSource } = require('../legacy-session-subagent');
 const { forkConfiguration } = require('../legacy-fork-configuration');
 const { selectionKey } = require('../../../src/providers/auto-provider-config');

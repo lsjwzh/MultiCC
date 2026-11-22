@@ -28,8 +28,7 @@
 // tests/helpers/legacy-provider-force-detach.js, which the big providers
 // differential (docs/rust-migration/differential/providers.js) runs as its
 // oracle while the live path runs this one.
-const { getNative } = require('../native/runtime');
-const { desiredSession } = require('../session/pending-configuration');
+const { getNative, pendingDesiredSession } = require('../native/runtime');
 
 async function detachProviderReferences({
   providerId, references, sessions, applySessionPatch, clearDefault, clearAuxProvider,
@@ -37,7 +36,7 @@ async function detachProviderReferences({
 } = {}) {
   const request = (op, input) => getNative().providerDetachRequest(op, input);
   const planSession = sessionId => request('session', {
-    sessionId, session: sessions.get(sessionId), providerId, desiredSession,
+    sessionId, session: sessions.get(sessionId), providerId, desiredSession: pendingDesiredSession,
   });
   const { effects, sessionIds } = request('scope', references);
   const detached = [];

@@ -15,7 +15,7 @@
 
 const { sanitizePublicText } = require('../http/public-safety');
 const { isLocalRequest } = require('../request-locality');
-const { desiredSession } = require('../session/pending-configuration');
+const { getNative, assignHostProperty } = require('../native/runtime');
 
 const HOST_PATH = '/api/__host/subagent-defaults';
 
@@ -31,7 +31,7 @@ function planSessions(sessions) {
   for (const session of listSessions(sessions)) {
     if (!session || typeof session !== 'object') continue;
     let desired = session;
-    try { desired = desiredSession(session); } catch (_) { desired = session; }
+    try { desired = getNative().sessionPendingDesiredSession(session, assignHostProperty); } catch (_) { desired = session; }
     list.push({
       id: String(session.id || ''),
       name: String(session.label || session.name || session.id || ''),

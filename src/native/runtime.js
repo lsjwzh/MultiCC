@@ -13,6 +13,9 @@ const counts = { search: 0, usage: 0 };
 // V8 strict property assignment port: preserves Proxy/setter and TypeError
 // semantics while native session configuration owns all policy and ordering.
 function assignHostProperty(target, key, value) { target[key] = value; }
+// The provider detach port consumes a callback; keep that callback as a thin
+// host adapter until the provider host and its callback move into Rust.
+function pendingDesiredSession(session) { return getNative().sessionPendingDesiredSession(session, assignHostProperty); }
 
 
 // Native prompt policies retain live callback, getter and opaque value identity.
@@ -325,7 +328,7 @@ const codexBackground = {
       setMainThread: id => call('main', id), dispose: () => call('dispose', null) };
   },
 };
-module.exports = { addonPath, gatewayPath, getNative, assignHostProperty, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { addonPath, gatewayPath, getNative, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

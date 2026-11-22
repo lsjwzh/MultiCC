@@ -1,6 +1,6 @@
 'use strict';
 
-const { desiredSession, readConfiguration } = require('../../src/session/pending-configuration');
+const { desiredSession, readConfiguration } = require('./session-pending-configuration-oracle');
 const { normalizeSubagentInput } = require('./legacy-session-subagent');
 
 // Transcript provenance and the next run's settings are independent. A stale
