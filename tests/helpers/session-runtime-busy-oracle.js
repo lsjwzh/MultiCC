@@ -1,0 +1,11 @@
+'use strict';
+// Preserve the frozen module byte-for-byte while resolving its original imports.
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+const filename = path.resolve(__dirname, '../../src/session/runtime-busy.js');
+const oracle = new Module(filename, module);
+oracle.filename = filename;
+oracle.paths = Module._nodeModulePaths(path.dirname(filename));
+oracle._compile(fs.readFileSync(path.join(__dirname, 'legacy-session-runtime-busy.js'), 'utf8'), filename);
+module.exports = oracle.exports;

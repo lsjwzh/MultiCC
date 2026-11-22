@@ -2587,3 +2587,25 @@ pub fn session_proc_alive(env: Env, value: Unknown<'_>) -> Result<bool> {
     let proc = L::new(&env, value);
     Ok(active_turns::process_alive(&proc_observation(proc)?))
 }
+
+/// Native replacement for the former runtime-busy port. The optional argument
+/// preserves the JavaScript wrapper's `undefined` default for omitted inputs.
+#[napi]
+#[cfg_attr(test, allow(dead_code))]
+pub fn session_runtime_is_chat_state_busy(env: Env, value: Option<Unknown<'_>>) -> Result<bool> {
+    match value {
+        Some(value) => chat_busy_of(L::new(&env, value)),
+        None => Ok(false),
+    }
+}
+
+#[napi]
+#[cfg_attr(test, allow(dead_code))]
+pub fn session_runtime_process_alive(env: Env, value: Option<Unknown<'_>>) -> Result<bool> {
+    match value {
+        Some(value) => Ok(active_turns::process_alive(&proc_observation(L::new(
+            &env, value,
+        ))?)),
+        None => Ok(false),
+    }
+}

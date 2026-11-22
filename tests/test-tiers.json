@@ -5974,6 +5974,11 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-session-runtime-busy-differential.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-session-runtime-busy.js",
       "tier": "core",
       "lane": "deterministic",

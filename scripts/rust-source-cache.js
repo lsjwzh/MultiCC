@@ -257,12 +257,14 @@ function probeAddon(file, node = process.execPath) {
       || ['isInternalExecutionSlot','createPublicSessionAccessGuard','mountPublicSessionAccessGuard'].some(key=>typeof pubApi[key]!=='function')
       || !a.sessionIsInternalExecutionSlot({taskExecutionSlot:true})
       || a.sessionIsInternalExecutionSlot({taskExecutionSlot:false})) process.exit(1);
-    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive'].some(key=>typeof a[key]!=='function')) process.exit(1);
     const recordsPort={list(){},get(){}};
     if(a.sessionAssertSessionRecordsPort(recordsPort)!==recordsPort
       || a.taskHistoryRefusal({}).code!=='history_check_failed'
       || a.taskHistoryRefusal({}).blocked!==true
       || a.claudeExpHasNativeHistory({cli:'claude',cliSessionId:'x'})!==true) process.exit(1);
+    if(a.sessionRuntimeIsChatStateBusy({isStreaming:true})!==true || a.sessionRuntimeIsChatStateBusy()!==false
+      || a.sessionRuntimeProcessAlive({exitCode:0})!==false || a.sessionRuntimeProcessAlive()!==false) process.exit(1);
     const createSession=a.sessionCreateRecordFactory({isResidentSession(){}},require('node:path'));
     if(typeof createSession!=='function' || createSession.length!==1) process.exit(1);
     const historyFacade=a.chatHistoryFileRepositoryCreate({root:'/__multicc_probe__/chat_history',appendEnabled:false,reportFailure(){}});

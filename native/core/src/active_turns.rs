@@ -235,6 +235,49 @@ mod tests {
     }
 
     #[test]
+    fn busy_and_process_liveness_cover_all_boolean_axes() {
+        for present in [false, true] {
+            for exit_code_set in [false, true] {
+                for signal_code_set in [false, true] {
+                    let proc = ProcObservation {
+                        present,
+                        exit_code_set,
+                        signal_code_set,
+                    };
+                    assert_eq!(
+                        process_alive(&proc),
+                        present && !exit_code_set && !signal_code_set
+                    );
+                    for streaming in [false, true] {
+                        for active_runner in [false, true] {
+                            let axes = ChatBusyAxes {
+                                streaming,
+                                claude_proc: proc,
+                                cancelled_proc: dead(),
+                                active_runner,
+                            };
+                            assert_eq!(
+                                chat_state_busy(&axes),
+                                streaming || process_alive(&proc) || active_runner
+                            );
+                            let axes = ChatBusyAxes {
+                                streaming,
+                                claude_proc: dead(),
+                                cancelled_proc: proc,
+                                active_runner,
+                            };
+                            assert_eq!(
+                                chat_state_busy(&axes),
+                                streaming || process_alive(&proc) || active_runner
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tally_counts_and_short_circuits() {
         let mut tally = ActiveTurnTally::new();
         assert_eq!(tally.count(), 0);
