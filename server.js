@@ -1836,7 +1836,7 @@ tunnel.setFailureReporter((stage, category) => {
 });
 const chatStream = require('./src/chat/chat-stream');
 const waitInjector = require('./src/wait/injector');
-const sessionDelivery = require('./src/session/delivery').createSessionDelivery({
+const sessionDelivery = require('./src/native/runtime').getSessionDeliveryApi().createSessionDelivery({
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
   log: message => console.log('[multicc/delivery]', message),
 });

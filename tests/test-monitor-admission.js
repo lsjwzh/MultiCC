@@ -9,7 +9,7 @@ const { createSdkStream } = require('../src/chat/claude-sdk-stream');
 const { createStreamRouter } = require('../src/chat/stream-router');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-const { createSessionDelivery } = require('../src/session/delivery');
+const { createSessionDelivery } = require('../src/native/runtime').getSessionDeliveryApi();
 const sdkFixture = require('./helpers/claude-sdk-fixture');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/chat/monitor-admission');
 

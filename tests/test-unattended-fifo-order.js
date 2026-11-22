@@ -30,7 +30,7 @@ const { createProductionQuestionHost, createProductionWorkHost } = require('../s
 const { createUnattendedHost } = require('../src/unattended/host');
 const nativeKernel = require('../src/unattended/kernel');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
-const { createSessionDelivery } = require('../src/session/delivery');
+const { createSessionDelivery } = require('../src/native/runtime').getSessionDeliveryApi();
 const waitInjector = require('../src/wait/injector');
 const { createProcessingWatchdog } = require('../src/chat/process-watchdog');
 

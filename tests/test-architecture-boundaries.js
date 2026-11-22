@@ -198,3 +198,9 @@ test('login-terminal disposer is owned by the native addon', () => {
   assert.equal(fs.existsSync('src/session/login-terminal.js'), false);
   assert.ok(fs.readFileSync('server.js', 'utf8').includes('getNative().sessionLoginTerminalDisposer('));
 });
+
+
+test('session delivery is provided by the native addon', () => {
+  assert.equal(fs.existsSync('src/session/delivery.js'), false);
+  assert.ok(fs.readFileSync('server.js', 'utf8').includes('getSessionDeliveryApi().createSessionDelivery('));
+});
