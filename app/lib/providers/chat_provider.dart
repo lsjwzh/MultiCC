@@ -578,6 +578,13 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
     return vendorViewFromBar(_balanceBar);
   }
 
+  VendorQuotaView? get agyQuotaView {
+    if (_cli != SessionCli.agy) return null;
+    if (_agyLoading) return const VendorQuotaView('反重力额度查询中…', VendorQuotaColor.gray);
+    return vendorViewFromBar(_agyQuota == null ? null : _barOf(_agyQuota!))
+        ?? const VendorQuotaView('反重力额度：点击查询', VendorQuotaColor.gray);
+  }
+
   /// OpenCode Go subscription bar (5h / weekly / monthly), under the opencode
   /// CLI. Source: GET /api/opencode/quota.
   VendorQuotaView? get opencodeQuotaView {
@@ -676,6 +683,11 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
 
   // OpenCode Go subscription usage (GET /api/opencode/quota — CDP scrape of the
   // opencode.ai Zen console). Fetched when the opencode CLI is (re)connected.
+  Map<String, dynamic>? _agyQuota;
+  bool _agyLoading = false;
+  bool _agyInFlight = false;
+  bool _agyDisposed = false;
+  int _agyErrorAt = 0;
   Map<String, dynamic>? _opencodeQuota;
   bool _opencodeLoading = false;
   bool _opencodeInFlight = false;
@@ -1089,6 +1101,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
         }
         refreshClaudeUsage();
         refreshQoderQuota();
+        refreshAgyQuota();
         refreshOpenCodeQuota();
         refreshCodexQuota();
         if (_providerSelection == null) {
@@ -1147,6 +1160,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
         // CLI switches the account whose quota is on screen, so fetch the one
         // bar that just became relevant (no-op off its CLI; in-flight guard
         // dedupes the applyCliConfig that often precedes this broadcast).
+        refreshAgyQuota();
         refreshOpenCodeQuota();
         refreshCodexQuota();
         if (_providerSelection == null) {
@@ -1354,6 +1368,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
         break;
       case 'stream_end':
         _finishStreaming();
+        unawaited(refreshAgyQuota());
         notifyListeners();
         break;
 
@@ -1805,6 +1820,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
     }
     refreshClaudeUsage();
     refreshQoderQuota();
+    refreshAgyQuota();
     refreshOpenCodeQuota();
     refreshCodexQuota();
     final model = _providerSelection == null
@@ -2005,6 +2021,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
   void _clearCliQuotaBackoff() {
     _claudeUsageErrorAt = 0;
     _qoderErrorAt = 0;
+    _agyErrorAt = 0;
     _opencodeErrorAt = 0;
     _codexErrorAt = 0;
   }
@@ -2193,6 +2210,24 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
       _opencodeQuota = data;
       if (data['status'] == 'ok') _persistRuntimeCache();
     }
+    notifyListeners();
+  }
+
+  Future<void> refreshAgyQuota({bool force = false}) async {
+    if (_cli != SessionCli.agy || _agyInFlight) return;
+    if (!force && _agyErrorAt != 0 && _nowMs() - _agyErrorAt < _vendorQuotaBackoffMs) return;
+    _agyInFlight = true;
+    _agyLoading = true;
+    notifyListeners();
+    final data = await _quota.fetchAgyQuota(force: force);
+    if (_agyDisposed) return;
+    _agyInFlight = false;
+    _agyLoading = false;
+    _agyErrorAt = data?['status'] == 'ok' ? 0 : _nowMs();
+    _agyQuota = data ?? {'status': 'unavailable', 'bar': {
+      'text': '反重力额度查询失败 · 点击重试', 'color': '#f85149',
+      'title': '无法连接额度服务，请检查网络。', 'action': 'refresh',
+    }};
     notifyListeners();
   }
 
@@ -2983,6 +3018,7 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
 
   @override
   void dispose() {
+    _agyDisposed = true;
     _usageExpiryTimer?.cancel();
     _bgSweepTimer?.cancel();
     _dispatchQueueTimer?.cancel();

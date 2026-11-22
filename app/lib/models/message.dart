@@ -107,6 +107,8 @@ class MessageUsage {
   final int outputTokens;
   final int cacheReadTokens;
   final int cacheCreationTokens;
+  final int? contextTokens;
+  final int? contextWindow;
 
   /// Main-model tokens saved by offloading work to sub-roles (Task/Agent/Workflow).
   /// Not carried in the server `usage` payload — computed by the provider from
@@ -125,6 +127,8 @@ class MessageUsage {
     this.outputTokens = 0,
     this.cacheReadTokens = 0,
     this.cacheCreationTokens = 0,
+    this.contextTokens,
+    this.contextWindow,
     this.savedMainTokens,
     this.roleBreakdown,
   });
@@ -176,6 +180,8 @@ class MessageUsage {
 
   factory MessageUsage.fromJson(Map<String, dynamic> json) {
     return MessageUsage(
+      contextTokens: (json['context_tokens'] as num?)?.toInt(),
+      contextWindow: (json['context_window'] as num?)?.toInt(),
       inputTokens: (json['input_tokens'] as num?)?.toInt() ?? 0,
       outputTokens: (json['output_tokens'] as num?)?.toInt() ?? 0,
       cacheReadTokens: (json['cache_read_input_tokens'] as num?)?.toInt() ?? 0,

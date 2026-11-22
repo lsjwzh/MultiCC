@@ -1265,7 +1265,10 @@ function updateContextBar(usage, modelUsage) {
       if (modelUsage[key].contextWindow) _contextWindow = modelUsage[key].contextWindow;
     }
   }
-  if (usage) _turnUsage = usage;
+  if (usage) {
+    _turnUsage = usage;
+    if (Number.isFinite(usage.context_window) && usage.context_window > 0) _contextWindow = usage.context_window;
+  }
   // Runs inside the history render on connect, so a missing readout module must
   // degrade the bar rather than abort the whole page.
   usageReadout?.render({

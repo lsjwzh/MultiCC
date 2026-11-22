@@ -31,6 +31,9 @@ class QuotaService {
   Future<Map<String, dynamic>?> fetchKimiQuota(String? host) =>
       _get('/api/kimi/quota${_hostQuery(host)}');
 
+  Future<Map<String, dynamic>?> fetchAgyQuota({bool force = false}) =>
+      _get('/api/agy/quota${force ? '?force=1' : ''}', timeout: const Duration(seconds: 40));
+
   /// OpenCode Go subscription usage (5h / weekly / monthly) scraped from the
   /// opencode.ai Zen console via the backend's CDP path (`/api/opencode/quota`),
   /// the same route the web opencode bar reads. The body carries a server-
@@ -209,11 +212,11 @@ class QuotaService {
     return '?baseUrl=${Uri.encodeComponent(baseUrl)}';
   }
 
-  Future<Map<String, dynamic>?> _get(String path) async {
+  Future<Map<String, dynamic>?> _get(String path, {Duration timeout = const Duration(seconds: 20)}) async {
     try {
       final res = await http
           .get(Uri.parse(_url(path)), headers: _headers)
-          .timeout(const Duration(seconds: 20));
+          .timeout(timeout);
       final body = jsonDecode(res.body);
       return body is Map<String, dynamic> ? body : null;
     } catch (_) {

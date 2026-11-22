@@ -1004,3 +1004,28 @@ test('a provider-snapshot kimi bar answers the user click: loading render, then 
     assert.notEqual(el.textContent, 'auto 不应落槽', 'an automatic refresh still yields to the snapshot');
   } finally { f.cleanup(); }
 });
+
+test('反重力额度在当前车道显示，点击时强制刷新，换车道后隐藏', async () => {
+  const f = freshClient();
+  try {
+    await flushClient();
+    const calls = [];
+    global.fetch = async (url, opts) => {
+      calls.push([url, opts.method]);
+      return { json: async () => ({ status: 'ok', bar: {
+        text: '反重力 · Gemini 5小时剩余42%', title: '点击刷新', color: '#58a6ff', action: 'refresh',
+      } }) };
+    };
+    f.C.setCli('agy');
+    await flushClient();
+    const bar = f.element('agy-quota-bar');
+    assert.equal(bar.style.display, 'block');
+    assert.match(bar.textContent, /剩余42%/);
+    assert.deepEqual(calls[0], ['/api/agy/quota', 'GET']);
+    bar.onclick();
+    await flushClient();
+    assert.deepEqual(calls[1], ['/api/agy/quota?force=1', 'GET']);
+    f.C.setCli('claude');
+    assert.equal(bar.style.display, 'none');
+  } finally { f.cleanup(); }
+});

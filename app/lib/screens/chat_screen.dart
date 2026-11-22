@@ -1059,11 +1059,13 @@ class _ChatViewState extends State<ChatView> {
                                 claudeUsage: provider.claudeLimitView,
                                 qoderUsage: provider.qoderQuotaView,
                                 opencodeUsage: provider.opencodeQuotaView,
+                                agyUsage: provider.agyQuotaView,
                                 codexUsage: provider.codexQuotaView,
                                 onClaudeQuotaTap: () =>
                                     provider.handleClaudeQuotaTap(),
                                 onQoderQuotaTap: () =>
                                     provider.handleQoderQuotaTap(),
+                                onAgyQuotaTap: () => provider.refreshAgyQuota(force: true),
                                 onOpenCodeQuotaTap: () =>
                                     provider.handleOpenCodeQuotaTap(),
                                 onCodexQuotaTap: () =>

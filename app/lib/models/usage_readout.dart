@@ -49,6 +49,12 @@ class ContextReadout {
     MessageUsage? turn,
     int window = 0,
   }) {
+    final measured = turn?.contextTokens ?? 0;
+    final effectiveWindow = (turn?.contextWindow ?? 0) > 0 ? turn!.contextWindow! : window;
+    if (measured > 0) {
+      return ContextReadout(tokens: measured, window: effectiveWindow, exact: true,
+          usable: effectiveWindow <= 0 || measured <= effectiveWindow);
+    }
     final exact = _resident(request);
     if (exact > 0) {
       return ContextReadout(

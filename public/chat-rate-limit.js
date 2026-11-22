@@ -271,7 +271,7 @@
   // while in flight. ark adds an 'installing' state and its own click (install /
   // auth / refresh), so it passes onClick and sets canInstall.
   function createQuotaSlot(opts) {
-    const store = makeStorage(opts.storageKey);
+    const store = opts.noCache ? { load: () => null, save: () => {} } : makeStorage(opts.storageKey);
     const BACKOFF = 60_000;
     let current = null;
     let inFlight = false;
@@ -279,7 +279,7 @@
     let installInFlight = false;
     let revision = 0;
     function isVisible() { return opts.isVisible ? opts.isVisible() : true; }
-    function activeBar() { return (current && current.bar) || idleBarFor(opts.kind); }
+    function activeBar() { return (current && current.bar) || idleBarFor(opts.kind) || opts.idleBar; }
     function activeState() {
       if (opts.canInstall && installInFlight) return 'installing';
       return inFlight ? 'loading' : undefined;
@@ -300,7 +300,7 @@
       const requestRevision = revision;
       inFlight = true; render();
       try {
-        const res = await fetch(opts.getUrl(), { method: 'POST', credentials: 'same-origin' });
+        const res = await fetch(opts.getUrl(force), { method: opts.method || 'POST', credentials: 'same-origin' });
         let data = null; try { data = await res.json(); } catch (_) {}
         if (requestRevision !== revision) return current;
         if (!data) data = { status: 'unavailable', error: 'invalid response' };
@@ -321,7 +321,7 @@
         if (requestRevision !== revision) return current;
         if (!force && currentProviderSnapshot?.kind === opts.kind) return current;
         lastErrorAt = Date.now();
-        current = { status: 'unavailable', error: 'fetch failed' };
+        current = { status: 'unavailable', error: 'fetch failed', ...(opts.failBar ? { bar: opts.failBar } : {}) };
       } finally { if (requestRevision === revision) inFlight = false; }
       render();
       return current;
@@ -339,6 +339,13 @@
     };
   }
 
+  const agySlot = createQuotaSlot({
+    kind: 'agy', id: 'agy-quota-bar', method: 'GET', noCache: true,
+    isVisible: () => currentCli === 'agy',
+    getUrl: force => `/api/agy/quota${force ? '?force=1' : ''}`,
+    idleBar: { text: '反重力额度：点击查询', title: '点击查询反重力账号额度', color: '#8b949e', states: { loading: { text: '反重力额度查询中…', title: '正在查询额度', color: '#8b949e' } } },
+    failBar: { text: '反重力额度查询失败 · 点击重试', title: '无法连接额度服务，请检查网络。', color: '#f85149' },
+  });
   const opencodeSlot = createQuotaSlot({
     kind: 'opencode', id: 'opencode-quota-bar', loginKind: 'opencode',
     isVisible: () => currentCli === 'opencode',
@@ -681,7 +688,7 @@
   // ── CLI / provider switching ──
   function renderAll() {
     renderCurrent(); renderBalance();
-    opencodeSlot.render(); qoderSlot.render(); codexSlot.render();
+    agySlot.render(); opencodeSlot.render(); qoderSlot.render(); codexSlot.render();
     arkSlot.render(); kimiSlot.render();
   }
   async function restoreServerQuotaBars() {
@@ -713,10 +720,11 @@
     const changed = cliInitialized && next !== currentCli;
     cliInitialized = true; currentCli = next;
     renderAll();
-    if (!changed) return;
+    if (!changed) { if (next === 'agy') agySlot.refresh(); return; }
     // Switching CLI switches the account whose quota is on screen. Exactly one
     // fetch per real switch, for the one bar that just became visible.
-    if (next === 'opencode') { opencodeSlot.clearBackoff(); opencodeSlot.refresh(); }
+    if (next === 'agy') { agySlot.clearBackoff(); agySlot.refresh(); }
+    else if (next === 'opencode') { opencodeSlot.clearBackoff(); opencodeSlot.refresh(); }
     else if (next === 'qoder') { qoderSlot.clearBackoff(); qoderSlot.refresh(); }
     else if (isCodexCli(next)) { codexSlot.clearBackoff(); codexSlot.refresh(); }
     // No claude auto-fetch on switch: its 5h is passive (the live event) and the
@@ -803,6 +811,7 @@
     // Compatibility alias for older callers; it now queries every concrete
     // Provider, not only relay URLs.
     refreshRelayBar: refreshProviderLimit,
+    refreshAgyQuota: (...a) => agySlot.refresh(...a),
     refreshOpenCodeQuota: (...a) => opencodeSlot.refresh(...a),
     restoreOpenCodeQuota: () => opencodeSlot.restore(),
     refreshQoderQuota: (...a) => qoderSlot.refresh(...a),

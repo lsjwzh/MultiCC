@@ -969,6 +969,7 @@
           // Skip when streaming was cancelled (pendingCancel) to avoid spurious
           // fetches right after the user aborts a turn.
           if (!state.pendingCancel) {
+            global.MultiCCChatRateLimit?.refreshAgyQuota?.();
             global.MultiCCChatRateLimit?.refreshOpenCodeQuota?.();
             global.MultiCCChatRateLimit?.refreshQoderQuota?.();
             global.MultiCCChatRateLimit?.refreshCodexQuota?.();

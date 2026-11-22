@@ -313,8 +313,8 @@ fn agy_model_options(session: &Value) -> Vec<Value> {
         .collect()
 }
 
-async fn agy_models() -> Result<Vec<Value>, ()> {
-    let executable = std::env::var_os("AGY_CMD")
+pub(super) fn agy_executable() -> std::ffi::OsString {
+    std::env::var_os("AGY_CMD")
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| {
             let binary = if cfg!(windows) { "agy.exe" } else { "agy" };
@@ -328,8 +328,11 @@ async fn agy_models() -> Result<Vec<Value>, ()> {
                 .filter(|path| path.is_file())
                 .map(|path| path.into_os_string())
                 .unwrap_or_else(|| binary.into())
-        });
-    let mut child = Command::new(executable)
+        })
+}
+
+async fn agy_models() -> Result<Vec<Value>, ()> {
+    let mut child = Command::new(agy_executable())
         .arg("acp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

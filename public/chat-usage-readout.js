@@ -75,6 +75,8 @@
   function contextState(sources) {
     const readout = tokenReadout();
     const window = count(sources.contextWindow);
+    const measured = count(sources.turnUsage && sources.turnUsage.context_tokens);
+    if (measured > 0) return { tokens: measured, window, exact: true, usable: !window || measured <= window };
     const exact = readout ? readout.requestContext(sources.requestUsage) : 0;
     if (exact > 0) return { tokens: exact, window, exact: true, usable: true };
 
