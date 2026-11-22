@@ -816,10 +816,12 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
   final VendorQuotaView? claudeUsage;
   final VendorQuotaView? qoderUsage;
   final VendorQuotaView? opencodeUsage;
+  final VendorQuotaView? agyUsage;
   final VendorQuotaView? codexUsage;
   final VoidCallback? onClaudeQuotaTap;
   final VoidCallback? onQoderQuotaTap;
   final VoidCallback? onOpenCodeQuotaTap;
+  final VoidCallback? onAgyQuotaTap;
   final VoidCallback? onCodexQuotaTap;
   final VoidCallback? onArkQuotaTap;
   final VoidCallback? onKimiQuotaTap;
@@ -835,10 +837,12 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
     this.claudeUsage,
     this.qoderUsage,
     this.opencodeUsage,
+    this.agyUsage,
     this.codexUsage,
     this.onClaudeQuotaTap,
     this.onQoderQuotaTap,
     this.onOpenCodeQuotaTap,
+    this.onAgyQuotaTap,
     this.onCodexQuotaTap,
     this.onArkQuotaTap,
     this.onKimiQuotaTap,
@@ -855,6 +859,7 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         claudeUsage == null &&
         qoderUsage == null &&
         opencodeUsage == null &&
+        agyUsage == null &&
         codexUsage == null) {
       return const SizedBox.shrink();
     }
@@ -874,6 +879,8 @@ class ChatRuntimeNoticePanel extends StatelessWidget {
         runSpacing: 6,
         crossAxisAlignment: WrapCrossAlignment.center,
         children: [
+          if (agyUsage != null)
+            _quotaBarView(agyUsage!, onTap: onAgyQuotaTap, key: const Key('agy-quota-bar')),
           if (opencodeUsage != null)
             _quotaBarView(
               opencodeUsage!,

@@ -46,6 +46,12 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if (m.method === 'session/cancel') { cancelled && cancelled(); return; }
   if (m.method === 'session/prompt') {
     const sid = m.params.sessionId;
+    if (mode === 'context-usage') {
+      update('different-session', { sessionUpdate: 'usage_update', used: 999, size: 1000 });
+      update(sid, { sessionUpdate: 'usage_update', used: 1024, size: 65536 });
+      update(sid, { sessionUpdate: 'usage_update', used: 999999, size: 65536 });
+      return reply({ stopReason: 'end_turn', usage: { inputTokens: 30, outputTokens: 4, cachedReadTokens: 2 } });
+    }
     if (mode === 'native-usage' || mode === 'native-usage-rpc') {
       const { DatabaseSync } = require('node:sqlite');
       const db = new DatabaseSync(process.env.ACP_TEST_DB);
@@ -175,6 +181,18 @@ test('bridge streams one turn, auto-approves permission and reports the stop rea
   assert.equal(decoded[4].name, 'execute');
   assert.deepEqual(decoded[5], { type: 'assistant_text', text: 'done:ok', delta: true });
   assert.equal(tracker.finish({ kind: 'process', code: 0 }).state, 'completed');
+});
+
+test('ACP context updates retain the last valid session measurement with turn usage', async () => {
+  const { code, events } = await runBridge(['context-usage', '--', '你好']);
+  assert.equal(code, 0);
+  const usage = events.find(e => e.method === 'multicc/turnEnd').params.usage;
+  assert.equal(usage.input_tokens, 30);
+  assert.equal(usage.output_tokens, 4);
+  assert.equal(usage.cache_read_input_tokens, 2);
+  assert.equal(usage.context_tokens, 1024);
+  assert.equal(usage.context_window, 65536);
+  assert.equal(usage.usage_source, 'acp');
 });
 
 test('bridge rejects a model the agent does not offer before prompting', async () => {

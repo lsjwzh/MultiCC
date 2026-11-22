@@ -63,6 +63,7 @@ pub enum Route {
     PricingLookupGet,
     PricingRefreshPost,
     PricingSearchGet,
+    AgyQuotaGet,
     OpenCodeQuotaGet,
     OpenCodeLoginPost,
     QoderQuotaGet,
@@ -115,6 +116,11 @@ static LAYERS: &[Layer] = &[
         segs: &["pricing", "search"],
         method: "GET",
         kind: Route::PricingSearchGet,
+    },
+    Layer {
+        segs: &["agy", "quota"],
+        method: "GET",
+        kind: Route::AgyQuotaGet,
     },
     Layer {
         segs: &["opencode", "quota"],
@@ -491,6 +497,7 @@ async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Resp
             express::json(ctx, 200, &pricing_search(&query, results, status), &[])
         }
 
+        Route::AgyQuotaGet => super::agy_quota::handle(ctx).await,
         Route::OpenCodeQuotaGet => vendor_quota(ctx, host, "opencode", opencode_http).await,
         Route::QoderQuotaGet => vendor_quota(ctx, host, "qoder", qoder_http).await,
         Route::CodexQuotaGet => codex_quota(ctx, host).await,

@@ -126,6 +126,7 @@ function createBridge(options, { env = process.env, spawnFn = spawn } = {}) {
   let sessionId = null;
   let configOptions = [];
   let activePrompt = null;
+  let contextUsage = null;
   let cancelRequested = false;
   let exitResolve;
   const exited = new Promise(resolve => { exitResolve = resolve; });
@@ -186,6 +187,13 @@ function createBridge(options, { env = process.env, spawnFn = spawn } = {}) {
     if (message.id != null) { answerClientRequest(message); return; }
     if (message.method === 'session/update') {
       if (replaying) return;
+      const update = message.params?.update;
+      // ACP reports context occupancy independently of per-turn billed usage.
+      if (activePrompt && message.params?.sessionId === sessionId && update?.sessionUpdate === 'usage_update'
+          && Number.isSafeInteger(update.used) && update.used >= 0
+          && Number.isSafeInteger(update.size) && update.size > 0 && update.used <= update.size) {
+        contextUsage = { context_tokens: update.used, context_window: update.size, usage_source: 'acp' };
+      }
       process.stdout.write(`${JSON.stringify({ method: message.method, params: message.params })}\n`);
     }
   });
@@ -316,6 +324,7 @@ function createBridge(options, { env = process.env, spawnFn = spawn } = {}) {
 
   async function prompt(text) {
     cancelRequested = false;
+    contextUsage = null;
     const usageCursor = nativeUsage ? await nativeUsage.cursor(sessionId) : null;
     if (stopping) {
       emit('multicc/turnEnd', { sessionId, stopReason: 'cancelled', usage: null });
@@ -335,6 +344,7 @@ function createBridge(options, { env = process.env, spawnFn = spawn } = {}) {
             ? { ...measured, ...usage } : measured;
         }
       }
+      if (contextUsage) usage = { ...(usage || {}), ...contextUsage };
       emit('multicc/turnEnd', { sessionId, stopReason, usage });
       return stopReason;
     } finally {

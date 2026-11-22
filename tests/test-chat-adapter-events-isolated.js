@@ -136,6 +136,26 @@ emit({ sessionID: 'ses-open-1', type: 'step_finish', part: { reason: 'stop', cos
 process.stdout.write('', () => process.exit(0));
 `, { mode: 0o755 });
 
+  const fakeAgy = path.join(root, 'fake-agy.js');
+  fs.writeFileSync(fakeAgy, `#!/usr/bin/env node
+const send = value => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+if (process.argv.includes('--version')) { process.stdout.write('agy 1.5.14\\n'); process.exit(0); }
+if (process.argv.includes('-p')) { process.stdout.write(JSON.stringify({command:{data:{groups:[]}}})); process.exit(0); }
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const m = JSON.parse(line);
+  const reply = result => send({id:m.id, result});
+  if (m.method === 'initialize') return reply({protocolVersion:1, agentCapabilities:{}, authMethods:[]});
+  if (m.method === 'session/new') return reply({sessionId:'agy-s1'});
+  if (m.method === 'session/set_config_option') return reply({configOptions:[]});
+  if (m.method === 'session/prompt') {
+    const update = update => send({method:'session/update',params:{sessionId:m.params.sessionId,update}});
+    update({sessionUpdate:'usage_update',used:120,size:1000});
+    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'HELLO_FROM_AGY'}});
+    return reply({stopReason:'end_turn',usage:{inputTokens:100,outputTokens:20,cachedReadTokens:0,cachedWriteTokens:0}});
+  }
+});
+`, { mode: 0o755 });
+
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const addon = process.env.MULTICC_RUST_ADDON
@@ -164,6 +184,7 @@ process.stdout.write('', () => process.exit(0));
       CLAUDE_CMD: path.join(root, 'missing-claude'),
       CODEX_CMD: fakeCodex,
       OPENCODE_CMD: fakeOpencode,
+      AGY_CMD: fakeAgy,
       MULTICC_OPENCODE_LEGACY_JSON: '1',
       QODER_CMD: path.join(root, 'missing-qoder'),
     },
@@ -234,6 +255,29 @@ process.stdout.write('', () => process.exit(0));
       await waitIdle(sessionId);
       socket.ws.close();
     }
+
+    const created = await apiOk('POST', `/api/directories/${dir.id}/sessions`, {
+      cli: 'agy', kind: 'chat', label: 'adapter-agy',
+    });
+    const sessionId = created.id || created.sessionId;
+    assert.ok(sessionId);
+    const socket = await connect(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(sessionId)}&token=${TOKEN}`);
+    sockets.push(socket.ws);
+    await socket.until(frames => frames.length > 0, 'agy initial frame');
+    socket.send({type:'user_message', text:'PING_AGY', taskShell:true, clientMsgId:randomUUID()});
+    await socket.until(frames => frames.some(frame => frame.type === 'result' && frame.usage), 'agy usage result');
+    const usage = socket.frames.find(frame => frame.type === 'result' && frame.usage).usage;
+    assert.equal(usage.input_tokens, 100);
+    assert.equal(usage.output_tokens, 20);
+    assert.equal(usage.context_tokens, 120);
+    assert.equal(usage.context_window, 1000);
+    await waitIdle(sessionId);
+    const history = await apiOk('GET', `/api/sessions/${sessionId}/history?limit=100`);
+    const historicalUsage = history.messages.find(message => message.usage?.context_tokens === 120)?.usage;
+    assert.ok(historicalUsage, `agy history usage: ${JSON.stringify(history)}`);
+    assert.equal(historicalUsage.context_window, 1000);
+    assert.equal(historicalUsage.input_tokens, 100);
+    socket.ws.close();
     console.log('test-chat-adapter-events-isolated ok');
   } finally {
     for (const socket of sockets) {

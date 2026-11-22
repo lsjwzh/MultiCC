@@ -517,3 +517,11 @@ test('the web chat loader asks for include=messages only when bodies are wanted'
   assert.match(chat, /\$\{includeMessages \? '&include=messages' : ''\}/);
   assert.match(chat, /\/api\/sessions\/\$\{encodeURIComponent\(_sessionName\)\}\/context\?traceId=/);
 });
+
+
+test('ACP 上下文水位优先于旧请求用量', () => {
+  const view = buildUsageView({ requestUsage: { input_tokens: 900 },
+    turnUsage: { input_tokens: 100, context_tokens: 300, context_window: 1000 }, contextWindow: 1000 });
+  assert.equal(view.summary.text, '上下文 300 / 1k · 30.0%');
+  assert.equal(view.summary.exact, true);
+});
