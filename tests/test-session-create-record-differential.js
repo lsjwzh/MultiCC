@@ -31,10 +31,10 @@ function world(implementation, scenario) {
     allocateSessionId: () => 's1', persistedSessions: records,
     ensureDirGitReady: async () => { events.push(['ready']); return scenario.ready || { ok: true }; },
     friendlyDirReason: reason => `reason:${reason}`, WORKTREE_SUBDIR: '.multicc-worktrees',
-    gitWorktreeAdd: async () => { events.push(['add']); if (scenario.addError) throw new Error('add failed'); return { worktreePath: '/wt/s1', branch: 'multicc/s1' }; },
+    gitWorktreeAdd: async () => { events.push(['add']); if (scenario.addError) throw scenario.addErrorValue === undefined ? new Error('add failed') : scenario.addErrorValue; return { worktreePath: '/wt/s1', branch: 'multicc/s1' }; },
     gitWorktreeRollbackCreate: async (...args) => { events.push(['rollback', ...args]); if (scenario.rollbackError) throw new Error('rollback failed'); },
     sanitizeLoginEnv: () => ({ ok: true }), ensureCliStates: note('states'),
-    sessionPersistence: { mutate: (_source, mutate) => { events.push(['mutate']); if (scenario.persistError) throw new Error('persist failed'); mutate(records); } },
+    sessionPersistence: { mutate: (_source, mutate) => { events.push(['mutate']); if (scenario.persistError) throw scenario.persistErrorValue || new Error('persist failed'); mutate(records); } },
     savePersistedSessionsBestEffort: note('save'), appendEvent: note('event'),
     cliForLoginFlow: () => null, loginWorkspacePath: () => '/login/s1',
   };
@@ -77,6 +77,7 @@ const cases = [
   ['login', { dir, cli: 'codex', kind: 'terminal', loginFlow: 'codex-login' }, {}],
   ['unready repository', { dir, cli: 'claude', kind: 'chat' }, { ready: { ok: false, reason: 'offline' } }],
   ['worktree rollback', { dir, cli: 'claude', kind: 'chat' }, { addError: true }],
+  ['worktree rejects null', { dir, cli: 'claude', kind: 'chat' }, { addError: true, addErrorValue: null }],
   ['persistence rollback', { dir, cli: 'claude', kind: 'chat', persistence: 'required' }, { persistError: true }],
 ];
 for (const [name, input, scenario] of cases) {
@@ -88,6 +89,7 @@ for (const [name, input, scenario] of cases) {
       catch (error) { outputs.push({ error: { name: error.name, message: error.message } }); }
     }
     assert.deepEqual(normalize(outputs[1]), normalize(outputs[0]));
+    if (outputs[0].value?.session) assert.deepEqual(Object.keys(outputs[1].value.session), Object.keys(outputs[0].value.session));
     assert.deepEqual(normalize(worlds[1].events), normalize(worlds[0].events));
     assert.deepEqual(normalize([...worlds[1].records]), normalize([...worlds[0].records]));
     if (name === 'worktree rollback') {
@@ -128,3 +130,20 @@ for (const [name, input, scenario] of cases) {
     }
   });
 }
+
+test('persistence rejection preserves the original error identity after rollback', async () => {
+  for (const implementation of [frozen.exports, candidate]) {
+    const original = new Error('identity');
+    const item = world(implementation, { persistError: true, persistErrorValue: original });
+    await assert.rejects(item.run({ dir, cli: 'claude', kind: 'chat', persistence: 'required' }), error => error === original);
+    assert.equal(item.events.at(-1)[0], 'rollback');
+  }
+});
+
+test('factory validates its injected resident port synchronously', () => {
+  for (const implementation of [frozen.exports, candidate]) {
+    assert.throws(() => implementation.createSessionRecordFactory({}), {
+      name: 'TypeError', message: '[session/create-record] isResidentSession port is required',
+    });
+  }
+});

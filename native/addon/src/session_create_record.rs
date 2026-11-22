@@ -521,6 +521,16 @@ fn then<'a>(
     }
 }
 fn worktree_failure<'a>(state: L<'a>, error: L<'a>) -> Result<L<'a>> {
+    if error.nullish()? {
+        let value = if error.undefined()? {
+            "undefined"
+        } else {
+            "null"
+        };
+        return Err(error.type_error(&format!(
+            "Cannot read properties of {value} (reading 'message')"
+        )));
+    }
     let message = string(state, error.get(c"message")?)?;
     failure(
         state,
