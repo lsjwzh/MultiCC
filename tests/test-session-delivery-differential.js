@@ -121,3 +121,30 @@ test('native API is cached and callback cycles can be collected', () => {
   const result=spawnSync(process.execPath,['--expose-gc','-e',script,runtime.addonPath()],{encoding:'utf8',timeout:10000});
   assert.equal(result.status,0,result.stderr || String(result.error));
 });
+
+test('mutable kind set and UTF-16 error and log messages match', async () => {
+  const lone='x\ud800';
+  for (const impl of implementations) {
+    const delivery=impl.createSessionDelivery({admit(){return false;},log(){}});
+    assert.throws(()=>delivery.deliver('s','m',{kind:lone}),error=>error instanceof TypeError && error.message===`[session-delivery] unsupported kind: ${lone}`);
+    impl.DELIVERY_KINDS.add(lone);
+    try {
+      const logs=[];const d=impl.createSessionDelivery({admit(){return false;},log(message){logs.push(message);}});
+      assert.equal(await d.deliver('s','m',{kind:lone}),false);
+      assert.deepEqual(logs,[`[session-delivery] ${lone} rejected for s: not_accepted`]);
+    } finally {impl.DELIVERY_KINDS.delete(lone);}
+  }
+});
+
+test('factory reads optional log getter twice and preserves a changing result', async () => {
+  const results=[];
+  for (const impl of implementations) {
+    let reads=0;
+    const options={admit(){return false;},get log(){reads++;return reads===1 ? ()=>{} : undefined;}};
+    const delivery=impl.createSessionDelivery(options);
+    const outcome=await delivery.deliver('s','m').then(value=>({value}),error=>({name:error.name,message:error.message}));
+    results.push({reads,outcome});
+  }
+  assert.deepEqual(results[1],results[0]);
+  assert.deepEqual(results[0],{reads:2,outcome:{name:'TypeError',message:'log is not a function'}});
+});
