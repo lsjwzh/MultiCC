@@ -6,8 +6,13 @@
 /// `Math.max(1, Math.min(64, Number(count) || 1))` with `count` already
 /// coerced. A falsy coercion (`0`, `-0`, `NaN`) falls back to `1`.
 pub fn capacity_limit(count: f64) -> f64 {
-    let count = if count == 0.0 || count.is_nan() { 1.0 } else { count };
-    count.min(64.0).max(1.0)
+    let count = if count == 0.0 || count.is_nan() {
+        1.0
+    } else {
+        count
+    };
+    // NaN and zero were replaced above, so clamp's NaN behavior is unreachable.
+    count.clamp(1.0, 64.0)
 }
 
 /// How one settled `hibernate()` result moves the run counters. The legacy
@@ -41,6 +46,14 @@ pub fn use_idle_override(override_not_nullish: bool, override_finite: bool) -> b
     override_not_nullish && override_finite
 }
 
+/// `reportSkips ?? !ignoreIdle`: the first conjunct of the skip-publish gate,
+/// split out so the caller can keep the legacy short-circuit (the record
+/// reads for `taskBoundTaskId`/`kind` never happen when this is false).
+/// `report_skips` is `None` when the option is nullish.
+pub fn skip_gate(report_skips: Option<bool>, ignore_idle: bool) -> bool {
+    report_skips.unwrap_or(!ignore_idle)
+}
+
 /// `(reportSkips ?? !ignoreIdle) && record?.taskBoundTaskId && record.kind === 'chat'`.
 /// `report_skips` is `None` when the option is nullish, `Some(t)` with its
 /// truthiness otherwise.
@@ -50,7 +63,7 @@ pub fn should_publish_skip(
     task_bound: bool,
     kind_is_chat: bool,
 ) -> bool {
-    report_skips.unwrap_or(!ignore_idle) && task_bound && kind_is_chat
+    skip_gate(report_skips, ignore_idle) && task_bound && kind_is_chat
 }
 
 /// `hibernated >= limit`: the success budget check that ends the scan early.
@@ -110,6 +123,14 @@ mod tests {
         assert!(!use_idle_override(true, false));
         assert!(!use_idle_override(false, true));
         assert!(!use_idle_override(false, false));
+    }
+
+    #[test]
+    fn skip_gate_is_the_nullish_default_conjunct() {
+        assert!(skip_gate(None, false));
+        assert!(!skip_gate(None, true));
+        assert!(skip_gate(Some(true), true));
+        assert!(!skip_gate(Some(false), false));
     }
 
     #[test]
