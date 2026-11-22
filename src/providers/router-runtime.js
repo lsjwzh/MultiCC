@@ -17,6 +17,7 @@ const { VENDOR_NATIVE_SET } = require('./native-vendor');
 const { applyCliKeyAccountEnv, selectedAccountId } = require('../cli-key-accounts');
 const { ensureLoopbackNoProxyEnv, hasProxyEnv } = require('../network/proxy-policy');
 const { latestChildProxyEnv } = require('../network/global-proxy');
+const { accountEnv: agyAccountEnv } = require('../agy-accounts');
 
 const DEFAULT_MODE = 'legacy';
 
@@ -164,6 +165,16 @@ function createProviderRouterRuntime(options = {}) {
     return { ...result, env: applyCliKeyAccountEnv(result.env || {}, session, keyAccounts, cli) };
   }
 
+  // agy 把整套登录都放在 `$HOME/.gemini`，一个账号 = 一个独立 HOME。选中账号
+  // 后每一次 spawn 都要带上它（终端与 chat 子进程一视同仁），否则终端会静默
+  // 退回本机登录。登录终端自己用 loginEnv.HOME 指定目标账号，那条在 server.js
+  // 里后合并、优先级更高。
+  function withAgyAccountEnv(result, cli) {
+    if (!result || cli !== 'agy') return result;
+    const pin = agyAccountEnv();
+    return pin ? { ...result, env: { ...(result.env || {}), ...pin } } : result;
+  }
+
   // Children routed onto the local CPR (127.0.0.1) must never let a proxy
   // capture that hop. Two capture paths: (a) inherited proxy env without a
   // loopback NO_PROXY — fixed by ensureLoopbackNoProxyEnv; (b) codex
@@ -204,7 +215,7 @@ function createProviderRouterRuntime(options = {}) {
     const result = binding.cli === 'pi' || vendorNative || hostOwnsOfficialCodexHome(binding)
       ? legacy.resolveSpawnEnv(toLegacyProviderView(binding))
       : port.resolveSpawn(binding);
-    return withManagedProxyEnv(withKeyAccount(result, session, binding.cli), binding.cli);
+    return withManagedProxyEnv(withKeyAccount(withAgyAccountEnv(result, binding.cli), session, binding.cli), binding.cli);
   }
 
   function buildChildEnv(base, session, extra = {}, overrides) {
@@ -216,7 +227,7 @@ function createProviderRouterRuntime(options = {}) {
       || hostOwnsOfficialCodexHome(binding)
       ? legacy.buildChildEnv(base, toLegacyProviderView(binding), extra)
       : port.buildChildEnv(base, binding, extra);
-    return withManagedProxyEnv(withKeyAccount(result, session, binding.cli), binding.cli);
+    return withManagedProxyEnv(withKeyAccount(withAgyAccountEnv(result, binding.cli), session, binding.cli), binding.cli);
   }
 
   return Object.freeze({

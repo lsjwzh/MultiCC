@@ -1,6 +1,7 @@
 'use strict';
 
 const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
+const { mountAgyAccountRoutes } = require('./agy-accounts');
 
 function assertDependencies(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('[session-create] dependencies are required');
@@ -94,6 +95,16 @@ function mountSessionCreateRoutes(app, rawDeps) {
     if (!result.ok) return res.status(400).json({ error: result.error });
     return res.json(result.session);
   }));
+
+  // agy's per-account sign-in terminal: same dependencies as above, and it has
+  // to live in Node because the PTY does. Mounted here rather than in server.js
+  // to keep that file's ratcheted line budget untouched.
+  mountAgyAccountRoutes(app, {
+    directories: deps.directories,
+    createSessionRecord: deps.createSessionRecord,
+    disposeLoginTerminal: deps.disposeLoginTerminal,
+    asyncHandler: deps.asyncHandler,
+  });
 }
 
 module.exports = { mountSessionCreateRoutes };

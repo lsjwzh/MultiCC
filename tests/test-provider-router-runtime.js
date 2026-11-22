@@ -815,3 +815,36 @@ test('managed loopback routing stays bound to the claude/codex lane families', (
   assert.equal('ANTHROPIC_BASE_URL' in dsh.env, false);
   assert.equal(JSON.stringify(dsh.env).includes('127.0.0.1'), false);
 });
+
+// agy 的账号是 `$HOME/.gemini` 的一份拷贝，切换账号必须落到每一次 spawn：
+// 终端走 resolveSpawnEnv，chat 子进程走 buildChildEnv，两条都得带上 HOME。
+test('a pinned agy account rides on both spawn paths and never leaks without one', () => {
+  const agy = require('../src/agy-accounts');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-agy-pin-'));
+  const oldHome = process.env.HOME;
+  process.env.HOME = temp;
+  try {
+    const runtime = createProviderRouterRuntime({ providers: fakeProviders(), ...HOST });
+    const id = '0123456789abcdef';
+    fs.mkdirSync(path.join(temp, '.multicc', 'official-accounts', 'agy'), { recursive: true });
+    fs.writeFileSync(agy.metaFile(temp, id), JSON.stringify({ id, label: '工作', createdAt: 1, source: 'create' }));
+    fs.mkdirSync(agy.accountHome(temp, id), { recursive: true });
+
+    assert.equal('HOME' in runtime.resolveSpawnEnv({ id: 's1', cli: 'agy' }).env, false,
+      'no pin means the machine login — the adapter leaves HOME untouched');
+    assert.equal('HOME' in runtime.buildChildEnv({ KEEP: '1' }, { id: 's1', cli: 'agy' }).env, false);
+
+    agy.setActive(temp, id);
+    const term = runtime.resolveSpawnEnv({ id: 's1', cli: 'agy' });
+    assert.equal(term.env.HOME, agy.accountHome(temp, id));
+    const chat = runtime.buildChildEnv({ KEEP: '1' }, { id: 's1', cli: 'agy' });
+    assert.equal(chat.env.HOME, agy.accountHome(temp, id));
+    assert.equal(chat.env.KEEP, '1', 'the pin merges over, it does not replace the env');
+
+    assert.equal('HOME' in runtime.resolveSpawnEnv({ id: 's2', cli: 'claude' }).env, false,
+      'other lanes never get the agy pin');
+  } finally {
+    process.env.HOME = oldHome;
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});

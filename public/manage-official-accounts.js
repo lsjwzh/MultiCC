@@ -30,6 +30,13 @@
   const state = {
     codex: [],
     claude: [],
+    // agy keeps its login in $HOME/.gemini, so each account is a whole HOME.
+    // The list/switch/import/delete routes are served by the Rust front door;
+    // the sign-in terminal is a Node route (the PTY lives there).
+    agy: [],
+    agyActive: null,
+    agyLocal: null,
+    agyAvailable: true,
     loading: false,
     quota: {}, // `${vendor}:${id}` → {status:'loading'} | {status:'ok'|'err', html}
     loginWatch: {}, // claude accountId → poll timer
@@ -164,6 +171,57 @@
     return accountRow('claude', a, chips, login.state === 'pending' ? loginResumeBlock('claude', a) : '');
   }
 
+  // agy has no PKCE panel: signing in is the vendor TUI, opened as a terminal
+  // with HOME pointed at that account's own home.
+  function agyRow(a) {
+    let chips;
+    if (a.loggedIn) {
+      chips = chip(tr('airOfficialAcctSignedIn'), '#58a6ff')
+        + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '');
+      if (a.expiresAt && a.expiresAt <= Date.now()) {
+        chips += ' ' + chip(tr('airOfficialAcctAgyExpired'), '#d29922');
+      }
+    } else {
+      chips = chip(tr('airOfficialAcctSignedOut'), '#f85149');
+    }
+    const buttons = (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="agy" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
+      + '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-login" data-id="' + a.id + '">' + esc(tr(a.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin')) + '</button>'
+      + '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="agy" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>';
+    return accountRow('agy', a, chips, '', buttons);
+  }
+
+  // The machine's own `~/.gemini` — what agy uses with no account pinned.
+  function agyLocalRow() {
+    const local = state.agyLocal || { loggedIn: false };
+    const inUse = !state.agyActive;
+    const chips = (local.loggedIn
+      ? chip(tr('airOfficialAcctSignedIn'), '#58a6ff')
+        + (local.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(local.email) + '</span>' : '')
+      : chip(tr('airOfficialAcctSignedOut'), '#f85149')
+        + ' <span style="font-size:11px;color:var(--faint)">' + esc(tr('airOfficialAcctAgyNoLocal')) + '</span>')
+      + (inUse ? ' ' + chip(tr('airOfficialAcctAgyLocalActive'), '#3fb950') : '');
+    const buttons = inUse ? ''
+      : '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-use-local">' + esc(tr('airOfficialAcctAgyUseLocal')) + '</button>';
+    return '<div style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+      + '<b style="font-size:13px">' + esc(tr('airOfficialAcctAgyLocal')) + '</b>' + chips
+      + '<span style="margin-left:auto;display:flex;gap:6px">' + buttons + '</span></div>';
+  }
+
+  function agySection() {
+    if (!state.agyAvailable) return '';
+    const rows = agyLocalRow() + state.agy.map(agyRow).join('');
+    return '<div style="border-top:1px solid var(--border);margin:10px 0"></div>'
+      + '<div style="display:flex;flex-direction:column;gap:8px">'
+      + '<div style="font-size:12px;color:var(--muted);font-weight:600">' + esc(tr('airOfficialAcctAgySection'))
+      + ' <span style="font-weight:400;color:var(--faint)">' + esc(tr('airOfficialAcctAgySectionHint')) + '</span></div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+      + '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-create">' + esc(tr('airOfficialAcctAgyCreate')) + '</button>'
+      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-import">' + esc(tr('airOfficialAcctAgyImport')) + '</button>'
+      + '</div>'
+      + (state.agy.length ? '' : '<div style="font-size:12px;color:var(--faint)">' + esc(tr('airOfficialAcctAgyEmpty')) + '</div>')
+      + rows + '</div>';
+  }
+
   // A pending login keeps its link on the server; this reopens the panel for it
   // (both vendors now share the browser + paste flow).
   function loginResumeBlock(vendor, a) {
@@ -173,22 +231,31 @@
       + '</div>';
   }
 
-  function accountRow(vendor, a, chipsHtml, extraHtml) {
-    const name = a.label || tr(vendor === 'codex' ? 'airOfficialAcctCodexAccount' : 'airOfficialAcctClaudeAccount', { id: a.id.slice(0, 6) });
+  const ROW_NAME_KEY = {
+    codex: 'airOfficialAcctCodexAccount',
+    claude: 'airOfficialAcctClaudeAccount',
+    agy: 'airOfficialAcctAgyAccount',
+  };
+
+  // `buttonsHtml` lets a vendor replace the standard button group (agy has no
+  // per-account quota read, and its "relogin" is an interactive terminal).
+  function accountRow(vendor, a, chipsHtml, extraHtml, buttonsHtml) {
+    const name = a.label || tr(ROW_NAME_KEY[vendor] || ROW_NAME_KEY.claude, { id: a.id.slice(0, 6) });
     const provider = a.providerName
       ? '<span style="font-size:11px;color:var(--faint)">⇄ ' + esc(a.providerName) + '</span>' : '';
+    const buttons = buttonsHtml != null
+      ? buttonsHtml
+      : (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
+        + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRefreshQuota')) + '</button>')
+        + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '"' + (a.cliCopy ? ' title="' + esc(tr('airOfficialAcctCliCopyTitle')) + '"' : '') + '>' + esc(tr('airOfficialAcctRelogin')) + '</button>'
+        + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>');
     return '<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px">'
       + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
       + '<b style="font-size:13px">' + esc(name) + '</b>' + chipsHtml
       + (a.cliCopy ? ' <span title="' + esc(tr('airOfficialAcctCliCopyTitle')) + '">' + chip(tr('airOfficialAcctCliCopy'), '#d29922') + '</span>' : '') + provider + (a.active ? chip(tr('airOfficialAcctActive'), '#3fb950') : '')
-      + '<span style="margin-left:auto;display:flex;gap:6px">'
-      + (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
-      + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="quota" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctRefreshQuota')) + '</button>')
-      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="relogin" data-vendor="' + vendor + '" data-id="' + a.id + '"' + (a.cliCopy ? ' title="' + esc(tr('airOfficialAcctCliCopyTitle')) + '"' : '') + '>' + esc(tr('airOfficialAcctRelogin')) + '</button>'
-      + (a.global ? '' : '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="' + vendor + '" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>')
-      + '</span></div>'
-      + (a.global ? '' : '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>')
-      + '<div data-subscription-vendor="' + vendor + '" data-subscription-account="' + esc(a.id) + '"></div>'
+      + '<span style="margin-left:auto;display:flex;gap:6px">' + buttons + '</span></div>'
+      + (a.global || vendor === 'agy' ? '' : '<div style="font-size:12px">' + quotaHtml(vendor, a.id) + '</div>')
+      + (vendor === 'agy' ? '' : '<div data-subscription-vendor="' + vendor + '" data-subscription-account="' + esc(a.id) + '"></div>')
       + (extraHtml || '')
       + '</div>';
   }
@@ -218,7 +285,8 @@
     if (state.loading) { el.innerHTML = '<span style="color:var(--faint);font-size:13px">' + esc(tr('airOfficialAcctLoading')) + '</span>'; return; }
     el.innerHTML = vendorSection('codex', tr('airOfficialAcctCodexSection'), tr('airOfficialAcctCodexSectionHint'), state.codex, codexRow)
       + '<div style="border-top:1px solid var(--border);margin:10px 0"></div>'
-      + vendorSection('claude', tr('airOfficialAcctClaudeSection'), tr('airOfficialAcctClaudeSectionHint'), state.claude, claudeRow);
+      + vendorSection('claude', tr('airOfficialAcctClaudeSection'), tr('airOfficialAcctClaudeSectionHint'), state.claude, claudeRow)
+      + agySection();
     el.querySelectorAll('[data-subscription-vendor]').forEach(host => {
       const vendor = host.dataset.subscriptionVendor;
       const accountId = host.dataset.subscriptionAccount;
@@ -233,13 +301,17 @@
     state.loading = true;
     paint();
     try {
-      const [codex, claude] = await Promise.all([
+      const [codex, claude, agy] = await Promise.all([
         api().json('/api/codex/accounts'),
         api().json('/api/claude/accounts'),
+        // The agy cluster ships with the Rust front door; an older server answers
+        // 404 here, and that must not take the whole panel down.
+        api().json('/api/agy/accounts').catch(() => null),
       ]);
       state.codex = Array.isArray(codex.accounts) ? codex.accounts : [];
       state.claude = Array.isArray(claude.accounts) ? claude.accounts : [];
       state.cli = { codex: codex.cliLogin || null, claude: claude.cliLogin || null };
+      if (agy) applyAgyState(agy); else state.agyAvailable = false;
       state.loading = false;
       paint();
       // 自动为已登录账号拉一次余量；失败的行保留可点「刷新余量」重试。
@@ -429,6 +501,97 @@
       loadOfficialAccounts();
       refreshProviders();
     } catch (err) { setStatus(tr('airOfficialAcctDeleteFailed', { message: err.message }), true); }
+  }
+
+  // ── agy accounts (HOME-isolated) ───────────────────────────────────────────
+
+  // agy 的「机器本身登录」是 data.local 那条虚线行，不是一个 global 账号记录；
+  // 只有 16 位十六进制 id 才是真账号（新建/导入时生成）。这里滤掉别的形状，
+  // 免得把 codex/claude 那套 global 伪账号画成可删除的 agy 账号。
+  function applyAgyState(data) {
+    if (!data || !Array.isArray(data.accounts)) return;
+    state.agy = data.accounts.filter(a => a && /^[a-f0-9]{16}$/.test(String(a.id || '')));
+    state.agyActive = data.active || null;
+    state.agyLocal = data.local || null;
+    state.agyAvailable = true;
+  }
+
+  async function agyCreate() {
+    const label = window.prompt(tr('airOfficialAcctAgyLabelPrompt'), '');
+    if (label === null) return;
+    setStatus(tr('airOfficialAcctCreating'));
+    try {
+      const before = new Set(state.agy.map(a => a.id));
+      applyAgyState(await api().json('/api/agy/accounts', { method: 'POST', json: { label } }));
+      const created = state.agy.find(a => !before.has(a.id));
+      setStatus('');
+      toast(tr('airOfficialAcctAgyCreated'));
+      paint();
+      // A fresh account has no credentials yet, so go straight to sign-in.
+      if (created) agyLogin(created.id);
+    } catch (err) {
+      setStatus(tr('airOfficialAcctFailed', { message: err.message }), true);
+    }
+  }
+
+  async function agyImport() {
+    const label = window.prompt(tr('airOfficialAcctAgyLabelPrompt'), '');
+    if (label === null) return;
+    setStatus(tr('airOfficialAcctCreating'));
+    try {
+      applyAgyState(await api().json('/api/agy/accounts/import', { method: 'POST', json: { label } }));
+      setStatus('');
+      toast(tr('airOfficialAcctAgyCreated'));
+      paint();
+    } catch (err) {
+      setStatus(tr('airOfficialAcctFailed', { message: err.message }), true);
+    }
+  }
+
+  async function agyUseLocal() {
+    setStatus(tr('airOfficialAcctSwitching'));
+    try {
+      applyAgyState(await api().json('/api/agy/accounts/deactivate', { method: 'POST', json: {} }));
+      setStatus(tr('airOfficialAcctSwitched'));
+      paint();
+      refreshProviders();
+    } catch (err) {
+      setStatus(tr('airOfficialAcctSwitchFailed', { message: err.message }), true);
+    }
+  }
+
+  async function agyLogin(id) {
+    try {
+      const data = await api().json('/api/agy/accounts/' + encodeURIComponent(id) + '/login-terminal', { method: 'POST', json: {} });
+      if (data.url) window.open(data.url, '_blank');
+      toast(tr('airOfficialAcctAgyLoginOpened'));
+      watchAgyLogin(id);
+    } catch (err) {
+      setStatus(tr('airOfficialAcctAgyLoginFailed', { message: err.message }), true);
+    }
+  }
+
+  // The sign-in happens inside the terminal, with no callback into this page —
+  // poll the list while the account is still signed out so the row flips on its
+  // own once `~/.gemini/oauth_creds.json` lands.
+  function watchAgyLogin(id) {
+    const key = 'agy:' + id;
+    if (!id || state.loginWatch[key]) return;
+    const startedAt = Date.now();
+    state.loginWatch[key] = setInterval(async () => {
+      const account = state.agy.find(a => a.id === id);
+      if ((account && account.loggedIn) || Date.now() - startedAt > 10 * 60 * 1000) {
+        stopWatch(key);
+        return;
+      }
+      try {
+        applyAgyState(await api().json('/api/agy/accounts'));
+        paint();
+        const now = state.agy.find(a => a.id === id);
+        if (now && now.loggedIn) { stopWatch(key); refreshProviders(); }
+      } catch (_) { /* transient — keep polling until the timeout */ }
+    }, 3000);
+    state.loginWatch[key].unref?.();
   }
 
   // ── browser-login watch (both vendors) ─────────────────────────────────────
@@ -636,6 +799,10 @@
     else if (btn.dataset.act === 'activate') activate(vendor, btn.dataset.id);
     else if (btn.dataset.act === 'delete') removeAccount(vendor, btn.dataset.id);
     else if (btn.dataset.act === 'open-signin') resumeSignin(vendor, btn.dataset.id);
+    else if (btn.dataset.act === 'agy-create') agyCreate();
+    else if (btn.dataset.act === 'agy-import') agyImport();
+    else if (btn.dataset.act === 'agy-login') agyLogin(btn.dataset.id);
+    else if (btn.dataset.act === 'agy-use-local') agyUseLocal();
   });
 
   // Provider 视图每次被打开时刷新（账号可能刚在别处登录/删除过）。

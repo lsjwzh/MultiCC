@@ -1,6 +1,7 @@
 pub mod account_routes;
 pub mod account_subscription;
 pub mod active_turns;
+pub mod agy_accounts;
 pub mod api_error_policy;
 pub mod auto_provider_config;
 pub mod auto_provider_handoff;

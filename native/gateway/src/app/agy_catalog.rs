@@ -81,14 +81,20 @@ fn model_options(session: &Value) -> Vec<Value> {
 }
 
 async fn fetch() -> Result<Vec<Value>, ()> {
-    let mut child = Command::new(executable())
+    let mut command = Command::new(executable());
+    command
         .arg("acp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| ())?;
+        .kill_on_drop(true);
+    // The model list follows the signed-in account; agy reads its login from
+    // `$HOME/.gemini`, so a pinned account is served by pointing HOME at its
+    // mini-home. No pin leaves the real home untouched.
+    if let Some(home) = super::agy_accounts::home_override() {
+        command.env("HOME", home);
+    }
+    let mut child = command.spawn().map_err(|_| ())?;
     let mut stdin = child.stdin.take().ok_or(())?;
     let mut stdout = BufReader::new(child.stdout.take().ok_or(())?).lines();
     for (id, method, params) in [
@@ -130,6 +136,14 @@ async fn fetch() -> Result<Vec<Value>, ()> {
         }
     }
     Err(())
+}
+
+/// The cached catalog describes the previous account, so an account switch
+/// must drop it instead of waiting out the ten-minute TTL.
+pub(super) async fn invalidate() {
+    if let Some(cache) = CACHE.get() {
+        *cache.lock().await = None;
+    }
 }
 
 /// The catalog plus whether it came from the process cache. The caller owns the
