@@ -1,0 +1,167 @@
+'use strict';
+const path = require('node:path');
+const { getNative } = require('../native/runtime');
+const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
+const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
+const familyDefaultSubagent = input => getNative().sessionSubagentFamilyDefault(input);
+function createSessionRecordFactory(deps) {
+  // Injected by the composition root. src/session is a bounded context and must
+  // not reach into src/cli for the lane table (tests/test-architecture-boundaries.js).
+  if (typeof deps?.isResidentSession !== 'function') throw new TypeError('[session/create-record] isResidentSession port is required');
+  const { isResidentSession, sharedWorkspace, SUPPORTED_CHAT_CLIS, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath = () => null } = deps;
+async function createSessionRecord({ dir, cli, kind, label = null, id = null, ephemeral = false, model = null, provider = undefined, providerSelection = null, effort = null, agent = null, subagent = undefined, cliAccounts = null, rolePrompt = null, rolePresetId = null, type = null, taskExecutionSlot = false, experimentalMode = null, loginFlow = null, loginEnv = null, persistence = 'bestEffort', persistenceSource = 'runtime.create-session', taskBoundTaskId = null, autoCommit = true, workspaceOwnerSessionId = null, workspaceBaseCommit = null, validateOnly = false }) {
+  if (!dir) return { ok: false, error: 'directory not found' };
+  if (!SUPPORTED_CHAT_CLIS.includes(cli)) return { ok: false, error: `cli must be ${SUPPORTED_CHAT_CLIS.join(', ')}` };
+  if (!['terminal', 'chat'].includes(kind)) return { ok: false, error: 'kind must be terminal or chat' };
+  if ((cli === 'claude-exp' || cli === 'codex-exp') && kind !== 'chat') return { ok: false, error: `${cli} only supports chat sessions` };
+  const loginFlowCli = { 'codex-login': 'codex', 'claude-auth-login': 'claude' }[loginFlow]
+    || cliForLoginFlow(loginFlow);
+  if (loginFlow && (loginFlowCli !== cli || kind !== 'terminal')) return { ok: false, error: 'loginFlow only supports whitelisted interactive login terminal sessions' };
+  const experiment = validateExperimentalSession({ enabled: tuiChatMirrorEnabled(), cli, kind, experimentalMode });
+  if (!experiment.ok) return experiment;
+  // Model can be set for both Claude and Codex sessions. Claude terminal mode
+  // interpolates it into a shell command, so keep the charset tight; Codex uses
+  // the same id shape in config.toml.
+  if (model && !/^[A-Za-z0-9._:\/\[\]-]{1,100}$/.test(model)) {
+    return { ok: false, error: 'invalid model' };
+  }
+  const effortLevel = normalizeEffort(effort);
+  if (effortLevel === undefined) return { ok: false, error: 'invalid effort' };
+  if (!validEffortForCli(cli, effortLevel)) return { ok: false, error: 'invalid reasoning level' };
+  const sessionEffort = effortLevel || (cli === 'codex' || cli === 'codex-exp' ? codexDefaultReasoningLevel() : null);
+  const sessionAgent = normalizeCliAgent(cli, agent);
+  if (sessionAgent === undefined) return { ok: false, error: 'invalid agent' };
+  const rp = rolePrompt == null ? null : String(rolePrompt).trim();
+  if (rp && rp.length > 40000) return { ok: false, error: 'rolePrompt too long (max 40000)' };
+  // Provider override (cc-switch). An explicit value is validated; when omitted
+  // the session inherits the global default for this CLI. null = use the default
+  // login / OAuth subscription.
+  const autoSelection = validateProviderSelection(providerSelection, { cli, providers }); if (!autoSelection.ok) return { ok: false, error: autoSelection.error }; let providerId;
+  if (provider === undefined) {
+    const defaultPool = cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli;
+    const primary = primaryProviderCandidate(autoSelection.value, cli);
+    // A vendor-native Auto line (<cli>-native:<cli>) has no provider record;
+    // the lane owns its account, so the concrete fallback stays null. Keep the
+    // prefix list local: src/session must not require the provider context.
+    const nativeLine = primary
+      && /^(?:qoder|codebuddy|gemini|pi|commandcode|dsh|grok|agy)-native:/.test(String(primary.providerId || ''));
+    providerId = (nativeLine ? null : primary?.providerId)
+      || providerDefaults[defaultPool] || null;
+  } else {
+    const v = validProviderId(cli, provider);
+    if (!v.ok) return { ok: false, error: 'invalid provider' }; if (autoSelection.value && !autoSelection.value.candidates.some(candidate => candidate.enabled && candidate.providerId === v.value)) return { ok: false, error: 'Auto Provider fallback must be an enabled candidate' };
+    providerId = v.value;
+  }
+  if (loginFlow) providerId = null;
+  else providerId = providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli, providerId);
+  const loginEnvChecked = sanitizeLoginEnv(loginEnv, loginFlow);
+  if (!loginEnvChecked.ok) return { ok: false, error: loginEnvChecked.error };
+  // Sub-task route (Claude/Codex only), pinned at creation. Air tasks choose their
+  // line before they exist, so this cannot wait for the profile PATCH — same rules,
+  // same module as that path.
+  //
+  // `undefined` means "the caller did not choose": a fresh chat session then picks
+  // up the CLI family's default (AI 配置 → 子任务默认线路). Explicit null/''/{}
+  // still means "no sub-task route", so a picker that says "follow the main line"
+  // is never overridden. A default that no longer validates (provider deleted, a
+  // Codex session with no main line…) must never make creation fail — it silently
+  // falls back to no route, including in validateOnly mode. Ephemeral helper
+  // chats (gateway/ultra workers) are not tasks and stay out, as in the sync.
+  const usesDefaultSubagent = subagent === undefined;
+  const subagentChecked = usesDefaultSubagent
+    ? { ok: true, value: (kind === 'chat' && !loginFlow && !ephemeral)
+      ? familyDefaultSubagent({ cli, provider: providerId, providerDefaults, validProviderId, providers }) : null }
+    : normalizeSubagentInput({ cli, provider: providerId, subagent: subagent ?? null, validProviderId, providers });
+  if (!subagentChecked.ok) return { ok: false, error: subagentChecked.error };
+  if (validateOnly) return { ok: true };
+  const sid = id || allocateSessionId(dir, cli, kind);
+  if (persistedSessions.has(sid)) return { ok: true, id: sid, session: persistedSessions.get(sid), reused: true };
+
+  // Every session is isolated — make sure the directory is a git repo, then give the
+  // session its own worktree + branch. Login terminals (codex login / claude auth
+  // login) are the exception: they only need a writable cwd, and creating a git
+  // worktree inside the user's project directory is what breaks login on macOS when
+  // that directory sits in a TCC-protected location (Desktop / Documents /
+  // Downloads / iCloud — git fails with "Operation not permitted").
+  const deferred = kind === 'chat' && !!taskBoundTaskId && !workspaceOwnerSessionId;
+  const loginTerminal = Boolean(loginFlow);
+  const gitless = deferred || loginTerminal;
+  const ready = gitless ? { ok: true } : await ensureDirGitReady(dir);
+  if (!ready.ok) return { ok: false, error: friendlyDirReason(ready.reason) };
+  let worktreePath = path.join(dir.path, WORKTREE_SUBDIR, sid);
+  let branch = `multicc/${sid}`;
+  const rollbackOptions = { sessionId: sid, baseBranch: dir.baseBranch };
+  try {
+    if (!gitless) ({ worktreePath, branch } = workspaceOwnerSessionId
+      ? sharedWorkspace(persistedSessions, workspaceOwnerSessionId, dir.id)
+      : await gitWorktreeAdd(dir.path, sid, workspaceBaseCommit || dir.baseBranch));
+    else if (loginTerminal) { worktreePath = null; branch = null; }
+  } catch (e) {
+    if (!gitless && !workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
+    return { ok: false, error: 'worktree 创建失败: ' + e.message };
+  }
+
+  const createdAt = new Date().toISOString();
+  const session = {
+    id: sid,
+    dirId: dir.id,
+    cli, kind,
+    cliSessionId: null,   // claude gets one allocated on spawn; codex captures from first event
+    label,
+    model: model || null, // null = follow default/provider model
+    effort: sessionEffort || null, // null = follow Claude Code/provider default
+    agent: sessionAgent || null, // Claude/OpenCode/Qoder native --agent; unsupported CLIs keep null
+    provider: providerId, providerSelection: autoSelection.value, // concrete manual fallback + optional virtual Auto policy
+    // Auto-commit+merge is ON for a new session unless the caller says
+    // otherwise: the per-turn checkbox defaults to it, so an explicit `false`
+    // (experiment / task-shell branches) must stay the only way to opt out.
+    autoCommit: autoCommit !== false,
+    // streaming (流式常驻) keeps the CLI process alive across turns for faster,
+    // context-preserving continuation. Non-resident CLIs ignore this field, and a
+    // resident CLI keeps it whatever provider the session is routed through: the
+    // lane holds a route that outlives the attempt on every path (see the lane
+    // table and src/codex/resident-route.js).
+    streaming: isResidentSession(cli, { provider: providerId, subagent: subagentChecked.value }) && kind === 'chat',
+    // autoContinue is no longer a user-facing toggle (the picker keeps only the
+    // streaming option). The field stays true for back-compat only; the old
+    // auto-drive mechanisms are retired.
+    autoContinue: true,
+    createdAt, workspaceState: deferred ? 'planned' : 'awake', workspaceBaseCommit, lastWorkAt: createdAt,
+    worktreePath, workspaceOwnerSessionId,
+    branch,
+  };
+  if (rp) session.rolePrompt = rp;
+  if (subagentChecked.value) session.subagent = withSubagentSource(subagentChecked.value, null, usesDefaultSubagent);
+  // Per-lane API-key account picks, already validated by the caller against the
+  // account store (src/cli-key-accounts.js) — this context only copies them.
+  if (cliAccounts && typeof cliAccounts === 'object' && !Array.isArray(cliAccounts)) {
+    const picks = Object.fromEntries(Object.entries(cliAccounts).filter(([, id]) => typeof id === 'string' && id));
+    if (Object.keys(picks).length) session.cliAccounts = picks;
+  }
+  if (rolePresetId) session.rolePresetId = String(rolePresetId).trim();
+  if (type) session.type = type;   // commander (and future roles) — round-trips via bootstrap/state + session-persistence
+  if (loginFlow) { session.loginFlow = loginFlow; session.cwd = loginWorkspacePath(sid); }
+  if (loginEnvChecked.env) session.loginEnv = loginEnvChecked.env; // whitelisted interactive login terminal (codex-login) + allowlisted env pins
+  if (type === 'worker' && taskExecutionSlot) session.taskExecutionSlot = true;
+  if (ephemeral) session.ephemeral = true; if (experiment.mode) session.experimentalMode = experiment.mode; if (taskBoundTaskId) session.taskBoundTaskId = String(taskBoundTaskId).slice(0, 120);
+  if (kind === 'chat') ensureCliStates(session);
+  try {
+    if (persistence === 'required') {
+      sessionPersistence.mutate(persistenceSource, records => records.set(sid, session));
+    } else {
+      persistedSessions.set(sid, session);
+      savePersistedSessionsBestEffort(persistenceSource);
+    }
+  } catch (error) {
+    // The record never committed. Remove the just-created worktree so a failed
+    // HTTP create cannot leave either a session ghost or an unowned worktree.
+    if (!deferred && !workspaceOwnerSessionId) await gitWorktreeRollbackCreate(dir.path, worktreePath, branch, rollbackOptions);
+    throw error;
+  }
+  appendEvent(dir.id, 'session_created', `${cli} ${kind}${ephemeral ? ' (gw)' : ''}`, sid);
+  return { ok: true, id: sid, session };
+}
+
+  return createSessionRecord;
+}
+module.exports = { createSessionRecordFactory };

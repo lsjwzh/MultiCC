@@ -5814,6 +5814,11 @@
       ]
     },
     {
+      "path": "tests/test-session-create-record-differential.js",
+      "tier": "core",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-session-create-routes.js",
       "tier": "core",
       "lane": "deterministic",
