@@ -52,6 +52,7 @@ const cases = [
   ['invalid kind', { dir, cli: 'claude', kind: 'other' }, {}],
   ['experimental terminal', { dir, cli: 'codex-exp', kind: 'terminal' }, {}],
   ['invalid model', { dir, cli: 'claude', kind: 'chat', model: 'bad model' }, {}],
+  ['model symbol', { dir, cli: 'claude', kind: 'chat', model: Symbol('model') }, {}],
   ['model newline', { dir, cli: 'claude', kind: 'chat', model: 'model\n' }, {}],
   ['invalid effort', { dir, cli: 'claude', kind: 'chat' }, { invalidEffort: true }],
   ['invalid reasoning', { dir, cli: 'claude', kind: 'chat' }, { invalidReasoning: true }],
@@ -78,6 +79,7 @@ const cases = [
   ['unready repository', { dir, cli: 'claude', kind: 'chat' }, { ready: { ok: false, reason: 'offline' } }],
   ['worktree rollback', { dir, cli: 'claude', kind: 'chat' }, { addError: true }],
   ['worktree rejects null', { dir, cli: 'claude', kind: 'chat' }, { addError: true, addErrorValue: null }],
+  ['worktree rejects symbol message', { dir, cli: 'claude', kind: 'chat' }, { addError: true, addErrorValue: { message: Symbol('failure') } }],
   ['persistence rollback', { dir, cli: 'claude', kind: 'chat', persistence: 'required' }, { persistError: true }],
 ];
 for (const [name, input, scenario] of cases) {

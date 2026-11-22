@@ -531,13 +531,10 @@ fn worktree_failure<'a>(state: L<'a>, error: L<'a>) -> Result<L<'a>> {
             "Cannot read properties of {value} (reading 'message')"
         )));
     }
-    let message = string(state, error.get(c"message")?)?;
+    let message = error.get(c"message")?.coerce_string()?;
     failure(
         state,
-        &format!(
-            "worktree 创建失败: {}",
-            message.coerce_string()?.to_string_lossy()
-        ),
+        &format!("worktree 创建失败: {}", message.to_string_lossy()),
     )
 }
 fn rollback<'a>(
