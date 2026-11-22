@@ -3,8 +3,9 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createHibernationReclaimer } = require('./hibernation-reclaimer');
 const { getNative } = require('../native/runtime');
+
+const createHibernationReclaimer = deps => getNative().sessionHibernationReclaimerCreate(deps);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Idle gate for the periodic sweep. The LRU resident budget (awakeLimit) is

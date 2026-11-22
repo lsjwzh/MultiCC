@@ -1032,6 +1032,15 @@
       ]
     },
     {
+      "path": "tests/test-agy-accounts.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:provider-router",
+      "entrypoints": [
+        "npm:test:provider-router"
+      ]
+    },
+    {
       "path": "tests/test-agy-models.js",
       "tier": "flow",
       "lane": "deterministic"
@@ -3870,6 +3879,15 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-hibernation-reclaimer-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:architecture",
+      "entrypoints": [
+        "npm:test:architecture"
       ]
     },
     {
