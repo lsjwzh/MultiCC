@@ -221,7 +221,8 @@ pub async fn catalog(catalog: Catalog, ctx: &RequestCtx, host_port_num: u16) -> 
     if catalog == Catalog::Agy {
         let refresh = flag(&query_text(ctx, "refresh"));
         let result =
-            tokio::time::timeout(Duration::from_secs(25), super::agy_catalog::models(refresh)).await;
+            tokio::time::timeout(Duration::from_secs(25), super::agy_catalog::models(refresh))
+                .await;
         return match result {
             Ok(Some((models, cached))) => express::json(
                 ctx,

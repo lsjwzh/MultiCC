@@ -1715,7 +1715,16 @@ mod tests {
         // missing here makes PUT /api/provider-defaults reject its native id.
         assert_eq!(
             vendor_list(),
-            vec!["qoder", "codebuddy", "gemini", "pi", "commandcode", "dsh", "grok", "agy"]
+            vec![
+                "qoder",
+                "codebuddy",
+                "gemini",
+                "pi",
+                "commandcode",
+                "dsh",
+                "grok",
+                "agy"
+            ]
         );
     }
 

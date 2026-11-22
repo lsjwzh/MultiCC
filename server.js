@@ -175,7 +175,8 @@ const {
   getMemoryEntries,
   normalizeManualMemory,
 } = require('./src/memory/runtime');
-const { createTaskHistoryRetention, taskHistoryRefusal } = require('./src/session/task-history-retention');
+const createTaskHistoryRetention = deps => require('./src/native/runtime').getNative().createTaskHistoryRetention(deps);
+const taskHistoryRefusal = error => require('./src/native/runtime').getNative().taskHistoryRefusal(error);
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { createFleetSharing } = require('./src/fleet-sharing');

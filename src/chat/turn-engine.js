@@ -99,7 +99,7 @@ function claudeSettingsExtra(invocation, spawnOpts, binding, cli) {
 const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
-const { hasNativeHistory } = require('../cli-adapters/claude-exp-history');
+const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context-guard');
 const { opencodeProcessError, processSpawnArgs } = require('../native/runtime');
 const isInternalExecutionSlot = record => getNative().sessionIsInternalExecutionSlot(record);

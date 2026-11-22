@@ -1,7 +1,9 @@
 'use strict';
 
 const { toSessionDto } = require('../session-dto');
-const { assertSessionRecordsPort, assertSessionRuntimePort } = require('./ports');
+const { getNative } = require('../native/runtime');
+const assertSessionRecordsPort = port => getNative().sessionAssertSessionRecordsPort(port);
+const assertSessionRuntimePort = port => getNative().sessionAssertSessionRuntimePort(port);
 
 const HIDDEN_SESSION_TYPES = new Set(['aux', 'gateway']);
 

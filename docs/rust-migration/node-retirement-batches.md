@@ -582,6 +582,20 @@ SDK、平台、配置和数据格式不变；不重启服务，不推送。私�
 
 对应规则与 N-API 兼容表面迁入 `native/core/src/session_subagent.rs`、`native/core/src/public_session_access.rs` 与 `native/addon/src/session_subagent.rs`、`native/addon/src/public_session_access.rs`：保留 `normalizeSubagentInput` / `withSubagentSource` / `familyDefaultSubagent`、`forkConfiguration`（含 `pendingConfiguration` 叠层与配置字段克隆）以及 `isInternalExecutionSlot` / `createPublicSessionAccessGuard` / `mountPublicSessionAccessGuard`（含 WeakMap 弱引用闭环、Express `length === 3` 中间件 arity 与 `/api/v1/` 404 分流）。所有生产调用点直接通过 `src/native/runtime.js` 调用原生导出，不新增 Node 业务实现。`scripts/rust-source-cache.js` 与 `tests/test-source-rust.js` 新增 8 个原生导出与探针校验，`tests/test-public-session-access.js` 与 `tests/test-subagent-defaults.js` 补充与冻结旧版的全量差分测试。
 
+### 会话端口断言、任务历史留存与 claude-exp 历史探测（Rust 迁移）
+
+以 `543a900e` 为基线，同批退役 3 个独立 Node 模块（共 198 行）：`src/session/ports.js`（46 行）、`src/session/task-history-retention.js`（125 行）与 `src/cli-adapters/claude-exp-history.js`（27 行），分别冻结至 `tests/helpers/legacy-session-ports.js`、`tests/helpers/legacy-task-history-retention.js` 与 `tests/helpers/legacy-claude-exp-history.js` 作为测试对照样本。
+
+对应规则与 N-API 表面迁入 Rust：
+
+- 端口断言迁入 `native/core/src/session_ports.rs` 与 `native/addon/src/session_ports.rs`，导出 `sessionAssertSessionRecordsPort` / `sessionAssertSessionRuntimePort` / `sessionAssertWorkspaceFactsPort` / `sessionAssertDirectoryRecordsPort` / `sessionAssertChatHistoryPort`，成功时原样返回端口对象（身份相等），失败时抛 TypeError，消息与旧实现逐字节一致（`[session] <name> port is required`、`[session] <name>.<method> must be a function`）。
+- 任务历史留存迁入 `native/core/src/task_history_retention.rs` 与 `native/addon/src/task_history_retention.rs`，导出 `createTaskHistoryRetention({ getBoard, getRecord, loadHistory })` 与 `taskHistoryRefusal(error)`：会话删除判定（chatSessionId/routing/refs 三类链接、执行槽恒可删、消息 taskId 戳的活任务/孤儿/暂定三态、ENOENT 按空历史处理而其余错误原样上抛）、消息保护判定、引用任务汇总与删除事实分桶（session/routing/message 分桶与去重），拒绝消息中的中文用户文案逐字节保留。N-API 侧用 WeakMap 键捕获依赖闭包，避免 JS 对象经 Rust 引用形成 V8 循环。
+- `claude-exp` 的 `hasNativeHistory(record, { configDir })` 折叠进既有 `missing_resume_recovery` 模块（core 与 addon 各一份），导出 `claudeExpHasNativeHistory`：仅「pending 状态的新建 claude-exp 交接 + 合法 UUID」才触盘探测会话转写文件，其余形态一律按「有历史」失败关闭处理。
+
+所有生产调用点（`server.js`、`src/chat/turn-engine.js`、`src/session/chat-history-service.js`、`src/session/query-service.js`、`src/session/workspace-service.js`、`src/task-board/lifecycle.js`）直接通过 `src/native/runtime.js` 调用原生导出，不新增 Node 业务实现；早前批次冻结的 `tests/helpers/legacy-chat-history-service.js` 改引本批冻结的端口样本保持可加载。`scripts/rust-source-cache.js` 与 `tests/test-source-rust.js` 新增 10 个原生导出探针（含端口身份相等、拒绝体默认 code、`claudeExpHasNativeHistory` 失败关闭三项功能校验），旧版 addon 缺任一导出即拒绝启动。新增 3 个差分测试（`tests/test-session-ports-differential.js`、`tests/test-task-history-retention-differential.js`、`tests/test-claude-exp-history-differential.js`），含逐分支覆盖断言与篡改样本必变红的变异验证；`tests/test-claude-adapter.js` 与 `tests/test-task-history-retention.js` 改走原生导出；三条差分已登记 `tests/test-tiers.json` 并串入 `npm run test:rust`。
+
+同批另带独立样式提交 `c1fbb53e`：`provider_registry.rs`、`agy_catalog.rs`、`model_catalogs.rs` 三个早前合入的文件存在 rustfmt 漂移，会令 rust-kernels CI 的 `cargo fmt --all --check` 转红，以纯 rustfmt 重写修复，不并入本批迁移提交。
+
 ## 每批验收与最后停用条件
 
 - 先冻结旧版输出和状态变化。覆盖默认与条件入口，对比 WebSocket 原始帧、HTTP/SSE 响应、事务写入以及副作用顺序。对必须变化的字段逐项登记。补充关键失败的断言，变异验证须区分编译失败与行为被检出。

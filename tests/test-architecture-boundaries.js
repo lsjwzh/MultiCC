@@ -29,7 +29,9 @@ test('session bounded-context core has no host or cross-context dependencies', (
         || file === path.join('src/session', 'hibernation.js')
         || file === path.join('src/session', 'runtime-busy.js')
         || file === path.join('src/session', 'chat-history-service.js')
-        || file === path.join('src/session', 'create-record.js'))
+        || file === path.join('src/session', 'create-record.js')
+        || file === path.join('src/session', 'workspace-service.js')
+        || file === path.join('src/session', 'query-service.js'))
         && dependency === '../native/runtime';
       assert.equal(
         dependency.startsWith('node:') || dependency.startsWith('./') || dependency === '../session-dto'

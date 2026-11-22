@@ -10,7 +10,7 @@ const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createClaudeAdapter } = require('../src/native/runtime');
 const { processSpawnArgs } = require('../src/native/runtime');
 const { createChatTurnEngine } = require('../src/chat/turn-engine');
-const { hasNativeHistory } = require('../src/cli-adapters/claude-exp-history');
+const hasNativeHistory = (record, options) => require('../src/native/runtime').getNative().claudeExpHasNativeHistory(record, options);
 const prepareTurn = require('./helpers/claude-turn');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 const { recordsOf } = require('./helpers/session-records');

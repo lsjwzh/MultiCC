@@ -1,7 +1,8 @@
 'use strict';
 
 const { boardRule } = require('./native-bridge');
-const { taskHistoryRefusal } = require('../session/task-history-retention');
+const { getNative } = require('../native/runtime');
+const taskHistoryRefusal = error => getNative().taskHistoryRefusal(error);
 
 // Purge-stage refusals that describe a permanent state (evidence retention,
 // shared sessions/workspaces): retrying the same DELETE changes nothing, so

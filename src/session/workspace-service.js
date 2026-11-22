@@ -1,7 +1,9 @@
 'use strict';
 
 const { assertDtoSafe, sanitizePublicText } = require('../session-dto');
-const { assertDirectoryRecordsPort, assertWorkspaceFactsPort } = require('./ports');
+const { getNative } = require('../native/runtime');
+const assertDirectoryRecordsPort = port => getNative().sessionAssertDirectoryRecordsPort(port);
+const assertWorkspaceFactsPort = port => getNative().sessionAssertWorkspaceFactsPort(port);
 
 const WORKSPACE_STATUSES = new Set([
   'idle', 'thinking', 'editing', 'running', 'waiting', 'background', 'succeeded', 'completed', 'error',
