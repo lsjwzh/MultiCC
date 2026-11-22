@@ -121,6 +121,11 @@ test('property and dependency getter exceptions retain original identity', () =>
     assert.throws(() => impl.readConfiguration(session), error => error === marker);
     const ports = Object.defineProperty({}, 'getChatState', { get() { throw marker; } });
     assert.throws(() => impl.configurationBusy('s', ports), error => error === marker);
+    const pending = { toJSON() { return {}; } };
+    Object.defineProperty(pending, 'pendingConfiguration', { get() { throw marker; } });
+    assert.throws(() => impl.desiredSession(pending), error => error === marker);
+    const options = Object.defineProperty({}, 'fresh', { get() { throw marker; } });
+    assert.throws(() => impl.stageConfiguration({}, {}, options), error => error === marker);
   }
 });
 
