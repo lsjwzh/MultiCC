@@ -117,7 +117,8 @@ test('native API is cached and callback cycles can be collected', () => {
   const script=String.raw`
     const api=require(process.argv[1]).sessionDeliveryApi();
     function cycle(){let d;d=api.createSessionDelivery({admit(){return d;}});return new WeakRef(d);}
-    (async()=>{const weak=cycle();for(let i=0;i<30;i++){await new Promise(r=>setImmediate(r));global.gc();}if(weak.deref()!==undefined)throw Error('delivery callback cycle retained');})().catch(e=>{console.error(e);process.exitCode=1;});
+    function pendingCycle(){let d;d=api.createSessionDelivery({admit(){return new Promise(()=>{});},log(){return d;}});const pending=d.deliver('s','m');d.pending=pending;return new WeakRef(d);}
+    (async()=>{const refs=[cycle(),pendingCycle()];for(let i=0;i<30;i++){await new Promise(r=>setImmediate(r));global.gc();}if(refs.some(weak=>weak.deref()!==undefined))throw Error('delivery callback cycle retained');})().catch(e=>{console.error(e);process.exitCode=1;});
   `;
   const result=spawnSync(process.execPath,['--expose-gc','-e',script,runtime.addonPath()],{encoding:'utf8',timeout:10000});
   assert.equal(result.status,0,result.stderr || String(result.error));
