@@ -865,10 +865,67 @@ JSON 方法和 getter 读取顺序、异常身份、强制转换、严格赋值�
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
 
-### 登录终端清理（下一批，基线阶段）
+### 登录终端清理（Rust 迁移，待验收）
 
-以 `c2b17573` 为基线，已将 `src/session/login-terminal.js` 原样冻结到
-`tests/helpers/legacy-session-login-terminal.js`，并固定匹配快照、逐条 cascade /
-tmux / 删除顺序、可忽略失败、删除或保存异常身份以及参数转换的基线。
-当前生产仍使用原 Node 文件；原生异步工厂、调用点切换、差分对拍与完整
-门禁尚未完成，尚不能视为退休。`src/` 的 `.js` / `.cjs` 数量仍为 544。
+以 `c2b17573` 为基线，退役 `src/session/login-terminal.js`，原文件逐字节
+冻结到 `tests/helpers/legacy-session-login-terminal.js`。筛选与保存决策迁入
+`native/core/src/session_login_terminal.rs`，快照、异步续接、吞掉指定失败、
+删除及保存顺序迁入 `native/addon/src/session_login_terminal.rs`，生产经
+`src/native/runtime.js` 调用。新工厂已纳入启动探针；差分覆盖缺省参数、
+getter、转换、异常身份、迭代器、异步顺序、循环回收及大量同步失败。
+
+已核实的 Node 宿主桥：登录终端工厂仍接收 `persistedSessions.values/delete`、
+`tmuxKillSession`、`destroySessionCascade` 和 `saveSessions` 回调，以维持现有
+宿主的活 Map、tmux 与持久化状态。Rust 持有遍历和清理流程，没有新增 Node
+业务规则；会话表、tmux 和持久化所有者迁入 Rust，且快照、回调顺序及失败
+恢复通过差分与集成验证后，应删除这些宿主端口。V8 Promise、WeakMap 和活
+对象接口也随 Node 兼容宿主退出时一并退休。
+
+当前 `src/` 有 543 个 `.js` / `.cjs` 文件，按文件所在目录统计：
+
+| 目录 | 文件数 |
+| --- | ---: |
+| `src/` | 85 |
+| `src/chat/` | 60 |
+| `src/classify/` | 8 |
+| `src/claude-auth/` | 8 |
+| `src/cli/` | 9 |
+| `src/cli-adapters/` | 27 |
+| `src/codex/` | 11 |
+| `src/codex-auth/` | 1 |
+| `src/context/` | 1 |
+| `src/directory/` | 5 |
+| `src/dispatch/` | 3 |
+| `src/doctor/` | 5 |
+| `src/events/` | 8 |
+| `src/experiments/` | 1 |
+| `src/git/` | 4 |
+| `src/http/` | 6 |
+| `src/liveness/` | 3 |
+| `src/memo/` | 4 |
+| `src/memory/` | 5 |
+| `src/native/` | 5 |
+| `src/network/` | 5 |
+| `src/orchestration/` | 6 |
+| `src/plugins/` | 4 |
+| `src/pricing/` | 1 |
+| `src/providers/` | 27 |
+| `src/push/` | 8 |
+| `src/quota/` | 17 |
+| `src/routes/` | 96 |
+| `src/search/` | 6 |
+| `src/session/` | 10 |
+| `src/session-work/` | 2 |
+| `src/skill-sync/` | 1 |
+| `src/sqlite/` | 1 |
+| `src/state/` | 3 |
+| `src/task-board/` | 17 |
+| `src/task-routing/` | 6 |
+| `src/task-shell/` | 24 |
+| `src/triggers/` | 1 |
+| `src/turn-ledger/` | 5 |
+| `src/unattended/` | 4 |
+| `src/voice/` | 16 |
+| `src/wait/` | 2 |
+| `src/workspace/` | 18 |
+| `src/ws/` | 4 |
