@@ -1386,6 +1386,9 @@
           : t('airOfficialAcctSignedOut');
         row.append(make('span', statusText));
       }
+      if (account.egressBinding && account.egressBinding.profileId) {
+        row.append(make('span', `🌐 ${account.egressBinding.profileId}`, 'default'));
+      }
       if (account.active) row.append(make('span', t('airOfficialAcctActive'), 'default'));
       const ops = make('div', null, 'air-provider-card-actions');
       ops.style.marginLeft = 'auto';
@@ -1393,12 +1396,13 @@
       if (isRemote) {
         ops.append(
           button(t(account.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin'), () => void startRemoteAgyLogin(account.id, label), 'primary'),
-          button(t('airOfficialAcctAgyRemoteAddSibling'), () => void addSiblingRemoteAgyAccount(account)),
+          button(t('airOfficialAcctAgyRemoteAddSibling'), () => addSiblingRemoteAgyAccount(account)),
           button(t('airOfficialAcctAgyRemoteTest'), () => void testRemoteAgyAccount(account.id)),
         );
       } else {
         ops.append(button(t(account.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin'), () => void loginAgyAccount(account.id)));
       }
+      ops.append(button(t('airOfficialAcctAgyEditEgress'), () => editAgyAccountEgress(account)));
       ops.append(button(t('airOfficialAcctDelete'), () => void deleteAgyAccount(account.id), 'danger'));
       row.append(ops);
       rows.push(row);
@@ -1428,17 +1432,119 @@
     }
   }
 
-  async function createAgyAccount() {
-    const label = root.prompt ? root.prompt(t('airOfficialAcctAgyLabelPrompt'), '') : '';
-    if (label === null) return;
-    const before = new Set((agyState?.accounts || []).map(item => item.id));
-    try {
-      const next = applyAgyResponse(await context.api('/api/agy/accounts', { label }, 'POST'));
-      if (activeProtocol !== 'all' && activeProtocol !== 'agy') setProtocol('agy');
-      const created = next?.accounts.find(item => !before.has(item.id));
-      context?.notice(t('airOfficialAcctAgyCreated'));
-      if (created) await loginAgyAccount(created.id);
-    } catch (error) { context?.notice(t('airOfficialAcctFailed', { message: error.message })); }
+  function buildAgyEgressControl(preselect = '') {
+    const wrap = make('div');
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:4px';
+    const select = document.createElement('select');
+    select.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--line, #d8e5f2);border-radius:8px';
+    const hint = make('div', t('airProviderEgressBindingLoading'));
+    hint.style.cssText = 'font-size:11px;color:#b45309;line-height:1.5';
+    const openBtn = button(t('airProviderEgressOpenPlugin'), () => { if (root.open) root.open('/air?view=plugins', '_blank', 'noopener'); });
+    openBtn.hidden = true;
+    wrap.append(make('label', t('airProviderEgressSelectLabel')), select, make('div', t('airProviderEgressSelectBody')), hint, openBtn);
+    let alive = true;
+    const populate = async (keep) => {
+      select.innerHTML = '';
+      const off = document.createElement('option'); off.value = ''; off.textContent = t('airProviderEgressBindingOff');
+      select.append(off);
+      select.disabled = true;
+      hint.hidden = false; hint.textContent = t('airProviderEgressBindingLoading'); openBtn.hidden = true;
+      try {
+        const pluginsPayload = await context.api('/api/plugins');
+        const entry = ((pluginsPayload && pluginsPayload.plugins) || []).find(item => item && item.id === EGRESS_PLUGIN_ID);
+        if (!alive) return;
+        if (!entry || !entry.engine || !entry.engine.available) {
+          hint.textContent = (entry && entry.engine && entry.engine.reason) || t('airProviderEgressBindingNoPlugin');
+          openBtn.hidden = false;
+          return;
+        }
+        const listed = await context.api(`/api/plugins/${EGRESS_PLUGIN_ID}/run`, { command: 'list', input: {} }, 'POST');
+        if (!alive) return;
+        const usable = (Array.isArray(listed && listed.profiles) ? listed.profiles : []).filter(p => p && typeof p.id === 'string' && p.id);
+        for (const p of usable) {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = `${p.name || p.id}${p.egressText ? ` · ${p.egressText}` : ''}`;
+          select.append(opt);
+        }
+        const target = keep || preselect;
+        select.value = usable.some(p => p.id === target) ? target : (preselect === '' && !keep && usable[0] ? usable[0].id : '');
+        select.disabled = !usable.length;
+        if (usable.length) { hint.hidden = true; }
+        else { hint.textContent = t('airProviderEgressBindingNoProfiles'); openBtn.hidden = false; }
+      } catch (error) {
+        if (!alive) return;
+        hint.textContent = t('airProviderEgressBindingLoadFailed', { message: error.message });
+        openBtn.hidden = false;
+      }
+    };
+    const onFocus = () => void populate(select.value);
+    root.addEventListener?.('focus', onFocus);
+    void populate(preselect);
+    return {
+      el: wrap,
+      value: () => (select.value.trim() ? { pluginId: EGRESS_PLUGIN_ID, profileId: select.value.trim() } : null),
+      destroy: () => { alive = false; root.removeEventListener?.('focus', onFocus); },
+    };
+  }
+
+  function createAgyAccount() {
+    const overlay = make('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+    const card = make('div', null, 'admin-panel');
+    card.style.cssText = 'width:440px;max-width:94vw;padding:18px;display:flex;flex-direction:column;gap:8px;background:var(--surface, #fff)';
+    const labelIn = document.createElement('input');
+    labelIn.type = 'text'; labelIn.maxLength = 64; labelIn.placeholder = t('airOfficialAcctLabelPlaceholder');
+    labelIn.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--line, #d8e5f2);border-radius:8px';
+    const egress = buildAgyEgressControl('');
+    const errEl = make('div'); errEl.style.cssText = 'font-size:12px;color:#d1242f';
+    const close = () => { egress.destroy(); overlay.remove(); };
+    const foot = make('div', null, 'air-provider-card-actions'); foot.style.justifyContent = 'flex-end';
+    foot.append(
+      button(t('airOfficialAcctCancel'), close),
+      button(t('airOfficialAcctCreateAndLogin'), async () => {
+        errEl.textContent = '';
+        try {
+          const payload = await context.api('/api/agy/accounts', { label: labelIn.value.trim(), egressBinding: egress.value() }, 'POST');
+          applyAgyResponse(payload);
+          if (activeProtocol !== 'all' && activeProtocol !== 'agy') setProtocol('agy');
+          close();
+          context?.notice(t('airOfficialAcctAgyCreated'));
+          if (payload?.created?.id) await loginAgyAccount(payload.created.id);
+        } catch (error) { errEl.textContent = t('airOfficialAcctFailed', { message: error.message }); }
+      }, 'primary'),
+    );
+    card.append(make('h3', t('airOfficialAcctAgyCreateTitle')), labelIn, egress.el, errEl, foot);
+    overlay.append(card);
+    overlay.onclick = e => { if (e.target === overlay) close(); };
+    document.body.append(overlay);
+  }
+
+  function editAgyAccountEgress(account) {
+    const name = account.label || t('airOfficialAcctAgyAccount', { id: account.id.slice(0, 6) });
+    const overlay = make('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+    const card = make('div', null, 'admin-panel');
+    card.style.cssText = 'width:440px;max-width:94vw;padding:18px;display:flex;flex-direction:column;gap:8px;background:var(--surface, #fff)';
+    const egress = buildAgyEgressControl((account.egressBinding && account.egressBinding.profileId) || '__NONE__');
+    const errEl = make('div'); errEl.style.cssText = 'font-size:12px;color:#d1242f';
+    const close = () => { egress.destroy(); overlay.remove(); };
+    const foot = make('div', null, 'air-provider-card-actions'); foot.style.justifyContent = 'flex-end';
+    foot.append(
+      button(t('airOfficialAcctCancel'), close),
+      button(t('airOfficialAcctAgyRemoteSave'), async () => {
+        errEl.textContent = '';
+        try {
+          applyAgyResponse(await context.api(`/api/agy/accounts/${encodeURIComponent(account.id)}`, { egressBinding: egress.value() }, 'PATCH'));
+          close();
+          context?.notice(t('airOfficialAcctAgyEditEgressSaved'));
+        } catch (error) { errEl.textContent = t('airOfficialAcctFailed', { message: error.message }); }
+      }, 'primary'),
+    );
+    card.append(make('h3', t('airOfficialAcctAgyEditEgressTitle', { name })), egress.el, errEl, foot);
+    overlay.append(card);
+    overlay.onclick = e => { if (e.target === overlay) close(); };
+    document.body.append(overlay);
   }
 
   async function importAgyAccount() {
@@ -1478,10 +1584,11 @@
     const isoChk = document.createElement('input');
     isoChk.type = 'checkbox'; isoChk.checked = true;
     isoWrap.append(isoChk, make('span', t('airOfficialAcctAgyRemoteIsolateToggle')));
+    const egress = buildAgyEgressControl('');
     const errEl = make('div'); errEl.style.cssText = 'font-size:12px;color:#d1242f';
     const foot = make('div', null, 'air-provider-card-actions');
     foot.style.justifyContent = 'flex-end';
-    const close = () => overlay.remove();
+    const close = () => { egress.destroy(); overlay.remove(); };
     foot.append(
       button(t('airOfficialAcctCancel'), close),
       button(t('airOfficialAcctAgyRemoteSave'), async () => {
@@ -1498,7 +1605,7 @@
           isolateHome,
         };
         try {
-          const payload = await context.api('/api/agy/accounts/remote', { label: labelIn.value.trim(), remote }, 'POST');
+          const payload = await context.api('/api/agy/accounts/remote', { label: labelIn.value.trim(), remote, egressBinding: egress.value() }, 'POST');
           applyAgyResponse(payload);
           close();
           context?.notice(t('airOfficialAcctAgyRemoteCreated'));
@@ -1516,6 +1623,7 @@
       labelIn, sshIn, portIn, keyIn, homeIn, binIn,
       make('label', t('airOfficialAcctAgyRemoteModeLabel')), modeSel,
       isoWrap,
+      egress.el,
       errEl, foot,
     );
     overlay.append(card);
@@ -1523,26 +1631,44 @@
     document.body.append(overlay);
   }
 
-  async function addSiblingRemoteAgyAccount(source) {
+  function addSiblingRemoteAgyAccount(source) {
     if (!source || !source.remote) return;
-    const label = root.prompt ? root.prompt(t('airOfficialAcctAgyRemoteSiblingPrompt'), '') : '';
-    if (label === null) return;
-    const remote = {
-      sshTarget: source.remote.sshTarget,
-      ...(source.remote.sshPort ? { sshPort: source.remote.sshPort } : {}),
-      ...(source.remote.sshIdentityFile ? { sshIdentityFile: source.remote.sshIdentityFile } : {}),
-      ...(source.remote.remoteAgyBin ? { remoteAgyBin: source.remote.remoteAgyBin } : {}),
-      ...(source.remote.remoteWorkspaceBase ? { remoteWorkspaceBase: source.remote.remoteWorkspaceBase } : {}),
-      fileMode: source.remote.fileMode || 'mutagen',
-      isolateHome: true,
-    };
-    try {
-      const payload = await context.api('/api/agy/accounts/remote', { label, remote }, 'POST');
-      applyAgyResponse(payload);
-      if (payload?.created?.id) await startRemoteAgyLogin(payload.created.id, payload.created.label);
-    } catch (error) {
-      context?.notice(t('airOfficialAcctFailed', { message: error.message }));
-    }
+    const overlay = make('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+    const card = make('div', null, 'admin-panel');
+    card.style.cssText = 'width:440px;max-width:94vw;padding:18px;display:flex;flex-direction:column;gap:8px;background:var(--surface, #fff)';
+    const labelIn = document.createElement('input');
+    labelIn.type = 'text'; labelIn.maxLength = 64; labelIn.placeholder = t('airOfficialAcctAgyRemoteSiblingPrompt');
+    labelIn.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--line, #d8e5f2);border-radius:8px';
+    const egress = buildAgyEgressControl('');
+    const errEl = make('div'); errEl.style.cssText = 'font-size:12px;color:#d1242f';
+    const close = () => { egress.destroy(); overlay.remove(); };
+    const foot = make('div', null, 'air-provider-card-actions'); foot.style.justifyContent = 'flex-end';
+    foot.append(
+      button(t('airOfficialAcctCancel'), close),
+      button(t('airOfficialAcctCreateAndLogin'), async () => {
+        errEl.textContent = '';
+        const remote = {
+          sshTarget: source.remote.sshTarget,
+          ...(source.remote.sshPort ? { sshPort: source.remote.sshPort } : {}),
+          ...(source.remote.sshIdentityFile ? { sshIdentityFile: source.remote.sshIdentityFile } : {}),
+          ...(source.remote.remoteAgyBin ? { remoteAgyBin: source.remote.remoteAgyBin } : {}),
+          ...(source.remote.remoteWorkspaceBase ? { remoteWorkspaceBase: source.remote.remoteWorkspaceBase } : {}),
+          fileMode: source.remote.fileMode || 'mutagen',
+          isolateHome: true,
+        };
+        try {
+          const payload = await context.api('/api/agy/accounts/remote', { label: labelIn.value.trim(), remote, egressBinding: egress.value() }, 'POST');
+          applyAgyResponse(payload);
+          close();
+          if (payload?.created?.id) await startRemoteAgyLogin(payload.created.id, payload.created.label);
+        } catch (error) { errEl.textContent = t('airOfficialAcctFailed', { message: error.message }); }
+      }, 'primary'),
+    );
+    card.append(make('h3', `${t('airOfficialAcctAgyRemoteAddSibling')} · ${source.remote.sshTarget || ''}`), labelIn, egress.el, errEl, foot);
+    overlay.append(card);
+    overlay.onclick = e => { if (e.target === overlay) close(); };
+    document.body.append(overlay);
   }
 
   async function startRemoteAgyLogin(id, label) {

@@ -286,6 +286,7 @@ fn remote_vps_account_crud_resolution_and_activation_work() {
             id: resolved_id,
             label,
             remote,
+            egress_binding: None,
         } => {
             assert_eq!(resolved_id, id);
             assert_eq!(label, "新加坡 VPS");

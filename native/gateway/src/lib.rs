@@ -18,6 +18,7 @@ pub mod backoff;
 pub mod chat_bridge;
 pub mod codex_bridge;
 pub mod daemon;
+pub mod egress_runtime;
 pub mod forward;
 pub mod host_exec;
 pub mod host_port;

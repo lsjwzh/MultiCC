@@ -339,6 +339,10 @@ function claudeAccountFilePath(id, root = DEFAULT_ROOT) {
 // HOME does the same for agy (its whole login is `$HOME/.gemini`). Tight
 // allowlist — this crosses into an interactive shell, nothing else may.
 const LOGIN_ENV_ALLOWLIST = Object.freeze(['CODEX_HOME', 'HOME']);
+const LOGIN_PROXY_URL_KEYS = Object.freeze([
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy',
+]);
+const LOGIN_NO_PROXY_KEYS = Object.freeze(['NO_PROXY', 'no_proxy']);
 
 function sanitizeLoginEnv(loginEnv, loginFlow) {
   if (loginEnv == null) return { ok: true, env: null };
@@ -353,6 +357,26 @@ function sanitizeLoginEnv(loginEnv, loginFlow) {
       return { ok: false, error: `invalid loginEnv.${key}` };
     }
     env[key] = text;
+  }
+  if (loginFlow === 'agy-login') {
+    for (const key of LOGIN_PROXY_URL_KEYS) {
+      const value = loginEnv[key];
+      if (value == null) continue;
+      const text = String(value).trim();
+      if (!/^(https?|socks5h?|socks4):\/\/\S+$/i.test(text) || text.length > 512 || /[\0\r\n]/.test(text)) {
+        return { ok: false, error: `invalid loginEnv.${key}` };
+      }
+      env[key] = text;
+    }
+    for (const key of LOGIN_NO_PROXY_KEYS) {
+      const value = loginEnv[key];
+      if (value == null) continue;
+      const text = String(value).trim();
+      if (!text || text.length > 256 || /[\0\r\n]/.test(text)) {
+        return { ok: false, error: `invalid loginEnv.${key}` };
+      }
+      env[key] = text;
+    }
   }
   return { ok: true, env: Object.keys(env).length ? env : null };
 }

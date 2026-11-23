@@ -358,11 +358,17 @@ pub fn sanitize_oauth_callback(raw: &str) -> Result<String, String> {
 ///
 /// 设置 `SSH_CONNECTION` + 清空 `DISPLAY` 强制 `agy` 走官方 `https://antigravity.google/oauth-callback`
 /// 链接 + stdin 粘贴授权码/回调 URL 流程（无需端口转发、无需本地浏览器、无需 PTY）。
-pub fn build_remote_login_script(remote_agy_bin: &str, remote_home: Option<&str>) -> String {
+/// 若账号绑定了出口代理，通过 `remote_proxy_url` 在登录换票阶段即锁定同一出口 IP。
+pub fn build_remote_login_script(
+    remote_agy_bin: &str,
+    remote_home: Option<&str>,
+    remote_proxy_url: Option<&str>,
+) -> String {
     let home_export = render_remote_home_export(remote_home);
+    let proxy_export = crate::egress_plugin::render_remote_proxy_exports(remote_proxy_url);
     let agy = posix_shell_quote(remote_agy_bin);
     format!(
-        r#"{home_export}set -e
+        r#"{home_export}{proxy_export}set -e
 rm -f "$HOME/.gemini/oauth_creds.json"
 SSH_CONNECTION="1 1 1 1" DISPLAY="" BROWSER="/bin/false" {agy} acp --login
 if [ -f "$HOME/.gemini/google_accounts.json" ]; then
@@ -370,6 +376,7 @@ if [ -f "$HOME/.gemini/google_accounts.json" ]; then
 fi
 "#,
         home_export = home_export,
+        proxy_export = proxy_export,
         agy = agy,
     )
 }
@@ -424,6 +431,7 @@ pub struct RemoteExecSpec<'a> {
     pub file_mode: &'a str,
     pub host_exec_url: &'a str,
     pub host_exec_token: &'a str,
+    pub remote_proxy_url: Option<&'a str>,
     pub agy_args: &'a [String],
     pub prompt: &'a str,
 }
@@ -495,8 +503,9 @@ pub fn build_remote_agy_exec_command(spec: &RemoteExecSpec<'_>) -> String {
     let quoted_args: Vec<String> = final_args.iter().map(|a| posix_shell_quote(a)).collect();
 
     format!(
-        "set -e; {} mkdir -p {ws} && cd {ws} && exec env {} {} {}",
+        "set -e; {}{} mkdir -p {ws} && cd {ws} && exec env {} {} {}",
         render_remote_home_export(spec.remote_home),
+        crate::egress_plugin::render_remote_proxy_exports(spec.remote_proxy_url),
         env_parts.join(" "),
         posix_shell_quote(spec.remote_agy_bin),
         quoted_args.join(" "),
@@ -550,6 +559,7 @@ mod tests {
             file_mode: FILE_MODE_MUTAGEN,
             host_exec_url: "http://127.0.0.1:41234",
             host_exec_token: "tok_secret_abc",
+            remote_proxy_url: Some("http://127.0.0.1:45001"),
             agy_args: &[
                 "--output-format".into(),
                 "stream-json".into(),
@@ -562,6 +572,8 @@ mod tests {
         });
         assert!(cmd.contains("MULTICC_HOST_EXEC_URL='http://127.0.0.1:41234'"));
         assert!(cmd.contains("MULTICC_HOST_EXEC_TOKEN='tok_secret_abc'"));
+        assert!(cmd.contains("HTTPS_PROXY='http://127.0.0.1:45001'"));
+        assert!(cmd.contains("NO_PROXY='127.0.0.1,localhost,::1'"));
         assert!(cmd.contains("command(*)"));
         assert!(cmd.contains("mcp_multicc_host_exec_host_run_command"));
         assert!(cmd.contains("run tests"));

@@ -4,7 +4,10 @@
 // 目录存在性、按绑定解析与 fail-closed）只有一份：native/core/src/agy_accounts.rs，
 // 经原生模块暴露。这里不再解析 JSON、也不自己拼路径 —— 任何账号读写规则都在 Rust。
 
+const path = require('node:path');
 const { getNative } = require('./native/runtime');
+
+const PLUGINS_DIR = path.resolve(__dirname, '..', 'plugins');
 
 function missingAccountError(reason) {
   const error = new Error('所选 Antigravity 账户已不存在，请在运行配置里重新选择账户');
@@ -25,10 +28,19 @@ function envFromResolvedJson(raw) {
   if (!raw) return null;
   const parsed = JSON.parse(raw);
   if (parsed && parsed.kind === 'remote' && parsed.remote) {
-    return { MULTICC_AGY_REMOTE_ACCOUNT_JSON: raw };
+    return {
+      MULTICC_AGY_REMOTE_ACCOUNT_JSON: raw,
+      ...(parsed.egressBinding ? { MULTICC_PLUGINS_DIR: PLUGINS_DIR } : {}),
+    };
   }
   if (parsed && parsed.kind === 'local' && parsed.home) {
-    return { HOME: parsed.home };
+    return {
+      HOME: parsed.home,
+      ...(parsed.egressBinding ? {
+        MULTICC_AGY_EGRESS_JSON: JSON.stringify(parsed.egressBinding),
+        MULTICC_PLUGINS_DIR: PLUGINS_DIR,
+      } : {}),
+    };
   }
   return null;
 }

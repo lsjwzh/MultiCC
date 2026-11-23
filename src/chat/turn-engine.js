@@ -1511,6 +1511,9 @@ function createChatTurnEngine(deps) {
       if (persisted.cli === 'agy' && childEnv.MULTICC_AGY_REMOTE_ACCOUNT_JSON) {
         spawnCmd = gatewayPath();
         finalSpawnArgs = ['agy-remote-bridge', '--local-cwd', cs.cwd, '--', ...finalSpawnArgs];
+      } else if (persisted.cli === 'agy' && childEnv.MULTICC_AGY_EGRESS_JSON) {
+        spawnCmd = gatewayPath();
+        finalSpawnArgs = ['agy-egress-exec', '--bin', spawnCmd, '--', ...finalSpawnArgs];
       }
       const runner = createRunnerOwnership(turn, {
         completion: createAdapterCompletion(provider),

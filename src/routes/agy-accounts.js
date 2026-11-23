@@ -41,6 +41,21 @@ function mountAgyAccountRoutes(app, rawDeps) {
     const dir = dirList.find(item => item && item.path) || dirList[0];
     if (!dir) return res.status(500).json({ error: 'no directory available' });
 
+    const proxyUrl = typeof (req.body && req.body.proxyUrl) === 'string' ? req.body.proxyUrl.trim() : '';
+    const loginEnv = {
+      HOME: accountDir,
+      ...(proxyUrl ? {
+        HTTP_PROXY: proxyUrl,
+        HTTPS_PROXY: proxyUrl,
+        ALL_PROXY: proxyUrl,
+        http_proxy: proxyUrl,
+        https_proxy: proxyUrl,
+        all_proxy: proxyUrl,
+        NO_PROXY: '127.0.0.1,localhost,::1',
+        no_proxy: '127.0.0.1,localhost,::1',
+      } : {}),
+    };
+
     await disposeLoginTerminal(AGY_LOGIN_FLOW);
     const result = await createSessionRecord({
       dir,
@@ -49,7 +64,7 @@ function mountAgyAccountRoutes(app, rawDeps) {
       id: AGY_LOGIN_SESSION_ID,
       label: LOGIN_LABEL,
       loginFlow: AGY_LOGIN_FLOW,
-      loginEnv: { HOME: accountDir },
+      loginEnv,
       persistence: 'required',
       persistenceSource: 'http.agy-login-terminal',
     });
