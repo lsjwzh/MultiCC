@@ -31,10 +31,10 @@ use multicc_core::http_gate::{self};
 use multicc_core::js::regex::SPACE;
 use multicc_core::js::serde::truthy_opt;
 use multicc_core::js::string::js_trim;
+use multicc_core::notify_settings::summarize_secret_url;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use url::Url;
 
 use crate::app::express::{self, RequestCtx};
 use crate::host_port;
@@ -298,43 +298,6 @@ fn fingerprint_endpoint(endpoint: Option<&Value>) -> String {
     format!("sha256:{}", &hex[..16])
 }
 
-// ── notification URL masking ────────────────────────────────────────────────
-
-struct SecretUrl {
-    configured: bool,
-    origin: String,
-    masked: String,
-}
-
-/// Only the origin of a notification destination is safe to display: the path,
-/// query and userinfo can carry a device key or webhook token.
-fn summarize_secret_url(value: Option<&Value>) -> SecretUrl {
-    let raw = match value {
-        Some(Value::String(text)) if !text.is_empty() => text,
-        _ => {
-            return SecretUrl {
-                configured: false,
-                origin: String::new(),
-                masked: String::new(),
-            }
-        }
-    };
-    let origin = Url::parse(raw)
-        .ok()
-        .filter(|url| url.scheme() == "http" || url.scheme() == "https")
-        .map(|url| url.origin().ascii_serialization())
-        .unwrap_or_default();
-    SecretUrl {
-        masked: if origin.is_empty() {
-            "\u{2022}\u{2022}\u{2022}\u{2022}".to_string()
-        } else {
-            format!("{origin}/\u{2022}\u{2022}\u{2022}\u{2022}")
-        },
-        configured: true,
-        origin,
-    }
-}
-
 // ── access token ────────────────────────────────────────────────────────────
 
 /// `token.length > 4 ? '****' + token.slice(-4) : '****'` with `length` and
@@ -365,7 +328,7 @@ fn internal(ctx: &RequestCtx, code: Option<&str>, detail: &str) -> Response<Body
 
 /// `safeErrorHandler` for a host-side throw: its status (when the error carried
 /// a 4xx/5xx), the client-safe message rule, and the error's `code` fallback.
-fn internal_from_answer(ctx: &RequestCtx, answer: &Value) -> Response<Body> {
+pub(super) fn internal_from_answer(ctx: &RequestCtx, answer: &Value) -> Response<Body> {
     let status = answer
         .get("status")
         .and_then(Value::as_u64)
@@ -449,7 +412,11 @@ pub async fn handle(ctx: &RequestCtx, route: Route, host: u16, peer: &str) -> Re
         Route::PushHealth => push_health(ctx, payload),
         Route::Notify => notify(ctx, payload),
         Route::Funnel => echo_status_wrapper(ctx, payload),
-        Route::AccessToken => access_token(ctx, payload, peer),
+        Route::AccessToken => {
+            let token =
+                multicc_core::js::serde::value_or_empty(payload.and_then(|p| p.get("token")));
+            access_token(ctx, &token, peer)
+        }
         Route::Tunnel | Route::Ipv6 | Route::Sakurafrp | Route::Power | Route::Battery => {
             echo_json(ctx, payload)
         }
@@ -460,7 +427,7 @@ fn object_field<'a>(object: Option<&'a Map<String, Value>>, key: &str) -> Option
     object.and_then(|object| object.get(key))
 }
 
-fn push_health(ctx: &RequestCtx, payload: Option<&Value>) -> Response<Body> {
+pub(super) fn push_health(ctx: &RequestCtx, payload: Option<&Value>) -> Response<Body> {
     let Some(source) = payload.and_then(Value::as_object) else {
         return internal(ctx, None, "push health host payload missing");
     };
@@ -506,10 +473,10 @@ fn push_health(ctx: &RequestCtx, payload: Option<&Value>) -> Response<Body> {
     )
 }
 
-fn notify(ctx: &RequestCtx, payload: Option<&Value>) -> Response<Body> {
+pub(super) fn notify(ctx: &RequestCtx, payload: Option<&Value>) -> Response<Body> {
     let source = payload.and_then(Value::as_object);
-    let bark = summarize_secret_url(object_field(source, "barkUrl"));
-    let webhook = summarize_secret_url(object_field(source, "webhookUrl"));
+    let bark = summarize_secret_url(object_field(source, "barkUrl").and_then(Value::as_str));
+    let webhook = summarize_secret_url(object_field(source, "webhookUrl").and_then(Value::as_str));
     let mut out = Map::new();
     out.insert("barkUrl".into(), Value::String(bark.masked));
     out.insert("barkOrigin".into(), Value::String(bark.origin));
@@ -533,14 +500,11 @@ fn notify(ctx: &RequestCtx, payload: Option<&Value>) -> Response<Body> {
     express::json(ctx, 200, &Value::Object(out), &[])
 }
 
-fn access_token(ctx: &RequestCtx, payload: Option<&Value>, peer: &str) -> Response<Body> {
-    let source = payload.and_then(Value::as_object);
-    // `deps.getAccessToken() || ''`.
-    let token = multicc_core::js::serde::value_or_empty(object_field(source, "token"));
+pub(super) fn access_token(ctx: &RequestCtx, token: &str, peer: &str) -> Response<Body> {
     let masked = if token.is_empty() {
         String::new()
     } else {
-        mask_token(&token)
+        mask_token(token)
     };
     express::json(
         ctx,
@@ -643,29 +607,6 @@ mod tests {
             channel,
             r#"{"configured":true,"lastSendTime":5,"lastSuccess":true,"lastError":"timeout"}"#
         );
-    }
-
-    #[test]
-    fn secret_urls_keep_only_the_origin() {
-        let full = summarize_secret_url(Some(&json!("https://h.example:8443/a/b?token=1")));
-        assert!(full.configured);
-        assert_eq!(full.origin, "https://h.example:8443");
-        assert_eq!(
-            full.masked,
-            "https://h.example:8443/\u{2022}\u{2022}\u{2022}\u{2022}"
-        );
-        let default_port = summarize_secret_url(Some(&json!("http://H.Example:80/x")));
-        assert_eq!(default_port.origin, "http://h.example");
-        let userinfo = summarize_secret_url(Some(&json!("https://user:secret@h.example/x")));
-        assert_eq!(userinfo.origin, "https://h.example");
-        let relative = summarize_secret_url(Some(&json!("/not-a-url")));
-        assert!(relative.configured);
-        assert_eq!(relative.origin, "");
-        assert_eq!(relative.masked, "\u{2022}\u{2022}\u{2022}\u{2022}");
-        let empty = summarize_secret_url(Some(&json!("")));
-        assert!(!empty.configured);
-        assert_eq!(empty.masked, "");
-        assert!(!summarize_secret_url(None).configured);
     }
 
     #[test]

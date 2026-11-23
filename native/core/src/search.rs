@@ -1,5 +1,7 @@
-//! 纯计算内核。字符串规范化、UTF-16 高亮和本地化排序留在 JS 契约边界。
+//! Shared BM25 index for the addon and the standalone gateway.
+mod board;
 use crate::search_tokens::weighted_terms as tokenize;
+pub use board::search_board;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -56,6 +58,9 @@ impl SearchIndex {
         // JSON.parse accepted; sanitize them instead of failing the index.
         let documents: Vec<Document> =
             crate::json_lenient::from_str(json).map_err(|_| "invalid_search_documents")?;
+        Ok(Self::from_documents(documents))
+    }
+    fn from_documents(documents: Vec<Document>) -> Self {
         let mut docs = Vec::new();
         let mut frequencies: HashMap<String, usize> = HashMap::new();
         let mut sums = [0.0; 4];
@@ -105,11 +110,14 @@ impl SearchIndex {
                 (sums[i] / counts[i] as f64).max(1.0)
             }
         });
-        Ok(Self { docs, idf, average })
+        Self { docs, idf, average }
     }
     pub fn search(&self, json: &str) -> Result<String, String> {
         let query: Query =
             crate::json_lenient::from_str(json).map_err(|_| "invalid_search_query")?;
+        serde_json::to_string(&self.rank(&query)).map_err(|_| "search_result_encode".into())
+    }
+    fn rank(&self, query: &Query) -> Vec<Hit> {
         let mut hits = Vec::new();
         for doc in &self.docs {
             let source = &doc.source;
@@ -190,7 +198,7 @@ impl SearchIndex {
                 matched_fields,
             });
         }
-        serde_json::to_string(&hits).map_err(|_| "search_result_encode".into())
+        hits
     }
 }
 

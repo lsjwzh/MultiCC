@@ -25,8 +25,7 @@
 // The Node side mounts the frozen retired handlers
 // (tests/helpers/legacy-session-admin-routes.js) over the scripted world in
 // tests/helpers/session-admin-scripted-world.js, behind the same public-session
-// access guard server.js mounts on those paths (src/session/
-// public-session-access.js). The Rust front door calls its host port
+// access guard frozen at tests/helpers/legacy-public-session-access.js. The Rust front door calls its host port
 // (/api/__host/session-admin); the stub Node child here is the real
 // src/routes/session-admin.js host composition (createSessionAdminRuntime →
 // mountSessionAdminHostRoute) over the same world, so both sides read one set
@@ -58,7 +57,7 @@
 //     native/gateway/tests/session_admin.rs.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, send } = require('./lib');
 
 const HOST_PATH = '/api/__host/session-admin';
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-req-1' };
@@ -796,6 +795,17 @@ listener.listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT), '127.0.0.1');
 
 main({
   name: 'session-admin',
+  async ready(port) {
+    // The gateway listener can accept requests before the scripted host binds.
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        const result = await send(port, { method: 'GET', url: '/api/sessions', headers: { Host: 'localhost' } }, 1000);
+        if (result.status === 200) return;
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('session-admin fixture did not become ready');
+  },
   mount(app, { repo, work }) {
     worldPath = path.join(work, 'session-admin-world.json');
     effectsPath = path.join(work, 'session-admin-effects.ndjson');
@@ -808,7 +818,7 @@ main({
     // to reproduce both 404 shapes, so the Node side mounts the real guard.
     const { createErrorDto, requestContext } = require(path.join(repo, 'src/api-contract'));
     const { mountPublicSessionAccessGuard } =
-      require(path.join(repo, 'src/session/public-session-access'));
+      require(path.join(repo, 'tests/helpers/legacy-public-session-access'));
     mountPublicSessionAccessGuard(app, {
       records: bag.deps.records,
       v1NotFound: (req, res) => res.status(404).json(createErrorDto({

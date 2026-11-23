@@ -117,8 +117,31 @@ function untrackedPlugins(repoRoot) {
     .sort();
 }
 
+const LEGACY_HOST_PACKAGES = [
+  "@agentclientprotocol/sdk",
+  "@anthropic-ai/claude-agent-sdk",
+  "@homebridge/ciao",
+  "@larksuiteoapi/node-sdk",
+  "@slack/bolt",
+  "chokidar",
+  "cli-provider-router",
+  "discord.js",
+  "express",
+  "multer",
+  "node-cron",
+  "node-telegram-bot-api",
+  "pinyin-pro",
+  "proxy-agent",
+  "sherpa-onnx-node",
+  "undici",
+  "web-push",
+  "ws"
+];
+
 function transformPackageJson(pkg) {
-  const dependencies = { ...(pkg.dependencies || {}) };
+  const dependencies = pkg.dependencies ? { ...pkg.dependencies }
+    : Object.fromEntries(LEGACY_HOST_PACKAGES.filter(name => pkg.devDependencies?.[name])
+      .map(name => [name, pkg.devDependencies[name]]));
   const optionalDependencies = { ...(pkg.optionalDependencies || {}) };
   for (const name of OPTIONAL_AT_RUNTIME) {
     if (dependencies[name]) {

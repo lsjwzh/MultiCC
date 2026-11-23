@@ -121,6 +121,7 @@ pub async fn handle(
     let upgrade = hyper::upgrade::on(&mut request);
     tokio::spawn(async move {
         let Ok(upgraded) = upgrade.await else { return };
+        let _connected = app.ws_clients.enter();
         let mut socket =
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, None).await;
         let authorized = matches!(

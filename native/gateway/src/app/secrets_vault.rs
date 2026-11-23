@@ -15,7 +15,11 @@
 //! `{name,description,source,createdAt,updatedAt,updatedBy?}` (values never
 //! leave it except through `reveal`).
 //!
-//! Node answered each request to completion on one thread. Every route here
+//! In standalone mode the list reads the startup metadata snapshot only after
+//! the local audit journal records access. The remaining operations and all
+//! compatibility-mode operations still use the live store in the host.
+//!
+//! Node answered each request to completion on one thread. Each host operation
 //! awaits the host once, so [`App::secrets_vault`] serializes requests: the
 //! rename's old/new pair and the capacity check both read store state before
 //! writing it, and a request must not see another's half-finished round trip.
@@ -129,15 +133,7 @@ fn is_name(text: &str) -> bool {
 
 /// `LEGACY_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/`: lookup names may still be the
 /// pre-tightening entries, which is what keeps them readable and deletable.
-fn is_legacy_name(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    if bytes.is_empty() || bytes.len() > 64 {
-        return false;
-    }
-    bytes
-        .iter()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-}
+use multicc_core::vault_metadata::legacy_name as is_legacy_name;
 
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
     match (shape(path)?, method.as_str()) {
@@ -206,6 +202,16 @@ fn lookup_name(ctx: &RequestCtx) -> Option<String> {
 /// the store, re-emitted as received.
 pub async fn list(app: &App, ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
     let _serialized = app.secrets_vault.lock().await;
+    if !app.node_enabled {
+        let Some(catalog) = app.vault_metadata.get().cloned() else {
+            return unavailable(ctx);
+        };
+        let audit = app.data_root.join("logs/secret-audit.jsonl");
+        return match tokio::task::spawn_blocking(move || catalog.list(&audit)).await {
+            Ok(Ok(bytes)) => express::send(ctx, 200, "application/json; charset=utf-8", bytes, &[]),
+            _ => unavailable(ctx),
+        };
+    }
     let Some(answer) = host(host_port_num, json!({ "op": "list" })).await else {
         return unavailable(ctx);
     };

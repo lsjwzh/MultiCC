@@ -6448,6 +6448,15 @@
       ]
     },
     {
+      "path": "tests/test-task-display-attribution.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
       "path": "tests/test-task-domain-native.js",
       "tier": "core",
       "lane": "deterministic"

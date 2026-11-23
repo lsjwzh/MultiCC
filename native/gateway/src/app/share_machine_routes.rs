@@ -20,7 +20,7 @@
 //! registry and its grant store (already `multicc_core::machines`, reached
 //! through the addon), the remote machine HTTP transport, the WS-ticket table
 //! owned by the child's `AuthRuntime`, the share store and its password
-//! cookies, the workspace scan/sweep runtime and the versioned-HTML writer.
+//! cookies and the workspace scan/sweep runtime. The gateway renders the share page.
 //! Node keeps exactly those behind one host port,
 //! `POST /api/__host/share-machines` (`src/routes/share-machines-host.js`),
 //! which answers `{ status, body, headers }` — the status, JSON body and
@@ -208,7 +208,7 @@ fn relay_headers(answer: &Value) -> Vec<(&str, &str)> {
 /// its own `try` (the old `safeErrorHandler` path) carries `threw:true` plus the
 /// DTO fields; the front door builds the same envelope with its own request ids,
 /// never leaking the thrown message.
-fn relay(ctx: &RequestCtx, answer: Value) -> Response<Body> {
+pub(super) fn relay(ctx: &RequestCtx, answer: Value) -> Response<Body> {
     if answer.get("threw") == Some(&Value::Bool(true)) {
         let status = answer.get("status").and_then(Value::as_u64).unwrap_or(500) as u16;
         let code = answer
@@ -223,25 +223,6 @@ fn relay(ctx: &RequestCtx, answer: Value) -> Response<Body> {
     }
     let status = answer.get("status").and_then(Value::as_u64).unwrap_or(500) as u16;
     let headers = relay_headers(&answer);
-    // `res.status(500).end()` on the share page (the HTML file is missing):
-    // Express ends a body-less response with no Content-Type and no ETag.
-    if answer.get("bare") == Some(&Value::Bool(true)) {
-        let mut builder = express::with_base_headers(Response::builder().status(status), ctx);
-        builder = express::header(builder, "Content-Length", "0");
-        express::log_request(ctx, status);
-        return builder.body(Body::empty()).expect("static response parts");
-    }
-    // The public page goes out as `res.type('text/html').send(html)`; every
-    // other route as `res.status(...).json(...)`.
-    if let Some(content_type) = answer.get("contentType").and_then(Value::as_str) {
-        let body = answer
-            .get("body")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .as_bytes()
-            .to_vec();
-        return express::send(ctx, status, content_type, body, &headers);
-    }
     let body = answer.get("body").cloned().unwrap_or(Value::Null);
     express::json(ctx, status, &body, &headers)
 }
@@ -352,6 +333,19 @@ pub async fn handle(
         },
     };
 
+    if route == Route::SharePage {
+        let page = share_machine_routes::page_segments(&ctx.path).unwrap_or_default();
+        if let Err(response) = decoded(ctx, page.get(1).copied().unwrap_or("")) {
+            return response;
+        }
+        return super::static_web_root::versioned(
+            app,
+            ctx,
+            super::static_web_root::HtmlPage::Share,
+        )
+        .await;
+    }
+
     let Some(op) = route.op() else {
         return express::error(ctx, 500, "native route has no host op");
     };
@@ -365,21 +359,44 @@ pub async fn handle(
         "originalUrl".into(),
         Value::String(ctx.original_url.clone()),
     );
-    let param_parts = match route.page_param() {
-        Some((_, _)) => share_machine_routes::page_segments(&ctx.path).unwrap_or_default(),
-        None => parts.clone(),
-    };
-    let mut params = route.params().to_vec();
-    if let Some(param) = route.page_param() {
-        params.push(param);
-    }
-    for (name, index) in params {
-        let raw = param_parts.get(index).copied().unwrap_or("");
+    for &(name, index) in route.params() {
+        let raw = parts.get(index).copied().unwrap_or("");
         match decoded(ctx, raw) {
             Ok(value) => {
                 payload.insert(name.to_string(), Value::String(value));
             }
             Err(response) => return response,
+        }
+    }
+    if !app.node_enabled {
+        if matches!(route, Route::ShareEntry | Route::ShareAuth) {
+            let token = payload["token"].as_str().unwrap_or_default().to_owned();
+            return super::share_entry::handle(&app.data_root, ctx, route, token, request_body)
+                .await;
+        }
+        let op = match route {
+            Route::MachinesList => Some("list"),
+            Route::MachinesSelf => Some("self"),
+            Route::MachinesGrants => Some("grants"),
+            Route::MachinesRename => Some("rename"),
+            _ => None,
+        };
+        if let Some(op) = op {
+            let input = json!({ "id": payload.get("machineId"), "name": request_body.get("name") });
+            let root = app.data_root.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                multicc_core::machines::local_operation(&root.to_string_lossy(), op, &input)
+            })
+            .await;
+            return match result {
+                Ok(reply) => express::json(
+                    ctx,
+                    reply["status"].as_u64().unwrap_or(500) as u16,
+                    &reply["data"],
+                    &[("Cache-Control", "no-store")],
+                ),
+                Err(_) => unavailable(ctx),
+            };
         }
     }
     payload.insert("query".into(), query_json(ctx));

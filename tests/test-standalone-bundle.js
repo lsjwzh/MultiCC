@@ -24,6 +24,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
+const stageDesktopKernels = require('./helpers/stage-desktop-kernels');
 const LAUNCHER = path.join(ROOT, 'scripts', 'standalone-launcher.js');
 const FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js');
 
@@ -74,11 +75,10 @@ function readPidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error && error.code === 'EPERM'; }
 }
 
-// A minimal bundle: only Resources/app-server/server.js is needed to drive the
-// launcher end to end; the fixture replaces the real server.
+// Stage the gateway and its auth addon. Only the Node backend is a fixture.
 function stageFakeServer(resourcesDir) {
   const appServer = path.join(resourcesDir, 'app-server');
-  fs.mkdirSync(appServer, { recursive: true });
+  stageDesktopKernels(ROOT, appServer);
   fs.writeFileSync(path.join(appServer, 'server.js'), `require(${JSON.stringify(FIXTURE)});\n`);
   return appServer;
 }
@@ -411,7 +411,7 @@ test('a foreground launcher outlives a dead server and brings it back', { timeou
     stdio: ['ignore', 'pipe', 'pipe'],
     // Exit 0, the way /api/restart in desktop mode ends: the front door hands
     // that back to the launcher (a crash it would relaunch on its own).
-    env: { ...process.env, READY_DELAY_MS: '50', EXIT_AFTER_READY_MS: '6000', EXIT_CODE: '0',
+    env: { ...process.env, MULTICC_COMPAT_HOST: '1', READY_DELAY_MS: '50', EXIT_AFTER_READY_MS: '6000', EXIT_CODE: '0',
       EXIT_ONCE_MARKER: path.join(scratch, 'exited-once') },
   });
   let output = '';
@@ -464,7 +464,7 @@ test('a second launcher refuses to start while the first is still booting', { ti
   // /readyz for this long, so nothing about the running server is discoverable.
   const first = spawn(process.execPath, [LAUNCHER, '--start', ...launcherArgs], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, READY_DELAY_MS: '8000' },
+    env: { ...process.env, MULTICC_COMPAT_HOST: '1', READY_DELAY_MS: '8000' },
   });
   let firstOutput = '';
   first.stdout.on('data', chunk => { firstOutput += chunk; });

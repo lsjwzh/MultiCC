@@ -7,6 +7,8 @@ publish = false
 [features]
 
 [dependencies]
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value", "preserve_order", "float_roundtrip", "unbounded_depth"] }
 serde_stacker = "0.1"
@@ -35,6 +37,8 @@ aes-gcm = "0.10"
 toml_edit = "0.22"
 crc32fast = "1"
 flate2 = "1"
+icu_collator = "2"
+icu_locale_core = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -927,7 +927,7 @@ fn exit_text(code: Option<i32>, signal: Option<i32>) -> String {
 
 /// Node reports `signal` as a name (`'SIGKILL'`); map the common numbers back.
 #[cfg(unix)]
-fn signal_name(signal: Option<i32>) -> Option<String> {
+pub(crate) fn signal_name(signal: Option<i32>) -> Option<String> {
     let signal = signal?;
     let name = match signal {
         libc::SIGHUP => "SIGHUP",

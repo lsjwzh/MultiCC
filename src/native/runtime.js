@@ -233,11 +233,6 @@ function runNative(operation) {
     if (active < 2) start(); else waiting.push(start);
   });
 }
-// 版本化 HTML 重写：规则只有 Rust 一份（multicc_core::static_assets_routes），
-// 分享页在宿主端口上渲染时经这里调用。读文件失败回 null = 退休实现的 500。
-function staticVersionedHtml(file, publicDir) {
-  return getNative().staticVersionedHtml(file, publicDir) ?? null;
-}
 function decodeRecoveryEvents(raw) { return getNative().decodeSchedulerRecoveryEvents(raw); }
 const reference = (op, value) => JSON.parse(getNative().taskShellReference(op, JSON.stringify(value)));
 const taskShellContext = {
@@ -385,7 +380,7 @@ function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
 module.exports = { getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
-  staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
   pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };

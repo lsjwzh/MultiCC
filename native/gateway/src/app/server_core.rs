@@ -18,8 +18,7 @@
 //! commander-migration snapshot), the merged metrics table and the repo-actor
 //! operation status. Under `--no-node` there is no child to ask and the front
 //! door *is* the service, so the two public probes answer from this process's
-//! own facts (`local_healthz` / `local_readyz`); `/metrics` and
-//! `/api/repo-operations` still describe Node state and keep failing closed.
+//! own state, exporting the gateway counters and its Git operation history.
 //! The host-port facts they
 //! cross one host port, `POST /api/__host/server-core`
 //! (`src/routes/server-core-host.js`); this module validates the DTO, renders the
@@ -342,7 +341,7 @@ async fn metrics(ctx: &RequestCtx, host: u16) -> Response<Body> {
     )
 }
 
-async fn repo_operation(ctx: &RequestCtx, host: u16) -> Response<Body> {
+async fn repo_operation(app: &App, ctx: &RequestCtx, host: u16) -> Response<Body> {
     let Some(raw) = operation_segment(&ctx.path) else {
         // Claimed only when the matcher accepted it.
         return express::error(ctx, 500, "repo-operation route claimed without a segment");
@@ -352,6 +351,12 @@ async fn repo_operation(ctx: &RequestCtx, host: u16) -> Response<Body> {
     let Some(id) = super::download::decode_uri_component(raw) else {
         return express::error(ctx, 400, "Failed to decode param");
     };
+    if !app.node_enabled {
+        return match app.git_push_states.operations.status(&id) {
+            Some(row) => express::json(ctx, 200, &row, &[]),
+            None => express::json(ctx, 404, &json!({"error":not_found_message()}), &[]),
+        };
+    }
     let answer = host_port::call(
         host,
         HOST_PATH,
@@ -407,8 +412,29 @@ pub async fn handle(
         Route::Readyz if !app.node_enabled => local_readyz(ctx),
         Route::Healthz => healthz(ctx, host).await,
         Route::Readyz => readyz(ctx, host).await,
+        Route::Metrics if !app.node_enabled => {
+            let table = Map::from_iter([
+                (
+                    "multicc_active_turns".into(),
+                    json!(app.native_chat.active_turns().await),
+                ),
+                (
+                    "multicc_git_queue_depth".into(),
+                    json!(app.git_push_states.operations.depth.value()),
+                ),
+                ("multicc_ws_clients".into(), json!(app.ws_clients.value())),
+                ("multicc_ready".into(), json!(1)),
+            ]);
+            express::send(
+                ctx,
+                200,
+                metrics_content_type(),
+                render_metrics(&table).into_bytes(),
+                &[],
+            )
+        }
         Route::Metrics => metrics(ctx, host).await,
-        Route::RepoOperation => repo_operation(ctx, host).await,
+        Route::RepoOperation => repo_operation(app, ctx, host).await,
         Route::Options { .. } => super::options(ctx, "GET,HEAD"),
     }
 }

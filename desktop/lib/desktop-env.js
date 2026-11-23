@@ -98,18 +98,21 @@ function gatewayBinary({ serverDir, env = process.env, platform = process.platfo
   return path.join(dir, name);
 }
 
-// What the supervisor spawns: the front door, told which Node runs which entry.
+// Packaged services start Rust directly. An explicit compatibility host is available for legacy installations.
 // `--stdin-lifeline`: the supervisor holds the front door's stdin, so whatever
 // way the supervisor goes away, the front door and then Node shut down too.
-function gatewayLaunch({ serverEntry, node, env = process.env, platform, arch, exists = fs.existsSync }) {
+function gatewayLaunch({ serverEntry, node, packaged = false, env = process.env, platform, arch, exists = fs.existsSync }) {
   const serverDir = path.dirname(serverEntry);
-  const command = gatewayBinary({ serverDir, env, platform, arch });
+  const command = gatewayBinary({ serverDir, env: packaged ? {} : env, platform, arch });
   if (!exists(command)) {
     const error = new Error(`Rust front door not found: ${command}`);
     error.code = 'GATEWAY_MISSING';
     throw error;
   }
-  return { command, args: ['serve', '--cwd', serverDir, '--node', node, '--stdin-lifeline', serverEntry] };
+  const args = ['serve', '--cwd', serverDir, '--stdin-lifeline'];
+  if (env.MULTICC_COMPAT_HOST === '1') args.push('--node', node, serverEntry);
+  else args.push('--no-node');
+  return { command, args };
 }
 
 // Same tolerant KEY=VALUE parsing as src/host-env.js readEnvFile: one assignment
@@ -169,6 +172,13 @@ function buildChildEnv({ port, desktopEnv, baseEnv = {}, dotenv = {}, runtimeNod
   env.PORT = String(port);
   env.HOST = DESKTOP_LOOPBACK_HOST;
   env.MULTICC_DATA_DIR = desktopEnv.dataRoot;
+  if (desktopEnv.mode === 'packaged') {
+    // A terminal opened by an older checkout inherits its native module.
+    // Load the module built alongside this installation's gateway.
+    env.MULTICC_RUST_PREBUILT_DIR = path.join(desktopEnv.serverDir, 'native', 'prebuilt');
+    env.MULTICC_RUST_ADDON = path.join(env.MULTICC_RUST_PREBUILT_DIR,
+      `${process.platform}-${process.arch}`, 'multicc_core.node');
+  }
   // The detached restart supervisor publishes one generation before the old
   // gateway exits. Re-read it on each spawn, including crash-loop retries.
   try { env.MULTICC_RESTART_GENERATION = fs.readFileSync(path.join(desktopEnv.dataRoot, '.restart-generation'), 'utf8').trim(); env.MULTICC_RESTART_EXACT_PORT = '1'; }

@@ -19,6 +19,8 @@ function snapshot(filename, source, dependencies = {}) {
 const context = snapshot('task-board/turn-context.js', 'legacy-task-run-context.js');
 const seed = require('./legacy-task-cold-start-seed');
 const runtime = snapshot('routes/task-board.js', 'legacy-task-board-runtime.js', {
+  '../task-display-attribution': require('./legacy-task-display-attribution'),
+  '../task-board/runtime-helpers': require('./legacy-task-board-runtime-helpers'),
   '../task-board/turn-context': context, '../task-board/cold-start-seed': seed,
 });
 module.exports = { ...runtime, ...context, ...seed };

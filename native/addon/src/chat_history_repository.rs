@@ -9,8 +9,8 @@ use crate::{
 };
 use multicc_core::{
     chat_history_file::{
-        encode_rows, safe_stem, scan_json_lines, scan_legacy_array, starts_with_array,
-        transcript_path as history_path, visibility_path, visit_json_object, LegacyError,
+        encode_rows, safe_stem, scan_json_lines, scan_legacy_array, scan_legacy_records,
+        starts_with_array, transcript_path as history_path, visibility_path, LegacyError,
         LineError, Row,
     },
     chat_history_file_repository as facade_core,
@@ -283,7 +283,11 @@ impl Task for HistoryPhysicalPageJob {
                 .map_err(|_| Error::from_reason("HISTORY_INDEX_TOO_LARGE"))?,
             records: records
                 .into_iter()
-                .map(|line| String::from_utf8_lossy(&line).into_owned())
+                .map(|line| {
+                    String::from_utf8(line).unwrap_or_else(|error| {
+                        String::from_utf8_lossy(error.as_bytes()).into_owned()
+                    })
+                })
                 .collect(),
             ledger,
         })
@@ -929,10 +933,14 @@ fn probe_legacy_array(
     delivery_id: &str,
 ) -> std::result::Result<bool, HistoryProbeError> {
     let mut found = false;
-    match scan_legacy_array(reader, |_, value| {
-        found |= probe_value(&value, delivery_id) == Some(true);
-        Ok::<(), LegacyError<std::convert::Infallible>>(())
-    }) {
+    match scan_legacy_records(
+        reader,
+        |line| multicc_core::js::json_project_object(line, &["deliveryId", "clientMsgId"]),
+        |_, value| {
+            found |= probe_value(&value, delivery_id) == Some(true);
+            Ok::<(), LegacyError<std::convert::Infallible>>(())
+        },
+    ) {
         Ok(()) => Ok(found),
         Err(LegacyError::Io(error)) => Err(io_probe(error, "read", None)),
         Err(LegacyError::Callback(never)) => match never {},
@@ -983,9 +991,16 @@ fn probe_file(file: File, delivery_id: &str) -> std::result::Result<bool, Histor
         false,
         Some(multicc_core::chat_history_index::MAX_INDEX_RECORD_BYTES),
         |line| {
-            Ok::<_, std::convert::Infallible>(visit_json_object(line, |value| {
-                found |= probe_value(&value, delivery_id) == Some(true);
-            }))
+            Ok::<_, std::convert::Infallible>(
+                match multicc_core::js::json_project_object(line, &["deliveryId", "clientMsgId"]) {
+                    Ok(value @ SemanticValue::Object(_)) => {
+                        found |= probe_value(&value, delivery_id) == Some(true);
+                        Row::Accepted
+                    }
+                    Ok(_) => Row::InvalidObject,
+                    Err(_) => Row::InvalidJson,
+                },
+            )
         },
     );
     match result {

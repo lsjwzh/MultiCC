@@ -1,19 +1,11 @@
 'use strict';
 // Composition for the session doctor and its environment sibling: wires the
 // Aux HTTP target and the host's session/history accessors into the services
-// and (for the legacy direct mount) registers their routes.
-//
-// Both route groups are now owned by the Rust front door
-// (`native/gateway/src/app/host_ops_routes.rs`): `src/routes/host-ops-host.js`
-// mounts them on its capture app. `createDoctorHost` builds the two service
-// instances; `mountDoctor` is kept for callers that still mount the Express
-// routes directly (the unit tests).
+// used by the Rust gateway through the host operations port.
 const os = require('os');
 const path = require('path');
 const { createDoctorService } = require('./service');
 const { createEnvironmentDoctor } = require('./environment');
-const { mountDoctorRoutes } = require('../routes/doctor');
-const { mountEnvDoctorRoutes } = require('../routes/env-doctor');
 const { probeEnv, execShell } = require('../routes/ops-terminal');
 
 function createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir, dataDir }) {
@@ -38,11 +30,4 @@ function createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, a
   return { doctor, envDoctor };
 }
 
-function mountDoctor(app, deps) {
-  const { doctor, envDoctor } = createDoctorHost(deps);
-  mountEnvDoctorRoutes(app, { doctor: envDoctor });
-  mountDoctorRoutes(app, { doctor });
-  return doctor;
-}
-
-module.exports = { createDoctorHost, mountDoctor };
+module.exports = { createDoctorHost };

@@ -2,7 +2,13 @@
 
 > How MultiCC is installed and kept running: the one-line standalone install and its flags, updating (installed package vs. source checkout), prerequisites, the `./multicc` service manager, a systemd unit, and Flutter app builds.
 
-## Install (one line, no flags)
+## Deploy the production service
+
+Build the root Dockerfile with `docker build -t multicc-rust .`, or run `make stage DESTDIR="$PWD/multicc-service"` in a checkout and transfer that directory to a machine of the same OS and architecture. A release built with this workflow also provides the staged tree as a `multicc-service-<version>-<platform>-<arch>` archive with a SHA-256 sidecar. In the service directory, run `bin/multicc-gateway serve --cwd .` (on Windows, `bin\multicc-gateway.exe serve --cwd .`).
+
+Set `ACCESS_TOKEN`, `HOST`, a writable persistent `MULTICC_DATA_DIR` and `MULTICC_ENV_FILE`. When migrating from the Node host, let outstanding Aux requests finish before stopping it. Its queue lives in memory. Start the Rust service with the same data and configuration paths and check `/readyz`. Scheduled rules and minute claims live in `scheduled_tasks.json`. Rust stores the Aux queue, results and recovery state in `aux-jobs.sqlite`. After a Rust restart, queued requests resume. Requests already claimed with an unknown upstream outcome receive an interruption error. [Deployment commands and recovery semantics](gateway.md)
+
+## Install the desktop-compatible standalone distribution
 
 ```bash
 # macOS / Linux
@@ -97,13 +103,13 @@ toolchain:
 ```bash
 git clone https://github.com/lsjwzh/MultiCC.git
 cd MultiCC
-npm install
-node server.js
+make production
+./multicc start
 ```
 
 Here `./multicc` is a **source-checkout manager** (`start` / `stop` / `restart` /
 `status` / `log` / `update` / `install` / `uninstall`), not the packaged command,
-and `./multicc update` is `git pull` + `npm install` + restart. The
+and `./multicc update` selects the source revision, rebuilds with locked Cargo dependencies and restarts the gateway. The
 [standalone package](standalone.md) is what end users install.
 
 `install.sh` is not used on this path, so create `.env` yourself (the server also
@@ -117,11 +123,7 @@ On the stable channel (`.multicc_channel` = `stable`, written by the packaged
 installer) `update` checks out the newest release tag. On the dev channel it
 fast-forwards `main`.
 
-The v1 updater also verifies the independently packaged `cli-provider-router`
-(CPR) before starting the server. Provider credentials and defaults remain in
-MultiCC's existing `providers.json` / data directory; no CPR data migration is
-required. If an interrupted upgrade leaves dependencies incomplete, rerun
-`./multicc update` and it will repair them with `npm install` before restarting.
+Source builds require Cargo, a C/C++ toolchain and libclang. The service directory is portable to a compatible target machine with Git and the command-line tools used by its jobs.
 
 ### When the working tree is dirty or the history diverged
 
@@ -153,7 +155,7 @@ cd MultiCC && ./multicc update --force
 2. The checkout is forced onto the target commit — `origin/main` on the dev channel
    (`git reset --hard`, so ahead / behind / diverged all end the same way), the newest
    release tag on stable (`git checkout -f`).
-3. Dependencies are reinstalled if the manifests changed, and the server restarts. On the
+3. Cargo builds the selected revision, and the service restarts. On the
    dev channel that happens even when `HEAD` didn't move, because the files on disk did.
 
 The stash is **not** popped afterwards. Recover your work with `git stash list` and
@@ -191,10 +193,6 @@ Installed from the standalone package, the requirements are only these:
 - **tmux** (terminal mode only; chat mode works without it). The package does not ship or install `tmux` — install it yourself with Homebrew / your system package manager if you want the terminal page.
 - **At least one coding CLI** on your `PATH`, already logged in — `claude`, `codex`, `opencode`, `zcode`, `kimi`, or `qoder`. MultiCC can install the missing ones for you from the CLI switcher (see [Multi-CLI switching](cli-switching.md)). The package's runtime is prepended to `PATH`, so these Node-based CLIs run on the bundled Node and you never install Node yourself.
 - **On macOS, don't use a protected location for a workspace** — Desktop, Documents, Downloads, iCloud Drive, removable and network volumes. macOS gates those behind per-process disk-access grants, so registering a directory there can fail with `Operation not permitted` no matter what you authorize. Use something like `~/working`; a symlink from a protected folder to the real repo works too. See [macOS disk permissions](standalone.md#macos-磁盘权限tcc为什么给权限常常给不上).
-
-Running from a source checkout adds one more:
-
-- **Node.js** >= 22.16 (the server uses the built-in `node:sqlite` module; both `server.js` and the source-checkout `./multicc` manager refuse to start below this floor). This applies to the checkout path only — the standalone package carries its own pinned Node 22, which is also why it supports **macOS 11+** including Intel Macs that Homebrew and the Electron shell no longer cover.
 
 ## Network binding and LAN access
 
@@ -251,7 +249,7 @@ stop-marker semantics.
 ./multicc restart     # restart server
 ./multicc status      # check if running
 ./multicc log         # tail live logs
-./multicc update      # pull latest, reinstall deps, restart
+./multicc update      # pull latest, rebuild Rust, restart
 ./multicc update -f   # ...forcibly, discarding local changes to a stash (see above)
 ./multicc install     # install launchd agent (macOS auto-start on login)
 ./multicc uninstall   # remove launchd agent
@@ -263,13 +261,14 @@ source checkout (`./multicc install` covers launchd on macOS only):
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/multicc.service <<'UNIT'
+cat > ~/.config/systemd/user/multicc.service <<UNIT
 [Unit]
 Description=MultiCC Server
 After=network.target
 [Service]
-ExecStart=$(which node) $PWD/server.js
+ExecStart="$PWD/native/target/release/multicc-gateway" serve --cwd "$PWD"
 WorkingDirectory=$PWD
+EnvironmentFile=$PWD/.env
 Restart=always
 RestartSec=5
 [Install]

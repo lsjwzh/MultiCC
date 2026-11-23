@@ -480,7 +480,9 @@ test('every release-asset route mounts on the release-history host port, none on
   for (const factory of ['createDeveloperToolsRoutes', 'createMacosPrivacyRoutes', 'createOpsTerminalRoutes']) {
     assert.match(hostOpsSource, new RegExp(factory));
   }
-  assert.match(hostOpsSource, /mountEnvDoctorRoutes|mountDoctorRoutes/);
+  assert.doesNotMatch(hostOpsSource, /mountEnvDoctorRoutes|mountDoctorRoutes/);
+  assert.match(hostOpsSource, /envDoctor\.start\(input\)/);
+  assert.match(hostOpsSource, /doctor\.start\(input\)/);
 
   const response = { json(value) { this.body = value; } };
   await createApkInfoHandler({ apkDistribution })({}, response, error => { throw error; });

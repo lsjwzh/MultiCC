@@ -175,6 +175,7 @@ impl RemoteScreenWs {
         let tuning = self.tuning;
         tokio::spawn(async move {
             let Ok(upgraded) = upgrade.await else { return };
+            let _connected = app.ws_clients.enter();
             let client = WebSocketStream::from_raw_socket(
                 TokioIo::new(upgraded),
                 Role::Server,

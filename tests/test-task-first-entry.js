@@ -13,13 +13,7 @@ test('public conversation bookmarks resolve through tasks; Air owns the only cha
   const server = await new Promise(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
-  // `/manage`、`/dashboard`、`/air?view=planner` 的重定向，以及整个静态服务，
-  // 都已由 Rust 前门独占。Node 侧的产品模块现在一条注册都不剩 —— 这里直接按
-  // 导出面断言，比在冻结副本上看状态码更不容易被绕过。
-  const production = require('../src/routes/static-assets')
-    .createStaticAssetsRoutes({ publicDir: path.resolve(__dirname, '../public') });
-  assert.deepEqual(Object.keys(production), ['serveHtml']);
-  assert.equal(typeof production.mountRoutes, 'undefined');
+  assert.equal(fs.existsSync(path.resolve(__dirname, '../src/routes/static-assets.js')), false);
   for (const url of ['/manage-task-planner.js', '/manage-task-planner.css']) {
     assert.equal((await fetch(base + url)).status, 404, url);
   }

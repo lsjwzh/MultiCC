@@ -50,7 +50,7 @@
 // No documented differences: every case must agree byte for byte.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-push-1' };
 const JSONH = { ...L, 'Content-Type': 'application/json' };
@@ -461,6 +461,7 @@ function bagFor(scenario) {
 }
 
 const app = express();
+app.get('/__health', (_req, res) => res.send('ok'));
 app.use(express.json({ limit: '50mb' }));
 app.post('/api/__host/push', (req, res, next) => {
   const scenario = readWorld();
@@ -541,10 +542,12 @@ main({
     setLegacyHandler(legacyBag);
     upstreamText = upstreamSource(repo);
   },
+  ready: waitForFixture,
   get upstream() {
     return upstreamText;
   },
   gatewayEnv: work => ({
+    HOST: '127.0.0.1',
     MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON,
     MULTICC_RUST_PREBUILT_DIR: process.env.MULTICC_RUST_PREBUILT_DIR,
     MULTICC_DATA_DIR: work,

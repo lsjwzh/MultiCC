@@ -12,12 +12,12 @@ const { isVoiceRouterRecord } = require('../voice/router');
 const { runStateForFreezeReason } = require('../session-work/scheduler');
 const { runStateForClassify: runStateForLetter } = require('../classify/vocab');
 const { createTaskWorktreeService } = require('../task-worktree');
-const { taskFields } = require('../task-display-attribution');
-const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board/runtime-helpers');
 const { createTaskRetention } = require('../task-board/retention');
 const { createTaskPlanningRuntime } = require('./task-planning');
 const { openBoardStore } = require('../task-board/board-store');
 const { getNative } = require('../native/runtime');
+
+function assertTaskBoardDeps(deps) { return getNative().taskBoardAssertDeps(deps); }
 
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
@@ -374,8 +374,8 @@ function createTaskBoardRuntime(deps) {
     return classification.settled(classificationPorts, sessionName, taskId, messages, meta);
   }
 
-  const linkRelatedTasks = createRelatedTaskLinker({
-    board, groupRelatedTasks: core.groupRelatedTasks, save, notify,
+  const linkRelatedTasks = getNative().taskBoardLinkRelated.bind(null, {
+    board, groupRelatedTasks: core.groupRelatedTasks, save, notify, now: Date.now,
   });
 
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.
@@ -571,7 +571,8 @@ function createTaskBoardRuntime(deps) {
       tasks: { [task.id]: task },
       taskGroups: board.taskGroups,
     }, getSessionRunState, { sessionHasTurn }).tasks[0];
-    dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1); Object.assign(dto, taskFields(task, deps.taskShortCode));
+    dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1);
+    Object.assign(dto, getNative().taskDisplayFields(task, deps.taskShortCode));
     const body = canonicalTaskBody(task);
     if (dto.title === core.PENDING_TASK_TITLE && body.text) {
       dto.title = core.deriveTaskTitle(body.text);

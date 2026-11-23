@@ -89,7 +89,7 @@ Install v2.16.0 or later on both computers and the updated mobile app, and use a
 
 ### Mobile app
 
-The mobile app connects to your own MultiCC server. Install the desktop app or standalone server on your computer or server first.
+The mobile app connects to your own MultiCC server. Install the desktop app or deploy the Rust service first. [Production service setup](docs/installation.md#deploy-the-production-service)
 
 | System | Download |
 |---|---|
@@ -97,7 +97,7 @@ The mobile app connects to your own MultiCC server. Install the desktop app or s
 | iPhone / iPad | [App Store](https://apps.apple.com/app/id6807642727) (availability follows Apple review) |
 
 <details>
-<summary>Standalone server downloads (servers, terminal users, macOS 11–12)</summary>
+<summary>Desktop-compatible standalone downloads (including macOS 11–12)</summary>
 
 Standalone packages include Node.js. Use the [one-line installer](#quick-start) or download a package directly:
 
@@ -235,6 +235,16 @@ Remote desktop control requires a desktop agent on the host and its OS permissio
 
 ### 1. Install
 
+For a production server, build the root Dockerfile or deploy the Rust service directory. From a checkout with Rust, a C/C++ toolchain and libclang:
+
+```sh
+make stage DESTDIR="$PWD/multicc-service"
+# Set ACCESS_TOKEN and a persistent MULTICC_DATA_DIR in the service environment.
+HOST=127.0.0.1 ./multicc-service/bin/multicc-gateway serve --cwd "$PWD/multicc-service"
+```
+
+The versioned installer below is for the desktop-compatible standalone distribution. [Production deployment and systemd](docs/installation.md)
+
 ```bash
 # macOS / Linux
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.22.0/install.sh | bash
@@ -290,12 +300,13 @@ exactly as it is — nothing is copied from a directory you did not point the
 installer at without an answer — and `--adopt-data <path>` brings its sessions,
 chat history and memories over as a copy, leaving the original untouched.
 
-To hack on MultiCC itself, run it from a checkout — that path is for developers, and
-`./multicc update` there is a `git pull` + `npm install`:
+To run the Rust gateway from a checkout, install Rust, a C/C++ toolchain and libclang. Configure `ACCESS_TOKEN` and a writable `MULTICC_DATA_DIR` in the deployment environment.
 
 ```bash
 git clone https://github.com/lsjwzh/MultiCC.git
-cd MultiCC && npm install && node server.js
+cd MultiCC
+cargo build --locked --release --manifest-path native/Cargo.toml --target-dir native/target
+native/target/release/multicc-gateway serve --cwd .
 ```
 
 </details>
@@ -393,7 +404,7 @@ package *is* the upgrade).
 <details>
 <summary>Running from a source checkout (git semantics)</summary>
 
-In a checkout `./multicc update` is a `git pull` + `npm install` + restart, and it
+In a checkout `./multicc update` is a Git update, a locked Cargo build and a restart, and it
 copes with an everyday dirty tree: on the dev channel it stashes your changes as
 `multicc-auto-update`, fast-forwards `main`, and pops them back. `--force` is for
 when that isn't enough — the pop conflicts with what was just pulled, the stable
@@ -649,23 +660,11 @@ npm run test:native
 
 ### Run behind the Rust front door
 
-Every entry point — the source-checkout `./multicc` script, the standalone launcher, the desktop shell and `npm start` — already starts `multicc-gateway serve --cwd <checkout> --node <node> server.js`; the front door owns the public port and supervises Node behind it. `scripts/start-gateway.js` is the foreground launcher behind `npm start`; it refreshes the native artifacts and then runs the gateway with `--stdin-lifeline`.
-
-```bash
-npm start
-# or, against an already-built binary:
-native/target/release/multicc-gateway serve --cwd "$PWD" --node "$(command -v node)" server.js
-# Rust-owned routes only, no Node process at all:
-scripts/start-rust-only.sh
-```
-
-`--node` and `--no-node` are mutually exclusive and exactly one is mandatory: a front door told neither exits 2 instead of silently picking a runtime. `scripts/start-rust-only.sh` starts this checkout with `--no-node`, using `$MULTICC_GATEWAY_BIN` or `native/target/release/multicc-gateway`. Under `--no-node` the front door owns the authentication runtime itself when `.env` supplies a usable `ACCESS_TOKEN`: it reads the token with the same rules `server.js` used and answers auth-gated native routes through the same Rust gate (`403 AUTH_REQUIRED` / `302 /login` / `200`). Without a token (missing, empty, or over the 64 KiB control-frame limit) it fails closed: auth-gated native routes answer 503 `node_runtime_absent` with the documented text, and one diagnostic line is written to stderr. Every route the front door would forward — including every `/ws/*` upgrade, so a locally minted WS ticket cannot be redeemed yet — still answers 503 `node_runtime_absent` instead of reaching for a Node child. `--node` is unchanged: the Node child remains the only authentication owner.
-
-The front door reads `.env` from `--cwd` with the same rules `server.js` used, passes `MULTICC_GATEWAY_CHILD=1` and `MULTICC_GATEWAY_INTERNAL_PORT` to the child, and writes a PROXY v1 header on every upstream connection. `--version` prints the protocol and crate version; with no arguments it prints usage and exits 2. The full contract — arguments, supervision, the `--no-node` fail-closed shape and environment variables — is in [docs/gateway.md](docs/gateway.md).
+Use `make production` to build and `make start` to launch from a checkout. The source manager and its launchd service run the same Rust gateway. For deployment, `make stage DESTDIR=<new-directory>` installs the five native binaries, static web assets and version metadata. The root Dockerfile stages that same directory and starts its gateway directly. A persistent data volume retains cron rules, run receipts, queued Aux work and completed results. [Production entry verification](docs/rust-migration/production-entry-2026-11-24.md)
 
 The writer-lease launcher is the other shipped binary: `multicc-writer exec -- <command> [args…]` waits for `MULTICC_TASK_STORE`, `MULTICC_WRITER_FENCE` and `MULTICC_WRITER_KIND`, acquires the SQLite writer lease before spawning anything, and releases it only after the child's process group is empty. Its usage errors exit 64.
 
-### Node-free Docker image (Rust binaries only)
+### Two-binary Docker test image
 
 `docker/task-shell/Dockerfile` has a `node-free-runtime` stage: `debian:bookworm-slim` with CA certificates plus the two Rust executables (`multicc-gateway`, `multicc-writer`). Its default command is `multicc-gateway serve --cwd /srv/multicc --no-node`: the container runs with no Node process at all. It ships no `.env`, so it has no access token: forwarded routes (including WebSocket upgrades) and auth-gated native routes answer 503 `node_runtime_absent`. The build asserts there is no `node` executable, smoke-runs both binaries (`--version`, `--help`, bare gateway exit 2, bare writer exit 64) and then runs `scripts/smoke-no-node-gateway.sh` with an empty `PATH`. The image is built from the same tracked-source context the lab uses — the repository's own `.dockerignore` is fail-closed, so build it through the exporter:
 
@@ -689,7 +688,7 @@ CI builds and re-runs the smoke checks for this stage in the `node-free-runtime`
 
 ### What the Rust front door does not cover yet
 
-This is not yet a Rust-only product. The gateway owns the public port, request admission and the route groups listed in [docs/gateway.md §9](docs/gateway.md) (run-config presets, file transfer/upload/download, service routes, quota guard, subscription and limit history, token usage, model catalogs, agent resources, secrets vault, host routes, turn ledger, voice-gateway records and runtime, …). Everything else — most HTTP routes, the WebSocket hosts, static files and the chat turn coordinator — is still served by the `node server.js` upstream the gateway spawns. A Node-free start path now exists (`--no-node`, `scripts/start-rust-only.sh`, the `node-free-runtime` Docker stage and the `--no-node` CI smoke), but it only serves what needs no Node state: requests for an unmigrated route, and — when `.env` supplies no usable `ACCESS_TOKEN` — any native route that needs the authentication runtime, fail closed with 503 `node_runtime_absent`. With a token, the front door owns the token, WS-ticket table and shutdown flag locally and those auth-gated native routes answer normally, but forwarded routes and every `/ws/*` upgrade still need Node. The complete feature set therefore still needs `--node`, and the default entry points (`./multicc`, `npm start`, the standalone launcher and the desktop shell) keep passing it. How much has moved, what remains and the acceptance criteria for removing the Node upstream are tracked in [docs/backend-rust-exit-plan.md](docs/backend-rust-exit-plan.md); the front door itself is described in [docs/gateway.md](docs/gateway.md).
+The standalone gateway serves static pages and native API and WebSocket handlers. Several configured handlers still call Node for additional session operations, plugins, push delivery or repository operations. A successful readiness probe covers the running gateway. The route comparison and module inventory track the remaining product dependencies. [Production entry verification](docs/rust-migration/production-entry-2026-11-24.md) · [Node module inventory](docs/rust-migration/node-module-dependencies.md)
 
 **→ [Architecture](docs/architecture.md)**
 

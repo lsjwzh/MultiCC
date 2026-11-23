@@ -36,24 +36,19 @@
 // /api/settings/access-token and /api/settings/power also carry POST handlers
 // (src/routes/host-write.js and src/routes/host-power.js), so Express answers
 // their automatic OPTIONS with GET,HEAD,POST; the other five answer GET,HEAD.
-// The oracle only mounts the frozen read module, so this script registers a
-// pass-through POST on exactly those five paths. The pass-through calls next(),
-// which keeps POST itself a 404 in the oracle (the real POST route is not
-// mounted) while making the automatic OPTIONS Allow list match the production
-// composition and the front door. That 404 is the documented POST difference
-// below.
+// Register the same POST methods for OPTIONS. For the power POST probe both
+// sides return a marker from the neighboring write handler. On the gateway side
+// only the correct private host-ops call can produce that marker.
 //
 // Documented differences, registered apart from the byte-for-byte cases:
 //   * `GET /API/...` (uppercase prefix): Express routing is case-insensitive so
 //     the oracle answers 200, the front door only claims an exact `/api/`
 //     prefix and forwards the request.
-//   * any method other than GET/HEAD/OPTIONS on a claimed path: the oracle
-//     answers Express's 404 (its POST route is deliberately not mounted), the
-//     front door forwards.
+//   * DELETE on a read-only path: Express answers 404, the gateway forwards.
 //   * an extra path segment: oracle 404, front door forwards.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, send } = require('./lib');
 
 const HOST_PATH = '/api/__host/host-read';
 
@@ -377,6 +372,18 @@ async function answer(script, input) {
 }
 
 const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/api/__host/host-ops') {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      const call = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const ok = call.op === 'settings-power' && call.method === 'POST' && call.originalUrl === '/api/settings/power';
+      const reply = JSON.stringify({ ok, value: { status: 200, body: { owner: 'settings-power' } } });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(reply) });
+      res.end(reply);
+    });
+    return;
+  }
   if (req.method === 'POST' && req.url.split('?')[0] === HOST_PATH) {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
@@ -518,12 +525,12 @@ function corpus(ctx) {
     failureScenario('battery', { status: 500, code: 'EBATTERY', detail: 'battery probe exploded' }));
   add('GET push health host down', get('/api/push/health'), hostDownScenario());
 
+  add('POST settings power reaches the write handler', { method: 'POST', url: '/api/settings/power', headers: L });
+
   // ── documented differences ──────────────────────────────────────────────
   const shape = (node, rust = forwarded) => ({ node, rust });
   add('GET uppercase API prefix', get('/API/push/vapid-key'),
     baseScenario(), { expectedDifference: shape(view => view.status === 200) });
-  add('POST settings power', { method: 'POST', url: '/api/settings/power', headers: L },
-    baseScenario(), { expectedDifference: shape(view => view.status === 404) });
   add('DELETE vapid key', { method: 'DELETE', url: '/api/push/vapid-key', headers: L },
     baseScenario(), { expectedDifference: shape(view => view.status === 404) });
   add('GET notify extra segment', get('/api/settings/notify/x'),
@@ -544,12 +551,21 @@ main({
     installOracle(baseScenario());
     fs.writeFileSync(scriptPath, JSON.stringify(currentScenario));
     legacy.mount(app, deps);
-    // Express derives its automatic OPTIONS Allow list from the layers mounted
-    // on the path. Production registers POST on these five (host-write.js /
-    // host-power.js); a pass-through keeps that method visible to OPTIONS while
-    // still ending in the 404 of an unmounted POST route.
-    for (const routePath of POST_PATHS) app.post(routePath, (req, res, next) => next());
+    for (const routePath of POST_PATHS) {
+      app.post(routePath, (_req, res, next) => routePath === '/api/settings/power'
+        ? res.json({ owner: 'settings-power' }) : next());
+    }
     upstreamText = upstreamSource(repo);
+  },
+  async ready(port) {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        const result = await send(port, { method: 'GET', url: '/api/push/vapid-key', headers: { Host: 'localhost' } }, 1000);
+        if (result.status === 200) return;
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('host-read fixture did not become ready');
   },
   get upstream() {
     return upstreamText;

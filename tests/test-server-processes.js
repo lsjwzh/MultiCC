@@ -123,6 +123,7 @@ test('multicc start always launches through the front door and never runs node d
   // A fake front door: argument capture, or an immediate exit.
   const gateway = path.join(root, 'runtime', 'multicc-gateway');
   fs.writeFileSync(gateway, `#!/bin/sh
+[ "$1" = "--version" ] && exit 0
 printf '%s' "$*" > "$(dirname "$0")/args"
 if [ -n "$FAKE_GATEWAY_FAIL" ]; then echo "fake gateway: address already in use" >&2; exit 1; fi
 echo $$ > "$(dirname "$0")/pid"
@@ -140,7 +141,7 @@ while :; do sleep 1; done
       cwd: root,
       env: {
         PATH: process.env.PATH, HOME: root, LANG: 'C', PORT: String(port),
-        MULTICC_NODE: process.execPath, MULTICC_RUST_ADDON: path.join(root, 'runtime', 'multicc_core.node'),
+        MULTICC_GATEWAY_BIN: gateway,
         ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -166,13 +167,13 @@ while :; do sleep 1; done
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  // 1. Healthy front door: argv carries server.js, cwd is this checkout.
+  // 1. The production service starts with no compatibility child.
   const withGateway = await run({});
   assert.equal(withGateway.code, 0, withGateway.stderr);
   assert.match(withGateway.stdout, /started behind multicc-gateway/);
   assert.equal(withGateway.pid, Number(fs.readFileSync(path.join(root, 'runtime', 'pid'), 'utf8').trim()));
   const args = fs.readFileSync(path.join(root, 'runtime', 'args'), 'utf8');
-  assert.match(args, new RegExp(`^serve --cwd ${root} --node \\S+ server\\.js$`));
+  assert.equal(args, 'serve --cwd ' + root + ' --no-node');
   if (process.platform !== 'win32') {
     const table = processTable();
     const listed = table.filter(p => isServer(p, config, undefined, table));
@@ -193,9 +194,9 @@ while :; do sleep 1; done
   await killAll();
 
   // 3. A missing binary is refused before anything is spawned.
-  const missing = await run({ MULTICC_RUST_ADDON: path.join(root, 'runtime', 'absent', 'multicc_core.node') });
+  const missing = await run({ MULTICC_GATEWAY_BIN: path.join(root, 'runtime', 'absent', 'multicc-gateway') });
   assert.equal(missing.code, 1, missing.stdout);
-  assert.match(missing.stdout, /Rust front door not found/);
+  assert.match(missing.stderr + missing.stdout, /Rust front door not found/);
   assert.equal(missing.pid, null);
   await killAll();
 

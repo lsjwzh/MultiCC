@@ -13,7 +13,8 @@
 //! repair terminal, the `.env` writer and the tunnel/push runtimes, the skill
 //! sync runtime, and the doctor / environment-doctor services. Node keeps
 //! exactly those behind one host port, `POST /api/__host/host-ops`
-//! (`src/routes/host-ops-host.js`), which answers `{ status, body, headers }`
+//! (`src/routes/host-ops-host.js`). Doctor operations return their service
+//! result for the gateway to present. Other operations answer `{ status, body, headers }`
 //! — the status, JSON body and response headers the retired Express handler
 //! produced — so the public contract stays byte-identical.
 //!
@@ -136,6 +137,82 @@ async fn call(ctx: &RequestCtx, host: u16, payload: Value) -> Result<Value, Resp
             }
         }
     }
+}
+
+/// Doctor services own jobs, probes and cancellation in the live host. Only
+/// their arguments and results cross the port. Keep request fields that were
+/// actually present so absence and JSON null remain distinct.
+fn doctor_input(route: &Route, params: &Map<String, Value>, body: &Value) -> Option<Value> {
+    let mut input = Map::new();
+    match route {
+        Route::EnvDoctorStart => {
+            for field in ["error", "path", "fix", "recent", "lang"] {
+                if let Some(value) = body.get(field) {
+                    input.insert(field.to_string(), value.clone());
+                }
+            }
+        }
+        Route::SessionDoctorStart => {
+            input.insert("sessionId".into(), params.get("id")?.clone());
+            input.insert("autofix".into(), Value::Bool(body["autofix"] == true));
+            if let Some(note) = body.get("note") {
+                input.insert("note".into(), note.clone());
+            }
+        }
+        Route::SessionDoctorList => return params.get("id").cloned(),
+        Route::DoctorRun | Route::DoctorCancel | Route::EnvDoctorRun | Route::EnvDoctorCancel => {
+            return params.get("runId").cloned();
+        }
+        _ => return None,
+    }
+    Some(Value::Object(input))
+}
+
+fn doctor_response(ctx: &RequestCtx, route: &Route, answer: Value) -> Response<Body> {
+    use multicc_core::js::serde::truthy;
+    if answer["threw"] == true {
+        return relay(ctx, answer);
+    }
+    let result = &answer["result"];
+    let (status, body) = match route {
+        Route::EnvDoctorStart | Route::SessionDoctorStart if result.is_null() => {
+            return host_failed(ctx);
+        }
+        Route::EnvDoctorStart | Route::SessionDoctorStart if !truthy(&result["ok"]) => {
+            let mut body = json!({ "ok": false });
+            if matches!(route, Route::EnvDoctorStart) {
+                if let Some(code) = result.get("code") {
+                    body["code"] = code.clone();
+                }
+            }
+            if let Some(error) = result.get("error") {
+                body["error"] = error.clone();
+            }
+            (result["status"].as_u64().unwrap_or(400) as u16, body)
+        }
+        Route::EnvDoctorStart | Route::SessionDoctorStart => (200, result.clone()),
+        Route::DoctorRun if !truthy(result) => (404, json!({"error": "doctor run not found"})),
+        Route::EnvDoctorRun if !truthy(result) => (
+            404,
+            json!({"ok": false, "code": "NOT_FOUND", "error": "diagnosis not found"}),
+        ),
+        Route::DoctorRun => (200, json!({ "run": result })),
+        Route::EnvDoctorRun => (200, json!({ "ok": true, "run": result })),
+        Route::SessionDoctorList | Route::DoctorCancel | Route::EnvDoctorCancel => {
+            let key = if matches!(route, Route::SessionDoctorList) {
+                "runs"
+            } else {
+                "ok"
+            };
+            let mut body = json!({});
+            if let Some(value) = answer.get("result") {
+                body[key] = value.clone();
+            }
+            (200, body)
+        }
+        _ => unreachable!("only doctor operations carry a service result"),
+    };
+    express::json(ctx, status, &body, &[])
 }
 
 /// The response headers the retired handler set through `res.set`
@@ -265,6 +342,12 @@ pub async fn handle(
         },
     };
 
+    if !app.node_enabled && route == Route::SettingsNotify {
+        return super::notification_reads::save(app, ctx, request_body).await;
+    }
+    if !app.node_enabled && route == Route::UpdateStatus {
+        return super::update_status::read(app, ctx).await;
+    }
     let Some(op) = route.op() else {
         return express::error(ctx, 500, "native route has no host op");
     };
@@ -286,6 +369,12 @@ pub async fn handle(
             }
             Err(response) => return response,
         }
+    }
+    if let Some(input) = doctor_input(&route, &payload, &request_body) {
+        return match call(ctx, host, json!({ "op": op, "input": input })).await {
+            Ok(answer) => doctor_response(ctx, &route, answer),
+            Err(response) => response,
+        };
     }
     payload.insert("query".into(), query_json(ctx));
     payload.insert("body".into(), request_body);

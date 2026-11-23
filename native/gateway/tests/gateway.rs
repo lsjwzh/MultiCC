@@ -861,7 +861,7 @@ fn the_version_line_carries_the_protocol_version() {
     assert!(output.status.success());
     let line = String::from_utf8_lossy(&output.stdout);
     assert!(
-        line.starts_with("multicc-gateway 12 "),
+        line.starts_with("multicc-gateway 15 "),
         "unexpected --version output: {line:?}"
     );
 }

@@ -106,14 +106,13 @@ impl Route {
             Route::SessionSharesList => "session-shares-list",
             Route::SessionShareRevoke => "session-share-revoke",
             Route::SessionMessageShare => "session-share-messages",
-            Route::SharePage => "share-page",
             Route::ShareAuth => "share-auth",
             Route::ShareEntry => "share-entry",
             Route::ShareHistory => "share-history",
             Route::ShareSession => "share-session",
             Route::WorkspacesOverview => "workspaces-overview",
             Route::WorkspacesSweep => "workspaces-sweep",
-            Route::Options { .. } => return None,
+            Route::SharePage | Route::Options { .. } => return None,
         })
     }
 
@@ -177,16 +176,6 @@ impl Route {
                 &[("token", 1)]
             }
             _ => &[],
-        }
-    }
-
-    /// `/share/:token` is not under `/api/`, so its one parameter is indexed
-    /// against [`page_segments`] instead.
-    pub fn page_param(self) -> Option<(&'static str, usize)> {
-        match self {
-            // `page_segments` keeps the literal, so the token is segment 1.
-            Route::SharePage => Some(("token", 1)),
-            _ => None,
         }
     }
 }
@@ -513,7 +502,7 @@ mod tests {
             seen.push(op);
         }
         assert_eq!(seen.len(), 20);
-        assert_eq!(Route::SharePage.op(), Some("share-page"));
+        assert_eq!(Route::SharePage.op(), None);
         assert_eq!(
             Route::Options {
                 allow: "GET,HEAD",
@@ -762,7 +751,6 @@ mod tests {
         );
         assert_eq!(Route::ShareHistory.params(), &[("token", 1)]);
         assert_eq!(Route::SharePage.params(), &[]);
-        assert_eq!(Route::SharePage.page_param(), Some(("token", 1)));
         assert_eq!(Route::WorkspacesSweep.params(), &[]);
     }
 

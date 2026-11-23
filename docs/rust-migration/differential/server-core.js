@@ -17,7 +17,7 @@
 // Usage: node docs/rust-migration/differential/server-core.js <repo> <gateway> <addon>
 const path = require('node:path');
 const fs = require('node:fs');
-const { run } = require('./lib');
+const { run, waitForFixture } = require('./lib');
 
 const FIXED = { 'x-request-id': 'req-fixed', 'x-correlation-id': 'corr-fixed' };
 
@@ -68,6 +68,7 @@ process.stdin.on('error', () => process.exit(0));
 process.stdin.resume();
 const STATE = ${JSON.stringify({ health: dtos.health, metrics: dtos.metrics, ops: state.ops })};
 const server = http.createServer((req, res) => {
+  if (req.url === '/__health') { res.end('ok'); return; }
   let raw = '';
   req.on('data', chunk => { raw += chunk; });
   req.on('end', () => {
@@ -215,6 +216,7 @@ function spec(name, repo, state) {
       oracleMount(repo, state)(app);
     },
     upstream: upstreamScript(repo, state),
+    ready: waitForFixture,
     // Differential-only mutations (native/gateway/src/app/server_core.rs reads
     // this); the parent process forwards it so a mutation run cannot be missed.
     gatewayEnv: process.env.MULTICC_SERVER_CORE_MUTATION

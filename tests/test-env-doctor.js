@@ -13,8 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runToolLoop } = require('../src/doctor/llm-loop');
 const { createEnvironmentDoctor, checkArgv, inspectPath, normalizeReport, SYSTEM_PROMPT } = require('../src/doctor/environment');
-const { mountEnvDoctorRoutes } = require('../src/routes/env-doctor');
-const { mountDoctor } = require('../src/doctor/host');
+const { createDoctorHost } = require('../src/doctor/host');
 
 const PLAIN_ACCOUNT = { user: 'multicc', uid: 996, sudo: false };
 const ROOT_ACCOUNT = { user: 'root', uid: 0, sudo: false };
@@ -188,30 +187,12 @@ test('a real tool loop runs read-only probes and finishes with the report', asyn
   assert.deepEqual(run.report.commands, [{ command: 'git config --global user.name "multicc"', purpose: '', runHere: true }]);
 });
 
-function fakeApp() {
-  const routes = new Map();
-  const app = { get: (p, h) => routes.set(`GET ${p}`, h), post: (p, h) => routes.set(`POST ${p}`, h) };
-  const call = (key, req = {}) => new Promise(resolve => {
-    const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { resolve({ status: this.statusCode, body }); } };
-    routes.get(key)({ params: {}, body: {}, ...req }, res);
-  });
-  return { app, routes, call };
-}
-
-test('routes carry the refusal code and are mounted with the session doctor', async () => {
-  const { app, call } = fakeApp();
-  mountEnvDoctorRoutes(app, { doctor: createEnvironmentDoctor({
-    resolveTarget: () => { throw new Error('Aux Provider 不可用'); }, probe: probeFor(PLAIN_ACCOUNT) }) });
-  const refused = await call('POST /api/system/env-doctor', { body: { error: 'spawn git ENOENT' } });
+test('the composed gateway host exposes both doctor services and preserves Aux refusal', () => {
+  const host = createDoctorHost({ persistedSessions: new Map(), loadChatHistory: () => [], cwdForSession: () => null,
+    auxQueue: { resolveHttpTarget() { throw new Error('Aux Provider 不可用'); } }, getAuxConfig: () => ({ model: 'm' }), rootDir: os.tmpdir(), dataDir: os.tmpdir() });
+  const refused = host.envDoctor.start({ error: 'spawn git ENOENT' });
   assert.equal(refused.status, 503);
-  assert.equal(refused.body.code, 'AUX_UNAVAILABLE');
-  const missing = await call('GET /api/system/env-doctor/:runId', { params: { runId: 'nope' } });
-  assert.equal(missing.status, 404);
-
-  const host = fakeApp();
-  mountDoctor(host.app, { persistedSessions: new Map(), loadChatHistory: () => [], cwdForSession: () => null,
-    auxQueue: { resolveHttpTarget: () => target.target }, getAuxConfig: () => ({ model: 'm' }), rootDir: os.tmpdir(), dataDir: os.tmpdir() });
-  for (const key of ['POST /api/system/env-doctor', 'GET /api/system/env-doctor/:runId', 'POST /api/system/env-doctor/:runId/cancel', 'POST /api/sessions/:id/doctor']) {
-    assert.ok(host.routes.has(key), `mounted: ${key}`);
-  }
+  assert.equal(refused.code, 'AUX_UNAVAILABLE');
+  assert.equal(host.envDoctor.get('nope'), null);
+  assert.equal(host.doctor.start({ sessionId: 'nope' }).status, 404);
 });

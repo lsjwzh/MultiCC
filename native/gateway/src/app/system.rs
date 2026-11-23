@@ -55,6 +55,45 @@ fn unavailable(ctx: &RequestCtx) -> Response<Body> {
     )
 }
 
+/// Read the public listener and process facts from their owner in standalone mode.
+pub async fn local_server_info(
+    app: &Arc<App>,
+    ctx: &RequestCtx,
+    auth_required: bool,
+) -> Response<Body> {
+    let app = Arc::clone(app);
+    let result = tokio::task::spawn_blocking(move || {
+        let mut interfaces = serde_json::Map::new();
+        for interface in if_addrs::get_if_addrs()? {
+            if let std::net::IpAddr::V4(ip) = interface.ip() {
+                let internal = interface.is_loopback();
+                let entries = interfaces
+                    .entry(interface.name)
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                entries
+                    .as_array_mut()
+                    .expect("interface entries are arrays")
+                    .push(json!({"family":"IPv4","internal":internal,"address":ip.to_string()}));
+            }
+        }
+        let uptime = app.started.elapsed().as_millis() as i64;
+        let started = chrono::Utc::now() - chrono::Duration::milliseconds(uptime);
+        let version = read_install_metadata(&app)
+            .map(|(version, _)| version)
+            .unwrap_or_else(|| "0.0.0".to_owned());
+        Ok::<_, std::io::Error>(system_info::server_info(&json!({
+            "interfaces":interfaces, "bindHost":app.bind_host, "port":app.public_port,
+            "authRequired":auth_required,"version":version,"uptimeMs":uptime,
+            "startedAt":started.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)
+        })))
+    })
+    .await;
+    match result {
+        Ok(Ok(info)) => express::json(ctx, 200, &info, &[]),
+        _ => express::error(ctx, 500, "cannot read network interfaces"),
+    }
+}
+
 /// `GET /api/server-info`: Node reports its own facts, Rust ranks and renders.
 pub async fn server_info(ctx: &RequestCtx, host: u16) -> Response<Body> {
     let facts = match host_port::call(host, HOST_PATH, &json!({ "op": "server-info" })).await {
@@ -101,7 +140,14 @@ fn default_version_result(ctx: &RequestCtx) -> Response<Body> {
 /// Any failure (missing or malformed package.json) maps to the default DTO,
 /// exactly the retired handler's catch.
 fn read_install_metadata(app: &App) -> Option<(String, String)> {
-    let package_json = std::fs::read_to_string(app.package_root.join("package.json")).ok()?;
+    let package_json = match std::fs::read_to_string(app.package_root.join("multicc-release.json"))
+    {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::read_to_string(app.package_root.join("package.json")).ok()?
+        }
+        Err(_) => return None,
+    };
     let channel_sidecar = std::fs::read_to_string(app.package_root.join(".multicc_channel")).ok();
     system_info::install_metadata(&package_json, channel_sidecar.as_deref())
 }

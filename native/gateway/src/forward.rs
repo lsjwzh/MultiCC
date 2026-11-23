@@ -337,7 +337,10 @@ async fn dispatch(
         return screen.handle(app, peer.ip(), request).await;
     }
     // The chat upgrade is shared by the native host and the compatibility bridge.
-    if crate::ws_chat::claims(request.uri().path()) && is_websocket_upgrade(request.headers()) {
+    if (crate::ws_chat::claims(request.uri().path())
+        || (upstream.node_absent() && app.auth.has_local() && request.uri().path() == "/ws/aux"))
+        && is_websocket_upgrade(request.headers())
+    {
         let (peer, local) = upstream.addresses();
         return crate::ws_chat::handle(app, peer, local, request).await;
     }
@@ -363,7 +366,9 @@ async fn dispatch(
         )
         .await;
     }
-    if let Some(route) = crate::app::claim_uri(request.method(), request.uri()) {
+    if let Some(route) = crate::app::claim_uri(request.method(), request.uri()).or_else(|| {
+        crate::app::cron_list::claim(!app.node_enabled, request.method(), request.uri().path())
+    }) {
         let host = upstream.state.port.load(Ordering::SeqCst);
         return crate::app::handle(app, route, request, upstream.state.client, host, upstream)
             .await;

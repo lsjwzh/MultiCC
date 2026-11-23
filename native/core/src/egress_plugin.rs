@@ -135,38 +135,49 @@ pub fn resolve_plugin_binary_for(
             continue;
         };
 
-        let base_name = Path::new(binary)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(binary);
-        let mut names = vec![base_name.to_string()];
-        if is_windows && !base_name.to_ascii_lowercase().ends_with(".exe") {
-            names.push(format!("{base_name}.exe"));
+        if let Some(path) = command_binary(&dir, engine, binary, &plat_arch, is_windows) {
+            return Some(path);
         }
+    }
+    None
+}
 
-        let mut candidates = Vec::new();
-        if let Some(plat_dir) = engine
-            .get("binaryPlatformDir")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-        {
-            for name in &names {
-                candidates.push(dir.join(plat_dir).join(&plat_arch).join(name));
-            }
-        }
-        candidates.push(dir.join(binary));
-        if is_windows && !binary.to_ascii_lowercase().ends_with(".exe") {
-            candidates.push(dir.join(format!("{binary}.exe")));
-        }
+pub fn command_binary(
+    dir: &Path,
+    engine: &serde_json::Map<String, Value>,
+    binary: &str,
+    plat_arch: &str,
+    is_windows: bool,
+) -> Option<PathBuf> {
+    let base_name = Path::new(binary)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(binary);
+    let mut names = vec![base_name.to_string()];
+    if is_windows && !base_name.to_ascii_lowercase().ends_with(".exe") {
+        names.push(format!("{base_name}.exe"));
+    }
 
-        let Ok(canon_dir) = fs::canonicalize(&dir) else {
-            continue;
-        };
-        for cand in candidates {
-            if let Ok(canon_bin) = fs::canonicalize(&cand) {
-                if canon_bin.starts_with(&canon_dir) && canon_bin.is_file() {
-                    return Some(canon_bin);
-                }
+    let mut candidates = Vec::new();
+    if let Some(plat_dir) = engine
+        .get("binaryPlatformDir")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        for name in &names {
+            candidates.push(dir.join(plat_dir).join(plat_arch).join(name));
+        }
+    }
+    candidates.push(dir.join(binary));
+    if is_windows && !binary.to_ascii_lowercase().ends_with(".exe") {
+        candidates.push(dir.join(format!("{binary}.exe")));
+    }
+
+    let canon_dir = fs::canonicalize(dir).ok()?;
+    for cand in candidates {
+        if let Ok(canon_bin) = fs::canonicalize(&cand) {
+            if canon_bin.starts_with(&canon_dir) && canon_bin.is_file() {
+                return Some(canon_bin);
             }
         }
     }

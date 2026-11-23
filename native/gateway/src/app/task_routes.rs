@@ -364,7 +364,7 @@ pub async fn handle(
     } else {
         None
     };
-    answer(ctx, route, body, host_port_num).await
+    answer(app, ctx, route, body, host_port_num).await
 }
 
 async fn planning(
@@ -397,7 +397,13 @@ async fn planning(
     express::json(ctx, 200, &planning_ok(&task, &revision), &[])
 }
 
-async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Response<Body> {
+async fn answer(
+    app: &App,
+    ctx: &RequestCtx,
+    route: Route,
+    body: &Value,
+    host: u16,
+) -> Response<Body> {
     let parts = segments(&ctx.path).unwrap_or_default();
     match route {
         Route::Options => {
@@ -586,7 +592,26 @@ async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Resp
                     // `JSON.stringify(Infinity)` is `null`, and so is ours.
                     .unwrap_or(Value::Null),
             ));
-            let value = match call(ctx, host, payload("search-board", fields)).await {
+            let request = payload("search-board", fields);
+            if !app.node_enabled {
+                let file = app.data_root.join("task_board.json");
+                let found = tokio::task::spawn_blocking(move || {
+                    let board = multicc_core::task_domain::repository::read_board_snapshot(&file)
+                        .map_err(|_| "task_board_unavailable")?;
+                    multicc_core::search::search_board(&board, &request)
+                })
+                .await;
+                return match found {
+                    Ok(Ok(results)) => express::json(ctx, 200, &search_ok(&query, &results), &[]),
+                    failure => express::json(
+                        ctx,
+                        503,
+                        &json!({"error":failure.ok().and_then(Result::err).unwrap_or("task_search_unavailable")}),
+                        &[],
+                    ),
+                };
+            }
+            let value = match call(ctx, host, request).await {
                 Ok(value) => value,
                 Err(response) => return response,
             };

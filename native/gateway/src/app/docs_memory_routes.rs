@@ -332,6 +332,8 @@ fn first_item(value: &Value, name: &str, index: usize) -> Value {
 }
 
 /// `entry.artifactId || artifactIdFromUrl(entry.url)`.
+mod registry;
+
 fn artifact_of(entry: &Value) -> Value {
     if let Some(stored) = entry.get("artifactId") {
         if truthy(stored) {
@@ -508,6 +510,15 @@ pub async fn handle(
     } else {
         None
     };
+    if !app.node_enabled && route == Route::DocsListGet {
+        let root = app.data_root.clone();
+        let artifacts = super::artifacts::served_roots(app);
+        let result = tokio::task::spawn_blocking(move || registry::views(&root, &artifacts)).await;
+        return match result {
+            Ok(Ok(views)) => list_response(ctx, registry::probe_services(views).await),
+            _ => unavailable(ctx),
+        };
+    }
     answer(ctx, route, body, host).await
 }
 
@@ -570,6 +581,10 @@ async fn docs_list(ctx: &RequestCtx, host: u16) -> Response<Body> {
         .into_iter()
         .map(|index| build_view(&entries[index], facts[index].clone(), &retained))
         .collect();
+    list_response(ctx, views)
+}
+
+fn list_response(ctx: &RequestCtx, views: Vec<Value>) -> Response<Body> {
     let raw = q_json(ctx, "dir");
     match raw {
         None => ok(ctx, Value::Array(views)),

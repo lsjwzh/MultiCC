@@ -79,7 +79,7 @@ function createRuntimeHomesJanitor({ homesRoot, fsImpl = fs, now = Date.now, ttl
 }
 
 // Boot pass + periodic pass; the timer goes through the host's tracker so
-// graceful shutdown clears it (same lifecycle contract as assist-snapshots).
+// graceful shutdown clears it.
 function startRuntimeHomesJanitor({ homesRoot, ttlDays, trackTimer, log }) {
   const sweep = createRuntimeHomesJanitor({ homesRoot, ttlDays, log });
   sweep();

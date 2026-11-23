@@ -285,6 +285,7 @@ pub async fn handle(app: Arc<App>, mut request: Request<Body>) -> Response<Body>
     let upgrade = hyper::upgrade::on(&mut request);
     tokio::spawn(async move {
         let Ok(upgraded) = upgrade.await else { return };
+        let _connected = app.ws_clients.enter();
         let client =
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Server, Some(config()))
                 .await;

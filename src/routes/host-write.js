@@ -1,6 +1,6 @@
 'use strict';
 
-const { resolveNotifySettingsUpdates } = require('../notify-settings');
+const { getNative } = require('../native/runtime');
 const { createPowerSettingsHandler, mountPowerWriteRoutes } = require('./host-power');
 
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';
@@ -167,7 +167,7 @@ function createNotifySettingsHandler(deps) {
   return function notifySettingsHandler(req, res, next) {
     try {
       const current = { ...deps.push.cfg };
-      const updates = resolveNotifySettingsUpdates(req.body || {}, current);
+      const updates = getNative().resolveNotifySettingsUpdates(req.body || {}, current);
       if (Object.values(updates).some(value => !validateNotifyUrl(value))) {
         return res.status(400).json({ error: `notification URL must be http(s) and at most ${MAX_NOTIFY_URL_LENGTH} characters` });
       }

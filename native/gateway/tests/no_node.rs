@@ -14,8 +14,7 @@
 //! * a route that needs the Node host port fails at once with its existing
 //!   503 `rust_backend_unavailable` shape;
 //! * SIGINT/SIGTERM (and the stdin lifeline) stop it with exit code 0;
-//! * `--node` and `--no-node` are mutually exclusive and one of them is
-//!   mandatory (exit code 2 with the documented text).
+//! * Rust is the default and conflicting runtime options are rejected.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -37,7 +36,6 @@ const AUTH_ABSENT_BODY: &str = concat!(
     r#"{"error":"Authentication state is held by the Node runtime, which this front door was started without (--no-node).","#,
     r#""code":"node_runtime_absent"}"#
 );
-const MISSING_RUNTIME: &str = "[multicc-gateway] serve needs --no-node (Rust-only, unmigrated routes fail closed) or --node <node executable>";
 
 fn unique(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -78,10 +76,7 @@ impl Gateway {
 
     fn start_with(tag: &str, stdin_lifeline: bool) -> Self {
         let dir = unique(tag);
-        // The `--no-node` runtime still derives its package root from
-        // `<cwd>/server.js`; the file only needs to exist for that.
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("server.js"), "").unwrap();
         let home = dir.join("home");
         let empty_path = dir.join("empty-path");
         fs::create_dir_all(&home).unwrap();
@@ -92,7 +87,6 @@ impl Gateway {
             .arg("serve")
             .arg("--cwd")
             .arg(&dir)
-            .arg("--no-node")
             .arg("--ephemeral-loopback")
             .env_clear()
             // No directory named `node` is reachable from this PATH.
@@ -434,16 +428,13 @@ fn run_gateway(args: &[&str], dir: &Path) -> (ExitStatus, String) {
 }
 
 #[test]
-fn the_runtime_mode_must_be_exactly_one_of_node_and_no_node() {
+fn the_compatibility_runtime_must_be_explicit() {
     let dir = unique("cli");
     fs::create_dir_all(&dir).unwrap();
 
-    let (status, stderr) = run_gateway(&["serve"], &dir);
-    assert_eq!(status.code(), Some(2), "neither mode: {stderr}");
-    assert!(
-        stderr.contains(MISSING_RUNTIME),
-        "neither mode must print the documented text: {stderr}"
-    );
+    let (status, stderr) = run_gateway(&["serve", "server.js"], &dir);
+    assert_eq!(status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("takes no script or arguments"), "{stderr}");
 
     let (status, stderr) = run_gateway(&["serve", "--no-node", "--node", "node"], &dir);
     assert_eq!(status.code(), Some(2), "both modes: {stderr}");

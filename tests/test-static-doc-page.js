@@ -124,14 +124,7 @@ test('the static mount keeps the canonical APK download; the stray-APK guard mov
   // with them (static_web_root.rs). The production module must now register
   // nothing at all: no route, no middleware, not even a factory that could
   // install a second static implementation behind the front door's back.
-  const production = require('../src/routes/static-assets');
-  const runtime = production.createStaticAssetsRoutes({ publicDir: PUBLIC_DIR });
-  assert.deepEqual(Object.keys(runtime), ['serveHtml']);
-  assert.equal(typeof runtime.mountRoutes, 'undefined');
-
-  const source = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'routes', 'static-assets.js'), 'utf8');
-  assert.doesNotMatch(source, /app\.get\(/, 'the redirects belong to the Rust front door');
-  assert.doesNotMatch(source, /\(apk\|ipa\)\/i/, 'the guard belongs to the Rust front door');
+  assert.equal(fs.existsSync(path.join(__dirname, '../src/routes/static-assets.js')), false);
   const nativeSource = fs.readFileSync(
     path.resolve(__dirname, '..', 'native', 'core', 'src', 'static_assets_routes.rs'),
     'utf8',

@@ -1,0 +1,16 @@
+**
+!.cargo/config.toml
+!native/Cargo.toml
+!native/Cargo.lock
+!native/*/Cargo.toml
+!native/*/build.rs
+!native/*/src/**
+!native/*/examples/**
+!package.json
+!public/**
+!plugins/*/ui/**
+!plugins/*/public/**
+!scripts/stage-rust-runtime.sh
+**/.env*
+**/.DS_Store
+**/node_modules

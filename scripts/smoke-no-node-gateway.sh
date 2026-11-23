@@ -137,8 +137,8 @@ status=$(http /readyz)
 grep -q '"status":"ready"' "$tmp/body" \
     || fail "/readyz body is not the ready shape"
 
-# `/metrics` belongs to the same cluster but describes Node state, so it stays
-# fail-closed here (no token in this smoke, so the auth-absent refusal answers).
+# This smoke starts without a token. Reading gateway metrics requires a
+# configured authentication runtime.
 status=$(http /metrics)
 [ "$status" = 503 ] || fail "/metrics answered $status, expected 503"
 grep -q 'node_runtime_absent' "$tmp/body" \
@@ -161,7 +161,7 @@ printf '%s\n' \
     "  listening:       127.0.0.1:$port" \
     "  rust route:      200 /__gateway_test/native" \
     "  health probes:   200 /healthz, 200 /readyz (front-door facts, no token)" \
-    "  metrics route:   503 node_runtime_absent /metrics (Node-held facts)" \
-    "  auth route:      503 node_runtime_absent /api/claude/models (auth state lives in Node)" \
+    "  metrics route:   503 node_runtime_absent /metrics (no configured token)" \
+    "  auth route:      503 node_runtime_absent /api/claude/models (no configured token)" \
     "  node route:      503 node_runtime_absent /api/not-owned-by-rust" \
     "  SIGTERM:         exit 0"

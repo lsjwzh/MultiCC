@@ -49,7 +49,7 @@ pub enum ResolvedAgyAccount {
     Remote {
         id: String,
         label: String,
-        remote: RemoteAgyTarget,
+        remote: Box<RemoteAgyTarget>,
     },
 }
 
@@ -262,7 +262,11 @@ pub fn resolve_account(
     if let Some(meta_val) = meta.as_ref() {
         if meta_val.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
             return match parse_remote_from_meta(&id, meta_val) {
-                Some((label, remote)) => Ok(Some(ResolvedAgyAccount::Remote { id, label, remote })),
+                Some((label, remote)) => Ok(Some(ResolvedAgyAccount::Remote {
+                    id,
+                    label,
+                    remote: Box::new(remote),
+                })),
                 None if explicit => Err("invalid remote account configuration".to_owned()),
                 None => Ok(None),
             };

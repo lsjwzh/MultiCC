@@ -10,7 +10,7 @@ const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/native/runtime').taskShellCapacity;
 const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/native/runtime').taskShellContext;
 const { createTaskShellHost } = require('../src/task-shell/host');
-const { displayMessages, displayTask } = require('../src/task-display-attribution');
+const { taskDisplayMessages: displayMessages, taskDisplayTask: displayTask } = require('../src/native/runtime').getNative();
 
 const { fixture } = require('./helpers/task-shell');
 const input = (key, taskId = null, extra = {}) => ({ clientMsgId: key, taskId, intent: 'work', text: key, ...extra });

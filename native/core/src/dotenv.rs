@@ -7,7 +7,15 @@
 
 use regex::Regex;
 use serde_json::{Map, Value};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+/// Packaged installations keep the editable settings file outside the read-only application.
+pub fn config_path(cwd: &Path) -> PathBuf {
+    std::env::var_os("MULTICC_ENV_FILE")
+        .filter(|p| !p.is_empty())
+        .map_or_else(|| cwd.join(".env"), |p| cwd.join(p))
+}
 
 /// JS `\s`: WhiteSpace + LineTerminator, including U+FEFF and excluding U+0085.
 const JS_SPACE: &str = r"[\t\n\u{b}\u{c}\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]";

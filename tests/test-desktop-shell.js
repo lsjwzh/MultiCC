@@ -245,6 +245,14 @@ test('buildChildEnv: dotenv fills gaps, desktop knobs always win, bundled runtim
   // app-server/ + runtime/ + launcher/), so the backend carries an explicit
   // marker; the standalone launcher calls the same module without it.
   assert.equal(env.MULTICC_DESKTOP_SHELL, undefined, 'standalone-style children carry no shell marker');
+  const stale = { MULTICC_RUST_ADDON: '/old/kernel.node', MULTICC_RUST_PREBUILT_DIR: '/old/prebuilt' };
+  const packaged = desktopEnv.buildChildEnv({ port: 3457, desktopEnv: layout, baseEnv: stale });
+  const kernels = path.join(layout.serverDir, 'native', 'prebuilt');
+  assert.equal(packaged.MULTICC_RUST_PREBUILT_DIR, kernels);
+  assert.equal(packaged.MULTICC_RUST_ADDON, path.join(kernels, `${process.platform}-${process.arch}`, 'multicc_core.node'));
+  const launch = desktopEnv.gatewayLaunch({ serverEntry: layout.serverEntry, node: layout.runtimeNode,
+    packaged: true, env: stale, platform: 'darwin', arch: 'arm64', exists: () => true });
+  assert.equal(launch.command, path.join(kernels, 'darwin-arm64', 'multicc-gateway'));
   const shellEnv = desktopEnv.buildChildEnv({
     port: 3457, desktopEnv: layout, baseEnv: { MULTICC_DESKTOP_SHELL: 'stale' }, dotenv: {}, desktopShell: true,
   });
@@ -299,7 +307,7 @@ test('the front door is found where the native module is, and a missing one refu
   const launch = desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
     platform: 'darwin', arch: 'arm64', exists: () => true });
   assert.deepEqual(launch, { command: prebuilt,
-    args: ['serve', '--cwd', serverDir, '--node', '/rt/node', '--stdin-lifeline', entry] });
+    args: ['serve', '--cwd', serverDir, '--stdin-lifeline', '--no-node'] });
   assert.throws(() => desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
     platform: 'darwin', arch: 'arm64', exists: () => false }),
   error => error.code === 'GATEWAY_MISSING' && error.message.includes(prebuilt));
@@ -528,7 +536,7 @@ test('supervisor: stop() after an already-exited never-ready child returns promp
 // same step as the module).
 
 function gatewayLaunchForFixture() {
-  const launch = desktopEnv.gatewayLaunch({ serverEntry: FIXTURE, node: process.execPath });
+  const launch = desktopEnv.gatewayLaunch({ serverEntry: FIXTURE, node: process.execPath, env: { ...process.env, MULTICC_COMPAT_HOST: '1' } });
   return { command: launch.command, args: launch.args };
 }
 
@@ -604,7 +612,7 @@ test('front door: killing the supervising process takes the front door and Node 
   const pidfile = path.join(dir, 'child.pid');
   const port = await reservePort();
   const host = spawn(process.execPath, [FOREGROUND_SUPERVISOR], {
-    env: { ...process.env, ...GATEWAY_TEST_ENV, GATEWAY: '1', PORT: String(port), READY_TARGET: '99',
+    env: { ...process.env, ...GATEWAY_TEST_ENV, GATEWAY: '1', MULTICC_COMPAT_HOST: '1', PORT: String(port), READY_TARGET: '99',
       LOGS_DIR: dir, RUNTIME_INFO_FILE: runtimeInfoFile, SPAWN_CHILD_PIDFILE: pidfile },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -728,7 +736,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   const pkg = JSON.parse(fs.readFileSync(path.join(staged, 'package.json'), 'utf8'));
   assert.ok(pkg.optionalDependencies['sherpa-onnx-node'], 'sherpa becomes optional (graceful ASR degrade)');
   assert.equal(pkg.dependencies['sherpa-onnx-node'], undefined);
-  assert.ok(pkg.dependencies['@iarna/toml'], 'the server imports TOML directly, so it must be a direct production dependency');
+  assert.equal(pkg.dependencies['@iarna/toml'], undefined, 'the packaged server uses the native Grok config writer');
   assert.equal(pkg.version, require(path.join(ROOT, 'package.json')).version);
   assert.equal(require(path.join(staged, 'src/memory/builtin-rules')).DOCS_REGISTRY_RULE,
     require('../src/memory/builtin-rules').DOCS_REGISTRY_RULE);
@@ -846,7 +854,7 @@ function writeBundleFile(resources, rel, content = '') {
 function dependencyFixture(resources) {
   writeBundleFile(resources, 'app-server/server.js');
   writeBundleFile(resources, 'app-server/package.json', JSON.stringify({ dependencies: {
-    '@iarna/toml': '^2.2.5', 'cli-provider-router': '0.5.1',
+    'cli-provider-router': '0.5.1',
   } }));
   writeBundleFile(resources, 'app-server/node_modules/@iarna/toml/index.js',
     'exports.parse = () => ({ value: 1 });');
@@ -872,7 +880,7 @@ test('packaged dependency gate rejects missing modules and build-host fallback r
   t.after(() => fs.rmSync(resources, { recursive: true, force: true }));
   dependencyFixture(resources);
   const server = path.join(resources, 'app-server');
-  assert.equal(verifyServerDependencies(server).length, 2);
+  assert.equal(verifyServerDependencies(server).length, 1);
   fs.rmSync(path.join(server, 'node_modules/cli-provider-router'), { recursive: true });
   assert.throws(() => verifyServerDependencies(server), /cli-provider-router.*missing/);
   // A development checkout can make a broken installed tree appear healthy:
@@ -926,7 +934,9 @@ test('packaged dependency gate checks cross-arch trees and detects transitive lo
     "require('./missing-transitive'); exports.API_VERSION = '1.1.0';");
   assert.throws(() => verifyDesktopResources({ resourcesDir: resources }), /smoke failed:[\s\S]*missing-transitive/);
   fs.rmSync(path.join(resources, 'app-server/node_modules/@iarna/toml'), { recursive: true });
-  assert.throws(() => verifyDesktopResources({ resourcesDir: resources, execute: false }), /@iarna\/toml.*missing/);
+  writeBundleFile(resources, 'app-server/node_modules/cli-provider-router/index.js',
+    "require('@iarna/toml'); exports.API_VERSION = '1.1.0';");
+  assert.throws(() => verifyDesktopResources({ resourcesDir: resources }), /smoke failed:[\s\S]*@iarna\/toml/);
 });
 
 test('packaged Rust gate rejects missing and wrong-target addons without executing them', t => {
@@ -1357,7 +1367,12 @@ test('desktop-release workflow: three native runners, publishes before Android, 
   // land on the same release; a failed build blocks publishing instead of
   // shipping a half-populated Release.
   assert.match(wf, /scripts\/standalone-bundle\.js/);
-  assert.match(wf, /needs: \[core-tests, clean-install, rust-kernels, build, standalone\]/);
+  assert.match(wf, /needs: \[core-tests, clean-install, rust-kernels, build, standalone, service\]/);
+  const service = wf.slice(wf.indexOf('  service:\n'), wf.indexOf('  standalone:\n'));
+  assert.match(service, /cargo build --locked --release/);
+  assert.match(service, /stage-rust-runtime\.sh/);
+  assert.match(service, /production-workers\.py/);
+  assert.doesNotMatch(service, /actions\/setup-node|npm (?:ci|install|start)/);
   assert.match(wf, /multicc-standalone-\$\{VERSION\}-darwin-x64\.tar\.gz/);
   assert.match(wf, /multicc-standalone-\$\{VERSION\}-linux-arm64\.tar\.gz/);
   assert.match(wf, /multicc-standalone-\$\{VERSION\}-win32-x64\.zip/);

@@ -60,15 +60,6 @@ function assertShareRouteDeps(deps) {
   if (typeof deps.parseCookies !== 'function') {
     throw new TypeError('share route dependency missing: parseCookies');
   }
-  // The share page is the chat page, so it is served through the same
-  // versioned-HTML writer the rest of public/ uses (cache-busting ?v=<mtime>);
-  // a recipient's embedded WebView must not keep a stale renderer.
-  if (typeof deps.serveHtml !== 'function') {
-    throw new TypeError('share route dependency missing: serveHtml');
-  }
-  if (typeof deps.chatPageFile !== 'string' || !deps.chatPageFile.trim()) {
-    throw new TypeError('share route dependency missing: chatPageFile');
-  }
   return deps;
 }
 
@@ -237,10 +228,6 @@ function createShareRoutes(rawDeps) {
     }
   }
 
-  function serveSharePage(req, res) {
-    return deps.serveHtml(deps.chatPageFile, res);
-  }
-
   // One recipient's authority over one token: the password cookie is the only
   // credential, exactly as the WS router and the read endpoint treat it.
   //
@@ -384,7 +371,6 @@ function createShareRoutes(rawDeps) {
     app.get('/api/sessions/:id/shares', listSessionShares);
     app.delete('/api/sessions/:id/share/:token', revokeSessionShare);
     app.post('/api/sessions/:id/share-messages', createMessageShare);
-    app.get('/share/:token', serveSharePage);
     app.post('/api/share/:token/auth', authenticateShare);
     app.get('/api/share/:token/entry', readShareEntry);
     app.get('/api/share/:token/history', readSharedHistory);
@@ -401,7 +387,6 @@ function createShareRoutes(rawDeps) {
     readSharedHistory,
     readSharedSession,
     revokeSessionShare,
-    serveSharePage,
   });
 }
 

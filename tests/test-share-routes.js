@@ -161,15 +161,12 @@ function createHarness(overrides = {}) {
         return index < 0 ? [pair, ''] : [pair.slice(0, index), pair.slice(index + 1)];
       }),
     )),
-    // 分享页就是聊天页本身，所以这里指的就是它，而不是另一份精简界面。
-    chatPageFile: '/app/public/chat.html',
-    serveHtml: overrides.serveHtml || ((file, res) => { res.sentFile = file; return res; }),
     logger: overrides.logger,
   };
   return { deps, fakeShare, histories, historyPages, persistedSessions };
 }
 
-test('mount registers the nine established share routes and validates dependencies', () => {
+test('mount registers the eight host-backed share routes and validates dependencies', () => {
   const { deps } = createHarness();
   const { app, routes } = createApp();
   mountShareRoutes(app, deps);
@@ -178,7 +175,6 @@ test('mount registers the nine established share routes and validates dependenci
     'GET /api/sessions/:id/shares',
     'DELETE /api/sessions/:id/share/:token',
     'POST /api/sessions/:id/share-messages',
-    'GET /share/:token',
     'POST /api/share/:token/auth',
     'GET /api/share/:token/entry',
     'GET /api/share/:token/history',
@@ -442,15 +438,6 @@ test('recipient session read serializes the live history view without cloning it
   assert.equal(calls.view, 1);
   assert.equal(calls.load, 0);
   assert.deepEqual(shared, snapshot, 'the cached transcript was not mutated');
-});
-
-test('page route serves the chat renderer itself, so a share is the same page', () => {
-  const { deps } = createHarness();
-  const routes = createShareRoutes(deps);
-  const res = invoke(routes.serveSharePage, { params: { token: 'anything' } });
-  // 分享出去的必须就是管理员用的那一份文档。指到另一份精简页面上，两边就会各自
-  // 演化 —— 这正是这次要修掉的东西。
-  assert.equal(res.sentFile, '/app/public/chat.html');
 });
 
 test('recipient entry answers who the link is and how much it may do', () => {

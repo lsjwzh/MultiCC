@@ -15,7 +15,7 @@
 const net = require('node:net');
 const path = require('node:path');
 
-const GATEWAY_PROTOCOL = 12;
+const GATEWAY_PROTOCOL = 15;
 const INTERNAL_HOST = '127.0.0.1';
 // Max PROXY v1 line length including CRLF (docs/gateway.md §5).
 const MAX_HEADER_BYTES = 107;

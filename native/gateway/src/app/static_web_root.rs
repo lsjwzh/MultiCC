@@ -173,9 +173,9 @@ pub fn claim(app: &App, method: &Method, uri: &Uri, headers: &HeaderMap) -> Opti
 
 /// `res.status(500).end()` — an empty body, no Content-Type and no ETag. Node
 /// stamps `Content-Length: 0` for an ended GET response but not for HEAD.
-fn ended(ctx: &RequestCtx, status: u16) -> Response<Body> {
+fn ended(ctx: &RequestCtx, status: u16, share_page: bool) -> Response<Body> {
     let mut builder = express::with_base_headers(Response::builder().status(status), ctx);
-    let body = if express::is_head(ctx) {
+    let body = if express::is_head(ctx) && !share_page {
         express::no_content_body()
     } else {
         builder = builder.header("Content-Length", "0");
@@ -185,21 +185,36 @@ fn ended(ctx: &RequestCtx, status: u16) -> Response<Body> {
     builder.body(body).expect("static response parts")
 }
 
+pub(super) enum HtmlPage {
+    Static(PathBuf),
+    Share,
+}
+
 /// `_serveVersionedHtml(absPath, res)`: the `?v=<mtime>` rewrite, `no-store`,
 /// then `res.type('text/html').send(out)`.
-fn versioned(app: &App, ctx: &RequestCtx, file: &Path) -> Response<Body> {
-    let Ok(bytes) = std::fs::read(file) else {
-        // `fs.readFile` err -> `res.status(500).end()`.
-        return ended(ctx, 500);
+pub(super) async fn versioned(app: &App, ctx: &RequestCtx, page: HtmlPage) -> Response<Body> {
+    let root = app.public_dir.clone();
+    let share_page = matches!(page, HtmlPage::Share);
+    let file = match page {
+        HtmlPage::Static(file) => file,
+        HtmlPage::Share => root.join("chat.html"),
     };
-    let html = String::from_utf8_lossy(&bytes);
-    let root = app.public_dir.as_path();
-    let mtime = |asset: &str| {
-        std::fs::metadata(root.join(asset))
-            .ok()
-            .map(|meta| download::file_stat(&meta).mtime_ms)
+    let render = tokio::task::spawn_blocking(move || {
+        let bytes = std::fs::read(file).ok()?;
+        let html = String::from_utf8_lossy(&bytes);
+        let mtime = |asset: &str| {
+            std::fs::metadata(root.join(asset))
+                .ok()
+                .map(|meta| download::file_stat(&meta).mtime_ms)
+                // The retired share addon skipped timestamps before the epoch.
+                .filter(|ms| !share_page || *ms >= 0.0)
+        };
+        Some(static_assets_routes::version_html(&html, &mtime))
+    });
+    let Ok(Some(out)) = render.await else {
+        // The share host relayed an explicit zero length even for HEAD.
+        return ended(ctx, 500, share_page);
     };
-    let out = static_assets_routes::version_html(&html, &mtime);
     express::send(
         ctx,
         200,
@@ -273,7 +288,9 @@ pub(super) async fn serve_file(ctx: &RequestCtx, file: &Path) -> Response<Body> 
 
 pub async fn handle(app: &App, ctx: &RequestCtx, resolved: Option<&Resolved>) -> Response<Body> {
     match resolved {
-        Some(Resolved::Versioned { file }) => versioned(app, ctx, file),
+        Some(Resolved::Versioned { file }) => {
+            versioned(app, ctx, HtmlPage::Static(file.clone())).await
+        }
         Some(Resolved::File { file }) => serve_file(ctx, file).await,
         Some(Resolved::Directory { location }) => directory(ctx, location),
         Some(Resolved::Failed { code, detail }) => {

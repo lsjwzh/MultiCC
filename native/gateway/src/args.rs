@@ -3,7 +3,7 @@ use std::path::PathBuf;
 /// `multicc-gateway serve --cwd <目录> (--no-node | --node <node 可执行文件>)
 /// [--stdin-lifeline] [--ephemeral-loopback] [--] [脚本] [参数…]`.
 ///
-/// Exactly one runtime mode must be chosen: `--node` spawns and supervises the
+/// Rust is the default. An explicit `--node` spawns and supervises the
 /// Node server exactly as before, while `--no-node` never spawns a child and
 /// answers every route the Rust front door does not own with 503
 /// `node_runtime_absent` (docs/gateway.md §8.1).
@@ -29,11 +29,6 @@ impl ServeOptions {
         self.node.is_some()
     }
 }
-
-/// The error text for "neither runtime mode was given"; `main.rs` prefixes it
-/// with `[multicc-gateway] ` and exits 2.
-pub const MISSING_RUNTIME: &str =
-    "serve needs --no-node (Rust-only, unmigrated routes fail closed) or --node <node executable>";
 
 pub fn parse(raw: &[String]) -> Result<ServeOptions, String> {
     let mut cwd = None;
@@ -86,12 +81,10 @@ pub fn parse(raw: &[String]) -> Result<ServeOptions, String> {
     }
     let cwd = cwd.ok_or("serve needs --cwd <dir>")?;
     match (node, no_node) {
-        // No silent default: the launcher must say which runtime it wants.
-        (None, false) => Err(MISSING_RUNTIME.to_string()),
         (Some(_), true) => {
             Err("serve takes either --no-node or --node <node executable>, not both".to_string())
         }
-        (None, true) => {
+        (None, _) => {
             if let Some(token) = rest.first() {
                 return Err(format!(
                     "serve --no-node takes no script or arguments (unexpected: {token})"
@@ -175,8 +168,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_one_runtime_mode_is_required() {
-        assert_eq!(parse(&args(&["--cwd", "c"])).unwrap_err(), MISSING_RUNTIME);
+    fn rust_is_the_default_and_conflicting_modes_are_rejected() {
+        assert_eq!(
+            parse(&args(&["--cwd", "c"])),
+            parse(&args(&["--cwd", "c", "--no-node"]))
+        );
         assert_eq!(
             parse(&args(&["--cwd", "c", "--node", "n", "--no-node"])).unwrap_err(),
             "serve takes either --no-node or --node <node executable>, not both"

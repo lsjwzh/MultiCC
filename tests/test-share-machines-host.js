@@ -126,14 +126,6 @@ function fakeDeps(overrides = {}) {
         .map(pair => pair.trim().split('='))
         .filter(pair => pair[0])),
       logger: { error: (...args) => calls.push(['logger.error', ...args]) },
-      chatPageFile: path.join(tmp, 'chat.html'),
-      serveHtml: (file, res) => {
-        calls.push(['serveHtml', file]);
-        res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
-        res.set('Pragma', 'no-cache');
-        res.type('text/html');
-        return res.send('<html>chat</html>');
-      },
     },
     workspaces: {
       records: overrides.records || new Map(),
@@ -177,7 +169,6 @@ function payloadFor(op, extra = {}) {
   const spec = OPS[op];
   const body = { op, method: spec.method, originalUrl: spec.path, query: {}, headers: { host: 'mac.local:7800' }, body: {} };
   for (const name of spec.params) body[name] = name === 'id' ? 's1' : `${name}-1`;
-  if (op === 'share-page') body.token = 'tok-1';
   if (op === 'machines-ws-ticket') { body.machineId = 'm1'; body.body = { path: '/api/status' }; }
   return { ...body, ...extra };
 }
@@ -205,14 +196,14 @@ test('an unknown or malformed body is a 400, never a silent success', async () =
 
 test('every op maps to exactly one Node fact and the front door keeps the envelope', async () => {
   const { handler } = mount();
-  assert.equal(Object.keys(OPS).length, 21, 'the op table is the whole cluster');
+  assert.equal(Object.keys(OPS).length, 20, 'the op table is the whole cluster');
   for (const op of Object.keys(OPS)) {
     const res = await respond(handler, payloadFor(op));
     assert.equal(res.statusCode, 200, `${op}: ${JSON.stringify(res.body)}`);
     assert.equal(res.body.ok, true, op);
     const value = res.body.value;
     assert.equal(typeof value.status, 'number', `${op} answers a rendered status`);
-    if (op !== 'share-page') assert.ok('body' in value, `${op} answers a rendered body`);
+    assert.ok('body' in value, `${op} answers a rendered body`);
   }
 });
 
@@ -256,18 +247,11 @@ test('ws-ticket keeps the retired key order and mints through the injected auth 
   assert.deepEqual(value.headers, [['Cache-Control', 'no-store']]);
 });
 
-test('the share page renders through serveHtml with its cache headers and no ETag', async () => {
-  const { handler, calls } = mount();
-  const res = await respond(handler, payloadFor('share-page'));
-  const value = res.body.value;
-  assert.equal(value.status, 200);
-  assert.equal(value.contentType, 'text/html; charset=utf-8');
-  assert.deepEqual(value.headers, [
-    ['Cache-Control', 'no-store, no-cache, must-revalidate'],
-    ['Pragma', 'no-cache'],
-  ]);
-  assert.equal(value.body, '<html>chat</html>');
-  assert.deepEqual(calls.filter(([name]) => name === 'serveHtml'), [['serveHtml', path.join(tmp, 'chat.html')]]);
+test('the retired share-page host operation is rejected', async () => {
+  const { handler } = mount();
+  const res = await respond(handler, { op: 'share-page', token: 'tok-1' });
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.body, { error: 'unknown host operation' });
 });
 
 test('share links are built from the forwarded host and proto, not the internal port', async () => {

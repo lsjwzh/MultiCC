@@ -6,7 +6,7 @@
 //! and after fetching the requested bytes; callers must still coordinate file
 //! replacement and mutations through their owner before publishing a result.
 
-use crate::js::{is_js_whitespace_char, json_parse, JsValue};
+use crate::js::{is_js_whitespace_char, json_project_object};
 use sha2::{Digest, Sha256};
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
 
@@ -179,8 +179,8 @@ impl HistoryIndex {
                 canonical_lines = false;
                 continue;
             }
-            let parsed = json_parse(body);
-            if !matches!(parsed, Ok(JsValue::Object(_))) {
+            // Only offsets survive this scan. Validate all JSON, skipping message values.
+            if first != Some('{') || json_project_object(body, &[]).is_err() {
                 if !complete && !positions.is_empty() {
                     canonical_lines = false;
                     break;

@@ -13,6 +13,7 @@ mod delivery;
 mod delivery_flow;
 mod registry;
 mod rules;
+mod schedule;
 mod workspace_permit;
 type Result<T> = std::result::Result<T, String>;
 /// v2：引用列 task_ref/receipt_ref（仓储写入时维护）+ 台账独立成类 + 上下文记录分层。
@@ -219,6 +220,27 @@ impl TaskStore {
         let store = Self::open_chat_reader(file)?.ok_or("shell_not_found")?;
         let session_ids = store.chat_scope(shell_id, session_id, session_in_directory)?;
         read(&store, session_ids)
+    }
+
+    /// Resolve document task names from a single read-only snapshot. A fresh
+    /// deployment has no task database until a shell is created.
+    pub fn document_task_titles(
+        file: &Path,
+        ids: &HashSet<String>,
+    ) -> Result<serde_json::Map<String, Value>> {
+        let mut titles = serde_json::Map::new();
+        if ids.is_empty() {
+            return Ok(titles);
+        }
+        if let Some(store) = Self::open_chat_reader(file)? {
+            for id in ids {
+                let task = store.get("task", id)?;
+                if let Some(title) = task["title"].as_str().filter(|s| !s.is_empty()) {
+                    titles.insert(id.clone(), Value::String(title.to_owned()));
+                }
+            }
+        }
+        Ok(titles)
     }
 
     fn open_chat_reader(file: &Path) -> Result<Option<Self>> {

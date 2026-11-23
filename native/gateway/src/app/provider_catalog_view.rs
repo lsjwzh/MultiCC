@@ -25,7 +25,7 @@ fn supports_cli(provider: &Value, cli: &str) -> bool {
             .any(|value| value.as_str() == Some(cli))
 }
 
-fn limit(facts: &Value, provider_key: &str) -> Value {
+pub(in crate::app) fn limit(facts: &Value, provider_key: &str) -> Value {
     let entry = &facts["limits"][provider_key];
     if !entry.is_object() {
         return Value::Null;
@@ -50,7 +50,7 @@ fn limit(facts: &Value, provider_key: &str) -> Value {
     Value::Object(out)
 }
 
-pub(super) fn project(facts: &Value, cli: &str) -> Value {
+pub(in crate::app) fn project(facts: &Value, cli: &str) -> Value {
     let mut projected = facts.clone();
     let providers = rows(&facts["providers"])
         .iter()

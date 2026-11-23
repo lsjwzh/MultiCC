@@ -31,7 +31,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const zlib = require('zlib');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 
 const TOKEN = 'secret-token-1';
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -181,15 +181,24 @@ async function run(spec, argv = process.argv.slice(2)) {
   // answered by Rust; a forwarded one shows up as the stub's answer. A spec
   // that compares forwarding itself supplies its own script (it has to parse
   // the PROXY v1 line, like the real child).
-  fs.writeFileSync(path.join(gwDir, 'server.js'), spec.upstream || (
-    "require('http').createServer((q,s)=>{s.end('forwarded')}).listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT),'127.0.0.1');"
-    + "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));"));
+  const standalone = process.env.MULTICC_DIFF_NO_NODE === '1';
+  if (!standalone) {
+    fs.writeFileSync(path.join(gwDir, 'server.js'), spec.upstream || (
+      "require('http').createServer((q,s)=>{s.end('forwarded')}).listen(Number(process.env.MULTICC_GATEWAY_INTERNAL_PORT),'127.0.0.1');"
+      + "process.stdin.resume();process.stdin.on('end',()=>process.exit(0));"));
+  }
   const gwPort = await freePort();
-  gw = spawn(gatewayBin, ['serve', '--cwd', gwDir, '--node', process.execPath, 'server.js'], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(gwPort), ACCESS_TOKEN: TOKEN,
-      MULTICC_DATA_DIR: gwData,
-      ...(typeof spec.gatewayEnv === 'function' ? spec.gatewayEnv(work) : spec.gatewayEnv || {}) },
-    stdio: ['ignore', 'ignore', fs.openSync(path.join(work, 'gw.log'), 'w')],
+  const mode = standalone ? ['--no-node'] : ['--node', process.execPath, 'server.js'];
+  const env = { PATH: process.env.PATH, HOME: process.env.HOME, PORT: String(gwPort), ACCESS_TOKEN: TOKEN,
+    ...(addon && !standalone ? { MULTICC_RUST_ADDON: path.resolve(addon) } : {}),
+    MULTICC_DATA_DIR: gwData, ...(typeof spec.gatewayEnv === 'function' ? spec.gatewayEnv(work) : spec.gatewayEnv || {}) };
+  if (standalone) {
+    const home = path.join(work, 'gateway-home');
+    fs.mkdirSync(home);
+    Object.assign(env, { HOME: home, USERPROFILE: home, HOST: '127.0.0.1' });
+  }
+  gw = spawn(gatewayBin, ['serve', '--cwd', gwDir, ...mode], {
+    env, stdio: ['ignore', 'ignore', fs.openSync(path.join(work, 'gw.log'), 'w')],
   });
   try {
     step = 'waiting for the gateway';
@@ -197,7 +206,7 @@ async function run(spec, argv = process.argv.slice(2)) {
     // `/healthz` is answered by the gateway itself, before its Node child has
     // the host port listening: a spec whose claimed routes call back into the
     // child would race a 503 `rust_backend_unavailable` window without this.
-    if (spec.ready) {
+    if (spec.ready && !standalone) {
       step = 'waiting for the gateway child';
       await spec.ready(gwPort);
     }
@@ -291,17 +300,49 @@ async function run(spec, argv = process.argv.slice(2)) {
  * deleted it), with its relative requires pointed at the current tree.
  */
 function loadDeleted(repo, rev, file) {
-  const source = execFileSync('git', ['-C', repo, 'show', `${rev}:${file}`], { encoding: 'utf8' });
-  const dir = path.join(repo, path.dirname(file));
-  const rewritten = source.replace(/require\((['"])(\.{1,2}\/[^'"]+)\1\)/g,
-    (_, __, rel) => `require(${JSON.stringify(path.resolve(dir, rel))})`);
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'deleted-route-')), path.basename(file));
-  fs.writeFileSync(out, rewritten);
-  return require(out);
+  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'deleted-route-'));
+  const staged = new Map();
+  function stage(name) {
+    if (staged.has(name)) return staged.get(name);
+    const source = execFileSync('git', ['-C', repo, 'show', `${rev}:${name}`], { encoding: 'utf8' });
+    const out = path.join(staging, name);
+    staged.set(name, out);
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    const rewritten = source.replace(/require\((['"])(\.{1,2}\/[^'"]+)\1\)/g, (_, __, rel) => {
+      const local = path.resolve(repo, path.dirname(name), rel);
+      let resolved;
+      try { resolved = require.resolve(local); }
+      catch (error) {
+        if (error.code !== 'MODULE_NOT_FOUND') throw error;
+        const base = path.relative(repo, local).split(path.sep).join('/');
+        const candidate = [base + '.js', base + '/index.js', base].find(candidate =>
+          spawnSync('git', ['-C', repo, 'cat-file', '-e', rev + ':' + candidate], { stdio: 'ignore' }).status === 0);
+        if (!candidate) throw error;
+        resolved = stage(candidate);
+      }
+      return `require(${JSON.stringify(resolved)})`;
+    });
+    fs.writeFileSync(out, rewritten);
+    return out;
+  }
+  return require(stage(file));
 }
 
 function main(spec) {
   run(spec).then(ok => { process.exitCode = ok ? 0 : 1; }, (error) => { console.error(error); process.exit(1); });
 }
 
-module.exports = { run, main, loadDeleted, send, view, TOKEN };
+// A private marker from the fixture confirms its host port and forwarding
+// path are ready before recording the first differential request.
+async function waitForFixture(port) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      const res = await send(port, { method: 'GET', url: '/__health', headers: { Host: 'localhost' } }, 1000);
+      if (res.status === 200 && res.body.toString() === 'ok') return;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error('differential host did not become ready');
+}
+
+module.exports = { run, main, loadDeleted, send, view, TOKEN, waitForFixture };

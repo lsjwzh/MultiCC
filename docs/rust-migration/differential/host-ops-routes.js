@@ -60,7 +60,7 @@
 // fail the run if any response leaks them.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, send } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-host-ops-1' };
 const REMOTE_IP = '203.0.113.9';
@@ -104,7 +104,13 @@ function corpus(ctx) {
   };
 
   // ── restart / update ────────────────────────────────────────────────────
-  add('restart schedules the detached launcher', () => post('/api/restart', {}));
+  // The frozen shell launcher predates the Rust supervisor's restart receipt.
+  add('restart schedules the detached launcher', () => post('/api/restart', {}), {
+    expectedDifference: {
+      node: view => view.status === 202 && view.body === '{"ok":true,"status":"scheduled","activeStreaming":1}',
+      rust: view => view.status === 202 && /^\{"ok":true,"status":"scheduled","activeStreaming":1,"mode":"background","restartId":"[0-9a-f]{48}","supervisorPid":4242\}$/.test(view.body),
+    },
+  });
   add('restart debounces a second request', () => post('/api/restart', {}));
   // The front door cannot reach the child for this one: Rust 503, Express 409.
   add('restart with the host unreachable', () => post('/api/restart?down=1', {}), {
@@ -151,6 +157,9 @@ function corpus(ctx) {
   // ── settings / tunnel ───────────────────────────────────────────────────
   add('notify settings update', () => post('/api/settings/notify', { barkUrl: 'https://bark.example/new' }));
   add('notify settings reject a non-url', () => post('/api/settings/notify', { barkUrl: 'not a url' }));
+  add('notify settings preserve the displayed origin', () => post('/api/settings/notify', { barkUrl: 'https://bark.example/••••' }));
+  add('notify settings ignore non-string fields', () => post('/api/settings/notify', { barkUrl: false, webhookUrl: {} }));
+  add('notify settings clear the destination', () => post('/api/settings/notify', { barkUrl: '' }));
   add('tunnel settings apply a provider', () => post('/api/settings/tunnel', { natapp: { enabled: true, url: 'https://tunnel.example' } }));
   add('tunnel settings reject a bad interval', () => post('/api/settings/tunnel', { intervalSec: 1 }));
   add('restart a known provider', () => post('/api/tunnel/restart/natapp', {}));
@@ -299,12 +308,18 @@ const world = createWorld({ rootDir: process.env.HOST_OPS_ROOT });
 // Both detached launchers are fakes; the log is written so this process can
 // prove it scheduled each of them exactly once without starting anything.
 const spawnLog = [];
+world.restartDeps.desktopExit = () => {};
 for (const [name, deps] of [['restart', world.restartDeps], ['update', world.updateDeps]]) {
   const base = deps.spawn;
   deps.spawn = (file, args, options) => {
     spawnLog.push({ module: name, file, args });
     fs.writeFileSync(process.env.HOST_OPS_SPAWN_LOG, JSON.stringify(spawnLog));
-    return base(file, args, options);
+    const child = base(file, args, options);
+    if (name === 'restart') {
+      child.pid = 4242;
+      child.stdout = require('node:stream').Readable.from(['READY\\n']);
+    }
+    return child;
   };
 }
 
@@ -393,8 +408,21 @@ inner.listen(0, '127.0.0.1', () => {
 main({
   name: 'host-ops-routes',
   mount: mountOracle,
+  async ready(port) {
+    // /healthz can answer before the child binds its private Express listener.
+    // Read a side-effect-free host operation before starting the ordered corpus.
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try {
+        const result = await send(port, { method: 'GET', url: '/api/skill-sync/status', headers: L }, 1000);
+        if (result.status === 200) return;
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('host-ops fixture did not become ready');
+  },
   get upstream() { return upstreamText; },
   gatewayEnv: work => ({
+    HOST: '127.0.0.1',
     MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON,
     MULTICC_RUST_PREBUILT_DIR: process.env.MULTICC_RUST_PREBUILT_DIR,
     MULTICC_DATA_DIR: path.join(work, 'gw-data'),
@@ -469,6 +497,9 @@ main({
     expect('ops run stop', 200, '"stopped":true');
     expect('ops run status after the stop', 200, '"running":false');
     expect('notify settings update', 200, '"ok":true');
+    expect('notify settings preserve the displayed origin', 200, '"ok":true');
+    expect('notify settings ignore non-string fields', 200, '"ok":true');
+    expect('notify settings clear the destination', 200, '"ok":true');
     expect('notify settings reject a non-url', 400, 'notification URL must be http(s)');
     expect('tunnel settings apply a provider', 200, '"enabled":true');
     expect('tunnel settings reject a bad interval', 400, 'intervalSec must be an integer');
@@ -579,7 +610,10 @@ main({
     for (const name of ['restart', 'update']) {
       const calls = childSpawns.filter(entry => entry.module === name);
       if (calls.length !== 1) problems.push(`the Node child scheduled ${name} ${calls.length} times, expected 1`);
-      if (calls[0] && calls[0].file !== '/bin/sh') problems.push(`the Node child ${name} spawn did not use /bin/sh`);
+      const expectedFile = name === 'restart'
+        ? path.join(path.dirname(process.env.MULTICC_RUST_ADDON), process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor')
+        : '/bin/sh';
+      if (calls[0] && calls[0].file !== expectedFile) problems.push(`the Node child ${name} spawn did not use ${expectedFile}`);
     }
     if (fs.existsSync(path.join(rootDir, 'logs', 'update.log'))) {
       problems.push('an updater wrote logs/update.log — it must never run');

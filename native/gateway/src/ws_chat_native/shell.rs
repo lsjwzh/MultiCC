@@ -41,6 +41,20 @@ pub(super) fn queue_store(root: &Path) -> Result<Store, String> {
     )
 }
 
+pub(super) fn adoption_facts(
+    root: &Path,
+    id: &str,
+    record: &V,
+    board: &Value,
+) -> Result<Value, String> {
+    let pending = super::question::read(root, id, record)?.pending;
+    let last = store::last_task_message(root, id, board)?;
+    Ok(
+        json!({"sessionId":id,"record":js::to_serde(record),"taskFirst":true,
+        "indexed":board["tasks"],"deleted":board["deletedTaskIds"],"pending":js::to_serde(&pending),"last":last}),
+    )
+}
+
 pub(super) fn registry(root: &Path, request: &Value) -> Result<Value, String> {
     let all = store::records(root)?;
     let mut tasks = task_store(root)?;
@@ -63,23 +77,7 @@ pub(super) fn registry(root: &Path, request: &Value) -> Result<Value, String> {
             let board = multicc_core::task_domain::repository::read_board_snapshot(
                 &root.join("task_board.json"),
             )?;
-            let pending = super::question::read(root, id, &record)?.pending;
-            let last = store::session_messages(root, id)?
-                .into_iter()
-                .rev()
-                .find(|row| {
-                    let task = store::text(row, "taskId");
-                    !task.is_empty()
-                        && !js::truthy_opt(row.get("inherited"))
-                        && !board["deletedTaskIds"]
-                            .as_array()
-                            .is_some_and(|deleted| deleted.iter().any(|id| id == &task))
-                })
-                .map_or(Value::Null, |row| js::to_serde(&row));
-            tasks.open_chat_shell(
-                &json!({"sessionId":id,"record":js::to_serde(&record),"taskFirst":true,
-                "indexed":board["tasks"],"pending":js::to_serde(&pending),"last":last}),
-            )
+            tasks.open_chat_shell(&adoption_facts(root, id, &record, &board)?)
         }
         Some("view") => {
             let shell = tasks.shell_record(shell_id)?;

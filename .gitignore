@@ -56,6 +56,8 @@ secrets.json
 secrets.json.tmp.*
 external-fleets.json
 aux-config.json
+aux-jobs.sqlite*
+background-jobs.lock
 aux_runs/
 notes.json
 ui-layout.json
@@ -206,6 +208,8 @@ services/openrouter-usage/
 
 # Rust 产物由构建脚本写到外部目录，源码与锁文件保留在仓库。
 /native/target/
+/multicc-service/
+/dist-service/
 /native/prebuilt/
 
 # plugins/ 只跟踪内置项：插件是「复制进来即安装」的目录，本机自己装的插件属于
