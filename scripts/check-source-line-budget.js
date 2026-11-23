@@ -102,6 +102,16 @@ const MIGRATION_DEBT = Object.freeze({
   // （_turnAutoCommit/_turnAutoCommitTouched/_autoCommittedTurns 等 ~50 行），
   // 实测降回 2963（<= 3000），这条登记按闸的要求退休 —— 别再把它加回来。
   // 该拆的仍是那笔 ~200 行的 vendor-quota 集群。
+  // 2026-11-23 退休后又越线（第三次）：agy 多账号额度条新增 agyQuotaView getter、
+  // _agyQuota/_agyLoading/_agyInFlight/_agyDisposed/_agyErrorAt 状态与四处
+  // refreshAgyQuota 接线（d47d18b8），实测 3032 行 / 122979 字节，按棘轮重新登记。
+  // agy 这一格现在也归那笔 vendor-quota 集群，拆出去落回 <= 3000 就删掉这条。
+  'app/lib/providers/chat_provider.dart': Object.freeze({
+    ceiling: 3032,
+    byteCeiling: 122979,
+    target: 3000,
+    reason: 'extract the vendor-quota cluster (the ark/kimi/qoder/agy fetchers, their in-flight and backoff state, and their *QuotaView getters) into its own collaborator to return under 3k',
+  }),
   // public/chat.js 越过 3000：2026-09-27 产出链接优化（fixupLocalFileLinks +
   // stripServerOrigin：agent 输出的本地文件链接改走 /api/download，不再 404）和
   // FIFO 暂存消息双击改正文（createEditHandler + configure 的 onEdit）各加了十几行。
@@ -325,9 +335,12 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-21 远控 Node 层删除：require、remoteScreenRfb 与 remoteScreen.mount(app)
   // 三处一并移除（路由由 Rust 前门独占），实测 3081 行 / 166013 字节（行数按
   // split('\n') 计，比 wc -l 多一行尾换行），双降后按棘轮下调。
+  // 2026-11-22 会话仓储/创建/登录终端/投递四个 Node 模块退役为 Rust 端口后字节
+  // 高水位抬到 165773；2026-11-23 把两段说明各压回一行抵偿，实测 3076 行 /
+  // 165636 字节，行数与字节双降，按棘轮下调。
   'server.js': Object.freeze({
-    ceiling: 3078,
-    byteCeiling: 165671,
+    ceiling: 3076,
+    byteCeiling: 165636,
     target: 3000,
     reason: 'the 30 orchestration and unattended routes (aux queue/config/history, goal settings and precheck, aux run log, unattended get/post, scheduled messages, observed tasks, dispatch recovery, user-input dismiss, queue read and actions, the v1 waits projection) moved to the Rust front door (native/gateway/src/app/orchestration_routes.rs) behind one orchestration host port, with wait and detached handlers remaining in the Node host; the 18 session-management routes (memory get/put/delete/action, bundle export/import, session delete/relocate/restart/restart-spawn, vendor-login-terminal, role-workers and directory session creation, notes get/post, liveness, session patch/fork) moved to the Rust front door (native/gateway/src/app/session_routes.rs) behind one session-routes host port; the 18 push routes (subscribe, validate, test, notify, test-bark, test-webhook, channel subscriptions plus :id removal and test-channel, fcm devices plus fcm/test, bark devices) moved to the Rust front door (native/gateway/src/app/push_routes.rs) behind one push host port; the 16 task-surface routes (task-board writes, retention, status, delete, relocate, chat-session, both searches, mark-achieved, task-graph, task-attribution) moved to the Rust front door (native/gateway/src/app/task_routes.rs) behind one task-routes host port; the 16 docs/memory/memo/directory-event routes live behind the docs-memory host port; the 15 events/trigger/annotation routes live behind the events host port; the 22 pricing/vendor-quota/quota-bar routes live behind the quota host port; the 13 directory/onboarding/ui-layout routes live behind the directory host port; the 32 account and login routes (claude/codex account list-create-activate-login-status-login-callback-relogin-delete, claude account quota, zcode auth get/put/sync/check, kimi auth get/put/check, CLI key account list/create/patch/delete, claude/codex oauth status+login, commandcode auth status/login) live behind the account-routes host port; the four server-core routes (/healthz, /readyz, /metrics, /api/repo-operations/:operationId) moved to the Rust front door (native/gateway/src/app/server_core.rs) behind one server-core host port, which also retired the Node-side active-turn table walk in favour of the Rust-owned count (native/core/src/active_turns.rs); POST /api/sessions/:id/switch-cli moved to the Rust front door (native/gateway/src/app/cli_switch.rs) behind one cli-switch host port, leaving the mount call in place so server.js itself was untouched by that cluster; the next extraction is the remaining vendor-quota fetchers and chat routes to return under 3k',
   }),

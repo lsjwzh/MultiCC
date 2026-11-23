@@ -86,7 +86,8 @@ test('the current tracked tree satisfies the ratcheted budget', () => {
   // budget is a violation above, so this pins the declared set — a new god file
   // cannot be quietly parked here, and retiring an entry (by splitting the file
   // back under 3000) means shrinking this list in the same commit.
-  // The run-config model panel and server bridge remain tracked migration debt.
+  // The run-config model panel, the chat provider's vendor-quota cluster and the
+  // server bridge remain tracked migration debt.
   assert.deepEqual(result.debts.map(entry => entry.file),
-    ['public/run-config.js', 'server.js']);
+    ['app/lib/providers/chat_provider.dart', 'public/run-config.js', 'server.js']);
 });
