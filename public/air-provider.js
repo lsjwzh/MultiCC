@@ -12,6 +12,7 @@
     ['all', t('airProviderProtocolAll')],
     ['anthropic', 'Anthropic Messages'],
     ['openai_responses', 'OpenAI Responses'],
+    ['agy', t('airProviderProtocolAgy')],
   ];
   // ── 模板（provider templates）────────────────────────────────────────────
   // 模板只预填表单（CLI / 协议 / Base URL / 模型 / 档位别名），永远不含 key。
@@ -745,21 +746,37 @@
     panel.append(button(t('airProviderSaveDefaults'), saveDefaults, 'primary'));
   }
 
+  function syncProtocolVisibility() {
+    const agyTab = document.querySelector('.air-provider-tab[data-protocol="agy"]');
+    if (agyTab) agyTab.hidden = !agyState;
+    if (activeProtocol === 'agy' && !agyState) {
+      activeProtocol = 'all';
+      document.querySelectorAll('.air-provider-tab').forEach(item => item.classList.toggle('active', item.dataset.protocol === activeProtocol));
+    }
+    const grid = el('air-provider-cards');
+    if (grid) grid.hidden = activeProtocol === 'agy';
+    const agyPanel = el('air-provider-agy-accounts');
+    if (agyPanel) agyPanel.hidden = !agyState || (activeProtocol !== 'all' && activeProtocol !== 'agy');
+  }
+
   function renderCards() {
     const grid = el('air-provider-cards');
     if (!grid || !data) return;
-    const rows = activeProtocol === 'all' ? data.providers : data.providers.filter(item => item.apiFormat === activeProtocol);
-    grid.replaceChildren(...rows.map(renderProviderCard));
-    if (!rows.length) grid.append(make('p', t('airProviderEmptyProtocol'), 'admin-empty'));
     el('air-provider-count').textContent = t('airProviderCount', {
       routes: data.providers.length,
       credentials: data.providers.filter(item => item.hasToken || item.isOfficial).length,
     });
+    syncProtocolVisibility();
+    if (activeProtocol === 'agy') return;
+    const rows = activeProtocol === 'all' ? data.providers : data.providers.filter(item => item.apiFormat === activeProtocol);
+    grid.replaceChildren(...rows.map(renderProviderCard));
+    if (!rows.length) grid.append(make('p', t('airProviderEmptyProtocol'), 'admin-empty'));
   }
 
   function setProtocol(value) {
     activeProtocol = value;
     document.querySelectorAll('.air-provider-tab').forEach(item => item.classList.toggle('active', item.dataset.protocol === value));
+    syncProtocolVisibility();
     renderCards();
   }
 
@@ -1312,8 +1329,8 @@
     const panel = el('air-provider-agy-accounts');
     const host = el('air-provider-agy-list');
     if (!panel || !host) return;
-    if (!agyState) { panel.hidden = true; return; }
-    panel.hidden = false;
+    syncProtocolVisibility();
+    if (!agyState) return;
     const actionsEl = el('air-provider-agy-actions');
     if (actionsEl) {
       actionsEl.querySelector('[data-agy-mutagen]')?.remove();
@@ -1417,6 +1434,7 @@
     const before = new Set((agyState?.accounts || []).map(item => item.id));
     try {
       const next = applyAgyResponse(await context.api('/api/agy/accounts', { label }, 'POST'));
+      if (activeProtocol !== 'all' && activeProtocol !== 'agy') setProtocol('agy');
       const created = next?.accounts.find(item => !before.has(item.id));
       context?.notice(t('airOfficialAcctAgyCreated'));
       if (created) await loginAgyAccount(created.id);

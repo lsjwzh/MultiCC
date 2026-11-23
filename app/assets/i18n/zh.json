@@ -2470,6 +2470,7 @@
   "airProviderPresetSourceGithub": "GitHub 模板 · {time}",
   "airProviderPresetSourceLocal": "本地模板 · {count} 个",
   "airProviderPresetXfMaas": "讯飞 MaaS Coding",
+  "airProviderProtocolAgy": "反重力 (agy)",
   "airProviderProtocolAll": "全部线路",
   "airProviderQuota": "余量 · ",
   "airProviderQuotaStale": "上次余量 · ",
