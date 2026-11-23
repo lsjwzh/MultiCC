@@ -18,7 +18,8 @@ const FAIL_TTL: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: u64 = 1024 * 1024;
 /// `None` records a failed probe, so a signed-out or offline CLI is not spawned
 /// on every page load.
-static CACHE: OnceLock<Mutex<Option<(Instant, Option<Value>)>>> = OnceLock::new();
+type CacheEntry = Option<(Instant, Option<Value>)>;
+static CACHE: OnceLock<Mutex<CacheEntry>> = OnceLock::new();
 
 fn render(data: &Value, now_ms: u64) -> Option<Value> {
     let groups = data.pointer("/command/data/groups")?.as_array()?;
