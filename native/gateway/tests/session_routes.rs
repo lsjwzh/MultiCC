@@ -471,8 +471,15 @@ fn agy_login_terminal_resolves_the_account_before_forwarding() {
             "agy-login-terminal": relay(200, json!({"ok": true, "id": "agy-login", "url": "/?id=agy-login"}))
         })),
     );
-    // 账号存储只有 native/core 一份：这里直接按磁盘布局造状态。
-    let root = gateway.dir.join("home/.multicc/official-accounts/agy");
+    // 账号存储只有 native/core 一份：这里直接按磁盘布局造状态。逐段 join，
+    // 与生产同构：Windows 下 join 不会归一化字符串参数里的 `/`，一次拼进
+    // "home/.multicc/..." 会让期望值与生产路径在分隔符上分叉。
+    let root = gateway
+        .dir
+        .join("home")
+        .join(".multicc")
+        .join("official-accounts")
+        .join("agy");
     fs::create_dir_all(&root).unwrap();
     let id = "0123456789abcdef";
     let account = root.join(format!("{id}.home"));
