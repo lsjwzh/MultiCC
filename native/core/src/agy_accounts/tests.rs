@@ -367,3 +367,42 @@ fn remote_vps_account_crud_resolution_and_activation_work() {
     assert!(resolve_account(&home, Some(&id)).is_err());
     let _ = fs::remove_dir_all(&home);
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn import_account_links_macos_keychains_and_delete_preserves_target() {
+    let home = temp_home("macos-keychains");
+    let keychains_dir = home.join("Library").join("Keychains");
+    fs::create_dir_all(&keychains_dir).unwrap();
+    let sentinel = keychains_dir.join("login.keychain-db");
+    fs::write(&sentinel, b"sentinel").unwrap();
+    let gemini = home.join(".gemini");
+    fs::create_dir_all(&gemini).unwrap();
+    fs::write(
+        gemini.join("oauth_creds.json"),
+        r#"{"access_token":"tok","expiry_date":1900000000000}"#,
+    )
+    .unwrap();
+    fs::write(
+        gemini.join("google_accounts.json"),
+        r#"{"active":"mac@example.com"}"#,
+    )
+    .unwrap();
+
+    let imported = import_account(&home, "Mac Keychain 账号").unwrap();
+    let id = imported["id"].as_str().unwrap();
+    let link = account_home(&home, id)
+        .unwrap()
+        .join("Library")
+        .join("Keychains");
+    let meta = fs::symlink_metadata(&link).unwrap();
+    assert!(meta.file_type().is_symlink());
+    assert_eq!(fs::read_link(&link).unwrap(), keychains_dir);
+    assert!(link.join("login.keychain-db").is_file());
+
+    // 删除导入账号必须只移除软链，绝不能删除真实用户的 Keychains 内容。
+    delete_account(&home, id).unwrap();
+    assert!(sentinel.is_file());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"sentinel");
+    let _ = fs::remove_dir_all(&home);
+}
