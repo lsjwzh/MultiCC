@@ -454,3 +454,33 @@ test('fork carries the live account picks and drops vanished ones', async () => 
   assert.equal(response.statusCode, 200, JSON.stringify(response.body));
   assert.deepEqual(attempts[0].cliAccounts, { commandcode: cc.id });
 });
+
+test('agy session picks validate against Rust store, survive fork, and release on delete', async () => {
+  const store = freshStore();
+  const agyId = '0123456789abcdef';
+  const agyRoot = path.join(process.env.HOME, '.multicc', 'official-accounts', 'agy');
+  fs.mkdirSync(path.join(agyRoot, `${agyId}.home`, '.gemini'), { recursive: true });
+  fs.writeFileSync(path.join(agyRoot, `${agyId}.json`), JSON.stringify({ id: agyId, label: '工作号', createdAt: 1, source: 'created' }));
+
+  const session = { id: 's1', dirId: 'd1', cli: 'agy', kind: 'chat' };
+  const attempts = [];
+  const app = profileFixture(session, store, {
+    createSessionRecord: async input => { attempts.push(input); return { ok: true, id: 'new', session: { ...input, id: 'new' } }; },
+  });
+  const patch = body => call(app, 'PATCH /api/sessions/:id', { params: { id: 's1' }, body });
+
+  assert.equal(patch({ cliAccounts: { agy: 'ffffffffffffffff' } }).statusCode, 400);
+  const ok = patch({ cliAccounts: { agy: agyId } });
+  assert.equal(ok.statusCode, 200);
+  assert.deepEqual(session.cliAccounts, { agy: agyId });
+
+  const forkRes = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+  await app.routes.get('POST /api/sessions/:id/fork')({ params: { id: 's1' }, body: { atMessageId: 'm0', includeMemory: false } }, forkRes);
+  assert.equal(forkRes.statusCode, 200);
+  assert.deepEqual(attempts[0].cliAccounts, { agy: agyId });
+
+  const released = call(app, 'POST /api/agy/accounts/:id/release', { params: { id: agyId } });
+  assert.equal(released.statusCode, 200);
+  assert.deepEqual(released.body, { ok: true, releasedSessions: 1 });
+  assert.equal('cliAccounts' in session, false);
+});

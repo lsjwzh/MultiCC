@@ -825,16 +825,26 @@ test('a pinned agy account rides on both spawn paths and never leaks without one
   try {
     const runtime = createProviderRouterRuntime({ providers: fakeProviders(), ...HOST });
     const id = '0123456789abcdef';
+    const secondId = 'fedcba9876543210';
     // 直接按 Rust 的磁盘布局造状态：账号存储只有 native/core 一份。
     const root = path.join(temp, '.multicc', 'official-accounts', 'agy');
     const accountDir = path.join(root, `${id}.home`);
+    const secondDir = path.join(root, `${secondId}.home`);
     fs.mkdirSync(root, { recursive: true });
     fs.writeFileSync(path.join(root, `${id}.json`), JSON.stringify({ id, label: '工作', createdAt: 1, source: 'create' }));
     fs.mkdirSync(accountDir, { recursive: true });
+    fs.writeFileSync(path.join(root, `${secondId}.json`), JSON.stringify({ id: secondId, label: '备用', createdAt: 2, source: 'create' }));
+    fs.mkdirSync(secondDir, { recursive: true });
 
     assert.equal('HOME' in runtime.resolveSpawnEnv({ id: 's1', cli: 'agy' }).env, false,
       'no pin means the machine login — the adapter leaves HOME untouched');
     assert.equal('HOME' in runtime.buildChildEnv({ KEEP: '1' }, { id: 's1', cli: 'agy' }).env, false);
+
+    // Per-session binding picks its own account even without a global active pin.
+    const boundSession = { id: 's-bound', cli: 'agy', cliAccounts: { agy: secondId } };
+    assert.equal(runtime.createBinding(boundSession).accountId, secondId);
+    assert.equal(runtime.resolveSpawnEnv(boundSession).env.HOME, secondDir);
+    assert.equal(runtime.buildChildEnv({ KEEP: '1' }, boundSession).env.HOME, secondDir);
 
     fs.writeFileSync(path.join(root, 'active.json'), JSON.stringify({ id }));
     const term = runtime.resolveSpawnEnv({ id: 's1', cli: 'agy' });
@@ -842,6 +852,16 @@ test('a pinned agy account rides on both spawn paths and never leaks without one
     const chat = runtime.buildChildEnv({ KEEP: '1' }, { id: 's1', cli: 'agy' });
     assert.equal(chat.env.HOME, accountDir);
     assert.equal(chat.env.KEEP, '1', 'the pin merges over, it does not replace the env');
+
+    // Explicit binding overrides global active; explicit null override falls back to global active.
+    assert.equal(runtime.resolveSpawnEnv(boundSession).env.HOME, secondDir);
+    assert.equal(runtime.buildChildEnv({ KEEP: '1' }, boundSession).env.HOME, secondDir);
+    assert.equal(runtime.resolveSpawnEnv(boundSession, { accountId: null }).env.HOME, accountDir);
+
+    // A missing bound account fails closed instead of silently billing the global or local login.
+    const missingSession = { id: 's-missing', cli: 'agy', cliAccounts: { agy: 'ffffffffffffffff' } };
+    assert.throws(() => runtime.resolveSpawnEnv(missingSession), error => error.code === 'AGY_ACCOUNT_MISSING');
+    assert.throws(() => runtime.buildChildEnv({}, missingSession), error => error.code === 'AGY_ACCOUNT_MISSING');
 
     assert.equal('HOME' in runtime.resolveSpawnEnv({ id: 's2', cli: 'claude' }).env, false,
       'other lanes never get the agy pin');

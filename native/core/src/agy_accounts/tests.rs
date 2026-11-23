@@ -203,3 +203,58 @@ fn an_empty_root_lists_nothing_and_no_active_account() {
     assert!(active_id(&home).is_none());
     assert!(active_home(&home).is_none());
 }
+
+#[test]
+fn resolve_home_prefers_explicit_binding_and_fails_closed_when_missing() {
+    let home = temp_home("resolve");
+    let first = create_account(&home, "一号", "created").unwrap();
+    let second = create_account(&home, "二号", "created").unwrap();
+    let first_id = first["id"].as_str().unwrap();
+    let second_id = second["id"].as_str().unwrap();
+
+    assert!(has_account(&home, first_id));
+    assert!(has_account(&home, second_id));
+    assert!(!has_account(&home, "ffffffffffffffff"));
+    assert!(!has_account(&home, "../../etc"));
+
+    // Unpinned global + no explicit pick → real HOME (Ok(None)).
+    assert_eq!(resolve_home(&home, None).unwrap(), None);
+    assert_eq!(resolve_home(&home, Some("  ")).unwrap(), None);
+
+    // Explicit binding pins its own account even without global active.
+    assert_eq!(
+        resolve_home(&home, Some(second_id)).unwrap(),
+        account_home(&home, second_id)
+    );
+
+    // Global active applies when binding omits account_id, while explicit binding overrides it.
+    set_active(&home, Some(first_id)).unwrap();
+    assert_eq!(
+        resolve_home(&home, None).unwrap(),
+        account_home(&home, first_id)
+    );
+    assert_eq!(
+        resolve_home(&home, Some(second_id)).unwrap(),
+        account_home(&home, second_id)
+    );
+
+    // Deleted or malformed explicit binding must fail closed instead of falling back.
+    delete_account(&home, second_id).unwrap();
+    assert!(!has_account(&home, second_id));
+    assert_eq!(
+        resolve_home(&home, Some(second_id)).unwrap_err(),
+        "unknown account"
+    );
+    assert_eq!(
+        resolve_home(&home, Some("../../etc")).unwrap_err(),
+        "invalid account id"
+    );
+    // Missing .home directory with lingering meta file also fails closed.
+    fs::remove_dir_all(account_home(&home, first_id).unwrap()).unwrap();
+    assert!(!has_account(&home, first_id));
+    assert_eq!(
+        resolve_home(&home, Some(first_id)).unwrap_err(),
+        "unknown account"
+    );
+    let _ = fs::remove_dir_all(&home);
+}

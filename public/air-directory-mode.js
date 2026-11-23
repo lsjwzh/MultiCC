@@ -366,6 +366,7 @@
         ...(runtime.providerSelection ? { providerSelection: runtime.providerSelection } : {}),
         ...(runtime.model ? { model: runtime.model } : {}),
         ...(runtime.effort ? { effort: runtime.effort } : {}),
+        ...(runtime.cliAccounts ? { cliAccounts: runtime.cliAccounts } : {}),
       });
       const url = `/?id=${encodeURIComponent(session.id)}`;
       root.location.assign(root.MultiCCMachineScope?.navigation(url) || url);

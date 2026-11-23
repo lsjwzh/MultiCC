@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { accountEnv } = require('../src/agy-accounts');
+const { accountEnv, hasAccount } = require('../src/agy-accounts');
 
 const REAL_HOME = process.env.HOME;
 
@@ -87,6 +87,35 @@ test('a malformed id in active.json is not a pin', () => {
 
 test('an empty HOME is not a pin', () => {
   assert.equal(accountEnv(''), null);
+  assert.throws(
+    () => accountEnv('', '0123456789abcdef'),
+    error => error.code === 'AGY_ACCOUNT_MISSING',
+  );
+});
+
+test('explicit accountId overrides global active and fails closed when missing', () => {
+  const home = tempHome('binding');
+  const firstId = '0123456789abcdef';
+  const secondId = 'fedcba9876543210';
+  const firstDir = createAccount(home, firstId, '一号');
+  const secondDir = createAccount(home, secondId, '二号');
+  setActive(home, firstId);
+
+  assert.equal(hasAccount(firstId, home), true);
+  assert.equal(hasAccount(secondId, home), true);
+  assert.equal(hasAccount('ffffffffffffffff', home), false);
+  assert.equal(hasAccount('../../etc', home), false);
+
+  assert.deepEqual(accountEnv(home, null), { HOME: firstDir });
+  assert.deepEqual(accountEnv(home, secondId), { HOME: secondDir });
+  assert.throws(
+    () => accountEnv(home, 'ffffffffffffffff'),
+    error => error.code === 'AGY_ACCOUNT_MISSING' && /重新选择账户/.test(error.message),
+  );
+  assert.throws(
+    () => accountEnv(home, '../../etc'),
+    error => error.code === 'AGY_ACCOUNT_MISSING',
+  );
 });
 
 test('login env may pin HOME and nothing else', () => {

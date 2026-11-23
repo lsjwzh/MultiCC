@@ -20,20 +20,37 @@ test('ProviderBinding is narrow, immutable, and maps to a narrow legacy view', (
   assert.equal(isProviderBinding(binding), true);
   assert.equal(Object.isFrozen(binding), true);
   assert.deepEqual(Object.keys(binding), [
-    'sessionId', 'cli', 'providerId', 'model', 'roleKind', 'agentRole', 'routeName',
+    'sessionId', 'cli', 'providerId', 'model', 'roleKind', 'agentRole', 'routeName', 'accountId',
   ]);
   assert.equal(binding.roleKind, 'main');
   assert.equal(binding.agentRole, null);
   assert.equal(binding.routeName, 'main');
+  assert.equal(binding.accountId, null);
 
   const legacy = toLegacyProviderView(binding);
   assert.deepEqual(Object.keys(legacy), [
-    'id', 'cli', 'provider', 'model', 'roleKind', 'agentRole', 'routeName',
+    'id', 'cli', 'provider', 'model', 'roleKind', 'agentRole', 'routeName', 'accountId',
   ]);
   assert.equal(legacy.provider, 'provider-1');
+  assert.equal(legacy.accountId, null);
   assert.equal(Object.isFrozen(legacy), true);
   assert.equal('token' in legacy, false);
   assert.equal('worktreePath' in legacy, false);
+});
+
+test('ProviderBinding carries optional accountId and validates control characters', () => {
+  const binding = createProviderBinding({
+    sessionId: 'session-agy',
+    cli: 'agy',
+    accountId: '  0123456789abcdef  ',
+  });
+  assert.equal(binding.accountId, '0123456789abcdef');
+  assert.equal(toLegacyProviderView(binding).accountId, '0123456789abcdef');
+  assert.equal(createProviderBinding({ sessionId: 'session-agy', cli: 'agy', accountId: '' }).accountId, null);
+  assert.throws(
+    () => createProviderBinding({ sessionId: 'session-agy', cli: 'agy', accountId: 'bad\nid' }),
+    /accountId is invalid/,
+  );
 });
 
 test('ProviderBinding refuses a whole session or credentials', () => {

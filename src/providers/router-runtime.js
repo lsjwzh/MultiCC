@@ -141,11 +141,15 @@ function createProviderRouterRuntime(options = {}) {
     const requestedProvider = overrides.providerId !== undefined ? overrides.providerId : value.provider;
     const providerId = !value.loginFlow && typeof providers.normalizeOfficialProviderId === 'function'
       ? providers.normalizeOfficialProviderId(cli === 'codex-exp' ? 'codex' : cli === 'claude-exp' ? 'claude' : cli, requestedProvider) : requestedProvider;
+    const accountId = overrides.accountId !== undefined
+      ? overrides.accountId
+      : (!value.loginFlow ? selectedAccountId(value, cli) : null);
     return port.createBinding({
       sessionId: overrides.sessionId || value.id || value.sessionId,
       cli, providerId,
       model: overrides.model !== undefined ? overrides.model : value.model,
       roleKind: overrides.roleKind || 'main',
+      ...(accountId ? { accountId } : {}),
       ...(overrides.agentRole ? { agentRole: overrides.agentRole } : {}),
       ...(overrides.routeName ? { routeName: overrides.routeName } : {}),
     });
@@ -165,13 +169,13 @@ function createProviderRouterRuntime(options = {}) {
     return { ...result, env: applyCliKeyAccountEnv(result.env || {}, session, keyAccounts, cli) };
   }
 
-  // agy 把整套登录都放在 `$HOME/.gemini`，一个账号 = 一个独立 HOME。选中账号
-  // 后每一次 spawn 都要带上它（终端与 chat 子进程一视同仁），否则终端会静默
-  // 退回本机登录。登录终端自己用 loginEnv.HOME 指定目标账号，那条在 server.js
-  // 里后合并、优先级更高。
-  function withAgyAccountEnv(result, cli) {
-    if (!result || cli !== 'agy') return result;
-    const pin = agyAccountEnv();
+  // agy 把整套登录都放在 `$HOME/.gemini`，一个账号 = 一个独立 HOME。按绑定
+  // 注入对应账号的 HOME（binding.accountId 优先，未指定时沿用全局 active.json），
+  // 终端与 chat 子进程一视同仁。登录终端自己用 loginEnv.HOME 指定目标账号，
+  // 那条在 server.js 里后合并、优先级更高。
+  function withAgyAccountEnv(result, binding) {
+    if (!result || !binding || binding.cli !== 'agy') return result;
+    const pin = agyAccountEnv(undefined, binding.accountId);
     return pin ? { ...result, env: { ...(result.env || {}), ...pin } } : result;
   }
 
@@ -215,7 +219,7 @@ function createProviderRouterRuntime(options = {}) {
     const result = binding.cli === 'pi' || vendorNative || hostOwnsOfficialCodexHome(binding)
       ? legacy.resolveSpawnEnv(toLegacyProviderView(binding))
       : port.resolveSpawn(binding);
-    return withManagedProxyEnv(withKeyAccount(withAgyAccountEnv(result, binding.cli), session, binding.cli), binding.cli);
+    return withManagedProxyEnv(withKeyAccount(withAgyAccountEnv(result, binding), session, binding.cli), binding.cli);
   }
 
   function buildChildEnv(base, session, extra = {}, overrides) {
@@ -227,7 +231,7 @@ function createProviderRouterRuntime(options = {}) {
       || hostOwnsOfficialCodexHome(binding)
       ? legacy.buildChildEnv(base, toLegacyProviderView(binding), extra)
       : port.buildChildEnv(base, binding, extra);
-    return withManagedProxyEnv(withKeyAccount(withAgyAccountEnv(result, binding.cli), session, binding.cli), binding.cli);
+    return withManagedProxyEnv(withKeyAccount(withAgyAccountEnv(result, binding), session, binding.cli), binding.cli);
   }
 
   return Object.freeze({

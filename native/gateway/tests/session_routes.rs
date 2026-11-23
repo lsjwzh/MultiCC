@@ -517,6 +517,39 @@ fn agy_login_terminal_resolves_the_account_before_forwarding() {
 }
 
 #[test]
+fn agy_delete_notifies_host_to_release_session_bindings() {
+    let gateway = Gateway::start(
+        "agy-delete-release",
+        world(json!({
+            "agy-release-account": relay(200, json!({"ok": true, "releasedSessions": 2}))
+        })),
+    );
+    let root = gateway
+        .dir
+        .join("home")
+        .join(".multicc")
+        .join("official-accounts")
+        .join("agy");
+    fs::create_dir_all(&root).unwrap();
+    let id = "0123456789abcdef";
+    fs::create_dir_all(root.join(format!("{id}.home")).join(".gemini")).unwrap();
+    fs::write(
+        root.join(format!("{id}.json")),
+        json!({"id": id, "label": "工作", "createdAt": 1, "source": "created"}).to_string(),
+    )
+    .unwrap();
+
+    let response = gateway.send("DELETE", &format!("/api/agy/accounts/{id}"), &json!({}));
+    assert_eq!(response.status, 200);
+    assert_eq!(response.json()["accounts"], json!([]));
+    let calls = gateway.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["op"], json!("agy-release-account"));
+    assert_eq!(calls[0]["method"], json!("POST"));
+    assert_eq!(calls[0]["id"], json!(id));
+}
+
+#[test]
 fn role_workers_put_decodes_both_parameters() {
     let gateway = Gateway::start(
         "role-workers",

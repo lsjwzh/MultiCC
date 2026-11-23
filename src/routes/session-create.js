@@ -1,6 +1,7 @@
 'use strict';
 
 const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
+const { mergeCliAccountsPatch, sharedCliKeyAccountStore } = require('../cli-key-accounts');
 const { mountAgyAccountRoutes } = require('./agy-accounts');
 
 function assertDependencies(deps) {
@@ -75,12 +76,23 @@ function mountSessionCreateRoutes(app, rawDeps) {
     // undefined = 未指定 → 新 chat 会话吃该 CLI 家族的子任务默认线路；
     // null/''/{} = 明确不要子任务线路。两者必须保持可区分。
     const subagent = req.body.subagent;
+    let cliAccounts;
+    if (req.body.cliAccounts !== undefined) {
+      const checked = mergeCliAccountsPatch(
+        null,
+        req.body.cliAccounts,
+        deps.cliKeyAccounts || sharedCliKeyAccountStore(),
+      );
+      if (!checked.ok) return res.status(400).json({ error: checked.error });
+      cliAccounts = checked.value;
+    }
     if (kind === 'chat' && !experimentalMode && deps.createTask) {
       const result = await deps.createTask({ dirId: dir.id, title: label || '新任务', cli: cli || 'claude',
         ...(model ? { model } : {}), ...(provider === undefined ? {} : { provider }),
         ...(providerSelection === undefined ? {} : { providerSelection }),
         effort, agent, ...(rolePrompt ? { rolePrompt } : {}),
         ...(subagent === undefined ? {} : { subagent }),
+        ...(cliAccounts ? { cliAccounts } : {}),
         clientMsgId: req.body.clientMsgId || require('node:crypto').randomUUID() });
       return res.json({ ...deps.getRecord(result.sessionId), taskId: result.taskId, url: result.url });
     }
@@ -90,6 +102,7 @@ function mountSessionCreateRoutes(app, rawDeps) {
       effort, agent, rolePrompt, experimentalMode,
       // 省略键 = 未指定（吃家族默认）；显式 null 必须作为 null 传下去。
       ...(subagent === undefined ? {} : { subagent }),
+      ...(cliAccounts ? { cliAccounts } : {}),
       persistence: 'required', persistenceSource: 'http.create-session',
     });
     if (!result.ok) return res.status(400).json({ error: result.error });

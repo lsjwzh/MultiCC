@@ -39,13 +39,6 @@
   // Lanes that have no managed provider pool at all: their only line is the
   // vendor catalog. dsh/grok are managed-capable and therefore absent here.
   const VENDOR_ONLY_CLIS = new Set(['qoder', 'codebuddy', 'gemini', 'pi', 'commandcode', 'agy']);
-  // 用 API Key 认证的车道（Command Code、OpenCode 的 opencode.ai 线路）：会话可以给
-  // 每条车道各挑一个账户（服务端 src/cli-key-accounts.js），留空 = 用 CLI 自己的登录。
-  const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);
-  // OpenCode 的账户只换 opencode.ai 那几条线路（Zen / Go）的 key —— 与服务端
-  // OPENCODE_ACCOUNT_PROVIDERS 是同一张表。
-  const OPENCODE_ACCOUNT_LINES = Object.freeze(['opencode', 'opencode-go', 'opencodego']);
-  const ACCOUNT_ADD_VALUE = '__add_account__';
   // 一条线路能不能被某条车道跑，只由两件事决定：协议对不对得上，以及那条车道要不要
   // 凭据。这张表是车道属性（权威表在服务端 src/cli/cli-capability.js）在这里的投影。
   // 'both' = 两种协议都能跑（opencode 自己配、zcode 直连上游）。
@@ -1069,16 +1062,6 @@
     let subClearPlan = null;
     let subClearBusy = false;
     let subNotice = null;
-    // 账户：accountPicks 是「车道 → 账户 id」，打开时从会话现值读（运行配置的几个入口
-    // 都不带这个字段，所以已有会话要自己拉一次详情）。保存只写用户动过的那条车道 ——
-    // 服务端按车道合并，读不到现值时也不会把别处选好的账户清掉。
-    let accountPicks = { ...(config.cliAccounts || {}) };
-    let accountPicksReady = !entry.sessionId || config.cliAccounts !== undefined;
-    const accountTouched = new Set();
-    const accountLists = new Map(); // cli → 账户数组 | null（加载中）| Error
-    let accountVanished = '';
-    let commandcodeLogin;
-    let commandcodeLoginLoading = false;
 
     function providersOf(cli) {
       const catalog = catalogs.get(cli);
@@ -1320,53 +1303,22 @@
     modelStatus.hidden = true;
     modelField.append(modelSearch, modelSelect, modelCustom, modelStatus);
     lineRow.append(lineField, modelField);
-    const accountField = el(doc, 'div', 'rc-field rc-account-field');
-    accountField.append(el(doc, 'span', null, tt('runConfigAccountLabel', '账户')));
-    const accountRow = el(doc, 'div', 'rc-account-row');
-    const accountSelect = el(doc, 'select', 'rc-account');
-    accountSelect.setAttribute('aria-label', tt('runConfigAccountLabel', '账户'));
-    const accountDelete = el(doc, 'button', 'rc-account-delete', tt('runConfigAccountDelete', '删除'));
-    accountDelete.type = 'button';
-    accountRow.append(accountSelect, accountDelete);
-    const accountLoginRow = el(doc, 'div', 'rc-account-login-row');
-    const accountLoginStatus = el(doc, 'span', 'rc-login-status');
-    accountLoginStatus.setAttribute('role', 'status');
-    const accountLogin = el(doc, 'button', 'rc-account-login', tt('runConfigAccountLogin', '登录官方账号'));
-    const accountLoginRefresh = el(doc, 'button', 'rc-account-login-refresh', tt('runConfigAccountRefresh', '刷新登录状态'));
-    accountLogin.type = accountLoginRefresh.type = 'button';
-    const accountLoginLink = el(doc, 'a', 'rc-account-login-link', tt('runConfigAccountLoginOpen', '打开登录终端'));
-    accountLoginLink.target = '_blank';
-    accountLoginLink.rel = 'noopener';
-    show(accountLoginLink, false);
-    accountLoginRow.append(accountLoginStatus, accountLogin, accountLoginRefresh, accountLoginLink);
-    show(accountLoginRow, false);
-    // 内联的添加表单：key 只经这一个输入框直接发给本机 MultiCC，不进聊天、不发给模型。
-    const accountForm = el(doc, 'div', 'rc-account-form');
-    const accountLabelInput = el(doc, 'input', 'rc-account-name');
-    accountLabelInput.type = 'text';
-    accountLabelInput.maxLength = 64;
-    accountLabelInput.placeholder = tt('runConfigAccountName', '名称（可选）');
-    accountLabelInput.setAttribute('aria-label', tt('runConfigAccountName', '名称（可选）'));
-    const accountKeyInput = el(doc, 'input', 'rc-account-key');
-    accountKeyInput.type = 'password';
-    accountKeyInput.maxLength = 512;
-    accountKeyInput.autocomplete = 'new-password';
-    accountKeyInput.placeholder = tt('runConfigAccountKey', 'API Key');
-    accountKeyInput.setAttribute('aria-label', tt('runConfigAccountKey', 'API Key'));
-    const accountSave = el(doc, 'button', 'rc-account-save primary', tt('runConfigAccountSave', '保存账户'));
-    accountSave.type = 'button';
-    const accountCancel = el(doc, 'button', 'rc-account-cancel', tt('runConfigCancel', '取消'));
-    accountCancel.type = 'button';
-    accountForm.append(accountLabelInput, accountKeyInput, accountSave, accountCancel);
-    show(accountForm, false);
-    const accountNote = el(doc, 'p', 'rc-note');
-    accountField.append(accountRow, accountLoginRow, accountForm, accountNote);
     const effortField = el(doc, 'div', 'rc-field rc-effort-field');
     effortField.append(el(doc, 'span', null, tt('runConfigEffortLabel', '推理强度')));
     const effortSeg = segment(doc, 'rc-efforts', tt('runConfigEffortLabel', '推理强度'));
     effortField.append(effortSeg);
     const fixedStatus = el(doc, 'p', 'air-config-status');
     fixedStatus.setAttribute('role', 'status');
+    // 会话账户选择器（Command Code / OpenCode API Key + Antigravity HOME 隔离账号）归 run-config-controls.js 管理。
+    const accounts = controls.createAccountSection({
+      doc, el, option, show, tt, scope, request, entry, config, fixedStatus,
+      getCli: () => currentCli,
+      getProvider: () => providerValue,
+      isNativeLine, nativeLineId, providerless, cliLabel,
+      onChanged: () => renderFooter(),
+      isAlive: () => dialog.isConnected,
+    });
+    const accountField = accounts.field;
     // 子 agent 不再是藏在「高级」里的 details：它是和「CLI」「怎么挑」平级的一节，
     // 常显 + 左侧强调条 + 状态芯片，第一眼就看得到自己有没有单独设置。显示/隐藏
     // 仍由 renderSub 按主线路的 CLI 决定（终端草稿不摆）。
@@ -1837,199 +1789,11 @@
       }
     }
 
-    // ── 账户（Command Code / OpenCode）────────────────────────────────────────
-    function accountLane() {
-      if (!KEY_ACCOUNT_CLIS.includes(currentCli)) return '';
-      // 挑了 MultiCC 线路或别家的原生线路时，opencode.ai 的 key 用不上，账户行就不摆出来。
-      if (currentCli === 'opencode' && providerValue
-        && !(isNativeLine(providerValue) && OPENCODE_ACCOUNT_LINES.includes(nativeLineId(providerValue)))) return '';
-      return currentCli;
-    }
-
-    function accountTitle(account) {
-      const name = account.label || tt('runConfigAccountUnnamed', '账户 {id}', { id: String(account.id).slice(0, 6) });
-      return [name, account.keyHint].filter(Boolean).join(' · ');
-    }
-
-    function pickedAccount() {
-      const cli = accountLane();
-      const list = cli ? accountLists.get(cli) : null;
-      return Array.isArray(list) ? list.find(account => account.id === accountPicks[cli]) || null : null;
-    }
-
-    function loadAccounts(cli) {
-      if (accountLists.has(cli)) return;
-      accountLists.set(cli, null);
-      request(`/api/cli-accounts/${encodeURIComponent(cli)}`, undefined, 'GET').then(
-        result => { accountLists.set(cli, Array.isArray(result.accounts) ? result.accounts : []); },
-        cause => { accountLists.set(cli, cause instanceof Error ? cause : new Error(String(cause))); },
-      ).then(() => { if (accountLane() === cli) { renderAccount(); renderFooter(); } });
-    }
-
-    function renderAccount() {
-      const cli = accountLane();
-      show(accountField, !!cli);
-      if (!cli) {
-        show(accountForm, false);
-        fixedStatus.textContent = providerless(currentCli)
-          ? tt('runConfigStatusOwn', '使用 {name} 自己的账号', { name: cliLabel(currentCli) }) : '';
-        return;
-      }
-      loadAccounts(cli);
-      const list = accountLists.get(cli);
-      const known = Array.isArray(list) ? list : [];
-      const picked = accountPicks[cli] || '';
-      // 会话选过、账户文件却没了：保存时改回本机登录，并且说出来 —— 否则下一轮
-      // 服务端会拒绝启动（它不会悄悄换成本机账户扣费）。
-      if (picked && Array.isArray(list) && !known.some(account => account.id === picked)) {
-        accountPicks = { ...accountPicks, [cli]: null };
-        accountTouched.add(cli);
-        accountVanished = cli;
-      }
-      const items = [option(doc, '', tt('runConfigAccountLocal', '本机 CLI 登录（默认）'))];
-      for (const account of known) items.push(option(doc, account.id, accountTitle(account)));
-      if (accountPicks[cli] && !Array.isArray(list)) items.push(option(doc, accountPicks[cli], tt('runConfigAccountLoading', '加载中…')));
-      items.push(option(doc, ACCOUNT_ADD_VALUE, tt('runConfigAccountAdd', '＋ 添加账户…')));
-      accountSelect.replaceChildren(...items);
-      accountSelect.value = accountPicks[cli] || '';
-      accountSelect.disabled = !accountPicksReady;
-      const account = pickedAccount();
-      show(accountDelete, !!account);
-      show(accountLoginRow, cli === 'commandcode');
-      if (cli === 'commandcode') {
-        if (commandcodeLogin === undefined) refreshCommandcodeLogin();
-        accountLoginRefresh.disabled = commandcodeLoginLoading;
-        accountLogin.textContent = tt(commandcodeLogin && commandcodeLogin.credentialSaved ? 'runConfigAccountRelogin' : 'runConfigAccountLogin',
-          commandcodeLogin && commandcodeLogin.credentialSaved ? '查看／登录官方账号' : '登录官方账号');
-        accountLoginStatus.textContent = commandcodeLogin instanceof Error
-          ? tt('runConfigAccountLoginFailed', '无法读取登录状态，请重试。')
-          : commandcodeLogin && commandcodeLogin.environmentKey
-            ? tt('runConfigAccountLoginEnv', '当前默认使用环境变量中的 API Key，优先于本机账号。')
-            : commandcodeLogin && commandcodeLogin.credentialSaved
-              ? tt('runConfigAccountLoginSaved', '本机已保存登录：{name}（有效性以实际调用为准）', { name: commandcodeLogin.userName || 'Command Code' })
-              : tt('runConfigAccountLoginMissing', '本机尚未保存官方账号登录。');
-        if (commandcodeLoginLoading) accountLoginStatus.textContent = tt('runConfigAccountLoading', '加载中…');
-      }
-      accountNote.textContent = list instanceof Error
-        ? tt('runConfigAccountLoadFailed', '账户列表加载失败')
-        : accountVanished === cli
-          ? tt('runConfigAccountVanished', '之前选的账户已不存在，保存后改用本机 CLI 登录。')
-          : cli === 'opencode'
-            ? tt('runConfigAccountHintOpencode', '添加时填 opencode.ai 的 API Key，Zen 与 Go 共用；只用于这个会话，不改本机配置。')
-            : tt('runConfigAccountHintCommandcode', '官方账号通过登录按钮授权，选择“本机 CLI 登录”并保存后使用；影响所有复用本机登录的会话。添加 API Key 账户只用于所选会话。');
-      fixedStatus.textContent = account
-        ? tt('runConfigStatusAccount', '使用 {name} 账户「{account}」', { name: cliLabel(currentCli), account: account.label || String(account.id).slice(0, 6) })
-        : providerless(currentCli) ? tt('runConfigStatusOwn', '使用 {name} 自己的账号', { name: cliLabel(currentCli) }) : '';
-    }
-
-    function refreshCommandcodeLogin() {
-      if (commandcodeLoginLoading) return;
-      commandcodeLoginLoading = true;
-      commandcodeLogin = null;
-      request('/api/commandcode/auth/status', undefined, 'GET').then(
-        result => { commandcodeLogin = result; },
-        cause => { commandcodeLogin = cause instanceof Error ? cause : new Error(String(cause)); },
-      ).then(() => {
-        commandcodeLoginLoading = false;
-        if (dialog.isConnected && accountLane() === 'commandcode') renderAccount();
-      });
-    }
-
-    accountLoginRefresh.onclick = () => { refreshCommandcodeLogin(); renderAccount(); };
-    accountLogin.onclick = () => {
-      // 同步打开标签页，避免异步请求完成后被浏览器拦截；拦截时仍提供可点击链接。
-      const popup = scope().open('about:blank', '_blank');
-      if (popup) popup.opener = null;
-      accountLogin.disabled = true;
-      request('/api/commandcode/auth/login', {}).then(result => {
-        const url = `/?id=${encodeURIComponent(result.sessionId)}`;
-        accountLoginLink.href = url;
-        show(accountLoginLink, true);
-        if (popup) popup.location.replace(window.MultiCCMachineScope?.navigation(url) || url);
-        accountLoginStatus.textContent = tt('runConfigAccountLoginHint', '在登录终端完成浏览器授权，回来点击“刷新登录状态”。远程访问时，请在运行 MultiCC 的电脑上完成授权。');
-      }, cause => {
-        if (popup) popup.close();
-        accountLoginStatus.textContent = cause.message;
-      }).then(() => { accountLogin.disabled = false; });
-    };
-
-    // 保存时要写回的那一格：只写用户动过的车道。
-    function accountPatch() {
-      const cli = accountLane();
-      return cli && accountTouched.has(cli) ? { [cli]: accountPicks[cli] || null } : null;
-    }
-
-    function setAccountPick(cli, id) {
-      accountPicks = { ...accountPicks, [cli]: id || null };
-      accountTouched.add(cli);
-      if (accountVanished === cli) accountVanished = '';
-      renderAccount();
-      renderFooter();
-    }
-
-    accountSelect.onchange = () => {
-      const cli = accountLane();
-      if (!cli) return;
-      if (accountSelect.value === ACCOUNT_ADD_VALUE) {
-        accountSelect.value = accountPicks[cli] || '';
-        show(accountForm, true);
-        accountLabelInput.focus();
-        return;
-      }
-      setAccountPick(cli, accountSelect.value);
-    };
-    accountCancel.onclick = () => {
-      accountLabelInput.value = '';
-      accountKeyInput.value = '';
-      show(accountForm, false);
-      renderAccount();
-    };
-    accountSave.onclick = () => {
-      const cli = accountLane();
-      const apiKey = accountKeyInput.value.trim();
-      if (!cli) return;
-      if (!apiKey) {
-        accountNote.textContent = tt('runConfigAccountKeyRequired', '先填 API Key。');
-        accountKeyInput.focus();
-        return;
-      }
-      accountSave.disabled = true;
-      request(`/api/cli-accounts/${encodeURIComponent(cli)}`, { label: accountLabelInput.value, apiKey }).then((result) => {
-        const list = accountLists.get(cli);
-        accountLists.set(cli, [...(Array.isArray(list) ? list : []), result.account]);
-        accountLabelInput.value = '';
-        accountKeyInput.value = '';
-        show(accountForm, false);
-        if (accountLane() === cli) setAccountPick(cli, result.account.id);
-      }, (cause) => { accountNote.textContent = cause.message; })
-        .then(() => { accountSave.disabled = false; });
-    };
-    // 这两个输入框在运行配置的 <form> 里：回车只该保存账户，不能顺手把整份配置提交了。
-    for (const input of [accountLabelInput, accountKeyInput]) {
-      input.onkeydown = (event) => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault();
-        accountSave.click();
-      };
-    }
-    accountDelete.onclick = () => {
-      const cli = accountLane();
-      const account = pickedAccount();
-      if (!cli || !account) return;
-      const confirmed = typeof confirm !== 'function' || confirm(tt('runConfigAccountDeleteConfirm',
-        '删除账户「{name}」？选了它的会话都会改回本机 CLI 登录。', { name: accountTitle(account) }));
-      if (!confirmed) return;
-      accountDelete.disabled = true;
-      request(`/api/cli-accounts/${encodeURIComponent(cli)}/${encodeURIComponent(account.id)}`, undefined, 'DELETE').then(() => {
-        const list = accountLists.get(cli);
-        accountLists.set(cli, (Array.isArray(list) ? list : []).filter(item => item.id !== account.id));
-        // 服务端已经把选了它的会话（包括这一个）改回本机登录，这里只同步界面。
-        accountPicks = { ...accountPicks, [cli]: null };
-        renderAccount();
-        renderFooter();
-      }, (cause) => { accountNote.textContent = cause.message; })
-        .then(() => { accountDelete.disabled = false; });
-    };
+    // ── 账户（Command Code / OpenCode / Antigravity）──────────────────────────
+    function renderAccount() { accounts.render(); }
+    function pickedAccount() { return accounts.picked(); }
+    function accountTitle(account) { return accounts.title(account); }
+    function accountPatch() { return accounts.patch(); }
 
     function primaryProviderId() {
       if (mode === MODE_AUTO && rows.length) return rows[0].providerId;
@@ -2935,11 +2699,10 @@
         const subagent = collectSubagent();
         const providerName = (providersOf(currentCli).find(item => String(item.id) === String(patch.value.provider)) || {}).name || null;
         if (draft) {
-          const picks = Object.fromEntries(Object.entries(accountPicks).filter(([, id]) => id));
           await onSaved({ cli: currentCli, provider: patch.value.provider, providerSelection: null,
             model: patch.value.model, effort: patch.value.effort, providerName, subagent,
             ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}),
-            cliAccounts: Object.keys(picks).length ? picks : null });
+            cliAccounts: accounts.draftPicks() });
           await finishSubagentSync();
           return;
         }
@@ -3211,12 +2974,7 @@
 
     // ── 启动 ────────────────────────────────────────────────────────────────
     async function boot() {
-      if (!accountPicksReady) {
-        request(`/api/sessions/${encodeURIComponent(entry.sessionId)}`, undefined, 'GET').then(
-          (detail) => { accountPicks = { ...(detail && detail.cliAccounts || {}), ...accountPicks }; },
-          () => { /* 读不到现值：只写用户动过的车道，保持安全 */ },
-        ).then(() => { accountPicksReady = true; renderAccount(); renderFooter(); });
-      }
+      accounts.boot();
       setBusy(true);
       try { await loadCatalog(currentCli); } catch (_) { /* 渲染里会把失败说出来 */ }
       if (closed || !dialog.open) return;

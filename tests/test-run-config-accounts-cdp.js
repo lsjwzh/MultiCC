@@ -217,3 +217,87 @@ test('OpenCode: a stored pick is shown, hidden on a MultiCC line; a vanished one
     assert.deepEqual(patches[1][1].cliAccounts, { opencode: null }, 'a vanished pick heals back to the local login');
   });
 });
+
+test('Antigravity (agy): pick account per session, create & open login terminal, delete, and heal vanished picks', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  let agyAccounts = [
+    { id: OLD_ID, label: '工作号', email: 'work@example.com', loggedIn: true, expiresAt: null, createdAt: 1, active: true },
+  ];
+  let activeId = OLD_ID;
+  const patches = [];
+  const loginCalls = [];
+  const stateReply = () => json({
+    accounts: agyAccounts,
+    active: activeId,
+    local: { loggedIn: true, email: 'local@example.com', expiresAt: null },
+  });
+  const fixture = { ...routes,
+    'GET /api/agy/models': () => json({ models: [{ model: 'gemini-4-neon', label: 'Gemini 4 Neon' }], source: 'cache' }),
+    'GET /api/agy/accounts': () => stateReply(),
+    'POST /api/agy/accounts': ({ body }) => {
+      const input = JSON.parse(body);
+      agyAccounts = [...agyAccounts, { id: NEW_ID, label: input.label || '反重力账号', email: null, loggedIn: false, expiresAt: null, createdAt: 2, active: false }];
+      return stateReply();
+    },
+    [`POST /api/agy/accounts/${NEW_ID}/login-terminal`]: () => {
+      loginCalls.push(NEW_ID);
+      return json({ id: 'agy-login', url: '/?id=agy-login' });
+    },
+    [`DELETE /api/agy/accounts/${NEW_ID}`]: () => {
+      agyAccounts = agyAccounts.filter(a => a.id !== NEW_ID);
+      return stateReply();
+    },
+    'GET /api/sessions/agy-s1': () => json({ id: 'agy-s1', cli: 'agy', cliAccounts: null }),
+    'PATCH /api/sessions/agy-s1': ({ body }) => { patches.push(['agy-s1', JSON.parse(body)]); return json({ ok: true, cli: 'agy' }); },
+    'GET /api/sessions/agy-gone': () => json({ id: 'agy-gone', cli: 'agy', cliAccounts: { agy: 'cccccccccccccccc' } }),
+    'PATCH /api/sessions/agy-gone': ({ body }) => { patches.push(['agy-gone', JSON.parse(body)]); return json({ ok: true, cli: 'agy' }); },
+  };
+  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig && window.MultiCCChatAiConfig'));
+    await page.evaluate(`window.open = () => ({ opener: null, location: { replace: url => { window.agyLoginPopupUrl = url; } } });
+      window.MultiCCRunConfig.open({ sessionId: 'agy-s1', configuration: { cli: 'agy', model: 'gemini-4-neon' } }, ['agy', 'claude-exp'], () => {})`);
+    assert.ok(await page.waitFor(`${visible('.rc-account')} && document.querySelector('.air-config-dialog[open] .rc-account option[value="${OLD_ID}"]')`));
+    assert.match(await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-account option[value=""]').textContent`), /跟随全局默认（工作号）/);
+    assert.match(await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-account option[value="${OLD_ID}"]').textContent`), /工作号 · work@example\.com/);
+
+    // Inline add for agy hides the API Key input, shows Import, creates account and opens login terminal.
+    await page.evaluate(`const s = document.querySelector('.air-config-dialog[open] .rc-account'); s.value = '__add_account__'; s.dispatchEvent(new Event('change'));`);
+    assert.ok(await page.waitFor(visible('.rc-account-form')));
+    assert.equal(await page.evaluate(visible('.rc-account-key')), false, 'agy never asks for an API key');
+    assert.equal(await page.evaluate(visible('.rc-account-import')), true, 'agy offers importing the local login');
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-account-name').value = '小号';
+      document.querySelector('.air-config-dialog[open] .rc-account-save').click();`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-account').value === '${NEW_ID}'`));
+    assert.ok(await page.waitFor(`window.agyLoginPopupUrl === '/?id=agy-login'`));
+    assert.deepEqual(loginCalls, [NEW_ID]);
+    assert.equal(patches.length, 0, 'creating an agy account does not submit the dialog');
+
+    // Save writes cliAccounts.agy = NEW_ID.
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-config-form').requestSubmit()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
+    assert.equal(patches.length, 1);
+    assert.deepEqual(patches[0], ['agy-s1', patches[0][1]]);
+    assert.deepEqual(patches[0][1].cliAccounts, { agy: NEW_ID });
+
+    // Reopen with NEW_ID selected, delete it via DELETE /api/agy/accounts/:id.
+    fixture['GET /api/sessions/agy-s1'] = () => json({ id: 'agy-s1', cli: 'agy', cliAccounts: { agy: NEW_ID } });
+    await page.evaluate(`window.confirm = () => true;
+      window.MultiCCRunConfig.open({ sessionId: 'agy-s1', configuration: { cli: 'agy', model: 'gemini-4-neon' } }, ['agy'], () => {})`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-account')?.value === '${NEW_ID}'`));
+    assert.ok(await page.waitFor(`${visible('.rc-account-delete')} && !document.querySelector('.air-config-dialog[open] .rc-account-delete').disabled`));
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-account-delete').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('.air-config-dialog[open] .rc-account').value === '' && !document.querySelector('.air-config-dialog[open] .rc-account option[value="${NEW_ID}"]')`));
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-config-close').click()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
+
+    // Vanished agy pick heals back to default on save.
+    await page.evaluate(`window.MultiCCRunConfig.open({ sessionId: 'agy-gone', configuration: { cli: 'agy', model: 'gemini-4-neon' } }, ['agy'], () => {})`);
+    assert.ok(await page.waitFor(`/已不存在/.test(document.querySelector('.air-config-dialog[open] .rc-account-field .rc-note')?.textContent || '')`));
+    assert.equal(await page.evaluate(`document.querySelector('.air-config-dialog[open] .rc-account').value`), '');
+    await page.evaluate(`document.querySelector('.air-config-dialog[open] .air-config-form').requestSubmit()`);
+    assert.ok(await page.waitFor(`!document.querySelector('.air-config-dialog[open]')`));
+    assert.deepEqual(patches[1][1].cliAccounts, { agy: null });
+  });
+});

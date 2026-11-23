@@ -14,7 +14,12 @@ const { taskShortCode } = require('../classify/task-short-code');
 const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 const { isGoalState } = require('../classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
-const { mergeCliAccountsPatch, retainExistingCliAccounts, sharedCliKeyAccountStore } = require('../cli-key-accounts');
+const {
+  mergeCliAccountsPatch,
+  releaseCliAccountReferences,
+  retainExistingCliAccounts,
+  sharedCliKeyAccountStore,
+} = require('../cli-key-accounts');
 const { nativeVendorName, nativeVendorOf } = require('../providers/native-vendor');
 const { nativeOpenCodeId, nativeOpenCodeName } = require('../providers/native-opencode');
 
@@ -534,6 +539,16 @@ function createSessionProfileRoutes(rawDeps) {
       }
       return prepare();
     }
+
+    app.post('/api/agy/accounts/:id/release', (req, res) => {
+      const id = String(req.params.id || '').trim();
+      if (!id) return res.status(400).json({ error: 'invalid account id' });
+      const releasedSessions = sessionPersistence.mutate(
+        'http.agy-account-delete',
+        () => releaseCliAccountReferences(persistedSessions, 'agy', id),
+      );
+      return res.json({ ok: true, releasedSessions });
+    });
 
     app.patch('/api/sessions/:id', (req, res, next) => {
       const result = patchWithPreparation(req, res);

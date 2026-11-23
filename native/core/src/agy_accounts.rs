@@ -109,6 +109,38 @@ pub fn active_home(home: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// Whether `id` is a registered agy account whose isolated home exists on disk.
+pub fn has_account(home: &Path, id: &str) -> bool {
+    let id = id.trim();
+    let Some(meta) = meta_file(home, id) else {
+        return false;
+    };
+    let Some(dir) = account_home(home, id) else {
+        return false;
+    };
+    meta.is_file() && dir.is_dir()
+}
+
+/// Resolve the HOME a spawned `agy` should use for one binding.
+///
+/// * `Some(id)` (non-empty): fail-closed lookup — returns the account's own
+///   `<id>.home` when valid and present, or `Err` so a deleted/invalid pick
+///   never silently falls back to another account or the machine login.
+/// * `None` / blank: follows the global `active.json` pin (`active_home`), or
+///   `Ok(None)` to leave the real `$HOME` untouched.
+pub fn resolve_home(home: &Path, account_id: Option<&str>) -> Result<Option<PathBuf>, String> {
+    let Some(id) = account_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(active_home(home));
+    };
+    if !valid_account(id) {
+        return Err("invalid account id".to_owned());
+    }
+    match (meta_file(home, id), account_home(home, id)) {
+        (Some(meta), Some(dir)) if meta.is_file() && dir.is_dir() => Ok(Some(dir)),
+        _ => Err("unknown account".to_owned()),
+    }
+}
+
 /// `{"loggedIn","email","expiresAt"}` for one `.gemini` directory. Reads
 /// `oauth_creds.json` and `google_accounts.json` but never echoes a token: only
 /// whether an access token is present, the active Google address and the expiry.
