@@ -267,12 +267,15 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
     let failure =
         |status: u16, error: String| express::json(ctx, status, &json!({ "error": error }), &[]);
     match route {
-        Route::ListGet => express::json(
-            ctx,
-            200,
-            &state_with_mutagen(&home).await,
-            &[("Cache-Control", "no-store")],
-        ),
+        Route::ListGet => {
+            crate::egress_runtime::publish_host_runtime_manifest(&home);
+            express::json(
+                ctx,
+                200,
+                &state_with_mutagen(&home).await,
+                &[("Cache-Control", "no-store")],
+            )
+        }
         Route::MutagenStatusGet => express::json(
             ctx,
             200,
@@ -292,6 +295,7 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             }
         }
         Route::CreatePost => {
+            crate::egress_runtime::publish_host_runtime_manifest(&home);
             let result = store::create_account_with_egress(
                 &home,
                 &label(),
@@ -311,12 +315,10 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             }
         }
         Route::CreateRemotePost => {
+            // 标准 Host/Client 分离：远端引用账号绝不接受 Client 侧 egressBinding，
+            // 出口 IP 严格由远端 Host（VPS 的 MultiCC）账号自身绑定与解析。
             let raw_remote = body.get("remote").unwrap_or(body);
-            let raw_egress = body
-                .get("egressBinding")
-                .or_else(|| raw_remote.get("egressBinding"));
-            match store::create_remote_account_with_egress(&home, &label(), raw_remote, raw_egress)
-            {
+            match store::create_remote_account(&home, &label(), raw_remote) {
                 Ok(created) => {
                     invalidate_spawn_caches().await;
                     let mut out = state_with_mutagen(&home).await;
@@ -370,13 +372,41 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             let Some(id) = account_id(ctx) else {
                 return failure(400, "invalid account id".to_owned());
             };
-            let Some((_, remote)) = store::get_remote_account(&home, &id) else {
-                return failure(404, "未找到对应的远端 VPS 反重力账号".to_owned());
-            };
-            let egress = store::get_account_egress(&home, &id);
-            match crate::agy_remote_login::start_login(&home, &id, &remote, egress.as_ref()).await {
-                Ok(payload) => express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")]),
-                Err(error) => failure(400, error),
+            match store::resolve_account(&home, Some(&id)) {
+                Ok(Some(store::ResolvedAgyAccount::Local {
+                    home: account_home,
+                    egress_binding,
+                })) => {
+                    match crate::agy_remote_login::start_local_login(
+                        &home,
+                        &id,
+                        &account_home,
+                        egress_binding.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(payload) => {
+                            express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")])
+                        }
+                        Err(error) => failure(400, error),
+                    }
+                }
+                Ok(Some(store::ResolvedAgyAccount::Remote { remote, .. })) => {
+                    if remote.host_account_id.is_some() {
+                        return failure(
+                            400,
+                            "该账号由远端 Host（VPS 的 MultiCC）管理，请在 Host 端完成登录与出口绑定"
+                                .to_owned(),
+                        );
+                    }
+                    match crate::agy_remote_login::start_login(&home, &id, &remote).await {
+                        Ok(payload) => {
+                            express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")])
+                        }
+                        Err(error) => failure(400, error),
+                    }
+                }
+                Ok(None) | Err(_) => failure(404, "未找到对应的反重力账号".to_owned()),
             }
         }
         Route::RemoteLoginCallbackPost => {

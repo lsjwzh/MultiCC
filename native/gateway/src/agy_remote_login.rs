@@ -57,11 +57,14 @@ fn ssh_bin() -> String {
         .unwrap_or_else(|| "ssh".to_string())
 }
 
-fn build_ssh_args(
-    target: &RemoteAgyTarget,
-    proxy_forward_spec: Option<&str>,
-    script: &str,
-) -> Vec<String> {
+fn local_agy_bin() -> String {
+    std::env::var("MULTICC_AGY_BIN")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_REMOTE_AGY_BIN.to_string())
+}
+
+fn build_ssh_args(target: &RemoteAgyTarget, script: &str) -> Vec<String> {
     let mut args = vec![
         "-T".to_string(),
         "-o".to_string(),
@@ -80,12 +83,6 @@ fn build_ssh_args(
     if let Some(key) = &target.ssh_identity_file {
         args.push("-i".to_string());
         args.push(key.clone());
-    }
-    if let Some(spec) = proxy_forward_spec {
-        args.push("-o".to_string());
-        args.push("ExitOnForwardFailure=yes".to_string());
-        args.push("-R".to_string());
-        args.push(spec.to_string());
     }
     args.push(target.ssh_target.clone());
     args.push("--".to_string());
@@ -128,55 +125,24 @@ pub async fn login_status(id: &str) -> Value {
     state_to_json(&st)
 }
 
-/// 为指定远端账号启动一次 SSH `agy acp --login` 授权流程并返回 Google 授权链接。
-/// 若绑定了 `egress_binding`，自动解析出口并经 SSH `-R` 反向隧道固定登录换票出口 IP（fail-closed）。
-pub async fn start_login(
+async fn drive_login_child(
     home: &Path,
     account_id: &str,
-    target: &RemoteAgyTarget,
-    egress_binding: Option<&multicc_core::egress_plugin::EgressBinding>,
+    mut child: tokio::process::Child,
+    is_local: bool,
 ) -> Result<Value, String> {
-    // 取消该账号上尚未结束的旧登录会话。
-    if let Some(old) = sessions_map().lock().await.remove(account_id) {
-        if let Some(tx) = old.cancel_tx.lock().await.take() {
-            let _ = tx.send(());
-        }
-    }
-
-    let proxy_plan = crate::egress_runtime::prepare_remote_proxy(egress_binding, None).await?;
-    let agy_bin = target
-        .remote_agy_bin
-        .as_deref()
-        .unwrap_or(DEFAULT_REMOTE_AGY_BIN);
-    let script = build_remote_login_script(
-        agy_bin,
-        target.remote_home.as_deref(),
-        proxy_plan.as_ref().map(|p| p.remote_proxy_url()),
-    );
-    let forward_spec = proxy_plan.as_ref().and_then(|p| p.ssh_forward_spec());
-    let ssh_args = build_ssh_args(target, forward_spec.as_deref(), &script);
-
-    let mut child = Command::new(ssh_bin())
-        .args(&ssh_args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|err| format!("无法启动 SSH 连接进行远端登录: {err}"))?;
-
     let stdin = child
         .stdin
         .take()
-        .ok_or_else(|| "无法打开 SSH 标准输入通道".to_string())?;
+        .ok_or_else(|| "无法打开登录进程标准输入通道".to_string())?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "无法打开 SSH 标准输出通道".to_string())?;
+        .ok_or_else(|| "无法打开登录进程标准输出通道".to_string())?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "无法打开 SSH 错误输出通道".to_string())?;
+        .ok_or_else(|| "无法打开登录进程错误输出通道".to_string())?;
 
     let initial = LoginState {
         state: "pending",
@@ -261,7 +227,6 @@ pub async fn start_login(
                         let _ = s.write_all(code.as_bytes()).await;
                         let _ = s.write_all(b"\n").await;
                         let _ = s.flush().await;
-                        // 关闭 stdin 触发远端 sh 在 agy 退出后结束。
                         drop(s);
                     }
                 }
@@ -287,12 +252,24 @@ pub async fn start_login(
         let exit_ok = !cancelled && !timed_out && child.wait().await.is_ok_and(|s| s.success());
 
         if exit_ok {
-            let _ = store::set_remote_login_meta(
-                &home_owned,
-                &id_owned,
-                true,
-                detected_email.as_deref(),
-            );
+            if is_local {
+                if detected_email.is_none() {
+                    let st = store::login_status(&home_owned, &id_owned);
+                    detected_email = st
+                        .get("email")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
+                }
+            } else {
+                let _ = store::set_remote_login_meta(
+                    &home_owned,
+                    &id_owned,
+                    true,
+                    detected_email.as_deref(),
+                );
+            }
             status_tx.send_modify(|st| {
                 st.state = "complete";
                 st.email = detected_email.clone();
@@ -310,7 +287,11 @@ pub async fn start_login(
             } else {
                 let tail = last_lines.join(" | ");
                 if tail.is_empty() {
-                    "远端 agy 登录失败，请确认 VPS 已安装 agy 且 SSH 连通正常".to_string()
+                    if is_local {
+                        "本机 agy 网页授权登录失败，请确认已安装 agy".to_string()
+                    } else {
+                        "远端 agy 登录失败，请确认 VPS 已安装 agy 且 SSH 连通正常".to_string()
+                    }
                 } else {
                     tail
                 }
@@ -334,19 +315,105 @@ pub async fn start_login(
             "accountId": account_id,
         })),
         Ok(Ok(Err(err))) => Err(err),
-        Ok(Err(_)) => Err("远端登录进程异常退出，未能获取授权链接".to_string()),
+        Ok(Err(_)) => Err("登录进程异常退出，未能获取授权链接".to_string()),
         Err(_) => {
             if let Some(old) = sessions_map().lock().await.remove(account_id) {
                 if let Some(tx) = old.cancel_tx.lock().await.take() {
                     let _ = tx.send(());
                 }
             }
-            Err(
+            Err(if is_local {
+                "等待 agy 生成 Google 授权链接超时，请确认本机 agy 版本支持 acp --login".to_string()
+            } else {
                 "等待远端 VPS 生成 Google 授权链接超时，请检查 SSH 连通性与远端 agy 版本"
-                    .to_string(),
-            )
+                    .to_string()
+            })
         }
     }
+}
+
+/// 为本机（Host）反重力账号启动无浏览器 `agy acp --login` 网页授权（适用于无桌面 Linux VPS
+/// 或任何希望用本机浏览器授权的场景）。若该 Host 账号绑定了 `chrome-proxy-launcher` 专用出口，
+/// 实时解析代理并注入换票进程（fail-closed）。
+pub async fn start_local_login(
+    home: &Path,
+    account_id: &str,
+    account_home: &Path,
+    egress_binding: Option<&multicc_core::egress_plugin::EgressBinding>,
+) -> Result<Value, String> {
+    if let Some(old) = sessions_map().lock().await.remove(account_id) {
+        if let Some(tx) = old.cancel_tx.lock().await.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    let proxy_url = if let Some(binding) = egress_binding {
+        Some(crate::egress_runtime::resolve_egress_proxy_url(binding).await?)
+    } else {
+        None
+    };
+
+    let _ = std::fs::remove_file(account_home.join(".gemini").join("oauth_creds.json"));
+    let agy_bin = local_agy_bin();
+    let mut cmd = Command::new(&agy_bin);
+    cmd.args(["acp", "--login"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env("HOME", account_home)
+        .env("SSH_CONNECTION", "1 1 1 1")
+        .env("DISPLAY", "")
+        .env("BROWSER", "/bin/false");
+
+    if let Some(url) = proxy_url.as_deref() {
+        let no_proxy = multicc_core::egress_plugin::LOOPBACK_NO_PROXY;
+        cmd.env("HTTP_PROXY", url)
+            .env("HTTPS_PROXY", url)
+            .env("ALL_PROXY", url)
+            .env("http_proxy", url)
+            .env("https_proxy", url)
+            .env("all_proxy", url)
+            .env("NO_PROXY", no_proxy)
+            .env("no_proxy", no_proxy);
+    }
+
+    let child = cmd
+        .spawn()
+        .map_err(|err| format!("无法启动本机 agy 网页授权登录（{agy_bin}）: {err}"))?;
+
+    drive_login_child(home, account_id, child, true).await
+}
+
+/// 为传统纯 SSH 远端账号启动一次 SSH `agy acp --login` 授权流程并返回 Google 授权链接。
+pub async fn start_login(
+    home: &Path,
+    account_id: &str,
+    target: &RemoteAgyTarget,
+) -> Result<Value, String> {
+    if let Some(old) = sessions_map().lock().await.remove(account_id) {
+        if let Some(tx) = old.cancel_tx.lock().await.take() {
+            let _ = tx.send(());
+        }
+    }
+
+    let agy_bin = target
+        .remote_agy_bin
+        .as_deref()
+        .unwrap_or(DEFAULT_REMOTE_AGY_BIN);
+    let script = build_remote_login_script(agy_bin, target.remote_home.as_deref(), None);
+    let ssh_args = build_ssh_args(target, &script);
+
+    let child = Command::new(ssh_bin())
+        .args(&ssh_args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|err| format!("无法启动 SSH 连接进行远端登录: {err}"))?;
+
+    drive_login_child(home, account_id, child, false).await
 }
 
 /// 将用户在浏览器拿到的授权码或完整回调 URL 喂给远端等待中的 `agy acp --login`。
@@ -472,7 +539,7 @@ exit 0
         );
 
         let (_, target) = store::get_remote_account(&local_home, &id).unwrap();
-        let started = start_login(&local_home, &id, &target, None).await.unwrap();
+        let started = start_login(&local_home, &id, &target).await.unwrap();
         assert_eq!(started["state"], "pending");
         assert!(started["oauthUrl"]
             .as_str()
@@ -500,6 +567,82 @@ exit 0
             .is_file());
 
         std::env::remove_var("MULTICC_SSH_BIN");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn local_host_login_injects_host_egress_proxy_and_records_email() {
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!(
+            "multicc-local-login-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let host_home = root.join("host-home");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&host_home).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_agy = bin_dir.join("fake-agy");
+        std::fs::write(
+            &fake_agy,
+            r#"#!/bin/sh
+if [ "$HTTPS_PROXY" != "http://127.0.0.1:29111" ]; then
+  echo "missing expected Host HTTPS_PROXY: $HTTPS_PROXY" >&2
+  exit 2
+fi
+echo "Open this link:"
+echo "  https://accounts.google.com/o/oauth2/auth?client_id=host-client&state=xyz789"
+read -r CODE
+if [ "$CODE" != "https://antigravity.google/oauth-callback?code=host-ok" ]; then
+  echo "bad code" >&2
+  exit 3
+fi
+mkdir -p "$HOME/.gemini"
+printf '{"active":"host-user@example.com"}' > "$HOME/.gemini/google_accounts.json"
+printf '{"access_token":"host-tok"}' > "$HOME/.gemini/oauth_creds.json"
+exit 0
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let created = store::create_account_with_egress(
+            &host_home,
+            "Host主号",
+            "created",
+            Some(&json!({ "pluginId": "chrome-proxy-launcher", "profileId": "host-jp" })),
+        )
+        .unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        let acct_home = store::account_home(&host_home, &id).unwrap();
+        let binding = store::get_account_egress(&host_home, &id);
+
+        std::env::set_var("MULTICC_AGY_BIN", &fake_agy);
+        std::env::set_var("MULTICC_EGRESS_PROXY_OVERRIDE", "http://127.0.0.1:29111");
+
+        let started = start_local_login(&host_home, &id, &acct_home, binding.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(started["state"], "pending");
+        assert!(started["oauthUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://accounts.google.com/o/oauth2/auth?"));
+
+        let done = submit_callback(
+            &id,
+            "https://antigravity.google/oauth-callback?code=host-ok",
+        )
+        .await
+        .unwrap();
+        assert_eq!(done["state"], "complete");
+        assert_eq!(done["email"], "host-user@example.com");
+
+        std::env::remove_var("MULTICC_AGY_BIN");
+        std::env::remove_var("MULTICC_EGRESS_PROXY_OVERRIDE");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

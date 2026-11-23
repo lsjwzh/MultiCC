@@ -65,6 +65,15 @@ fn main() {
             multicc_gateway::egress_runtime::serve_local_egress_exec(&args[1..]),
         ));
     }
+    if args.first().map(String::as_str) == Some("agy-host-exec") {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        std::process::exit(
+            runtime.block_on(multicc_gateway::egress_runtime::serve_host_exec(&args[1..])),
+        );
+    }
     if args.first().map(String::as_str) == Some("host-exec-mcp") {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

@@ -4,22 +4,30 @@
 //! - 不缓存解析结果：每次登录或回合执行前实时向插件查询 `egress`，确保出口切换立刻生效；
 //! - 插件缺失、身份不存在或出口不可用时立刻返回明确中文错误，绝不静默回落直连。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+use multicc_core::agy_accounts::{self as agy_store, ResolvedAgyAccount};
 use multicc_core::egress_plugin::{
     plan_remote_proxy, resolve_plugin_binary, EgressBinding, RemoteProxyPlan, LOOPBACK_NO_PROXY,
 };
+use multicc_core::state_file;
 
 const PLUGIN_TIMEOUT: Duration = Duration::from_secs(20);
+const HOST_RUNTIME_REL_PATH: &str = ".multicc/host-runtime.json";
 
-fn candidate_plugin_roots() -> Vec<PathBuf> {
+fn candidate_plugin_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    for dir in extra {
+        if !dir.as_os_str().is_empty() {
+            roots.push(dir.clone());
+        }
+    }
     if let Ok(raw) = std::env::var("MULTICC_PLUGINS_DIR") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
@@ -49,6 +57,38 @@ fn candidate_plugin_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// 将本机（Host）`multicc-gateway` 与 `plugins` 目录路径写入 `~/.multicc/host-runtime.json`
+/// （零密钥，权限 `0600`），供远端 Client 经 SSH 调用 `agy-host-exec` 时准确定位 Host 运行时。
+pub fn publish_host_runtime_manifest(home: &Path) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let plugins_dir = candidate_plugin_roots(&[])
+        .into_iter()
+        .find(|dir| dir.is_dir());
+    let updated_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let payload = json!({
+        "schema": 1,
+        "gatewayBin": exe.to_string_lossy(),
+        "pluginsDir": plugins_dir.map(|d| d.to_string_lossy().into_owned()),
+        "updatedAt": updated_at,
+    });
+    let manifest_path = home.join(HOST_RUNTIME_REL_PATH);
+    let _ = state_file::write_json_atomic(&manifest_path, &payload);
+}
+
+pub fn publish_host_runtime_manifest_default() {
+    if let Some(home) = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|v| !v.is_empty())
+    {
+        publish_host_runtime_manifest(Path::new(&home));
+    }
+}
+
 fn pick_proxy_remote_port(avoid: Option<u16>) -> u16 {
     for _ in 0..8 {
         let mut bytes = [0u8; 2];
@@ -63,6 +103,13 @@ fn pick_proxy_remote_port(avoid: Option<u16>) -> u16 {
 
 /// 实时调用出口插件 `egress` 命令，拿到代理 URL（fail-closed，不缓存）。
 pub async fn resolve_egress_proxy_url(binding: &EgressBinding) -> Result<String, String> {
+    resolve_egress_proxy_url_with_roots(binding, &[]).await
+}
+
+pub async fn resolve_egress_proxy_url_with_roots(
+    binding: &EgressBinding,
+    extra_roots: &[PathBuf],
+) -> Result<String, String> {
     if let Ok(override_url) = std::env::var("MULTICC_EGRESS_PROXY_OVERRIDE") {
         let trimmed = override_url.trim();
         if !trimmed.is_empty() {
@@ -70,7 +117,7 @@ pub async fn resolve_egress_proxy_url(binding: &EgressBinding) -> Result<String,
         }
     }
 
-    let roots = candidate_plugin_roots();
+    let roots = candidate_plugin_roots(extra_roots);
     let binary = resolve_plugin_binary(&binding.plugin_id, &roots).ok_or_else(|| {
         format!(
             "未安装「{}」插件或其可执行文件不可用，无法解析该账号绑定的专用出口。请先在 Air → 资料与插件里安装并配置出口身份。",
@@ -243,6 +290,210 @@ pub async fn serve_local_egress_exec(args: &[String]) -> i32 {
     }
 }
 
+fn find_node_executable() -> String {
+    if let Ok(explicit) = std::env::var("MULTICC_NODE_BIN") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "node".to_string()
+}
+
+/// 幂等确保 Host 账号隔离的 `<account_home>/.gemini/config/mcp_config.json` 中已注册
+/// 无密钥的 `multicc_host_exec` stdio MCP 条目（保留用户其它 MCP 服务器配置）。
+fn ensure_host_exec_mcp_config(account_home: &Path, script_path: &str) -> Result<(), String> {
+    let cfg_path = account_home
+        .join(".gemini")
+        .join("config")
+        .join("mcp_config.json");
+    let mut root = if cfg_path.is_file() {
+        let raw = std::fs::read_to_string(&cfg_path)
+            .map_err(|err| format!("读取 Host mcp_config.json 失败: {err}"))?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            json!({})
+        } else {
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(Value::Object(map)) => Value::Object(map),
+                _ => json!({}),
+            }
+        }
+    } else {
+        json!({})
+    };
+
+    let desired = json!({
+        "command": find_node_executable(),
+        "args": [script_path],
+    });
+    let servers = root
+        .as_object_mut()
+        .expect("json object")
+        .entry("mcpServers")
+        .or_insert_with(|| json!({}));
+    if !servers.is_object() {
+        *servers = json!({});
+    }
+    let map = servers.as_object_mut().expect("mcpServers object");
+    if map.get("multicc_host_exec") != Some(&desired) {
+        map.insert("multicc_host_exec".to_string(), desired);
+        state_file::write_json_atomic(&cfg_path, &root)
+            .map_err(|err| format!("写入 Host mcp_config.json 失败: {err}"))?;
+    }
+    Ok(())
+}
+
+/// 入口：`multicc-gateway agy-host-exec --account-id <16hex> [--plugins-dir <dir>] [--host-exec-mcp <script>] --bin <agy_cmd> -- <agy_args...>`
+///
+/// 标准 Host/Client 分离模式的 Host 侧执行器（运行在 VPS 上）：
+/// 1. 严格按 `--account-id` 查找 Host 本地的 `agy` 账号与独立 `.home`（fail-closed）；
+/// 2. 可选幂等注册无密钥 `multicc_host_exec` MCP（凭据仍仅走当前 SSH 会话的 `MULTICC_HOST_EXEC_*` 环境变量）；
+/// 3. 若该 Host 账号绑定了 `chrome-proxy-launcher` 专用出口，在 Host 本地实时解析代理并注入
+///    `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY=127.0.0.1,localhost,::1`（fail-closed，零绕路）；
+/// 4. 以 Host 账号的 `HOME` 执行 `agy`。
+pub async fn serve_host_exec(args: &[String]) -> i32 {
+    let mut account_id: Option<String> = None;
+    let mut plugins_dir: Option<PathBuf> = None;
+    let mut host_exec_mcp: Option<String> = None;
+    let mut bin: Option<String> = None;
+    let mut passthrough: Vec<String> = Vec::new();
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--account-id" => {
+                idx += 1;
+                if idx < args.len() {
+                    account_id = Some(args[idx].clone());
+                }
+            }
+            "--plugins-dir" => {
+                idx += 1;
+                if idx < args.len() && !args[idx].trim().is_empty() {
+                    plugins_dir = Some(PathBuf::from(&args[idx]));
+                }
+            }
+            "--host-exec-mcp" => {
+                idx += 1;
+                if idx < args.len() && !args[idx].trim().is_empty() {
+                    host_exec_mcp = Some(args[idx].clone());
+                }
+            }
+            "--bin" => {
+                idx += 1;
+                if idx < args.len() {
+                    bin = Some(args[idx].clone());
+                }
+            }
+            "--" => {
+                passthrough.extend_from_slice(&args[idx + 1..]);
+                break;
+            }
+            other => passthrough.push(other.to_string()),
+        }
+        idx += 1;
+    }
+
+    let Some(account_id) = account_id.filter(|s| !s.trim().is_empty()) else {
+        emit_agy_error("agy-host-exec 缺少 --account-id 参数");
+        return 1;
+    };
+    let agy_bin = bin
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "agy".to_string());
+
+    let Some(host_home) = std::env::var_os("MULTICC_AGY_ACCOUNTS_HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()))
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+    else {
+        emit_agy_error("Host 无法定位 HOME 目录，无法读取反重力账号");
+        return 1;
+    };
+
+    let (account_home, egress_binding) = match agy_store::resolve_account(
+        &host_home,
+        Some(&account_id),
+    ) {
+        Ok(Some(ResolvedAgyAccount::Local {
+            home,
+            egress_binding,
+        })) => (home, egress_binding),
+        Ok(Some(ResolvedAgyAccount::Remote { .. })) => {
+            emit_agy_error(&format!(
+                "Host 上的账号（{account_id}）不是本机账号，不能作为 Host 承载账号使用"
+            ));
+            return 1;
+        }
+        Ok(None) | Err(_) => {
+            emit_agy_error(&format!(
+                    "Host（VPS）上未找到反重力账号（{account_id}），请确认已在 Host 的 MultiCC 中创建该账号"
+                ));
+            return 1;
+        }
+    };
+
+    if let Some(script_path) = host_exec_mcp.as_deref() {
+        if let Err(err) = ensure_host_exec_mcp_config(&account_home, script_path) {
+            emit_agy_error(&err);
+            return 1;
+        }
+    }
+
+    let extra_roots: Vec<PathBuf> = plugins_dir.into_iter().collect();
+    let proxy_url = if let Some(binding) = egress_binding.as_ref() {
+        match resolve_egress_proxy_url_with_roots(binding, &extra_roots).await {
+            Ok(url) => Some(url),
+            Err(err) => {
+                emit_agy_error(&format!("Host 账号专用出口不可用：{err}"));
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+
+    let mut cmd = Command::new(&agy_bin);
+    cmd.args(&passthrough)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .env("HOME", &account_home)
+        .env_remove("MULTICC_AGY_EGRESS_JSON")
+        .env_remove("MULTICC_AGY_REMOTE_ACCOUNT_JSON");
+
+    if let Some(url) = proxy_url.as_deref() {
+        cmd.env("HTTP_PROXY", url)
+            .env("HTTPS_PROXY", url)
+            .env("ALL_PROXY", url)
+            .env("http_proxy", url)
+            .env("https_proxy", url)
+            .env("all_proxy", url)
+            .env("NO_PROXY", LOOPBACK_NO_PROXY)
+            .env("no_proxy", LOOPBACK_NO_PROXY);
+    }
+
+    match cmd.status().await {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(err) => {
+            emit_agy_error(&format!("Host 启动 agy 失败（{agy_bin}）: {err}"));
+            1
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -250,6 +501,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_egress_plugin_executes_command_and_fails_closed_on_error() {
+        let _guard = TEST_ENV_LOCK.lock().await;
         let root = std::env::temp_dir().join(format!(
             "multicc-egress-plugin-test-{}",
             std::time::SystemTime::now()

@@ -39,6 +39,7 @@ pub async fn serve(options: ServeOptions) -> i32 {
         return 1;
     }
     let dotenv_keys = load_dotenv(Path::new("."));
+    crate::egress_runtime::publish_host_runtime_manifest_default();
     let restart_exact_port = crate::init_restart_generation(&options.cwd);
     let mut policy = match resolve_network_policy(&current_env()) {
         Ok(policy) => policy,

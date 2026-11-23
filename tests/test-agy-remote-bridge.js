@@ -406,28 +406,86 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'conv-m
   assert.match(log, /MANAGED:sync flush/);
 });
 
-test('agy-remote-bridge tunnels loopback chrome-proxy-launcher egress over SSH -R and fails closed when unavailable', {
+test('Host/Client separation: agy-remote-bridge delegates egress to VPS agy-host-exec with zero client proxy detour and fails closed', {
   skip: process.platform === 'win32',
 }, () => {
-  const work = mkTempDir('egress-remote');
+  const work = mkTempDir('host-client-egress');
+  const hostHome = path.join(work, 'vps-host-home');
+  const hostAccountId = 'a1b2c3d4e5f60718';
+  const hostAcctRoot = path.join(hostHome, '.multicc', 'official-accounts', 'agy');
+  const hostAcctHome = path.join(hostAcctRoot, `${hostAccountId}.home`);
+  fs.mkdirSync(hostAcctHome, { recursive: true });
+  writeJson(path.join(hostAcctRoot, `${hostAccountId}.json`), {
+    id: hostAccountId,
+    label: 'VPS主号',
+    createdAt: Date.now(),
+    source: 'created',
+    egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'host-jp-1' },
+  });
+
+  // Host-side fake chrome-proxy-launcher plugin (runs on VPS, NOT on Client!).
+  const hostPluginsDir = path.join(work, 'vps-plugins');
+  const fakePluginBin = path.join(hostPluginsDir, 'chrome-proxy-launcher', 'bin', 'chrome-proxy-launcher');
+  writeJson(path.join(hostPluginsDir, 'chrome-proxy-launcher', 'plugin.json'), {
+    id: 'chrome-proxy-launcher',
+    commands: ['list', 'egress'],
+    engine: { type: 'command', binary: 'bin/chrome-proxy-launcher' },
+  });
+  writeExecutable(fakePluginBin, `#!/bin/sh
+INPUT="$(cat)"
+case "$INPUT" in
+  *host-jp-1*)
+    echo '{"ok":true,"data":{"proxyUrl":"http://127.0.0.1:28999"}}'
+    exit 0
+    ;;
+  *)
+    echo '{"ok":false,"error":"host egress profile offline"}'
+    exit 1
+    ;;
+esac
+`);
+
+  // Host publishes ~/.multicc/host-runtime.json pointing to Host's multicc-gateway + pluginsDir.
+  writeJson(path.join(hostHome, '.multicc', 'host-runtime.json'), {
+    schema: 1,
+    gatewayBin: gatewayPath(),
+    pluginsDir: hostPluginsDir,
+    updatedAt: Date.now(),
+  });
+
   const sshLog = path.join(work, 'ssh.log');
   const fakeSsh = path.join(work, 'bin', 'ssh');
   const fakeAgy = path.join(work, 'bin', 'fake-agy');
 
+  // Fake SSH runs on the simulated VPS with HOME=hostHome (no Client plugins dir, no Client proxy env).
   writeExecutable(fakeSsh, `#!/bin/sh
 echo "$*" >> ${JSON.stringify(sshLog)}
+export HOME=${JSON.stringify(hostHome)}
+unset MULTICC_PLUGINS_DIR
+unset MULTICC_EGRESS_PROXY_OVERRIDE
 exec /bin/sh -s
 `);
   writeExecutable(fakeAgy, `#!${process.execPath}
-if (process.env.HTTPS_PROXY !== 'http://127.0.0.1:45123') {
-  console.error('unexpected HTTPS_PROXY:', process.env.HTTPS_PROXY);
+const fs = require('node:fs');
+const path = require('node:path');
+if (process.env.HOME !== ${JSON.stringify(hostAcctHome)}) {
+  console.error('unexpected Host account HOME:', process.env.HOME);
+  process.exit(40);
+}
+if (process.env.HTTPS_PROXY !== 'http://127.0.0.1:28999') {
+  console.error('unexpected Host HTTPS_PROXY:', process.env.HTTPS_PROXY);
   process.exit(41);
 }
 if (!String(process.env.NO_PROXY || '').includes('127.0.0.1')) {
   console.error('missing loopback NO_PROXY:', process.env.NO_PROXY);
   process.exit(42);
 }
-console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'conv-egress', status: 'SUCCESS' } }));
+const mcpCfg = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.gemini', 'config', 'mcp_config.json'), 'utf8'));
+if (!mcpCfg.mcpServers || !mcpCfg.mcpServers.multicc_host_exec) {
+  console.error('missing multicc_host_exec MCP registration on Host account home');
+  process.exit(43);
+}
+console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'conv-host-egress', status: 'SUCCESS' } }));
 `);
 
   const okRun = spawnSync(gatewayPath(), [
@@ -440,21 +498,35 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'conv-e
     encoding: 'utf8',
     env: {
       ...process.env,
+      // Client has NO egressBinding and NO chrome-proxy-launcher plugin!
+      MULTICC_PLUGINS_DIR: path.join(work, 'client-has-no-plugins'),
       MULTICC_AGY_REMOTE_ACCOUNT_JSON: JSON.stringify({
-        remote: { sshTarget: 'ubuntu@vps.test', remoteAgyBin: fakeAgy, remoteHome: work, fileMode: 'remote_mcp' },
-        egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'prof-1' },
+        remote: {
+          sshTarget: 'ubuntu@vps.test',
+          hostAccountId,
+          remoteAgyBin: fakeAgy,
+          fileMode: 'remote_mcp',
+        },
       }),
       MULTICC_SSH_BIN: fakeSsh,
-      MULTICC_EGRESS_PROXY_OVERRIDE: 'http://127.0.0.1:21001',
-      MULTICC_REMOTE_PROXY_TUNNEL_PORT: '45123',
       MULTICC_REMOTE_DIRECT_LOOPBACK: '1',
     },
   });
-  assert.equal(okRun.status, 0, `egress remote bridge failed: ${okRun.stderr}\n${okRun.stdout}`);
+  assert.equal(okRun.status, 0, `Host/Client remote bridge failed: ${okRun.stderr}\n${okRun.stdout}`);
   const sshArgsLog = fs.readFileSync(sshLog, 'utf8');
-  assert.ok(sshArgsLog.includes('-R 127.0.0.1:45123:127.0.0.1:21001'), `missing proxy -R tunnel in: ${sshArgsLog}`);
+  // Client opens strictly ONE -R tunnel (for host_exec), never a second -R proxy tunnel.
+  const turnLine = sshArgsLog.trim().split('\n').pop() || '';
+  const rMatches = turnLine.match(/(?:^|\s)-R\s/g) || [];
+  assert.equal(rMatches.length, 1, `expected strictly 1 -R tunnel (host_exec only), got: ${turnLine}`);
 
-  // Fail-closed: missing plugin must exit 1 with an agy ERROR frame without launching SSH for the turn.
+  // Fail-closed on Host: switch Host account egress to a broken profile -> Host agy-host-exec refuses to run agy!
+  writeJson(path.join(hostAcctRoot, `${hostAccountId}.json`), {
+    id: hostAccountId,
+    label: 'VPS主号',
+    createdAt: Date.now(),
+    source: 'created',
+    egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'offline-profile' },
+  });
   const failRun = spawnSync(gatewayPath(), [
     'agy-remote-bridge',
     '--local-cwd', work,
@@ -465,21 +537,25 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'conv-e
     encoding: 'utf8',
     env: {
       ...process.env,
-      HOME: work,
-      MULTICC_PLUGINS_DIR: path.join(work, 'empty-plugins'),
+      MULTICC_PLUGINS_DIR: path.join(work, 'client-has-no-plugins'),
       MULTICC_AGY_REMOTE_ACCOUNT_JSON: JSON.stringify({
-        remote: { sshTarget: 'ubuntu@vps.test', remoteAgyBin: fakeAgy, remoteHome: work, fileMode: 'remote_mcp' },
-        egressBinding: { pluginId: 'nonexistent-egress-plugin', profileId: 'prof-1' },
+        remote: {
+          sshTarget: 'ubuntu@vps.test',
+          hostAccountId,
+          remoteAgyBin: fakeAgy,
+          fileMode: 'remote_mcp',
+        },
       }),
       MULTICC_SSH_BIN: fakeSsh,
       MULTICC_REMOTE_DIRECT_LOOPBACK: '1',
     },
   });
   assert.equal(failRun.status, 1);
-  const errFrame = JSON.parse(failRun.stdout.trim());
-  assert.equal(errFrame.event, 'result');
+  const errLine = failRun.stdout.trim().split('\n').find(l => l.includes('"ERROR"'));
+  assert.ok(errLine, `expected agy ERROR frame from Host fail-closed, got: ${failRun.stdout}`);
+  const errFrame = JSON.parse(errLine);
   assert.equal(errFrame.result.status, 'ERROR');
-  assert.match(errFrame.result.error, /插件/);
+  assert.match(errFrame.result.error, /Host 账号专用出口不可用/);
 });
 
 test('agy-egress-exec injects resolved egress proxy for local agy and fails closed when unavailable', {

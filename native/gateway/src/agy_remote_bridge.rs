@@ -22,9 +22,10 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use multicc_core::agy_remote::{
-    build_remote_agy_exec_command, build_remote_bootstrap_script, mutagen_session_name,
-    parse_remote_target, posix_shell_quote, remote_workspace_rel_or_abs, resolve_mutagen_ignores,
-    RemoteAgyTarget, RemoteExecSpec, DEFAULT_REMOTE_AGY_BIN, FILE_MODE_MUTAGEN,
+    build_remote_agy_exec_command, build_remote_bootstrap_script,
+    build_remote_host_mcp_bootstrap_script, mutagen_session_name, parse_remote_target,
+    posix_shell_quote, remote_workspace_rel_or_abs, resolve_mutagen_ignores, RemoteAgyTarget,
+    RemoteExecSpec, DEFAULT_REMOTE_AGY_BIN, FILE_MODE_MUTAGEN,
 };
 use multicc_core::mutagen_runtime::{
     executable_name, has_complete_managed_install, managed_mutagen_agents, managed_mutagen_bin,
@@ -137,25 +138,11 @@ fn pick_remote_port() -> u16 {
     32_000 + (n % 26_000)
 }
 
-fn parse_target_and_egress_from_json(
-    raw: &str,
-) -> Result<
-    (
-        RemoteAgyTarget,
-        Option<multicc_core::egress_plugin::EgressBinding>,
-    ),
-    String,
-> {
+fn parse_target_from_json(raw: &str) -> Result<RemoteAgyTarget, String> {
     let value: Value =
         serde_json::from_str(raw).map_err(|err| format!("远程 VPS 配置 JSON 解析失败: {err}"))?;
     let target_val = value.get("remote").unwrap_or(&value);
-    let target = parse_remote_target(target_val)?;
-    let egress = multicc_core::egress_plugin::parse_egress_binding(
-        value
-            .get("egressBinding")
-            .or_else(|| target_val.get("egressBinding")),
-    )?;
-    Ok((target, egress))
+    parse_remote_target(target_val)
 }
 
 /// 拆分 `agy` 原始 argv：分离 `-p <prompt>` 中的 prompt 与其余标志。
@@ -219,7 +206,11 @@ async fn bootstrap_remote_workspace(
     target: &RemoteAgyTarget,
     remote_ws_rel_or_abs: &str,
 ) -> Result<String, String> {
-    let bootstrap = build_remote_bootstrap_script(target.remote_home.as_deref());
+    let bootstrap = if target.host_account_id.is_some() {
+        build_remote_host_mcp_bootstrap_script()
+    } else {
+        build_remote_bootstrap_script(target.remote_home.as_deref())
+    };
     let ws_expr = if remote_ws_rel_or_abs.starts_with('/') {
         posix_shell_quote(remote_ws_rel_or_abs)
     } else {
@@ -693,8 +684,8 @@ pub async fn serve(args: &[String]) -> i32 {
         emit_bridge_error("缺少远端 VPS 反重力账号配置（MULTICC_AGY_REMOTE_ACCOUNT_JSON）");
         return 1;
     }
-    let (target, egress_binding) = match parse_target_and_egress_from_json(&target_raw) {
-        Ok(pair) => pair,
+    let target = match parse_target_from_json(&target_raw) {
+        Ok(target) => target,
         Err(err) => {
             emit_bridge_error(&err);
             return 1;
@@ -804,21 +795,6 @@ pub async fn serve(args: &[String]) -> i32 {
         .filter(|&p| p >= 1)
         .unwrap_or_else(pick_remote_port);
 
-    // 若账号绑定了「Chrome 隔离出口启动器」身份，实时解析代理并规划远端代理反向隧道（fail-closed，绝不静默直连）。
-    let proxy_plan = match crate::egress_runtime::prepare_remote_proxy(
-        egress_binding.as_ref(),
-        Some(remote_port),
-    )
-    .await
-    {
-        Ok(plan) => plan,
-        Err(err) => {
-            server_handle.abort();
-            emit_bridge_error(&err);
-            return 1;
-        }
-    };
-
     // 在单元测试无真实 sshd 隧道场景下允许直连本机环回端口，生产环境始终走 127.0.0.1:<remote_port>。
     let host_exec_url = if std::env::var("MULTICC_REMOTE_DIRECT_LOOPBACK").as_deref() == Ok("1") {
         format!("http://127.0.0.1:{}", local_addr.port())
@@ -826,16 +802,18 @@ pub async fn serve(args: &[String]) -> i32 {
         format!("http://127.0.0.1:{remote_port}")
     };
 
+    // 出口代理完全由远端 Host（VPS 上的 MultiCC）通过 `agy-host-exec` 本地解析与注入，
+    // Client 侧只建立 host_exec 回连隧道，绝不把 VPS 流量绕回开发机代理。
     let remote_script = build_remote_agy_exec_command(&RemoteExecSpec {
         remote_agy_bin,
         remote_home: target.remote_home.as_deref(),
+        host_account_id: target.host_account_id.as_deref(),
         remote_workspace_path: &remote_abs_ws,
         local_root: &local_root_str,
         local_os: std::env::consts::OS,
         file_mode: &target.file_mode,
         host_exec_url: &host_exec_url,
         host_exec_token: &token,
-        remote_proxy_url: proxy_plan.as_ref().map(|p| p.remote_proxy_url()),
         agy_args: &flags,
         prompt: &prompt,
     });
@@ -848,10 +826,6 @@ pub async fn serve(args: &[String]) -> i32 {
         "127.0.0.1:{remote_port}:127.0.0.1:{}",
         local_addr.port()
     ));
-    if let Some(forward_spec) = proxy_plan.as_ref().and_then(|p| p.ssh_forward_spec()) {
-        ssh_args.push("-R".to_string());
-        ssh_args.push(forward_spec);
-    }
     ssh_args.push(target.ssh_target.clone());
     ssh_args.push("--".to_string());
     ssh_args.push("sh".to_string());

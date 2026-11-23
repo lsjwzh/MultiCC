@@ -827,10 +827,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +1 bilingual key (airProviderProtocolAgy): Antigravity (agy) tab alongside
     // Anthropic Messages / OpenAI Responses in Provider panel. 中英各 1 行 = +2 行；
     // countLines 口径实测 10744/699221。
-    // +4 bilingual keys (airOfficialAcctAgyEditEgress* / CreateTitle): 反重力账号专用出口绑定文案。
-    // 中英各 4 行 = +8 行；重跑生成器实测 10752/699739。
-    maxLines: 10752,
-    maxBytes: 699739,
+    // +10 bilingual keys (airOfficialAcctAgyWebLogin/TermLogin/Host*): 标准 Host/Client 分离文案。
+    // 中英各 10 行 = +20 行；重跑生成器实测 10772/701550。
+    maxLines: 10772,
+    maxBytes: 701550,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
