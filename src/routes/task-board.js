@@ -13,11 +13,12 @@ const { runStateForFreezeReason } = require('../session-work/scheduler');
 const { runStateForClassify: runStateForLetter } = require('../classify/vocab');
 const { createTaskWorktreeService } = require('../task-worktree');
 const { taskFields } = require('../task-display-attribution');
-const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../task-board/runtime-helpers');
 const { createTaskRetention } = require('../task-board/retention');
 const { createTaskPlanningRuntime } = require('./task-planning');
 const { openBoardStore } = require('../task-board/board-store');
 const { getNative } = require('../native/runtime');
+
+function assertTaskBoardDeps(deps) { return getNative().taskBoardAssertDeps(deps); }
 
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
@@ -374,8 +375,8 @@ function createTaskBoardRuntime(deps) {
     return classification.settled(classificationPorts, sessionName, taskId, messages, meta);
   }
 
-  const linkRelatedTasks = createRelatedTaskLinker({
-    board, groupRelatedTasks: core.groupRelatedTasks, save, notify,
+  const linkRelatedTasks = getNative().taskBoardLinkRelated.bind(null, {
+    board, groupRelatedTasks: core.groupRelatedTasks, save, notify, now: Date.now,
   });
 
   // Turn-end hook — called from classifyTurnEnd alongside the classify pass.

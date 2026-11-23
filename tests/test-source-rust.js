@@ -127,7 +127,7 @@ test('addon preflight rejects an exported audit function that cannot write', t =
       'confirmTurnEnd', 'searchNormalizeText', 'searchTokenize', 'searchIndexTokens', 'searchMatchGroups', 'searchMatchExpression',
     'chatHistoryFileRepositoryCreate', 'sessionCreateRecordFactory', 'sessionRuntimeIsChatStateBusy', 'sessionRuntimeProcessAlive',
     'sessionPendingConfigurationFields', 'sessionPendingReadConfiguration', 'sessionPendingDesiredSession', 'sessionPendingConfigurationBusy', 'sessionPendingStageConfiguration', 'sessionLoginTerminalDisposer', 'sessionDeliveryApi', 'sessionHibernationReclaimerCreate', 'sessionPersistenceCreate', 'sessionPersistenceErrorClass', 'sessionPersistenceJsonClone', 'acpBridgeKernel', 'taskBoardQueueRunState',
-    'taskBoardStableTaskId', 'taskBoardCanonicalMessages', 'taskBoardCanonicalTaskBody',
+    'taskBoardAssertDeps', 'taskBoardLinkRelated', 'taskBoardStableTaskId', 'taskBoardCanonicalMessages', 'taskBoardCanonicalTaskBody',
     'taskBoardLegacyImportMessages', 'taskBoardContextMessages', 'TaskBoardClassification', 'TaskBoardStart', 'TaskBoardFollowup', 'taskBoardRunContext',
     'taskBoardTurnEnd', 'taskBoardClassifyGoal', 'taskBoardSystemPrompt', 'taskBoardUserPrompt']) {
     const staleZip = write(root, `stale-${name}.js`, `module.exports = {

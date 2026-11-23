@@ -110,6 +110,7 @@ pub mod subagent_defaults;
 pub mod task_board;
 pub mod task_board_classification;
 pub mod task_board_followup;
+pub mod task_board_groups;
 mod task_board_host;
 pub mod task_board_queue;
 mod task_board_seed;

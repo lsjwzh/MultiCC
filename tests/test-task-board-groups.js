@@ -105,3 +105,68 @@ test('failed related-task persistence rolls back only presentation metadata', t 
   assert.equal(board.revision, revisionBefore);
   assert.equal(fixture.broadcasts.length, 0);
 });
+
+test('group linking matches the frozen runtime across refusal, failed save, retry and duplicate', t => {
+  const legacy = require('./helpers/load-legacy-task-board-runtime');
+  t.mock.method(Date, 'now', () => 1700000000000);
+  function capture(createRuntime) {
+    const effects = [];
+    let fail = false;
+    const fixture = mkRuntime({
+      atomicWriteJson(file, value) {
+        effects.push(['write', value.revision]);
+        if (fail) throw new Error('disk full');
+        fs.writeFileSync(file, JSON.stringify(value));
+      },
+      workspaceBroadcast(dirId, payload) { effects.push(['notify', dirId, payload]); },
+    }, createRuntime);
+    t.after(() => fs.rmSync(path.dirname(fixture.file), { recursive: true, force: true }));
+    const board = fixture.runtime.getBoard();
+    for (const taskId of ['a', 'b', 'c']) {
+      core.createPendingTask(board, { taskId, dirId: 'dir-1', sessionId: 'sess-1', taskText: taskId, now: 10 });
+    }
+    function link(id, related) {
+      effects.length = 0;
+      const result = fixture.runtime.linkRelatedTasks(id, related);
+      const disk = fs.existsSync(fixture.file) ? JSON.parse(fs.readFileSync(fixture.file, 'utf8')) : null;
+      return structuredClone({ result, effects, revision: board.revision,
+        groups: JSON.parse(JSON.stringify(board.taskGroups)), persisted: disk && disk.taskGroups });
+    }
+    const refused = link('missing', 'a');
+    const created = link('b', 'a');
+    fail = true;
+    const rolledBack = link('c', 'b');
+    fail = false;
+    return [refused, created, rolledBack, link('c', 'b'), link('a', 'b')];
+  }
+  const expected = capture(legacy.createTaskBoardRuntime);
+  assert.equal(expected[0].result.error, 'task_not_found');
+  assert.ok(expected[1].effects.some(([kind]) => kind === 'notify'));
+  assert.equal(expected[2].result.error, 'persistence_failed');
+  assert.deepEqual(expected[2].groups, expected[1].groups);
+  assert.deepEqual(expected[2].persisted, expected[1].persisted);
+  assert.ok(expected[3].result.changed);
+  assert.deepEqual(expected[4].effects, []);
+  assert.deepEqual(capture(createTaskBoardRuntime), expected);
+});
+
+test('required board ports preserve validation order, missing values and getter exceptions', () => {
+  const { assertTaskBoardDeps } = require('../src/routes/task-board');
+  const frozen = require('./helpers/legacy-task-board-runtime-helpers').assertTaskBoardDeps;
+  function trace(validate, missing, value) {
+    const reads = [];
+    const deps = new Proxy({}, { get(_, key) { reads.push(key); return key === missing ? value : false; } });
+    try { validate(deps); return { reads }; }
+    catch (error) { return { reads, error: [error.constructor.name, error.message, error.code] }; }
+  }
+  for (const missing of ['file', 'atomicWriteJson', 'getSessionRunState', 'none']) {
+    for (const value of [null, undefined]) {
+      assert.deepEqual(trace(assertTaskBoardDeps, missing, value), trace(frozen, missing, value));
+    }
+  }
+  for (const value of [undefined, null, 'file', () => {}]) {
+    assert.throws(() => assertTaskBoardDeps(value), { name: 'Error', message: '[taskboard] deps object required' });
+  }
+  const fault = new Error('port unavailable');
+  assert.throws(() => assertTaskBoardDeps({ get file() { throw fault; } }), error => error === fault);
+});
