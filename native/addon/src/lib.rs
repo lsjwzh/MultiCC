@@ -107,6 +107,7 @@ pub mod state_bootstrap;
 pub mod static_assets_routes;
 pub mod subagent_defaults;
 pub mod task_board;
+pub mod task_board_classification;
 pub mod task_board_queue;
 pub mod task_board_transcript;
 pub mod task_context;

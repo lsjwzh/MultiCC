@@ -9,6 +9,7 @@ const legacy = require('./helpers/load-legacy-task-board-runtime');
 const current = require('../src/routes/task-board');
 const baseline = require('./fixtures/task-board-runtime-baseline.json');
 const queueBaseline = require('./fixtures/task-board-queue-baseline.json');
+const classifyBaseline = require('./fixtures/task-board-classify-baseline.json');
 const queueEvents = [
   { type: 'queued', workKind: 'task' },
   { type: 'claimed' },
@@ -60,6 +61,20 @@ const histories = {
   'sess-2': [
     { id: 'ms2', role: 'user', content: '更早的开始', ts: 5, taskId: 'tsk-baseline', taskStart: true, taskText: '更早文本' },
   ],
+  // Classification-input resolution pins: a blank user message falls back to
+  // the module-assignment seed; a marker line resolves through the third
+  // scan; a taskId field resolves through the second.
+  'sess-4': [
+    { id: 'blank', role: 'user', content: '   ', ts: 8 },
+  ],
+  'sess-5': [
+    { id: 'mk1', role: 'user', content: '修复登录 ｜tb:tsk-marker】', ts: 3 },
+    { id: 'mk2', role: 'assistant', content: '标记回复', ts: 4 },
+  ],
+  'sess-6': [
+    { id: 'sf1', role: 'user', content: '带任务字段', ts: 6, taskId: 'tsk-scan2' },
+    { id: 'sf2', role: 'assistant', content: '好的', ts: 7, taskId: 'tsk-scan2' },
+  ],
 };
 const mockRes = () => ({ statusCode: 200, body: null,
   status(code) { this.statusCode = code; return this; },
@@ -69,7 +84,10 @@ async function capture(createRuntime) {
   Date.now = () => 1700000000000;
   let fixture;
   try {
-    fixture = mkRuntime({ loadHistory: sessionId => histories[sessionId] || [] }, createRuntime);
+    fixture = mkRuntime({ loadHistory: sessionId => {
+      if (sessionId === 'sess-3') throw new Error('history unreadable');
+      return histories[sessionId] || [];
+    } }, createRuntime);
     const { runtime, broadcasts, sessionMessages, file } = fixture;
     const input = { id: 'tsk-baseline', dirId: 'dir-1', sessionId: 'sess-1',
       title: '固定任务', createdAt: 1700000000000 };
@@ -93,14 +111,70 @@ async function capture(createRuntime) {
     const liveBoard = runtime.getBoard();
     liveBoard.tasks[input.id].refs.push({ sessionId: 'sess-2', dirId: 'dir-1',
       userMsgId: null, assistantMsgId: null, ts: 1, excerpt: '' });
-    liveBoard.tasks['tsk-legacy'] = { id: 'tsk-legacy', title: '遗留卡片', status: 'active',
+    liveBoard.tasks['tsk-legacy'] = { id: 'tsk-legacy', title: '遗留卡片', areas: [], status: 'active',
       refs: [{ sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'mu1', assistantMsgId: null, ts: 10, excerpt: '' }],
       createdAt: 1700000000000, updatedAt: 1700000000000 };
     liveBoard.tasks['tsk-planned'] = { id: 'tsk-planned', recordType: 'planned',
-      title: '计划标题', description: '  计划描述  ', status: 'active', chatSessionId: 'sess-9',
+      title: '计划标题', areas: [], description: '  计划描述  ', status: 'active', chatSessionId: 'sess-9',
       refs: [], createdAt: 1700000000000, updatedAt: 1700000000000 };
-    liveBoard.tasks['tsk-empty'] = { id: 'tsk-empty', title: '空卡', status: 'active',
+    liveBoard.tasks['tsk-empty'] = { id: 'tsk-empty', title: '空卡', areas: [], status: 'active',
       refs: [], createdAt: 1700000000000, updatedAt: 1700000000000 };
+    // Classification-queue pins: pending cards in every input-resolution
+    // branch (direct ids, taskId scan, marker scan, seed fallback, unreadable
+    // history, empty refs), plus the guard cards (archived, attempt limit) and
+    // the startup-scan recovery states.
+    const pendingAssignment = { running: false, attempts: 0, lastAttemptAt: 0, lastError: '', seed: '' };
+    const stamp = { createdAt: 1700000000000, updatedAt: 1700000000000 };
+    liveBoard.tasks['tsk-pending'] = { id: 'tsk-pending', title: '待归类', status: 'active',
+      moduleAssignment: { ...pendingAssignment },
+      refs: [{ sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'mu1', assistantMsgId: 'ma1', ts: 10, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-fallback'] = { id: 'tsk-fallback', title: '回退解析', status: 'active',
+      moduleAssignment: { ...pendingAssignment },
+      refs: [{ sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'mu1', assistantMsgId: 'ma1', ts: 10, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-nolabel'] = { id: 'tsk-nolabel', title: '无标签会话', status: 'active',
+      moduleAssignment: { ...pendingAssignment },
+      refs: [{ sessionId: 'sess-2', dirId: null, userMsgId: 'ms2', assistantMsgId: null, ts: 5, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-archived'] = { id: 'tsk-archived', title: '已归档', status: 'archived',
+      moduleAssignment: { ...pendingAssignment }, refs: [], ...stamp };
+    liveBoard.tasks['tsk-attempts'] = { id: 'tsk-attempts', title: '次数耗尽', status: 'active',
+      moduleAssignment: { ...pendingAssignment, attempts: 2, lastAttemptAt: 1, lastError: 'classification_failed' },
+      refs: [{ sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'mu1', assistantMsgId: 'ma1', ts: 10, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-seed'] = { id: 'tsk-seed', title: '空引用', status: 'active',
+      moduleAssignment: { ...pendingAssignment, seed: '种子文本' }, refs: [], ...stamp };
+    liveBoard.tasks['tsk-seedtext'] = { id: 'tsk-seedtext', title: '种子回退', status: 'active',
+      moduleAssignment: { ...pendingAssignment, seed: '种子任务描述' },
+      refs: [{ sessionId: 'sess-4', dirId: 'dir-1', userMsgId: 'blank', assistantMsgId: null, ts: 8, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-unreadable'] = { id: 'tsk-unreadable', title: '历史不可读', status: 'active',
+      moduleAssignment: { ...pendingAssignment },
+      refs: [{ sessionId: 'sess-3', dirId: 'dir-1', userMsgId: 'x', assistantMsgId: null, ts: 1, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-marker'] = { id: 'tsk-marker', title: '标记解析', status: 'active',
+      moduleAssignment: { ...pendingAssignment },
+      refs: [{ sessionId: 'sess-5', dirId: 'dir-1', userMsgId: null, assistantMsgId: null, ts: 1, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-scan2'] = { id: 'tsk-scan2', title: '字段解析', status: 'active',
+      moduleAssignment: { ...pendingAssignment },
+      refs: [{ sessionId: 'sess-6', dirId: 'dir-1', userMsgId: null, assistantMsgId: null, ts: 1, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-scan-missing'] = { id: 'tsk-scan-missing', title: '扫描归档', status: 'active',
+      moduleAssignment: { ...pendingAssignment, attempts: 1, lastAttemptAt: 1, lastError: 'missing_context' },
+      refs: [], ...stamp };
+    liveBoard.tasks['tsk-scan-unreadable'] = { id: 'tsk-scan-unreadable', title: '扫描不可读', status: 'active',
+      moduleAssignment: { ...pendingAssignment, attempts: 1, lastAttemptAt: 1, lastError: 'missing_context' },
+      refs: [{ sessionId: 'sess-3', dirId: 'dir-1', userMsgId: 'x', assistantMsgId: null, ts: 1, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-scan-recover'] = { id: 'tsk-scan-recover', title: '扫描恢复', status: 'active',
+      moduleAssignment: { ...pendingAssignment, attempts: 1, lastAttemptAt: 1, lastError: 'missing_context' },
+      refs: [{ sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'mu1', assistantMsgId: 'ma1', ts: 10, excerpt: '' }],
+      ...stamp };
+    liveBoard.tasks['tsk-scan-interrupted'] = { id: 'tsk-scan-interrupted', title: '扫描中断', status: 'active',
+      moduleAssignment: { ...pendingAssignment, running: true, attempts: 1, lastAttemptAt: 1 },
+      refs: [], ...stamp };
     const dtos = [];
     for (const taskId of [input.id, 'tsk-legacy', 'tsk-planned', 'tsk-empty']) {
       const res = mockRes();
@@ -113,28 +187,114 @@ async function capture(createRuntime) {
     // key is pinned so every derived id is deterministic.
     const followup = await runtime.routeCommanderFollowup('commander-1', input.id,
       '继续处理', { clientMsgId: 'fixed-followup-key' });
+    // Classification-resolution pins: the settled-attribution hook resolves the
+    // current turn first, falls back to the per-ref history scans when the turn
+    // carries no user text, dedupes on the attribution key, and queues the Aux
+    // tag job whose recorded enqueue carries the targeted prompt end to end.
+    const settle = [];
+    const turn1 = [
+      { id: 'tu1', role: 'user', content: '归因文本', ts: 30 },
+      { id: 'ta1', role: 'assistant', content: '归因回复', ts: 31 },
+    ];
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-pending', turn1, { runId: 'run-1' }));
+    // Same attribution key while the first job is still in flight: deduped.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-pending', turn1, { runId: 'run-1' }));
+    // Empty turn: the fallback resolves through the ref's stored message ids.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-fallback', [], {}));
+    // A session without a records entry labels the prompt with the raw id.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-nolabel', [], { runId: 'run-4' }));
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'missing-task', [], {}));
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-legacy', [], {}));
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-archived', [], {}));
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-attempts', turn1, { runId: 'run-8' }));
+    // No refs at all: nothing to resolve, so the card reports missing context.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-seed', [], {}));
+    // A throwing history marks the resolution unreadable.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-unreadable', [], {}));
+    // Blank user text: the module-assignment seed becomes the user text.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-seedtext', [], { runId: 'run-11' }));
+    // Third scan: the task marker inside the message text finds the ref pair.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-marker', [], {}));
+    // Second scan: a stored taskId field on the message finds the ref pair.
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-scan2', [], {}));
+    const auxJobs = fixture.auxJobs;
+    assert.equal(auxJobs.length, 6);
+    // Settling the first job applies the classification: the module assignment
+    // clears, the module is created and the attribution dedupe resets.
+    auxJobs[0].resolve({ text: '{"tasks":[{"id":"tsk-pending","title":"归因任务","module":"服务端","areas":["src/routes"]}]}' });
+    await auxJobs[0].promise;
+    await Promise.resolve();
+    settle.push(await runtime.onTaskAttributionSettled('sess-1', 'tsk-pending', turn1, { runId: 'run-1' }));
+    // Startup recovery: archive the proven-stale card, re-prove the unreadable
+    // one, clear the recovered one and interrupt the abandoned running flag.
+    const scanChanged = runtime.scanPendingClassifications();
+    // Turn-end and classify-goal hooks share the turn-resolution projection.
+    runtime.onTurnEnd({ currentUserText: '实现任务板', _currentTaskId: 'tsk-legacy' }, 'sess-1');
+    runtime.onTurnEnd({ currentUserText: '无对应文本' }, 'sess-1');
+    runtime.onClassifyGoal('sess-1', '目标标题', 'done',
+      { currentUserText: '实现任务板', taskId: 'tsk-legacy', runState: 'completed' });
+    runtime.onClassifyGoal('sess-1', '新目标', 'done',
+      { currentUserText: '正式任务卡', runState: 'running' });
     const board = JSON.parse(JSON.stringify(runtime.getBoard()));
     const persisted = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
     const moduleIds = Object.keys(board.modules);
-    assert.equal(moduleIds.length, 1);
-    const [moduleId] = moduleIds;
-    assert.match(moduleId, /^mod-[a-f0-9]{32}$/);
-    assert.equal(board.modules[moduleId].id, moduleId);
-    assert.equal(board.tasks['tsk-baseline'].moduleId, moduleId);
-    assert.equal(persisted.modules[moduleId].id, moduleId);
-    assert.equal(persisted.tasks['tsk-baseline'].moduleId, moduleId);
-    const raw = JSON.stringify({ results, queue, dtos, followup, sessionMessages, board, broadcasts, persisted });
-    return JSON.parse(raw.replaceAll(moduleId, '<generated-module-id>'));
+    assert.equal(moduleIds.length, 2);
+    for (const moduleId of moduleIds) assert.match(moduleId, /^mod-[a-f0-9]{32}$/);
+    assert.equal(board.tasks['tsk-baseline'].moduleId, moduleIds[0]);
+    assert.equal(board.tasks['tsk-pending'].moduleId, moduleIds[1]);
+    assert.equal(board.modules[moduleIds[0]].id, moduleIds[0]);
+    assert.equal(board.modules[moduleIds[1]].id, moduleIds[1]);
+    assert.equal(board.modules[moduleIds[1]].name, '服务端');
+    assert.equal(persisted.modules[moduleIds[0]].id, moduleIds[0]);
+    assert.equal(persisted.tasks['tsk-baseline'].moduleId, moduleIds[0]);
+    const jobIds = auxJobs.map(job => job.task.id);
+    let raw = JSON.stringify({ results, queue, dtos, followup, sessionMessages,
+      classify: { settle, scanChanged }, auxJobs: auxJobs.map(job => job.task),
+      board, broadcasts, persisted });
+    moduleIds.forEach((moduleId, index) => {
+      raw = raw.replaceAll(moduleId, `<generated-module-id-${index}>`);
+    });
+    jobIds.forEach((jobId, index) => {
+      raw = raw.replaceAll(jobId, `<generated-job-id-${index}>`);
+    });
+    return JSON.parse(raw);
   } finally {
     Date.now = oldNow;
     if (fixture) fs.rmSync(path.dirname(fixture.file), { recursive: true, force: true });
   }
 }
 
+function capturePrompts() {
+  const core = require('../src/task-board/core');
+  const board = { modules: { server: { name: '服务端' } }, tasks: {
+    a: { id: 'a', moduleId: 'server', title: '甲', status: 'active', areas: ['a', 'b', '', 'd'] },
+    b: { id: 'b', moduleId: 'removed', title: '乙', updatedAt: 2, areas: [] },
+    c: { id: 'c', status: 'archived' },
+    d: { id: 'd', moduleAssignment: {} },
+  } };
+  const session = { board, sessionLabel: '工程师', dirLabel: '仓库' };
+  const empty = { board: { modules: {}, tasks: {} } };
+  const tag = core.buildTagUserPrompt({ ...session, userText: '甲'.repeat(1199) + '🌊',
+    replyText: '乙'.repeat(1799) + '🌊' });
+  const backfill = core.buildBackfillUserPrompt({ ...session, turns: [
+    { n: 1, user: '甲'.repeat(499) + '🌊', reply: '乙'.repeat(699) + '🌊' },
+    { n: 2, user: 7, reply: false },
+  ] });
+  // 以 UTF-16LE 冻结旧提示词，保留恰好从代理对中间截断的码元。
+  return [core.buildTagSystemPrompt(), core.buildBackfillSystemPrompt(), tag, backfill,
+    core.buildTagUserPrompt(empty), core.buildBackfillUserPrompt({ ...empty, turns: [] })]
+    .map(prompt => require('node:crypto').createHash('sha256').update(prompt, 'utf16le').digest('hex'));
+}
+
+test('分类提示词与迁移前的 UTF-16 基线一致', () => {
+  assert.deepEqual(capturePrompts(), classifyBaseline.promptSha256);
+});
+
 test('task board runtime matches its frozen host baseline', async () => {
   const expected = await capture(legacy.createTaskBoardRuntime);
   assert.deepEqual(expected.results, baseline);
   assert.deepEqual(expected.queue, queueBaseline);
+  assert.deepEqual(expected.classify, { settle: classifyBaseline.settle, scanChanged: classifyBaseline.scanChanged });
   assert.deepEqual(await capture(current.createTaskBoardRuntime), expected);
 });
 
@@ -424,4 +584,70 @@ test('native legacy-import adapter preserves dedupe, caching and sort order', ()
   assert.notEqual(seen[0], seen[1]);
   assert.deepEqual(Object.keys(seen[0]), ['content']);
   assert.equal(seen[0].content, '摘录文本');
+});
+
+test('分类作业区分同步入队异常和异步拒绝，并允许下一轮重试', async t => {
+  for (const implementation of [legacy, current]) {
+    const logs = [];
+    let calls = 0;
+    const { runtime, file } = mkRuntime({
+      logger: { log: message => logs.push(message) },
+      auxQueue: { enqueue() {
+        if (++calls === 1) throw new Error('队列未启动');
+        return Promise.reject(new Error('工作进程退出'));
+      } },
+    }, implementation.createTaskBoardRuntime);
+    t.after(() => fs.rmSync(path.dirname(file), { recursive: true, force: true }));
+    const task = require('../src/task-board/core').createPendingTask(runtime.getBoard(), {
+      taskId: 'failure', sessionId: 'sess-1', taskText: '归类错误', now: 1,
+    });
+    const submit = runId => runtime.onTaskAttributionSettled('sess-1', task.id,
+      [{ role: 'user', content: '归类错误' }], { runId });
+    assert.deepEqual(submit('one'), { ok: false, error: 'enqueue_failed' });
+    assert.equal(task.moduleAssignment.lastError, 'enqueue_failed');
+    assert.deepEqual(submit('one'), { ok: true, queued: true });
+    assert.deepEqual(submit('two'), { ok: false, error: 'classification_running' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(task.moduleAssignment.running, false);
+    assert.equal(task.moduleAssignment.lastError, 'classification_failed');
+    assert.equal(task.moduleAssignment.attempts, 2);
+    assert.deepEqual(submit('two'), { ok: false, error: 'automatic_attempt_limit' });
+    assert.ok(logs.some(line => line.endsWith('classify enqueue failed for failure: 队列未启动')));
+    assert.ok(logs.some(line => line.endsWith('classify failed for failure: 工作进程退出')));
+  }
+});
+
+test('恢复扫描取消已失去上下文的作业，迟到回执不能消费同任务的新作业', async t => {
+  for (const implementation of [legacy, current]) {
+    const jobs = [];
+    const cancelled = [];
+    const { runtime, file } = mkRuntime({
+      auxQueue: {
+        enqueue: message => new Promise(resolve => jobs.push({ message, resolve })),
+        cancel: id => cancelled.push(id),
+      },
+    }, implementation.createTaskBoardRuntime);
+    t.after(() => fs.rmSync(path.dirname(file), { recursive: true, force: true }));
+    const task = require('../src/task-board/core').createPendingTask(runtime.getBoard(), {
+      taskId: 'stale-job', sessionId: 'sess-1', taskText: '恢复归类', now: 1,
+    });
+    const submit = runId => runtime.onTaskAttributionSettled('sess-1', task.id,
+      [{ role: 'user', content: '恢复归类' }], { runId });
+    assert.equal(submit('one').queued, true);
+    task.moduleAssignment.lastError = 'missing_context';
+    task.refs = [];
+    assert.equal(runtime.scanPendingClassifications(12), 1);
+    assert.deepEqual(cancelled, [jobs[0].message.id]);
+    assert.equal(task.status, 'archived');
+    task.status = 'active';
+    assert.equal(submit('one').queued, true);
+    jobs[0].resolve({ text: '{"tasks":[{"title":"迟到结果","module":"旧"}]}' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(task.moduleAssignment.running, true);
+    assert.deepEqual(submit('two'), { ok: false, error: 'classification_running' });
+    jobs[1].resolve({ cancelled: true });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(task.moduleAssignment.running, false);
+    assert.equal(task.moduleAssignment.lastError, 'classification_cancelled');
+  }
 });

@@ -2,12 +2,11 @@
 const crypto = require('crypto');
 const planning = require('./planning');
 const { TURN_RUN_STATES } = require('../classify/vocab');
-const { boardRule } = require('./native-bridge');
+const { boardRule, MAX_TASKS_IN_PROMPT } = require('./native-bridge');
 const MAX_TAGS_PER_TURN = 3;
 const MAX_AREAS_PER_TASK = 8;
 // References are durable ownership, not a display window. Never age them out.
 const MAX_REFS_PER_TASK = Infinity;
-const MAX_TASKS_IN_PROMPT = 50;
 const MAX_TITLE_LEN = 40;
 const MAX_MODULE_LEN = 20;
 const MAX_TASKS_PER_GROUP = 100;

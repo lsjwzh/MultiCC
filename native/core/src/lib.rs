@@ -117,6 +117,7 @@ pub mod subagent_defaults;
 pub mod subscription;
 pub mod subscription_cache;
 pub mod system_info;
+pub mod task_board_classification_prompt;
 pub mod task_board_queue;
 pub mod task_board_transcript;
 pub mod task_context;

@@ -6397,8 +6397,12 @@
     },
     {
       "path": "tests/test-task-board-runtime-differential.js",
-      "tier": "other",
-      "lane": "deterministic"
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:task-board-auto",
+      "entrypoints": [
+        "npm:test:task-board-auto"
+      ]
     },
     {
       "path": "tests/test-task-board-store.js",

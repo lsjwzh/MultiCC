@@ -1,0 +1,69 @@
+{
+  "settle": [
+    {
+      "ok": true,
+      "queued": true
+    },
+    {
+      "ok": false,
+      "error": "attribution_already_handled"
+    },
+    {
+      "ok": true,
+      "queued": true
+    },
+    {
+      "ok": true,
+      "queued": true
+    },
+    {
+      "ok": false,
+      "error": "task_not_found"
+    },
+    {
+      "ok": false,
+      "error": "not_pending"
+    },
+    {
+      "ok": false,
+      "error": "not_pending"
+    },
+    {
+      "ok": false,
+      "error": "automatic_attempt_limit"
+    },
+    {
+      "ok": false,
+      "error": "missing_context"
+    },
+    {
+      "ok": false,
+      "error": "context_unavailable"
+    },
+    {
+      "ok": true,
+      "queued": true
+    },
+    {
+      "ok": true,
+      "queued": true
+    },
+    {
+      "ok": true,
+      "queued": true
+    },
+    {
+      "ok": false,
+      "error": "not_pending"
+    }
+  ],
+  "scanChanged": 4,
+  "promptSha256": [
+    "83b583fccb27660999281b6ebbfcaffa94d8413c9a1d12c51d4a27c54d1cec58",
+    "59619c07f2014bbd5dc407d92b422a5eeb7125000f0386af311e523f946e13bc",
+    "71039ef433f47aa10fc80059c3228e1901f5f883d27911fae141e424d2ecc22a",
+    "80a419e7e26abf0f37fa3d4565ae1bbbc81035e3bdb18ff9971e99c9631cb8c2",
+    "c60a6a9eda3b5d49512fb48bbf43aa4ba1ea30ea34f618041ec8306c25533c2a",
+    "41db6a0cde71c6a6874a560da39c294c8320bae41f782f32be3e1f6f60c9ab81"
+  ]
+}
