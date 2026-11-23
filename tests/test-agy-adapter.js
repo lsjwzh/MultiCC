@@ -185,6 +185,9 @@ test('chat_apply_adapter_decoded_event forwards live_usage as role_token_stats a
   const runner = { runnerId: 'r-1' };
   const cs = { _activeTurn: turn, _activeRunner: runner };
   const ports = {
+    isCurrent: () => true,
+    scrub: (_attempt, evt) => evt,
+    observeAdapter: () => {},
     touchActivity: () => {},
     decodeEvent: () => [],
     updatePhase: () => {},
