@@ -45,6 +45,14 @@ fn emit_relay_error(message: &str) {
     println!("{evt}");
 }
 
+fn is_auth_rejected_http(status: u16, location: Option<&str>) -> bool {
+    if status == 401 || status == 403 {
+        return true;
+    }
+    matches!(status, 301 | 302 | 303 | 307 | 308)
+        && location.is_some_and(|loc| loc.starts_with("/login") || loc.contains("/login?"))
+}
+
 fn build_ws_turn_url(relay_base_url: &str) -> Result<url::Url, String> {
     let mut parsed = url::Url::parse(relay_base_url).map_err(|_| "借道地址格式无效".to_string())?;
     let ws_scheme = match parsed.scheme() {
@@ -110,7 +118,8 @@ async fn dial_relay_ws(
         Ok(Ok((ws, _resp))) => Ok(ws),
         Ok(Err(WsError::Http(resp))) => {
             let code = resp.status().as_u16();
-            if code == 401 || code == 403 {
+            let loc = resp.headers().get("location").and_then(|v| v.to_str().ok());
+            if is_auth_rejected_http(code, loc) {
                 Err("反重力借道分享码已被撤销或无效，请向出借方重新获取".to_string())
             } else if code == 404 {
                 Err(
@@ -345,6 +354,7 @@ pub async fn probe_relay_target(target: &RemoteAgyTarget) -> Value {
     let ping_url = format!("{}/ping", base_url.trim_end_matches('/'));
     let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(c) => c,
@@ -358,6 +368,11 @@ pub async fn probe_relay_target(target: &RemoteAgyTarget) -> Value {
     {
         Ok(resp) => {
             let status = resp.status().as_u16();
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
             let bytes = resp.bytes().await.unwrap_or_default();
             let body = serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| json!({}));
             if status == 200 && body.get("ok") == Some(&Value::Bool(true)) {
@@ -379,7 +394,7 @@ pub async fn probe_relay_target(target: &RemoteAgyTarget) -> Value {
                     "hostAccount": label,
                     "egressProfile": egress,
                 })
-            } else if status == 401 || status == 403 {
+            } else if is_auth_rejected_http(status, location.as_deref()) {
                 json!({ "ok": false, "error": "分享码已被撤销或无效，请向出借方重新获取" })
             } else {
                 let err_msg = body
@@ -482,5 +497,34 @@ exit 0
         std::env::remove_var("MULTICC_AGY_BIN");
         std::env::remove_var("MULTICC_EGRESS_PROXY_OVERRIDE");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn probe_relay_treats_login_redirect_as_revoked_without_following() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let srv = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = "HTTP/1.1 302 Found\r\nLocation: /login?redirect=%2Fagy-proxy%2F0123456789abcdef%2Fping\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        let target = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{port}/agy-proxy/0123456789abcdef"),
+            "relayAuthToken": "mcr1.0123456789abcdef.revokedsecret99",
+        }))
+        .unwrap();
+        let probed = probe_relay_target(&target).await;
+        let _ = srv.await;
+        assert_eq!(probed["ok"], false);
+        assert!(probed["error"]
+            .as_str()
+            .unwrap()
+            .contains("分享码已被撤销或无效"));
     }
 }
