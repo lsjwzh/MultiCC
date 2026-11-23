@@ -96,6 +96,11 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
   routes['/api/token-usage/by-role'] = () => json({});
   routes['/api/codex/accounts'] = () => json({ accounts: [], cliLogin: null });
   routes['/api/claude/accounts'] = () => json({ accounts: [], cliLogin: null });
+  routes['/api/agy/accounts'] = () => json({
+    active: '1111111111111111',
+    local: { loggedIn: true, email: 'local@example.com' },
+    accounts: [{ id: '1111111111111111', label: 'Agy 主号', email: 'agy@example.com', loggedIn: true, active: true, kind: 'local' }],
+  });
   // 隔离出口插件「未安装」：加账号面板应当直接提示并给出插件入口。
   routes['/api/plugins'] = () => json({ plugins: [] });
 
@@ -112,6 +117,23 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?view=provider&dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('.air-provider-card').length===4`));
+    // Agy 账号拥有独立协议 tab，与 Anthropic Messages / OpenAI Responses 并列：
+    // 全部线路显示双方；切 Anthropic / OpenAI 时隐藏 Agy；切 Agy 时只看 Agy 账号。
+    assert.ok(await page.waitFor(`document.querySelector('.air-provider-tab[data-protocol="agy"]')?.hidden === false`));
+    assert.deepEqual(
+      await page.evaluate(`[...document.querySelectorAll('.air-provider-tab:not([hidden])')].map(n => n.dataset.protocol)`),
+      ['all', 'anthropic', 'openai_responses', 'agy'],
+    );
+    assert.equal(await page.evaluate(`document.getElementById('air-provider-agy-accounts').hidden`), false);
+    await page.evaluate(`document.querySelector('.air-provider-tab[data-protocol="anthropic"]').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-provider-cards').hidden`), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-provider-agy-accounts').hidden`), true);
+    await page.evaluate(`document.querySelector('.air-provider-tab[data-protocol="agy"]').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-provider-cards').hidden`), true);
+    assert.equal(await page.evaluate(`document.getElementById('air-provider-agy-accounts').hidden`), false);
+    await page.evaluate(`document.querySelector('.air-provider-tab[data-protocol="all"]').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-provider-cards').hidden`), false);
+    assert.equal(await page.evaluate(`document.getElementById('air-provider-agy-accounts').hidden`), false);
     assert.ok(await page.waitFor(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription').textContent.includes('下次续费：')`));
     assert.ok(await page.waitFor(`document.querySelector('[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-subscription').textContent.includes('2030')`),
       '独立账号的订阅查询完成后显示续费日期');

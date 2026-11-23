@@ -824,8 +824,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +8 bilingual keys (quotaVendorAgy/quotaAgy*/quotaLoadingTitleAgy): align
     // the Antigravity (agy) quota bar & tooltip copy with all other quota bars.
     // 中英各 8 行 = +16 行；countLines 口径实测 10742/699121，按真实高水位抬一格。
-    maxLines: 10742,
-    maxBytes: 699121,
+    // +1 bilingual key (airProviderProtocolAgy): Antigravity (agy) tab alongside
+    // Anthropic Messages / OpenAI Responses in Provider panel. 中英各 1 行 = +2 行；
+    // countLines 口径实测 10744/699221。
+    maxLines: 10744,
+    maxBytes: 699221,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

@@ -2470,6 +2470,7 @@
   "airProviderPresetSourceGithub": "GitHub templates · {time}",
   "airProviderPresetSourceLocal": "Bundled templates · {count}",
   "airProviderPresetXfMaas": "iFlytek MaaS Coding",
+  "airProviderProtocolAgy": "Antigravity (agy)",
   "airProviderProtocolAll": "All routes",
   "airProviderQuota": "Quota · ",
   "airProviderQuotaStale": "Last quota · ",
