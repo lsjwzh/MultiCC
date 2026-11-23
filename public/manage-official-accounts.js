@@ -182,16 +182,17 @@
       const modeText = a.remote.fileMode === 'remote_mcp'
         ? tr('airOfficialAcctAgyRemoteModeMcp')
         : tr('airOfficialAcctAgyRemoteModeMutagen');
-      const loginState = a.login && a.login.state;
-      const authChip = loginState === 'pending'
-        ? chip(tr('airOfficialAcctAwaitingBrowser'), '#d29922')
-        : a.loggedIn
-          ? chip(tr('airOfficialAcctSignedIn'), '#58a6ff')
-            + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '')
-          : chip(tr('airOfficialAcctSignedOut'), '#f85149');
+      const hostTag = a.remote.hostAccountId
+        ? chip('Host · ' + (a.remote.hostAccountLabel || a.remote.hostAccountId.slice(0, 8)), '#58a6ff')
+        : '';
+      const hostEgressTag = a.remote.hostEgressProfile
+        ? chip('🌐 ' + a.remote.hostEgressProfile + ' (Host)', '#39c5cf')
+        : chip(tr('airOfficialAcctAgyHostEgressManaged'), '#8b949e');
       chips = chip(tr('airOfficialAcctAgyRemoteBadge'), '#a371f7')
+        + (hostTag ? ' ' + hostTag : '')
+        + ' ' + hostEgressTag
         + ' <span style="font-size:12px;color:var(--muted)">' + esc(a.remote.sshTarget || '') + '</span>'
-        + ' ' + authChip + ' ' + chip(modeText, '#58a6ff');
+        + ' ' + chip(modeText, '#58a6ff');
     } else if (a.loggedIn) {
       chips = chip(tr('airOfficialAcctSignedIn'), '#58a6ff')
         + (a.email ? ' <span style="font-size:12px;color:var(--muted)">' + esc(a.email) + '</span>' : '');
@@ -201,16 +202,15 @@
     } else {
       chips = chip(tr('airOfficialAcctSignedOut'), '#f85149');
     }
-    const egressChip = a.egressBinding && a.egressBinding.profileId
+    const egressChip = !isRemote && a.egressBinding && a.egressBinding.profileId
       ? ' ' + chip('🌐 ' + a.egressBinding.profileId, '#39c5cf')
       : '';
     const buttons = (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="agy" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
       + (isRemote
-        ? '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-remote-login" data-id="' + a.id + '">' + esc(tr(a.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin')) + '</button>'
-          + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-remote-sibling" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyRemoteAddSibling')) + '</button>'
-          + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-remote-test" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyRemoteTest')) + '</button>'
-        : '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-login" data-id="' + a.id + '">' + esc(tr(a.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin')) + '</button>')
-      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-egress" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyEditEgress')) + '</button>'
+        ? '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-remote-test" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyRemoteTest')) + '</button>'
+        : '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-remote-login" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyWebLogin')) + '</button>'
+          + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-login" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyTermLogin')) + '</button>'
+          + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-egress" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyEditEgress')) + '</button>')
       + '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="agy" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>';
     return accountRow('agy', a, chips + egressChip, '', buttons);
   }
@@ -609,7 +609,7 @@
         close();
         toast(tr('airOfficialAcctAgyCreated'));
         paint();
-        if (res && res.created && res.created.id) agyLogin(res.created.id);
+        if (res && res.created && res.created.id) agyStartRemoteLogin(res.created.id, res.created.label);
       } catch (err) {
         st.textContent = tr('airOfficialAcctFailed', { message: err.message }); st.className = 'status-text err';
       }
@@ -670,121 +670,179 @@
     const fieldStyle = 'width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:7px 10px;outline:none';
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    overlay.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:460px;max-width:94vw;display:flex;flex-direction:column;gap:8px">'
+    overlay.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:94vw;max-height:92vh;overflow:auto;display:flex;flex-direction:column;gap:8px">'
       + '<div style="font-size:14px;color:#c9d1d9;font-weight:600">' + esc(tr('airOfficialAcctAgyRemoteTitle')) + '</div>'
       + '<div style="font-size:12px;color:var(--faint);line-height:1.6">' + esc(tr('airOfficialAcctAgyRemoteDesc')) + '</div>'
+      + '<label style="font-size:11px;color:var(--faint)">' + esc(tr('airOfficialAcctAgyHostMachineLabel'))
+      + '<select data-k="hostMachine" style="' + fieldStyle + ';margin-top:4px"></select></label>'
+      + '<div data-k="hostMachineHint" style="font-size:11px;color:#d29922;line-height:1.5" hidden></div>'
+      + '<div data-k="hostAccountWrap" style="display:flex;flex-direction:column;gap:4px">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:6px">'
+      + '<span style="font-size:11px;color:var(--faint)">' + esc(tr('airOfficialAcctAgyHostAccountLabel')) + '</span>'
+      + '<button type="button" class="btn" data-act="reload-host" style="padding:2px 8px;font-size:11px">' + esc(tr('refresh')) + '</button>'
+      + '</div>'
+      + '<select data-k="hostAccount" style="' + fieldStyle + '"></select>'
+      + '<div data-k="hostAccountHint" style="font-size:11px;color:#d29922;line-height:1.5" hidden></div>'
+      + '</div>'
       + '<input data-k="label" type="text" maxlength="64" placeholder="' + esc(tr('airOfficialAcctLabelPlaceholder')) + '" style="' + fieldStyle + '">'
       + '<input data-k="sshTarget" type="text" placeholder="' + esc(tr('airOfficialAcctAgyRemoteSshLabel')) + '" style="' + fieldStyle + '">'
       + '<div style="display:flex;gap:8px">'
       + '<input data-k="sshPort" type="number" min="1" max="65535" placeholder="' + esc(tr('airOfficialAcctAgyRemotePortLabel')) + '" style="' + fieldStyle + ';flex:1">'
-      + '<input data-k="remoteAgyBin" type="text" placeholder="' + esc(tr('airOfficialAcctAgyRemoteBinLabel')) + '" style="' + fieldStyle + ';flex:1">'
+      + '<input data-k="sshIdentityFile" type="text" placeholder="' + esc(tr('airOfficialAcctAgyRemoteKeyLabel')) + '" style="' + fieldStyle + ';flex:1.4">'
       + '</div>'
-      + '<input data-k="sshIdentityFile" type="text" placeholder="' + esc(tr('airOfficialAcctAgyRemoteKeyLabel')) + '" style="' + fieldStyle + '">'
-      + '<input data-k="remoteHome" type="text" placeholder="' + esc(tr('airOfficialAcctAgyRemoteHomeLabel')) + '" style="' + fieldStyle + '">'
       + '<label style="font-size:11px;color:var(--faint)">' + esc(tr('airOfficialAcctAgyRemoteModeLabel'))
       + '<select data-k="fileMode" style="' + fieldStyle + ';margin-top:4px">'
       + '<option value="mutagen">' + esc(tr('airOfficialAcctAgyRemoteModeMutagen')) + '</option>'
       + '<option value="remote_mcp">' + esc(tr('airOfficialAcctAgyRemoteModeMcp')) + '</option>'
       + '</select></label>'
-      + '<label style="font-size:12px;color:#c9d1d9;display:flex;align-items:center;gap:6px;margin-top:4px">'
-      + '<input data-k="isolateHome" type="checkbox" checked>'
-      + '<span>' + esc(tr('airOfficialAcctAgyRemoteIsolateToggle')) + '</span></label>'
-      + egressBlockHtml()
+      + '<details style="font-size:11px;color:var(--faint);border-top:1px solid #30363d;padding-top:6px"><summary style="cursor:pointer">' + esc(tr('airOfficialAcctAgyHostAdvanced')) + '</summary>'
+      + '<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">'
+      + '<input data-k="manualHostAccountId" type="text" maxlength="16" placeholder="' + esc(tr('airOfficialAcctAgyHostAccountIdLabel')) + '" style="' + fieldStyle + '">'
+      + '<input data-k="remoteAgyBin" type="text" placeholder="' + esc(tr('airOfficialAcctAgyRemoteBinLabel')) + '" style="' + fieldStyle + '">'
+      + '<input data-k="remoteHome" type="text" placeholder="' + esc(tr('airOfficialAcctAgyRemoteHomeLabel')) + '" style="' + fieldStyle + '">'
+      + '</div></details>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">'
       + '<button class="btn" data-act="close">' + esc(tr('airOfficialAcctCancel')) + '</button>'
       + '<button class="btn btn-green" data-act="save">' + esc(tr('airOfficialAcctAgyRemoteSave')) + '</button>'
       + '</div>'
       + '<div data-k="status" class="status-text"></div></div>';
     document.body.appendChild(overlay);
-    const egressCtl = mountEgressSelector(overlay, '');
-    const close = () => { egressCtl.destroy(); overlay.remove(); };
-    const val = k => (overlay.querySelector('[data-k="' + k + '"]')?.value || '').trim();
+    const close = () => overlay.remove();
+    const q = k => overlay.querySelector('[data-k="' + k + '"]');
+    const val = k => (q(k)?.value || '').trim();
+    const machineSel = q('hostMachine');
+    const machineHint = q('hostMachineHint');
+    const accountSel = q('hostAccount');
+    const accountHint = q('hostAccountHint');
+    let hostAccounts = [];
+
+    const syncSelectedAccount = () => {
+      const picked = hostAccounts.find(a => a.id === accountSel.value);
+      if (picked && !val('label')) {
+        q('label').value = picked.label || picked.email || '';
+      }
+    };
+
+    const prefillSshForMachine = (machineId) => {
+      if (!machineId || val('sshTarget')) return;
+      const prev = (state.agy || []).find(a => a.kind === 'remote' && a.remote && a.remote.hostMachineId === machineId);
+      if (!prev) return;
+      if (prev.remote.sshTarget) q('sshTarget').value = prev.remote.sshTarget;
+      if (prev.remote.sshPort && !val('sshPort')) q('sshPort').value = String(prev.remote.sshPort);
+      if (prev.remote.sshIdentityFile && !val('sshIdentityFile')) q('sshIdentityFile').value = prev.remote.sshIdentityFile;
+    };
+
+    const loadHostAccounts = async (machineId) => {
+      hostAccounts = [];
+      accountSel.innerHTML = '';
+      if (!machineId) {
+        accountSel.disabled = true;
+        accountHint.hidden = true;
+        return;
+      }
+      accountSel.disabled = true;
+      accountHint.hidden = false;
+      accountHint.textContent = tr('airOfficialAcctAgyHostAccountLoading');
+      try {
+        const data = await api().json('/api/machines/' + encodeURIComponent(machineId) + '/proxy/api/agy/accounts');
+        hostAccounts = (Array.isArray(data && data.accounts) ? data.accounts : [])
+          .filter(a => a && a.kind !== 'remote' && /^[a-f0-9]{16}$/.test(String(a.id || '')));
+        accountSel.innerHTML = '';
+        if (!hostAccounts.length) {
+          accountHint.hidden = false;
+          accountHint.textContent = tr('airOfficialAcctAgyHostAccountEmpty');
+          return;
+        }
+        for (const a of hostAccounts) {
+          const opt = document.createElement('option');
+          opt.value = a.id;
+          const parts = [
+            a.label || a.id.slice(0, 8),
+            a.email || '',
+            a.loggedIn ? tr('airOfficialAcctSignedIn') : tr('airOfficialAcctSignedOut'),
+            a.egressBinding && a.egressBinding.profileId ? ('🌐 ' + a.egressBinding.profileId) : '',
+          ].filter(Boolean);
+          opt.textContent = parts.join(' · ');
+          accountSel.appendChild(opt);
+        }
+        accountSel.disabled = false;
+        accountHint.hidden = true;
+        syncSelectedAccount();
+      } catch (err) {
+        accountHint.hidden = false;
+        accountHint.textContent = tr('airOfficialAcctFailed', { message: err.message });
+      }
+    };
+
+    const loadMachines = async () => {
+      machineSel.innerHTML = '';
+      try {
+        const data = await api().json('/api/machines');
+        const peers = Array.isArray(data && data.machines) ? data.machines : [];
+        if (!peers.length) {
+          machineSel.disabled = true;
+          machineHint.hidden = false;
+          machineHint.textContent = tr('airOfficialAcctAgyHostMachineNone');
+          accountSel.disabled = true;
+          return;
+        }
+        machineHint.hidden = true;
+        for (const m of peers) {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = m.name + (m.origin ? ' (' + m.origin + ')' : '');
+          machineSel.appendChild(opt);
+        }
+        machineSel.disabled = false;
+        prefillSshForMachine(machineSel.value);
+        await loadHostAccounts(machineSel.value);
+      } catch (err) {
+        machineSel.disabled = true;
+        machineHint.hidden = false;
+        machineHint.textContent = tr('airOfficialAcctFailed', { message: err.message });
+      }
+    };
+
+    machineSel.onchange = () => {
+      prefillSshForMachine(machineSel.value);
+      void loadHostAccounts(machineSel.value);
+    };
+    accountSel.onchange = syncSelectedAccount;
+    overlay.querySelector('[data-act="reload-host"]').onclick = () => void loadHostAccounts(machineSel.value);
     overlay.onclick = e => { if (e.target === overlay) close(); };
     overlay.querySelector('[data-act="close"]').onclick = close;
     overlay.querySelector('[data-act="save"]').onclick = async () => {
-      const st = overlay.querySelector('[data-k="status"]');
+      const st = q('status');
       st.textContent = tr('airOfficialAcctCreating'); st.className = 'status-text';
       const portRaw = val('sshPort');
-      const isolateHome = !!overlay.querySelector('[data-k="isolateHome"]')?.checked;
-      const egressBinding = egressCtl.value();
+      const picked = hostAccounts.find(a => a.id === accountSel.value);
+      const hostAccountId = val('manualHostAccountId') || (picked && picked.id) || '';
       const remote = {
         sshTarget: val('sshTarget'),
         ...(portRaw ? { sshPort: Number(portRaw) } : {}),
         ...(val('sshIdentityFile') ? { sshIdentityFile: val('sshIdentityFile') } : {}),
         ...(val('remoteHome') ? { remoteHome: val('remoteHome') } : {}),
         ...(val('remoteAgyBin') ? { remoteAgyBin: val('remoteAgyBin') } : {}),
+        ...(machineSel.value && hostAccountId ? { hostMachineId: machineSel.value } : {}),
+        ...(hostAccountId ? { hostAccountId } : {}),
+        ...(picked && picked.label ? { hostAccountLabel: picked.label } : {}),
+        ...(picked && picked.egressBinding && picked.egressBinding.profileId ? { hostEgressProfile: picked.egressBinding.profileId } : {}),
         fileMode: val('fileMode') || 'mutagen',
-        isolateHome,
       };
       try {
         const res = await api().json('/api/agy/accounts/remote', {
-          method: 'POST', json: { label: val('label'), remote, egressBinding },
+          method: 'POST', json: { label: val('label'), remote },
         });
         applyAgyState(res);
         close();
         toast(tr('airOfficialAcctAgyRemoteCreated'));
         paint();
         refreshProviders();
-        if (isolateHome && res && res.created && res.created.id) {
-          agyStartRemoteLogin(res.created.id, res.created.label);
-        }
       } catch (err) {
         st.textContent = tr('airOfficialAcctFailed', { message: err.message }); st.className = 'status-text err';
       }
     };
-  }
-
-  function agyAddSiblingOnVps(sourceId) {
-    const source = state.agy.find(a => a.id === sourceId);
-    if (!source || !source.remote) return;
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    overlay.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:92vw;display:flex;flex-direction:column;gap:8px">'
-      + '<div style="font-size:14px;color:#c9d1d9;font-weight:600">' + esc(tr('airOfficialAcctAgyRemoteAddSibling')) + ' · ' + esc(source.remote.sshTarget || '') + '</div>'
-      + '<input data-k="label" type="text" maxlength="64" placeholder="' + esc(tr('airOfficialAcctAgyRemoteSiblingPrompt')) + '" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none">'
-      + egressBlockHtml()
-      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">'
-      + '<button class="btn" data-act="close">' + esc(tr('airOfficialAcctCancel')) + '</button>'
-      + '<button class="btn btn-green" data-act="ok">' + esc(tr('airOfficialAcctCreateAndLogin')) + '</button>'
-      + '</div>'
-      + '<div data-k="status" class="status-text"></div></div>';
-    document.body.appendChild(overlay);
-    const egressCtl = mountEgressSelector(overlay, '');
-    const close = () => { egressCtl.destroy(); overlay.remove(); };
-    overlay.onclick = e => { if (e.target === overlay) close(); };
-    overlay.querySelector('[data-act="close"]').onclick = close;
-    overlay.querySelector('[data-act="ok"]').onclick = async () => {
-      const st = overlay.querySelector('[data-k="status"]');
-      st.textContent = tr('airOfficialAcctCreating'); st.className = 'status-text';
-      const remote = {
-        sshTarget: source.remote.sshTarget,
-        ...(source.remote.sshPort ? { sshPort: source.remote.sshPort } : {}),
-        ...(source.remote.sshIdentityFile ? { sshIdentityFile: source.remote.sshIdentityFile } : {}),
-        ...(source.remote.remoteAgyBin ? { remoteAgyBin: source.remote.remoteAgyBin } : {}),
-        ...(source.remote.remoteWorkspaceBase ? { remoteWorkspaceBase: source.remote.remoteWorkspaceBase } : {}),
-        fileMode: source.remote.fileMode || 'mutagen',
-        isolateHome: true,
-      };
-      try {
-        const res = await api().json('/api/agy/accounts/remote', {
-          method: 'POST',
-          json: {
-            label: overlay.querySelector('[data-k="label"]').value.trim(),
-            remote,
-            egressBinding: egressCtl.value(),
-          },
-        });
-        applyAgyState(res);
-        close();
-        paint();
-        refreshProviders();
-        if (res && res.created && res.created.id) {
-          agyStartRemoteLogin(res.created.id, res.created.label);
-        }
-      } catch (err) {
-        st.textContent = tr('airOfficialAcctFailed', { message: err.message }); st.className = 'status-text err';
-      }
-    };
+    void loadMachines();
   }
 
   async function agyStartRemoteLogin(id, label) {
@@ -1172,7 +1230,6 @@
     else if (btn.dataset.act === 'agy-import') agyImport();
     else if (btn.dataset.act === 'agy-remote-create') agyOpenRemoteModal();
     else if (btn.dataset.act === 'agy-remote-login') agyStartRemoteLogin(btn.dataset.id);
-    else if (btn.dataset.act === 'agy-remote-sibling') agyAddSiblingOnVps(btn.dataset.id);
     else if (btn.dataset.act === 'agy-egress') agyEditEgress(btn.dataset.id);
     else if (btn.dataset.act === 'agy-remote-test') agyTestRemote(btn.dataset.id);
     else if (btn.dataset.act === 'agy-mutagen-install') agyInstallMutagen();

@@ -30,7 +30,6 @@ function envFromResolvedJson(raw) {
   if (parsed && parsed.kind === 'remote' && parsed.remote) {
     return {
       MULTICC_AGY_REMOTE_ACCOUNT_JSON: raw,
-      ...(parsed.egressBinding ? { MULTICC_PLUGINS_DIR: PLUGINS_DIR } : {}),
     };
   }
   if (parsed && parsed.kind === 'local' && parsed.home) {

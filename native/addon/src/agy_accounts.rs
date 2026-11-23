@@ -60,17 +60,11 @@ pub fn agy_resolve_account_target(
             "home": dir.to_string_lossy(),
             "egressBinding": egress_binding.map(|b| b.to_value()).unwrap_or(serde_json::Value::Null),
         }),
-        Some(ResolvedAgyAccount::Remote {
-            id,
-            label,
-            remote,
-            egress_binding,
-        }) => json!({
+        Some(ResolvedAgyAccount::Remote { id, label, remote }) => json!({
             "kind": store::KIND_REMOTE,
             "id": id,
             "label": label,
             "remote": remote,
-            "egressBinding": egress_binding.map(|b| b.to_value()).unwrap_or(serde_json::Value::Null),
         }),
     };
     Ok(Some(value.to_string()))

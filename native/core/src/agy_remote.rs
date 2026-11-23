@@ -62,6 +62,20 @@ pub struct RemoteAgyTarget {
     pub file_mode: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_ignores: Vec<String>,
+    /// 标准 Host/Client 分离模式：关联的远端 Host（MultiCC「多电脑」ID，供 UI 展示）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_machine_id: Option<String>,
+    /// 标准 Host/Client 分离模式：远端 Host（VPS 上的 MultiCC）本地 `agy` 账号 16hex ID。
+    /// 设置后，Client 侧绝不管理出口 IP；执行时由 VPS 上的 `multicc-gateway agy-host-exec`
+    /// 直接读取 Host 账号 HOME 并实时解析 Host 绑定的 `chrome-proxy-launcher` 出口（fail-closed）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_account_id: Option<String>,
+    /// 远端 Host 账号显示名称快照（仅用于 Client UI 展示）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_account_label: Option<String>,
+    /// 远端 Host 账号绑定的出口身份名快照（仅用于 Client UI 只读展示，运行期以 Host 实时配置为准）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_egress_profile: Option<String>,
 }
 
 fn default_file_mode() -> String {
@@ -137,6 +151,15 @@ pub fn parse_remote_target(raw: &Value) -> Result<RemoteAgyTarget, String> {
     let remote_agy_bin = clean_opt("remoteAgyBin", false)?;
     let remote_home = clean_opt("remoteHome", true)?;
     let remote_workspace_base = clean_opt("remoteWorkspaceBase", false)?;
+    let host_machine_id = clean_opt("hostMachineId", false)?;
+    let host_account_id = clean_opt("hostAccountId", false)?;
+    if let Some(ref hid) = host_account_id {
+        if !crate::account_subscription::valid_account(hid) {
+            return Err("hostAccountId 必须是 16 位十六进制 Host 账号 ID".to_string());
+        }
+    }
+    let host_account_label = clean_opt("hostAccountLabel", true)?;
+    let host_egress_profile = clean_opt("hostEgressProfile", true)?;
 
     let file_mode = match obj
         .get("fileMode")
@@ -172,6 +195,10 @@ pub fn parse_remote_target(raw: &Value) -> Result<RemoteAgyTarget, String> {
         remote_workspace_base,
         file_mode,
         extra_ignores,
+        host_machine_id,
+        host_account_id,
+        host_account_label,
+        host_egress_profile,
     })
 }
 
@@ -381,6 +408,29 @@ fi
     )
 }
 
+/// 仅在远端登录用户 `$HOME/.multicc-remote/bin/host-exec-mcp.cjs` 幂等部署无密钥 MCP 脚本
+/// （用于标准 Host/Client 分离模式：由 Host 侧 `multicc-gateway agy-host-exec` 负责把该脚本
+/// 注册进对应 Host 账号隔离的 `<account_home>/.gemini/config/mcp_config.json`）。
+pub fn build_remote_host_mcp_bootstrap_script() -> String {
+    let script_b64 = base64::engine::general_purpose::STANDARD
+        .encode(crate::host_exec::render_remote_mcp_script().as_bytes());
+    format!(
+        r#"set -e
+mkdir -p "$HOME/.multicc-remote/bin"
+SCRIPT="$HOME/.multicc-remote/bin/host-exec-mcp.cjs"
+printf '%s' {b64} | base64 -d > "$SCRIPT.tmp"
+chmod 700 "$SCRIPT.tmp"
+mv -f "$SCRIPT.tmp" "$SCRIPT"
+NODE_BIN="$(command -v node || true)"
+if [ -z "$NODE_BIN" ]; then
+  echo "MULTICC_REMOTE_BOOTSTRAP_ERROR: node is required on the remote VPS for multicc_host_exec MCP" >&2
+  exit 12
+fi
+"#,
+        b64 = posix_shell_quote(&script_b64),
+    )
+}
+
 /// 构造在远端 VPS 上幂等部署 `host-exec-mcp.cjs` 并注册进 `$HOME/.gemini/config/mcp_config.json` 的 shell 脚本。
 pub fn build_remote_bootstrap_script(remote_home: Option<&str>) -> String {
     let script_b64 = base64::engine::general_purpose::STANDARD
@@ -425,13 +475,15 @@ if (JSON.stringify(root.mcpServers.multicc_host_exec) !== JSON.stringify(desired
 pub struct RemoteExecSpec<'a> {
     pub remote_agy_bin: &'a str,
     pub remote_home: Option<&'a str>,
+    /// 标准 Host/Client 分离模式：VPS（Host）上的 MultiCC 本地账号 16hex ID。
+    /// 设置后直接委托 Host 的 `multicc-gateway agy-host-exec` 读取 Host 账号 HOME 与出口绑定。
+    pub host_account_id: Option<&'a str>,
     pub remote_workspace_path: &'a str,
     pub local_root: &'a str,
     pub local_os: &'a str,
     pub file_mode: &'a str,
     pub host_exec_url: &'a str,
     pub host_exec_token: &'a str,
-    pub remote_proxy_url: Option<&'a str>,
     pub agy_args: &'a [String],
     pub prompt: &'a str,
 }
@@ -502,10 +554,59 @@ pub fn build_remote_agy_exec_command(spec: &RemoteExecSpec<'_>) -> String {
 
     let quoted_args: Vec<String> = final_args.iter().map(|a| posix_shell_quote(a)).collect();
 
+    if let Some(host_account_id) = spec
+        .host_account_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // 标准 Host/Client 分离模式：由 VPS（Host）侧 MultiCC 的 `agy-host-exec` 读取
+        // Host 账号 HOME 与 Host 绑定的 `chrome-proxy-launcher` 出口（零绕路、多机同 IP、fail-closed）。
+        let host_id_q = posix_shell_quote(host_account_id);
+        let agy_q = posix_shell_quote(spec.remote_agy_bin);
+        let env_joined = env_parts.join(" ");
+        let args_joined = quoted_args.join(" ");
+        return format!(
+            r#"set -e
+ORIG_HOME="$HOME"
+HOST_GW="${{MULTICC_HOST_GATEWAY_BIN:-}}"
+HOST_PLUGINS="${{MULTICC_HOST_PLUGINS_DIR:-}}"
+if [ -z "$HOST_GW" ]; then
+  MANIFEST="$ORIG_HOME/.multicc/host-runtime.json"
+  if [ ! -f "$MANIFEST" ]; then
+    echo "未检测到 VPS（Host）上的 MultiCC 运行时信息（~/.multicc/host-runtime.json），请先在 VPS 上启动 MultiCC" >&2
+    exit 14
+  fi
+  NODE_BIN="$(command -v node || true)"
+  if [ -z "$NODE_BIN" ]; then
+    echo "VPS 缺少 node，无法读取 MultiCC Host 运行时信息" >&2
+    exit 14
+  fi
+  HOST_GW="$("$NODE_BIN" -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.gatewayBin||""));' "$MANIFEST")"
+  if [ -z "$HOST_PLUGINS" ]; then
+    HOST_PLUGINS="$("$NODE_BIN" -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.pluginsDir||""));' "$MANIFEST")"
+  fi
+fi
+if [ -z "$HOST_GW" ] || [ ! -x "$HOST_GW" ]; then
+  echo "VPS（Host）上的 multicc-gateway 不可用（$HOST_GW），请重启 VPS 上的 MultiCC" >&2
+  exit 14
+fi
+mkdir -p {ws} && cd {ws}
+if [ -n "$HOST_PLUGINS" ]; then
+  exec env {env_joined} "$HOST_GW" agy-host-exec --account-id {host_id_q} --plugins-dir "$HOST_PLUGINS" --host-exec-mcp "$ORIG_HOME/.multicc-remote/bin/host-exec-mcp.cjs" --bin {agy_q} -- {args_joined}
+else
+  exec env {env_joined} "$HOST_GW" agy-host-exec --account-id {host_id_q} --host-exec-mcp "$ORIG_HOME/.multicc-remote/bin/host-exec-mcp.cjs" --bin {agy_q} -- {args_joined}
+fi"#,
+            ws = ws_expr,
+            env_joined = env_joined,
+            host_id_q = host_id_q,
+            agy_q = agy_q,
+            args_joined = args_joined,
+        );
+    }
+
     format!(
-        "set -e; {}{} mkdir -p {ws} && cd {ws} && exec env {} {} {}",
+        "set -e; {} mkdir -p {ws} && cd {ws} && exec env {} {} {}",
         render_remote_home_export(spec.remote_home),
-        crate::egress_plugin::render_remote_proxy_exports(spec.remote_proxy_url),
         env_parts.join(" "),
         posix_shell_quote(spec.remote_agy_bin),
         quoted_args.join(" "),
@@ -553,13 +654,13 @@ mod tests {
         let cmd = build_remote_agy_exec_command(&RemoteExecSpec {
             remote_agy_bin: "agy",
             remote_home: Some("/home/ubuntu/.agy-acct-1"),
+            host_account_id: None,
             remote_workspace_path: ".multicc-remote/workspaces/mac-a/1234567890ab",
             local_root: "/Users/dev/proj",
             local_os: "darwin",
             file_mode: FILE_MODE_MUTAGEN,
             host_exec_url: "http://127.0.0.1:41234",
             host_exec_token: "tok_secret_abc",
-            remote_proxy_url: Some("http://127.0.0.1:45001"),
             agy_args: &[
                 "--output-format".into(),
                 "stream-json".into(),
@@ -572,11 +673,28 @@ mod tests {
         });
         assert!(cmd.contains("MULTICC_HOST_EXEC_URL='http://127.0.0.1:41234'"));
         assert!(cmd.contains("MULTICC_HOST_EXEC_TOKEN='tok_secret_abc'"));
-        assert!(cmd.contains("HTTPS_PROXY='http://127.0.0.1:45001'"));
-        assert!(cmd.contains("NO_PROXY='127.0.0.1,localhost,::1'"));
+        assert!(!cmd.contains("HTTPS_PROXY="));
         assert!(cmd.contains("command(*)"));
         assert!(cmd.contains("mcp_multicc_host_exec_host_run_command"));
         assert!(cmd.contains("run tests"));
+
+        let host_cmd = build_remote_agy_exec_command(&RemoteExecSpec {
+            remote_agy_bin: "agy",
+            remote_home: None,
+            host_account_id: Some("0123456789abcdef"),
+            remote_workspace_path: ".multicc-remote/workspaces/mac-a/1234567890ab",
+            local_root: "/Users/dev/proj",
+            local_os: "darwin",
+            file_mode: FILE_MODE_MUTAGEN,
+            host_exec_url: "http://127.0.0.1:41234",
+            host_exec_token: "tok_secret_abc",
+            agy_args: &["-p".into()],
+            prompt: "hello host",
+        });
+        assert!(host_cmd.contains("host-runtime.json"));
+        assert!(host_cmd.contains("agy-host-exec --account-id '0123456789abcdef'"));
+        assert!(host_cmd.contains("--host-exec-mcp"));
+        assert!(!host_cmd.contains("HTTPS_PROXY="));
     }
 
     #[test]

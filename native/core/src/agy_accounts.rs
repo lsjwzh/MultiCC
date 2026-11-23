@@ -50,7 +50,6 @@ pub enum ResolvedAgyAccount {
         id: String,
         label: String,
         remote: RemoteAgyTarget,
-        egress_binding: Option<EgressBinding>,
     },
 }
 
@@ -263,12 +262,7 @@ pub fn resolve_account(
     if let Some(meta_val) = meta.as_ref() {
         if meta_val.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
             return match parse_remote_from_meta(&id, meta_val) {
-                Some((label, remote)) => Ok(Some(ResolvedAgyAccount::Remote {
-                    id,
-                    label,
-                    remote,
-                    egress_binding,
-                })),
+                Some((label, remote)) => Ok(Some(ResolvedAgyAccount::Remote { id, label, remote })),
                 None if explicit => Err("invalid remote account configuration".to_owned()),
                 None => Ok(None),
             };
@@ -396,7 +390,7 @@ pub fn list_accounts(home: &Path) -> Vec<Value> {
                     "createdAt": meta.get("createdAt").cloned().unwrap_or(Value::Null),
                     "source": meta.get("source").cloned().unwrap_or_else(|| json!("remote")),
                     "active": active.as_deref() == Some(id),
-                    "egressBinding": egress_val,
+                    "egressBinding": Value::Null,
                     "remote": remote,
                 }));
             }
@@ -474,37 +468,41 @@ pub fn create_account_with_egress(
 /// 若 `raw_remote.isolateHome == true` 且未手填 `remoteHome`，自动分配
 /// `.multicc-remote/agy-accounts/<id>` 作为该账号在 VPS 上的独立 `$HOME`，
 /// 并把初始 `remoteLoggedIn` 置为 `false` 供网页 OAuth 授权登录。
+/// 创建远端 Host / VPS `agy` 账号引用。
+///
+/// 标准 Host/Client 分离约定：出口 IP 由远端 Host（VPS 上的 MultiCC）账号自己绑定与解析，
+/// Client 侧绝不持久化或覆盖远端账号的 `egressBinding`。
 pub fn create_remote_account(
     home: &Path,
     label: &str,
     raw_remote: &Value,
 ) -> Result<Value, String> {
-    create_remote_account_with_egress(home, label, raw_remote, raw_remote.get("egressBinding"))
-}
-
-pub fn create_remote_account_with_egress(
-    home: &Path,
-    label: &str,
-    raw_remote: &Value,
-    raw_egress: Option<&Value>,
-) -> Result<Value, String> {
     let mut remote = parse_remote_target(raw_remote)?;
-    let egress = parse_egress_binding(raw_egress)?;
-    let isolate_home = raw_remote
-        .get("isolateHome")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let isolate_home = remote.host_account_id.is_none()
+        && raw_remote
+            .get("isolateHome")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     let id = random_id()?;
     if isolate_home && remote.remote_home.is_none() {
         remote.remote_home = Some(format!(".multicc-remote/agy-accounts/{id}"));
     }
     let meta = meta_file(home, &id).ok_or("invalid account id")?;
     let effective_label = if label.trim().is_empty() {
-        clean_label(&format!("{DEFAULT_REMOTE_LABEL} ({})", remote.ssh_target))
+        if let Some(host_label) = remote
+            .host_account_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            clean_label(host_label)
+        } else {
+            clean_label(&format!("{DEFAULT_REMOTE_LABEL} ({})", remote.ssh_target))
+        }
     } else {
         clean_label(label)
     };
-    let mut record = json!({
+    let record = json!({
         "id": id,
         "kind": KIND_REMOTE,
         "label": effective_label,
@@ -514,14 +512,12 @@ pub fn create_remote_account_with_egress(
         "remoteEmail": Value::Null,
         "remote": remote,
     });
-    if let Some(binding) = egress {
-        record["egressBinding"] = binding.to_value();
-    }
     state_file::write_json_atomic(&meta, &record).map_err(|err| err.to_string())?;
     Ok(record)
 }
 
-/// 更新任意反重力账号（本机或远端 VPS）绑定的专用出口身份；传入 `None`/`null` 清除绑定。
+/// 更新本机（Host）反重力账号绑定的专用出口身份；传入 `None`/`null` 清除绑定。
+/// 远端引用账号拒绝在 Client 侧修改出口，保证出口归属严格在 Host 侧。
 pub fn update_account_egress(
     home: &Path,
     id: &str,
@@ -536,6 +532,12 @@ pub fn update_account_egress(
     let mut existing = provider_store::read(&meta_path)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "unknown account".to_owned())?;
+    if existing.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
+        return Err(
+            "远程 Host 账号的出口 IP 由远端 Host（VPS 的 MultiCC）管理，请在 Host 端修改"
+                .to_owned(),
+        );
+    }
     if let Some(obj) = existing.as_object_mut() {
         match egress {
             Some(binding) => {

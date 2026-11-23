@@ -280,13 +280,12 @@ fn remote_vps_account_crud_resolution_and_activation_work() {
     // Remote accounts do not create a local `.home` directory.
     assert!(!account_home(&home, &id).unwrap().exists());
 
-    // Explicit resolution returns ResolvedAgyAccount::Remote.
+    // Explicit resolution returns ResolvedAgyAccount::Remote (no client-side egressBinding).
     match resolve_account(&home, Some(&id)).unwrap().unwrap() {
         ResolvedAgyAccount::Remote {
             id: resolved_id,
             label,
             remote,
-            egress_binding: None,
         } => {
             assert_eq!(resolved_id, id);
             assert_eq!(label, "新加坡 VPS");
@@ -296,6 +295,14 @@ fn remote_vps_account_crud_resolution_and_activation_work() {
         }
         other => panic!("expected Remote, got {other:?}"),
     }
+
+    // Remote accounts reject client-side egress binding updates (egress belongs to Host).
+    assert!(update_account_egress(
+        &home,
+        &id,
+        Some(&json!({ "pluginId": "chrome-proxy-launcher", "profileId": "jp-1" }))
+    )
+    .is_err());
 
     // Can be activated globally and resolved via None.
     set_active(&home, Some(&id)).unwrap();
