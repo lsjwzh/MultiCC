@@ -246,7 +246,7 @@ function createCodexUsageHost(deps = {}) {
       usage: evt.usage || {},
       history: deps.loadHistory(sessionName),
       cliSessionId: persisted.cliSessionId,
-      perTurn: persisted.cli === 'codex-exp',
+      perTurn: persisted.cli === 'codex-exp' || persisted.cli === 'agy',
     });
     const usage = normalized.usage;
     if (normalized.code === 'regression' && logger && typeof logger.warn === 'function') {

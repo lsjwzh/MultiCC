@@ -2,6 +2,8 @@
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
+const { getNative } = require('../native/runtime');
 
 const ROUTER_ENV_KEYS = [
   'MULTICC_SESSION_ID',
@@ -140,6 +142,15 @@ function applyRouterMcpEnv(env, cli, node, script, options = {}) {
         };
         fs.writeFileSync(mcpPath, JSON.stringify(existing, null, 2), 'utf8');
       }
+    } catch (_) { /* best effort — MCP injection failure should not crash the turn */ }
+  }
+  if (cli === 'agy') {
+    // Antigravity (`agy -p --output-format stream-json`) reads global stdio MCP
+    // entries from `$HOME/.gemini/config/mcp_config.json` and forwards parent
+    // `MULTICC_*` env vars to the MCP child, so no per-turn secret is written.
+    try {
+      const home = typeof env.HOME === 'string' && env.HOME.trim() ? env.HOME.trim() : os.homedir();
+      if (home) getNative().agyEnsureRouterMcp(home, String(node), String(script));
     } catch (_) { /* best effort — MCP injection failure should not crash the turn */ }
   }
   return env;

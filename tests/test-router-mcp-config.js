@@ -119,3 +119,24 @@ test('ZCode workspace config is skipped without cwd or router credentials', () =
   }, 'zcode', '/opt/node', '/opt/router.js', { cwd: malformed });
   assert.equal(fs.readFileSync(configPath, 'utf8'), '{not json');
 });
+
+test('Antigravity MCP config merges multicc_router into HOME without persisting secrets', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-agy-mcp-'));
+  const cfgPath = path.join(home, '.gemini', 'config', 'mcp_config.json');
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  fs.writeFileSync(cfgPath, JSON.stringify({
+    mcpServers: { user_tool: { command: 'uvx', args: ['mcp-server'] } },
+  }), 'utf8');
+  const env = {
+    HOME: home,
+    MULTICC_SESSION_ID: 'sess-agy',
+    MULTICC_ROUTER_CAPABILITY: 'secret-token-must-not-be-written',
+  };
+  applyRouterMcpEnv(env, 'agy', '/opt/node', '/opt/router.js');
+  const raw = fs.readFileSync(cfgPath, 'utf8');
+  assert.ok(!raw.includes('secret-token-must-not-be-written'), 'per-turn capability token must not be written to disk');
+  const parsed = JSON.parse(raw);
+  assert.deepEqual(parsed.mcpServers.user_tool, { command: 'uvx', args: ['mcp-server'] });
+  assert.deepEqual(parsed.mcpServers.multicc_router, { command: '/opt/node', args: ['/opt/router.js'] });
+  fs.rmSync(home, { recursive: true, force: true });
+});

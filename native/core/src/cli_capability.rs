@@ -108,7 +108,7 @@ pub const CAPABILITIES: &[(&str, Capability)] = &[
         cap("command-code-json", "per-turn", "process"),
     ),
     ("grok", cap("acp", "per-turn", "process")),
-    ("agy", cap("acp", "per-turn", "process")),
+    ("agy", cap("agy-stream-json", "per-turn", "process")),
 ];
 
 /// Which upstream API dialect a CLI's protocol talks. Deliberately not the
@@ -129,7 +129,7 @@ const PROTOCOL_FAMILIES: &[(&str, ProtocolFamily)] = &[
     ("opencode", ProtocolFamily::Acp),
     ("gemini", ProtocolFamily::Acp),
     ("grok", ProtocolFamily::Acp),
-    ("agy", ProtocolFamily::Acp),
+    ("agy", ProtocolFamily::Unknown),
     ("commandcode", ProtocolFamily::Unknown),
     ("pi", ProtocolFamily::Unknown),
 ];
@@ -441,7 +441,7 @@ pub const CLIS: &[Family] = &[
         providerless: true,
         update: Some(Update { package: None, command: None, manual: Some("请安装并登录官方 Antigravity CLI（agy）") }),
         lanes: Some(&[
-            ("chat", &[Lane { id: "agy", engine: Some("agy acp"), ..LANE }]),
+            ("chat", &[Lane { id: "agy", engine: Some("agy --output-format stream-json"), ..LANE }]),
             ("terminal", &[Lane { id: "agy", ..LANE }]),
         ]),
     },

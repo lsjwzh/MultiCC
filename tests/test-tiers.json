@@ -1059,6 +1059,11 @@
       ]
     },
     {
+      "path": "tests/test-agy-adapter.js",
+      "tier": "flow",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-agy-models.js",
       "tier": "flow",
       "lane": "deterministic"

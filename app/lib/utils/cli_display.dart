@@ -249,7 +249,7 @@ const Map<String, CliFamily> kCliFamilies = <String, CliFamily>{
   'agy': CliFamily('Antigravity', AppColors.agy, mark: 'A', providerless: true,
       update: CliUpdate(manual: '请安装并登录官方 Antigravity CLI（agy）'),
       lanes: <String, List<CliLane>>{
-        'chat': <CliLane>[CliLane('agy', engine: 'agy acp')],
+        'chat': <CliLane>[CliLane('agy', engine: 'agy --output-format stream-json')],
         'terminal': <CliLane>[CliLane('agy')],
       }),
   'grok': CliFamily('Grok', AppColors.grok, mark: 'R',

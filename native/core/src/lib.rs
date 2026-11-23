@@ -5,6 +5,7 @@ pub mod acp_session;
 pub mod acp_transport;
 pub mod active_turns;
 pub mod agy_accounts;
+pub mod agy_stream;
 pub mod api_error_policy;
 pub mod auto_provider_config;
 pub mod auto_provider_handoff;
