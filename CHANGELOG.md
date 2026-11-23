@@ -4,6 +4,20 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
+## v2.22.0 - Remote anti-gravity accounts and more of the runtime in Rust (2026-11-23)
+
+- Run anti-gravity (agy) accounts on a remote VPS. An account can now live on another machine: the gateway keeps a host-exec bridge to it, installs and manages Mutagen on the machine for file sync, and starts the agy CLI there while the chat, tools and files stay on this host. Accounts can also be added with a browser OAuth login, so several Google identities can sit side by side. The account list in Air and the control center shows where each account runs and lets you add, log in and pin one.
+
+- Bind an egress to every agy account. A local or remote agy account can be tied to a chrome-proxy-launcher egress, so its traffic leaves through the line you chose instead of the machine default. The binding is stored with the account, applied when the CLI is spawned, and shown next to the account.
+
+- Add an edit action to each row of the secrets panel. Edit prefills the name and description, leaves the value empty so a stored secret is never read back into the page, and explains that saving overwrites the same name.
+
+- Fold live transcript events in the app. Streamed transcript updates are now merged into one folded view with a unit test, and agy usage is shown with the other CLI families. The app version moves to 2.45.0 (build 198) so it can replace the previous stable build.
+
+- Move more of the task board to Rust. The queue event decision chain (run-state mapping, freeze and reconcile branches, completed-turn projection), the transcript projections (stable task id, canonical messages and body) and the legacy import projections now live in the native core behind adapters. Task dispatch, search tokenization and the terminal turn contracts moved too, and the turn-ledger modules they replaced were deleted. Every move keeps a frozen copy of the old behaviour and a differential check against it, so the results stay identical.
+
+- Keep the release gates honest. The source line budget ratchet was re-recorded for the new modules, the agy adapter and remote bridge suites were classified in the test tiers, and the task-board auto suite now counts as core so it runs in the exact core manifest.
+
 ## v2.21.3 - Native session runtime and multi-account routing (2026-11-23)
 
 - Give each anti-gravity (agy) account its own HOME. agy keeps its whole login inside `$HOME/.gemini` and honours `HOME`, so an account is simply a separate home directory under `~/.multicc/official-accounts/agy/`, with `active.json` naming the pinned one. The layout and validation live in Rust (`agyAccountHome`, exposed as the `agyAccountHome` native binding), and Node reads the pinned home once, at spawn, instead of parsing the store itself. The account layout is the shared contract with the agy routes and the gateway, which read the same paths with no FFI in between. Account ids are checked as 16 hex characters, a missing or malformed account falls back to the real `HOME` instead of failing the launch, and login status reports only whether a usable credential is present, never the token.
