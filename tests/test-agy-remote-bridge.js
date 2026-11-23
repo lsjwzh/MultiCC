@@ -405,3 +405,127 @@ console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'conv-m
   assert.match(log, /MANAGED:version/);
   assert.match(log, /MANAGED:sync flush/);
 });
+
+test('agy-remote-bridge tunnels loopback chrome-proxy-launcher egress over SSH -R and fails closed when unavailable', {
+  skip: process.platform === 'win32',
+}, () => {
+  const work = mkTempDir('egress-remote');
+  const sshLog = path.join(work, 'ssh.log');
+  const fakeSsh = path.join(work, 'bin', 'ssh');
+  const fakeAgy = path.join(work, 'bin', 'fake-agy');
+
+  writeExecutable(fakeSsh, `#!/bin/sh
+echo "$*" >> ${JSON.stringify(sshLog)}
+exec /bin/sh -s
+`);
+  writeExecutable(fakeAgy, `#!${process.execPath}
+if (process.env.HTTPS_PROXY !== 'http://127.0.0.1:45123') {
+  console.error('unexpected HTTPS_PROXY:', process.env.HTTPS_PROXY);
+  process.exit(41);
+}
+if (!String(process.env.NO_PROXY || '').includes('127.0.0.1')) {
+  console.error('missing loopback NO_PROXY:', process.env.NO_PROXY);
+  process.exit(42);
+}
+console.log(JSON.stringify({ event: 'result', result: { conversation_id: 'conv-egress', status: 'SUCCESS' } }));
+`);
+
+  const okRun = spawnSync(gatewayPath(), [
+    'agy-remote-bridge',
+    '--local-cwd', work,
+    '--',
+    '--output-format', 'stream-json',
+    '-p', 'hi',
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MULTICC_AGY_REMOTE_ACCOUNT_JSON: JSON.stringify({
+        remote: { sshTarget: 'ubuntu@vps.test', remoteAgyBin: fakeAgy, remoteHome: work, fileMode: 'remote_mcp' },
+        egressBinding: { pluginId: 'chrome-proxy-launcher', profileId: 'prof-1' },
+      }),
+      MULTICC_SSH_BIN: fakeSsh,
+      MULTICC_EGRESS_PROXY_OVERRIDE: 'http://127.0.0.1:21001',
+      MULTICC_REMOTE_PROXY_TUNNEL_PORT: '45123',
+      MULTICC_REMOTE_DIRECT_LOOPBACK: '1',
+    },
+  });
+  assert.equal(okRun.status, 0, `egress remote bridge failed: ${okRun.stderr}\n${okRun.stdout}`);
+  const sshArgsLog = fs.readFileSync(sshLog, 'utf8');
+  assert.ok(sshArgsLog.includes('-R 127.0.0.1:45123:127.0.0.1:21001'), `missing proxy -R tunnel in: ${sshArgsLog}`);
+
+  // Fail-closed: missing plugin must exit 1 with an agy ERROR frame without launching SSH for the turn.
+  const failRun = spawnSync(gatewayPath(), [
+    'agy-remote-bridge',
+    '--local-cwd', work,
+    '--',
+    '--output-format', 'stream-json',
+    '-p', 'hi',
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: work,
+      MULTICC_PLUGINS_DIR: path.join(work, 'empty-plugins'),
+      MULTICC_AGY_REMOTE_ACCOUNT_JSON: JSON.stringify({
+        remote: { sshTarget: 'ubuntu@vps.test', remoteAgyBin: fakeAgy, remoteHome: work, fileMode: 'remote_mcp' },
+        egressBinding: { pluginId: 'nonexistent-egress-plugin', profileId: 'prof-1' },
+      }),
+      MULTICC_SSH_BIN: fakeSsh,
+      MULTICC_REMOTE_DIRECT_LOOPBACK: '1',
+    },
+  });
+  assert.equal(failRun.status, 1);
+  const errFrame = JSON.parse(failRun.stdout.trim());
+  assert.equal(errFrame.event, 'result');
+  assert.equal(errFrame.result.status, 'ERROR');
+  assert.match(errFrame.result.error, /插件/);
+});
+
+test('agy-egress-exec injects resolved egress proxy for local agy and fails closed when unavailable', {
+  skip: process.platform === 'win32',
+}, () => {
+  const work = mkTempDir('egress-local');
+  const fakeAgy = path.join(work, 'fake-agy');
+  writeExecutable(fakeAgy, `#!${process.execPath}
+console.log(JSON.stringify({ https: process.env.HTTPS_PROXY, noProxy: process.env.NO_PROXY, argv: process.argv.slice(2) }));
+`);
+
+  const ok = spawnSync(gatewayPath(), [
+    'agy-egress-exec',
+    '--bin', fakeAgy,
+    '--',
+    '--output-format', 'stream-json',
+    '-p', 'hello',
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MULTICC_AGY_EGRESS_JSON: JSON.stringify({ pluginId: 'chrome-proxy-launcher', profileId: 'prof-1' }),
+      MULTICC_EGRESS_PROXY_OVERRIDE: 'socks5://127.0.0.1:22001',
+    },
+  });
+  assert.equal(ok.status, 0, ok.stderr);
+  const out = JSON.parse(ok.stdout.trim());
+  assert.equal(out.https, 'socks5://127.0.0.1:22001');
+  assert.match(out.noProxy, /127\.0\.0\.1/);
+  assert.deepEqual(out.argv, ['--output-format', 'stream-json', '-p', 'hello']);
+
+  const bad = spawnSync(gatewayPath(), [
+    'agy-egress-exec',
+    '--bin', fakeAgy,
+    '--',
+    '-p', 'hello',
+  ], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: work,
+      MULTICC_PLUGINS_DIR: path.join(work, 'no-plugins'),
+      MULTICC_AGY_EGRESS_JSON: JSON.stringify({ pluginId: 'missing-plugin', profileId: 'p1' }),
+    },
+  });
+  assert.equal(bad.status, 1);
+  const frame = JSON.parse(bad.stdout.trim());
+  assert.equal(frame.result.status, 'ERROR');
+});

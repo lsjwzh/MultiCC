@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use crate::account_subscription::{official_root, valid_account};
 use crate::agy_remote::{parse_remote_target, RemoteAgyTarget};
 use crate::auth_runtime::now_ms;
+use crate::egress_plugin::{parse_egress_binding, EgressBinding};
 use crate::provider_store;
 use crate::state_file;
 
@@ -41,11 +42,15 @@ pub const KIND_REMOTE: &str = "remote";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedAgyAccount {
-    Local(PathBuf),
+    Local {
+        home: PathBuf,
+        egress_binding: Option<EgressBinding>,
+    },
     Remote {
         id: String,
         label: String,
         remote: RemoteAgyTarget,
+        egress_binding: Option<EgressBinding>,
     },
 }
 
@@ -146,6 +151,22 @@ fn parse_remote_from_meta(id: &str, meta: &Value) -> Option<(String, RemoteAgyTa
     Some((label, remote))
 }
 
+fn egress_from_meta(meta: &Value) -> Option<EgressBinding> {
+    parse_egress_binding(meta.get("egressBinding"))
+        .ok()
+        .flatten()
+}
+
+/// 读取账号绑定的专用出口身份（本机与远端 VPS 账号通用）。
+pub fn get_account_egress(home: &Path, id: &str) -> Option<EgressBinding> {
+    let id = id.trim();
+    if !valid_account(id) {
+        return None;
+    }
+    let meta = read_meta(home, id)?;
+    egress_from_meta(&meta)
+}
+
 /// 读取远端 VPS 账号配置；若非远端账号或不存在则返回 `None`。
 pub fn get_remote_account(home: &Path, id: &str) -> Option<(String, RemoteAgyTarget)> {
     let id = id.trim();
@@ -237,17 +258,27 @@ pub fn resolve_account(
             Ok(None)
         };
     }
-    if let Some(meta) = provider_store::read(&meta_path).ok().flatten() {
-        if meta.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
-            return match parse_remote_from_meta(&id, &meta) {
-                Some((label, remote)) => Ok(Some(ResolvedAgyAccount::Remote { id, label, remote })),
+    let meta = provider_store::read(&meta_path).ok().flatten();
+    let egress_binding = meta.as_ref().and_then(egress_from_meta);
+    if let Some(meta_val) = meta.as_ref() {
+        if meta_val.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
+            return match parse_remote_from_meta(&id, meta_val) {
+                Some((label, remote)) => Ok(Some(ResolvedAgyAccount::Remote {
+                    id,
+                    label,
+                    remote,
+                    egress_binding,
+                })),
                 None if explicit => Err("invalid remote account configuration".to_owned()),
                 None => Ok(None),
             };
         }
     }
     match account_home(home, &id) {
-        Some(dir) if dir.is_dir() => Ok(Some(ResolvedAgyAccount::Local(dir))),
+        Some(dir) if dir.is_dir() => Ok(Some(ResolvedAgyAccount::Local {
+            home: dir,
+            egress_binding,
+        })),
         _ if explicit => Err("unknown account".to_owned()),
         _ => Ok(None),
     }
@@ -341,6 +372,9 @@ pub fn list_accounts(home: &Path) -> Vec<Value> {
                 .and_then(Value::as_str)
                 .filter(|label| !label.is_empty())
                 .unwrap_or(id);
+            let egress_val = egress_from_meta(&meta)
+                .map(|b| b.to_value())
+                .unwrap_or(Value::Null);
             if let Some((_, remote)) = parse_remote_from_meta(id, &meta) {
                 let remote_logged_in = meta
                     .get("remoteLoggedIn")
@@ -362,6 +396,7 @@ pub fn list_accounts(home: &Path) -> Vec<Value> {
                     "createdAt": meta.get("createdAt").cloned().unwrap_or(Value::Null),
                     "source": meta.get("source").cloned().unwrap_or_else(|| json!("remote")),
                     "active": active.as_deref() == Some(id),
+                    "egressBinding": egress_val,
                     "remote": remote,
                 }));
             }
@@ -376,6 +411,7 @@ pub fn list_accounts(home: &Path) -> Vec<Value> {
                 "createdAt": meta.get("createdAt").cloned().unwrap_or(Value::Null),
                 "source": meta.get("source").cloned().unwrap_or(Value::Null),
                 "active": active.as_deref() == Some(id),
+                "egressBinding": egress_val,
             }))
         })
         .collect();
@@ -405,17 +441,30 @@ fn clean_label(label: &str) -> String {
 /// A fresh account home with no credentials yet — the user signs in through
 /// the ordinary agy OAuth flow, which writes into `<id>.home/.gemini`.
 pub fn create_account(home: &Path, label: &str, source: &str) -> Result<Value, String> {
+    create_account_with_egress(home, label, source, None)
+}
+
+pub fn create_account_with_egress(
+    home: &Path,
+    label: &str,
+    source: &str,
+    raw_egress: Option<&Value>,
+) -> Result<Value, String> {
+    let egress = parse_egress_binding(raw_egress)?;
     let id = random_id()?;
     let dir = account_home(home, &id).ok_or("invalid account id")?;
     let meta = meta_file(home, &id).ok_or("invalid account id")?;
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     set_dir_mode(&dir);
-    let record = json!({
+    let mut record = json!({
         "id": id,
         "label": clean_label(label),
         "createdAt": now_ms().floor() as i64,
         "source": source,
     });
+    if let Some(binding) = egress {
+        record["egressBinding"] = binding.to_value();
+    }
     state_file::write_json_atomic(&meta, &record).map_err(|err| err.to_string())?;
     Ok(record)
 }
@@ -430,7 +479,17 @@ pub fn create_remote_account(
     label: &str,
     raw_remote: &Value,
 ) -> Result<Value, String> {
+    create_remote_account_with_egress(home, label, raw_remote, raw_remote.get("egressBinding"))
+}
+
+pub fn create_remote_account_with_egress(
+    home: &Path,
+    label: &str,
+    raw_remote: &Value,
+    raw_egress: Option<&Value>,
+) -> Result<Value, String> {
     let mut remote = parse_remote_target(raw_remote)?;
+    let egress = parse_egress_binding(raw_egress)?;
     let isolate_home = raw_remote
         .get("isolateHome")
         .and_then(Value::as_bool)
@@ -445,7 +504,7 @@ pub fn create_remote_account(
     } else {
         clean_label(label)
     };
-    let record = json!({
+    let mut record = json!({
         "id": id,
         "kind": KIND_REMOTE,
         "label": effective_label,
@@ -455,8 +514,40 @@ pub fn create_remote_account(
         "remoteEmail": Value::Null,
         "remote": remote,
     });
+    if let Some(binding) = egress {
+        record["egressBinding"] = binding.to_value();
+    }
     state_file::write_json_atomic(&meta, &record).map_err(|err| err.to_string())?;
     Ok(record)
+}
+
+/// 更新任意反重力账号（本机或远端 VPS）绑定的专用出口身份；传入 `None`/`null` 清除绑定。
+pub fn update_account_egress(
+    home: &Path,
+    id: &str,
+    raw_egress: Option<&Value>,
+) -> Result<Value, String> {
+    let id = id.trim();
+    if !valid_account(id) {
+        return Err("invalid account id".to_owned());
+    }
+    let egress = parse_egress_binding(raw_egress)?;
+    let meta_path = meta_file(home, id).ok_or("invalid account id")?;
+    let mut existing = provider_store::read(&meta_path)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "unknown account".to_owned())?;
+    if let Some(obj) = existing.as_object_mut() {
+        match egress {
+            Some(binding) => {
+                obj.insert("egressBinding".to_string(), binding.to_value());
+            }
+            None => {
+                obj.remove("egressBinding");
+            }
+        }
+    }
+    state_file::write_json_atomic(&meta_path, &existing).map_err(|err| err.to_string())?;
+    Ok(existing)
 }
 
 /// 更新远端 VPS 账号的登录状态与 Google 邮箱（网页 OAuth 授权完成后落盘）。

@@ -292,23 +292,31 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             }
         }
         Route::CreatePost => {
-            let result = store::create_account(&home, &label(), "created");
+            let result = store::create_account_with_egress(
+                &home,
+                &label(),
+                "created",
+                body.get("egressBinding"),
+            );
             match result {
-                Ok(_) => {
+                Ok(created) => {
                     invalidate_spawn_caches().await;
-                    express::json(
-                        ctx,
-                        200,
-                        &state_with_mutagen(&home).await,
-                        &[("Cache-Control", "no-store")],
-                    )
+                    let mut out = state_with_mutagen(&home).await;
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("created".to_string(), created);
+                    }
+                    express::json(ctx, 200, &out, &[("Cache-Control", "no-store")])
                 }
-                Err(error) => failure(500, error),
+                Err(error) => failure(400, error),
             }
         }
         Route::CreateRemotePost => {
             let raw_remote = body.get("remote").unwrap_or(body);
-            match store::create_remote_account(&home, &label(), raw_remote) {
+            let raw_egress = body
+                .get("egressBinding")
+                .or_else(|| raw_remote.get("egressBinding"));
+            match store::create_remote_account_with_egress(&home, &label(), raw_remote, raw_egress)
+            {
                 Ok(created) => {
                     invalidate_spawn_caches().await;
                     let mut out = state_with_mutagen(&home).await;
@@ -324,20 +332,29 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             let Some(id) = account_id(ctx) else {
                 return failure(400, "invalid account id".to_owned());
             };
-            let raw_remote = body.get("remote").unwrap_or(body);
-            let next_label = body.get("label").and_then(Value::as_str);
-            match store::update_remote_account(&home, &id, next_label, raw_remote) {
-                Ok(_) => {
-                    invalidate_spawn_caches().await;
-                    express::json(
-                        ctx,
-                        200,
-                        &state_with_mutagen(&home).await,
-                        &[("Cache-Control", "no-store")],
-                    )
+            let has_remote_fields = body.get("remote").is_some() || body.get("sshTarget").is_some();
+            if has_remote_fields {
+                let raw_remote = body.get("remote").unwrap_or(body);
+                let next_label = body.get("label").and_then(Value::as_str);
+                if let Err(error) = store::update_remote_account(&home, &id, next_label, raw_remote)
+                {
+                    return failure(400, error);
                 }
-                Err(error) => failure(400, error),
             }
+            if body.get("egressBinding").is_some() || !has_remote_fields {
+                if let Err(error) =
+                    store::update_account_egress(&home, &id, body.get("egressBinding"))
+                {
+                    return failure(400, error);
+                }
+            }
+            invalidate_spawn_caches().await;
+            express::json(
+                ctx,
+                200,
+                &state_with_mutagen(&home).await,
+                &[("Cache-Control", "no-store")],
+            )
         }
         Route::TestRemotePost => {
             let Some(id) = account_id(ctx) else {
@@ -356,7 +373,8 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             let Some((_, remote)) = store::get_remote_account(&home, &id) else {
                 return failure(404, "未找到对应的远端 VPS 反重力账号".to_owned());
             };
-            match crate::agy_remote_login::start_login(&home, &id, &remote).await {
+            let egress = store::get_account_egress(&home, &id);
+            match crate::agy_remote_login::start_login(&home, &id, &remote, egress.as_ref()).await {
                 Ok(payload) => express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")]),
                 Err(error) => failure(400, error),
             }
@@ -448,11 +466,20 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             if let Err(error) = std::fs::create_dir_all(&dir) {
                 return failure(500, error.to_string());
             }
+            let mut login_body = json!({ "home": dir.to_string_lossy() });
+            if let Some(binding) = store::get_account_egress(&home, &id) {
+                match crate::egress_runtime::resolve_egress_proxy_url(&binding).await {
+                    Ok(proxy_url) => {
+                        login_body["proxyUrl"] = json!(proxy_url);
+                    }
+                    Err(error) => return failure(400, error),
+                }
+            }
             let payload = json!({
                 "op": "agy-login-terminal",
                 "method": "POST",
                 "id": id,
-                "body": { "home": dir.to_string_lossy() },
+                "body": login_body,
             });
             match super::session_routes::call(ctx, host, payload).await {
                 Ok(answer) => super::session_routes::relay(ctx, answer),

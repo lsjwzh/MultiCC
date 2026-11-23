@@ -57,7 +57,11 @@ fn ssh_bin() -> String {
         .unwrap_or_else(|| "ssh".to_string())
 }
 
-fn build_ssh_args(target: &RemoteAgyTarget, script: &str) -> Vec<String> {
+fn build_ssh_args(
+    target: &RemoteAgyTarget,
+    proxy_forward_spec: Option<&str>,
+    script: &str,
+) -> Vec<String> {
     let mut args = vec![
         "-T".to_string(),
         "-o".to_string(),
@@ -76,6 +80,12 @@ fn build_ssh_args(target: &RemoteAgyTarget, script: &str) -> Vec<String> {
     if let Some(key) = &target.ssh_identity_file {
         args.push("-i".to_string());
         args.push(key.clone());
+    }
+    if let Some(spec) = proxy_forward_spec {
+        args.push("-o".to_string());
+        args.push("ExitOnForwardFailure=yes".to_string());
+        args.push("-R".to_string());
+        args.push(spec.to_string());
     }
     args.push(target.ssh_target.clone());
     args.push("--".to_string());
@@ -119,10 +129,12 @@ pub async fn login_status(id: &str) -> Value {
 }
 
 /// 为指定远端账号启动一次 SSH `agy acp --login` 授权流程并返回 Google 授权链接。
+/// 若绑定了 `egress_binding`，自动解析出口并经 SSH `-R` 反向隧道固定登录换票出口 IP（fail-closed）。
 pub async fn start_login(
     home: &Path,
     account_id: &str,
     target: &RemoteAgyTarget,
+    egress_binding: Option<&multicc_core::egress_plugin::EgressBinding>,
 ) -> Result<Value, String> {
     // 取消该账号上尚未结束的旧登录会话。
     if let Some(old) = sessions_map().lock().await.remove(account_id) {
@@ -131,12 +143,18 @@ pub async fn start_login(
         }
     }
 
+    let proxy_plan = crate::egress_runtime::prepare_remote_proxy(egress_binding, None).await?;
     let agy_bin = target
         .remote_agy_bin
         .as_deref()
         .unwrap_or(DEFAULT_REMOTE_AGY_BIN);
-    let script = build_remote_login_script(agy_bin, target.remote_home.as_deref());
-    let ssh_args = build_ssh_args(target, &script);
+    let script = build_remote_login_script(
+        agy_bin,
+        target.remote_home.as_deref(),
+        proxy_plan.as_ref().map(|p| p.remote_proxy_url()),
+    );
+    let forward_spec = proxy_plan.as_ref().and_then(|p| p.ssh_forward_spec());
+    let ssh_args = build_ssh_args(target, forward_spec.as_deref(), &script);
 
     let mut child = Command::new(ssh_bin())
         .args(&ssh_args)
@@ -454,7 +472,7 @@ exit 0
         );
 
         let (_, target) = store::get_remote_account(&local_home, &id).unwrap();
-        let started = start_login(&local_home, &id, &target).await.unwrap();
+        let started = start_login(&local_home, &id, &target, None).await.unwrap();
         assert_eq!(started["state"], "pending");
         assert!(started["oauthUrl"]
             .as_str()
