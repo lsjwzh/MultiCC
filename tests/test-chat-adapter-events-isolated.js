@@ -139,21 +139,41 @@ process.stdout.write('', () => process.exit(0));
   const fakeAgy = path.join(root, 'fake-agy.js');
   fs.writeFileSync(fakeAgy, `#!/usr/bin/env node
 const send = value => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
-if (process.argv.includes('--version')) { process.stdout.write('agy 1.5.14\\n'); process.exit(0); }
-if (process.argv.includes('-p')) { process.stdout.write(JSON.stringify({command:{data:{groups:[]}}})); process.exit(0); }
-require('node:readline').createInterface({input:process.stdin}).on('line', line => {
-  const m = JSON.parse(line);
-  const reply = result => send({id:m.id, result});
-  if (m.method === 'initialize') return reply({protocolVersion:1, agentCapabilities:{}, authMethods:[]});
-  if (m.method === 'session/new') return reply({sessionId:'agy-s1'});
-  if (m.method === 'session/set_config_option') return reply({configOptions:[]});
-  if (m.method === 'session/prompt') {
-    const update = update => send({method:'session/update',params:{sessionId:m.params.sessionId,update}});
-    update({sessionUpdate:'usage_update',used:120,size:1000});
-    update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'HELLO_FROM_AGY'}});
-    return reply({stopReason:'end_turn',usage:{inputTokens:100,outputTokens:20,cachedReadTokens:0,cachedWriteTokens:0}});
-  }
-});
+const emit = value => process.stdout.write(JSON.stringify(value) + '\\n');
+const args = process.argv.slice(2);
+const formatIndex = args.indexOf('--output-format');
+const outputFormat = formatIndex >= 0 ? args[formatIndex + 1] : '';
+if (args.includes('--version')) { process.stdout.write('agy 1.5.14\\n'); process.exit(0); }
+// Chat turns: \`agy --output-format stream-json ... -p\` reads the prompt from
+// stdin and answers with NDJSON init / step_update / result events.
+if (outputFormat === 'stream-json') {
+  let prompt = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => { prompt += chunk; });
+  process.stdin.on('end', () => {
+    const conversation = 'agy-s1';
+    emit({ event: 'init', conversation_id: conversation, init: { model: 'gemini-4-neon' } });
+    emit({ event: 'step_update', step_update: {
+      conversation_id: conversation, step_index: 1, state: 'DONE', step_type: 'agent_response',
+      text_delta: 'HELLO_FROM_AGY',
+      usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 },
+    } });
+    emit({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', num_turns: 1 } });
+    process.exit(0);
+  });
+} else if (args.includes('-p')) {
+  // Quota probe: \`agy -p /usage --output-format json\`.
+  process.stdout.write(JSON.stringify({command:{data:{groups:[]}}})); process.exit(0);
+} else {
+  // Model catalog probe: \`agy acp\` speaks ACP over stdio.
+  require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+    const m = JSON.parse(line);
+    const reply = result => send({id:m.id, result});
+    if (m.method === 'initialize') return reply({protocolVersion:1, agentCapabilities:{}, authMethods:[]});
+    if (m.method === 'session/new') return reply({sessionId:'agy-s1'});
+    if (m.method === 'session/set_config_option') return reply({configOptions:[]});
+  });
+}
 `, { mode: 0o755 });
 
   const port = await freePort();
@@ -269,13 +289,13 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     const usage = socket.frames.find(frame => frame.type === 'result' && frame.usage).usage;
     assert.equal(usage.input_tokens, 100);
     assert.equal(usage.output_tokens, 20);
-    assert.equal(usage.context_tokens, 120);
-    assert.equal(usage.context_window, 1000);
+    // stream-json reports no context window size (that was ACP's usage_update.size),
+    // so only the accumulated context token count is asserted.
+    assert.equal(usage.context_tokens, 100);
     await waitIdle(sessionId);
     const history = await apiOk('GET', `/api/sessions/${sessionId}/history?limit=100`);
-    const historicalUsage = history.messages.find(message => message.usage?.context_tokens === 120)?.usage;
+    const historicalUsage = history.messages.find(message => message.usage?.context_tokens === 100)?.usage;
     assert.ok(historicalUsage, `agy history usage: ${JSON.stringify(history)}`);
-    assert.equal(historicalUsage.context_window, 1000);
     assert.equal(historicalUsage.input_tokens, 100);
     socket.ws.close();
     console.log('test-chat-adapter-events-isolated ok');
