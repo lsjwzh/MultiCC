@@ -421,9 +421,12 @@ pub fn wrap_remote_prompt(
         format!(
             "[Remote execution environment]\n\
 You are running on a remote host, while the user's real workspace lives on their {local_os} machine at `{local_root}`.\n\
-Built-in local command and file tools are disabled by policy.\n\
-Use `mcp_multicc_host_exec_host_run_command` to run shell/build/test/git commands on the real {local_os} machine, \
-and `mcp_multicc_host_exec_host_read_file` / `mcp_multicc_host_exec_host_write_file` / `mcp_multicc_host_exec_host_list_dir` to access workspace files.\n\
+Built-in local command and file tools (`run_command`, `read_file`, `write_file`, `edit_file`) are ALL disabled by policy — do NOT call `read_file` to inspect MCP schema JSONs.\n\
+Invoke `call_mcp_tool` directly with `ServerName: \"multicc_host_exec\"` (or the `mcp_multicc_host_exec_*` alias if exposed) using these exact tool names and `Arguments`:\n\
+- `host_run_command`: {{\"command\": \"<shell command>\", \"cwd\": \"<optional relative or workspace path>\", \"timeoutMs\": 120000}}\n\
+- `host_read_file`: {{\"path\": \"<relative or workspace path>\"}}\n\
+- `host_write_file`: {{\"path\": \"<relative or workspace path>\", \"content\": \"<utf-8 text>\"}}\n\
+- `host_list_dir`: {{\"path\": \"<optional relative or workspace path>\"}}\n\
 [End of remote execution environment]\n\n"
         )
     } else {

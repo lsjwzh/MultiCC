@@ -692,9 +692,8 @@ pub fn import_account(home: &Path, label: &str) -> Result<Value, String> {
         .as_str()
         .ok_or("invalid account id")?
         .to_owned();
-    let target = account_home(home, &id)
-        .ok_or("invalid account id")?
-        .join(".gemini");
+    let account_dir = account_home(home, &id).ok_or("invalid account id")?;
+    let target = account_dir.join(".gemini");
     let result = (|| {
         for name in IMPORT_FILES {
             copy_file(&source.join(name), &target.join(name))?;
@@ -704,6 +703,7 @@ pub fn import_account(home: &Path, label: &str) -> Result<Value, String> {
                 copy_file(&source.join(dir).join(name), &target.join(dir).join(name))?;
             }
         }
+        link_macos_keychains_if_present(home, &account_dir)?;
         // The label defaults to the imported account's own Google address so
         // the list is readable without opening anything; persist it so the
         // stored metadata and the answer agree.
@@ -732,12 +732,36 @@ pub fn import_account(home: &Path, label: &str) -> Result<Value, String> {
     })();
     // A half-copied home would look like a usable account, so roll it back.
     if result.is_err() {
-        let _ = fs::remove_dir_all(&target);
+        let _ = fs::remove_dir_all(&account_dir);
         if let Some(meta) = meta_file(home, &id) {
             let _ = fs::remove_file(meta);
         }
     }
     result
+}
+
+/// macOS 上 `agy` 的登录态保存在 `$HOME/Library/Keychains/login.keychain-db`。
+/// 导入本机登录态时软链该目录，隔离 HOME 仍可完成静默认证，同时保持 `.gemini`
+/// 配置与 MCP 文件完全隔离；删除账号时 `remove_dir_all` 只删软链本身，不触碰真实 Keychain。
+#[cfg(target_os = "macos")]
+fn link_macos_keychains_if_present(home: &Path, account_dir: &Path) -> Result<(), String> {
+    let src = home.join("Library").join("Keychains");
+    if !src.exists() {
+        return Ok(());
+    }
+    let dst_lib = account_dir.join("Library");
+    fs::create_dir_all(&dst_lib).map_err(|err| err.to_string())?;
+    set_dir_mode(&dst_lib);
+    let dst = dst_lib.join("Keychains");
+    if fs::symlink_metadata(&dst).is_ok() {
+        let _ = fs::remove_file(&dst);
+    }
+    std::os::unix::fs::symlink(&src, &dst).map_err(|err| err.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn link_macos_keychains_if_present(_home: &Path, _account_dir: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn delete_account(home: &Path, id: &str) -> Result<(), String> {

@@ -223,3 +223,72 @@ test('dropMessages rewrites in place and the following append self-heals', async
   assert.equal(f.counts.appendAsync, tailWrites, 'first append after the drop is a full rewrite');
   assert.deepEqual(f.readLines('s1').map(m => m.id), ['a', 'c', 'd']);
 });
+
+test('resendPendingWrite maps queue operationId to history op after non-writing mutations (ext4 fallback)', async t => {
+  const dataDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-tail-ext4-')));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const repository = createChatHistoryFileRepository({ dataDir });
+  const counts = { writeAsync: 0, appendAsync: 0 };
+  const history = { ...repository };
+  history.writeAsync = (id, json) => {
+    counts.writeAsync += 1;
+    return repository.writeAsync(id, json);
+  };
+  // 模拟 Linux ext4 等不支持写时复制的文件系统：所有尾部写回退整份重写（appended: false）。
+  history.appendAsync = async () => {
+    counts.appendAsync += 1;
+    return { appended: false };
+  };
+  let sequence = 0;
+  const timers = new Map();
+  const warnings = [];
+  const runtime = createChatHistoryRuntime({
+    history,
+    persistedSessions: new Map([['s1', { id: 's1', kind: 'chat', cli: 'agy' }]]),
+    chatSessions: new Map([['s1', {}]]),
+    idFactory: () => `ext4-${++sequence}`,
+    now: () => 1700000000000,
+    chatBroadcast() {},
+    distillHistoryIntoMemory() { return Promise.resolve(); },
+    maybeSchedulePeriodicMemoryReview() {},
+    async cliSwitchGitSnapshot() { return {}; },
+    chatStream: { close() {} },
+    clearAllNativeCliStates() { return 0; },
+    buildHandoffCheckpoint() { return {}; },
+    rememberActiveCliState() {},
+    saveBestEffort() {},
+    trackPendingMemoryDistill(_sessionId, promise) { return promise; },
+    setImmediate() { return { unref() {} }; },
+    setTimeout(callback) {
+      const id = `timer-${++sequence}`;
+      timers.set(id, callback);
+      return { unref() {} };
+    },
+    clearTimeout() {},
+    logger: { warn(obj) { warnings.push(obj); } },
+  });
+  t.after(() => runtime.stop());
+
+  assert.equal(await runtime.appendMessage('s1', { id: 'u1', role: 'user', content: 'hello' }), true);
+  // 触发一次无写入的 interim（空文本不落盘），使队列 job.id 与历史服务 opId 错开。
+  runtime.scheduleIncrementalSave('s1', { currentAssistantText: '' });
+  for (const cb of [...timers.values()]) cb();
+  timers.clear();
+  await new Promise(resolve => setImmediate(resolve));
+
+  // 真实 interim 写 + 正式 assistant 替换 interim：每次 appendAsync 返回 appended=false 时
+  // resendPendingWrite 必须通过 job.op 找到挂起快照并落盘，不能报 history append is no longer pending。
+  runtime.scheduleIncrementalSave('s1', { currentAssistantText: 'interim response text' });
+  for (const cb of [...timers.values()]) cb();
+  timers.clear();
+  assert.equal(
+    await runtime.appendMessage('s1', { id: 'a1', role: 'assistant', content: 'final answer' }),
+    true,
+  );
+  assert.ok(counts.appendAsync >= 1, 'tail path was attempted and fell back cleanly');
+  assert.ok(counts.writeAsync >= 2, 'full snapshot fallback wrote cleanly');
+  assert.deepEqual(warnings, [], 'no chat_history_append_failed warnings');
+  const lines = fs.readFileSync(repository.fileFor('s1'), 'utf8')
+    .split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.deepEqual(lines.map(m => m.id), ['u1', 'a1']);
+});

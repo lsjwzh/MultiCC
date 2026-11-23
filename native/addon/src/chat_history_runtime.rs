@@ -2315,9 +2315,28 @@ impl<'a> Runtime<'a> {
     fn commit_append_message(&self, operation_id: L<'a>) -> Result<L<'a>> {
         self.service("commitAppend", &[operation_id])
     }
-    /// 尾部增量写被 worker 拒收（账本与文件错位）时，宿主经这里拿整份快照重写。
+    /// 尾部增量写被 worker 拒收（账本与文件错位或文件系统不支持写时复制）时，
+    /// 宿主传入队列 `step.operationId`（即 `job.id`），先映射到队首在途写入对应的
+    /// 历史服务 `job.op` 再拿整份快照重写；未命中队列时兼容直接传服务 `operationId`。
     fn resend_pending_write(&self, operation_id: L<'a>) -> Result<L<'a>> {
-        self.service("resendPending", &[operation_id])
+        let id = operation_id.number()? as u64;
+        let mapped_op = {
+            let queues = self.owner.mutations.borrow();
+            let mut found = None;
+            for queue in queues.values() {
+                if let Some(front) = queue.front() {
+                    if front.id == id {
+                        if let Some(op_val) = front.op.as_ref() {
+                            found = Some(self.read(op_val)?);
+                        }
+                        break;
+                    }
+                }
+            }
+            found
+        };
+        let target_op = mapped_op.unwrap_or(operation_id);
+        self.service("resendPending", &[target_op])
     }
     fn discard_append_message(
         &self,
