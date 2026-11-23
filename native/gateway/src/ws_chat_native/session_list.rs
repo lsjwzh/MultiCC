@@ -38,18 +38,13 @@ pub(crate) fn ensure_aux(root: &Path, package: &Path) -> Result<(), String> {
     )
 }
 
-fn aux(record: &Value, clients: usize) -> Value {
-    let slots = std::env::var("MULTICC_AUX_CONCURRENCY")
-        .or_else(|_| std::env::var("AUX_CONCURRENCY"))
-        .ok()
-        .and_then(|s| multicc_core::session_git::parse_int10(&s))
-        .unwrap_or(5)
-        .clamp(1, 16);
-    let mut row = json!({"id":"__aux__","lastActivity":null,"clients":clients,"active":false,"type":"aux",
-        "label":record["label"].as_str().filter(|s|!s.is_empty()).unwrap_or("AI Assistant"),
-        "auxStatus":{"processing":false,"queueDepth":0,"currentTask":null,"active":0,"capacity":slots+1,"concurrency":slots,"running":[],
-        "lanes":{"serial":{"concurrency":1,"active":0,"queueDepth":0},"pool":{"concurrency":slots,"active":0,"queueDepth":0}},
-        "totalProcessed":0,"lastTaskTime":null,"health":{"consecutiveFails":0,"unhealthy":false,"retryable":true,"category":null,"action":null,"retryAt":null,"lastFailAt":null,"lastFailMsg":"","sinceAt":null}}});
+fn aux(record: &Value, clients: usize, status: Value) -> Value {
+    let last = status["lastTaskTime"]
+        .as_i64()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    let mut row = json!({"id":"__aux__","lastActivity":last,"clients":clients,"active":status["processing"],"type":"aux",
+        "label":record["label"].as_str().filter(|s|!s.is_empty()).unwrap_or("AI Assistant"),"auxStatus":status});
     for k in ["cwd", "createdAt"] {
         if let Some(v) = record.get(k) {
             row[k] = v.clone();
@@ -345,7 +340,16 @@ fn snapshot(
         .collect::<Vec<_>>();
     let mut out = Vec::new();
     if let Some(r) = all.get("__aux__") {
-        out.push(aux(r, host.hub.client_count("__aux__")));
+        let status = app
+            .aux_jobs
+            .get()
+            .ok_or("Aux runtime unavailable")?
+            .status()?;
+        out.push(aux(
+            r,
+            app.aux_jobs.get().map_or(0, |rt| rt.clients()),
+            status,
+        ));
     }
     let providerless = cli_switch::SUPPORTED_CHAT_CLIS
         .iter()

@@ -109,12 +109,12 @@ assert.match(androidGradle, /GradleException[\s\S]*official release signing/i,
 const beforeCapture = manager.indexOf('before="$(git rev-parse HEAD');
 const stableBranch = manager.indexOf('if [ "$channel" = "stable" ]');
 const stableAfter = manager.indexOf('after="$(git rev-parse HEAD', stableBranch);
-const dependencyDiff = manager.indexOf('Dependencies changed — running npm install');
+const dependencyDiff = manager.indexOf('update_step install start', stableAfter);
 assert.ok(beforeCapture >= 0 && beforeCapture < stableBranch, 'stable updates must capture the old revision before checkout');
 assert.ok(stableAfter > stableBranch, 'stable updates must capture the new revision after checkout');
 assert.ok(dependencyDiff > stableAfter, 'stable updates must install changed manifests before restart');
-assert.match(manager, /Runtime dependencies are incomplete or outdated — running npm install/);
-assert.match(manager, /scripts\/check-runtime-deps\.js/);
+assert.match(manager, /cargo build --locked --release/);
+assert.doesNotMatch(manager, /npm install|--node "\$NODE"/);
 // The installer no longer builds anything: dependencies and the runtime ship
 // inside the package it downloads, so it must not run npm, git or a host node.
 assert.doesNotMatch(installer, /npm install/, 'the installer must not install dependencies');
@@ -129,8 +129,7 @@ assert.match(windowsInstaller, /multicc-standalone-\$ResolvedVersion-win32-x64\.
   'the Windows installer must download the same standalone package family');
 assert.match(runtimeCheck, /requireFn\('@homebridge\/ciao'\)/);
 assert.match(manager, /Verifying runtime dependencies before service install/);
-assert.ok(manager.indexOf('Runtime dependencies are incomplete — running npm install') > manager.indexOf('do_install()'),
-  './multicc install must repair missing runtime packages before registering the service');
+assert.match(manager.slice(manager.indexOf('do_install()')), /check_runtime_dependencies \|\| return 1[\s\S]*set_launchd_program/);
 assert.match(manager, /wait_for_ready\(\)/);
 assert.match(manager, /Waiting for startup migrations and readiness/);
 assert.ok(manager.indexOf('if ! wait_for_ready') > manager.indexOf('Restarting to apply update'),

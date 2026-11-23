@@ -73,7 +73,7 @@ flowchart LR
 
 ### 手机 App
 
-手机 App 用来连接你自己的 MultiCC 服务端；请先在电脑或服务器上安装桌面版或独立版。
+手机 App 连接你自己的 MultiCC 服务端。请先安装桌面版或部署 Rust 服务。[生产服务部署](docs/gateway.md)
 
 | 系统 | 下载入口 |
 |---|---|
@@ -81,7 +81,7 @@ flowchart LR
 | iPhone／iPad | [前往 App Store](https://apps.apple.com/app/id6807642727)（商店版本以 Apple 审核进度为准） |
 
 <details>
-<summary>独立服务端下载（服务器、命令行用户、macOS 11–12）</summary>
+<summary>兼容桌面管理的独立包下载（含 macOS 11–12）</summary>
 
 独立版自带 Node.js，可通过[一行命令安装](#快速上手)，也可手动下载：
 
@@ -227,6 +227,15 @@ MultiCC **不会**把一家厂商的对话记录翻译成另一家的格式—�
 
 ### 1. 安装
 
+部署生产服务可构建根目录 Dockerfile，或在有 Rust、C/C++ 工具链和 libclang 的检出目录运行以下命令。先在服务环境设置 `ACCESS_TOKEN` 和持久化的 `MULTICC_DATA_DIR`。
+
+```sh
+make stage DESTDIR="$PWD/multicc-service"
+HOST=127.0.0.1 ./multicc-service/bin/multicc-gateway serve --cwd "$PWD/multicc-service"
+```
+
+下面的版本化安装脚本用于带桌面管理功能的独立包。[生产部署与作业恢复](docs/gateway.md)
+
 ```bash
 # macOS / Linux
 curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.22.0/install.sh | bash
@@ -361,7 +370,7 @@ cd ~/MultiCC        # 安装脚本的默认目录（--dir 可以改）
 <details>
 <summary>从源码检出运行（git 语义）</summary>
 
-在源码检出里，`./multicc update` 是 `git pull` + `npm install` + 重启：dev 渠道下它会先把改动 stash 成 `multicc-auto-update`，快进 `main`，再 pop 回来。`--force` 是给这样处理不了的情况准备的——pop 回来时和刚拉下来的代码冲突、stable 渠道的 `git checkout <tag>` 因为本地改动而拒绝、或者你的分支上有本地提交、不带参数的 `update` 只会说一句「nothing to update」。加上它就一定落到远端那份代码：工作区的全部改动（**包括未跟踪文件**）先备份进一个带标签的 `multicc-force-update-<时间戳>` stash，然后强制切换（dev 渠道是 `git reset --hard origin/main`，stable 渠道是 `git checkout -f <tag>`）。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。唯一的例外：stable 渠道下 `--force` 仍然只在有更新的 release 时才动手，已经在最新 tag 上时它会停下，并打印出让你手动执行的 `git checkout -f`。
+在源码检出里，`./multicc update` 是 更新 Git 代码、按锁文件构建 Rust 并重启：dev 渠道下它会先把改动 stash 成 `multicc-auto-update`，快进 `main`，再 pop 回来。`--force` 是给这样处理不了的情况准备的——pop 回来时和刚拉下来的代码冲突、stable 渠道的 `git checkout <tag>` 因为本地改动而拒绝、或者你的分支上有本地提交、不带参数的 `update` 只会说一句「nothing to update」。加上它就一定落到远端那份代码：工作区的全部改动（**包括未跟踪文件**）先备份进一个带标签的 `multicc-force-update-<时间戳>` stash，然后强制切换（dev 渠道是 `git reset --hard origin/main`，stable 渠道是 `git checkout -f <tag>`）。**不会删任何东西，但也不会自动恢复** —— 更新后你拿到的是一个干净的检出，本地改动请自己用 `git stash list` / `git stash pop` 取回。唯一的例外：stable 渠道下 `--force` 仍然只在有更新的 release 时才动手，已经在最新 tag 上时它会停下，并打印出让你手动执行的 `git checkout -f`。
 
 也可以在网页里点：**Air 控制台左侧栏底部的版本号** → 弹窗显示当前版本、最新版本和一个「强制更新」勾选框 → 确认后 MultiCC 就在后台跑同一个更新，日志实时显示在弹窗里，跑完自动重启服务、服务回来后自动刷新页面。更新失败时弹窗会保留完整输出，并提供「强制更新重试」。
 

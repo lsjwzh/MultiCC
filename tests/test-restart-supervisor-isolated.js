@@ -6,7 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const http = require('node:http');
-const { spawn } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
+const run = require('node:util').promisify(execFile);
 
 const binary = process.env.MULTICC_RESTART_TEST_BIN || path.join(
   process.env.CARGO_TARGET_DIR || path.resolve(__dirname, '../native/target'), 'debug',
@@ -212,8 +213,45 @@ test('restart client refuses a nonlocal target without exposing its token', asyn
   assert.match(output, /requires a local HTTP origin/);
 });
 
-for (const kind of ['source-cli', 'standalone-cli', 'standalone-cli-new-port', 'standalone-cli-foreground']) {
-  test(`real ${kind} delegates to Rust and verifies the replacement`, { skip: kind === 'source-cli' && process.platform === 'win32' }, async () => {
+test('real source-cli restarts its Rust gateway and verifies the replacement', { skip: process.platform === 'win32' }, async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-source-restart-')));
+  const manager = path.join(root, 'multicc');
+  const reservation = net.createServer();
+  const port = await listening(reservation);
+  await close(reservation);
+  const options = { cwd: root, timeout: 30000, env: {
+    HOME: root, PATH: process.env.PATH, HOST: '127.0.0.1', PORT: String(port),
+    ACCESS_TOKEN: 'isolated-source-test', MULTICC_DATA_DIR: path.join(root, 'data'),
+    MULTICC_ENV_FILE: path.join(root, 'test.env'),
+    MULTICC_GATEWAY_BIN: path.resolve(process.env.MULTICC_GATEWAY_BIN ||
+      path.join(process.env.CARGO_TARGET_DIR || path.join(__dirname, '../native/target'), 'debug/multicc-gateway')),
+  } };
+  fs.copyFileSync(path.resolve(__dirname, '../multicc'), manager);
+  const pidFile = path.join(root, '.multicc.pid');
+  async function readyPid() {
+    const response = await fetch(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(3000) });
+    assert.equal(response.status, 200);
+    const pid = Number(response.headers.get('x-multicc-gateway-pid'));
+    assert.ok(pid > 1);
+    assert.equal(Number(fs.readFileSync(pidFile, 'utf8')), pid);
+    return pid;
+  }
+  try {
+    await run('/bin/bash', [manager, 'start'], options);
+    const oldPid = await readyPid();
+    const result = await run('/bin/bash', [manager, 'restart'], options);
+    const replacementPid = await readyPid();
+    assert.notEqual(replacementPid, oldPid);
+    assert.throws(() => process.kill(oldPid, 0), { code: 'ESRCH' });
+    assert.ok(result.stdout.includes(`readiness confirmed (PID ${replacementPid})`));
+  } finally {
+    try { await run('/bin/bash', [manager, 'stop'], options); }
+    finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+for (const kind of ['standalone-cli', 'standalone-cli-new-port', 'standalone-cli-foreground']) {
+  test(`real ${kind} delegates to Rust and verifies the replacement`, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-restart-cli-'));
     const old = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
     const oldExit = exited(old);
@@ -249,51 +287,33 @@ for (const kind of ['source-cli', 'standalone-cli', 'standalone-cli-new-port', '
       const probePort = net.createServer(); target = await listening(probePort); await close(probePort);
     }
     const repo = path.resolve(__dirname, '..');
-    let command, args, env;
-    if (kind === 'source-cli') {
-      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
-      fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
-      fs.mkdirSync(path.join(root, 'native-bin'), { recursive: true });
-      fs.copyFileSync(path.join(repo, 'multicc'), path.join(root, 'multicc'));
-      fs.copyFileSync(path.join(repo, 'src/server-restart.js'), path.join(root, 'src/server-restart.js'));
-      fs.writeFileSync(path.join(root, 'src/host-env.js'), 'exports.readEnvFile=()=>({});');
-      fs.writeFileSync(path.join(root, 'src/server-processes.js'), 'if(process.argv[2]!=="list")process.exit(8);process.stdout.write(process.env.TEST_OLD_PID);');
-      fs.writeFileSync(path.join(root, 'scripts/ensure-source-rust.js'), 'process.stdout.write(process.env.TEST_ADDON);');
-      fs.writeFileSync(path.join(root, 'scripts/check-runtime-deps.js'), 'process.exit(0);');
-      const addon = path.join(root, 'native-bin', 'multicc_core.node');
-      fs.copyFileSync(binary, path.join(root, 'native-bin', 'restart-supervisor'));
-      fs.chmodSync(path.join(root, 'native-bin', 'restart-supervisor'), 0o755);
-      command = '/bin/bash'; args = [path.join(root, 'multicc'), 'restart'];
-      env = { ...process.env, PORT: String(port), HOST: '127.0.0.1', MULTICC_NODE: process.execPath, TEST_OLD_PID: String(old.pid), TEST_ADDON: addon };
-    } else {
-      const app = path.join(root, 'app-server');
-      const native = path.join(app, 'native/prebuilt', `${process.platform}-${process.arch}`);
-      const runtime = path.join(root, 'runtime', process.platform === 'win32' ? '' : 'bin');
-      const home = path.join(root, 'home');
-      for (const dir of [path.join(app, 'src'), native, runtime, path.join(root, 'launcher'), home]) fs.mkdirSync(dir, { recursive: true });
-      fs.copyFileSync(path.join(repo, 'src/server-restart.js'), path.join(app, 'src/server-restart.js'));
-      fs.writeFileSync(path.join(app, 'server.js'), '');
-      fs.writeFileSync(path.join(root, 'launcher/standalone-launcher.js'), kind === 'standalone-cli-foreground'
-        ? "require('fs').writeFileSync(process.env.TEST_STOP_FILE, 'stopped');" : '');
-      fs.writeFileSync(path.join(root, 'bundle-manifest.json'), JSON.stringify({ version: '0.0.0', platform: process.platform, arch: process.arch }));
-      const binName = process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor';
-      fs.copyFileSync(binary, path.join(native, binName));
-      if (process.platform !== 'win32') fs.chmodSync(path.join(native, binName), 0o755);
-      const runtimeNode = path.join(runtime, process.platform === 'win32' ? 'node.exe' : 'node');
-      if (process.platform === 'win32') fs.copyFileSync(process.execPath, runtimeNode);
-      else fs.symlinkSync(process.execPath, runtimeNode);
-      fs.writeFileSync(path.join(home, 'desktop-runtime.json'), JSON.stringify({ pid: old.pid, origin: `http://127.0.0.1:${port}` }));
-      if (kind === 'standalone-cli-foreground') {
-        owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
-        ownerExit = exited(owner);
-        fs.writeFileSync(path.join(home, 'standalone-launcher.pid'), String(owner.pid));
-      }
-      command = process.execPath; args = [path.join(repo, 'scripts/standalone-cli.js'), 'restart'];
-      if (target) args.push('--port', String(target));
-      if (kind === 'standalone-cli-foreground') args.push('--foreground');
-      env = { ...process.env, MULTICC_STANDALONE_RESOURCES: root, MULTICC_STANDALONE_HOME: home, TEST_STOP_FILE: path.join(root, 'stopped') };
+    const app = path.join(root, 'app-server');
+    const native = path.join(app, 'native/prebuilt', `${process.platform}-${process.arch}`);
+    const runtime = path.join(root, 'runtime', process.platform === 'win32' ? '' : 'bin');
+    const home = path.join(root, 'home');
+    for (const dir of [path.join(app, 'src'), native, runtime, path.join(root, 'launcher'), home]) fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(path.join(repo, 'src/server-restart.js'), path.join(app, 'src/server-restart.js'));
+    fs.writeFileSync(path.join(app, 'server.js'), '');
+    fs.writeFileSync(path.join(root, 'launcher/standalone-launcher.js'), kind === 'standalone-cli-foreground'
+      ? "require('fs').writeFileSync(process.env.TEST_STOP_FILE, 'stopped');" : '');
+    fs.writeFileSync(path.join(root, 'bundle-manifest.json'), JSON.stringify({ version: '0.0.0', platform: process.platform, arch: process.arch }));
+    const binName = process.platform === 'win32' ? 'restart-supervisor.exe' : 'restart-supervisor';
+    fs.copyFileSync(binary, path.join(native, binName));
+    if (process.platform !== 'win32') fs.chmodSync(path.join(native, binName), 0o755);
+    const runtimeNode = path.join(runtime, process.platform === 'win32' ? 'node.exe' : 'node');
+    if (process.platform === 'win32') fs.copyFileSync(process.execPath, runtimeNode);
+    else fs.symlinkSync(process.execPath, runtimeNode);
+    fs.writeFileSync(path.join(home, 'desktop-runtime.json'), JSON.stringify({ pid: old.pid, origin: `http://127.0.0.1:${port}` }));
+    if (kind === 'standalone-cli-foreground') {
+      owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      ownerExit = exited(owner);
+      fs.writeFileSync(path.join(home, 'standalone-launcher.pid'), String(owner.pid));
     }
-    const child = spawn(command, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const args = [path.join(repo, 'scripts/standalone-cli.js'), 'restart'];
+    if (target) args.push('--port', String(target));
+    if (kind === 'standalone-cli-foreground') args.push('--foreground');
+    const env = { ...process.env, MULTICC_STANDALONE_RESOURCES: root, MULTICC_STANDALONE_HOME: home, TEST_STOP_FILE: path.join(root, 'stopped') };
+    const child = spawn(process.execPath, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     const done = exited(child);
     const timer = setTimeout(() => child.kill(), 15000);
     let stderr = '', stdout = ''; child.stderr.on('data', chunk => { stderr += chunk; });

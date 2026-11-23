@@ -345,6 +345,9 @@ pub async fn handle(
     if !app.node_enabled && route == Route::SettingsNotify {
         return super::notification_reads::save(app, ctx, request_body).await;
     }
+    if !app.node_enabled && route == Route::UpdateStatus {
+        return super::update_status::read(app, ctx).await;
+    }
     let Some(op) = route.op() else {
         return express::error(ctx, 500, "native route has no host op");
     };

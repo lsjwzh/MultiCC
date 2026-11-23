@@ -1279,7 +1279,8 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   // runtime. The installed manager is the component that actually executes the
   // SQLite capability probe, so it owns the actionable runtime diagnostic.
   assert.match(installer, /package carries its own Node runtime/);
-  assert.match(manager, /SQLite/, 'the manager must explain what its runtime check failed on');
+  assert.match(manager, /cargo build --locked --release/, 'source manager builds the service with bundled SQLite');
+  assert.doesNotMatch(manager, /check-sqlite-runtime\.js/);
   const sqliteCheck = fs.readFileSync(path.join(root, 'scripts/check-sqlite-runtime.js'), 'utf8');
   assert.match(sqliteCheck, /new Database\(':memory:'\)/);
 });

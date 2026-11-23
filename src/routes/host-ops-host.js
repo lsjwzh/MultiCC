@@ -230,7 +230,13 @@ async function invoke(handlers, doctorOperations, body) {
     get(name) { return headers[String(name).toLowerCase()]; },
   };
   try {
-    return await runHandler(handler, req);
+    const reply = await runHandler(handler, req);
+    if (body.op === 'update-status') {
+      // The UTF-16 log window can end inside a surrogate pair. Carry the
+      // serialized JSON through the host port so the gateway preserves it.
+      return { ...reply, body: JSON.stringify(reply.body), contentType: 'application/json; charset=utf-8' };
+    }
+    return reply;
   } catch (error) {
     console.error(`[host-ops-host] ${body.op} threw: ${error?.stack || error}`);
     return thrownEnvelope(error);

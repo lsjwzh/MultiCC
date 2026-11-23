@@ -173,6 +173,31 @@ pub async fn serve(mut options: ServeOptions) -> i32 {
     }
     if !options.node_enabled() {
         let root = app.data_root.clone();
+        let jobs_root = root.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::app::aux_runtime::Runtime::open(&jobs_root)
+        })
+        .await
+        {
+            Ok(Ok(runtime)) => {
+                let _ = app.aux_jobs.set(Arc::new(runtime));
+            }
+            _ => {
+                log("cannot acquire background job store; check data directory ownership and active gateways");
+                return 1;
+            }
+        }
+        let vault_file = root.join("secrets.json");
+        match tokio::task::spawn_blocking(move || {
+            multicc_core::vault_metadata::Catalog::load(&vault_file)
+        })
+        .await
+        {
+            Ok(catalog) => {
+                let _ = app.vault_metadata.set(Arc::new(catalog));
+            }
+            Err(_) => log("cannot initialize vault metadata"),
+        }
         let package = app.package_root.clone();
         if let Err(error) = tokio::task::spawn_blocking(move || {
             crate::ws_chat_native::session_list::ensure_aux(&root, &package)
@@ -190,6 +215,12 @@ pub async fn serve(mut options: ServeOptions) -> i32 {
             return 1;
         }
     }
+    let aux_worker = app
+        .aux_jobs
+        .get()
+        .map(|rt| tokio::spawn(rt.clone().run(app.clone())));
+    let cron_worker =
+        (!options.node_enabled()).then(|| tokio::spawn(crate::app::cron_runtime::run(app.clone())));
     let channel_worker = if options.node_enabled() {
         None
     } else {
@@ -366,6 +397,14 @@ pub async fn serve(mut options: ServeOptions) -> i32 {
     // (docs/remote-screen-process.md §1), so it exits with the front door
     // instead of lingering as an orphan. `--no-node` reaches here too, having no
     // Node to wait for.
+    if let Some(worker) = aux_worker {
+        worker.abort();
+        let _ = worker.await;
+    }
+    if let Some(worker) = cron_worker {
+        worker.abort();
+        let _ = worker.await;
+    }
     if let Some(worker) = channel_worker {
         worker.stop().await;
     }

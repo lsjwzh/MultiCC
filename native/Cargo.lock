@@ -1741,6 +1741,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "icu_collator",
+ "icu_locale_core",
  "indexmap",
  "libc",
  "memchr",

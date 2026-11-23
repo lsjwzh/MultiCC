@@ -211,7 +211,15 @@ async fn call(host: u16, payload: &Value) -> Answer {
 
 /// `auxEnqueue` keeps the retired `{ ok:false, cancelled, message }` failure
 /// shape, so its answer must not go through the throw classification.
-async fn aux_call(host: u16, payload: &Value) -> Option<Value> {
+async fn aux_call(app: &Arc<App>, host: u16, payload: &Value) -> Option<Value> {
+    if let Some(rt) = app.aux_jobs.get() {
+        let answer = rt.submit(payload, false).await.ok()?;
+        return Some(if answer["ok"] == true {
+            json!({"ok":true,"text":answer["result"]})
+        } else {
+            json!({"ok":false,"cancelled":answer["error"]=="cancelled","message":answer["error"]})
+        });
+    }
     host_port::call(host, HOST_PATH, payload).await.ok()
 }
 
@@ -237,7 +245,7 @@ fn caught_error(ctx: &RequestCtx, message: &str) -> Response<Body> {
 
 // ── refine ─────────────────────────────────────────────────────────────────
 
-async fn refine(ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
+async fn refine(app: &Arc<App>, ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
     let started = super::now_ms();
     let req_id = rules::req_id("vr_", started, random_unit());
     let raw = match rules::trim_body_field(body, "raw") {
@@ -249,13 +257,28 @@ async fn refine(ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
         return express::json(ctx, 200, &json!({ "ok": true, "text": "", "ms": 0 }), &[]);
     }
 
-    let examples = match call(host, &json!({ "op": "examples" })).await {
-        Answer::Value(answer) => match answer.get("examples").and_then(Value::as_array) {
-            Some(examples) => examples.clone(),
-            None => return unavailable(ctx),
-        },
-        Answer::Thrown(error) => return send_thrown(ctx, &error),
-        Answer::Unavailable => return unavailable(ctx),
+    let examples = if !app.node_enabled {
+        let file = app.data_root.join("voice_examples.json");
+        tokio::task::spawn_blocking(move || {
+            let data = multicc_core::provider_store::read(&file)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            data.as_array()
+                .map(|v| v[v.len().saturating_sub(5)..].to_vec())
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        match call(host, &json!({ "op": "examples" })).await {
+            Answer::Value(answer) => match answer.get("examples").and_then(Value::as_array) {
+                Some(examples) => examples.clone(),
+                None => return unavailable(ctx),
+            },
+            Answer::Thrown(error) => return send_thrown(ctx, &error),
+            Answer::Unavailable => return unavailable(ctx),
+        }
     };
     let prompt = match rules::refine_prompt(&raw, &examples) {
         Ok(prompt) => prompt,
@@ -264,7 +287,7 @@ async fn refine(ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
 
     let t0 = super::now_ms();
     let payload = rules::aux_enqueue_payload("voice_refine", &prompt, &req_id);
-    let answer = match aux_call(host, &payload).await {
+    let answer = match aux_call(app, host, &payload).await {
         Some(answer) => answer,
         None => return unavailable(ctx),
     };
@@ -296,7 +319,7 @@ async fn feedback(app: &Arc<App>, ctx: &RequestCtx, body: &Value, host: u16) -> 
 
 // ── confirm ────────────────────────────────────────────────────────────────
 
-async fn confirm(ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
+async fn confirm(app: &Arc<App>, ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
     let started = super::now_ms();
     let req_id = rules::req_id("s2s_c_", started, random_unit());
     let raw = match rules::trim_body_field(body, "text") {
@@ -317,7 +340,7 @@ async fn confirm(ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
     let prompt = rules::confirm_prompt(&raw, previous, user_feedback);
     let t0 = super::now_ms();
     let payload = rules::aux_enqueue_payload("voice_confirm", &prompt, &req_id);
-    let answer = match aux_call(host, &payload).await {
+    let answer = match aux_call(app, host, &payload).await {
         Some(answer) => answer,
         None => return unavailable(ctx),
     };
@@ -339,7 +362,12 @@ async fn confirm(ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
 
 // ── progress-summary ───────────────────────────────────────────────────────
 
-async fn progress_summary(ctx: &RequestCtx, body: &Value, host: u16) -> Response<Body> {
+async fn progress_summary(
+    app: &Arc<App>,
+    ctx: &RequestCtx,
+    body: &Value,
+    host: u16,
+) -> Response<Body> {
     let started = super::now_ms();
     let req_id = rules::req_id("s2s_p_", started, random_unit());
     let Some(events) = field(body, "events").and_then(Value::as_array) else {
@@ -357,7 +385,7 @@ async fn progress_summary(ctx: &RequestCtx, body: &Value, host: u16) -> Response
 
     let t0 = super::now_ms();
     let payload = rules::aux_enqueue_payload("progress_summary", &prompt, &req_id);
-    let answer = match aux_call(host, &payload).await {
+    let answer = match aux_call(app, host, &payload).await {
         Some(answer) => answer,
         None => return unavailable(ctx),
     };
@@ -568,10 +596,10 @@ pub async fn handle(
         return super::options(ctx, allow);
     }
     match route {
-        Route::Refine => refine(ctx, body, host).await,
+        Route::Refine => refine(app, ctx, body, host).await,
         Route::Feedback => feedback(app, ctx, body, host).await,
-        Route::Confirm => confirm(ctx, body, host).await,
-        Route::ProgressSummary => progress_summary(ctx, body, host).await,
+        Route::Confirm => confirm(app, ctx, body, host).await,
+        Route::ProgressSummary => progress_summary(app, ctx, body, host).await,
         Route::Vocab => vocab(ctx, host).await,
         Route::Readiness => readiness(ctx, host).await,
         Route::Hotwords => hotwords(ctx, host).await,

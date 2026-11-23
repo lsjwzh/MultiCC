@@ -21,12 +21,20 @@ use std::{path::Path, sync::Arc};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Read {
     List,
+    Create,
     Calendar,
     Runs,
+    Run,
+    Modify,
 }
 
 pub(crate) fn claim(standalone: bool, method: &Method, path: &str) -> Option<Route> {
-    if !standalone || !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+    if !standalone
+        || !matches!(
+            method.as_str(),
+            "GET" | "HEAD" | "OPTIONS" | "POST" | "DELETE" | "PATCH"
+        )
+    {
         return None;
     }
     let path = path.strip_prefix("/api/")?;
@@ -35,6 +43,23 @@ pub(crate) fn claim(standalone: bool, method: &Method, path: &str) -> Option<Rou
         return None;
     }
     let read = match (parts.next(), parts.next(), parts.next()) {
+        (None, None, None) if method == Method::POST => Read::Create,
+        (Some(id), Some(end), None)
+            if !id.is_empty()
+                && end.eq_ignore_ascii_case("run")
+                && (method == Method::POST || method == Method::OPTIONS) =>
+        {
+            Read::Run
+        }
+        (Some(id), None, None)
+            if !id.is_empty()
+                && (method == Method::PATCH
+                    || method == Method::DELETE
+                    || (method == Method::OPTIONS && !id.eq_ignore_ascii_case("calendar"))) =>
+        {
+            Read::Modify
+        }
+        _ if matches!(method.as_str(), "POST" | "PATCH" | "DELETE") => return None,
         (None, None, None) => Read::List,
         (Some(segment), None, None) if segment.eq_ignore_ascii_case("calendar") => Read::Calendar,
         (Some(id), Some(suffix), None) if !id.is_empty() && suffix.eq_ignore_ascii_case("runs") => {
@@ -52,7 +77,7 @@ pub(super) fn fallback(v: &Value, default: Value) -> Value {
         default
     }
 }
-fn field(field: &str, min: u32, max: u32) -> Option<u64> {
+pub(super) fn field(field: &str, min: u32, max: u32) -> Option<u64> {
     fn integer(s: &str) -> Option<u32> {
         let s = s.trim().trim_start_matches('+');
         s[..s.bytes().take_while(u8::is_ascii_digit).count()]
@@ -345,13 +370,31 @@ fn view(t: &Value, dir: Option<&Value>, s: &Value, at: i64) -> Result<js::JsValu
     }
     Ok(js::JsValue::object(fields))
 }
-struct Bindings<'a> {
+pub(super) struct Bindings<'a> {
     root: &'a Path,
+    home: &'a Path,
     db: TaskStore,
     board: Value,
     records: Vec<Value>,
 }
-impl Bindings<'_> {
+impl<'a> Bindings<'a> {
+    pub(super) fn open(root: &'a Path, home: &'a Path) -> Result<Self, String> {
+        let mut board = repository::read_board_snapshot(&root.join("task_board.json"))?;
+        if board.is_null() {
+            board = normalize::empty();
+        }
+        Ok(Self {
+            root,
+            home,
+            board,
+            records: super::directory_list::records(&root.join("sessions.json"))?,
+            db: TaskStore::open(
+                root.join("task-shells.sqlite")
+                    .to_str()
+                    .ok_or("invalid task store path")?,
+            )?,
+        })
+    }
     fn summary(&self, id: &str) -> Result<Value, String> {
         let mut summary = self.db.schedule_summary(id, &self.board, &self.records)?;
         if summary["runtime"].is_object() {
@@ -359,7 +402,7 @@ impl Bindings<'_> {
         }
         Ok(summary)
     }
-    fn bind(&mut self, t: &mut Value, dir: Option<&Value>) -> Result<(), String> {
+    pub(super) fn bind(&mut self, t: &mut Value, dir: Option<&Value>) -> Result<(), String> {
         let dir = dir.ok_or("目标目录不存在")?;
         if !truthy(&t["taskId"]) || t["taskBindingVersion"] != 1 {
             if let Some(sid) = t["lastSessionId"].as_str().map(str::to_owned) {
@@ -427,11 +470,22 @@ impl Bindings<'_> {
                 let p = Path::new(text(&dir["path"]))
                     .join(".multicc-worktrees")
                     .join(sid);
-                let provider = match cli {
-                    "claude" | "claude-exp" => Some("claude-official"),
-                    "codex" | "codex-exp" => Some("codex-official"),
-                    _ => None,
-                };
+                let provider =
+                    if let Some(pool) = multicc_core::provider_registry::app_type_for_cli(cli) {
+                        let defaults =
+                            multicc_core::provider_defaults_store::ProviderDefaultsStore::open(
+                                self.root.join("provider-defaults.json"),
+                            );
+                        defaults.assert_readable()?;
+                        multicc_core::provider_catalog::normalize_default(
+                            self.root,
+                            self.home,
+                            pool,
+                            &js::to_serde(&defaults.get(pool)),
+                        )?
+                    } else {
+                        Value::Null
+                    };
                 let mut r = json!({"id":sid,"dirId":dir["id"],"cli":cli,"kind":"chat","cliSessionId":null,"label":title.trim(),"model":null,"effort":null,"agent":null,"provider":provider,"providerSelection":null,"autoCommit":true,"streaming":true,"autoContinue":true,"createdAt":at,"workspaceState":"planned","workspaceBaseCommit":null,"lastWorkAt":at,"worktreePath":p,"workspaceOwnerSessionId":null,"branch":format!("multicc/{sid}"),"taskBoundTaskId":id});
                 r["cliStates"][cli] = cli_switch::active_state(
                     &r,
@@ -473,8 +527,11 @@ impl Bindings<'_> {
 fn load(
     root: &Path,
     package: &Path,
+    home: &Path,
     read: Read,
     param: &str,
+    body: &Value,
+    delete: bool,
 ) -> Result<(u16, js::JsValue), String> {
     let path = root.join("scheduled_tasks.json");
     let legacy = package.join("plugins/cron/scheduled_tasks.json");
@@ -484,6 +541,12 @@ fn load(
         &path
     };
     let raw = match std::fs::read(source) {
+        Ok(bytes) if matches!(read, Read::Create | Read::Modify) => {
+            serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .filter(Value::is_array)
+                .ok_or("invalid schedule store")?
+        }
         Ok(bytes) => serde_json::from_slice::<Value>(&bytes).unwrap_or_default(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
         Err(e) => return Err(e.to_string()),
@@ -496,6 +559,90 @@ fn load(
         return history(&tasks, param);
     }
     let dirs = super::directory_list::records(&root.join("directories.json"))?;
+    if read == Read::Modify {
+        let Some(idx) = tasks.iter().position(|t| t["id"] == param) else {
+            return Ok((404, js::from_serde(&json!({"error":"task not found"}))));
+        };
+        let current = &tasks[idx];
+        if delete {
+            tasks.remove(idx);
+            state_file::write_json_atomic(&path, &json!(tasks)).map_err(|e| e.to_string())?;
+            return Ok((200, js::from_serde(&json!({"ok":true}))));
+        }
+        for (field, error) in [
+            ("dirId", "固定任务的工作目录不能修改；请新建另一条定时任务"),
+            ("cli", "请打开固定 Air 任务修改 CLI / Provider"),
+        ] {
+            if truthy(&current["taskId"]) && body.get(field).is_some_and(|v| v != &current[field]) {
+                return Ok((409, js::from_serde(&json!({"error":error}))));
+            }
+        }
+        let mut merged = current.clone();
+        for key in [
+            "kind",
+            "command",
+            "scriptTimeoutMs",
+            "name",
+            "dirId",
+            "cli",
+            "prompt",
+            "cron",
+            "enabled",
+            "createdBy",
+            "dirPath",
+        ] {
+            if let Some(v) = body.get(key) {
+                merged[key] = v.clone();
+            }
+        }
+        let patch = match super::cron_create::definition(&merged, &dirs, package) {
+            Ok(v) => v,
+            Err(e) => return Ok((400, js::from_serde(&json!({"error":e})))),
+        };
+        let t = &mut tasks[idx];
+        for (k, v) in patch.as_object().ok_or("invalid schedule")? {
+            t[k] = v.clone();
+        }
+        t["_tickKey"] = Value::Null;
+        let dir = dirs.iter().find(|d| d["id"] == t["dirId"]);
+        let summary = if let Some(id) = t["taskId"].as_str() {
+            Bindings::open(root, home)?.summary(id)?
+        } else {
+            Value::Null
+        };
+        let v = view(t, dir, &summary, chrono::Utc::now().timestamp_millis())?;
+        state_file::write_json_atomic(&path, &json!(tasks)).map_err(|e| e.to_string())?;
+        return Ok((200, v));
+    }
+    if read == Read::Create {
+        let mut task = match super::cron_create::definition(body, &dirs, package) {
+            Ok(task) => task,
+            Err(error) => return Ok((400, js::from_serde(&json!({"error":error})))),
+        };
+        let dir = dirs.iter().find(|dir| dir["id"] == task["dirId"]);
+        let mut summary = Value::Null;
+        // A failed bind or final write leaves a private reservation. Retrying
+        // this definition reuses its SQLite clientMsgId without making an
+        // incomplete rule visible to the scheduler.
+        let pending = super::cron_create::reserve(root, &mut task)?;
+        if let Some(committed) = tasks.iter().find(|t| t["id"] == task["id"]) {
+            task = committed.clone();
+        } else {
+            if task["kind"] != "script" {
+                Bindings::open(root, home)?.bind(&mut task, dir)?;
+            }
+            tasks.push(task.clone());
+            state_file::write_json_atomic(&path, &json!(tasks)).map_err(|e| e.to_string())?;
+        }
+        if let Some(id) = task["taskId"].as_str() {
+            summary = Bindings::open(root, home)?.summary(id)?;
+        }
+        std::fs::remove_file(pending).map_err(|e| e.to_string())?;
+        return Ok((
+            200,
+            view(&task, dir, &summary, chrono::Utc::now().timestamp_millis())?,
+        ));
+    }
     let mut binding = None;
     let mut rows = vec![];
     let now = chrono::Utc::now().timestamp_millis();
@@ -507,20 +654,7 @@ fn load(
         let mut summary = Value::Null;
         if t["kind"] != "script" && t.is_object() {
             if binding.is_none() {
-                let mut board = repository::read_board_snapshot(&root.join("task_board.json"))?;
-                if board.is_null() {
-                    board = normalize::empty();
-                }
-                binding = Some(Bindings {
-                    root,
-                    board,
-                    records: super::directory_list::records(&root.join("sessions.json"))?,
-                    db: TaskStore::open(
-                        root.join("task-shells.sqlite")
-                            .to_str()
-                            .ok_or("invalid task store path")?,
-                    )?,
-                });
+                binding = Some(Bindings::open(root, home)?);
             }
             let b = binding.as_mut().unwrap();
             if let Err(error) = b.bind(t, dir) {
@@ -548,12 +682,29 @@ fn load(
         Ok((200, js::JsValue::Array(rows)))
     }
 }
-pub(crate) async fn handle(app: &Arc<App>, ctx: &RequestCtx, read: Read) -> Response<Body> {
+pub(crate) async fn handle(
+    app: &Arc<App>,
+    ctx: &RequestCtx,
+    read: Read,
+    body: Value,
+) -> Response<Body> {
     use multicc_core::http_gate::{query_string, query_value};
     let param = match read {
-        Read::List => String::new(),
+        Read::Create | Read::List => String::new(),
         Read::Calendar => query_string(&query_value(&ctx.original_url, "month")),
-        Read::Runs => {
+        Read::Modify => {
+            let raw = ctx
+                .path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or_default();
+            let Some(id) = super::download::decode_uri_component(raw) else {
+                return express::error(ctx, 400, "Failed to decode param");
+            };
+            id
+        }
+        Read::Runs | Read::Run => {
             let raw = ctx
                 .path
                 .trim_end_matches('/')
@@ -570,20 +721,35 @@ pub(crate) async fn handle(app: &Arc<App>, ctx: &RequestCtx, read: Read) -> Resp
         return super::options(
             ctx,
             match read {
-                Read::List => "GET,HEAD,POST",
+                Read::Create | Read::List => "GET,HEAD,POST",
                 Read::Calendar => "PATCH,DELETE,GET,HEAD",
                 Read::Runs => "GET,HEAD",
+                Read::Run => "POST",
+                Read::Modify => "PATCH,DELETE",
             },
         );
     }
+    if read == Read::Run {
+        return match super::cron_runtime::manual(app, param).await {
+            Ok((status, body)) => express::json(ctx, status, &body, &[]),
+            Err(_) => express::error(ctx, 500, "schedule storage unavailable"),
+        };
+    }
     let app = app.clone();
+    let delete = ctx.method == "DELETE";
     let result = tokio::spawn(async move {
+        let _execution = if read == Read::Modify {
+            Some(app.cron_execution.for_rule(&param).await.lock_owned().await)
+        } else {
+            None
+        };
         let _cron = app.cron_lock.lock().await;
         let _records = app.native_chat.records.lock().await;
         let root = app.data_root.clone();
         let package = app.package_root.clone();
+        let home = app.home_dir.clone();
         tokio::task::spawn_blocking(move || {
-            let (status, body) = load(&root, &package, read, &param)?;
+            let (status, body) = load(&root, &package, &home, read, &param, &body, delete)?;
             js::json_stringify(&body)
                 .map(|s| (status, s))
                 .ok_or_else(|| String::from("invalid schedule response"))

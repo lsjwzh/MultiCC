@@ -329,7 +329,7 @@ pub async fn handle(
         return super::options(ctx, allow);
     }
 
-    let _serialized = if route.serializes() {
+    let _serialized = if route.serializes() || (!app.node_enabled && route == Route::AuxConfigGet) {
         Some(app.orchestration_write.lock().await)
     } else {
         None
@@ -343,6 +343,14 @@ pub async fn handle(
         },
     };
 
+    if !app.node_enabled && route == Route::AuxConfigGet {
+        return super::standalone_catalog::handle(app, ctx, None).await;
+    }
+    if !app.node_enabled {
+        if let Some(answer) = super::aux_runtime::handle(app, ctx, route, &request_body).await {
+            return answer;
+        }
+    }
     let Some(op) = route.op() else {
         return express::error(ctx, 500, "native route has no host op");
     };

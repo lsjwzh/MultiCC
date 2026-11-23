@@ -32,8 +32,10 @@ for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies',
 }
 const prodPackages = Object.entries(lock.packages).filter(([key, spec]) => key && !spec.dev);
 assert.equal(prodPackages.length, 0, 'production lockfile graph');
-assert.equal(pkg.scripts.start, 'native/target/release/multicc-gateway serve --cwd . --no-node');
-assert.equal(pkg.scripts['start:gateway'], pkg.scripts.start);
+const makefile = fs.readFileSync(path.join(cwd, 'Makefile'), 'utf8');
+assert.match(makefile, /^production:\n\tcargo build --locked --release/m);
+assert.match(makefile, /^start: production\n\texec native\/target\/release\/multicc-gateway serve --cwd \.$/m);
+assert.ok(files.includes('Makefile') && files.includes('scripts/stage-rust-runtime.sh'));
 const required = ['multicc-gateway', 'multicc-writer', 'restart-supervisor', 'multicc-remote', 'multicc-cdpd'];
 const metadata = JSON.parse(command('cargo', ['metadata', '--no-deps', '--locked', '--format-version', '1',
   '--manifest-path', 'native/Cargo.toml']));

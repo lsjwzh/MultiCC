@@ -307,7 +307,7 @@ test('the front door is found where the native module is, and a missing one refu
   const launch = desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
     platform: 'darwin', arch: 'arm64', exists: () => true });
   assert.deepEqual(launch, { command: prebuilt,
-    args: ['serve', '--cwd', serverDir, '--node', '/rt/node', '--stdin-lifeline', entry] });
+    args: ['serve', '--cwd', serverDir, '--stdin-lifeline', '--no-node'] });
   assert.throws(() => desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
     platform: 'darwin', arch: 'arm64', exists: () => false }),
   error => error.code === 'GATEWAY_MISSING' && error.message.includes(prebuilt));
@@ -536,7 +536,7 @@ test('supervisor: stop() after an already-exited never-ready child returns promp
 // same step as the module).
 
 function gatewayLaunchForFixture() {
-  const launch = desktopEnv.gatewayLaunch({ serverEntry: FIXTURE, node: process.execPath });
+  const launch = desktopEnv.gatewayLaunch({ serverEntry: FIXTURE, node: process.execPath, env: { ...process.env, MULTICC_COMPAT_HOST: '1' } });
   return { command: launch.command, args: launch.args };
 }
 
@@ -612,7 +612,7 @@ test('front door: killing the supervising process takes the front door and Node 
   const pidfile = path.join(dir, 'child.pid');
   const port = await reservePort();
   const host = spawn(process.execPath, [FOREGROUND_SUPERVISOR], {
-    env: { ...process.env, ...GATEWAY_TEST_ENV, GATEWAY: '1', PORT: String(port), READY_TARGET: '99',
+    env: { ...process.env, ...GATEWAY_TEST_ENV, GATEWAY: '1', MULTICC_COMPAT_HOST: '1', PORT: String(port), READY_TARGET: '99',
       LOGS_DIR: dir, RUNTIME_INFO_FILE: runtimeInfoFile, SPAWN_CHILD_PIDFILE: pidfile },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -1367,7 +1367,12 @@ test('desktop-release workflow: three native runners, publishes before Android, 
   // land on the same release; a failed build blocks publishing instead of
   // shipping a half-populated Release.
   assert.match(wf, /scripts\/standalone-bundle\.js/);
-  assert.match(wf, /needs: \[core-tests, clean-install, rust-kernels, build, standalone\]/);
+  assert.match(wf, /needs: \[core-tests, clean-install, rust-kernels, build, standalone, service\]/);
+  const service = wf.slice(wf.indexOf('  service:\n'), wf.indexOf('  standalone:\n'));
+  assert.match(service, /cargo build --locked --release/);
+  assert.match(service, /stage-rust-runtime\.sh/);
+  assert.match(service, /production-workers\.py/);
+  assert.doesNotMatch(service, /actions\/setup-node|npm (?:ci|install|start)/);
   assert.match(wf, /multicc-standalone-\$\{VERSION\}-darwin-x64\.tar\.gz/);
   assert.match(wf, /multicc-standalone-\$\{VERSION\}-linux-arm64\.tar\.gz/);
   assert.match(wf, /multicc-standalone-\$\{VERSION\}-win32-x64\.zip/);

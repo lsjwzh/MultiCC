@@ -17,10 +17,16 @@ pub mod air_routes;
 pub mod artifacts;
 pub mod auth;
 pub mod auto_provider_routing;
+mod aux_goal;
+pub(crate) mod aux_runtime;
+mod aux_transport;
 pub mod claude_models;
 pub mod cli_switch;
 mod cron_calendar;
+mod cron_create;
 pub(crate) mod cron_list;
+pub(crate) mod cron_runtime;
+mod cron_script;
 pub mod directory_list;
 mod directory_routes;
 pub mod docs_memory_routes;
@@ -40,6 +46,7 @@ pub mod plugins;
 pub mod provider_balance;
 mod provider_balance_adapters;
 mod provider_balance_panels;
+mod provider_catalog_stats;
 pub mod provider_limit_history;
 pub mod provider_relay;
 pub mod providers;
@@ -65,6 +72,7 @@ pub mod session_routes;
 pub mod share_entry;
 mod share_machine_routes;
 pub mod source_workspaces;
+mod standalone_catalog;
 pub mod static_assets_routes;
 pub mod static_web_root;
 pub mod subagent_defaults;
@@ -74,6 +82,7 @@ pub mod task_shell;
 pub mod token_usage_by_role;
 pub mod token_usage_global;
 pub mod turn_ledger;
+mod update_status;
 pub mod uploads;
 pub mod voice_gateway;
 pub mod voice_routes;
@@ -689,6 +698,7 @@ pub struct App {
     /// The vault answered each request to completion on one thread in Node;
     /// every route here awaits one host round trip, so serialize them.
     pub secrets_vault: tokio::sync::Mutex<()>,
+    pub vault_metadata: std::sync::OnceLock<Arc<multicc_core::vault_metadata::Catalog>>,
     /// `src/routes/providers.js` ran each write handler to completion on the
     /// event loop; these routes await host round trips instead.
     pub providers_write: tokio::sync::Mutex<()>,
@@ -705,6 +715,8 @@ pub struct App {
     /// classify state machine, so serialize them.
     pub(crate) session_merge: Arc<session_merge::Cache>,
     pub(crate) channels: resident_channels::Registry,
+    pub(crate) aux_jobs: std::sync::OnceLock<Arc<aux_runtime::Runtime>>,
+    pub(crate) cron_execution: cron_runtime::ExecutionLocks,
     pub(crate) cron_lock: tokio::sync::Mutex<()>,
     pub session_admin_write: tokio::sync::Mutex<()>,
     /// `src/routes/session-memory.js`, `session-bundle.js`, `session-lifecycle.js`,
@@ -864,11 +876,14 @@ impl App {
             token_usage_global: Mutex::new(token_usage_global::State::default()),
             subagent_defaults: tokio::sync::Mutex::new(()),
             secrets_vault: tokio::sync::Mutex::new(()),
+            vault_metadata: Default::default(),
             providers_write: tokio::sync::Mutex::new(()),
             session_git_write: tokio::sync::Mutex::new(()),
             task_shell_write: tokio::sync::Mutex::new(()),
             session_merge: Default::default(),
             channels: Default::default(),
+            aux_jobs: Default::default(),
+            cron_execution: Default::default(),
             cron_lock: Default::default(),
             session_admin_write: tokio::sync::Mutex::new(()),
             session_routes_write: tokio::sync::Mutex::new(()),
@@ -1246,7 +1261,7 @@ pub async fn handle(
             )
             .await
         }
-        Route::StandaloneCron(read) => return cron_list::handle(&app, &ctx, read).await,
+        Route::StandaloneCron(read) => return cron_list::handle(&app, &ctx, read, body).await,
         Route::Plugins(plugins::Route::Channels) if !app.node_enabled => {
             return resident_channels::list(&app, &ctx).await
         }

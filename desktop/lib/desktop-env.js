@@ -98,7 +98,7 @@ function gatewayBinary({ serverDir, env = process.env, platform = process.platfo
   return path.join(dir, name);
 }
 
-// What the supervisor spawns: the front door, told which Node runs which entry.
+// Packaged services start Rust directly. An explicit compatibility host is available for legacy installations.
 // `--stdin-lifeline`: the supervisor holds the front door's stdin, so whatever
 // way the supervisor goes away, the front door and then Node shut down too.
 function gatewayLaunch({ serverEntry, node, packaged = false, env = process.env, platform, arch, exists = fs.existsSync }) {
@@ -109,7 +109,10 @@ function gatewayLaunch({ serverEntry, node, packaged = false, env = process.env,
     error.code = 'GATEWAY_MISSING';
     throw error;
   }
-  return { command, args: ['serve', '--cwd', serverDir, '--node', node, '--stdin-lifeline', serverEntry] };
+  const args = ['serve', '--cwd', serverDir, '--stdin-lifeline'];
+  if (env.MULTICC_COMPAT_HOST === '1') args.push('--node', node, serverEntry);
+  else args.push('--no-node');
+  return { command, args };
 }
 
 // Same tolerant KEY=VALUE parsing as src/host-env.js readEnvFile: one assignment

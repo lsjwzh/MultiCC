@@ -20,7 +20,7 @@ const paths = [
   '/api/machines', '/api/share/unknown/entry', '/api/repo-operations/unknown',
 ];
 
-async function start(dir, gateway, addon, fixture, seeded = false, upgradedBoard) {
+async function start(dir, gateway, addon, fixture, seeded = false, upgradedBoard, deployment = {}) {
   for (const part of ['data', 'home', 'package']) fs.mkdirSync(path.join(dir, part), { recursive: true });
   const cwd = path.join(dir, 'package');
   for (const name of ['public', 'package.json']) {
@@ -39,7 +39,7 @@ async function start(dir, gateway, addon, fixture, seeded = false, upgradedBoard
   const env = { ...require(path.join(root, 'tests/helpers/isolated-host-env'))(),
     HOME: path.join(dir, 'home'), USERPROFILE: path.join(dir, 'home'), HOST: '127.0.0.1',
     MULTICC_DATA_DIR: path.join(dir, 'data'), MULTICC_ENV_FILE: path.join(cwd, '.env'),
-    MULTICC_RUST_ADDON: addon, NODE_ENV: 'test', ACCESS_TOKEN: token, ASR_LOCAL: 'off',
+    MULTICC_RUST_ADDON: addon, NODE_ENV: 'test', ACCESS_TOKEN: token, ASR_LOCAL: 'off', ...deployment,
   };
   if (seeded) {
     const seed = (name, value) => fs.writeFileSync(path.join(dir, 'data', name), JSON.stringify(value), { mode: 0o600 });

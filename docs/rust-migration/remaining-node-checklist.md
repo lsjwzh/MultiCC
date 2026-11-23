@@ -2,15 +2,25 @@
 
 ## 默认构建与部署路径（2026-11-24）
 
-| 入口 | 迁移前 | 当前运行路径 |
-|---|---|---|
-| Cargo 默认构建 | 工作区默认包含 N-API addon | 默认成员只构建 Rust 程序和库。全工作区测试及兼容宿主显式选择 addon |
-| 网关命令 | 必须显式选择运行时 | `serve --cwd .` 直接运行 Rust，支持外置配置文件；显式 `--node` 用于宿主 |
-| 根源码包、PM2、根 Linux 镜像 | 根包曾声明 18 项 Node 运行依赖 | 启动 Rust 网关，独立入口的通知配置读写、设备视图和持久化由 Rust 处理 |
-| 源码管理器及其 launchd、独立包和桌面后端 | Node 兼容宿主 | 这些入口仍启动宿主。桌面与独立包按自己的安装目录选择网关和兼容模块。兼容性切换探针见下方命令 |
-| 旧插件与后台任务 | 原宿主拥有调度、队列和投递 | Rust 可读取 cron 列表、月历及单项运行历史。cron 自动触发、Aux 消费、渠道投递及多项写路径尚待接管 |
+| 默认生产服务中逐项计数 | 数量 |
+|---|---:|
+| 后端 `.js` / `.cjs` / `.mjs` 文件 | 0 |
+| Node、npm 可执行文件及 N-API 扩展 | 0 |
+| 随服务安装的 npm 包、Node 运行依赖 | 0 |
+| 程序目录中的 npm 依赖清单 | 0 |
+| Rust 程序 | 5 |
 
-运行 `node docs/rust-migration/differential/production-entry.js "$GATEWAY" "$FIXTURE_ADDON" --cutover` 可用隔离的真实双入口核对切换条件。只要抽样接口的状态码或错误码不同，该命令即退出 1。源码宿主的逐文件依赖由 `scripts/inventory-node-backend.js` 生成。macOS ARM64 两种安装包均附带 17 项必需、1 项可选 Node 依赖，服务端实际安装 331 个包位置。版本、路径和复查命令见[安装包逐项盘点](packaged-backend-darwin-arm64.md)。
+清点范围为 `make stage` 的目录、由它生成的服务归档和根 Dockerfile 最终层。`public/` 及插件的 `ui/`、`public/` 供浏览器执行。根源码分发包的 npm 清单仅用于开发及打包，生产依赖图为零。默认 Cargo 成员的普通依赖图中没有 Node 绑定。[实测结果](production-entry-2026-11-24.md)
+
+| 入口或功能 | 当前所有者与验证 |
+|---|---|
+| 构建与启动 | `make production` 使用 Cargo；`make start`、源码管理器、launchd 和根镜像直接运行网关。服务归档的入口为 `bin/multicc-gateway`。 |
+| cron | 网关解析五字段规则，持久化触发分钟、在途记录和运行历史。脚本与固定任务投递均有手动及恢复覆盖。 |
+| Aux | Rust 消费 SQLite 队列，管理并发与取消，发送 Messages、Chat Completions 或 Responses 请求，保留终态、健康信息和历史。服务原生接入手动入队、Goal 预检及语音进度摘要。 |
+| 兼容发行物 | 带 Electron 的客户端和由旧安装器下载的 `multicc-standalone-*` 仍包含 Node 管理程序与兼容宿主文件；默认后端选用 Rust。要部署零 Node 的服务，使用 `multicc-service-*`、根镜像或 `make stage`。 |
+| 其他产品功能 | 渠道消息投递、部分会话及仓库写操作仍依赖兼容宿主。旧宿主的记忆复盘、终端意图分类和任务板分类仍由各自的宿主模块发起。 |
+
+[源码兼容宿主清单](node-module-dependencies.md) · [旧式安装包盘点](packaged-backend-darwin-arm64.md)
 
 ## 2026-11-24 独立生产网关（上一批基线）
 

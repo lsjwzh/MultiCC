@@ -38,6 +38,7 @@ toml_edit = "0.22"
 crc32fast = "1"
 flate2 = "1"
 icu_collator = "2"
+icu_locale_core = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

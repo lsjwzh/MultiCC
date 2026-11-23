@@ -140,7 +140,14 @@ fn default_version_result(ctx: &RequestCtx) -> Response<Body> {
 /// Any failure (missing or malformed package.json) maps to the default DTO,
 /// exactly the retired handler's catch.
 fn read_install_metadata(app: &App) -> Option<(String, String)> {
-    let package_json = std::fs::read_to_string(app.package_root.join("package.json")).ok()?;
+    let package_json = match std::fs::read_to_string(app.package_root.join("multicc-release.json"))
+    {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::read_to_string(app.package_root.join("package.json")).ok()?
+        }
+        Err(_) => return None,
+    };
     let channel_sidecar = std::fs::read_to_string(app.package_root.join(".multicc_channel")).ok();
     system_info::install_metadata(&package_json, channel_sidecar.as_deref())
 }

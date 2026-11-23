@@ -33,6 +33,9 @@ struct Account {
     id: String,
     created_at: Option<f64>,
     logged_in: bool,
+    label: String,
+    email: String,
+    subscription: Value,
 }
 
 fn official_id(kind: &str) -> String {
@@ -95,6 +98,9 @@ fn claude_accounts(home: &Path) -> Vec<Account> {
             id: id.to_string(),
             created_at: created_at(data.get("createdAt")),
             logged_in: access,
+            label: data["label"].as_str().unwrap_or_default().trim().into(),
+            email: data["email"].as_str().unwrap_or_default().into(),
+            subscription: Value::Null,
         });
     }
     list
@@ -124,7 +130,18 @@ fn codex_accounts(home: &Path) -> Vec<Account> {
             .and_then(|tokens| tokens.get("access_token"))
             .and_then(Value::as_str)
             .is_some_and(|text| !js_trim(text).is_empty());
+        let token = auth["tokens"]["id_token"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| auth["tokens"]["access_token"].as_str())
+            .unwrap_or_default();
         list.push(Account {
+            label: meta["label"].as_str().unwrap_or_default().trim().into(),
+            email: crate::provider_credentials::jwt(token)["email"]
+                .as_str()
+                .unwrap_or_default()
+                .into(),
+            subscription: crate::provider_credentials::codex_subscription(&auth),
             id,
             created_at: created_at(meta.get("createdAt")),
             logged_in: access,
@@ -183,29 +200,58 @@ fn default_account(selection: &Value, kind: &str, accounts: &[Account]) -> Resul
         .unwrap_or(selected))
 }
 
-/// `officialCatalog.listOfficial(type)`, reduced to the two fields the kernel
-/// sees. `defaultAccount` is evaluated for its throw, not for `isDefault`.
-fn list_official(data_root: &Path, home: &Path, kind: &str) -> Result<Vec<Value>, ()> {
+fn list_official(
+    selection: &Value,
+    home: &Path,
+    kind: &str,
+    stored: &[Value],
+) -> Result<Vec<Value>, ()> {
     let accounts = accounts_of(home, kind);
-    let selection = read_selection(data_root)?;
-    let logged: Vec<&Account> = accounts
-        .iter()
-        .filter(|account| account.logged_in)
-        .collect();
-    default_account(&selection, kind, &accounts)?;
-    let mut rows = vec![json!({"id": official_id(kind), "appType": kind})];
-    for account in logged {
-        rows.push(json!({
-            "id": format!("{}-{}", official_id(kind), account.id),
-            "appType": kind,
-        }));
+    let default = default_account(selection, kind, &accounts)?;
+    let title = if kind == "codex" { "Codex" } else { "Claude" };
+    let mut rows = vec![];
+    for account in std::iter::once(None).chain(accounts.iter().filter(|a| a.logged_in).map(Some)) {
+        let mut cfg = if kind == "codex" {
+            json!({"auth":{"auth_mode":"chatgpt"},"config":""})
+        } else {
+            json!({"env":{}})
+        };
+        let mut id = official_id(kind);
+        let mut name = format!("同 {title} 终端");
+        if let Some(a) = account {
+            id = format!("{id}-{}", a.id);
+            let label = [&a.label, &a.email]
+                .into_iter()
+                .map(|s| s.trim())
+                .find(|s| !s.is_empty())
+                .unwrap_or(&a.id[..6]);
+            name = format!("{title} 账号 · {label}");
+            cfg["officialAccount"] = json!({"id":a.id});
+        }
+        let mut row = json!({"id":id,"name":name,"appType":kind,"source":"builtin","builtinOfficial":true,
+            "activeAccountId":account.map_or("global",|a|&a.id),"isDefaultOfficial":account.is_some_and(|a|a.id==default),
+            "accountEmail":account.map(|a|&a.email).filter(|s|!s.is_empty()),"subscription":account.map(|a|&a.subscription),"settingsConfig":cfg});
+        if let Some(saved) = stored
+            .iter()
+            .find(|p| p["id"] == id && p["appType"] == kind)
+        {
+            row["egressIpAllowlist"] = saved["egressIpAllowlist"].clone();
+            let binding = &saved["egressBinding"];
+            if ["pluginId", "profileId"]
+                .iter()
+                .all(|k| binding[k].as_str().is_some_and(|s| !s.is_empty()))
+            {
+                row["egressBinding"] = binding.clone();
+            }
+        }
+        rows.push(row);
     }
     Ok(rows)
 }
 
 /// `src/providers/official-catalog.js` `configOf`; a parsed `null` is the one
 /// value that makes later `cfg.env` reads throw in JS, reported as Err.
-fn config_of(record: &Value) -> Result<Value, ()> {
+pub(super) fn config_of(record: &Value) -> Result<Value, ()> {
     match record.get("settingsConfig") {
         Some(Value::String(text)) => {
             Ok(crate::json_lenient::from_str(text).unwrap_or_else(|_| json!({})))
@@ -247,7 +293,7 @@ fn parse_object(value: Option<&Value>) -> Value {
     }
 }
 
-fn official_codex(record: &Value) -> bool {
+pub(super) fn official_codex(record: &Value) -> bool {
     static BASE_URL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let pattern = BASE_URL.get_or_init(|| {
         regex::Regex::new("(?i)(?:^|\\n)[\\s\\u{feff}]*base_url[\\s\\u{feff}]*=")
@@ -319,12 +365,14 @@ fn records(data_root: &Path) -> Result<Vec<Value>, ()> {
 }
 
 /// `officialCatalog.list(type)`.
-fn list(data_root: &Path, home: &Path, kind: &str) -> Result<Vec<Value>, ()> {
+pub(super) fn list(data_root: &Path, home: &Path, kind: &str) -> Result<Vec<Value>, ()> {
     let mut rows = Vec::new();
+    let stored = records(data_root)?;
+    let selection = read_selection(data_root)?;
     for official in TYPES {
-        rows.extend(list_official(data_root, home, official)?);
+        rows.extend(list_official(&selection, home, official, &stored)?);
     }
-    for record in records(data_root)? {
+    for record in stored {
         if record.is_null() {
             // The Node filter reads `p.id` on a null record: TypeError, empty
             // list for the whole call.
@@ -343,8 +391,48 @@ fn list(data_root: &Path, home: &Path, kind: &str) -> Result<Vec<Value>, ()> {
     }
     Ok(rows
         .into_iter()
-        .filter(|row| row.get("appType").and_then(Value::as_str) == Some(kind))
+        .filter(|row| kind.is_empty() || row.get("appType").and_then(Value::as_str) == Some(kind))
         .collect())
+}
+
+pub fn normalize_default(
+    root: &Path,
+    home: &Path,
+    kind: &str,
+    id: &Value,
+) -> Result<Value, &'static str> {
+    let alias = official_id(kind);
+    if !truthy(id) || id == "_default_" || id == &alias {
+        return Ok(alias.into());
+    }
+    let exists = |account: &str| accounts_of(home, kind).iter().any(|a| a.id == account);
+    if let Some(account) = id
+        .as_str()
+        .and_then(|s| s.strip_prefix(&format!("{alias}-")))
+        .filter(|s| is_account_id(s))
+    {
+        return Ok(if exists(account) {
+            id.clone()
+        } else {
+            alias.into()
+        });
+    }
+    if let Some(old) = records(root)
+        .map_err(|_| "invalid providers")?
+        .iter()
+        .find(|p| p["appType"] == kind && p["id"] == *id)
+    {
+        if is_official(old).map_err(|_| "invalid provider")? {
+            let cfg = config_of(old).map_err(|_| "invalid settings")?;
+            return Ok(cfg["officialAccount"]["id"]
+                .as_str()
+                .filter(|s| is_account_id(s) && exists(s))
+                .map(|s| format!("{alias}-{s}"))
+                .unwrap_or(alias)
+                .into());
+        }
+    }
+    Ok(id.clone())
 }
 
 /// Identities for one `listProviders(type)` call: `[{appType, providerId}]`

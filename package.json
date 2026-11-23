@@ -4,7 +4,7 @@
   "description": "Web interface for Claude Code CLI",
   "license": "MIT",
   "scripts": {
-    "start": "native/target/release/multicc-gateway serve --cwd . --no-node",
+    "start": "echo Start the service with make start or multicc-gateway serve --cwd . && exit 1",
     "i18n:generate": "node scripts/generate-i18n.js",
     "test:i18n": "node scripts/generate-i18n.js && node tests/test-i18n.js",
     "test:tiers:check": "node scripts/check-test-tiers.js",
@@ -106,6 +106,8 @@
     "ws": "^8.21.1"
   },
   "files": [
+    "Makefile",
+    "scripts/stage-rust-runtime.sh",
     ".cargo/config.toml",
     "native/Cargo.toml",
     "native/Cargo.lock",

@@ -13,6 +13,7 @@ use crate::app::App;
 use crate::ws_chat::PATH;
 
 pub struct ConnectionRequest {
+    pub path: String,
     pub session: Option<String>,
     pub shell: Option<String>,
     pub archive: bool,
@@ -29,6 +30,7 @@ impl ConnectionRequest {
                 .collect();
         let get = |field| param(&query, field).map(ToOwned::to_owned);
         Self {
+            path: request.uri().path().to_owned(),
             session: get("session"),
             shell: get("shell").filter(|value| !value.is_empty()),
             archive: get("historyScope").as_deref() == Some("archive"),
@@ -60,10 +62,10 @@ impl ConnectionRequest {
         let mut facts = Facts {
             shutting_down: snapshot.as_ref().is_some_and(|value| value.shutting_down),
             peer_allowed: !app.lan_only || http_gate::is_private_network_address(&peer),
-            path: PATH.into(),
+            path: self.path.clone(),
             share_param: get("share").unwrap_or("").into(),
             session_param: self.session.clone(),
-            addressed_session_id: self.session.clone(),
+            addressed_session_id: (self.path == PATH).then(|| self.session.clone()).flatten(),
             local: http_gate::is_local_request(&peer, &self.headers),
             access_token: !secret.is_empty(),
             has_ticket_param: get("ticket").is_some(),
@@ -91,7 +93,7 @@ impl ConnectionRequest {
         if app.auth.has_local() && ws_admission::needs_ticket(&facts) {
             let request = AuthRequest::ConsumeTicket {
                 ticket: get("ticket").unwrap_or("").into(),
-                path: PATH.into(),
+                path: self.path.clone(),
             };
             if let Ok(AuthResponse::Redeemed { metadata, .. }) = app.auth.request(request).await {
                 facts.consumed_ticket = ws_admission::ticket_from(&metadata);

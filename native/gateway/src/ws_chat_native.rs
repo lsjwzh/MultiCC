@@ -266,6 +266,12 @@ where
         send_refusal(&mut socket, initial).await;
         return;
     }
+    if request.path == "/ws/aux" {
+        if let Some(rt) = app.aux_jobs.get() {
+            rt.serve_socket(&app.data_root, &mut socket).await;
+        }
+        return;
+    }
     let root = app.data_root.clone();
     let records = tokio::task::spawn_blocking(move || store::records(&root)).await;
     let records = match records {

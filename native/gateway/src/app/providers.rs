@@ -56,7 +56,7 @@ use crate::app::App;
 use crate::host_port;
 
 #[path = "provider_catalog_view.rs"]
-mod catalog_view;
+pub(super) mod catalog_view;
 
 /// The host port the Node child serves (`src/routes/providers-host.js`).
 const HOST_PATH: &str = "/api/__host/providers";
@@ -388,7 +388,7 @@ fn bad_param(ctx: &RequestCtx) -> Response<Body> {
 }
 
 /// `GET|HEAD /api/providers`.
-async fn catalog(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
+async fn catalog(app: &Arc<App>, ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
     let app_type = match query_trimmed(ctx, "appType") {
         Ok(value) => value,
         Err(detail) => return express::error(ctx, 500, &detail),
@@ -397,6 +397,9 @@ async fn catalog(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
         Ok(value) => value,
         Err(detail) => return express::error(ctx, 500, &detail),
     };
+    if !app.node_enabled {
+        return super::standalone_catalog::handle(app, ctx, Some((app_type, cli))).await;
+    }
     let mut payload = Map::new();
     payload.insert("op".into(), json!("catalog"));
     payload.insert("appType".into(), json!(app_type));
@@ -1646,7 +1649,7 @@ pub async fn handle(
         | Route::V1ProvidersOptions
         | Route::LocalCliOptions
         | Route::SyncLocalOptions => super::options(ctx, route.allow().unwrap_or_default()),
-        Route::CatalogGet => catalog(ctx, host_port_num).await,
+        Route::CatalogGet => catalog(app, ctx, host_port_num).await,
         Route::StatsGet => stats(ctx, host_port_num).await,
         Route::ImportPost => import(app, ctx, host_port_num).await,
         Route::CreatePost => create(app, ctx, body, host_port_num).await,

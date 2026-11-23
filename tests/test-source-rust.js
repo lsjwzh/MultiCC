@@ -366,72 +366,45 @@ nativeTest('edits made during compilation discard the output instead of caching 
   assert.equal(fs.existsSync(path.join(before.prebuiltDir, `${process.platform}-${process.arch}/multicc_core.node`)), false);
 });
 
-nativeTest('real source manager exports the selected addon before preflight and never starts after build failure', t => {
+nativeTest('source manager refuses a failed Cargo build before writing a PID', t => {
   const { root, env, count } = fixture(t);
   write(root, 'multicc', fs.readFileSync(path.join(ROOT, 'multicc')));
-  write(root, 'src/server-processes.js', '// fixture: no server is running\n');
-  write(root, 'scripts/check-runtime-deps.js', `require('fs').writeFileSync('preflight-addon',process.env.MULTICC_RUST_ADDON||'');process.exit(57);`);
-  const run = extra => spawnSync('/bin/bash', [path.join(root, 'multicc'), 'start'], {
-    cwd: root, env: { ...env, ...extra }, encoding: 'utf8', timeout: 30_000,
+  const result = spawnSync('/bin/bash', [path.join(root, 'multicc'), 'start'], {
+    cwd: root, env: { ...env, MULTICC_GATEWAY_BIN: '', TEST_RUST_BUILD_FAIL: '1' }, encoding: 'utf8',
   });
-  const first = run({}); assert.notEqual(first.status, 0); assert.equal(count(), 1);
-  assert.equal(probeAddon(fs.readFileSync(path.join(root, 'preflight-addon'), 'utf8')), true);
-  fs.rmSync(path.join(root, 'preflight-addon'));
-  const again = run({}); assert.notEqual(again.status, 0); assert.equal(count(), 1);
-  fs.rmSync(path.join(root, 'preflight-addon'));
-  write(root, 'native/core/src/lib.rs', '// new source\n');
-  const failure = run({ TEST_RUST_BUILD_FAIL: '1' });
-  assert.notEqual(failure.status, 0); assert.match(failure.stderr, /服务尚未启动/);
-  assert.equal(fs.existsSync(path.join(root, 'preflight-addon')), false);
+  assert.notEqual(result.status, 0);
+  assert.equal(count(), 1);
   assert.equal(fs.existsSync(path.join(root, '.multicc.pid')), false);
 });
 
-nativeTest('source start boots an isolated server with the built addon and a repeated start never rebuilds', async t => {
-  const { root, env: fixtureEnv, count } = fixture(t);
-  // ./multicc only starts through the Rust front door: this checkout declares
-  // it, and the stand-in compiler hands out the real binary built next to the
-  // real addon. The front door rejects PORT=0, so give it a free port.
-  const gatewayBinary = path.join(path.dirname(path.resolve(addon)), 'multicc-gateway');
-  assert.ok(fs.existsSync(gatewayBinary), `${gatewayBinary} is missing; run node scripts/ensure-source-rust.js first`);
-  write(root, 'native/Cargo.toml', '[workspace]\nmembers = ["core", "gateway"]\n');
+nativeTest('source manager starts the Rust service, rejects a duplicate, and stops the owned PID', async t => {
+  const { root, env: baseEnv } = fixture(t);
+  const gateway = path.join(path.dirname(path.resolve(addon)), 'multicc-gateway');
+  write(root, 'multicc', fs.readFileSync(path.join(ROOT, 'multicc')));
   const port = await new Promise(resolve => {
     const probe = require('node:net').createServer();
-    probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+    probe.listen(0, '127.0.0.1', () => { const port = probe.address().port; probe.close(() => resolve(port)); });
   });
-  const env = { ...fixtureEnv, PORT: String(port), TEST_RUST_GATEWAY: gatewayBinary };
-  let pid;
-  t.after(async () => {
-    if (!pid) return;
-    try { process.kill(pid, 'SIGTERM'); } catch (_) {}
-    for (let i = 0; i < 100; i++) {
-      try { process.kill(pid, 0); } catch (_) { return; }
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-    try { process.kill(pid, 'SIGKILL'); } catch (_) {}
-  });
-  write(root, 'multicc', fs.readFileSync(path.join(ROOT, 'multicc')));
-  write(root, 'src/server-processes.js', `if(process.argv[2]==='list'){
-    try{const id=Number(require('fs').readFileSync('.multicc.pid','utf8'));process.kill(id,0);console.log(id)}catch{}}`);
-  write(root, 'scripts/check-runtime-deps.js', 'process.exit(0);');
-  write(root, 'server.js', `const db=new (require(process.env.MULTICC_RUST_ADDON).RustDatabase)(':memory:',false,false,5000);
-    db.exec('CREATE TABLE booted(x)');db.close();require('fs').writeFileSync('booted-addon',process.env.MULTICC_RUST_ADDON);
-    process.stdin.on('end',()=>process.exit(0));process.stdin.resume();
-    process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);`);
-  const run = () => spawnSync('/bin/bash', [path.join(root, 'multicc'), 'start'], {
-    cwd: root, env, encoding: 'utf8', timeout: 30_000,
-  });
-  const first = run();
-  const pidFile = path.join(root, '.multicc.pid');
-  if (fs.existsSync(pidFile)) pid = Number(fs.readFileSync(pidFile, 'utf8'));
+  const env = { ...baseEnv, MULTICC_GATEWAY_BIN: gateway, HOME: root, HOST: '127.0.0.1',
+    MULTICC_DATA_DIR: path.join(root, 'data'), MULTICC_ENV_FILE: path.join(root, 'empty.env'),
+    ACCESS_TOKEN: 'source-manager-fixture', PORT: String(port) };
+  const run = cmd => spawnSync('/bin/bash', [path.join(root, 'multicc'), cmd],
+    { cwd: root, env, encoding: 'utf8', timeout: 30_000 });
+  const first = run('start');
   assert.equal(first.status, 0, first.stderr + first.stdout);
-  assert.match(first.stdout, /started behind multicc-gateway/);
-  // The addon, front door and restart supervisor are built once each.
-  assert.ok(pid > 1); assert.equal(count(), 3);
-  const booted = path.join(root, 'booted-addon');
-  for (let i = 0; i < 200 && !fs.existsSync(booted); i++) await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(probeAddon(fs.readFileSync(booted, 'utf8')), true);
-  const repeated = run();
-  assert.notEqual(repeated.status, 0); assert.match(repeated.stdout, /already running/); assert.equal(count(), 3);
+  const pid = Number(fs.readFileSync(path.join(root, '.multicc.pid'), 'utf8'));
+  t.after(() => { try { process.kill(pid, 'SIGTERM'); } catch {} });
+  assert.ok(pid > 1);
+  assert.equal((await fetch('http://127.0.0.1:' + port + '/readyz')).status, 200);
+  const command = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).stdout;
+  assert.match(command, /multicc-gateway serve .*--no-node/);
+  assert.doesNotMatch(command, /server\.js/);
+  const repeated = run('start');
+  assert.notEqual(repeated.status, 0);
+  assert.match(repeated.stdout, /already running/);
+  const stopped = run('stop');
+  assert.equal(stopped.status, 0, stopped.stderr + stopped.stdout);
+  assert.equal(fs.existsSync(path.join(root, '.multicc.pid')), false);
 });
 
 // ---- 远控二进制：原型开发的补编路径（可选件，失败不阻断启动） ----

@@ -1,24 +1,39 @@
 # Rust 前门 multicc-gateway（进程结构倒置 + L7 转发）
 
-## 源码包部署（2026-11-24）
+## 生产服务部署（2026-11-24）
 
-根 npm 包提供 Rust 源码和 Web 静态资源。安装 Rust、Cargo、C/C++ 工具链与 libclang 后，在解包目录执行：
+源码需要 Cargo、C/C++ 工具链和 libclang。在环境中提供 `ACCESS_TOKEN`，把状态和可写配置指向持久卷。下面从检出构建出一个可拷贝到同平台主机的新目录，并在回环地址启动。
 
 ```sh
-cargo build --locked --release --manifest-path native/Cargo.toml --target-dir native/target
-native/target/release/multicc-gateway serve --cwd .
+make stage DESTDIR="$PWD/multicc-service"
+export HOST=127.0.0.1
+export MULTICC_DATA_DIR="$HOME/.local/share/multicc"
+mkdir -p "$MULTICC_DATA_DIR"
+export MULTICC_ENV_FILE="$MULTICC_DATA_DIR/multicc.env"
+exec ./multicc-service/bin/multicc-gateway serve --cwd "$PWD/multicc-service"
 ```
 
-构建后可在没有 Node 或 npm 的主机上直接运行同平台的产物。保留 `public/`、插件的静态资源及 `package.json`，在该目录启动 `native/target/release/multicc-gateway serve --cwd . --no-node`。目录卡从本地 Git 引用计算推送状态，部署主机需提供 Git。首次访问 Web Push 公钥时，网关在 `MULTICC_ENV_FILE` 指定的文件中原子保存密钥对，默认位置为部署目录的 `.env`；只读安装目录应显式指定数据卷内的配置文件。将 `multicc-writer`、`multicc-remote`、`multicc-cdpd` 和 `restart-supervisor` 放在网关旁边。在部署环境配置 `ACCESS_TOKEN` 和可写的 `MULTICC_DATA_DIR`。仅供本机使用时请显式设置 `HOST=127.0.0.1`。若未指定监听地址或远程策略，长度至少 6 的访问令牌会触发自动局域网监听。显式绑定非回环地址须设置 `MULTICC_ALLOW_REMOTE=1` 和访问令牌。PM2 的仓库配置也直接运行 release 网关。
+`make start` 可直接从检出前台运行；`./multicc start` 管理后台进程。生产目录含五个 Rust 程序、版本文件 `multicc-release.json` 和浏览器资源。发布工作流打包同一目录为 `multicc-service-<版本>-<平台>-<架构>`。使用发布资产时校验同名 SHA-256 文件，解包后从包目录运行 `bin/multicc-gateway serve --cwd .`（Windows 为 `bin\multicc-gateway.exe`）。Git 用于工作树操作，计划任务中的外部 CLI 或脚本解释器由部署者提供。
 
-根目录的镜像配方可用 `docker build -t multicc-rust .` 构建。最终层包含 Rust 可执行文件、静态页面、CA 证书和运行用户。数据卷挂到 `/var/lib/multicc/data`。通过 Docker 发布端口时需在容器内设置非回环监听，例如：
+源码管理器执行 `./multicc restart` 时会等待 `/readyz`，核对响应头中的网关 PID 和进程工作目录。macOS 的管理器只重载工作目录指向当前检出的 launchd 服务。
+
+根 Dockerfile 使用相同的打包脚本。以下命令把端口发布到宿主回环地址，将配置和作业状态保存在同一数据卷。先在宿主环境设置 `ACCESS_TOKEN`。
 
 ```sh
+docker build -t multicc-rust .
 docker run --rm -p 127.0.0.1:3000:3000 -e HOST=0.0.0.0 -e PORT=3000 \
   -e MULTICC_ALLOW_REMOTE=1 -e ACCESS_TOKEN -v multicc-data:/var/lib/multicc/data multicc-rust
 ```
 
-纯 Rust 部署可读取任务板搜索、文档登记、主机信息和推送配置。会话、定时任务和渠道列表、通知设置读写可在独立网关运行。定时任务月历支持本地时区和订阅提示，单项历史最多返回 20 条，保留最近 2,000 个 UTF-16 单元的脚本输出。定时任务执行、渠道消息投递和多项写操作仍需兼容宿主。上线范围和实测状态见[生产入口验收记录](rust-migration/production-entry-2026-11-24.md)。
+cron 使用服务本地时区，每 30 秒检查到期规则；指定时区时须在主机或镜像中提供相应时区数据。规则、分钟标记和最近 20 次运行保存在 `scheduled_tasks.json`。不同规则可以同时执行。同一规则的手动触发与修改按顺序处理。重启后，待确认的 agent 投递复用原回执键；中断的脚本记为错误，保留已有外部副作用。停机期间尚未领取的历史分钟不会补跑。
+
+Aux 作业保存在 `aux-jobs.sqlite`。服务启动时继续消费排队项。已领取且结果未知的请求会记为中断，避免重复调用上游。用同一任务 ID 和载荷可以取回结果。配置、入队、取消、状态、历史和 WebSocket 更新由服务提供。
+
+从 Node 宿主切换时，先让旧内存队列中的 Aux 作业执行完毕，再停止旧服务。保留数据和配置目录。如果已有规则仅存于旧安装目录的 `plugins/cron/scheduled_tasks.json`，请在新服务第一次启动前将它复制到数据目录下的 `scheduled_tasks.json`。已有同名数据文件时以数据目录为准。启动后检查 `/readyz`。同一数据目录只允许一个 Rust 网关领取作业。[生产入口验收记录](rust-migration/production-entry-2026-11-24.md)
+
+独立网关上的 `GET /api/update/status` 支持源码、桌面和 standalone 的日志布局。源码和桌面安装从程序目录读取 `logs/update.log`，standalone 从数据目录读取。管理面板可查看步骤、退出码和日志尾部。发起更新仍使用兼容宿主。
+
+`GET /api/secrets` 返回启动时加载的保险箱元数据。数据目录下的 `logs/secret-audit.jsonl` 必须可写，每次列表读取都记录开始和完成。审计失败时接口返回 503。新增、改名、删除、查看值及向 CLI 注入变量仍由兼容宿主提供。
 
 ## 目标与边界
 
@@ -36,7 +51,7 @@ docker run --rm -p 127.0.0.1:3000:3000 -e HOST=0.0.0.0 -e PORT=3000 \
 - 前门解析 HTTP，先匹配**原生路由**（由 Rust 直接应答，对应的 Node 路由已删除，见 §9），其余请求经 fallback 转发给 Node。
 - 转发仍然逐帧流式、不缓冲：8MB 上传下载、SSE / chunked 响应逐块到达客户端；WebSocket 升级把两侧字节流对接。
 - 进程管理、端口策略、PROXY 约定、看护与信号原样复用，与 L4 时代完全一致。
-- **所有启动入口、三个平台都经前门启动**：源码检出的 `./multicc`（start/restart、launchd 登录服务）、独立包启动器（含它的 launchd / systemd / Windows 登录自启）、桌面壳（`MULTICC_DESKTOP=1`），macOS / Linux / Windows 一样。没有任何「起不来就直接跑 `node server.js`」的退路，前门和原生模块一样是必需件（见 §8）。根包的 `npm start` 直接运行纯 Rust 网关。直接 `node server.js` 只剩集成测试在用：它缺少 §9 里已经搬进前门的路由，不是完整的服务。
+- 源码服务、launchd、服务归档和根镜像均直接启动 Rust 网关。桌面壳和旧式独立包保留自己的管理运行时，默认后端同样选择 Rust。
 
 兼容宿主仍负责分享授权、通知配置写入、任务调度与部分路由所需的数据。源码管理脚本、desktop 和 standalone 的生产依赖见[逐文件清单](rust-migration/node-module-dependencies.md)。协议 15 网关每六小时清理过期的人机协助截图。
 
@@ -128,17 +143,11 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 
 ### 8. 启动入口与进程识别
 
-前门和原生模块一样是**必需件**：构建链三个平台都编译、打包它（`build-rust-kernels.js`、`stage-rust-kernels.js`，发布流程缺件即失败），`ensure-source-rust` 编不出来就报错、不启动。它总在原生模块同目录，查找规则和 `src/native/runtime.js` 找模块一致：`MULTICC_RUST_ADDON` 所在目录，否则 `MULTICC_RUST_PREBUILT_DIR`（缺省为 `native/prebuilt`）下的 `<平台>-<架构>/`。
-
-- `./multicc start`：`check_runtime_dependencies` 之后 `nohup multicc-gateway serve --cwd "$SCRIPT_DIR" --node "$NODE" server.js`。二进制不在或启动 1 秒内退出，都按启动失败处理。
-- `./multicc install` / `update`（macOS launchd 登录服务）：`ProgramArguments` 写成 `multicc-gateway serve --cwd <检出> --node <node> <检出>/server.js`；模块路径随每次源码更新而变，所以 update 时整组参数重写（旧 plist 还是 `node server.js`）。脚本保持绝对路径 `<检出>/server.js`，`install.sh` 靠它认出安装目录。
-- 独立包启动器（`scripts/standalone-launcher.js`，以及经它启动的 launchd / systemd / Windows 登录自启）与桌面壳（`desktop/main.js`）：`desktop/lib/backend-supervisor.js` 拉起 `multicc-gateway serve --cwd <app-server> --node <内置运行时> --stdin-lifeline <app-server>/server.js`（`desktop/lib/desktop-env.js` 的 `gatewayLaunch`）。Node 崩溃由前门重拉，supervisor 看不到；supervisor 只处理前门本身的退出（就绪后的 0 退出 = 重启请求、端口被占、崩溃循环）。停机仍先 `POST /api/desktop-shutdown`（经前门到 Node，Node 以 0 退出，前门随之退出），超时再按信号 / `taskkill /T` 升级。
-- `src/server-processes.js`：`serve` 模式、cwd 为本检出的 `multicc-gateway` 认作服务根进程；父进程是这种前门的 `node server.js` **不算**根（它是前门的后代，排空后由 `stopServers` 的 SIGTERM 兜底）。这样 stop/restart 只给前门发 SIGINT，前门转给 Node，不会出现「Node 先退、前门以为崩溃又拉起来」的竞态。
-- `list` / `status` / `lock-alive` / `owner` 一并认得前门。
+`./multicc start` 使用 Cargo release 网关；可用 `MULTICC_GATEWAY_BIN` 指定已构建的绝对路径。源码管理器按可执行文件与工作目录识别进程，launchd 的 ProgramArguments 直接调用网关。服务归档和镜像使用 `bin/multicc-gateway`。桌面和旧式独立包通过 supervisor 传入 `--stdin-lifeline`；只在显式选择 `MULTICC_COMPAT_HOST=1` 时启动随包的兼容宿主。
 
 2026-11-24 任务板分组和任务短码展示已由 Rust 原生模块提供。该批次切换前，`npm start` 执行 `node scripts/start-gateway.js`，启动 `multicc-gateway serve --cwd <检出> --node <node> --stdin-lifeline server.js`。分组保存、变更通知、任务查询和短码注册表仍由 Node 宿主提供。该版本的 `src/` 剩 531 个 `.js`、2 个 `.cjs`，根包仍有 19 个直接 Node 运行依赖。 [迁移批次清单](rust-migration/node-retirement-batches.md#任务板分组与任务短码展示2026-11-24)
 
-构建与本地启动的 npm 入口：`npm run build:gateway`（cargo 构建 `multicc-gateway` 与 `multicc-writer-launcher` 的 release 产物）、`npm run test:gateway`（对应两个 crate 的 cargo 测试）、`npm run start:gateway`（同 `npm start`，执行 release 网关的 `--no-node` 模式）。**Node-free 运行镜像**：`npm run docker:node-free` 构建 `docker/task-shell/Dockerfile` 的 `node-free-runtime` 阶段（debian:bookworm-slim + CA 证书 + 前门与写者启动器两个二进制，镜像内无 Node）。默认 CMD 是 `multicc-gateway serve --cwd /srv/multicc --no-node`，即 §8.1 的 Rust-only 形态：不需要 Node 状态的 Rust 代码照常运行；该镜像不带 `.env`，没有 `ACCESS_TOKEN` 可交给本地鉴权运行态，所以需要鉴权快照的原生路由与 §9 之外的路由一律立即 503 `node_runtime_absent`（带上合法 token 的 `--no-node` 会启用前门自持的鉴权运行态，见 §8.1）。构建期冒烟断言 `--version` 形状、无 node、裸前门退出 2、裸 writer 退出 64，并调用 `scripts/smoke-no-node-gateway.sh`；CI 的 `rust-kernels.yml` 的 `node-free-runtime` job 会构建并复跑这些冒烟。它不能替代 `--node`：完整功能仍需 Node 上游（见 README「What the Rust front door does not cover yet」）。
+开发时可用 `npm run test:gateway` 运行兼容套件。`docker/task-shell/Dockerfile` 中的双程序镜像仅用于实验；生产部署使用根目录 Dockerfile，其入口、静态资源和辅助程序见本文开头。
 
 ### 8.1 `--no-node`：Rust-only 前门（不拉起 Node）
 
@@ -179,7 +188,7 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 - **宿主端口调用立即失败**：经 `host_port` 找 Node 子进程的 Rust 路由（§9 里依赖会话表、provider 存储等 Node 事实的组）不再等 60 秒预算，立即返回该路由原有的 503 `rust_backend_unavailable` 形状。
 - **生命周期**：`SIGINT` / `SIGTERM` / `--stdin-lifeline` 的 EOF 都只停止接受新连接并以 **0** 退出；没有子进程要转发信号或等待排空。日志分别写 `stop signal received; no node to stop, no longer accepting` 与 `stdin closed by our parent; no node to stop, no longer accepting`。
 - **日志行**：绑定成功后紧跟一行 `[multicc-gateway] node runtime disabled (--no-node): routes not owned by Rust answer 503 node_runtime_absent`；运维和冒烟脚本以它判断运行模式。
-- **入口**：`scripts/start-rust-only.sh`（`$MULTICC_GATEWAY_BIN`，否则 `native/target/release/multicc-gateway`，`--cwd` 为本检出）与 `scripts/smoke-no-node-gateway.sh <二进制>`（空 `PATH` + `--ephemeral-loopback`，断言测试钩子路由 200、需鉴权的 claim 路由 503 且文案为「鉴权状态在 Node」、落 Node 路由 503 `node_runtime_absent`、SIGTERM 退出 0；冒烟刻意不设 `ACCESS_TOKEN`，所以走的是「本地无持有者」的失败关闭分支；macOS 与 Linux 可跑）。根包的 `npm start`、PM2 和根镜像使用 `--no-node`。源码管理器 `./multicc`、独立包启动器与桌面壳使用 `--node` 来提供仍依赖宿主的路由和 WS 功能。
+- **入口**：`scripts/start-rust-only.sh`（`$MULTICC_GATEWAY_BIN`，否则 `native/target/release/multicc-gateway`，`--cwd` 为本检出）与 `scripts/smoke-no-node-gateway.sh <二进制>`（空 `PATH` + `--ephemeral-loopback`，断言测试钩子路由 200、需鉴权的 claim 路由 503 且文案为「鉴权状态在 Node」、落 Node 路由 503 `node_runtime_absent`、SIGTERM 退出 0；冒烟刻意不设 `ACCESS_TOKEN`，所以走的是「本地无持有者」的失败关闭分支；macOS 与 Linux 可跑）。生产目录、源码管理器和根镜像默认只启动 Rust。
 
 ### 9. 原生路由（已从 Node 删除）
 

@@ -2,20 +2,10 @@
 # MultiCC service manager for a SOURCE CHECKOUT — start/stop/restart/log
 # Usage: ./multicc start|stop|restart|status|log|update [--force]|install|uninstall
 #
-# This script manages a git checkout of MultiCC (it runs `node server.js` from
-# this directory, and `update` is `git pull` + `npm install`). It is a
-# development tool.
-#
-# Users install MultiCC from the standalone package, which ships its own Node
-# runtime and its own `multicc` command — no Node or npm required for install.
-# A working git is still required at runtime for per-session worktrees:
-#
-#   curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.1.2/install.sh | bash
-#
-# That command lives at <install dir>/multicc and is unrelated to this file
-# apart from the name. See docs/standalone.md.
+# Manages the Rust service from a source checkout. Packaged services can run
+# the staged bin/multicc-gateway directly under their operating system supervisor.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 LABEL="com.multicc.server"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$SCRIPT_DIR/logs"
@@ -23,56 +13,46 @@ OUT_LOG="$LOG_DIR/multicc.log"
 ERR_LOG="$LOG_DIR/multicc-error.log"
 PID_FILE="$SCRIPT_DIR/.multicc.pid"
 
-# Resolve the node binary. Auto-detect from PATH (covers Homebrew on both
-# Apple Silicon and Intel, nvm/fnm, system installs); fall back to the common
-# install locations. Override with MULTICC_NODE=/path/to/node if needed.
-if [ -n "${MULTICC_NODE:-}" ] && [ -x "${MULTICC_NODE:-}" ]; then
-  NODE="$MULTICC_NODE"
-elif command -v node >/dev/null 2>&1; then
-  NODE="$(command -v node)"
-else
-  NODE=""
-  for _n in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-    [ -x "$_n" ] && NODE="$_n" && break
-  done
-fi
-if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
-  echo "Error: could not find a 'node' binary. Install Node.js >= 20.19," >&2
-  echo "       or set MULTICC_NODE=/full/path/to/node and retry." >&2
-  exit 1
-fi
-
-# SQLite and the runtime transport require Node's built-in sqlite support.
-_node_supported="$($NODE -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=16)?0:1)' 2>/dev/null)"
-if [ "$?" -ne 0 ]; then
-  echo "Error: MultiCC requires Node.js >=22.16.0 (found $($NODE -v 2>/dev/null))." >&2
-  echo "       Upgrade Node.js and retry." >&2
-  exit 1
-fi
-
-# Warn (but do not block) when node is older than the floor in package.json.
-# chokidar 5 is pure ESM and needs the require(ESM) backport that landed in
-# Node 20.19 / 22.12 — without it the server dies with a bare ERR_REQUIRE_ESM.
-_node_ver="$("$NODE" -v 2>/dev/null | sed 's/^v//')"
-_node_major="${_node_ver%%.*}"
-_node_rest="${_node_ver#*.}"
-_node_minor="${_node_rest%%.*}"
-case "$_node_major" in
-  ''|*[!0-9]*) ;;  # unparseable — say nothing
-  *)
-    if [ "$_node_major" -lt 20 ] || { [ "$_node_major" -eq 20 ] && [ "${_node_minor:-0}" -lt 19 ]; }; then
-      echo "Warning: Node $_node_ver is below the required >= 20.19 ($NODE)." >&2
-      echo "         MultiCC will likely fail with ERR_REQUIRE_ESM (chokidar 5)." >&2
-      echo "         Upgrade Node, or point MULTICC_NODE at a newer binary." >&2
-    fi
-    ;;
-esac
-
+GATEWAY_BIN="${MULTICC_GATEWAY_BIN:-$SCRIPT_DIR/native/target/release/multicc-gateway}"
 mkdir -p "$LOG_DIR"
 
-# ── Helpers ──
+process_directory() {
+  if [ -d "/proc/$1" ]; then
+    readlink "/proc/$1/cwd"
+  else
+    lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
+  fi
+}
+
+is_checkout_gateway() {
+  local cmd
+  [ "$(process_directory "$1")" = "$SCRIPT_DIR" ] || return 1
+  cmd=$(ps -ww -p "$1" -o args= 2>/dev/null) || return 1
+  case " $cmd " in
+    *"/multicc-gateway serve --cwd $SCRIPT_DIR "*|*" multicc-gateway serve --cwd $SCRIPT_DIR "*|*"/multicc-gateway serve --cwd . "*|*" multicc-gateway serve --cwd . "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 get_pids() {
-  "$NODE" "$SCRIPT_DIR/src/server-processes.js" list "$SCRIPT_DIR"
+  local pid
+  for pid in $(ps -axo pid=,comm= | awk '$NF ~ /(^|\/)multicc-gateway$/ {print $1}'); do
+    if is_checkout_gateway "$pid"; then echo "$pid"; fi
+  done
+}
+
+configured_port() {
+  local port="${PORT:-}"
+  [ -n "$port" ] || port=$(sed -n 's/^PORT=[[:space:]]*\([0-9][0-9]*\).*$/\1/p' "${MULTICC_ENV_FILE:-$SCRIPT_DIR/.env}" 2>/dev/null | head -1)
+  case "${port:-3000}" in *[!0-9]*) return 1 ;; esac
+  echo "${port:-3000}"
+}
+
+owns_launch_agent() {
+  local directory
+  [ -f "$PLIST" ] || return 1
+  directory=$(plutil -extract WorkingDirectory raw -o - "$PLIST" 2>/dev/null) || return 1
+  [ "$(cd "$directory" 2>/dev/null && pwd -P)" = "$SCRIPT_DIR" ]
 }
 
 is_running() {
@@ -84,69 +64,41 @@ get_pid() {
 }
 
 check_runtime_dependencies() {
-  local check_rc=0 rust_addon
-  rust_addon="$("$NODE" "$SCRIPT_DIR/scripts/ensure-source-rust.js")" || return 1
-  if [ -n "$rust_addon" ]; then
-    export MULTICC_RUST_ADDON="$rust_addon"
+  if [ -z "${MULTICC_GATEWAY_BIN:-}" ]; then
+    cargo build --locked --release --manifest-path "$SCRIPT_DIR/native/Cargo.toml" --target-dir "$SCRIPT_DIR/native/target" || return 1
   fi
-  "$NODE" "$SCRIPT_DIR/scripts/check-runtime-deps.js" || check_rc=$?
-  if [ "$check_rc" -eq 0 ]; then
-    return 0
-  fi
-
-  # Exit 10 identifies a missing or incompatible Rust SQLite module.
-  if [ "$check_rc" -eq 10 ]; then
-    echo "Rust SQLite 校验失败；请检查上方的自动构建结果，或指定有效的 MULTICC_RUST_PREBUILT_DIR。"
-  fi
-  return "$check_rc"
+  if [ ! -x "$GATEWAY_BIN" ]; then echo "Rust front door not found ($GATEWAY_BIN)" >&2; return 1; fi
+  "$GATEWAY_BIN" --version >/dev/null
 }
 
-# An update is not complete merely because the new process stayed alive: boot
-# now runs the idempotent Fleet Commander compatibility migration.  Wait for
-# /readyz so `./multicc update` reports a degraded migration instead of a false
-# success. The server still listens on failure so operators can inspect/repair
-# the directoryId entries returned by readiness.
 wait_for_ready() {
-  local port="${PORT:-}" probe="" url
-  if [ -z "$port" ]; then
-    port="$("$NODE" -e 'const fs=require("fs");let s="";try{s=fs.readFileSync(process.argv[1],"utf8")}catch{};const m=s.match(/^PORT\s*=\s*([^\s#]+)\s*$/m);process.stdout.write(m?m[1]:"3000")' "$SCRIPT_DIR/.env")"
-  fi
-  url="http://127.0.0.1:${port}/readyz"
+  local port attempt host headers pid
+  port=$(configured_port) || return 1
+  host=${HOST:-}
+  [ -n "$host" ] || host=$(sed -n 's/^HOST=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "${MULTICC_ENV_FILE:-$SCRIPT_DIR/.env}" 2>/dev/null | head -1)
+  case "$host" in
+    ''|0.0.0.0) host=127.0.0.1 ;;
+    ::) host='[::1]' ;;
+    *[!A-Za-z0-9.:-]*) return 1 ;;
+    *:*) host="[$host]" ;;
+  esac
   echo "Waiting for startup migrations and readiness..."
-  # The first boot after an upgrade converts the task database once before it
-  # serves (its stand-in answers phase:"data-migration" with a percentage).
-  # That wait does not use up the 60s budget; it is capped at 30 minutes.
-  local _i=0 _migrating=0 _line="" _last=""
-  while [ "$_i" -lt 120 ]; do
-    _i=$((_i + 1))
-    if probe="$("$NODE" -e '(async()=>{for(const u of [process.argv[1],process.argv[2]]){try{const r=await fetch(u,{signal:AbortSignal.timeout(1500)});const t=await r.text();process.stdout.write(t.slice(0,2000));process.exit(r.status===200?0:2)}catch{}}process.exit(3)})()' "$url" "http://[::1]:${port}/readyz" 2>/dev/null)"; then
-      echo "MultiCC readiness confirmed."
-      return 0
+  for ((attempt=0; attempt<120; attempt++)); do
+    if headers=$(curl --noproxy '*' --silent --fail --max-time 2 -D - -o /dev/null "http://$host:$port/readyz"); then
+      pid=$(printf '%s\n' "$headers" | awk 'tolower($1)=="x-multicc-gateway-pid:" {sub(/\r$/, "", $2); print $2}')
+      if [[ "$pid" =~ ^[0-9]+$ ]] && is_checkout_gateway "$pid"; then
+        echo "MultiCC readiness confirmed (PID $pid)."
+        return 0
+      fi
     fi
-    case "$probe" in
-      *'"phase":"data-migration"'*)
-        _line="$("$NODE" -e 'try{const m=JSON.parse(process.argv[1]).migration;process.stdout.write(m.state==="failed"?`waiting: ${m.error.message}`:`${m.step} ${m.percent}%`)}catch{}' "$probe" 2>/dev/null)"
-        case "$probe" in
-          *'"state":"failed"'*) case "$probe" in *'"retrying":true'*) ;; *)
-            echo "Task data upgrade failed: ${_line#waiting: }"
-            return 1 ;; esac ;;
-        esac
-        if [ "$_migrating" -lt 3600 ]; then _migrating=$((_migrating + 1)); _i=$((_i - 1)); fi
-        [ "$_line" != "$_last" ] && echo "  upgrading task data (one time only): ${_line}"
-        _last="$_line"
-        ;;
-      *) [ $((_i % 10)) -eq 0 ] && echo "  still starting… $((_i / 2))s" ;;
-    esac
     sleep 0.5
   done
-  echo "MultiCC restarted but readiness did not become healthy."
-  [ -n "$probe" ] && echo "Readiness report: $probe"
-  echo "Check $ERR_LOG; Commander migration failures include their directoryId."
+  echo "Readiness timed out. Check $ERR_LOG" >&2
   return 1
 }
 
 do_start() {
-  local running_pids port port_owner gateway_bin
+  local running_pids
   running_pids=$(get_pids) || return 1
   if [ -n "$running_pids" ]; then
     echo "MultiCC is already running (PID $running_pids)"
@@ -158,48 +110,10 @@ do_start() {
     echo "Run './multicc update' to repair missing or outdated packages."
     return 1
   fi
-  # The Rust front door owns the public port and runs node server.js on a
-  # loopback port (docs/gateway.md §8). It is the only way this script starts
-  # MultiCC; ensure-source-rust built it next to the native module.
-  gateway_bin="$(dirname "${MULTICC_RUST_ADDON:-.}")/multicc-gateway"
-  if [ -z "${MULTICC_RUST_ADDON:-}" ] || [ ! -x "$gateway_bin" ]; then
-    echo "Rust front door not found ($gateway_bin) — MultiCC was not started."
-    return 1
-  fi
-  port="${PORT:-}"
-  if [ -z "$port" ]; then
-    port="$($NODE -e 'const fs=require("fs");let s="";try{s=fs.readFileSync(process.argv[1],"utf8")}catch{};const m=s.match(/^PORT\s*=\s*([0-9]+)/m);process.stdout.write(m?m[1]:"3000")' "$SCRIPT_DIR/.env")"
-  fi
-  # Resolve port collisions before spawning Node. A process running this
-  # checkout is safe to replace: matched by an absolute server.js, by a relative
-  # server.js whose cwd is this checkout, or by the front door (its argv carries
-  # server.js and it chdir()s here). Anything else — or a server that refuses to
-  # die — triggers automatic port selection. The chosen port is persisted in
-  # .env by REPLACING any previous PORT line (readers take the first match, so
-  # appending would silently lose the new port).
-  port_owner=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
-  if [ -n "$port_owner" ]; then
-    local owner_cmd owner_cwd
-    owner_cmd=$(ps -p "$port_owner" -o command= 2>/dev/null)
-    owner_cwd=$(lsof -a -p "$port_owner" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
-    if echo "$owner_cmd" | grep -q 'server\.js' \
-       && { [ "$owner_cwd" = "$SCRIPT_DIR" ] || echo "$owner_cmd" | grep -Fq "$SCRIPT_DIR/server.js"; }; then
-      echo "Stopping existing MultiCC on port $port (PID $port_owner)..."
-      kill "$port_owner" 2>/dev/null || true
-      for _i in $(seq 1 10); do kill -0 "$port_owner" 2>/dev/null || break; sleep 1; done
-      kill -9 "$port_owner" 2>/dev/null || true
-      sleep 1
-      port_owner=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)
-    fi
-    if [ -n "$port_owner" ]; then
-      port="$($NODE -e 'const net=require("net");const start=Number(process.argv[1])||3000;let p=start;function t(){const s=net.createServer();s.once("error",()=>{s.close();p++;t()});s.listen(p,"127.0.0.1",()=>{console.log(p);s.close()})}t()' "$port")"
-      echo "Port occupied by another process (PID $port_owner); using port $port."
-      "$NODE" -e 'const fs=require("fs");const f=process.argv[1],p=process.argv[2];let s="";try{s=fs.readFileSync(f,"utf8")}catch{};if(/^PORT\s*=/m.test(s)){s=s.replace(/^PORT\s*=.*$/m,"PORT="+p)}else{s+=(s&&!s.endsWith("\n")?"\n":"")+"PORT="+p+"\n"}fs.writeFileSync(f,s)' "$SCRIPT_DIR/.env" "$port"
-    fi
-  fi
+  configured_port >/dev/null || return 1
   echo "Starting MultiCC..."
-  cd "$SCRIPT_DIR"
-  MULTICC_SOURCE_ROOT="$SCRIPT_DIR" nohup "$gateway_bin" serve --cwd "$SCRIPT_DIR" --node "$NODE" server.js >> "$OUT_LOG" 2>> "$ERR_LOG" &
+  cd "$SCRIPT_DIR" || return 1
+  MULTICC_SOURCE_ROOT="$SCRIPT_DIR" nohup "$GATEWAY_BIN" serve --cwd "$SCRIPT_DIR" --no-node </dev/null >> "$OUT_LOG" 2>> "$ERR_LOG" &
   local pid=$!
   echo $pid > "$PID_FILE"
   sleep 1
@@ -214,28 +128,40 @@ do_start() {
 }
 
 do_stop() {
-  # Disable every auto-restart source first, otherwise the server resurrects
-  # right after we kill it: the launchd KeepAlive job, a ghost pm2 app, and
-  # detached graceful-restart scripts (cancelled inside server-processes.js).
-  if [ -f "$PLIST" ] && launchctl list 2>/dev/null | grep -q "$LABEL"; then
+  # Unload the manager's KeepAlive service before signalling its gateway.
+  if owns_launch_agent && launchctl list "$LABEL" >/dev/null 2>&1; then
     launchctl unload "$PLIST" 2>/dev/null
     echo "launchd auto-restart disabled (run './multicc install' to re-enable)"
   fi
-  if command -v pm2 >/dev/null 2>&1 && pm2 describe multicc >/dev/null 2>&1; then
-    pm2 delete multicc >/dev/null 2>&1 && echo "Removed pm2 app 'multicc' (it was auto-restarting the server)"
-  fi
-  # Resolve relative server.js against each process cwd, reap verified descendants
-  # and force-kill survivors after the graceful drain. PID files are not authority.
-  "$NODE" "$SCRIPT_DIR/src/server-processes.js" stop "$SCRIPT_DIR" || return 1
+  stop_gateways || return 1
   rm -f "$PID_FILE"
 }
 
+stop_gateways() {
+  local pid attempt
+  for pid in $(get_pids); do
+    is_checkout_gateway "$pid" || continue
+    kill -TERM "$pid" || return 1
+    for ((attempt=0; attempt<130; attempt++)); do
+      kill -0 "$pid" 2>/dev/null || break
+      is_checkout_gateway "$pid" || break
+      sleep 0.5
+    done
+    if is_checkout_gateway "$pid"; then
+      echo "Gateway $pid is still draining." >&2
+      return 1
+    fi
+  done
+}
+
 do_restart() {
-  local running_pids
-  running_pids="$(get_pids)" || return 1
-  if [ -z "$running_pids" ]; then do_start; return $?; fi
   check_runtime_dependencies || return 1
-  MULTICC_RESTART_PIDS="$running_pids" "$NODE" "$SCRIPT_DIR/src/server-restart.js" --request "$SCRIPT_DIR"
+  if owns_launch_agent && launchctl list "$LABEL" >/dev/null 2>&1; then
+    launchctl unload "$PLIST" && launchctl load "$PLIST" || return 1
+  else
+    stop_gateways && do_start || return 1
+  fi
+  wait_for_ready
 }
 
 do_status() {
@@ -271,10 +197,10 @@ update_step() {  # update_step <id> <start|done|skip> [note]
   echo "$UPDATE_STEP_MARKER $1 $2 $(date +%s)${3:+ $3}"
 }
 
-# Network hygiene for the update's git/curl/npm calls. git has no default
+# Network hygiene for the update's git/curl calls. git has no default
 # timeout, so a stalled TLS connection used to sit silently for minutes; the
 # low-speed guard aborts once a transfer stays under 1KB/s for 30s. A macOS
-# system proxy (Clash & co.) is honoured by browsers but not by git/curl/npm,
+# system proxy (Clash & co.) is honoured by browsers but not by git/curl,
 # so it is passed to those three commands explicitly — never exported, or the
 # restarted server would inherit it.
 UPDATE_PROXY=""
@@ -290,7 +216,7 @@ resolve_update_proxy() {
   port="$(echo "$info" | sed -n 's/^ *HTTPSPort : //p' | head -1)"
   [ -n "$host" ] && [ -n "$port" ] || return 0
   UPDATE_PROXY="http://$host:$port"
-  echo "  Using the system HTTPS proxy $host:$port for git/curl/npm."
+  echo "  Using the system HTTPS proxy $host:$port for git/curl."
 }
 update_git() {
   if [ -n "$UPDATE_PROXY" ]; then
@@ -299,12 +225,6 @@ update_git() {
     git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 "$@"
   fi
 }
-update_npm_install() {
-  local proxy_args=()
-  [ -n "$UPDATE_PROXY" ] && proxy_args=(--proxy "$UPDATE_PROXY" --https-proxy "$UPDATE_PROXY")
-  env PATH="$(dirname "$NODE"):$PATH" npm install --no-audit --no-fund "${proxy_args[@]}" 2>&1
-}
-
 do_update() {
   cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; return 1; }
 
@@ -336,7 +256,7 @@ do_update() {
     shift
   done
 
-  if [ ! -d .git ]; then
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "Not a git checkout ($SCRIPT_DIR) — cannot self-update."
     echo "This manager only updates a source checkout; an installed MultiCC updates"
     echo "with its own command (cd <install dir> && ./multicc update)."
@@ -350,13 +270,7 @@ do_update() {
   update_step deps start
   echo "Verifying current runtime dependencies..."
   resolve_update_proxy
-  if ! check_runtime_dependencies; then
-    echo "Runtime dependencies are incomplete or outdated — running npm install..."
-    if ! update_npm_install || ! check_runtime_dependencies; then
-      echo "Runtime dependency repair failed — update was not started."
-      return 1
-    fi
-  fi
+  check_runtime_dependencies || return 1
   update_step deps done
   # ── Resolve the release channel ──────────────────────────────────────
   # .multicc_channel is written by install.sh.  If absent we default to "dev"
@@ -411,7 +325,7 @@ do_update() {
     local_version="$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//')" || true
   fi
   if [ -z "$local_version" ]; then
-    local_version="$(node -e "try{process.stdout.write(require('./package.json').version||'0.0.0')}catch(e){process.stdout.write('0.0.0')}" 2>/dev/null)" || local_version="0.0.0"
+    local_version=$(sed -n 's/^  "version": "\([^"]*\)",.*/\1/p' package.json)
   fi
 
   echo "  Local:    v${local_version}   (channel: ${channel})"
@@ -605,31 +519,12 @@ do_update() {
     fi
   fi
 
-  # ── Reinstall deps when manifests changed (both channels) ─────────────
-  local deps_changed=0
-  if [ -n "${after:-}" ] && [ "$before" != "${after:-}" ] \
-     && git diff --name-only "$before" "${after:-}" | grep -qE '^package(-lock)?\.json$'; then
-    deps_changed=1
-  fi
-  if [ "$deps_changed" = 1 ]; then
-    update_step install start
-    echo "Dependencies changed — running npm install..."
-    if ! update_npm_install; then
-      echo "npm install failed — fix the error above, then re-run './multicc update'."
-      return 1
-    fi
-    update_step install done
-  else
-    update_step install skip "unchanged"
-  fi
-
+  # Cargo uses the lockfile from the newly selected revision.
+  update_step install start
+  check_runtime_dependencies || return 1
+  update_step install done
   update_step verify start
-  echo "Verifying runtime dependencies..."
-  if ! check_runtime_dependencies; then
-    echo "Runtime dependency verification failed — server was not restarted."
-    echo "Run the repair command shown above, then re-run './multicc update'."
-    return 1
-  fi
+  "$GATEWAY_BIN" --version || return 1
 
   # Record the version this update is coming *from*. The new process reads it on
   # boot to decide whether it must run one-time data migrations (today: the cron
@@ -643,17 +538,14 @@ do_update() {
   update_step restart start
   echo "Restarting to apply update..."
   echo "  (sessions that are still streaming get up to 65s to save their output)"
-  if [ -f "$PLIST" ]; then
-    # Installed as a launchd service — reload so the new server.js is picked up
-    if [ -n "${MULTICC_RUST_ADDON:-}" ]; then
-      plutil -replace EnvironmentVariables.MULTICC_RUST_ADDON -string "$MULTICC_RUST_ADDON" "$PLIST" || return 1
-    fi
+  if owns_launch_agent; then
+    # Installed as a launchd service — reload the selected Rust binary
     set_launchd_program || return 1
     launchctl unload "$PLIST" 2>/dev/null
-    launchctl load "$PLIST"
+    launchctl load "$PLIST" || return 1
     echo "Service reloaded."
   else
-    do_restart
+    do_restart || return 1
   fi
   update_step restart done
   update_step ready start
@@ -678,38 +570,22 @@ do_update() {
   echo "Update complete (${before:0:7} → ${after:0:7})."
 }
 
-# The login job starts the Rust front door exactly like `./multicc start`
-# (docs/gateway.md §8). The binary sits next to the native module, whose path
-# changes with every source update, so install and update both rewrite the
-# whole argument list (an older plist still says `node server.js`). The script
-# stays an absolute <dir>/server.js: install.sh finds the installation by it.
+# Update an existing launchd registration without shell/XML interpolation.
 set_launchd_program() {
-  local gateway_bin args_json
-  gateway_bin="$(dirname "${MULTICC_RUST_ADDON:-.}")/multicc-gateway"
-  if [ -z "${MULTICC_RUST_ADDON:-}" ] || [ ! -x "$gateway_bin" ]; then
-    echo "Rust front door not found ($gateway_bin) — the login service was not configured."
-    return 1
-  fi
-  args_json="$("$NODE" -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' -- \
-    "$gateway_bin" serve --cwd "$SCRIPT_DIR" --node "$NODE" "$SCRIPT_DIR/server.js")" || return 1
+  local index=0 arg
+  [ -x "$GATEWAY_BIN" ] || return 1
   plutil -replace EnvironmentVariables.MULTICC_SOURCE_ROOT -string "$SCRIPT_DIR" "$PLIST" || return 1
-  plutil -replace ProgramArguments -json "$args_json" "$PLIST"
+  plutil -replace ProgramArguments -json '[]' "$PLIST" || return 1
+  for arg in "$GATEWAY_BIN" serve --cwd "$SCRIPT_DIR" --no-node; do
+    plutil -insert "ProgramArguments.$index" -string "$arg" "$PLIST" || return 1
+    index=$((index+1))
+  done
 }
 
 do_install() {
   /bin/bash "$SCRIPT_DIR/scripts/install-terminal-deps.sh" || return 1
-  # `./multicc install` is also a supported entry point. Do not register a
-  # launchd service that will start without a required runtime package (notably
-  # the @homebridge/ciao responder used by app LAN discovery).
   echo "Verifying runtime dependencies before service install..."
-  if ! check_runtime_dependencies; then
-    echo "Runtime dependencies are incomplete — running npm install..."
-    if ! (cd "$SCRIPT_DIR" && env PATH="$(dirname "$NODE"):$PATH" npm install 2>&1) || ! check_runtime_dependencies; then
-      echo "Runtime dependency installation failed — service was not installed."
-      return 1
-    fi
-  fi
-
+  check_runtime_dependencies || return 1
   # Lay down every bundled skill so claude sessions can discover them immediately
   # (the server also re-syncs these on every startup). Any dir under skills/ that
   # contains a SKILL.md is installed — no need to list them here.
@@ -736,8 +612,7 @@ do_install() {
   <string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$NODE</string>
-    <string>$SCRIPT_DIR/server.js</string>
+
   </array>
   <key>WorkingDirectory</key>
   <string>$SCRIPT_DIR</string>
@@ -752,9 +627,7 @@ do_install() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>$(dirname "$NODE"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <key>MULTICC_RUST_ADDON</key>
-    <string>$("$NODE" -e 'process.stdout.write((process.env.MULTICC_RUST_ADDON||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"))')</string>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict>
 </plist>
@@ -773,7 +646,7 @@ EOF
 }
 
 do_uninstall() {
-  if [ -f "$PLIST" ]; then
+  if owns_launch_agent; then
     launchctl unload "$PLIST" 2>/dev/null
     rm -f "$PLIST"
     echo "MultiCC service uninstalled"
