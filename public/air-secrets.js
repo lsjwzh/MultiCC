@@ -68,6 +68,7 @@
     }
     const actions = make('div', null, 'air-secret-actions');
     actions.append(button(revealed.has(entry.name) ? t('secretsHide') : t('secretsShow'), () => toggleReveal(entry)));
+    actions.append(button(t('secretsEdit'), () => beginEdit(entry)));
     actions.append(button(t('delete'), () => remove(entry), 'danger'));
     card.append(make('span', '🔑', 'air-secret-mark'), copy, actions);
     return card;
@@ -102,6 +103,21 @@
       revealed.set(entry.name, String((result && result.value) || ''));
       paint();
     } catch (error) { context.notice(error.message || String(error)); }
+  }
+
+  // 「修改」= 把这一条带进上方表单：名称与描述预填，值栏留空（原值不会读回 DOM），
+  // 用户输入新值后保存就是同名覆盖。值栏为空时保存仍会被 secretsValueRequired 挡住。
+  function beginEdit(entry) {
+    const nameInput = el('air-secret-name');
+    const valueInput = el('air-secret-value');
+    const descInput = el('air-secret-desc');
+    const status = el('air-secret-status');
+    if (nameInput) nameInput.value = entry.name;
+    if (valueInput) valueInput.value = '';
+    if (descInput) descInput.value = entry.description || '';
+    if (status) status.textContent = t('secretsEditPrefill', { name: entry.name });
+    nameInput?.closest('.admin-panel')?.scrollIntoView({ block: 'start' });
+    valueInput?.focus();
   }
 
   async function remove(entry) {
