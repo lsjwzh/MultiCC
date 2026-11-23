@@ -1294,9 +1294,11 @@
     const titleWrap = make('div');
     titleWrap.append(make('h3', t('airOfficialAcctAgySection')), make('p', t('airOfficialAcctAgySectionHint')));
     const actions = make('div', null, 'air-provider-card-actions');
+    actions.id = 'air-provider-agy-actions';
     actions.append(
       button(t('airOfficialAcctAgyCreate'), () => void createAgyAccount(), 'primary'),
       button(t('airOfficialAcctAgyImport'), () => void importAgyAccount()),
+      button(t('airOfficialAcctAgyAddRemote'), () => openRemoteAgyModal()),
     );
     head.append(titleWrap, actions);
     const list = make('div');
@@ -1312,6 +1314,20 @@
     if (!panel || !host) return;
     if (!agyState) { panel.hidden = true; return; }
     panel.hidden = false;
+    const actionsEl = el('air-provider-agy-actions');
+    if (actionsEl) {
+      actionsEl.querySelector('[data-agy-mutagen]')?.remove();
+      const mut = agyState.mutagen;
+      if (mut && mut.installed) {
+        const badge = make('span', t('airOfficialAcctAgyMutagenReady', { version: mut.version || mut.targetVersion || '' }), 'default');
+        badge.dataset.agyMutagen = '1';
+        actionsEl.append(badge);
+      } else {
+        const installBtn = button(t('airOfficialAcctAgyMutagenInstall'), () => void installAgyMutagen(installBtn));
+        installBtn.dataset.agyMutagen = '1';
+        actionsEl.append(installBtn);
+      }
+    }
     const rows = [];
     const local = agyState.local || { loggedIn: false };
     const localInUse = !agyState.active;
@@ -1333,20 +1349,39 @@
       rows.push(make('p', t('airOfficialAcctAgyEmpty'), 'admin-empty'));
     }
     for (const account of agyState.accounts) {
+      const isRemote = account.kind === 'remote' && account.remote;
       const row = make('div');
       row.dataset.agyAccount = account.id;
       row.style.cssText = 'border:1px solid var(--line, #d8e5f2);border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap';
       const label = account.label || t('airOfficialAcctAgyAccount', { id: account.id.slice(0, 6) });
       row.append(make('strong', label));
-      const statusText = account.loggedIn
-        ? [t('airOfficialAcctSignedIn'), account.email, account.expiresAt && account.expiresAt <= Date.now() ? t('airOfficialAcctAgyExpired') : ''].filter(Boolean).join(' · ')
-        : t('airOfficialAcctSignedOut');
-      row.append(make('span', statusText));
+      if (isRemote) {
+        const modeText = account.remote.fileMode === 'remote_mcp'
+          ? t('airOfficialAcctAgyRemoteModeMcp')
+          : t('airOfficialAcctAgyRemoteModeMutagen');
+        const authText = account.loggedIn
+          ? [t('airOfficialAcctSignedIn'), account.email].filter(Boolean).join(' · ')
+          : t('airOfficialAcctSignedOut');
+        row.append(make('span', [t('airOfficialAcctAgyRemoteBadge'), account.remote.sshTarget, authText, modeText].filter(Boolean).join(' · ')));
+      } else {
+        const statusText = account.loggedIn
+          ? [t('airOfficialAcctSignedIn'), account.email, account.expiresAt && account.expiresAt <= Date.now() ? t('airOfficialAcctAgyExpired') : ''].filter(Boolean).join(' · ')
+          : t('airOfficialAcctSignedOut');
+        row.append(make('span', statusText));
+      }
       if (account.active) row.append(make('span', t('airOfficialAcctActive'), 'default'));
       const ops = make('div', null, 'air-provider-card-actions');
       ops.style.marginLeft = 'auto';
       if (!account.active) ops.append(button(t('airOfficialAcctActivate'), () => void activateAgyAccount(account.id)));
-      ops.append(button(t(account.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin'), () => void loginAgyAccount(account.id)));
+      if (isRemote) {
+        ops.append(
+          button(t(account.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin'), () => void startRemoteAgyLogin(account.id, label), 'primary'),
+          button(t('airOfficialAcctAgyRemoteAddSibling'), () => void addSiblingRemoteAgyAccount(account)),
+          button(t('airOfficialAcctAgyRemoteTest'), () => void testRemoteAgyAccount(account.id)),
+        );
+      } else {
+        ops.append(button(t(account.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin'), () => void loginAgyAccount(account.id)));
+      }
       ops.append(button(t('airOfficialAcctDelete'), () => void deleteAgyAccount(account.id), 'danger'));
       row.append(ops);
       rows.push(row);
@@ -1360,6 +1395,7 @@
       accounts: payload.accounts.filter(item => item && /^[a-f0-9]{16}$/.test(String(item.id || ''))),
       active: payload.active || null,
       local: payload.local || null,
+      mutagen: payload.mutagen || agyState?.mutagen || null,
     };
     renderAgyAccounts();
     return agyState;
@@ -1394,6 +1430,221 @@
       applyAgyResponse(await context.api('/api/agy/accounts/import', { label }, 'POST'));
       context?.notice(t('airOfficialAcctAgyCreated'));
     } catch (error) { context?.notice(t('airOfficialAcctFailed', { message: error.message })); }
+  }
+
+  function openRemoteAgyModal() {
+    const overlay = make('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+    const card = make('div', null, 'admin-panel');
+    card.style.cssText = 'width:460px;max-width:94vw;padding:18px;display:flex;flex-direction:column;gap:8px;background:var(--surface, #fff)';
+    const input = (placeholder, type = 'text') => {
+      const elInput = document.createElement('input');
+      elInput.type = type;
+      elInput.placeholder = placeholder;
+      elInput.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--line, #d8e5f2);border-radius:8px';
+      return elInput;
+    };
+    const labelIn = input(t('airOfficialAcctLabelPlaceholder'));
+    const sshIn = input(t('airOfficialAcctAgyRemoteSshLabel'));
+    const portIn = input(t('airOfficialAcctAgyRemotePortLabel'), 'number');
+    const keyIn = input(t('airOfficialAcctAgyRemoteKeyLabel'));
+    const homeIn = input(t('airOfficialAcctAgyRemoteHomeLabel'));
+    const binIn = input(t('airOfficialAcctAgyRemoteBinLabel'));
+    const modeSel = document.createElement('select');
+    modeSel.style.cssText = 'width:100%;box-sizing:border-box;padding:7px 10px;border:1px solid var(--line, #d8e5f2);border-radius:8px';
+    const optM = document.createElement('option'); optM.value = 'mutagen'; optM.textContent = t('airOfficialAcctAgyRemoteModeMutagen');
+    const optR = document.createElement('option'); optR.value = 'remote_mcp'; optR.textContent = t('airOfficialAcctAgyRemoteModeMcp');
+    modeSel.append(optM, optR);
+    const isoWrap = make('label');
+    isoWrap.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px';
+    const isoChk = document.createElement('input');
+    isoChk.type = 'checkbox'; isoChk.checked = true;
+    isoWrap.append(isoChk, make('span', t('airOfficialAcctAgyRemoteIsolateToggle')));
+    const errEl = make('div'); errEl.style.cssText = 'font-size:12px;color:#d1242f';
+    const foot = make('div', null, 'air-provider-card-actions');
+    foot.style.justifyContent = 'flex-end';
+    const close = () => overlay.remove();
+    foot.append(
+      button(t('airOfficialAcctCancel'), close),
+      button(t('airOfficialAcctAgyRemoteSave'), async () => {
+        errEl.textContent = '';
+        const portVal = portIn.value.trim();
+        const isolateHome = !!isoChk.checked;
+        const remote = {
+          sshTarget: sshIn.value.trim(),
+          ...(portVal ? { sshPort: Number(portVal) } : {}),
+          ...(keyIn.value.trim() ? { sshIdentityFile: keyIn.value.trim() } : {}),
+          ...(homeIn.value.trim() ? { remoteHome: homeIn.value.trim() } : {}),
+          ...(binIn.value.trim() ? { remoteAgyBin: binIn.value.trim() } : {}),
+          fileMode: modeSel.value || 'mutagen',
+          isolateHome,
+        };
+        try {
+          const payload = await context.api('/api/agy/accounts/remote', { label: labelIn.value.trim(), remote }, 'POST');
+          applyAgyResponse(payload);
+          close();
+          context?.notice(t('airOfficialAcctAgyRemoteCreated'));
+          if (isolateHome && payload?.created?.id) {
+            void startRemoteAgyLogin(payload.created.id, payload.created.label);
+          }
+        } catch (error) {
+          errEl.textContent = t('airOfficialAcctFailed', { message: error.message });
+        }
+      }, 'primary'),
+    );
+    card.append(
+      make('h3', t('airOfficialAcctAgyRemoteTitle')),
+      make('p', t('airOfficialAcctAgyRemoteDesc')),
+      labelIn, sshIn, portIn, keyIn, homeIn, binIn,
+      make('label', t('airOfficialAcctAgyRemoteModeLabel')), modeSel,
+      isoWrap,
+      errEl, foot,
+    );
+    overlay.append(card);
+    overlay.onclick = e => { if (e.target === overlay) close(); };
+    document.body.append(overlay);
+  }
+
+  async function addSiblingRemoteAgyAccount(source) {
+    if (!source || !source.remote) return;
+    const label = root.prompt ? root.prompt(t('airOfficialAcctAgyRemoteSiblingPrompt'), '') : '';
+    if (label === null) return;
+    const remote = {
+      sshTarget: source.remote.sshTarget,
+      ...(source.remote.sshPort ? { sshPort: source.remote.sshPort } : {}),
+      ...(source.remote.sshIdentityFile ? { sshIdentityFile: source.remote.sshIdentityFile } : {}),
+      ...(source.remote.remoteAgyBin ? { remoteAgyBin: source.remote.remoteAgyBin } : {}),
+      ...(source.remote.remoteWorkspaceBase ? { remoteWorkspaceBase: source.remote.remoteWorkspaceBase } : {}),
+      fileMode: source.remote.fileMode || 'mutagen',
+      isolateHome: true,
+    };
+    try {
+      const payload = await context.api('/api/agy/accounts/remote', { label, remote }, 'POST');
+      applyAgyResponse(payload);
+      if (payload?.created?.id) await startRemoteAgyLogin(payload.created.id, payload.created.label);
+    } catch (error) {
+      context?.notice(t('airOfficialAcctFailed', { message: error.message }));
+    }
+  }
+
+  async function startRemoteAgyLogin(id, label) {
+    context?.notice(t('airOfficialAcctReopeningLogin'));
+    try {
+      const res = await context.api(`/api/agy/accounts/${encodeURIComponent(id)}/remote-login`, {}, 'POST');
+      openRemoteAgySigninSheet(id, res?.oauthUrl || '', label);
+    } catch (error) {
+      context?.notice(t('airOfficialAcctAgyRemoteSigninFailed', { message: error.message }));
+    }
+  }
+
+  function openRemoteAgySigninSheet(accountId, oauthUrl, label) {
+    const overlay = make('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
+    const card = make('div', null, 'admin-panel');
+    card.style.cssText = 'width:540px;max-width:94vw;padding:18px;display:flex;flex-direction:column;gap:10px;background:var(--surface, #fff)';
+    const phase = make('div', t('airOfficialAcctSigninWaiting'));
+    phase.style.cssText = 'font-size:12px;color:#b45309';
+    let currentUrl = oauthUrl || '';
+    const urlCode = make('code', currentUrl);
+    urlCode.style.cssText = 'flex:1;min-width:0;white-space:nowrap;overflow-x:auto;user-select:all;padding:6px 8px;border:1px solid var(--line, #d8e5f2);border-radius:8px;font-size:12px';
+    const urlRow = make('div');
+    urlRow.style.cssText = 'display:flex;gap:6px;align-items:center;min-width:0';
+    urlRow.append(
+      urlCode,
+      button(t('airOfficialAcctSigninCopy'), () => {
+        if (navigator.clipboard) navigator.clipboard.writeText(currentUrl).then(() => context?.notice(t('airOfficialAcctSigninCopied')));
+      }),
+      button(t('airOfficialAcctSigninOpen'), () => { if (currentUrl && root.open) root.open(currentUrl, '_blank', 'noopener'); }),
+    );
+    const cbIn = document.createElement('input');
+    cbIn.type = 'text';
+    cbIn.placeholder = t('airOfficialAcctAgyRemoteSigninPlaceholder');
+    cbIn.style.cssText = 'flex:1;min-width:220px;padding:7px 10px;border:1px solid var(--line, #d8e5f2);border-radius:8px;font-size:12px';
+    const errEl = make('div'); errEl.style.cssText = 'font-size:12px;color:#d1242f;word-break:break-word';
+    const submitBtn = button(t('airOfficialAcctPasteAction'), async () => {
+      const raw = cbIn.value.trim();
+      if (!raw) return;
+      submitBtn.disabled = true; cbIn.disabled = true; errEl.textContent = '';
+      phase.textContent = t('airOfficialAcctSigninSubmitting');
+      try {
+        const res = await context.api(`/api/agy/accounts/${encodeURIComponent(accountId)}/remote-login-callback`, { callback: raw }, 'POST');
+        if (res && res.state === 'complete') {
+          phase.style.color = '#15803d';
+          phase.textContent = res.email
+            ? t('airOfficialAcctAgyRemoteSigninDoneEmail', { email: res.email })
+            : t('airOfficialAcctAgyRemoteSigninDone');
+          await loadAgyAccounts();
+          setTimeout(() => overlay.remove(), 1400);
+          return;
+        }
+        phase.textContent = t('airOfficialAcctPasteAccepted');
+      } catch (error) {
+        cbIn.disabled = false; submitBtn.disabled = false;
+        phase.textContent = t('airOfficialAcctSigninWaiting');
+        errEl.textContent = t('airOfficialAcctAgyRemoteSigninFailed', { message: error.message });
+      }
+    }, 'primary');
+    const cbRow = make('div');
+    cbRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+    cbRow.append(cbIn, submitBtn);
+    const foot = make('div', null, 'air-provider-card-actions');
+    foot.style.justifyContent = 'flex-end';
+    foot.append(
+      button(t('airOfficialAcctSigninRetry'), async () => {
+        errEl.textContent = ''; phase.textContent = t('airOfficialAcctReopeningLogin');
+        try {
+          const res = await context.api(`/api/agy/accounts/${encodeURIComponent(accountId)}/remote-login`, {}, 'POST');
+          currentUrl = res?.oauthUrl || '';
+          urlCode.textContent = currentUrl;
+          phase.textContent = t('airOfficialAcctSigninWaiting');
+        } catch (error) {
+          errEl.textContent = t('airOfficialAcctAgyRemoteSigninFailed', { message: error.message });
+        }
+      }),
+      button(t('airOfficialAcctSigninLater'), () => overlay.remove()),
+    );
+    card.append(
+      make('h3', t('airOfficialAcctAgyRemoteSigninTitle', { name: label || accountId.slice(0, 6) })),
+      phase,
+      make('p', t('airOfficialAcctAgyRemoteSigninStep1')),
+      urlRow,
+      make('p', t('airOfficialAcctAgyRemoteSigninStep2')),
+      cbRow,
+      errEl,
+      foot,
+    );
+    overlay.append(card);
+    document.body.append(overlay);
+  }
+
+  async function testRemoteAgyAccount(id) {
+    context?.notice(t('airOfficialAcctAgyRemoteTesting'));
+    try {
+      const res = await context.api(`/api/agy/accounts/${encodeURIComponent(id)}/test`, {}, 'POST');
+      if (res && res.ok) {
+        const detail = [res.agyVersion, res.nodeVersion].filter(Boolean).join(' · ') || 'SSH OK';
+        context?.notice(t('airOfficialAcctAgyRemoteTestOk', { detail }));
+      } else {
+        context?.notice(t('airOfficialAcctAgyRemoteTestFailed', { message: (res && res.error) || 'unknown' }));
+      }
+    } catch (error) {
+      context?.notice(t('airOfficialAcctAgyRemoteTestFailed', { message: error.message }));
+    }
+  }
+
+  async function installAgyMutagen(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = t('airOfficialAcctAgyMutagenInstalling'); }
+    context?.notice(t('airOfficialAcctAgyMutagenInstalling'));
+    try {
+      const payload = await context.api('/api/agy/mutagen/install', {}, 'POST');
+      if (payload && Array.isArray(payload.accounts)) applyAgyResponse(payload);
+      else await loadAgyAccounts();
+      const ver = agyState?.mutagen?.version || agyState?.mutagen?.targetVersion || '';
+      context?.notice(t('airOfficialAcctAgyMutagenInstalled', { version: ver }));
+    } catch (error) {
+      context?.notice(t('airOfficialAcctAgyMutagenInstallFailed', { message: error.message }));
+      if (btn) { btn.disabled = false; btn.textContent = t('airOfficialAcctAgyMutagenInstall'); }
+    }
   }
 
   async function activateAgyAccount(id) {

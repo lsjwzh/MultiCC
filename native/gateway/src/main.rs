@@ -48,6 +48,21 @@ fn main() {
             .expect("tokio runtime");
         std::process::exit(runtime.block_on(multicc_gateway::codex_bridge::serve(&args[1..])));
     }
+    if args.first().map(String::as_str) == Some("agy-remote-bridge") {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        std::process::exit(runtime.block_on(multicc_gateway::agy_remote_bridge::serve(&args[1..])));
+    }
+    if args.first().map(String::as_str) == Some("host-exec-mcp") {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        std::process::exit(runtime.block_on(multicc_gateway::host_exec::serve_mcp_stdio()));
+    }
     if args.iter().any(|arg| arg == "--version") {
         println!("{}", multicc_gateway::version_line());
         return;

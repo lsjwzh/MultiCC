@@ -258,3 +258,77 @@ fn resolve_home_prefers_explicit_binding_and_fails_closed_when_missing() {
     );
     let _ = fs::remove_dir_all(&home);
 }
+
+#[test]
+fn remote_vps_account_crud_resolution_and_activation_work() {
+    let home = temp_home("remote-vps");
+    let created = create_remote_account(
+        &home,
+        "新加坡 VPS",
+        &json!({
+            "sshTarget": "ubuntu@203.0.113.10",
+            "sshPort": 2222,
+            "fileMode": "mutagen",
+            "remoteAgyBin": "/usr/local/bin/agy"
+        }),
+    )
+    .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["kind"], KIND_REMOTE);
+    assert_eq!(created["label"], "新加坡 VPS");
+    assert!(has_account(&home, &id));
+    // Remote accounts do not create a local `.home` directory.
+    assert!(!account_home(&home, &id).unwrap().exists());
+
+    // Explicit resolution returns ResolvedAgyAccount::Remote.
+    match resolve_account(&home, Some(&id)).unwrap().unwrap() {
+        ResolvedAgyAccount::Remote {
+            id: resolved_id,
+            label,
+            remote,
+        } => {
+            assert_eq!(resolved_id, id);
+            assert_eq!(label, "新加坡 VPS");
+            assert_eq!(remote.ssh_target, "ubuntu@203.0.113.10");
+            assert_eq!(remote.ssh_port, Some(2222));
+            assert_eq!(remote.file_mode, "mutagen");
+        }
+        other => panic!("expected Remote, got {other:?}"),
+    }
+
+    // Can be activated globally and resolved via None.
+    set_active(&home, Some(&id)).unwrap();
+    assert!(matches!(
+        resolve_account(&home, None).unwrap(),
+        Some(ResolvedAgyAccount::Remote { .. })
+    ));
+
+    // Listing marks it as remote + active + loggedIn.
+    let listed = list_accounts(&home);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["kind"], KIND_REMOTE);
+    assert_eq!(listed[0]["active"], true);
+    assert_eq!(listed[0]["loggedIn"], true);
+    assert_eq!(listed[0]["remote"]["sshTarget"], "ubuntu@203.0.113.10");
+
+    // Update switches fileMode to remote_mcp.
+    let updated = update_remote_account(
+        &home,
+        &id,
+        Some("东京零落盘 VPS"),
+        &json!({
+            "sshTarget": "dev@jp.example.com",
+            "fileMode": "remote_mcp"
+        }),
+    )
+    .unwrap();
+    assert_eq!(updated["label"], "东京零落盘 VPS");
+    assert_eq!(updated["remote"]["fileMode"], "remote_mcp");
+
+    // Delete succeeds without `.home` directory and clears active.
+    delete_account(&home, &id).unwrap();
+    assert!(!has_account(&home, &id));
+    assert!(active_id(&home).is_none());
+    assert!(resolve_account(&home, Some(&id)).is_err());
+    let _ = fs::remove_dir_all(&home);
+}

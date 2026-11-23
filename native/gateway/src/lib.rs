@@ -9,6 +9,8 @@
 //! `docs/gateway.md`.
 
 pub mod acp_bridge;
+pub mod agy_remote_bridge;
+pub mod agy_remote_login;
 pub mod app;
 pub mod args;
 pub mod auth_control;
@@ -17,6 +19,7 @@ pub mod chat_bridge;
 pub mod codex_bridge;
 pub mod daemon;
 pub mod forward;
+pub mod host_exec;
 pub mod host_port;
 pub mod outbound;
 pub mod proxy_header;

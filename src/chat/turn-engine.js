@@ -15,7 +15,7 @@ const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/s
 const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
-const { getNative, deliveryClassForItem } = require('../native/runtime');
+const { getNative, gatewayPath, deliveryClassForItem } = require('../native/runtime');
 const writerGroup = require('../workspace/writer-group');
 const {
   TurnRequestError,
@@ -1507,6 +1507,11 @@ function createChatTurnEngine(deps) {
           finalSpawnArgs = processSpawnArgs(physicalInvocation, settingsFile);
         }
       }
+      let spawnCmd = physicalInvocation.cmd;
+      if (persisted.cli === 'agy' && childEnv.MULTICC_AGY_REMOTE_ACCOUNT_JSON) {
+        spawnCmd = gatewayPath();
+        finalSpawnArgs = ['agy-remote-bridge', '--local-cwd', cs.cwd, '--', ...finalSpawnArgs];
+      }
       const runner = createRunnerOwnership(turn, {
         completion: createAdapterCompletion(provider),
         runnerId: `proc_${crypto.randomBytes(8).toString('hex')}`,
@@ -1530,7 +1535,7 @@ function createChatTurnEngine(deps) {
         writerAdmission?.starting(sessionName, opts, attempt.routeAttemptId);
         writerLease = writerAdmission?.acquireProcessWriter?.(sessionName);
         proc = routerToolHost.spawnProcess({
-        cli: persisted.cli, spawn: (...args) => { proc = spawn(...args); return proc; }, command: physicalInvocation.cmd,
+        cli: persisted.cli, spawn: (...args) => { proc = spawn(...args); return proc; }, command: spawnCmd,
         args: finalSpawnArgs, cwd: cs.cwd, env: childEnv,
         sessionId: sessionName, turnId: turn.turnId, originDispatchId,
         // Correlation key for post-admission receipts addressed to this turn.

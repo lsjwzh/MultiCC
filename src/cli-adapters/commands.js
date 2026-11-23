@@ -93,9 +93,18 @@ function isCommandAvailable(command, options = {}) {
   // (`claude.exe`), while the npm installer writes the PATHEXT variant
   // (`claude.cmd`). The stem goes back through PATHEXT instead of pinning the
   // extension — this is what lets a CLI installed after startup be detected.
-  if (!isWindows) return false;
+  if (!isWindows) {
+    if (!options.env && !options.fsImpl && candidate === 'agy' && require('../agy-accounts').hasRemoteAccount()) {
+      return true;
+    }
+    return false;
+  }
   const stem = candidate.replace(/\.[^.\\/]+$/, '');
-  return stem !== candidate && !!findExecutableOnPath(stem, { isWindows, env, fsImpl });
+  if (stem !== candidate && !!findExecutableOnPath(stem, { isWindows, env, fsImpl })) return true;
+  if (!options.env && !options.fsImpl && (candidate.toLowerCase() === 'agy' || candidate.toLowerCase() === 'agy.exe')) {
+    return require('../agy-accounts').hasRemoteAccount();
+  }
+  return false;
 }
 
 function createContext(options) {

@@ -24,11 +24,19 @@ use multicc_core::agy_accounts as store;
 pub enum Route {
     ListGet,
     CreatePost,
+    CreateRemotePost,
     ImportPost,
     DeactivatePost,
     ActivatePost,
     LoginTerminal,
+    RemoteLoginStartPost,
+    RemoteLoginCallbackPost,
+    RemoteLoginStatusGet,
+    TestRemotePost,
+    UpdateRemotePatch,
     Delete,
+    MutagenStatusGet,
+    MutagenInstallPost,
     Options,
 }
 
@@ -39,9 +47,7 @@ struct Layer {
 }
 
 /// `:id` matches any non-empty segment, like Express's default `:param`. The
-/// literal layers must stay ahead of the parameterised one on any shared shape;
-/// none of these shapes overlap today (`import`/`deactivate` are two-segment
-/// literals, `:id/activate` and `:id` have different lengths).
+/// literal layers must stay ahead of the parameterised one on any shared shape.
 static LAYERS: &[Layer] = &[
     Layer {
         segs: &["agy", "accounts"],
@@ -52,6 +58,11 @@ static LAYERS: &[Layer] = &[
         segs: &["agy", "accounts"],
         method: "POST",
         kind: Route::CreatePost,
+    },
+    Layer {
+        segs: &["agy", "accounts", "remote"],
+        method: "POST",
+        kind: Route::CreateRemotePost,
     },
     Layer {
         segs: &["agy", "accounts", "import"],
@@ -74,9 +85,44 @@ static LAYERS: &[Layer] = &[
         kind: Route::LoginTerminal,
     },
     Layer {
+        segs: &["agy", "accounts", ":id", "remote-login"],
+        method: "POST",
+        kind: Route::RemoteLoginStartPost,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "remote-login-callback"],
+        method: "POST",
+        kind: Route::RemoteLoginCallbackPost,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "remote-login-status"],
+        method: "GET",
+        kind: Route::RemoteLoginStatusGet,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "test"],
+        method: "POST",
+        kind: Route::TestRemotePost,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id"],
+        method: "PATCH",
+        kind: Route::UpdateRemotePatch,
+    },
+    Layer {
         segs: &["agy", "accounts", ":id"],
         method: "DELETE",
         kind: Route::Delete,
+    },
+    Layer {
+        segs: &["agy", "mutagen", "status"],
+        method: "GET",
+        kind: Route::MutagenStatusGet,
+    },
+    Layer {
+        segs: &["agy", "mutagen", "install"],
+        method: "POST",
+        kind: Route::MutagenInstallPost,
     },
 ];
 
@@ -176,11 +222,23 @@ fn account_id(ctx: &RequestCtx) -> Option<String> {
     account_id_in(&ctx.path)
 }
 
-fn state(home: &Path) -> Value {
+async fn state_with_mutagen(home: &Path) -> Value {
+    let mut accounts = store::list_accounts(home);
+    for acct in &mut accounts {
+        if acct.get("kind").and_then(Value::as_str) == Some(store::KIND_REMOTE) {
+            if let Some(id) = acct.get("id").and_then(Value::as_str).map(str::to_owned) {
+                let login = crate::agy_remote_login::login_status(&id).await;
+                if let Some(obj) = acct.as_object_mut() {
+                    obj.insert("login".to_string(), login);
+                }
+            }
+        }
+    }
     json!({
-        "accounts": store::list_accounts(home),
+        "accounts": accounts,
         "active": store::active_id(home).map_or(Value::Null, |id| json!(id)),
         "local": store::local_status(home),
+        "mutagen": crate::agy_remote_bridge::mutagen_status_for(Some(home)).await,
     })
 }
 
@@ -209,21 +267,130 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
     let failure =
         |status: u16, error: String| express::json(ctx, status, &json!({ "error": error }), &[]);
     match route {
-        Route::ListGet => express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")]),
+        Route::ListGet => express::json(
+            ctx,
+            200,
+            &state_with_mutagen(&home).await,
+            &[("Cache-Control", "no-store")],
+        ),
+        Route::MutagenStatusGet => express::json(
+            ctx,
+            200,
+            &crate::agy_remote_bridge::mutagen_status_for(Some(&home)).await,
+            &[("Cache-Control", "no-store")],
+        ),
+        Route::MutagenInstallPost => {
+            match crate::agy_remote_bridge::install_managed_mutagen().await {
+                Ok(mutagen) => {
+                    let mut out = state_with_mutagen(&home).await;
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("mutagen".to_string(), mutagen);
+                    }
+                    express::json(ctx, 200, &out, &[("Cache-Control", "no-store")])
+                }
+                Err(error) => failure(500, error),
+            }
+        }
         Route::CreatePost => {
             let result = store::create_account(&home, &label(), "created");
             match result {
                 Ok(_) => {
                     invalidate_spawn_caches().await;
-                    express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")])
+                    express::json(
+                        ctx,
+                        200,
+                        &state_with_mutagen(&home).await,
+                        &[("Cache-Control", "no-store")],
+                    )
                 }
                 Err(error) => failure(500, error),
             }
         }
+        Route::CreateRemotePost => {
+            let raw_remote = body.get("remote").unwrap_or(body);
+            match store::create_remote_account(&home, &label(), raw_remote) {
+                Ok(created) => {
+                    invalidate_spawn_caches().await;
+                    let mut out = state_with_mutagen(&home).await;
+                    if let Some(obj) = out.as_object_mut() {
+                        obj.insert("created".to_string(), created);
+                    }
+                    express::json(ctx, 200, &out, &[("Cache-Control", "no-store")])
+                }
+                Err(error) => failure(400, error),
+            }
+        }
+        Route::UpdateRemotePatch => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let raw_remote = body.get("remote").unwrap_or(body);
+            let next_label = body.get("label").and_then(Value::as_str);
+            match store::update_remote_account(&home, &id, next_label, raw_remote) {
+                Ok(_) => {
+                    invalidate_spawn_caches().await;
+                    express::json(
+                        ctx,
+                        200,
+                        &state_with_mutagen(&home).await,
+                        &[("Cache-Control", "no-store")],
+                    )
+                }
+                Err(error) => failure(400, error),
+            }
+        }
+        Route::TestRemotePost => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let Some((_, remote)) = store::get_remote_account(&home, &id) else {
+                return failure(404, "未找到对应的远端 VPS 反重力账号".to_owned());
+            };
+            let result = crate::agy_remote_bridge::probe_remote_target(&remote).await;
+            express::json(ctx, 200, &result, &[("Cache-Control", "no-store")])
+        }
+        Route::RemoteLoginStartPost => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let Some((_, remote)) = store::get_remote_account(&home, &id) else {
+                return failure(404, "未找到对应的远端 VPS 反重力账号".to_owned());
+            };
+            match crate::agy_remote_login::start_login(&home, &id, &remote).await {
+                Ok(payload) => express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")]),
+                Err(error) => failure(400, error),
+            }
+        }
+        Route::RemoteLoginCallbackPost => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let callback = body
+                .get("callback")
+                .and_then(Value::as_str)
+                .or_else(|| body.get("code").and_then(Value::as_str))
+                .unwrap_or("");
+            match crate::agy_remote_login::submit_callback(&id, callback).await {
+                Ok(payload) => express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")]),
+                Err(error) => failure(400, error),
+            }
+        }
+        Route::RemoteLoginStatusGet => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let payload = crate::agy_remote_login::login_status(&id).await;
+            express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")])
+        }
         Route::ImportPost => match store::import_account(&home, &label()) {
             Ok(_) => {
                 invalidate_spawn_caches().await;
-                express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")])
+                express::json(
+                    ctx,
+                    200,
+                    &state_with_mutagen(&home).await,
+                    &[("Cache-Control", "no-store")],
+                )
             }
             Err(error) => failure(400, error),
         },
@@ -234,7 +401,12 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             match store::set_active(&home, Some(&id)) {
                 Ok(()) => {
                     invalidate_spawn_caches().await;
-                    express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")])
+                    express::json(
+                        ctx,
+                        200,
+                        &state_with_mutagen(&home).await,
+                        &[("Cache-Control", "no-store")],
+                    )
                 }
                 Err(error) => failure(400, error),
             }
@@ -242,7 +414,12 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
         Route::DeactivatePost => match store::set_active(&home, None) {
             Ok(()) => {
                 invalidate_spawn_caches().await;
-                express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")])
+                express::json(
+                    ctx,
+                    200,
+                    &state_with_mutagen(&home).await,
+                    &[("Cache-Control", "no-store")],
+                )
             }
             Err(error) => failure(500, error),
         },
@@ -258,6 +435,12 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             };
             if !meta.is_file() {
                 return failure(404, "unknown account".to_owned());
+            }
+            if store::get_remote_account(&home, &id).is_some() {
+                return failure(
+                    400,
+                    "远端 VPS 账号无需本机登录终端，请直接在 VPS 上登录 agy".to_owned(),
+                );
             }
             let Some(dir) = store::account_home(&home, &id) else {
                 return failure(400, "invalid account id".to_owned());
@@ -294,7 +477,12 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
                         });
                         let _ = super::session_routes::call(ctx, host, payload).await;
                     }
-                    express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")])
+                    express::json(
+                        ctx,
+                        200,
+                        &state_with_mutagen(&home).await,
+                        &[("Cache-Control", "no-store")],
+                    )
                 }
                 Err(error) => failure(400, error),
             }
@@ -360,8 +548,49 @@ mod tests {
             None
         );
         assert_eq!(
+            claim(&Method::POST, "/api/agy/accounts/remote"),
+            Some(Route::CreateRemotePost)
+        );
+        assert_eq!(
+            claim(&Method::POST, "/api/agy/accounts/0123456789abcdef/test"),
+            Some(Route::TestRemotePost)
+        );
+        assert_eq!(
+            claim(
+                &Method::POST,
+                "/api/agy/accounts/0123456789abcdef/remote-login"
+            ),
+            Some(Route::RemoteLoginStartPost)
+        );
+        assert_eq!(
+            claim(
+                &Method::POST,
+                "/api/agy/accounts/0123456789abcdef/remote-login-callback"
+            ),
+            Some(Route::RemoteLoginCallbackPost)
+        );
+        assert_eq!(
+            claim(
+                &Method::GET,
+                "/api/agy/accounts/0123456789abcdef/remote-login-status"
+            ),
+            Some(Route::RemoteLoginStatusGet)
+        );
+        assert_eq!(
+            claim(&Method::PATCH, "/api/agy/accounts/0123456789abcdef"),
+            Some(Route::UpdateRemotePatch)
+        );
+        assert_eq!(
             claim(&Method::DELETE, "/api/agy/accounts/0123456789abcdef"),
             Some(Route::Delete)
+        );
+        assert_eq!(
+            claim(&Method::GET, "/api/agy/mutagen/status"),
+            Some(Route::MutagenStatusGet)
+        );
+        assert_eq!(
+            claim(&Method::POST, "/api/agy/mutagen/install"),
+            Some(Route::MutagenInstallPost)
         );
         // The quota and catalog clusters keep `/api/agy/quota` and
         // `/api/agy/models`; this cluster must not claim them.
@@ -382,17 +611,25 @@ mod tests {
             Some("GET,HEAD,POST")
         );
         // Express unions every layer whose shape matches, and `:id` matches
-        // these literals too, so `DELETE` is part of the answer.
+        // these literals too, so `PATCH,DELETE` are part of the answer.
         assert_eq!(
             options_share("/api/agy/accounts/import").as_deref(),
-            Some("POST,DELETE")
+            Some("POST,PATCH,DELETE")
+        );
+        assert_eq!(
+            options_share("/api/agy/accounts/remote").as_deref(),
+            Some("POST,PATCH,DELETE")
         );
         assert_eq!(
             options_share("/api/agy/accounts/0123456789abcdef").as_deref(),
-            Some("DELETE")
+            Some("PATCH,DELETE")
         );
         assert_eq!(
             options_share("/api/agy/accounts/0123456789abcdef/login-terminal").as_deref(),
+            Some("POST")
+        );
+        assert_eq!(
+            options_share("/api/agy/accounts/0123456789abcdef/test").as_deref(),
             Some("POST")
         );
         assert_eq!(options_share("/api/agy/quota"), None);
