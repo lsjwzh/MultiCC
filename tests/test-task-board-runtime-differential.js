@@ -651,3 +651,183 @@ test('恢复扫描取消已失去上下文的作业，迟到回执不能消费�
     assert.equal(task.moduleAssignment.lastError, 'classification_cancelled');
   }
 });
+
+async function captureFirstDispatch(createRuntime, scenario) {
+  const key = 'first-dispatch';
+  const taskId = 'tsk-' + require('node:crypto').createHash('sha256')
+    .update('task-board:dir-1\0' + key).digest('hex').slice(0, 32);
+  const calls = [];
+  const failure = Object.assign(new Error('派发端口故障'), { code: 'OPERATION_CONFLICT' });
+  const fixture = mkRuntime({
+    sendSessionMessage(...args) {
+      calls.push(['send', ...args]);
+      if (scenario === 'retry' && calls.length === 1) return Promise.reject(failure);
+      return { chatId: args[0], queued: true, extra: '保留回执扩展字段' };
+    },
+    dispatchToSession(...args) {
+      calls.push(['dispatch', ...args]);
+      if (scenario === 'throw') throw failure;
+      if (scenario === 'reject') return Promise.reject(failure);
+      if (scenario === 'refuse') return null;
+      const receipt = { ok: true, chatId: args[0], operationId: 'historical', status: 'running' };
+      if (scenario === 'late') return Promise.resolve().then(() => {
+        fixture.runtime.getBoard().tasks[taskId].routing.status = 'admitted';
+        fixture.deps.records.get('sess-1').label = '更新后的会话名';
+        return receipt;
+      });
+      return receipt;
+    },
+  }, createRuntime);
+  try {
+    const { runtime, deps, file, creates, broadcasts } = fixture;
+    // Pre-existing module gives both boards the same durable foreign key.
+    runtime.getBoard().modules.pending = { id: 'pending', name: '待归类', dirId: 'dir-1',
+      source: 'classify', createdAt: 1, updatedAt: 1 };
+    if (!['fresh', 'retry'].includes(scenario)) {
+      const manual = ['conflict', 'slot', 'manual'].includes(scenario);
+      runtime.getBoard().tasks[taskId] = {
+        id: taskId, status: 'active', title: '历史任务', refs: [],
+        routing: { mode: manual ? 'manual' : 'commander',
+          targetSessionId: manual ? 'sess-1' : 'commander-1', workerSessionId: 'sess-1',
+          operationId: ['slot', 'manual'].includes(scenario) ? '' : 'historical', status: 'queued' },
+      };
+      if (scenario === 'slot') deps.records.get('sess-1').taskExecutionSlot = true;
+    }
+    const results = [];
+    const attempts = ['fresh', 'retry'].includes(scenario) ? 2 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        results.push(await runtime.routeCommanderInput('commander-1', ' \uFEFF处理任务 ', {
+          idempotencyKey: ' ' + key, source: 'task-board', goalNote: '目标\n',
+        }));
+      } catch (error) {
+        assert.equal(error, failure);
+        results.push({ rejected: error.code });
+      }
+    }
+    return { calls, results, creates, broadcasts, board: JSON.parse(JSON.stringify(runtime.getBoard())),
+      disk: fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null };
+  } finally {
+    fs.rmSync(path.dirname(fixture.file), { recursive: true, force: true });
+  }
+}
+
+test('首次派发在绑定、旧回执、手动路由和宿主故障上与冻结实现一致', async t => {
+  t.mock.method(Date, 'now', () => 1700000000000);
+  for (const scenario of ['fresh', 'retry', 'legacy', 'late', 'conflict', 'slot', 'manual', 'throw', 'reject', 'refuse']) {
+    const old = await captureFirstDispatch(legacy.createTaskBoardRuntime, scenario);
+    assert.deepEqual(await captureFirstDispatch(current.createTaskBoardRuntime, scenario), old, scenario);
+    const [first, second] = old.results;
+    switch (scenario) {
+      case 'fresh':
+        assert.equal(second.duplicate, true);
+        assert.deepEqual(old.calls.map(call => call[0]), ['send']);
+        assert.equal(old.disk.tasks[first.taskId].routing.operationId, first.operationId);
+        break;
+      case 'retry':
+        assert.equal(first.rejected, 'OPERATION_CONFLICT');
+        assert.equal(second.ok, true);
+        assert.equal(old.creates.length, 1);
+        assert.deepEqual(old.calls.map(call => call[1]), ['bound-1', 'bound-1']);
+        break;
+      case 'late':
+        assert.equal(first.duplicate, true);
+        assert.equal(first.queued, false);
+        assert.equal(first.targetLabel, '更新后的会话名');
+        break;
+      case 'legacy':
+      case 'manual':
+        assert.equal(first.ok, true);
+        assert.equal(first.duplicate, scenario === 'legacy' ? true : undefined);
+        assert.equal(old.calls[0][3].idempotencyKey,
+          scenario === 'legacy' ? 'task-run:historical' : 'task-start:' + first.taskId);
+        break;
+      case 'slot':
+      case 'conflict':
+        assert.equal(first.code, scenario === 'slot' ? 'no_relevant_target' : 'idempotency_conflict');
+        assert.equal(old.calls.length, 0);
+        break;
+      case 'refuse':
+        assert.deepEqual(first, { ok: false, error: 'dispatch_failed' });
+        break;
+      default:
+        assert.deepEqual(first, { ok: false, code: 'idempotency_conflict', error: '派发端口故障' });
+    }
+  }
+});
+
+async function captureFollowup(factory, scenario) {
+  const calls = [];
+  const target = 'target';
+  const bound = 'bound';
+  const error = new Error('续发被拒绝');
+  let failSave = false;
+  const fixture = mkRuntime({
+    loadHistory: () => [
+      { id: 'u', role: 'user', content: '用户原文', ts: 1 },
+      { id: 'a', role: 'assistant', content: '助手回复', ts: 2 },
+    ],
+    buildTaskRunContext({ task, messages, includeCurrent }) {
+      calls.push(['上下文', task.id, messages.map(m => ({ ...m })), includeCurrent]);
+      if (scenario === '坏上下文') throw error;
+      return { text: '  上下文  ' };
+    },
+    sendSessionMessage(sessionId, body, options) {
+      calls.push(['投递', sessionId, body, { ...options }]);
+      if (scenario === '异步拒绝') return Promise.reject(error);
+      if (scenario === '未投递') return { ok: false, code: 'not_accepted' };
+      return { operationId: 'op-followup', queued: true };
+    },
+    atomicWriteJson(file, value) {
+      if (failSave) throw new Error('写入失败');
+      fs.writeFileSync(file, JSON.stringify(value));
+    },
+  }, factory);
+  try {
+    const { runtime, deps, file, broadcasts } = fixture;
+    const tasks = runtime.getBoard().tasks;
+    deps.records.set(bound, { id: bound, kind: 'chat', dirId: 'dir-1',
+      taskBoundTaskId: target, cliSessionId: scenario === '热会话' ? 'native-id' : null });
+    const ref = { sessionId: 'sess-1', dirId: 'dir-1', userMsgId: 'u', assistantMsgId: 'a', ts: 1 };
+    const excerpt = { sessionId: 'sess-1', dirId: 'dir-1', ts: 4, excerpt: '旧摘录' };
+    tasks[target] = { id: target, status: scenario === '归档' ? 'archived' : 'active',
+      title: '父任务', refs: [ref, excerpt], chatSessionId: bound };
+    tasks.child = { id: 'child', status: 'archived', mergedInto: target,
+      refs: [{ ...ref, assistantMsgId: null }, { ...excerpt }] };
+    runtime.save();
+    failSave = scenario === '写失败';
+    let result;
+    try {
+      result = await runtime.routeCommanderFollowup('commander-1', target, '  继续处理  ',
+        { clientMsgId: ' 本次 ', source: 'commander', goalNote: '目标\n' });
+    } catch (e) {
+      assert.equal(e, error);
+      result = { rejected: true };
+    }
+    return { result, calls, broadcasts, disk: JSON.parse(fs.readFileSync(file)),
+      board: JSON.parse(JSON.stringify(runtime.getBoard())) };
+  } finally {
+    fs.rmSync(path.dirname(fixture.file), { recursive: true, force: true });
+  }
+}
+
+test('续发的上下文、发送回执、广播及落盘失败回滚与冻结实现一致', async t => {
+  t.mock.method(Date, 'now', () => 1700000000000);
+  for (const scenario of ['冷启动', '热会话', '坏上下文', '异步拒绝', '未投递', '写失败', '归档']) {
+    const expected = await captureFollowup(legacy.createTaskBoardRuntime, scenario);
+    assert.deepEqual(await captureFollowup(current.createTaskBoardRuntime, scenario), expected, scenario);
+    const send = expected.calls.find(row => row[0] === '投递');
+    if (scenario === '归档') { assert.equal(send, undefined); continue; }
+    assert.equal(send[2], '目标\n继续处理');
+    if (scenario === '冷启动') {
+      assert.equal(send[3].taskContextSeed, '  上下文  \n\n');
+      const messages = expected.calls[0][2].map(m => m.text);
+      assert.deepEqual(messages.sort(), ['用户原文', '助手回复', '旧摘录'].sort());
+    }
+    if (scenario === '热会话' || scenario === '坏上下文') assert.equal(send[3].taskContextSeed, undefined);
+    if (scenario === '写失败') {
+      assert.deepEqual(expected.result, { ok: false, code: 'persistence_failed', delivered: true });
+      assert.deepEqual(expected.board.tasks.target, expected.disk.tasks.target);
+    }
+  }
+});

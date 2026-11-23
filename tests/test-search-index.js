@@ -1,6 +1,6 @@
 'use strict';
 
-// The durable message index: the shared tokenizer (src/search/tokenize.js), the
+// The durable message index: the shared tokenizer (native/core/src/search_tokens.rs), the
 // FTS5 store over node:sqlite (src/search/index-store.js) and the chat_history
 // corpus that feeds it (src/search/message-corpus.js).
 //
@@ -20,7 +20,8 @@ const os = require('node:os');
 const path = require('node:path');
 
 const taskSearch = require('../src/task-board/search');
-const tokenizeModule = require('../src/search/tokenize');
+const tokenizeModule = require('../src/native/runtime').searchTokenizer;
+const legacyTokens = require('./helpers/legacy-search-tokenize');
 const { createSearchIndex, hashOf, buildSnippet, escapeLike } = require('../src/search/index-store');
 const {
   MESSAGE_SCOPE, chunkText, createMessageCorpus, isSearchableSession, messageText, sessionChunkRows,
@@ -40,6 +41,21 @@ function memIndex(overrides = {}) {
 function row(refId, ord, text, extra = {}) {
   return { scope: MESSAGE_SCOPE, refId, ord, kind: 'assistant', text, updatedAt: 1000, ...extra };
 }
+
+test('看板词频、索引词序和 FTS 表达式与冻结分词器一致', () => {
+  const many = Array.from({ length: 8002 }, (_, i) => 't' + i).join(' ') + ' t0';
+  const samples = [undefined, null, 0, false, Symbol('AIR'), { toString: () => '缓存 层' },
+    'ＡＩＲ.js ㍿ 缓存缓存 A+B _x 日かな 한글', 'a'.repeat(399) + '😀缓存',
+    'x\ud800中\udfff文 ＳΣ', '的'.repeat(100), '中文检索分析测试 资料\n重复 资料',
+    many, Array.from({ length: 25 }, (_, i) => 'w' + i).join(' ') + ' 缓存层'];
+  for (const value of samples) {
+    assert.deepEqual([...tokenizeModule.tokenize(value)], [...legacyTokens.tokenize(value)]);
+    assert.deepEqual(tokenizeModule.indexTokens(value), legacyTokens.indexTokens(value));
+    assert.deepEqual(tokenizeModule.matchGroups(value), legacyTokens.matchGroups(value));
+    assert.equal(tokenizeModule.matchExpression(value), legacyTokens.matchExpression(value));
+    assert.equal(tokenizeModule.normalizeText(value), legacyTokens.normalizeText(value));
+  }
+});
 
 test('the task board and the message index tokenize identically', () => {
   // The board re-exports the shared tokenizer, so its callers (and its tests keep

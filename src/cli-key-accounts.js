@@ -26,10 +26,10 @@ const path = require('node:path');
 const { atomicWriteJson, ensurePrivateDir } = require('./runtime-security');
 const { DEFAULT_ROOT, ACCOUNT_ID_PATTERN } = require('./official-accounts');
 const { hasAccount: hasAgyAccountNative } = require('./agy-accounts');
+const { displayNameOf } = require('./cli/cli-capability');
 
 const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);
 const SESSION_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode', 'agy']);
-const CLI_NAMES = Object.freeze({ commandcode: 'Command Code', opencode: 'OpenCode', agy: 'Antigravity' });
 // The key travels as its own env var and the config only names it, so the
 // merged OPENCODE_CONFIG_CONTENT never carries the secret itself.
 const OPENCODE_KEY_ENV = 'MULTICC_OPENCODE_ACCOUNT_KEY';
@@ -206,7 +206,7 @@ function applyCliKeyAccountEnv(env, session, store, cli = session && session.cli
   let key = null;
   try { key = store.readKey(cli, id); } catch (_) { key = null; }
   if (!key) {
-    throw invalid(`所选 ${CLI_NAMES[cli]} 账户已不存在或缺少 API Key，请在运行配置里重新选择账户`, 'CLI_KEY_ACCOUNT_MISSING');
+    throw invalid(`所选 ${displayNameOf(cli)} 账户已不存在或缺少 API Key，请在运行配置里重新选择账户`, 'CLI_KEY_ACCOUNT_MISSING');
   }
   const next = { ...env };
   if (cli === 'commandcode') {
@@ -234,7 +234,7 @@ function mergeCliAccountsPatch(current, patch, store, { hasAgyAccount = hasAgyAc
     const exists = cli === 'agy'
       ? (typeof value === 'string' && !!hasAgyAccount(value))
       : (typeof value === 'string' && store.has(cli, value));
-    if (!exists) return { ok: false, error: `${CLI_NAMES[cli]} 账户不存在` };
+    if (!exists) return { ok: false, error: `${displayNameOf(cli)} 账户不存在` };
     next[cli] = value;
   }
   return { ok: true, value: Object.keys(next).length ? next : null };

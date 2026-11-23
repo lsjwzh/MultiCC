@@ -50,6 +50,7 @@ pub fn agy_ensure_router_mcp(home_dir: String, node: String, script: String) -> 
         .map_err(napi::Error::from_reason)
 }
 
+#[derive(Default)]
 #[napi]
 pub struct RustAgyStreamDecoder {
     inner: RefCell<AgyStreamDecoder>,
@@ -59,9 +60,7 @@ pub struct RustAgyStreamDecoder {
 impl RustAgyStreamDecoder {
     #[napi(constructor)]
     pub fn new() -> Self {
-        Self {
-            inner: RefCell::new(AgyStreamDecoder::new()),
-        }
+        Self::default()
     }
 
     #[napi]

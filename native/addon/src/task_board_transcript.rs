@@ -540,19 +540,32 @@ pub fn task_board_legacy_import_messages(
     load_history: Unknown<'_>,
     message_text: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let members = L::new(&env, members);
-    let identity_ids = collect_identity_ids(L::new(&env, identity_ids))?;
-    let task = L::new(&env, task);
-    let load_history = L::new(&env, load_history);
+    Ok(legacy_import(
+        L::new(&env, members),
+        &collect_identity_ids(L::new(&env, identity_ids))?,
+        L::new(&env, task),
+        L::new(&env, load_history),
+        L::new(&env, message_text),
+    )?
+    .raw())
+}
+
+pub(crate) fn legacy_import<'a>(
+    members: L<'a>,
+    identity_ids: &[L<'a>],
+    task: L<'a>,
+    load_history: L<'a>,
+    message_text: L<'a>,
+) -> Result<L<'a>> {
     let mut importer = Importer {
         carrier: members,
-        message_text: L::new(&env, message_text),
+        message_text,
         entries: Vec::new(),
         index: HashMap::new(),
     };
     let default_excerpt = members.from_value(&J::string(""))?;
     let default_created = members.from_value(&J::Number(0.0))?;
-    let entries = collect_entries(members, &identity_ids, load_history)?;
+    let entries = collect_entries(members, identity_ids, load_history)?;
     for entry in &entries {
         let canonical_body = if entry.message.nullish()? {
             false
@@ -661,7 +674,7 @@ pub fn task_board_legacy_import_messages(
     for (index, (_, _, entry)) in projected.iter().enumerate() {
         out.set_element(index as u32, *entry)?;
     }
-    Ok(out.raw())
+    Ok(out)
 }
 
 /// `messages.map(message => ({id, role, ts, text}))`: Array#map reads the
@@ -673,8 +686,10 @@ pub fn task_board_context_messages(
     messages: Unknown<'_>,
     message_text: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let messages = L::new(&env, messages);
-    let message_text = L::new(&env, message_text);
+    Ok(context_messages(L::new(&env, messages), L::new(&env, message_text))?.raw())
+}
+
+pub(crate) fn context_messages<'a>(messages: L<'a>, message_text: L<'a>) -> Result<L<'a>> {
     let count = messages.get(c"length")?.number()?.max(0.0) as u32;
     let out = messages.from_value(&J::Array(vec![]))?;
     for index in 0..count {
@@ -692,5 +707,5 @@ pub fn task_board_context_messages(
         projected.set(c"text", text)?;
         out.set_element(index, projected)?;
     }
-    Ok(out.raw())
+    Ok(out)
 }

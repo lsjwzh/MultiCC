@@ -19,9 +19,9 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { normalizeEnvelope } = require('./contract');
+const { normalizeEnvelope } = require('../native/runtime').getTurnLedgerContract();
 const { createTurnLedger } = require('./ledger');
-const { createTurnEndEvidence } = require('./evidence');
+const { getNative } = require('../native/runtime');
 const { createHookInstaller } = require('./hook-install');
 
 const HOOKED_CLIS = new Set(['claude', 'codex']);
@@ -48,7 +48,7 @@ function createTurnLedgerRuntime(deps = {}) {
   const stateFile = path.join(root, 'sessions.json');
 
   const ledger = createTurnLedger({
-    confirmTurnEnd: createTurnEndEvidence({ fs }),
+    confirmTurnEnd: input => getNative().confirmTurnEnd(input),
     onTransition: t => logger.log?.(`[turn-ledger/shadow] ${t.sessionId} ${t.from || '-'}→${t.to} (${t.evidence}${t.reason ? `/${t.reason}` : ''}) ${t.transitionId}`),
     logger,
     ...ledgerOptions,

@@ -56,7 +56,9 @@
 // or any other field), and finalize() asserts the ids/timestamps are present.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const assert = require('node:assert/strict');
+const etag = require('etag');
+const { main, send } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-req-1' };
 // Both sides stamp task writes with Date.now(); the two processes are the only
@@ -73,7 +75,7 @@ let currentHandler = null;
 let setLegacyHandler = null;
 let upstreamText = '';
 const nodeEffects = new Map();
-const responses = new Map();
+const graphMeasurements = [];
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -88,15 +90,18 @@ function useScenario(scenario) {
     before(side) {
       if (side.name === 'node') {
         legacyBag = buildDeps(scenario);
+        if (scenario.graphClockStep) {
+          let now = FROZEN_NOW;
+          legacyBag.deps.graph.now = () => (now += scenario.graphClockStep);
+        }
         setLegacyHandler(legacyBag);
       } else {
         fs.writeFileSync(worldPath, JSON.stringify(scenario));
       }
     },
-    capture(response, side) {
+    capture(_response, side) {
       if (side.name === 'rust') return;
       nodeEffects.set(scenario.case, clone(legacyBag.effects.calls));
-      responses.set(scenario.case, response);
     },
   };
 }
@@ -122,11 +127,7 @@ function corpus() {
   // Node's http client drops the body of a DELETE unless Content-Length is
   // set; the stray bytes then parse as a second request and the server answers
   // a bare 400. Real clients frame the body, so the corpus does too.
-  // The ETag is computed over the raw body, so a response the harness has to
-  // normalize cannot carry a comparable validator: a created task's random
-  // `tsk-plan-…` id and the graph's measured `meta.durationMs`. The bodies are
-  // still compared byte for byte after normalization, and the status,
-  // content-type and content-length stay in the comparison.
+  // The created task id has a fixed width, but its raw ETag varies.
   const dropEtag = view => { delete view.headers.etag; return view; };
   const del = (url, body, headers = L) => {
     const payload = JSON.stringify(body === undefined ? {} : body);
@@ -297,12 +298,48 @@ function corpus() {
     '/api/air/tasks/mark-achieved', { taskId: 'tk-2' }));
 
   // ── task graph ─────────────────────────────────────────────────────────
-  add('task graph', () => get('/api/task-graph'), null, { normalize: dropEtag });
-  add('task graph filtered', () => get('/api/task-graph?dirId=dir-2'), null, { normalize: dropEtag });
-  add('task graph empty filter means all', () => get('/api/task-graph?dirId='), null, { normalize: dropEtag });
+  const graphBodies = new Map();
+  const graphHeaders = {
+    async send(side, request) {
+      const started = performance.now();
+      const raw = await send(side.port, request);
+      let representation = raw.body;
+      if (request.method === 'HEAD') {
+        assert.equal(raw.body.length, 0);
+        // HEAD advertises the GET representation for this same fixture. Only
+        // its elapsed milliseconds can have changed since the captured GET.
+        const previous = graphBodies.get(side.name);
+        const elapsed = Math.ceil(performance.now() - started);
+        for (let ms = 0; ms <= elapsed; ms++) {
+          representation = previous.replace(/("durationMs":)\d+(?=}}$)/, (_, key) => key + ms);
+          if (etag(representation, { weak: true }) === raw.headers.etag) break;
+        }
+      } else {
+        const text = raw.body.toString('utf8');
+        const duration = JSON.parse(text).meta.durationMs;
+        assert.ok(Number.isSafeInteger(duration) && duration >= 0);
+        if (request.url === '/api/task-graph') graphBodies.set(side.name, text);
+      }
+      assert.equal(raw.headers['content-length'], String(Buffer.byteLength(representation)));
+      assert.equal(raw.headers.etag, etag(representation, { weak: true }));
+      graphMeasurements.push({ side: side.name, method: request.method, url: request.url,
+        durationMs: JSON.parse(representation).meta.durationMs, bodyBytes: raw.body.length,
+        contentLength: raw.headers['content-length'] });
+      return raw;
+    },
+    normalize(view) {
+      delete view.headers.etag;
+      delete view.headers['content-length'];
+    },
+  };
+  add('task graph', () => get('/api/task-graph'), null, graphHeaders);
+  // A six-digit duration on the oracle guarantees a width difference even
+  // on a fast machine (the real request deadline is 20 seconds).
+  add('task graph filtered', () => get('/api/task-graph?dirId=dir-2'), { graphClockStep: 100000 }, graphHeaders);
+  add('task graph empty filter means all', () => get('/api/task-graph?dirId='), null, graphHeaders);
   add('task graph build failure', () => get('/api/task-graph'),
     () => ({ graphThrows: 'boom' }));
-  add('HEAD task graph', () => head('/api/task-graph'), null, { normalize: dropEtag });
+  add('HEAD task graph', () => head('/api/task-graph'), null, graphHeaders);
 
   // ── attribution ────────────────────────────────────────────────────────
   add('attribution read', () => get('/api/settings/task-attribution'));
@@ -569,6 +606,6 @@ main({
       return { ok: false, details };
     }
     console.log(`[task-routes] side effects identical in ${nodeEffects.size} case(s)`);
-    return { ok: true, details };
+    return { ok: true, details, graphMeasurements };
   },
 });

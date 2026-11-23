@@ -6,10 +6,19 @@ const fs = require('node:fs');
 const Module = require('node:module');
 const path = require('node:path');
 
-const original = path.resolve(__dirname, '../../src/routes/task-board.js');
-const snapshot = path.join(__dirname, 'legacy-task-board-runtime.js');
-const loaded = new Module(original, module);
-loaded.filename = original;
-loaded.paths = Module._nodeModulePaths(path.dirname(original));
-loaded._compile(fs.readFileSync(snapshot, 'utf8'), original);
-module.exports = loaded.exports;
+function snapshot(filename, source, dependencies = {}) {
+  const original = path.resolve(__dirname, '../../src', filename);
+  const loaded = new Module(original, module);
+  loaded.filename = original;
+  loaded.paths = Module._nodeModulePaths(path.dirname(original));
+  loaded.require = id => Object.hasOwn(dependencies, id) ? dependencies[id] : Module.prototype.require.call(loaded, id);
+  loaded._compile(fs.readFileSync(path.join(__dirname, source), 'utf8'), original);
+  return loaded.exports;
+}
+
+const context = snapshot('task-board/turn-context.js', 'legacy-task-run-context.js');
+const seed = require('./legacy-task-cold-start-seed');
+const runtime = snapshot('routes/task-board.js', 'legacy-task-board-runtime.js', {
+  '../task-board/turn-context': context, '../task-board/cold-start-seed': seed,
+});
+module.exports = { ...runtime, ...context, ...seed };

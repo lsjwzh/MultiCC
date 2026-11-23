@@ -2185,9 +2185,8 @@ fn apply_adapter_one<'a>(
                     && number_truthy(object_keys_len(anchor, incoming_input)?)
                 {
                     let next_json = multicc_core::js::json::json_stringify(&read(incoming_input)?);
-                    let prev_json = multicc_core::js::json::json_stringify(&read(
-                        tool.optional(c"input")?,
-                    )?);
+                    let prev_json =
+                        multicc_core::js::json::json_stringify(&read(tool.optional(c"input")?)?);
                     if next_json != prev_json {
                         tool.assign(c"input", incoming_input)?;
                         let frame = object(anchor)?;

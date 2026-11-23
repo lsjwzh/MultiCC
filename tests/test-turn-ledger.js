@@ -11,9 +11,13 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const { normalizeEnvelope, transitionId } = require('../src/turn-ledger/contract');
+const contract = require('../src/native/runtime').getTurnLedgerContract();
+const { normalizeEnvelope, transitionId } = contract;
+const legacyContract = require('./helpers/legacy-turn-ledger-contract');
 const { createTurnLedger } = require('../src/turn-ledger/ledger');
-const { claudeVerdict, codexVerdict, createTurnEndEvidence } = require('../src/turn-ledger/evidence');
+const legacyEvidence = require('./helpers/legacy-turn-end-evidence');
+const { getNative } = require('../src/native/runtime');
+const confirmTurnEnd = input => getNative().confirmTurnEnd(input);
 const { createHookInstaller, WRAPPER_SOURCE } = require('../src/turn-ledger/hook-install');
 const { createTurnLedgerRuntime } = require('../src/turn-ledger/runtime');
 const { createTurnLedgerHost, mountTurnLedgerHostRoute, HOST_PATH } = require('../src/routes/turn-ledger-host');
@@ -54,6 +58,59 @@ test('contract: envelopes are validated and transition ids are stable', () => {
   assert.equal(normalizeEnvelope({ ...ok, event: 'Bogus' }), null);
   assert.equal(normalizeEnvelope({ ...ok, ts: 0 }), null);
   assert.equal(transitionId({ sessionId: 's', epoch: 2, turnId: 't', seq: 3, state: 'D' }), 's:2:t:3:D');
+});
+
+test('contract: native spool records match the frozen reader including field order and identity', () => {
+  const base = { v: 1, sessionId: 'sid', eventId: 'eid', event: 'Stop', ts: 1 };
+  const id = { toString: () => 'object-id' };
+  const long = 'a'.repeat(31) + '😀' + '文'.repeat(1100);
+  const records = [
+    undefined, null, false, 1, [], { ...base, v: '1' },
+    ...[...legacyContract.HOOK_EVENTS].map(event => ({ ...base, event })),
+    ...['', true, 0, 17, id, 'A_:.-9', 'x'.repeat(128), 'x'.repeat(129), 'a\n', Symbol('s')].map(sessionId => ({ ...base, sessionId })),
+    ...[NaN, Infinity, -1, '0x10', 33n, null, {}, true].map(ts => ({ ...base, ts })),
+    ...[-0, 0.1, null, '7', 2, 1e21].map(n => ({ ...base, epoch: n, cliPid: n, backgroundTasks: n })),
+    { ...base, eventId: id, cli: long, cliSessionId: long, turnId: long, transcriptPath: long,
+      source: long, reason: long, notificationType: '', toolName: 4, error: long, stopHookActive: false, promptHead: long },
+  ];
+  for (const raw of records) {
+    const expected = legacyContract.normalizeEnvelope(raw);
+    const actual = normalizeEnvelope(raw);
+    assert.deepEqual(actual, expected);
+    if (expected) {
+      assert.deepEqual(Object.keys(actual), Object.keys(expected));
+      assert.equal(actual.eventId, expected.eventId);
+      assert.equal(actual.sessionId, expected.sessionId);
+    }
+  }
+  function trace(normalize) {
+    const reads = [];
+    const value = normalize(new Proxy({ ...base, epoch: 2, cliPid: 3, stopHookActive: true, backgroundTasks: 1 }, {
+      get(obj, key) { reads.push(key); return obj[key]; },
+    }));
+    return { value, reads };
+  }
+  assert.deepEqual(trace(normalizeEnvelope), trace(legacyContract.normalizeEnvelope));
+  const failure = new Error('spool getter');
+  assert.throws(() => normalizeEnvelope({ ...base, get eventId() { throw failure; } }), err => err === failure);
+  contract.HOOK_EVENTS.add('Custom');
+  try { assert.equal(normalizeEnvelope({ ...base, event: 'Custom' }).event, 'Custom'); }
+  finally { contract.HOOK_EVENTS.delete('Custom'); }
+});
+
+test('contract: transition ids and ownership project identically to the frozen contract', () => {
+  for (const key of ['HOOK_EVENTS', 'OWNERSHIP', 'E_REASONS', 'SILENT_E_REASONS']) {
+    assert.deepEqual(contract[key], legacyContract[key]);
+    assert.equal(Object.isFrozen(contract[key]), Object.isFrozen(legacyContract[key]));
+  }
+  for (const ownership of [...Object.values(legacyContract.OWNERSHIP), null, {}, 'other']) {
+    assert.deepEqual(contract.projectLiveness(ownership), legacyContract.projectLiveness(ownership));
+  }
+  for (const turnId of [undefined, -0, false, 1n, 'x', '\ud800']) {
+    const args = { sessionId: ['s'], epoch: 0, turnId, seq: 3, state: 'W' };
+    assert.equal(transitionId(args), legacyContract.transitionId(args));
+  }
+  assert.throws(() => transitionId({ state: Symbol() }), TypeError);
 });
 
 test('ledger: Stop is only a candidate until evidence confirms it', async () => {
@@ -160,28 +217,75 @@ test('ledger: duplicates, stale epochs and stale turns never mutate the turn', (
 });
 
 test('evidence: Claude stop_hook_summary / interrupt and Codex task_complete', async t => {
-  const J = o => JSON.stringify(o);
-  const prompt = J({ type: 'user', message: { role: 'user', content: 'do it' } });
+  const file = path.join(tmpDir(t), 'rollout.jsonl');
+  const baseline = legacyEvidence.createTurnEndEvidence({ fs });
+  async function check(cli, text, want, turnId = 't1') {
+    fs.writeFileSync(file, text);
+    const args = { cli, turnId, transcriptPath: file };
+    assert.equal(await baseline(args), want);
+    assert.equal(await confirmTurnEnd(args), want);
+  }
+  const J = JSON.stringify;
+  const prompt = J({ type: 'user', message: { content: 'do it' } });
   const summary = p => J({ type: 'system', subtype: 'stop_hook_summary', preventedContinuation: p });
-  assert.equal(claudeVerdict([prompt, summary(false)]), 'confirmed');
-  assert.equal(claudeVerdict([prompt, summary(true)]), 'continued');
-  assert.equal(claudeVerdict([summary(false), prompt]), 'pending');  // summary belongs to the previous turn
+  const intr = J({ type: 'user', message: { content: [{ type: 'text', text: '\uFEFF[Request interrupted by user]' }] } });
   const meta = J({ type: 'user', isMeta: true, message: { content: 'caveat' } });
-  assert.equal(claudeVerdict([prompt, summary(false), meta]), 'confirmed');
-  const intr = J({ type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } });
-  assert.equal(claudeVerdict([prompt, intr]), 'interrupted');
-
+  const side = J({ type: 'system', subtype: 'stop_hook_summary', isSidechain: [], preventedContinuation: true });
+  const user = content => J({ type: 'user', message: { content } });
+  for (const [lines, expected] of [
+    [[prompt, summary(false)], 'confirmed'], [[prompt, summary(true)], 'continued'],
+    [[summary(false), prompt], 'pending'], [[prompt, summary(false), meta, side], 'confirmed'],
+    [[prompt, intr], 'interrupted'], [[summary('true'), '{bad'], 'confirmed'],
+    [[intr, user([{ type: 'tool_result' }])], 'interrupted'],
+    [[intr, user([{ type: 'text', text: '' }])], 'pending'],
+    [[user([{ type: 'text', text: false }, { type: 'text', text: ['[Request interrupted by user'] }])], 'interrupted'],
+  ]) await check('claude', lines.join('\r\n'), expected);
   const ev = (type, turn) => J({ type: 'event_msg', payload: { type, turn_id: turn } });
-  assert.equal(codexVerdict([ev('task_started', 't1'), ev('task_complete', 't1')], 't1'), 'confirmed');
-  assert.equal(codexVerdict([ev('task_complete', 't0'), ev('task_started', 't1')], 't1'), 'pending');
-  assert.equal(codexVerdict([ev('turn_aborted', 't1')], 't1'), 'interrupted');
+  await check('codex', [ev('task_started', 't1'), ev('task_complete', 't1')].join('\n'), 'confirmed');
+  await check('codex', [ev('task_complete', 't0'), ev('task_started', 't1')].join('\n'), 'pending');
+  await check('codex', ev('turn_aborted', 't1'), 'interrupted');
+  await check('codex', ev('turn_aborted', '\ud800'), 'interrupted', '\ud800');
+  await check('codex', ev('turn_aborted', '\ud801'), 'pending', '\ud800');
+  await check('codex', ev('task_complete', ''), 'pending', '');
+  await check('other', summary(false), 'pending');
+  const tailSize = 256 * 1024;
+  const atBoundary = ev('task_complete', 't1').padEnd(tailSize, ' ');
+  await check('codex', atBoundary, 'confirmed');
+  await check('codex', '\n' + atBoundary, 'pending');
+  await check('codex', '坏'.repeat(tailSize) + '\n' + ev('task_complete', 't1'), 'confirmed');
+  await check('claude', Buffer.concat([Buffer.from(summary(false) + '\n'), Buffer.from([0xff])]), 'confirmed');
+  fs.unlinkSync(file);
+  const missing = { cli: 'codex', turnId: 't1', transcriptPath: file };
+  assert.equal(await baseline(missing), 'pending');
+  assert.equal(await confirmTurnEnd(missing), 'pending');
+});
 
-  const dir = tmpDir(t);
-  const file = path.join(dir, 'rollout.jsonl');
-  fs.writeFileSync(file, `${ev('task_complete', 't9')}\n`);
-  const confirm = createTurnEndEvidence({ fs });
-  assert.equal(await confirm({ cli: 'codex', turnId: 't9', transcriptPath: file }), 'confirmed');
-  assert.equal(await confirm({ cli: 'codex', turnId: 't9', transcriptPath: path.join(dir, 'nope') }), 'pending');
+test('停止事件经默认运行入口读取转录后才标记完成', { timeout: 5000 }, async t => {
+  const dataDir = tmpDir(t);
+  const transcriptPath = path.join(dataDir, 'rollout.jsonl');
+  const spool = path.join(dataDir, 'turn-hooks', 'spool', 's1');
+  const base = { v: 1, epoch: 1, sessionId: 's1', turnId: 't1', cli: 'codex' };
+  const schedules = [];
+  let finish;
+  const completed = new Promise(resolve => { finish = resolve; });
+  const rt = createTurnLedgerRuntime({
+    dataDir,
+    ledgerOptions: {
+      schedule: fn => schedules.push(fn),
+      onTransition: transition => { if (transition.to === 'D') finish(transition); },
+    },
+  });
+  fs.mkdirSync(spool, { recursive: true });
+  hookScript.writeSpool(spool, { ...base, event: 'UserPromptSubmit', eventId: 'start', ts: 1 });
+  hookScript.writeSpool(spool, { ...base, event: 'Stop', eventId: 'stop', ts: 2, transcriptPath });
+  rt.sweep();
+  assert.equal(rt.snapshot('s1').state, 'P');
+  assert.equal(rt.snapshot('s1').stopPending, true);
+  fs.writeFileSync(transcriptPath, JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1' } }));
+  assert.equal(schedules.length, 1);
+  schedules.shift()();
+  assert.equal((await completed).turnId, 't1');
+  assert.equal(rt.snapshot('s1').stopPending, false);
 });
 
 test('hook shim: projects, redacts and spools atomically', t => {

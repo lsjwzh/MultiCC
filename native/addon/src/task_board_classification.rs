@@ -13,65 +13,14 @@ use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 use std::{cell::RefCell, collections::HashMap, ffi::CStr};
 
-trait Properties: Sized {
-    fn invoke(self, key: &CStr, args: &[Self]) -> Result<Self>;
-    fn or(self, fallback: impl FnOnce() -> Result<Self>) -> Result<Self>;
-    fn length(self) -> Result<u32>;
-}
-
-impl Properties for L<'_> {
-    fn invoke(self, key: &CStr, args: &[Self]) -> Result<Self> {
-        self.get(key)?.call(self, args)
-    }
-    fn or(self, fallback: impl FnOnce() -> Result<Self>) -> Result<Self> {
-        if self.truthy()? {
-            Ok(self)
-        } else {
-            fallback()
-        }
-    }
-    fn length(self) -> Result<u32> {
-        Ok(self.get(c"length")?.number()? as u32)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Host<'a>(L<'a>);
+use crate::task_board_host::{Host, Properties};
 
 impl<'a> Host<'a> {
-    fn value(self, value: impl Into<J>) -> Result<L<'a>> {
-        self.0.from_value(&value.into())
-    }
-    fn null(self) -> Result<L<'a>> {
-        self.value(J::Null)
-    }
-    fn object(self, fields: &[(&CStr, L<'a>)]) -> Result<L<'a>> {
-        let obj = self.value(J::Object(vec![]))?;
-        for (key, value) in fields {
-            obj.set(key, *value)?;
-        }
-        Ok(obj)
-    }
-    fn board(self) -> Result<L<'a>> {
-        self.0.get(c"board")
-    }
-    fn tasks(self) -> Result<L<'a>> {
-        self.board()?.get(c"tasks")
-    }
-    fn now(self) -> Result<L<'a>> {
-        self.0.global()?.get(c"Date")?.invoke(c"now", &[])
-    }
-    fn record(self, id: L<'a>) -> Result<L<'a>> {
-        self.0.get(c"records")?.invoke(c"get", &[id])
-    }
     fn history(self, session: L<'a>) -> Result<L<'a>> {
         self.0
             .get(c"loadHistory")?
             .call_plain(&[session])?
             .or(|| self.value(J::Array(vec![])))
-    }
-    fn core(self, key: &CStr, args: &[L<'a>]) -> Result<L<'a>> {
-        self.0.get(c"core")?.invoke(key, args)
     }
     fn dir(self, task: L<'a>) -> Result<L<'a>> {
         self.core(c"taskDirId", &[self.board()?, task])?

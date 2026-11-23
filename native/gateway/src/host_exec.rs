@@ -58,16 +58,18 @@ pub fn generate_token() -> Result<String, String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn check_auth(headers: &HeaderMap, expected: &str) -> Result<(), Response> {
+fn unauthorized_response(headers: &HeaderMap, expected: &str) -> Option<Response> {
     let auth = headers.get("authorization").and_then(|v| v.to_str().ok());
     if verify_bearer_token(auth, expected) {
-        Ok(())
+        None
     } else {
-        Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "ok": false, "error": "unauthorized" })),
+        Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "ok": false, "error": "unauthorized" })),
+            )
+                .into_response(),
         )
-            .into_response())
     }
 }
 
@@ -96,14 +98,14 @@ fn verify_no_symlink_escape(target: &Path, canonical_root: Option<&Path>) -> Res
 }
 
 async fn handle_health(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    if let Err(resp) = check_auth(&headers, &state.token) {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
     (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
 
 async fn handle_info(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    if let Err(resp) = check_auth(&headers, &state.token) {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
     (
@@ -125,7 +127,7 @@ async fn handle_exec(
     headers: HeaderMap,
     Json(req): Json<HostExecRequest>,
 ) -> Response {
-    if let Err(resp) = check_auth(&headers, &state.token) {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
     if req.command.trim().is_empty() {
@@ -287,7 +289,7 @@ async fn handle_fs_read(
     headers: HeaderMap,
     Json(req): Json<HostFsReadRequest>,
 ) -> Response {
-    if let Err(resp) = check_auth(&headers, &state.token) {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
     let path = match map_remote_to_local_path(
@@ -339,7 +341,7 @@ async fn handle_fs_write(
     headers: HeaderMap,
     Json(req): Json<HostFsWriteRequest>,
 ) -> Response {
-    if let Err(resp) = check_auth(&headers, &state.token) {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
     let path = match map_remote_to_local_path(
@@ -396,7 +398,7 @@ async fn handle_fs_list(
     headers: HeaderMap,
     Json(req): Json<HostFsListRequest>,
 ) -> Response {
-    if let Err(resp) = check_auth(&headers, &state.token) {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
     let path = match map_remote_to_local_path(
