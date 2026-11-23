@@ -580,9 +580,9 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
 
   VendorQuotaView? get agyQuotaView {
     if (_cli != SessionCli.agy) return null;
-    if (_agyLoading) return const VendorQuotaView('反重力额度查询中…', VendorQuotaColor.gray);
+    if (_agyLoading) return const VendorQuotaView('反重力：加载中…', VendorQuotaColor.gray);
     return vendorViewFromBar(_agyQuota == null ? null : _barOf(_agyQuota!))
-        ?? const VendorQuotaView('反重力额度：点击查询', VendorQuotaColor.gray);
+        ?? const VendorQuotaView('反重力 余量 · ⟳ 刷新', VendorQuotaColor.gray);
   }
 
   /// OpenCode Go subscription bar (5h / weekly / monthly), under the opencode
@@ -2225,8 +2225,8 @@ class ChatProvider extends ChangeNotifier with ChatProviderUnattended {
     _agyLoading = false;
     _agyErrorAt = data?['status'] == 'ok' ? 0 : _nowMs();
     _agyQuota = data ?? {'status': 'unavailable', 'bar': {
-      'text': '反重力额度查询失败 · 点击重试', 'color': '#f85149',
-      'title': '无法连接额度服务，请检查网络。', 'action': 'refresh',
+      'text': '反重力 · 请求失败 ⟳ 重试', 'color': '#8b949e',
+      'title': '无法连接 MultiCC 服务，未能取到反重力用量。点击重试。',
     }};
     notifyListeners();
   }

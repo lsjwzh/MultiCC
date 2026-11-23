@@ -108,7 +108,7 @@ const MIGRATION_DEBT = Object.freeze({
   // agy 这一格现在也归那笔 vendor-quota 集群，拆出去落回 <= 3000 就删掉这条。
   'app/lib/providers/chat_provider.dart': Object.freeze({
     ceiling: 3032,
-    byteCeiling: 122979,
+    byteCeiling: 122978,
     target: 3000,
     reason: 'extract the vendor-quota cluster (the ark/kimi/qoder/agy fetchers, their in-flight and backoff state, and their *QuotaView getters) into its own collaborator to return under 3k',
   }),
@@ -821,8 +821,11 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +10 bilingual keys (airOfficialAcctAgyRemoteIsolateToggle / AddSibling / Signin*):
     // 远端 VPS 多账号自动隔离 HOME + 类 Claude/Codex 网页授权登录面板文案。
     // 中英各 10 行 = +20 行；重跑生成器实测 10726/697939。
-    maxLines: 10726,
-    maxBytes: 697939,
+    // +8 bilingual keys (quotaVendorAgy/quotaAgy*/quotaLoadingTitleAgy): align
+    // the Antigravity (agy) quota bar & tooltip copy with all other quota bars.
+    // 中英各 8 行 = +16 行；countLines 口径实测 10742/699121，按真实高水位抬一格。
+    maxLines: 10742,
+    maxBytes: 699121,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

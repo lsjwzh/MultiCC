@@ -339,12 +339,38 @@
     };
   }
 
+  const AGY_VENDOR_PART = { k: 'quotaVendorAgy', s: '反重力' };
+  const AGY_LOADING_BAR = {
+    text: '反重力：加载中…',
+    title: '正在通过 agy /usage 拉取反重力账号额度...',
+    color: '#8b949e',
+    action: null,
+    textParts: [{ k: 'quotaLoading', s: '反重力：加载中…', p: { label: AGY_VENDOR_PART } }],
+    titleParts: [{ k: 'quotaLoadingTitleAgy', s: '正在通过 agy /usage 拉取反重力账号额度...' }],
+  };
+  const AGY_UNREACHABLE_BAR = {
+    text: '反重力 · 请求失败 ⟳ 重试',
+    title: '无法连接 MultiCC 服务，未能取到反重力用量。点击重试。',
+    color: '#8b949e',
+    action: null,
+    textParts: [{ k: 'quotaUnreachableText', s: '反重力 · 请求失败 ⟳ 重试', p: { label: AGY_VENDOR_PART } }],
+    titleParts: [{ k: 'quotaUnreachableTitle', s: '无法连接 MultiCC 服务，未能取到反重力用量。点击重试。', p: { label: AGY_VENDOR_PART } }],
+    states: { loading: AGY_LOADING_BAR },
+  };
   const agySlot = createQuotaSlot({
     kind: 'agy', id: 'agy-quota-bar', method: 'GET', noCache: true,
     isVisible: () => currentCli === 'agy',
     getUrl: force => `/api/agy/quota${force ? '?force=1' : ''}`,
-    idleBar: { text: '反重力额度：点击查询', title: '点击查询反重力账号额度', color: '#8b949e', states: { loading: { text: '反重力额度查询中…', title: '正在查询额度', color: '#8b949e' } } },
-    failBar: { text: '反重力额度查询失败 · 点击重试', title: '无法连接额度服务，请检查网络。', color: '#f85149' },
+    idleBar: {
+      text: '反重力 余量 · ⟳ 刷新',
+      title: '点击通过 agy /usage 拉取反重力账号额度',
+      color: '#8b949e',
+      action: null,
+      textParts: [{ k: 'quotaAgyIdleText', s: '反重力 余量 · ⟳ 刷新' }],
+      titleParts: [{ k: 'quotaAgyIdleTitle', s: '点击通过 agy /usage 拉取反重力账号额度' }],
+      states: { loading: AGY_LOADING_BAR, unreachable: AGY_UNREACHABLE_BAR },
+    },
+    failBar: AGY_UNREACHABLE_BAR,
   });
   const opencodeSlot = createQuotaSlot({
     kind: 'opencode', id: 'opencode-quota-bar', loginKind: 'opencode',

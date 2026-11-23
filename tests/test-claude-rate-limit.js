@@ -1005,22 +1005,28 @@ test('a provider-snapshot kimi bar answers the user click: loading render, then 
   } finally { f.cleanup(); }
 });
 
-test('反重力额度在当前车道显示，点击时强制刷新，换车道后隐藏', async () => {
+test('反重力额度在当前车道显示（含重置倒计时），点击时强制刷新，换车道后隐藏', async () => {
   const f = freshClient();
   try {
     await flushClient();
     const calls = [];
+    const reset5h = Date.now() + 2 * 3_600_000;
+    const resetWk = Date.now() + 6 * 86_400_000;
+    const fetchedAt = Date.now();
     global.fetch = async (url, opts) => {
       calls.push([url, opts.method]);
-      return { json: async () => ({ status: 'ok', bar: {
-        text: '反重力 · Gemini 5小时剩余42%', title: '点击刷新', color: '#58a6ff', action: 'refresh',
+      return { json: async () => ({ status: 'ok', fetchedAt, bar: {
+        text: `反重力 · Gemini: 5h 42% {cd:${reset5h}|5h} · 1wk 98% {cd:${resetWk}|1wk} · {ago:${fetchedAt}} ⟳`,
+        title: `反重力账号额度（agy /usage）\nGemini\n  5小时: 余量 42% · 已用 58% · {cd:${reset5h}|5h} 后重置\n同步于 {ago:${fetchedAt}}\n点击 bar 刷新`,
+        color: '#58a6ff', action: null,
       } }) };
     };
     f.C.setCli('agy');
     await flushClient();
     const bar = f.element('agy-quota-bar');
     assert.equal(bar.style.display, 'block');
-    assert.match(bar.textContent, /剩余42%/);
+    assert.match(bar.textContent, /^反重力 · Gemini: 5h 42% \d+(?:\.\d+)?[mh] · 1wk 98% \d+d(?:\s+\d+h)? · 刚刚 ⟳$/);
+    assert.doesNotMatch(bar.textContent, /\{(cd|ago):/);
     assert.deepEqual(calls[0], ['/api/agy/quota', 'GET']);
     bar.onclick();
     await flushClient();
