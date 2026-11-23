@@ -26,7 +26,8 @@ const FAIL_TTL: Duration = Duration::from_secs(30);
 const MAX_LINE: usize = 4_000_000;
 
 /// `(when, models)` — `None` records a failed probe inside the same window.
-static CACHE: OnceLock<Mutex<Option<(Instant, Option<Vec<Value>>)>>> = OnceLock::new();
+type CacheEntry = Option<(Instant, Option<Vec<Value>>)>;
+static CACHE: OnceLock<Mutex<CacheEntry>> = OnceLock::new();
 
 pub(super) fn executable() -> OsString {
     if let Some(cmd) = std::env::var_os("AGY_CMD").filter(|v| !v.is_empty()) {
