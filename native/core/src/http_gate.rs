@@ -912,6 +912,7 @@ pub fn node_gate_special_path(method: &str, path: &str) -> bool {
         || (method == "POST" && path.starts_with("/api/wait/"))
         || path.starts_with("/claude-proxy")
         || path.starts_with("/codex-proxy")
+        || path.starts_with("/agy-proxy")
         || path.starts_with("/api/directories/")
         || path.starts_with("/api/sessions/")
         || path.starts_with("/api/fleet-shares/")

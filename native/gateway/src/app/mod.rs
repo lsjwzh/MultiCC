@@ -231,6 +231,7 @@ pub enum Route {
     Directory(directory_routes::Route),
     ProviderBalance(provider_balance::Route),
     ProviderRelay(provider_relay::Route),
+    AgyRelayPing,
     AutoProviderRouting(auto_provider_routing::Route),
     VoiceGateway(voice_gateway::Route),
     Voice(voice_routes::Route),
@@ -422,6 +423,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if let Some(route) = provider_relay::claim(method, path) {
         return Some(Route::ProviderRelay(route));
+    }
+    if matches!(*method, Method::GET | Method::HEAD) && crate::ws_agy_relay::claims_ping(path) {
+        return Some(Route::AgyRelayPing);
     }
     if let Some(route) = session_git::claim(method, path) {
         return Some(Route::SessionGit(route));
@@ -1011,6 +1015,10 @@ pub async fn handle(
     let peer = client.ip().to_string();
     // Relay reads use the same scoped grant owner as inference. Preserve the
     // original peer when the live host validates mcr1/fleet credentials.
+    if matches!(route, Route::AgyRelayPing) {
+        drop(body);
+        return crate::ws_agy_relay::handle_ping(&ctx, &peer, host).await;
+    }
     if matches!(route, Route::ProviderRelay(_))
         || matches!(route, Route::ProviderBalance(route) if provider_balance::is_relay(route))
     {

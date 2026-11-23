@@ -391,7 +391,7 @@ pub fn list_accounts(home: &Path) -> Vec<Value> {
                     "source": meta.get("source").cloned().unwrap_or_else(|| json!("remote")),
                     "active": active.as_deref() == Some(id),
                     "egressBinding": Value::Null,
-                    "remote": remote,
+                    "remote": remote.redacted_for_list(),
                 }));
             }
             let status = login_status(home, id);
@@ -496,6 +496,14 @@ pub fn create_remote_account(
             .filter(|s| !s.is_empty())
         {
             clean_label(host_label)
+        } else if remote.is_relay() {
+            let host = remote
+                .relay_base_url
+                .as_deref()
+                .and_then(|u| url::Url::parse(u).ok())
+                .and_then(|u| u.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "远程共享".to_string());
+            clean_label(&format!("反重力借道 ({host})"))
         } else {
             clean_label(&format!("{DEFAULT_REMOTE_LABEL} ({})", remote.ssh_target))
         }
@@ -507,13 +515,67 @@ pub fn create_remote_account(
         "kind": KIND_REMOTE,
         "label": effective_label,
         "createdAt": now_ms().floor() as i64,
-        "source": "remote",
+        "source": if remote.is_relay() { "relay" } else { "remote" },
         "remoteLoggedIn": !isolate_home,
         "remoteEmail": Value::Null,
         "remote": remote,
     });
     state_file::write_json_atomic(&meta, &record).map_err(|err| err.to_string())?;
-    Ok(record)
+    let mut public_record = record;
+    public_record["remote"] = remote.redacted_for_list();
+    Ok(public_record)
+}
+
+/// 取出本地（Host）反重力账号的显示名称（确认存在且为本机账号，用于生成借道分享码）。
+pub fn get_local_account_label(home: &Path, id: &str) -> Option<String> {
+    let id = id.trim();
+    if !valid_account(id) {
+        return None;
+    }
+    let dir = account_home(home, id)?;
+    if !dir.is_dir() {
+        return None;
+    }
+    let meta = read_meta(home, id)?;
+    if meta.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
+        return None;
+    }
+    let label = meta
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(id);
+    Some(label.to_string())
+}
+
+/// 为通过分享码导入的 `agy` 远程借道账号重新编码原始 `mcrelay1.…` 分享码（用于「复制原始导入信息」）。
+pub fn get_relay_import_code(home: &Path, id: &str) -> Result<(String, String), String> {
+    let (label, remote) =
+        get_remote_account(home, id).ok_or_else(|| "未找到对应的远程借道反重力账号".to_string())?;
+    if !remote.is_relay() {
+        return Err("这不是通过分享码导入的反重力借道账号".to_string());
+    }
+    let base_url = remote
+        .relay_base_url
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "缺少借道地址".to_string())?;
+    let token = remote
+        .relay_auth_token
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "缺少借道安全凭据".to_string())?;
+    let share_id = remote.relay_share_id.as_deref().unwrap_or("");
+    let code = crate::provider_registry::encode_relay_share_code(
+        &label,
+        "agy",
+        base_url,
+        &[],
+        share_id,
+        token,
+    );
+    Ok((code, base_url.to_string()))
 }
 
 /// 更新本机（Host）反重力账号绑定的专用出口身份；传入 `None`/`null` 清除绑定。

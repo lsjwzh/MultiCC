@@ -139,6 +139,7 @@ fn target(url: &Url) -> Option<(&'static str, String)> {
             Some(("claude", id))
         }
         "codex-proxy" => Some(("codex", id)),
+        "agy-proxy" => Some(("agy", id)),
         _ => None,
     }
 }
@@ -164,10 +165,10 @@ pub fn relay_route(value: &V) -> Option<V> {
         return None;
     }
     let (kind, id) = target(&parsed)?;
-    let prefix = if kind == "claude" {
-        "claude-proxy"
-    } else {
-        "codex-proxy"
+    let prefix = match kind {
+        "claude" => "claude-proxy",
+        "codex" => "codex-proxy",
+        _ => "agy-proxy",
     };
     let tail = if kind == "claude" { "/remote" } else { "" };
     let endpoint = format!(
@@ -472,7 +473,7 @@ impl Store {
         let base = clean(get(input, "publicBaseUrl"));
         let relay = clean(get(input, "relayBaseUrl"));
         let secret = secret(get(input, "token"))?;
-        if app != "claude" && app != "codex" {
+        if app != "claude" && app != "codex" && app != "agy" {
             return Err("RELAY_TYPE_INVALID: relay share appType is invalid".into());
         }
         if provider.is_empty() || provider.len() > 256 {

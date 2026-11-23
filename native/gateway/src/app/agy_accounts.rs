@@ -33,6 +33,8 @@ pub enum Route {
     RemoteLoginCallbackPost,
     RemoteLoginStatusGet,
     TestRemotePost,
+    RelaySharePost,
+    RelayImportCodeGet,
     UpdateRemotePatch,
     Delete,
     MutagenStatusGet,
@@ -103,6 +105,16 @@ static LAYERS: &[Layer] = &[
         segs: &["agy", "accounts", ":id", "test"],
         method: "POST",
         kind: Route::TestRemotePost,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "relay-share"],
+        method: "POST",
+        kind: Route::RelaySharePost,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "relay-import-code"],
+        method: "GET",
+        kind: Route::RelayImportCodeGet,
     },
     Layer {
         segs: &["agy", "accounts", ":id"],
@@ -368,6 +380,91 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             let result = crate::agy_remote_bridge::probe_remote_target(&remote).await;
             express::json(ctx, 200, &result, &[("Cache-Control", "no-store")])
         }
+        Route::RelaySharePost => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let Some(acct_label) = store::get_local_account_label(&home, &id) else {
+                return failure(
+                    404,
+                    "仅支持为本机（Host）反重力账号生成借道分享码".to_owned(),
+                );
+            };
+            let Some(urls) = multicc_core::provider_registry::relay_share_urls(
+                "agy",
+                &id,
+                body.get("publicBaseUrl"),
+            ) else {
+                return failure(400, "publicBaseUrl 必须是合法的 http(s) 地址".to_owned());
+            };
+            let relay_name = format!("{acct_label} · 反重力共享");
+            let mut payload = serde_json::Map::new();
+            payload.insert("op".into(), json!("relayShareCreate"));
+            payload.insert("appType".into(), json!("agy"));
+            payload.insert("id".into(), json!(id));
+            payload.insert("providerName".into(), json!(acct_label));
+            payload.insert("publicBaseUrl".into(), json!(urls.base));
+            payload.insert("relayBaseUrl".into(), json!(urls.relay_base_url));
+            if let Some(token) = body.get("token") {
+                payload.insert("token".into(), token.clone());
+            }
+            if let Some(label_val) = body.get("label") {
+                payload.insert("label".into(), label_val.clone());
+            }
+            let Ok(answer) =
+                crate::host_port::call(host, "/api/__host/providers", &Value::Object(payload))
+                    .await
+            else {
+                return failure(503, "借道分享服务暂不可用".to_owned());
+            };
+            if answer.get("ok") == Some(&Value::Bool(true)) {
+                let share = answer.get("share").cloned().unwrap_or(Value::Null);
+                let credential = answer
+                    .get("credential")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let share_id = share.get("id").and_then(Value::as_str).unwrap_or_default();
+                let code = multicc_core::provider_registry::encode_relay_share_code(
+                    &relay_name,
+                    "agy",
+                    &urls.relay_base_url,
+                    &[],
+                    share_id,
+                    credential,
+                );
+                return express::json(
+                    ctx,
+                    200,
+                    &json!({
+                        "ok": true,
+                        "code": code,
+                        "baseUrl": urls.relay_base_url,
+                        "share": share,
+                    }),
+                    &[("Cache-Control", "no-store")],
+                );
+            }
+            let err_msg = answer
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("生成反重力借道分享码失败")
+                .to_owned();
+            failure(400, err_msg)
+        }
+        Route::RelayImportCodeGet => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            match store::get_relay_import_code(&home, &id) {
+                Ok((code, base_url)) => express::json(
+                    ctx,
+                    200,
+                    &json!({ "ok": true, "code": code, "baseUrl": base_url }),
+                    &[("Cache-Control", "no-store")],
+                ),
+                Err(error) => failure(400, error),
+            }
+        }
         Route::RemoteLoginStartPost => {
             let Some(id) = account_id(ctx) else {
                 return failure(400, "invalid account id".to_owned());
@@ -533,6 +630,29 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
                             "body": {},
                         });
                         let _ = super::session_routes::call(ctx, host, payload).await;
+                        // Best-effort: revoke any active relay shares pointing to this account.
+                        if let Ok(listed) = crate::host_port::call(
+                            host,
+                            "/api/__host/providers",
+                            &json!({ "op": "relaySharesList", "appType": "agy", "providerId": id }),
+                        )
+                        .await
+                        {
+                            if let Some(shares) = listed.get("shares").and_then(Value::as_array) {
+                                for s in shares {
+                                    if s.get("status").and_then(Value::as_str) == Some("active") {
+                                        if let Some(sid) = s.get("id").and_then(Value::as_str) {
+                                            let _ = crate::host_port::call(
+                                                host,
+                                                "/api/__host/providers",
+                                                &json!({ "op": "relayShareRevoke", "id": sid }),
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     express::json(
                         ctx,

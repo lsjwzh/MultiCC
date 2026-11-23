@@ -816,6 +816,8 @@ pub fn relay_share_urls(
     let encoded = encode_uri_component(provider_id);
     let relay_base_url = if app_type == "codex" {
         format!("{base}/codex-proxy/{encoded}")
+    } else if app_type == "agy" {
+        format!("{base}/agy-proxy/{encoded}")
     } else {
         format!("{base}/claude-proxy/{encoded}/remote")
     };

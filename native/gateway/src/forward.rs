@@ -300,6 +300,21 @@ async fn dispatch(
         }
         return crate::ws_machines::handle(app, request).await;
     }
+    // 反重力（agy）借道分享码 WebSocket 入口：`/agy-proxy/<16hex>/turn`。
+    // 升级前先走 provider_relay::admission 校验 mcr1 分享凭据与撤销状态，拒绝则直接返回 HTTP 401/403。
+    if crate::ws_agy_relay::claims_ws(request.uri().path())
+        && is_websocket_upgrade(request.headers())
+    {
+        if upstream.node_absent() {
+            return forward(upstream, request, None).await;
+        }
+        let (peer, _local) = upstream.addresses();
+        let host_port = upstream.state.port.load(Ordering::SeqCst);
+        if host_port == 0 {
+            return forward(upstream, request, None).await;
+        }
+        return crate::ws_agy_relay::handle_ws(peer, host_port, request).await;
+    }
     // `/ws/remote-screen`: the exact path the retired `remote-screen-rust.js`
     // attached to. Like the machines bridge, only a real upgrade is claimed; a
     // plain GET on the path still falls through to Express/Node.

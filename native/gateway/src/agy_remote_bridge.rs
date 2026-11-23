@@ -540,6 +540,9 @@ async fn flush_mutagen_session(session_name: &str) -> Result<(), String> {
 
 /// 连通性探针（供 `POST /api/agy/accounts/:id/test` 调用）。
 pub async fn probe_remote_target(target: &RemoteAgyTarget) -> Value {
+    if target.is_relay() {
+        return crate::agy_relay_client::probe_relay_target(target).await;
+    }
     let agy_bin = target
         .remote_agy_bin
         .as_deref()
@@ -703,6 +706,11 @@ pub async fn serve(args: &[String]) -> i32 {
         }
     };
     let local_root_str = local_root.to_string_lossy().into_owned();
+    if target.is_relay() {
+        let (flags, prompt) = split_agy_args_and_prompt(&agy_args);
+        return crate::agy_relay_client::serve_relay_turn(&target, &local_root, &flags, &prompt)
+            .await;
+    }
     let machine_id = resolve_or_create_machine_id(machine_id_arg.as_deref());
     let remote_ws_rel = remote_workspace_rel_or_abs(
         target.remote_workspace_base.as_deref(),
