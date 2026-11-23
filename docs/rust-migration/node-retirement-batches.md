@@ -1203,3 +1203,14 @@ app/lib/providers/chat_provider.dart，与本批改动文件无交集）。
 Rust 接管每个看板的分类作业和归因去重记录，以及轮末取证、提示词生成、入队、回执应用和启动恢复。旧的 `src/task-board/classification.js` 已删除。调用方继续通过 `src/task-board/core.js` 访问归档与回填接口。自动分类最多尝试两次，启动扫描会复查缺失的历史，历史读取异常时保留任务卡。
 
 Aux 队列目前返回 JavaScript Promise，会话历史和看板变更通知也由现有 Node 运行时提供。因此 `src/routes/task-board.js` 保留这些端口，转发成功与失败的回执，并沿用现有持久化入口。Aux 执行器、会话历史和看板通知迁至 Rust 后可撤掉这些回调。`npm run test:task-board-auto` 对比冻结实现的任务卡、落盘内容、广播及入队载荷，并覆盖被取消作业的迟到回执。
+
+### 任务板分组与任务短码展示（2026-11-24）
+
+| 已移除的生产文件 | Rust 所有者 | 生产入口与行为 |
+| --- | --- | --- |
+| `src/task-board/runtime-helpers.js`（32 行） | `native/addon/src/task_board_groups.rs` | 任务板启动时校验依赖。关联任务发生变化时保存分组，保存失败时恢复原分组，保存成功后才通知。 |
+| `src/task-display-attribution.js`（32 行） | `native/addon/src/task_display_attribution.rs` | 任务板响应、任务壳详情及显式任务入口共用短码规则。只给有效短码添加展示字段，消息优先使用自己的来源任务。 |
+
+两个旧文件逐字节保留在 `tests/helpers/legacy-task-board-runtime-helpers.js` 和 `tests/helpers/legacy-task-display-attribution.js`。分组测试覆盖保存与回滚，短码测试对照输出、对象引用、回调顺序与异常，并经三个生产入口取回结果。
+
+按本批工作树统计，`src/` 有 531 个 `.js` 和 2 个 `.cjs`，共 533 个；根 `package.json` 的 `dependencies` 有 19 项。源码默认用 `npm start` 启动 Rust 网关及 `server.js` 子进程。分组保留 Node 保存和通知端口，短码展示读取宿主任务库和短码注册表；这些端口的持有者迁入 Rust 后可移除相应 N-API 调用。 [运行与部署](../gateway.md)

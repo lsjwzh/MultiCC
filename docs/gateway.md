@@ -114,6 +114,8 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - `src/server-processes.js`：`serve` 模式、cwd 为本检出的 `multicc-gateway` 认作服务根进程；父进程是这种前门的 `node server.js` **不算**根（它是前门的后代，排空后由 `stopServers` 的 SIGTERM 兜底）。这样 stop/restart 只给前门发 SIGINT，前门转给 Node，不会出现「Node 先退、前门以为崩溃又拉起来」的竞态。
 - `list` / `status` / `lock-alive` / `owner` 一并认得前门。
 
+2026-11-24 任务板分组和任务短码展示已由 Rust 原生模块提供。源码部署时，`npm start` 执行 `node scripts/start-gateway.js`，启动 `multicc-gateway serve --cwd <检出> --node <node> --stdin-lifeline server.js`。分组保存、变更通知、任务查询和短码注册表仍由 Node 宿主提供。该版本的 `src/` 剩 531 个 `.js`、2 个 `.cjs`，根包仍有 19 个直接 Node 运行依赖。 [迁移批次清单](rust-migration/node-retirement-batches.md#任务板分组与任务短码展示2026-11-24)
+
 构建与本地启动的 npm 入口：`npm run build:gateway`（cargo 构建 `multicc-gateway` 与 `multicc-writer-launcher` 的 release 产物）、`npm run test:gateway`（对应两个 crate 的 cargo 测试）、`npm run start:gateway`（即 `scripts/start-gateway.js`，等价于 `npm start` 的前台路径）。**Node-free 运行镜像**：`npm run docker:node-free` 构建 `docker/task-shell/Dockerfile` 的 `node-free-runtime` 阶段（debian:bookworm-slim + CA 证书 + 前门与写者启动器两个二进制，镜像内无 Node）。默认 CMD 是 `multicc-gateway serve --cwd /srv/multicc --no-node`，即 §8.1 的 Rust-only 形态：不需要 Node 状态的 Rust 代码照常运行；该镜像不带 `.env`，没有 `ACCESS_TOKEN` 可交给本地鉴权运行态，所以需要鉴权快照的原生路由与 §9 之外的路由一律立即 503 `node_runtime_absent`（带上合法 token 的 `--no-node` 会启用前门自持的鉴权运行态，见 §8.1）。构建期冒烟断言 `--version` 形状、无 node、裸前门退出 2、裸 writer 退出 64，并调用 `scripts/smoke-no-node-gateway.sh`；CI 的 `rust-kernels.yml` 的 `node-free-runtime` job 会构建并复跑这些冒烟。它不能替代 `--node`：完整功能仍需 Node 上游（见 README「What the Rust front door does not cover yet」）。
 
 ### 8.1 `--no-node`：Rust-only 前门（不拉起 Node）

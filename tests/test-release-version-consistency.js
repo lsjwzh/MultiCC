@@ -762,13 +762,16 @@ test('core runner covers every selected path and expands declared variants', () 
   // All prior manifest entries, variants and commands are preserved.
   // 任务板分类差分在临时目录比较冻结实现，不依赖在线 Aux，每次发布多运行一项。
   assert.ok(core.some(entry => entry.path === 'tests/test-task-board-runtime-differential.js'));
-  assert.equal(core.length, 487, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 487);
+  // The native display attribution differential pins backend task identity, callback
+  // failures and all three response paths using only temporary board and shell stores.
+  assert.ok(core.some(entry => entry.path === 'tests/test-task-display-attribution.js'));
+  assert.equal(core.length, 488, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 488);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 406);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 407);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 49);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 32,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -778,8 +781,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 458,
-    '455 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 459,
+    '456 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],

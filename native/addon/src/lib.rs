@@ -117,6 +117,7 @@ mod task_board_seed;
 pub mod task_board_start;
 pub mod task_board_transcript;
 pub mod task_context;
+pub mod task_display_attribution;
 pub mod task_domain;
 pub mod task_history_retention;
 pub mod task_read_model;

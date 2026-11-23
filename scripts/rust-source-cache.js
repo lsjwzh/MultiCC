@@ -271,7 +271,7 @@ function probeAddon(file, node = process.execPath) {
       || a.taskBoardQueueRunState('claim_released',{queuedItems:[],queueSummary:{classifyState:'B'}},null,x=>x)!=='B'
       || a.taskBoardQueueRunState('frozen',{freezeReason:'x'},value=>'frozen:'+value,null)!=='frozen:x'
       || a.taskBoardQueueRunState('mystery',{},null,x=>x)!==null) process.exit(1);
-    if(['taskBoardAssertDeps', 'taskBoardLinkRelated', 'taskBoardStableTaskId','taskBoardCanonicalMessages','taskBoardCanonicalTaskBody'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['taskDisplayFields', 'taskDisplayMessages', 'taskDisplayTask', 'taskBoardAssertDeps', 'taskBoardLinkRelated', 'taskBoardStableTaskId','taskBoardCanonicalMessages','taskBoardCanonicalTaskBody'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(a.taskBoardStableTaskId('board-send:dir-1','client-7')!=='tsk-c0f07d4d4b9f10225f2c1edc608a681a') process.exit(1);
     const transcriptHistories={s1:[{id:'a',role:'user',taskId:'t1',ts:20}],s2:[{id:'b',role:'user',taskId:'t1',taskStart:true,ts:10,taskText:'正文'}]};
     const transcriptCalls=[];

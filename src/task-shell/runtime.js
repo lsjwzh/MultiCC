@@ -6,7 +6,6 @@ const {
   estimateTokens, snapshotHistory, renderSnapshots, hash,
 } = require('../native/runtime').taskShellContext;
 const { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
-const { displayMessages, displayTask } = require('../task-display-attribution');
 const { getNative } = require('../native/runtime');
 
 function failure(code, message = code, status = 409) {
@@ -352,8 +351,8 @@ function createTaskShellRuntime(ports) {
     const records = shellRecords(chatScope(shellId), getHistory);
     const messages = (ports.applyAttributionOverlay?.(records) || records)
       .filter(m => m.taskId === taskId || (!m.taskId && m.sourceSessionId === task.sessionId)).slice(-200);
-    return { task: displayTask(task, ports.taskShortCode), execution,
-      messages: displayMessages(messages, task, { getTask: id => store.get('task', id) || getTask(id), codeFor: ports.taskShortCode }),
+    return { task: getNative().taskDisplayTask(task, ports.taskShortCode), execution,
+      messages: getNative().taskDisplayMessages(messages, task, { getTask: id => store.get('task', id) || getTask(id), codeFor: ports.taskShortCode }),
       snapshots: task.snapshotIds.map(id => store.get('snapshot', id)) };
   }
   function normalize(raw = {}, internalDispatch = false) {

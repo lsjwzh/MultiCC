@@ -2,7 +2,7 @@
 
 const { hash } = require('../native/runtime').taskShellContext;
 const { historySnapshot, shellRecords } = require('./history-context');
-const { displayMessages, displayTask } = require('../task-display-attribution');
+const { getNative } = require('../native/runtime');
 const { directoryAtCapacity } = require('../native/runtime').taskShellCapacity;
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 // Air is the only task surface left. A task link is an Air task URL, and the
@@ -73,13 +73,13 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       // judged exchange exists both as an inherited snapshot excerpt and as a
       // live record. The live record wins: it carries the full, current content.
       const liveIds = new Set(live.map(m => m.sourceMessageId).filter(Boolean));
-      messages = displayMessages(inherited.filter(m => !m.sourceMessageId || !liveIds.has(m.sourceMessageId)).concat(live), task, {
+      messages = getNative().taskDisplayMessages(inherited.filter(m => !m.sourceMessageId || !liveIds.has(m.sourceMessageId)).concat(live), task, {
         getTask: taskId => store.get('task', taskId) || getTask(taskId),
         codeFor: ports.taskShortCode,
       });
     }
     const execution = sid && getRecord(sid) ? await getExecution(sid) : { busy: false, status: 'idle' };
-    return { ok: true, task: displayTask({ id, title: lifecycle.title || task.title,
+    return { ok: true, task: getNative().taskDisplayTask({ id, title: lifecycle.title || task.title,
       recordType: lifecycle.recordType || task.recordType || null,
       description: lifecycle.description || task.description || '',
       acceptanceCriteria: lifecycle.acceptanceCriteria || task.acceptanceCriteria || '',

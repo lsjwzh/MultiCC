@@ -12,7 +12,6 @@ const { isVoiceRouterRecord } = require('../voice/router');
 const { runStateForFreezeReason } = require('../session-work/scheduler');
 const { runStateForClassify: runStateForLetter } = require('../classify/vocab');
 const { createTaskWorktreeService } = require('../task-worktree');
-const { taskFields } = require('../task-display-attribution');
 const { createTaskRetention } = require('../task-board/retention');
 const { createTaskPlanningRuntime } = require('./task-planning');
 const { openBoardStore } = require('../task-board/board-store');
@@ -572,7 +571,8 @@ function createTaskBoardRuntime(deps) {
       tasks: { [task.id]: task },
       taskGroups: board.taskGroups,
     }, getSessionRunState, { sessionHasTurn }).tasks[0];
-    dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1); Object.assign(dto, taskFields(task, deps.taskShortCode));
+    dto.mergedTaskCount = Math.max(0, taskIdentityIds(task).length - 1);
+    Object.assign(dto, getNative().taskDisplayFields(task, deps.taskShortCode));
     const body = canonicalTaskBody(task);
     if (dto.title === core.PENDING_TASK_TITLE && body.text) {
       dto.title = core.deriveTaskTitle(body.text);
