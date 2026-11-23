@@ -588,3 +588,26 @@ test('打包：Rust 前门同目录复制且保留可执行位，workspace 声�
     /平台或架构不匹配/);
 });
 
+test('addon 探针经临时文件执行，且失败留下可区分的诊断', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-probe-case-'));
+  const fake = path.join(dir, 'multicc_core.node');
+  fs.writeFileSync(fake, 'not a native module');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'scripts/rust-source-cache.js'), 'utf8');
+  const captured = [];
+  const original = process.stderr.write;
+  let ok;
+  try {
+    // Windows 的 CreateProcess 命令行上限是 32767 字符：脚本一旦长过它就必须走文件，
+    // 否则 spawn 直接失败，看上去和「接口版本不匹配」一模一样。
+    assert.doesNotMatch(source, /\['-e',\s*script/);
+    assert.match(source, /process\.env\.MULTICC_PROBE_ADDON/);
+    process.stderr.write = chunk => { captured.push(String(chunk)); return true; };
+    ok = require('../scripts/rust-source-cache').probeAddon(fake);
+  } finally {
+    process.stderr.write = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(ok, false);
+  assert.match(captured.join(''), /\[addon probe\] multicc_core\.node (could not run|assertion failed)/);
+});
+

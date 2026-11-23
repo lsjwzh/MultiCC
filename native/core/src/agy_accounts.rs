@@ -239,7 +239,10 @@ pub fn import_account(home: &Path, label: &str) -> Result<Value, String> {
         return Err("本机尚未登录 agy，请先完成登录再导入".to_owned());
     }
     let record = create_account(home, label, "import")?;
-    let id = record["id"].as_str().ok_or("invalid account id")?.to_owned();
+    let id = record["id"]
+        .as_str()
+        .ok_or("invalid account id")?
+        .to_owned();
     let target = account_home(home, &id)
         .ok_or("invalid account id")?
         .join(".gemini");
@@ -264,8 +267,11 @@ pub fn import_account(home: &Path, label: &str) -> Result<Value, String> {
                 "createdAt": record["createdAt"].clone(),
                 "source": "import",
             });
-            state_file::write_json_atomic(&meta_file(home, &id).ok_or("invalid account id")?, &updated)
-                .map_err(|err| err.to_string())?;
+            state_file::write_json_atomic(
+                &meta_file(home, &id).ok_or("invalid account id")?,
+                &updated,
+            )
+            .map_err(|err| err.to_string())?;
             return Ok(updated);
         }
         Ok::<Value, String>(json!({
@@ -306,13 +312,10 @@ pub fn delete_account(home: &Path, id: &str) -> Result<(), String> {
 
 fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
     match fs::read(from) {
-        Ok(bytes) => state_file::write_bytes_atomic(
-            to,
-            &bytes,
-            state_file::FILE_MODE,
-            state_file::DIR_MODE,
-        )
-        .map_err(|err| err.to_string()),
+        Ok(bytes) => {
+            state_file::write_bytes_atomic(to, &bytes, state_file::FILE_MODE, state_file::DIR_MODE)
+                .map_err(|err| err.to_string())
+        }
         // An optional file that is absent here is simply not part of the account.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),

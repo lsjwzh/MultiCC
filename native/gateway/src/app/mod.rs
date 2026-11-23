@@ -1322,9 +1322,7 @@ pub async fn handle(
         }
         Route::Push(route) => return push_routes::handle(&app, route, &ctx, &body, host).await,
         Route::Air(route) => return air_routes::handle(&app, route, &ctx, &body, host).await,
-        Route::AgyAccounts(route) => {
-            return agy_accounts::handle(&ctx, route, &body, host).await
-        }
+        Route::AgyAccounts(route) => return agy_accounts::handle(&ctx, route, &body, host).await,
         Route::Quota(route) => return quota_routes::handle(&app, route, &ctx, &body, host).await,
         Route::Account(route) => {
             return account_routes::handle(&app, route, &ctx, &body, host).await

@@ -94,7 +94,9 @@ function builtFromSource(file, fingerprint) {
 function probeAddon(file, node = process.execPath) {
   if (!fs.existsSync(file)) return false;
   // A separate process avoids require() caching and contains invalid binaries.
-  const script = `const a=require(process.argv[1]);
+  // The path rides an env var: the script is written to a temp file (see below),
+  // so argv[1] is the script itself, not the addon.
+  const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
     if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
       || typeof a.observeCodeFiles!=='function' || typeof a.RustWorkspaceRelease!=='function'
@@ -482,8 +484,30 @@ function probeAddon(file, node = process.execPath) {
       if(typeof encoded.etag!=='string' || JSON.parse(encoded.body).tasks.length!==0) throw Error('air_protocol_mismatch');
       await model.run('{"op":"close"}');
     })().catch(()=>process.exit(1));`;
-  const result = spawnSync(node, ['-e', script, path.resolve(file)], { stdio: 'ignore', timeout: 15_000 });
-  return result.status === 0;
+  // Windows caps a CreateProcess command line at 32767 characters and `-e`
+  // spent it all on the probe itself, so an outgrown script failed to spawn and
+  // looked exactly like a version mismatch. Hand the script over in a file.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-addon-probe-'));
+  const scriptFile = path.join(dir, 'probe.cjs');
+  try {
+    fs.writeFileSync(scriptFile, script);
+    const result = spawnSync(node, [scriptFile], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      env: { ...process.env, MULTICC_PROBE_ADDON: path.resolve(file) },
+    });
+    if (result.status === 0) return true;
+    // Distinguish "never ran" from "an assertion failed" in build logs.
+    if (result.error || result.status === null) {
+      process.stderr.write(`[addon probe] ${path.basename(file)} could not run: ${result.error?.message || `status ${result.status}`}\n`);
+    } else {
+      const detail = `${result.stderr || ''}`.trim().split('\n').slice(-3).join(' | ');
+      process.stderr.write(`[addon probe] ${path.basename(file)} assertion failed (exit ${result.status})${detail ? `: ${detail}` : ''}\n`);
+    }
+    return false;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 module.exports = { cacheRoot, sourceFingerprint, sourcePaths, probeAddon, provenancePath, writeProvenance, builtFromSource };

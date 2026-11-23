@@ -95,17 +95,13 @@ fn segments(path: &str) -> Option<Vec<&str>> {
 
 fn layer_matches(layer: &Layer, parts: &[&str]) -> bool {
     layer.segs.len() == parts.len()
-        && layer
-            .segs
-            .iter()
-            .zip(parts)
-            .all(|(name, part)| {
-                if *name == ":id" {
-                    !part.is_empty()
-                } else {
-                    part.eq_ignore_ascii_case(name)
-                }
-            })
+        && layer.segs.iter().zip(parts).all(|(name, part)| {
+            if *name == ":id" {
+                !part.is_empty()
+            } else {
+                part.eq_ignore_ascii_case(name)
+            }
+        })
 }
 
 pub fn claim(method: &Method, path: &str) -> Option<Route> {
@@ -210,7 +206,8 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             .unwrap_or("")
             .to_owned()
     };
-    let failure = |status: u16, error: String| express::json(ctx, status, &json!({ "error": error }), &[]);
+    let failure =
+        |status: u16, error: String| express::json(ctx, status, &json!({ "error": error }), &[]);
     match route {
         Route::ListGet => express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")]),
         Route::CreatePost => {
@@ -313,8 +310,14 @@ mod tests {
 
     #[test]
     fn claims_the_account_shapes_and_nothing_else() {
-        assert_eq!(claim(&Method::GET, "/api/agy/accounts"), Some(Route::ListGet));
-        assert_eq!(claim(&Method::HEAD, "/api/agy/accounts"), Some(Route::ListGet));
+        assert_eq!(
+            claim(&Method::GET, "/api/agy/accounts"),
+            Some(Route::ListGet)
+        );
+        assert_eq!(
+            claim(&Method::HEAD, "/api/agy/accounts"),
+            Some(Route::ListGet)
+        );
         assert_eq!(
             claim(&Method::POST, "/api/agy/accounts"),
             Some(Route::CreatePost)
@@ -332,11 +335,17 @@ mod tests {
             Some(Route::ActivatePost)
         );
         assert_eq!(
-            claim(&Method::POST, "/api/agy/accounts/0123456789abcdef/login-terminal"),
+            claim(
+                &Method::POST,
+                "/api/agy/accounts/0123456789abcdef/login-terminal"
+            ),
             Some(Route::LoginTerminal)
         );
         assert_eq!(
-            claim(&Method::GET, "/api/agy/accounts/0123456789abcdef/login-terminal"),
+            claim(
+                &Method::GET,
+                "/api/agy/accounts/0123456789abcdef/login-terminal"
+            ),
             None
         );
         assert_eq!(
@@ -348,7 +357,10 @@ mod tests {
         assert_eq!(claim(&Method::GET, "/api/agy/quota"), None);
         assert_eq!(claim(&Method::GET, "/api/agy/models"), None);
         // Shapes the retired Express router never registered.
-        assert_eq!(claim(&Method::POST, "/api/agy/accounts/0123456789abcdef"), None);
+        assert_eq!(
+            claim(&Method::POST, "/api/agy/accounts/0123456789abcdef"),
+            None
+        );
         assert_eq!(claim(&Method::GET, "/api/agy/accounts/import"), None);
     }
 

@@ -483,7 +483,10 @@ fn agy_login_terminal_resolves_the_account_before_forwarding() {
     )
     .unwrap();
 
-    let response = gateway.post(&format!("/api/agy/accounts/{id}/login-terminal"), &json!({}));
+    let response = gateway.post(
+        &format!("/api/agy/accounts/{id}/login-terminal"),
+        &json!({}),
+    );
     assert_eq!(response.status, 200);
     assert_eq!(response.json()["id"], json!("agy-login"));
     let call = gateway.calls().remove(0);
@@ -494,7 +497,10 @@ fn agy_login_terminal_resolves_the_account_before_forwarding() {
     assert_eq!(call["body"]["home"], json!(account.to_string_lossy()));
 
     // 未知账号与畸形 id 在前门就被拒，绝不落到宿主。
-    let unknown = gateway.post("/api/agy/accounts/ffffffffffffffff/login-terminal", &json!({}));
+    let unknown = gateway.post(
+        "/api/agy/accounts/ffffffffffffffff/login-terminal",
+        &json!({}),
+    );
     assert_eq!(unknown.status, 404);
     assert_eq!(unknown.json()["error"], json!("unknown account"));
     let bad = gateway.post("/api/agy/accounts/..%2Fetc/login-terminal", &json!({}));
