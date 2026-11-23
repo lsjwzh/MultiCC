@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 
 pub const FILE_MODE_MUTAGEN: &str = "mutagen";
 pub const FILE_MODE_REMOTE_MCP: &str = "remote_mcp";
+pub const TRANSPORT_SSH: &str = "ssh";
+pub const TRANSPORT_RELAY: &str = "relay";
 pub const DEFAULT_REMOTE_AGY_BIN: &str = "agy";
 pub const DEFAULT_REMOTE_WORKSPACE_BASE: &str = ".multicc-remote/workspaces";
 
@@ -47,6 +49,10 @@ pub const DEFAULT_MUTAGEN_IGNORES: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteAgyTarget {
+    /// 传输方式：`"ssh"`（默认，Host/Client SSH + Mutagen/MCP）或 `"relay"`（借道分享码 WebSocket，免 SSH）。
+    #[serde(default = "default_transport")]
+    pub transport: String,
+    #[serde(default)]
     pub ssh_target: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
@@ -76,6 +82,40 @@ pub struct RemoteAgyTarget {
     /// 远端 Host 账号绑定的出口身份名快照（仅用于 Client UI 只读展示，运行期以 Host 实时配置为准）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host_egress_profile: Option<String>,
+    /// 借道分享码模式：远端 MultiCC 的 `/agy-proxy/<accountId>` 地址。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_base_url: Option<String>,
+    /// 借道分享码模式：独立可撤销凭据 `mcr1.<shareId>.<secret>`（列表接口自动脱敏不返回明文）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_auth_token: Option<String>,
+    /// 借道分享码模式：对应的分享记录 ID（用于「复制原始导入信息」重新编码分享码）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_share_id: Option<String>,
+}
+
+impl RemoteAgyTarget {
+    pub fn is_relay(&self) -> bool {
+        self.transport == TRANSPORT_RELAY
+    }
+
+    /// 面向列表 API 的脱敏 JSON：绝不向浏览器明文回传 `relayAuthToken`，仅标出 `hasRelayToken`。
+    pub fn redacted_for_list(&self) -> Value {
+        let mut val = serde_json::to_value(self).unwrap_or_else(|_| json!({}));
+        if let Some(obj) = val.as_object_mut() {
+            let has_token = obj
+                .remove("relayAuthToken")
+                .and_then(|v| v.as_str().map(|s| !s.trim().is_empty()))
+                .unwrap_or(false);
+            if self.is_relay() {
+                obj.insert("hasRelayToken".to_string(), json!(has_token));
+            }
+        }
+        val
+    }
+}
+
+fn default_transport() -> String {
+    TRANSPORT_SSH.to_string()
 }
 
 fn default_file_mode() -> String {
@@ -92,11 +132,92 @@ fn reject_control_or_newline(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 校验并归一化远端 VPS `agy` 目标配置（防 SSH 选项注入与畸形字段）。
+/// 校验并归一化远端 VPS / 借道分享 `agy` 目标配置（防 SSH 选项注入与畸形字段）。
 pub fn parse_remote_target(raw: &Value) -> Result<RemoteAgyTarget, String> {
     let obj = raw
         .as_object()
         .ok_or_else(|| "remote 配置必须是 JSON 对象".to_string())?;
+
+    let clean_opt = |key: &str, allow_spaces: bool| -> Result<Option<String>, String> {
+        let Some(val) = obj.get(key).and_then(Value::as_str) else {
+            return Ok(None);
+        };
+        let trimmed = val.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        reject_control_or_newline(trimmed, key)?;
+        if !allow_spaces && trimmed.chars().any(char::is_whitespace) {
+            return Err(format!("{key} 不能包含空白字符"));
+        }
+        Ok(Some(trimmed.to_string()))
+    };
+
+    let raw_transport = obj
+        .get("transport")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let relay_base_raw = clean_opt("relayBaseUrl", false)?.or(clean_opt("baseUrl", false)?);
+    let is_relay = matches!(raw_transport, Some(TRANSPORT_RELAY))
+        || (raw_transport.is_none() && relay_base_raw.is_some());
+
+    if is_relay {
+        let base_raw = relay_base_raw.ok_or_else(|| {
+            "借道分享缺少 relayBaseUrl（应为 http(s)://.../agy-proxy/<id>）".to_string()
+        })?;
+        let parsed = url::Url::parse(&base_raw)
+            .map_err(|_| "借道地址 relayBaseUrl 不是合法的 http(s) URL".to_string())?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err("借道地址 relayBaseUrl 仅支持 http:// 或 https://".to_string());
+        }
+        let segs: Vec<&str> = parsed.path().split('/').filter(|s| !s.is_empty()).collect();
+        if segs.first().copied() != Some("agy-proxy")
+            || segs
+                .get(1)
+                .copied()
+                .is_none_or(|id| !crate::account_subscription::valid_account(id))
+        {
+            return Err("借道地址必须指向 /agy-proxy/<16位账号ID>".to_string());
+        }
+        let normalized_base = format!(
+            "{}/agy-proxy/{}",
+            parsed.origin().ascii_serialization(),
+            segs[1]
+        );
+        let token = clean_opt("relayAuthToken", false)?
+            .or(clean_opt("authToken", false)?)
+            .ok_or_else(|| "借道分享缺少安全凭据（relayAuthToken）".to_string())?;
+        if !(8..=256).contains(&token.len()) || !token.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
+            return Err("借道凭据格式无效".to_string());
+        }
+        let relay_share_id = clean_opt("relayShareId", false)?;
+        let host_egress_profile = clean_opt("hostEgressProfile", true)?;
+        return Ok(RemoteAgyTarget {
+            transport: TRANSPORT_RELAY.to_string(),
+            ssh_target: String::new(),
+            ssh_port: None,
+            ssh_identity_file: None,
+            remote_agy_bin: None,
+            remote_home: None,
+            remote_workspace_base: None,
+            file_mode: FILE_MODE_REMOTE_MCP.to_string(),
+            extra_ignores: Vec::new(),
+            host_machine_id: None,
+            host_account_id: Some(segs[1].to_string()),
+            host_account_label: None,
+            host_egress_profile,
+            relay_base_url: Some(normalized_base),
+            relay_auth_token: Some(token),
+            relay_share_id,
+        });
+    }
+
+    if let Some(other) = raw_transport.filter(|t| *t != TRANSPORT_SSH) {
+        return Err(format!(
+            "不支持的 transport: {other}（仅支持 ssh 或 relay）"
+        ));
+    }
 
     let ssh_target = obj
         .get("sshTarget")
@@ -130,21 +251,6 @@ pub fn parse_remote_target(raw: &Value) -> Result<RemoteAgyTarget, String> {
             Some(port)
         }
         Some(_) => return Err("sshPort 必须是 1-65535 的整数".to_string()),
-    };
-
-    let clean_opt = |key: &str, allow_spaces: bool| -> Result<Option<String>, String> {
-        let Some(val) = obj.get(key).and_then(Value::as_str) else {
-            return Ok(None);
-        };
-        let trimmed = val.trim();
-        if trimmed.is_empty() {
-            return Ok(None);
-        }
-        reject_control_or_newline(trimmed, key)?;
-        if !allow_spaces && trimmed.chars().any(char::is_whitespace) {
-            return Err(format!("{key} 不能包含空白字符"));
-        }
-        Ok(Some(trimmed.to_string()))
     };
 
     let ssh_identity_file = clean_opt("sshIdentityFile", true)?;
@@ -187,6 +293,7 @@ pub fn parse_remote_target(raw: &Value) -> Result<RemoteAgyTarget, String> {
     }
 
     Ok(RemoteAgyTarget {
+        transport: TRANSPORT_SSH.to_string(),
         ssh_target: ssh_target.to_string(),
         ssh_port,
         ssh_identity_file,
@@ -199,6 +306,9 @@ pub fn parse_remote_target(raw: &Value) -> Result<RemoteAgyTarget, String> {
         host_account_id,
         host_account_label,
         host_egress_profile,
+        relay_base_url: None,
+        relay_auth_token: None,
+        relay_share_id: None,
     })
 }
 

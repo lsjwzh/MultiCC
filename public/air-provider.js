@@ -1316,6 +1316,10 @@
       button(t('airOfficialAcctAgyCreate'), () => void createAgyAccount(), 'primary'),
       button(t('airOfficialAcctAgyImport'), () => void importAgyAccount()),
       button(t('airOfficialAcctAgyAddRemote'), () => openRemoteAgyModal()),
+      button(t('airOfficialAcctAgyRelayImport'), () => {
+        root.MultiCCAirProviderAdvanced?.prepare(context);
+        root.importRelayProvider?.();
+      }),
     );
     head.append(titleWrap, actions);
     const list = make('div');
@@ -1372,7 +1376,13 @@
       row.style.cssText = 'border:1px solid var(--line, #d8e5f2);border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap';
       const label = account.label || t('airOfficialAcctAgyAccount', { id: account.id.slice(0, 6) });
       row.append(make('strong', label));
-      if (isRemote) {
+      const isRelay = isRemote && account.remote.transport === 'relay';
+      if (isRelay) {
+        let relayHost = account.remote.relayBaseUrl || '';
+        try { relayHost = new URL(relayHost).host; } catch (_) {}
+        row.append(make('span', [t('airOfficialAcctAgyRelayBadge'), relayHost].filter(Boolean).join(' · ')));
+        row.append(make('span', t('airOfficialAcctAgyHostEgressManaged'), 'default'));
+      } else if (isRemote) {
         const modeText = account.remote.fileMode === 'remote_mcp'
           ? t('airOfficialAcctAgyRemoteModeMcp')
           : t('airOfficialAcctAgyRemoteModeMutagen');
@@ -1397,13 +1407,25 @@
       const ops = make('div', null, 'air-provider-card-actions');
       ops.style.marginLeft = 'auto';
       if (!account.active) ops.append(button(t('airOfficialAcctActivate'), () => void activateAgyAccount(account.id)));
-      if (isRemote) {
+      if (isRelay) {
+        ops.append(
+          button(t('airOfficialAcctAgyRemoteTest'), () => void testRemoteAgyAccount(account.id)),
+          button(t('airOfficialAcctAgyRelayCopyCode'), () => {
+            root.MultiCCAirProviderAdvanced?.prepare(context);
+            root.copyAgyRelayImportCode?.(account.id);
+          }),
+        );
+      } else if (isRemote) {
         ops.append(button(t('airOfficialAcctAgyRemoteTest'), () => void testRemoteAgyAccount(account.id)));
       } else {
         ops.append(
           button(t('airOfficialAcctAgyWebLogin'), () => void startRemoteAgyLogin(account.id, label), 'primary'),
           button(t('airOfficialAcctAgyTermLogin'), () => void loginAgyAccount(account.id)),
           button(t('airOfficialAcctAgyEditEgress'), () => editAgyAccountEgress(account)),
+          button(t('airOfficialAcctAgyRelayShare'), () => {
+            root.MultiCCAirProviderAdvanced?.prepare(context);
+            root.shareAgyAccount?.(account.id, label);
+          }),
         );
       }
       ops.append(button(t('airOfficialAcctDelete'), () => void deleteAgyAccount(account.id), 'danger'));
@@ -1434,6 +1456,7 @@
       renderAgyAccounts();
     }
   }
+  root.MultiCCAgyAccountsReload = () => void loadAgyAccounts();
 
   function buildAgyEgressControl(preselect = '') {
     const wrap = make('div');

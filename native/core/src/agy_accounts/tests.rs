@@ -304,6 +304,33 @@ fn remote_vps_account_crud_resolution_and_activation_work() {
     )
     .is_err());
 
+    // Relay share-code import account: token is redacted in list_accounts and re-encoded via get_relay_import_code.
+    let relay_created = create_remote_account(
+        &home,
+        "共享工作号",
+        &json!({
+            "transport": "relay",
+            "relayBaseUrl": "https://vps.example.com/agy-proxy/0123456789abcdef/",
+            "relayAuthToken": "mcr1.abcdef0123456789.secret9999",
+            "relayShareId": "abcdef0123456789"
+        }),
+    )
+    .unwrap();
+    let relay_id = relay_created["id"].as_str().unwrap().to_string();
+    assert_eq!(relay_created["remote"]["transport"], "relay");
+    assert_eq!(relay_created["remote"]["hasRelayToken"], true);
+    assert!(relay_created["remote"].get("relayAuthToken").is_none());
+
+    let listed_all = list_accounts(&home);
+    let relay_item = listed_all.iter().find(|a| a["id"] == relay_id).unwrap();
+    assert!(relay_item["remote"].get("relayAuthToken").is_none());
+    assert_eq!(relay_item["remote"]["hasRelayToken"], true);
+
+    let (code, base) = get_relay_import_code(&home, &relay_id).unwrap();
+    assert!(code.starts_with("mcrelay1."));
+    assert_eq!(base, "https://vps.example.com/agy-proxy/0123456789abcdef");
+    delete_account(&home, &relay_id).unwrap();
+
     // Can be activated globally and resolved via None.
     set_active(&home, Some(&id)).unwrap();
     assert!(matches!(

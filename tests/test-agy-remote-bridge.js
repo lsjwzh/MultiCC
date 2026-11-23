@@ -605,3 +605,33 @@ console.log(JSON.stringify({ https: process.env.HTTPS_PROXY, noProxy: process.en
   const frame = JSON.parse(bad.stdout.trim());
   assert.equal(frame.result.status, 'ERROR');
 });
+
+test('parseRelayShareCode accepts appType=agy share codes and rejects invalid payloads', () => {
+  const vm = require('node:vm');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'manage-provider-relay.js'), 'utf8');
+  const ctx = {
+    window: {},
+    document: {},
+    atob: b64 => Buffer.from(b64, 'base64').toString('binary'),
+    crypto: { getRandomValues: arr => arr },
+  };
+  vm.runInNewContext(src, ctx);
+  const payload = {
+    v: 2,
+    kind: 'multicc-relay',
+    name: 'VPS工作号 · 反重力共享',
+    appType: 'agy',
+    baseUrl: 'https://vps.example.com/agy-proxy/0123456789abcdef',
+    relayShareId: 'abcdef0123456789',
+    authToken: 'mcr1.abcdef0123456789.secret123456',
+  };
+  const b64url = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const parsed = ctx.parseRelayShareCode(`mcrelay1.${b64url}`);
+  assert.equal(parsed.error, undefined);
+  assert.equal(parsed.payload.appType, 'agy');
+  assert.equal(parsed.payload.baseUrl, payload.baseUrl);
+  assert.equal(parsed.payload.authToken, payload.authToken);
+
+  const badType = Buffer.from(JSON.stringify({ ...payload, appType: 'unknown' }), 'utf8').toString('base64url');
+  assert.match(ctx.parseRelayShareCode(`mcrelay1.${badType}`).error, /appType/);
+});

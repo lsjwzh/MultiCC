@@ -83,7 +83,7 @@ pub fn udid_content_type(content: &JsString) -> bool {
 }
 pub fn relay_path(path: &JsString) -> bool {
     let path = to_unit_view(path);
-    ["/claude-proxy", "/codex-proxy"]
+    ["/claude-proxy", "/codex-proxy", "/agy-proxy"]
         .iter()
         .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
 }

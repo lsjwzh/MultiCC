@@ -1066,27 +1066,53 @@ async fn relay_share_code(ctx: &RequestCtx, host_port_num: u16) -> Response<Body
         return express::json(ctx, status, &body, &[]);
     }
     let share = found.get("share").cloned().unwrap_or(Value::Null);
-    let provider = answer
-        .get("provider")
-        .filter(|value| truthy(value))
-        .cloned();
-    let Some(provider) = provider else {
-        return express::json(ctx, 404, &json!({ "error": "provider not found" }), &[]);
+    let share_app_type = value_or_empty(share.get("appType"));
+    let share_provider_id = value_or_empty(share.get("providerId"));
+    let (name, summary) = if share_app_type == "agy" {
+        let home = std::env::var_os("MULTICC_AGY_ACCOUNTS_HOME")
+            .filter(|v| !v.is_empty())
+            .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()))
+            .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+            .map(std::path::PathBuf::from);
+        let Some(label) = home.as_deref().and_then(|h| {
+            multicc_core::agy_accounts::get_local_account_label(h, &share_provider_id)
+        }) else {
+            return express::json(
+                ctx,
+                404,
+                &json!({ "error": "对应的反重力账号已不存在" }),
+                &[],
+            );
+        };
+        (label, json!({}))
+    } else {
+        let provider = answer
+            .get("provider")
+            .filter(|value| truthy(value))
+            .cloned();
+        let Some(provider) = provider else {
+            return express::json(ctx, 404, &json!({ "error": "provider not found" }), &[]);
+        };
+        let summary = answer.get("summary").cloned().unwrap_or_else(|| json!({}));
+        let name = {
+            let name = value_or_empty(provider.get("name"));
+            if name.is_empty() {
+                share_provider_id.clone()
+            } else {
+                name
+            }
+        };
+        (name, summary)
     };
-    let summary = answer.get("summary").cloned().unwrap_or_else(|| json!({}));
-    let name = {
-        let name = value_or_empty(provider.get("name"));
-        if name.is_empty() {
-            value_or_empty(share.get("providerId"))
-        } else {
-            name
-        }
+    let relay_name = if share_app_type == "agy" {
+        format!("{name} · 反重力共享")
+    } else {
+        format!("{name} · 远程共享")
     };
-    let relay_name = format!("{name} · 远程共享");
     let base_url = value_or_empty(share.get("relayBaseUrl"));
     let code = encode_relay_share_code(
         &relay_name,
-        &value_or_empty(share.get("appType")),
+        &share_app_type,
         &base_url,
         &relay_models_of(Some(&summary)),
         &value_or_empty(share.get("id")),

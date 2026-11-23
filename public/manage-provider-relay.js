@@ -20,7 +20,7 @@ function parseRelayShareCode(raw) {
     payload = JSON.parse(json);
   } catch (_) { return { error: '分享码无法解码，请检查是否复制完整' }; }
   if (!payload || payload.kind !== 'multicc-relay') return { error: '不是 MultiCC 跨设备分享码' };
-  if (payload.appType !== 'claude' && payload.appType !== 'codex') return { error: '分享码 appType 无效' };
+  if (payload.appType !== 'claude' && payload.appType !== 'codex' && payload.appType !== 'agy') return { error: '分享码 appType 无效' };
   if (!/^https?:\/\//.test(String(payload.baseUrl || ''))) return { error: '分享码缺少 baseUrl' };
   if (!String(payload.authToken || '').trim()) return { error: '分享码缺少安全凭据' };
   return { payload };
@@ -280,11 +280,87 @@ function shareRelayProvider(appType, id) {
   };
 }
 
+function shareAgyAccount(accountId, accountLabel) {
+  const displayName = String(accountLabel || accountId || '反重力账号');
+  const { overlay } = _relayOverlay(`
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:92vw;">
+      <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">反重力借道分享 · ${escapeHtml(displayName)}</div>
+      <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:10px">生成独立可撤销的反重力分享码。对方免装 agy、免配 SSH 即可直接使用此账号，流量自动锁定本 Host 绑定的出口 IP；命令与文件读写仍在对方真机执行，绝不暴露你的 VPS 权限或 OAuth 凭据。</div>
+      <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">链接备注（建议填写接收设备或用途）</div>
+        <input data-k="label" type="text" maxlength="100" placeholder="例如：办公室 Mac / 同事试用" autocomplete="off" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>
+      <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">其他设备访问本机时使用的地址</div>
+        <select data-k="basesel" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"><option value="">读取可用地址…</option></select></label>
+      <input data-k="basecustom" type="text" placeholder="https://…（自定义地址）" autocomplete="off" style="display:none;width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box;margin-bottom:10px">
+      <p data-k="network-hint" style="font-size:12px;line-height:1.6;color:var(--faint)"></p>
+      <textarea data-k="code" rows="4" readonly placeholder="生成后分享码显示在这里，可随时在共享记录中重新复制或撤销" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap">
+        <button class="btn" data-act="records" style="font-size:13px">共享记录</button><button class="btn" data-act="close" style="font-size:13px">关闭</button><button class="btn" data-act="copy" style="font-size:13px" disabled>复制分享码</button><button class="btn btn-green" data-act="gen" style="font-size:13px">生成分享码</button>
+      </div>
+      <div data-k="status" class="status-text" style="margin-top:8px"></div>
+    </div>`);
+  const sel = overlay.querySelector('[data-k="basesel"]');
+  const customEl = overlay.querySelector('[data-k="basecustom"]');
+  const labelInput = overlay.querySelector('[data-k="label"]');
+  const codeEl = overlay.querySelector('[data-k="code"]');
+  const st = overlay.querySelector('[data-k="status"]');
+  let shareCredential = _newRelayCredential();
+  const hint = overlay.querySelector('[data-k="network-hint"]');
+  const updateHint = () => multiccMountExternalAccessHint(hint, sel.value === '__custom' ? customEl.value : sel.value);
+  updateHint();
+  const generate = overlay.querySelector('[data-act="gen"]');
+  generate.disabled = true;
+
+  _relayBaseOptions().then((opts) => {
+    sel.innerHTML = '';
+    for (const o of opts) {
+      const op = document.createElement('option'); op.value = o.url; op.textContent = `${o.label} · ${o.url}`; sel.appendChild(op);
+    }
+    const custom = document.createElement('option'); custom.value = '__custom'; custom.textContent = '自定义地址…'; sel.appendChild(custom);
+    sel.value = multiccPreferredBaseUrl(opts)?.url || '__custom';
+    sel.onchange();
+    generate.disabled = false;
+  });
+  sel.onchange = () => { customEl.style.display = sel.value === '__custom' ? 'block' : 'none'; updateHint(); };
+  customEl.oninput = updateHint;
+  overlay.querySelector('[data-act="records"]').onclick = () => manageRelayShares('agy', accountId);
+  overlay.querySelector('[data-act="copy"]').onclick = async () => {
+    _relayCopyResult(st, await _relayCopyText(codeEl.value, codeEl));
+  };
+  overlay.querySelector('[data-act="gen"]').onclick = async () => {
+    st.textContent = ''; st.className = 'status-text';
+    const base = sel.value === '__custom' ? customEl.value : sel.value;
+    try {
+      const d = await providerApi.json(`/api/agy/accounts/${encodeURIComponent(accountId)}/relay-share`, {
+        method: 'POST', json: { publicBaseUrl: String(base || '').trim(), token: shareCredential, label: labelInput.value.trim() },
+      });
+      shareCredential = _newRelayCredential();
+      codeEl.value = d.code;
+      overlay.querySelector('[data-act="copy"]').disabled = false;
+      st.textContent = `已记录链接 ${d.share.tokenFingerprint}；请立即复制分享码。`; st.className = 'status-text ok';
+    } catch (err) { st.textContent = 'Failed: ' + err.message; st.className = 'status-text err'; }
+  };
+}
+
+async function copyAgyRelayImportCode(accountId) {
+  try {
+    const d = await providerApi.json(`/api/agy/accounts/${encodeURIComponent(accountId)}/relay-import-code`);
+    _relayShowCode('复制反重力分享码', '这是导入该反重力借道账号时使用的分享码。发给其他设备导入后会共用同一份借道凭据；出借方撤销后全部失效。', d.code);
+  } catch (err) {
+    const { overlay } = _relayOverlay(`
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:420px;max-width:92vw;">
+        <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">无法复制分享码</div>
+        <div data-k="why" class="status-text err" style="line-height:1.6"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" data-act="close" style="font-size:13px">关闭</button></div>
+      </div>`);
+    overlay.querySelector('[data-k="why"]').textContent = (err && err.message) || String(err);
+  }
+}
+
 function importRelayProvider() {
   const { overlay, close } = _relayOverlay(`
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">使用其他设备的线路</div>
-      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">粘贴另一台 MultiCC 生成的分享码。连接后，这条 AI 线路会像本机线路一样出现在列表中。</div>
+      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">粘贴另一台 MultiCC 生成的分享码（支持 Claude / Codex / 反重力 agy）。连接后可像本机账号一样直接使用。</div>
       <textarea data-k="code" rows="5" placeholder="mcrelay1.…"
         style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
@@ -299,6 +375,30 @@ function importRelayProvider() {
     const { payload, error } = parseRelayShareCode(overlay.querySelector('[data-k="code"]').value);
     if (error) { st.textContent = error; st.className = 'status-text err'; return; }
     try {
+      if (payload.appType === 'agy') {
+        await providerApi.json('/api/agy/accounts/remote', {
+          method: 'POST',
+          json: {
+            label: payload.name || '反重力共享账号',
+            remote: {
+              transport: 'relay',
+              relayBaseUrl: payload.baseUrl,
+              relayAuthToken: payload.authToken,
+              ...(payload.relayShareId ? { relayShareId: payload.relayShareId } : {}),
+            },
+          },
+        });
+        showToast('已导入反重力借道账号：' + (payload.name || payload.baseUrl));
+        close();
+        if (window.MultiCCOfficialAccounts && typeof window.MultiCCOfficialAccounts.load === 'function') {
+          window.MultiCCOfficialAccounts.load();
+        }
+        if (typeof window.MultiCCAgyAccountsReload === 'function') {
+          window.MultiCCAgyAccountsReload();
+        }
+        loadProviders();
+        return;
+      }
       await providerApi.json('/api/providers', {
         method: 'POST',
         json: relayProviderInput(payload),

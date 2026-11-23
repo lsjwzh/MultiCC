@@ -178,7 +178,14 @@
   function agyRow(a) {
     const isRemote = a.kind === 'remote' && a.remote;
     let chips;
-    if (isRemote) {
+    const isRelay = isRemote && a.remote.transport === 'relay';
+    if (isRelay) {
+      let relayHost = a.remote.relayBaseUrl || '';
+      try { relayHost = new URL(relayHost).host; } catch (_) {}
+      chips = chip(tr('airOfficialAcctAgyRelayBadge'), '#39c5cf')
+        + ' <span style="font-size:12px;color:var(--muted)">' + esc(relayHost) + '</span>'
+        + ' ' + chip(tr('airOfficialAcctAgyHostEgressManaged'), '#8b949e');
+    } else if (isRemote) {
       const modeText = a.remote.fileMode === 'remote_mcp'
         ? tr('airOfficialAcctAgyRemoteModeMcp')
         : tr('airOfficialAcctAgyRemoteModeMutagen');
@@ -206,11 +213,15 @@
       ? ' ' + chip('🌐 ' + a.egressBinding.profileId, '#39c5cf')
       : '';
     const buttons = (a.active ? '' : '<button class="btn btn-green" data-act="activate" data-vendor="agy" data-id="' + a.id + '">' + esc(tr('airOfficialAcctActivate')) + '</button>')
-      + (isRemote
+      + (isRelay
         ? '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-remote-test" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyRemoteTest')) + '</button>'
-        : '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-remote-login" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyWebLogin')) + '</button>'
-          + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-login" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyTermLogin')) + '</button>'
-          + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-egress" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyEditEgress')) + '</button>')
+          + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-relay-copy" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyRelayCopyCode')) + '</button>'
+        : isRemote
+          ? '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-remote-test" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyRemoteTest')) + '</button>'
+          : '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-remote-login" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyWebLogin')) + '</button>'
+            + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-login" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyTermLogin')) + '</button>'
+            + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-egress" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyEditEgress')) + '</button>'
+            + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-relay-share" data-id="' + a.id + '">' + esc(tr('airOfficialAcctAgyRelayShare')) + '</button>')
       + '<button class="btn" style="padding:2px 10px;font-size:11px;color:var(--danger)" data-act="delete" data-vendor="agy" data-id="' + a.id + '">' + esc(tr('airOfficialAcctDelete')) + '</button>';
     return accountRow('agy', a, chips + egressChip, '', buttons);
   }
@@ -243,6 +254,7 @@
       + '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-create">' + esc(tr('airOfficialAcctAgyCreate')) + '</button>'
       + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-import">' + esc(tr('airOfficialAcctAgyImport')) + '</button>'
       + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-remote-create">' + esc(tr('airOfficialAcctAgyAddRemote')) + '</button>'
+      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-relay-import">' + esc(tr('airOfficialAcctAgyRelayImport')) + '</button>'
       + (state.agyMutagen && state.agyMutagen.installed
         ? chip(tr('airOfficialAcctAgyMutagenReady', { version: state.agyMutagen.version || state.agyMutagen.targetVersion || '' }), '#3fb950')
         : '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-mutagen-install"' + (state.agyMutagenInstalling ? ' disabled' : '') + '>' + esc(tr(state.agyMutagenInstalling ? 'airOfficialAcctAgyMutagenInstalling' : 'airOfficialAcctAgyMutagenInstall')) + '</button>')
@@ -1229,6 +1241,14 @@
     else if (btn.dataset.act === 'agy-create') agyCreate();
     else if (btn.dataset.act === 'agy-import') agyImport();
     else if (btn.dataset.act === 'agy-remote-create') agyOpenRemoteModal();
+    else if (btn.dataset.act === 'agy-relay-import') { if (typeof window.importRelayProvider === 'function') window.importRelayProvider(); }
+    else if (btn.dataset.act === 'agy-relay-share') {
+      const acct = state.agy.find(a => a.id === btn.dataset.id);
+      if (typeof window.shareAgyAccount === 'function') window.shareAgyAccount(btn.dataset.id, acct && acct.label);
+    }
+    else if (btn.dataset.act === 'agy-relay-copy') {
+      if (typeof window.copyAgyRelayImportCode === 'function') window.copyAgyRelayImportCode(btn.dataset.id);
+    }
     else if (btn.dataset.act === 'agy-remote-login') agyStartRemoteLogin(btn.dataset.id);
     else if (btn.dataset.act === 'agy-egress') agyEditEgress(btn.dataset.id);
     else if (btn.dataset.act === 'agy-remote-test') agyTestRemote(btn.dataset.id);
