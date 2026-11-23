@@ -1224,7 +1224,8 @@
           else if (!state.currentTextContent) state.currentTextContent = block.text;
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();
-        } else if ((isCodexCli(state.currentCli) || state.currentCli === 'commandcode') && block.type === 'tool_use' && block.id) {
+        } else if (block.type === 'tool_use' && block.id
+            && (isCodexCli(state.currentCli) || state.currentCli === 'commandcode' || state.currentCli === 'agy')) {
           host.tokenRate?.noteOutputBoundary?.();
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
           let tool = findCurrentToolCardById(block.id);
@@ -1233,8 +1234,8 @@
             tool = {
               card, inputJson: block.input ? JSON.stringify(block.input) : '',
               name: block.name || 'Tool', id: block.id,
-              // Codex/opencode tools skip content_block_start, so this creation
-              // site is their startedAt — the paired tool_result stamps endedAt.
+              // These adapters announce tools in assistant blocks. The paired
+              // tool_result stamps endedAt on the same card.
               startedAt: Date.now(),
             };
             state.currentToolCards.set(`id:${block.id}`, tool);

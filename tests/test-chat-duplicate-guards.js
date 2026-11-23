@@ -25,6 +25,34 @@ const { createRig, scanDuplicates, scanEmptyBubbles, SCENARIOS } = require(
 );
 const { createTransportAdapter } = require('../public/chat-shell-entry');
 
+test('AGY shows the first tool before any prose, both live and after refresh', () => {
+  const tool = { id: 'agy_step_2', name: 'read_file', input: { Path: 'README.md' } };
+  const start = { type: 'assistant', message: { content: [{ type: 'tool_use', ...tool }] } };
+  const live = createRig('agy');
+  live.feed([{ type: 'stream_start' }, start]);
+  const refreshed = createRig('agy');
+  refreshed.feed([{ type: 'chat_history', messages: [
+    { role: 'assistant', streaming: true, content: '', tools: [tool] },
+  ] }]);
+
+  for (const rig of [live, refreshed]) {
+    const bubble = rig.messagesEl.querySelector('.msg.assistant');
+    assert.ok(bubble, 'the tool-only turn already has a visible assistant bubble');
+    const card = bubble.querySelector('.tool-card');
+    assert.equal(card.dataset.toolId, tool.id);
+    rig.feed([start, { type: 'user', message: { content: [
+      { type: 'tool_result', tool_use_id: tool.id, content: 'file contents' },
+    ] } }, { type: 'assistant', message: {
+      textSnapshot: true, content: [{ type: 'text', text: 'Finished reading.' }],
+    } }]);
+    assert.deepEqual(rig.messagesEl.querySelectorAll('.msg.assistant'), [bubble]);
+    assert.deepEqual(bubble.querySelectorAll('.tool-card'), [card]);
+    assert.equal(card.classList.contains('tool-running'), false);
+    assert.match(card.textContent, /file contents/);
+    assert.match(bubble.textContent, /Finished reading\./);
+  }
+});
+
 function shellRig() {
   const rig = createRig();
   const adapter = createTransportAdapter({ send: () => true });
