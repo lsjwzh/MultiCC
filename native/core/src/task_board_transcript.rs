@@ -40,11 +40,40 @@ pub fn number_or_zero(truthy: bool, number: f64) -> f64 {
     }
 }
 
+/// `legacy:` + first 40 hex chars of sha256(identity), with the identity
+/// encoded exactly the way Node's `crypto.update(text)` encodes well-formed
+/// text as UTF-8 and lone surrogates as U+FFFD.
+pub fn legacy_message_id(identity: &JsString) -> JsString {
+    let digest = Sha256::digest(identity.utf8_lossy_bytes());
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex.truncate(40);
+    JsString::from_rust_str(&format!("legacy:{hex}"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{compare_number_keys, number_or_zero, stable_task_id};
+    use super::{compare_number_keys, legacy_message_id, number_or_zero, stable_task_id};
     use crate::js::string::JsString;
     use std::cmp::Ordering;
+
+    #[test]
+    fn legacy_message_id_matches_node_crypto_vectors() {
+        // Precomputed with Node: crypto.createHash('sha256')
+        //   .update(identity, 'utf8').digest('hex').slice(0, 40).
+        let id = legacy_message_id(&JsString::from_rust_str("sess-1\0id:mu1"));
+        assert_eq!(
+            id.to_string_lossy(),
+            "legacy:e023ddc055814b8d6924a17de1f95a5d952b9b12"
+        );
+        let empty = legacy_message_id(&JsString::new());
+        assert_eq!(
+            empty.to_string_lossy(),
+            "legacy:e3b0c44298fc1c149afbf4c8996fb92427ae41e4"
+        );
+    }
 
     #[test]
     fn stable_task_id_matches_node_crypto_vectors() {

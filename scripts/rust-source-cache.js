@@ -289,6 +289,16 @@ function probeAddon(file, node = process.execPath) {
     const emptyBody=a.taskBoardCanonicalTaskBody([],['t1'],{},()=>[],()=>'x');
     if(emptyBody.text!=='' || emptyBody.messageId!==null || emptyBody.sessionId!==null
       || emptyBody.legacy!==true) process.exit(1);
+    if(['taskBoardLegacyImportMessages','taskBoardContextMessages'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    const legacyImport=a.taskBoardLegacyImportMessages([{refs:[{sessionId:'s1'}],routing:null}],['t1'],{refs:[{sessionId:'s1',userMsgId:'u1'}]},sid=>[{id:'u1',role:'user',content:'正文',taskId:'t1',ts:7}],m=>m.content);
+    if(legacyImport.length!==1 || legacyImport[0].messageId!=='legacy:014de01aab7cfabe87461cea77382ba3bbc10225'
+      || legacyImport[0].role!=='user' || legacyImport[0].kind!=='legacy_import'
+      || legacyImport[0].content!=='正文' || legacyImport[0].createdAt!==7
+      || legacyImport[0].metadata.canonicalBody!==true || legacyImport[0].metadata.lost!==false
+      || legacyImport[0].metadata.sourceSessionId!=='s1' || legacyImport[0].metadata.sourceMessageId!=='u1') process.exit(1);
+    const legacyContext=a.taskBoardContextMessages(legacyImport,m=>m.content);
+    if(legacyContext.length!==1 || legacyContext[0].id!=='legacy:014de01aab7cfabe87461cea77382ba3bbc10225'
+      || legacyContext[0].role!=='user' || legacyContext[0].ts!==7 || legacyContext[0].text!=='正文') process.exit(1);
     const acpProbe=JSON.parse(a.acpBridgeKernel(JSON.stringify({operation:'pickPermissionOption',options:[{kind:'allow_once',optionId:'ok'}]})));
     if(!acpProbe.ok || acpProbe.value.optionId!=='ok') process.exit(1);
     if(a.sessionPersistenceJsonClone(undefined)!==undefined || a.sessionPersistenceJsonClone({x:1}).x!==1) process.exit(1);

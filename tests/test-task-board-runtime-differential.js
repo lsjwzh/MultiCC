@@ -70,7 +70,7 @@ async function capture(createRuntime) {
   let fixture;
   try {
     fixture = mkRuntime({ loadHistory: sessionId => histories[sessionId] || [] }, createRuntime);
-    const { runtime, broadcasts, file } = fixture;
+    const { runtime, broadcasts, sessionMessages, file } = fixture;
     const input = { id: 'tsk-baseline', dirId: 'dir-1', sessionId: 'sess-1',
       title: '固定任务', createdAt: 1700000000000 };
     const results = [];
@@ -107,6 +107,12 @@ async function capture(createRuntime) {
       await runtime.routePorts.status({ taskId, body: { status: 'active' } }, res);
       dtos.push({ statusCode: res.statusCode, body: res.body });
     }
+    // Cold-start seed pin: the commander followup binds a chat session and
+    // routes through legacyImportMessages + contextMessages; the seeded
+    // context lands in the recorded sendSessionMessage options. The client
+    // key is pinned so every derived id is deterministic.
+    const followup = await runtime.routeCommanderFollowup('commander-1', input.id,
+      '继续处理', { clientMsgId: 'fixed-followup-key' });
     const board = JSON.parse(JSON.stringify(runtime.getBoard()));
     const persisted = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
     const moduleIds = Object.keys(board.modules);
@@ -117,7 +123,7 @@ async function capture(createRuntime) {
     assert.equal(board.tasks['tsk-baseline'].moduleId, moduleId);
     assert.equal(persisted.modules[moduleId].id, moduleId);
     assert.equal(persisted.tasks['tsk-baseline'].moduleId, moduleId);
-    const raw = JSON.stringify({ results, queue, dtos, board, broadcasts, persisted });
+    const raw = JSON.stringify({ results, queue, dtos, followup, sessionMessages, board, broadcasts, persisted });
     return JSON.parse(raw.replaceAll(moduleId, '<generated-module-id>'));
   } finally {
     Date.now = oldNow;
@@ -143,6 +149,16 @@ test('queue result mutation is detected by the baseline', async () => {
   });
   assert.notDeepEqual(mutated, expected);
   assert.notDeepEqual(mutated.queue, queueBaseline);
+  // The cold-start seed surface is pinned too: altering the followup result
+  // must change the capture.
+  const followupMutated = await capture(deps => {
+    const runtime = legacy.createTaskBoardRuntime(deps);
+    return { ...runtime, async routeCommanderFollowup(...args) {
+      const result = await runtime.routeCommanderFollowup(...args);
+      return { ...result, changed: true };
+    } };
+  });
+  assert.notDeepEqual(followupMutated, expected);
 });
 
 test('native queue run-state adapter preserves live reads and exceptions', () => {
@@ -320,4 +336,92 @@ test('native transcript adapters preserve live reads, callbacks and exceptions',
   assert.deepEqual(native.taskBoardCanonicalTaskBody([], ['t1'],
     { recordType: 'planned', description: '   ' }, () => [], messageText),
     { text: '', messageId: null, sessionId: null, legacy: true });
+});
+
+test('native legacy-import adapter preserves dedupe, caching and sort order', () => {
+  const crypto = require('node:crypto');
+  const native = require('../src/native/runtime').getNative();
+  const expectLegacyId = identity => 'legacy:' + crypto.createHash('sha256')
+    .update(identity, 'utf8').digest('hex').slice(0, 40);
+  const textOf = message => message.content;
+  // Canonical phase first, then the per-ref fallback: the ref re-finds the
+  // same message and the single entry upgrades canonicalBody; the excerpt
+  // branch builds a lost entry from the ref fields; a system role never
+  // reaches the text callback.
+  const user = { id: 'u1', role: 'user', content: '实现任务板', taskId: 't1', taskStart: true, ts: 10 };
+  const assistant = { id: 'a1', role: 'assistant', content: '已回复', taskId: 't1', ts: 20 };
+  const system = { id: 's0', role: 'system', content: '忽略', taskId: 't1', ts: 5 };
+  const calls = [];
+  const load = sessionId => { calls.push(sessionId); return [system, user, assistant]; };
+  const members = [{ refs: [{ sessionId: 's1' }], routing: null }];
+  const task = { refs: [
+    { sessionId: 's1', userMsgId: 'u1', assistantMsgId: 'a1' },
+    { sessionId: 's1', userMsgId: 'missing', excerpt: '摘录文本', ts: 3 },
+  ] };
+  const out = native.taskBoardLegacyImportMessages(members, ['t1'], task, load, textOf);
+  // One load for the canonical scan, one cache fill for both refs.
+  assert.deepEqual(calls, ['s1', 's1']);
+  assert.equal(out.length, 3);
+  // Sorted by (createdAt, messageId): excerpt ts 3, user ts 10, assistant 20.
+  assert.equal(out[0].messageId, expectLegacyId('s1\0user\0' + '3\0摘录文本'));
+  assert.deepEqual(out[0].metadata, { sourceSessionId: 's1', sourceMessageId: null,
+    canonicalBody: true, lost: true });
+  assert.equal(out[0].content, '摘录文本');
+  assert.equal(out[0].createdAt, 3);
+  assert.equal(out[0].role, 'user');
+  assert.equal(out[0].kind, 'legacy_import');
+  assert.equal(out[1].messageId, expectLegacyId('s1\0id:u1'));
+  assert.deepEqual(out[1].metadata, { sourceSessionId: 's1', sourceMessageId: 'u1',
+    canonicalBody: true, lost: false });
+  assert.equal(out[1].content, '实现任务板');
+  assert.equal(out[2].messageId, expectLegacyId('s1\0id:a1'));
+  assert.equal(out[2].metadata.canonicalBody, false);
+  assert.equal(out[2].role, 'assistant');
+  // An empty text drops non-assistant messages but keeps assistants.
+  assert.equal(native.taskBoardLegacyImportMessages([], ['t1'],
+    { refs: [{ sessionId: 'sx', userMsgId: 'u', excerpt: '', ts: 2 }] },
+    () => [{ id: 'u', role: 'user', content: '', ts: 1 }], textOf).length, 0);
+  const kept = native.taskBoardLegacyImportMessages([], ['t1'],
+    { refs: [{ sessionId: 'sx', userMsgId: 'keep', excerpt: 'fallback', ts: 2 }] },
+    () => [{ id: 'keep', role: 'assistant', content: '', ts: 1 }], textOf);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].role, 'assistant');
+  assert.equal(kept[0].createdAt, 1);
+  // A message id wins the identity; without one the identity carries the
+  // Number-coerced timestamp (string ts coerces like Number()).
+  const coerced = native.taskBoardLegacyImportMessages(
+    [{ refs: [{ sessionId: 's2' }], routing: null }], ['t1'], { refs: [] },
+    () => [{ role: 'user', content: '无标识', taskId: 't1', ts: '7' }], textOf);
+  assert.equal(coerced.length, 1);
+  assert.equal(coerced[0].messageId, expectLegacyId('s2\0user\0' + '7\0无标识'));
+  assert.equal(coerced[0].createdAt, 7);
+  // createdAt ties break on the message id bytes, not insertion order.
+  const ties = native.taskBoardLegacyImportMessages(
+    [{ refs: [{ sessionId: 's9' }], routing: null }], ['t1'], { refs: [] },
+    () => [{ role: 'user', content: '乙', taskId: 't1' },
+      { role: 'user', content: '甲', taskId: 't1' }], textOf);
+  assert.equal(ties.length, 2);
+  assert.deepEqual(ties.map(entry => entry.messageId),
+    [...ties.map(entry => entry.messageId)].sort());
+  assert.equal(ties[0].createdAt, 0);
+  // The text callback runs with a fresh {content} object per message and its
+  // exception propagates untouched.
+  const error = new Error('text failed');
+  assert.throws(() => native.taskBoardLegacyImportMessages(members, ['t1'], { refs: [] },
+    load, () => { throw error; }), value => value === error);
+  // contextMessages projects {id, role, ts, text} in key order with a fresh
+  // {content} input per call.
+  const seen = [];
+  const context = native.taskBoardContextMessages([out[0], out[1]], value => {
+    seen.push(value);
+    return value.content;
+  });
+  assert.deepEqual(context, [
+    { id: out[0].messageId, role: 'user', ts: 3, text: '摘录文本' },
+    { id: out[1].messageId, role: 'user', ts: 10, text: '实现任务板' },
+  ]);
+  assert.equal(seen.length, 2);
+  assert.notEqual(seen[0], seen[1]);
+  assert.deepEqual(Object.keys(seen[0]), ['content']);
+  assert.equal(seen[0].content, '摘录文本');
 });

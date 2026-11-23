@@ -214,77 +214,13 @@ function createTaskBoardRuntime(deps) {
   }
 
   function legacyImportMessages(task, { identityIds = null } = {}) {
-    const imported = new Map();
-    const add = (sessionId, message, {
-      excerpt = '', canonicalBody = false, createdAt: fallbackCreatedAt = 0,
-    } = {}) => {
-      const role = String(message?.role || (canonicalBody ? 'user' : '')).toLowerCase();
-      if (!['user', 'assistant'].includes(role)) return;
-      const content = message?.content ?? excerpt;
-      const text = core.messageText({ content });
-      if (!text && role !== 'assistant') return;
-      const sourceMessageId = String(message?.id || '').trim();
-      const createdAt = Number(message?.ts) || Number(fallbackCreatedAt) || 0;
-      const identity = sourceMessageId
-        ? `${sessionId}\0id:${sourceMessageId}`
-        : `${sessionId}\0${role}\0${createdAt}\0${text}`;
-      const messageId = `legacy:${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 40)}`;
-      if (imported.has(messageId)) {
-        if (canonicalBody) imported.get(messageId).metadata.canonicalBody = true;
-        return;
-      }
-      imported.set(messageId, {
-        messageId,
-        role,
-        kind: 'legacy_import',
-        content,
-        metadata: {
-          sourceSessionId: String(sessionId || '').slice(0, 256),
-          sourceMessageId: sourceMessageId.slice(0, 256) || null,
-          canonicalBody: canonicalBody || message?.taskStart === true,
-          lost: !message,
-        },
-        createdAt,
-      });
-    };
-
-    for (const entry of canonicalMessages(task, identityIds)) {
-      add(entry.sessionId, entry.message, {
-        canonicalBody: entry.message?.role === 'user' && entry.message?.taskStart === true,
-      });
-    }
-    const historyCache = new Map();
-    const historyFor = sessionId => {
-      if (!historyCache.has(sessionId)) {
-        try { historyCache.set(sessionId, loadHistory(sessionId) || []); }
-        catch (_) { historyCache.set(sessionId, []); }
-      }
-      return historyCache.get(sessionId);
-    };
-    for (const ref of task.refs || []) {
-      const history = historyFor(ref.sessionId);
-      const user = ref.userMsgId
-        ? history.find(message => message?.id === ref.userMsgId) : null;
-      const assistant = ref.assistantMsgId
-        ? history.find(message => message?.id === ref.assistantMsgId) : null;
-      if (user) add(ref.sessionId, user, { canonicalBody: true });
-      else if (ref.excerpt) add(ref.sessionId, null, {
-        excerpt: ref.excerpt, canonicalBody: true, createdAt: ref.ts,
-      });
-      if (assistant) add(ref.sessionId, assistant);
-    }
-    return [...imported.values()].sort((left, right) => (
-      left.createdAt - right.createdAt || left.messageId.localeCompare(right.messageId)
-    ));
+    const { identityIds: ids, members } = transcriptArgs(task, identityIds);
+    return getNative().taskBoardLegacyImportMessages(
+      members, ids, task, loadHistory, core.messageText);
   }
 
   function contextMessages(messages) {
-    return messages.map(message => ({
-      id: message.messageId,
-      role: message.role,
-      ts: message.createdAt,
-      text: core.messageText({ content: message.content }),
-    }));
+    return getNative().taskBoardContextMessages(messages, core.messageText);
   }
   function canonicalTaskBody(task) {
     const { identityIds, members } = transcriptArgs(task);
