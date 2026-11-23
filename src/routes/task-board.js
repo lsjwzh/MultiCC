@@ -191,34 +191,26 @@ function createTaskBoardRuntime(deps) {
 
 
   function stableTaskId(source, requestKey) {
-    const digest = crypto.createHash('sha256')
-      .update(`${source}\0${requestKey}`, 'utf8')
-      .digest('hex')
-      .slice(0, 32);
-    return `tsk-${digest}`;
+    return getNative().taskBoardStableTaskId(source, requestKey);
+  }
+
+  // The transcript projections are native-owned. The member views passed
+  // across the bridge keep the retired helpers' exact board reads: one
+  // `board.tasks[taskId]` per identity id in Set order, then `refs` and
+  // `routing` on that member object (the native side re-reads the view's own
+  // properties with the retired read counts).
+  function transcriptArgs(task, identityIdsOverride = null) {
+    const identityIds = [...new Set(identityIdsOverride || taskIdentityIds(task))];
+    const members = identityIds.map(taskId => {
+      const member = board.tasks[taskId];
+      return member ? { refs: member.refs, routing: member.routing } : null;
+    });
+    return { identityIds, members };
   }
 
   function canonicalMessages(task, identityIdsOverride = null) {
-    const identityIds = new Set(identityIdsOverride || taskIdentityIds(task));
-    const sessionIds = new Set();
-    for (const taskId of identityIds) {
-      const member = board.tasks[taskId];
-      for (const ref of member?.refs || []) if (ref.sessionId) sessionIds.add(ref.sessionId);
-      if (member?.routing?.workerSessionId) sessionIds.add(member.routing.workerSessionId);
-      if (member?.routing?.mode === 'manual' && member.routing.targetSessionId) {
-        sessionIds.add(member.routing.targetSessionId);
-      }
-    }
-    const messages = [];
-    for (const sessionId of sessionIds) {
-      let history = [];
-      try { history = loadHistory(sessionId) || []; } catch (_) {}
-      for (const message of history) {
-        if (!identityIds.has(message?.taskId)) continue;
-        messages.push({ sessionId, message });
-      }
-    }
-    return messages.sort((a, b) => (a.message.ts || 0) - (b.message.ts || 0));
+    const { identityIds, members } = transcriptArgs(task, identityIdsOverride);
+    return getNative().taskBoardCanonicalMessages(members, identityIds, loadHistory);
   }
 
   function legacyImportMessages(task, { identityIds = null } = {}) {
@@ -295,38 +287,9 @@ function createTaskBoardRuntime(deps) {
     }));
   }
   function canonicalTaskBody(task) {
-    const start = canonicalMessages(task)
-      .find(entry => entry.message.role === 'user' && entry.message.taskStart === true);
-    if (start) {
-      return {
-        text: String(start.message.taskText || core.messageText(start.message)),
-        messageId: start.message.id || null,
-        sessionId: start.sessionId,
-        legacy: false,
-      };
-    }
-    if (task.recordType === 'planned') {
-      const description = String(task.description || task.title || '').trim();
-      if (description) return { text: description, messageId: null,
-        sessionId: task.chatSessionId || null, legacy: false };
-    }
-    // Old cards predate taskId metadata; their ref remains a read-only fallback.
-    for (const ref of task.refs || []) {
-      let history = [];
-      try { history = loadHistory(ref.sessionId) || []; } catch (_) {}
-      const message = ref.userMsgId
-        ? history.find(candidate => candidate?.id === ref.userMsgId)
-        : null;
-      if (message) {
-        return {
-          text: core.messageText(message),
-          messageId: message.id || null,
-          sessionId: ref.sessionId,
-          legacy: true,
-        };
-      }
-    }
-    return { text: '', messageId: null, sessionId: null, legacy: true };
+    const { identityIds, members } = transcriptArgs(task);
+    return getNative().taskBoardCanonicalTaskBody(
+      members, identityIds, task, loadHistory, core.messageText);
   }
   function ensureTaskIndex({
     taskId, dirId, sessionId, routing, taskText = '', origin = null, now = Date.now(),

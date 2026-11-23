@@ -107,6 +107,7 @@ pub mod static_assets_routes;
 pub mod subagent_defaults;
 pub mod task_board;
 pub mod task_board_queue;
+pub mod task_board_transcript;
 pub mod task_context;
 pub mod task_domain;
 pub mod task_history_retention;

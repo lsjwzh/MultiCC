@@ -267,6 +267,28 @@ function probeAddon(file, node = process.execPath) {
       || a.taskBoardQueueRunState('claim_released',{queuedItems:[],queueSummary:{classifyState:'B'}},null,x=>x)!=='B'
       || a.taskBoardQueueRunState('frozen',{freezeReason:'x'},value=>'frozen:'+value,null)!=='frozen:x'
       || a.taskBoardQueueRunState('mystery',{},null,x=>x)!==null) process.exit(1);
+    if(['taskBoardStableTaskId','taskBoardCanonicalMessages','taskBoardCanonicalTaskBody'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(a.taskBoardStableTaskId('board-send:dir-1','client-7')!=='tsk-c0f07d4d4b9f10225f2c1edc608a681a') process.exit(1);
+    const transcriptHistories={s1:[{id:'a',role:'user',taskId:'t1',ts:20}],s2:[{id:'b',role:'user',taskId:'t1',taskStart:true,ts:10,taskText:'正文'}]};
+    const transcriptCalls=[];
+    const transcriptLoad=sid=>{transcriptCalls.push(sid);return transcriptHistories[sid];};
+    const transcriptMembers=[{refs:[{sessionId:'s1'}],routing:null},{refs:[],routing:{workerSessionId:'s2'}}];
+    const projected=a.taskBoardCanonicalMessages(transcriptMembers,['t1'],transcriptLoad);
+    if(transcriptCalls.join(',')!=='s1,s2' || projected.length!==2
+      || projected[0].message!==transcriptHistories.s2[0] || projected[0].sessionId!=='s2'
+      || projected[1].message!==transcriptHistories.s1[0] || projected[1].sessionId!=='s1') process.exit(1);
+    const projectedBody=a.taskBoardCanonicalTaskBody(transcriptMembers,['t1'],{},transcriptLoad,()=>'fallback');
+    if(projectedBody.text!=='正文' || projectedBody.messageId!=='b' || projectedBody.sessionId!=='s2'
+      || projectedBody.legacy!==false) process.exit(1);
+    const plannedBody=a.taskBoardCanonicalTaskBody([],['t1'],{recordType:'planned',description:'  计划  ',chatSessionId:'s9'},()=>[],()=>'x');
+    if(plannedBody.text!=='计划' || plannedBody.messageId!==null || plannedBody.sessionId!=='s9'
+      || plannedBody.legacy!==false) process.exit(1);
+    const legacyBody=a.taskBoardCanonicalTaskBody([],['t1'],{refs:[{sessionId:'s1',userMsgId:'a'}]},transcriptLoad,m=>m.id+':text');
+    if(legacyBody.text!=='a:text' || legacyBody.messageId!=='a' || legacyBody.sessionId!=='s1'
+      || legacyBody.legacy!==true) process.exit(1);
+    const emptyBody=a.taskBoardCanonicalTaskBody([],['t1'],{},()=>[],()=>'x');
+    if(emptyBody.text!=='' || emptyBody.messageId!==null || emptyBody.sessionId!==null
+      || emptyBody.legacy!==true) process.exit(1);
     const acpProbe=JSON.parse(a.acpBridgeKernel(JSON.stringify({operation:'pickPermissionOption',options:[{kind:'allow_once',optionId:'ok'}]})));
     if(!acpProbe.ok || acpProbe.value.optionId!=='ok') process.exit(1);
     if(a.sessionPersistenceJsonClone(undefined)!==undefined || a.sessionPersistenceJsonClone({x:1}).x!==1) process.exit(1);

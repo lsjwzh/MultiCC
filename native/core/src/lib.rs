@@ -113,6 +113,7 @@ pub mod subscription;
 pub mod subscription_cache;
 pub mod system_info;
 pub mod task_board_queue;
+pub mod task_board_transcript;
 pub mod task_context;
 pub mod task_domain;
 pub mod task_history_retention;

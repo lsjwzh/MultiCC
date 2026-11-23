@@ -124,7 +124,8 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     'sessionAssertDirectoryRecordsPort', 'sessionAssertChatHistoryPort', 'sessionPortsApi',
     'createTaskHistoryRetention', 'taskHistoryRefusal', 'taskHistoryRetentionApi', 'claudeExpHasNativeHistory',
     'chatHistoryFileRepositoryCreate', 'sessionCreateRecordFactory', 'sessionRuntimeIsChatStateBusy', 'sessionRuntimeProcessAlive',
-    'sessionPendingConfigurationFields', 'sessionPendingReadConfiguration', 'sessionPendingDesiredSession', 'sessionPendingConfigurationBusy', 'sessionPendingStageConfiguration', 'sessionLoginTerminalDisposer', 'sessionDeliveryApi', 'sessionHibernationReclaimerCreate', 'sessionPersistenceCreate', 'sessionPersistenceErrorClass', 'sessionPersistenceJsonClone', 'acpBridgeKernel', 'taskBoardQueueRunState']) {
+    'sessionPendingConfigurationFields', 'sessionPendingReadConfiguration', 'sessionPendingDesiredSession', 'sessionPendingConfigurationBusy', 'sessionPendingStageConfiguration', 'sessionLoginTerminalDisposer', 'sessionDeliveryApi', 'sessionHibernationReclaimerCreate', 'sessionPersistenceCreate', 'sessionPersistenceErrorClass', 'sessionPersistenceJsonClone', 'acpBridgeKernel', 'taskBoardQueueRunState',
+    'taskBoardStableTaskId', 'taskBoardCanonicalMessages', 'taskBoardCanonicalTaskBody']) {
     const staleZip = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);
