@@ -11,7 +11,6 @@ const { createAcpAdapter } = require('../src/cli-adapters/acp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createGeminiAdapter } = require('../src/cli-adapters/gemini');
 const { createGrokAdapter } = require('../src/cli-adapters/grok');
-const { createAgyAdapter } = require('../src/cli-adapters/agy');
 const { pickPermissionOption, routerMcpServers } = require('./helpers/native-acp-bridge');
 const { gatewayPath } = require('../src/native/runtime');
 
@@ -330,23 +329,6 @@ test('opencode defaults to ACP and grok launches its ACP server', () => {
   const agentArgv = grokArgs.filter((_, index) => grokArgs[index - 1] === '--agent-arg');
   assert.deepEqual(agentArgv, ['agent', '--no-leader', '--always-approve', '-m', 'grok-4.6', '--reasoning-effort', 'high', 'stdio']);
   assert.ok(!grokArgs.includes('--model') && !grokArgs.includes('--effort'));
-});
-
-test('Antigravity uses ACP session resume and model configuration', () => {
-  const adapter = createAgyAdapter({ cmd: '/bin/agy', routerMcpNode: '/node', routerMcpScript: '/router' });
-  const inv = adapter.buildInvocation(envelope({ first: false, sessionId: 'session-1', model: 'gemini-4-argon', effort: 'low' }));
-  assert.deepEqual(inv.args.slice(1), [
-    '--agent-bin', '/bin/agy', '--label', 'Antigravity', '--agent-arg', 'acp',
-    '--agent-arg', '--dangerously-skip-permissions', '--session-id', 'session-1',
-    '--model', 'gemini-4-argon', '--effort', 'low', '--router-mcp', '/node', '/router',
-    // agy 的账号 HOME 由父进程的 buildChildEnv 钉好，桥进程继承，不再走参数。
-    '--',
-  ]);
-  assert.equal(inv.payload, 'hello');
-  assert.equal(adapter.buildTerminalCmd({ model: 'gemini-4-argon', cliSessionId: 'session-1' }),
-    "'/bin/agy' --model 'gemini-4-argon' --conversation 'session-1'");
-  assert.equal(adapter.buildTerminalCmd({ cliSessionId: "abc'; touch /tmp/no; '" }),
-    "'/bin/agy' --conversation 'abc'\"'\"'; touch /tmp/no; '\"'\"''");
 });
 
 test('tool cards wait for real input and are announced once', () => {

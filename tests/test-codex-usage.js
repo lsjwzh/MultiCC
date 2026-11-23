@@ -227,6 +227,54 @@ test('Codex App Server host forwards the measured turn without a cumulative base
   assert.deepEqual(forwarded.usage, usage);
 });
 
+test('Antigravity stream-json host keeps smaller later turns without subtracting previous turn', async () => {
+  const usage = {
+    input_tokens: 2201,
+    output_tokens: 84,
+    cache_read_input_tokens: 11332,
+    cache_creation_input_tokens: 0,
+    reasoning_output_tokens: 33,
+    context_tokens: 13533,
+    usage_source: 'agy_stream',
+  };
+  let persistedMessage;
+  let forwarded;
+  const host = createCodexUsageHost({
+    loadHistory: () => [{
+      role: 'assistant',
+      usage: {
+        input_tokens: 13389,
+        output_tokens: 113,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        reasoning_output_tokens: 83,
+      },
+    }],
+    reconcileRole() {},
+    clearIncrementalSave() {},
+    persistFinalAssistantResult(_session, _state, _turn, _runner, message) {
+      persistedMessage = message;
+      return true;
+    },
+    recordDurableTurnUsage() {},
+    recordResultEvent() {},
+  });
+  await host.complete({
+    evt: { type: 'complete', usage },
+    cs: { currentAssistantText: 'done', currentToolCalls: [], chatTurnCount: 1 },
+    persisted: { cli: 'agy', cliSessionId: 'conv-1' },
+    sessionName: 'session-agy', turn: {}, runner: {},
+    forward: event => { forwarded = event; },
+  });
+  assert.equal(persistedMessage.usage.input_tokens, 2201);
+  assert.equal(persistedMessage.usage.output_tokens, 84);
+  assert.equal(persistedMessage.usage.cache_read_input_tokens, 11332);
+  assert.equal(persistedMessage.usage.reasoning_output_tokens, 33);
+  assert.equal(persistedMessage.usage.context_tokens, 13533);
+  assert.equal(Object.hasOwn(persistedMessage, 'usageCumulative'), false);
+  assert.equal(forwarded.usage.input_tokens, 2201);
+});
+
 test('the fallback result frame carries the model attribution the message was stamped with', async () => {
   const cliSessionId = 'native-thread-secret';
   const cs = {

@@ -2324,6 +2324,41 @@ fn apply_adapter_one<'a>(
         return Ok(());
     }
 
+    if evt.get(c"type")?.is_string("live_usage")? {
+        let usage = evt.optional(c"usage")?;
+        if usage.truthy()? {
+            runner.assign(c"pendingUsage", usage)?;
+        }
+        let role_main = evt.optional(c"roleMain")?;
+        if role_main.truthy()? {
+            let role_frame = object(anchor)?;
+            role_frame.set(c"type", text(anchor, "role_token_stats")?)?;
+            let role = object(anchor)?;
+            role.set(c"main", role_main)?;
+            role.set(c"sub", null(anchor)?)?;
+            role.set(c"subByProvider", array(anchor)?)?;
+            role.set(c"mainByProvider", array(anchor)?)?;
+            role_frame.set(c"role", role)?;
+            forward.call_plain(&[role_frame])?;
+        }
+        let step_usage = evt.optional(c"stepUsage")?;
+        let delta_usage = if step_usage.truthy()? {
+            step_usage
+        } else {
+            usage
+        };
+        if delta_usage.truthy()? {
+            let stream_frame = object(anchor)?;
+            stream_frame.set(c"type", text(anchor, "stream_event")?)?;
+            let inner = object(anchor)?;
+            inner.set(c"type", text(anchor, "message_delta")?)?;
+            inner.set(c"usage", delta_usage)?;
+            stream_frame.set(c"event", inner)?;
+            forward.call_plain(&[stream_frame])?;
+        }
+        return Ok(());
+    }
+
     if evt.get(c"type")?.is_string("complete")? {
         runner.assign(c"pendingCompletionEvent", evt)?;
         return Ok(());

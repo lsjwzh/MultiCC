@@ -752,6 +752,24 @@ pub fn cli_protocol_completion(
                 Some((state, prefixed(event, "commandcode/", reason)?))
             }
         }
+        "agy" => {
+            if !event.optional(c"event")?.is_string("result")? {
+                None
+            } else {
+                let result_obj = event.get(c"result")?;
+                let status = or_text(result_obj.optional(c"status")?, "unknown")?;
+                let finished_reason = result_obj.optional(c"finished_reason")?;
+                if status.is_string("SUCCESS")? {
+                    Some(("completed", text("agy/success")?))
+                } else if status.is_string("CANCELLED")?
+                    || finished_reason.is_string("cancelled")?
+                {
+                    Some(("cancelled", text("agy/cancelled")?))
+                } else {
+                    Some(("failed", prefixed(event, "agy/", status)?))
+                }
+            }
+        }
         _ => return Err(event.type_error("invalid CLI completion protocol")),
     };
     match result {
