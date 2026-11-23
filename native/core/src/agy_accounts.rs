@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::account_subscription::{official_root, valid_account};
+use crate::agy_remote::{parse_remote_target, RemoteAgyTarget};
 use crate::auth_runtime::now_ms;
 use crate::provider_store;
 use crate::state_file;
@@ -33,6 +34,20 @@ const HOME_SUFFIX: &str = ".home";
 const META_SUFFIX: &str = ".json";
 const MAX_LABEL: usize = 64;
 const DEFAULT_LABEL: &str = "反重力账号";
+const DEFAULT_REMOTE_LABEL: &str = "远程 VPS 反重力";
+
+pub const KIND_LOCAL: &str = "local";
+pub const KIND_REMOTE: &str = "remote";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedAgyAccount {
+    Local(PathBuf),
+    Remote {
+        id: String,
+        label: String,
+        remote: RemoteAgyTarget,
+    },
+}
 
 /// Copied into a new account home. agy rebuilds caches (`brain`, `log`,
 /// `cache`, `conversations`, `*.db`, `tmp`) on its own, and those are the files
@@ -109,16 +124,133 @@ pub fn active_home(home: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-/// Whether `id` is a registered agy account whose isolated home exists on disk.
+fn read_meta(home: &Path, id: &str) -> Option<Value> {
+    let meta = meta_file(home, id)?;
+    if !meta.is_file() {
+        return None;
+    }
+    provider_store::read(&meta).ok().flatten()
+}
+
+fn parse_remote_from_meta(id: &str, meta: &Value) -> Option<(String, RemoteAgyTarget)> {
+    if meta.get("kind").and_then(Value::as_str) != Some(KIND_REMOTE) {
+        return None;
+    }
+    let remote = parse_remote_target(meta.get("remote")?).ok()?;
+    let label = meta
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(id)
+        .to_owned();
+    Some((label, remote))
+}
+
+/// 读取远端 VPS 账号配置；若非远端账号或不存在则返回 `None`。
+pub fn get_remote_account(home: &Path, id: &str) -> Option<(String, RemoteAgyTarget)> {
+    let id = id.trim();
+    if !valid_account(id) {
+        return None;
+    }
+    let meta = read_meta(home, id)?;
+    parse_remote_from_meta(id, &meta)
+}
+
+/// 是否至少配置了一个有效的远端 VPS `agy` 账号（用于未安装本机 `agy` 时仍放行车道可用性）。
+pub fn has_remote_account(home: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(account_root(home)) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Some(id) = name.strip_suffix(META_SUFFIX) else {
+            continue;
+        };
+        if !valid_account(id) {
+            continue;
+        }
+        if let Some(meta) = provider_store::read(&entry.path()).ok().flatten() {
+            if parse_remote_from_meta(id, &meta).is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether `id` is a registered agy account (either local with isolated `.home`
+/// or a valid remote VPS account).
 pub fn has_account(home: &Path, id: &str) -> bool {
     let id = id.trim();
-    let Some(meta) = meta_file(home, id) else {
+    let Some(meta_path) = meta_file(home, id) else {
         return false;
     };
-    let Some(dir) = account_home(home, id) else {
+    if !meta_path.is_file() {
         return false;
+    }
+    if let Some(meta) = provider_store::read(&meta_path).ok().flatten() {
+        if meta.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
+            return parse_remote_from_meta(id, &meta).is_some();
+        }
+    }
+    account_home(home, id).is_some_and(|dir| dir.is_dir())
+}
+
+/// 解析一次绑定/调用所指向的 `agy` 账号目标（本机隔离 HOME 或远端 VPS 目标）。
+///
+/// * `Some(id)` (非空): fail-closed，账号不存在、格式非法或目录/远端配置损坏时返回 `Err`。
+/// * `None` / 空白: 沿用全局 `active.json`，未钉账号返回 `Ok(None)`（使用本机默认 `$HOME`）。
+pub fn resolve_account(
+    home: &Path,
+    account_id: Option<&str>,
+) -> Result<Option<ResolvedAgyAccount>, String> {
+    let (id, explicit) = match account_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => (id.to_owned(), true),
+        None => match active_id(home) {
+            Some(id) => (id, false),
+            None => return Ok(None),
+        },
     };
-    meta.is_file() && dir.is_dir()
+    if !valid_account(&id) {
+        return if explicit {
+            Err("invalid account id".to_owned())
+        } else {
+            Ok(None)
+        };
+    }
+    let Some(meta_path) = meta_file(home, &id) else {
+        return if explicit {
+            Err("invalid account id".to_owned())
+        } else {
+            Ok(None)
+        };
+    };
+    if !meta_path.is_file() {
+        return if explicit {
+            Err("unknown account".to_owned())
+        } else {
+            Ok(None)
+        };
+    }
+    if let Some(meta) = provider_store::read(&meta_path).ok().flatten() {
+        if meta.get("kind").and_then(Value::as_str) == Some(KIND_REMOTE) {
+            return match parse_remote_from_meta(&id, &meta) {
+                Some((label, remote)) => Ok(Some(ResolvedAgyAccount::Remote { id, label, remote })),
+                None if explicit => Err("invalid remote account configuration".to_owned()),
+                None => Ok(None),
+            };
+        }
+    }
+    match account_home(home, &id) {
+        Some(dir) if dir.is_dir() => Ok(Some(ResolvedAgyAccount::Local(dir))),
+        _ if explicit => Err("unknown account".to_owned()),
+        _ => Ok(None),
+    }
 }
 
 /// Resolve the HOME a spawned `agy` should use for one binding.
@@ -204,14 +336,39 @@ pub fn list_accounts(home: &Path) -> Vec<Value> {
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| json!({}));
-            let status = login_status(home, id);
             let label = meta
                 .get("label")
                 .and_then(Value::as_str)
                 .filter(|label| !label.is_empty())
                 .unwrap_or(id);
+            if let Some((_, remote)) = parse_remote_from_meta(id, &meta) {
+                let remote_logged_in = meta
+                    .get("remoteLoggedIn")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                let remote_email = meta
+                    .get("remoteEmail")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| json!(s))
+                    .unwrap_or(Value::Null);
+                return Some(json!({
+                    "id": id,
+                    "kind": KIND_REMOTE,
+                    "label": label,
+                    "email": remote_email,
+                    "loggedIn": remote_logged_in,
+                    "expiresAt": Value::Null,
+                    "createdAt": meta.get("createdAt").cloned().unwrap_or(Value::Null),
+                    "source": meta.get("source").cloned().unwrap_or_else(|| json!("remote")),
+                    "active": active.as_deref() == Some(id),
+                    "remote": remote,
+                }));
+            }
+            let status = login_status(home, id);
             Some(json!({
                 "id": id,
+                "kind": KIND_LOCAL,
                 "label": label,
                 "email": status.get("email").cloned().unwrap_or(Value::Null),
                 "loggedIn": status["loggedIn"],
@@ -260,6 +417,111 @@ pub fn create_account(home: &Path, label: &str, source: &str) -> Result<Value, S
         "source": source,
     });
     state_file::write_json_atomic(&meta, &record).map_err(|err| err.to_string())?;
+    Ok(record)
+}
+
+/// 创建一个远端 VPS 承载的 `agy` 账号（无需在本地建 `.home` 目录，也无需本机登录 `agy`）。
+///
+/// 若 `raw_remote.isolateHome == true` 且未手填 `remoteHome`，自动分配
+/// `.multicc-remote/agy-accounts/<id>` 作为该账号在 VPS 上的独立 `$HOME`，
+/// 并把初始 `remoteLoggedIn` 置为 `false` 供网页 OAuth 授权登录。
+pub fn create_remote_account(
+    home: &Path,
+    label: &str,
+    raw_remote: &Value,
+) -> Result<Value, String> {
+    let mut remote = parse_remote_target(raw_remote)?;
+    let isolate_home = raw_remote
+        .get("isolateHome")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let id = random_id()?;
+    if isolate_home && remote.remote_home.is_none() {
+        remote.remote_home = Some(format!(".multicc-remote/agy-accounts/{id}"));
+    }
+    let meta = meta_file(home, &id).ok_or("invalid account id")?;
+    let effective_label = if label.trim().is_empty() {
+        clean_label(&format!("{DEFAULT_REMOTE_LABEL} ({})", remote.ssh_target))
+    } else {
+        clean_label(label)
+    };
+    let record = json!({
+        "id": id,
+        "kind": KIND_REMOTE,
+        "label": effective_label,
+        "createdAt": now_ms().floor() as i64,
+        "source": "remote",
+        "remoteLoggedIn": !isolate_home,
+        "remoteEmail": Value::Null,
+        "remote": remote,
+    });
+    state_file::write_json_atomic(&meta, &record).map_err(|err| err.to_string())?;
+    Ok(record)
+}
+
+/// 更新远端 VPS 账号的登录状态与 Google 邮箱（网页 OAuth 授权完成后落盘）。
+pub fn set_remote_login_meta(
+    home: &Path,
+    id: &str,
+    logged_in: bool,
+    email: Option<&str>,
+) -> Result<(), String> {
+    let id = id.trim();
+    if !valid_account(id) {
+        return Err("invalid account id".to_owned());
+    }
+    let meta_path = meta_file(home, id).ok_or("invalid account id")?;
+    let mut existing = provider_store::read(&meta_path)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "unknown account".to_owned())?;
+    if existing.get("kind").and_then(Value::as_str) != Some(KIND_REMOTE) {
+        return Err("仅支持更新远端 VPS 反重力账号的登录状态".to_owned());
+    }
+    if let Some(obj) = existing.as_object_mut() {
+        obj.insert("remoteLoggedIn".to_string(), json!(logged_in));
+        if let Some(mail) = email.map(str::trim).filter(|s| !s.is_empty()) {
+            obj.insert("remoteEmail".to_string(), json!(mail));
+        }
+    }
+    state_file::write_json_atomic(&meta_path, &existing).map_err(|err| err.to_string())
+}
+
+/// 更新已有远端 VPS `agy` 账号的配置与显示名称。
+pub fn update_remote_account(
+    home: &Path,
+    id: &str,
+    label: Option<&str>,
+    raw_remote: &Value,
+) -> Result<Value, String> {
+    let id = id.trim();
+    if !valid_account(id) {
+        return Err("invalid account id".to_owned());
+    }
+    let meta_path = meta_file(home, id).ok_or("invalid account id")?;
+    let existing = provider_store::read(&meta_path)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "unknown account".to_owned())?;
+    if existing.get("kind").and_then(Value::as_str) != Some(KIND_REMOTE) {
+        return Err("仅支持更新远端 VPS 类型的反重力账号".to_owned());
+    }
+    let remote = parse_remote_target(raw_remote)?;
+    let effective_label = match label.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(next) => clean_label(next),
+        None => existing
+            .get("label")
+            .and_then(Value::as_str)
+            .map(clean_label)
+            .unwrap_or_else(|| clean_label(&remote.ssh_target)),
+    };
+    let record = json!({
+        "id": id,
+        "kind": KIND_REMOTE,
+        "label": effective_label,
+        "createdAt": existing.get("createdAt").cloned().unwrap_or_else(|| json!(now_ms().floor() as i64)),
+        "source": "remote",
+        "remote": remote,
+    });
+    state_file::write_json_atomic(&meta_path, &record).map_err(|err| err.to_string())?;
     Ok(record)
 }
 

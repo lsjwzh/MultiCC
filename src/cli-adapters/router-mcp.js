@@ -145,6 +145,8 @@ function applyRouterMcpEnv(env, cli, node, script, options = {}) {
     } catch (_) { /* best effort — MCP injection failure should not crash the turn */ }
   }
   if (cli === 'agy') {
+    // 远端 VPS 账号由 Rust `agy-remote-bridge` 管理远端 `mcp_config.json`，不修改本机配置。
+    if (env.MULTICC_AGY_REMOTE_ACCOUNT_JSON) return env;
     // Antigravity (`agy -p --output-format stream-json`) reads global stdio MCP
     // entries from `$HOME/.gemini/config/mcp_config.json` and forwards parent
     // `MULTICC_*` env vars to the MCP child, so no per-turn secret is written.

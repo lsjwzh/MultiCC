@@ -814,8 +814,15 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // section in the Provider panel — local-login row, create/import/sign-in
     // buttons and their status/receipt copy. 中英各 17 行 = +34 行；countLines
     // 口径实测 10660/691833，按真实高水位抬一格。
-    maxLines: 10660,
-    maxBytes: 691833,
+    // +18 bilingual keys (airOfficialAcctAgyAddRemote / Remote*): 远端 VPS 反重力账号
+    // 添加表单、状态徽标与连通性测试文案。中英各 18 行 = +36 行；重跑生成器实测 10696/694748。
+    // +5 bilingual keys (airOfficialAcctAgyMutagen*): 托管版 Mutagen 一键安装与状态文案。
+    // 中英各 5 行 = +10 行；重跑生成器实测 10706/695502。
+    // +10 bilingual keys (airOfficialAcctAgyRemoteIsolateToggle / AddSibling / Signin*):
+    // 远端 VPS 多账号自动隔离 HOME + 类 Claude/Codex 网页授权登录面板文案。
+    // 中英各 10 行 = +20 行；重跑生成器实测 10726/697939。
+    maxLines: 10726,
+    maxBytes: 697939,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

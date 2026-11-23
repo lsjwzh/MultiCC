@@ -1069,6 +1069,11 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-agy-remote-bridge.js",
+      "tier": "flow",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-air-artifacts-page-cdp.js",
       "tier": "flow",
       "lane": "cdp",
