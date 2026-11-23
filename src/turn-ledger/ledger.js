@@ -17,7 +17,7 @@ const { resolveTurnState } = require('../classify/turn-state');
 const { isProcessingLetter, isAbnormalLetter } = require('../classify/vocab');
 const {
   OWNERSHIP, SILENT_E_REASONS, transitionId, projectLiveness,
-} = require('./contract');
+} = require('../native/runtime').getTurnLedgerContract();
 
 const QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input']);
 const WAIT_NOTIFICATIONS = new Set(['permission_prompt', 'elicitation_dialog']);

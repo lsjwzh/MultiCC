@@ -123,10 +123,13 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     'sessionAssertSessionRecordsPort', 'sessionAssertSessionRuntimePort', 'sessionAssertWorkspaceFactsPort',
     'sessionAssertDirectoryRecordsPort', 'sessionAssertChatHistoryPort', 'sessionPortsApi',
     'createTaskHistoryRetention', 'taskHistoryRefusal', 'taskHistoryRetentionApi', 'claudeExpHasNativeHistory',
+    'turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
+      'confirmTurnEnd', 'searchNormalizeText', 'searchTokenize', 'searchIndexTokens', 'searchMatchGroups', 'searchMatchExpression',
     'chatHistoryFileRepositoryCreate', 'sessionCreateRecordFactory', 'sessionRuntimeIsChatStateBusy', 'sessionRuntimeProcessAlive',
     'sessionPendingConfigurationFields', 'sessionPendingReadConfiguration', 'sessionPendingDesiredSession', 'sessionPendingConfigurationBusy', 'sessionPendingStageConfiguration', 'sessionLoginTerminalDisposer', 'sessionDeliveryApi', 'sessionHibernationReclaimerCreate', 'sessionPersistenceCreate', 'sessionPersistenceErrorClass', 'sessionPersistenceJsonClone', 'acpBridgeKernel', 'taskBoardQueueRunState',
     'taskBoardStableTaskId', 'taskBoardCanonicalMessages', 'taskBoardCanonicalTaskBody',
-    'taskBoardLegacyImportMessages', 'taskBoardContextMessages']) {
+    'taskBoardLegacyImportMessages', 'taskBoardContextMessages', 'TaskBoardClassification', 'TaskBoardStart', 'TaskBoardFollowup', 'taskBoardRunContext',
+    'taskBoardTurnEnd', 'taskBoardClassifyGoal', 'taskBoardSystemPrompt', 'taskBoardUserPrompt']) {
     const staleZip = write(root, `stale-${name}.js`, `module.exports = {
       ...require(${JSON.stringify(path.resolve(addon))}), ${name}: undefined
     };`);

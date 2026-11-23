@@ -150,9 +150,7 @@ fn render(data: &Value, now_ms: u64) -> Option<Value> {
                 continue;
             }
             let window = bucket.get("window").and_then(Value::as_str).unwrap_or("");
-            let Some(meta) =
-                window_meta(window, bucket.get("name").and_then(Value::as_str))
-            else {
+            let Some(meta) = window_meta(window, bucket.get("name").and_then(Value::as_str)) else {
                 continue;
             };
             let rem_pct = (remaining * 100.0).round().clamp(0.0, 100.0) as u8;
@@ -163,7 +161,16 @@ fn render(data: &Value, now_ms: u64) -> Option<Value> {
                 .and_then(|v| chrono::DateTime::parse_from_rfc3339(v).ok())
                 .map(|v| v.timestamp_millis())
                 .filter(|&v| v > 0);
-            parsed.push((meta.rank, idx, meta.token, meta.period, meta.name_key, rem_pct, used_pct, at));
+            parsed.push((
+                meta.rank,
+                idx,
+                meta.token,
+                meta.period,
+                meta.name_key,
+                rem_pct,
+                used_pct,
+                at,
+            ));
         }
         if parsed.is_empty() {
             continue;
@@ -389,8 +396,12 @@ mod tests {
         );
         assert_eq!(v["bar"]["color"], BLUE);
         assert!(title.contains("反重力账号额度（agy /usage）"));
-        assert!(title.contains(&format!("5小时: 余量 91% · 已用 9% · {{cd:{gemini_5h}|5h}} 后重置")));
-        assert!(title.contains(&format!("周: 余量 97% · 已用 3% · {{cd:{gemini_wk}|1wk}} 后重置")));
+        assert!(title.contains(&format!(
+            "5小时: 余量 91% · 已用 9% · {{cd:{gemini_5h}|5h}} 后重置"
+        )));
+        assert!(title.contains(&format!(
+            "周: 余量 97% · 已用 3% · {{cd:{gemini_wk}|1wk}} 后重置"
+        )));
         assert!(title.contains("5小时: 余量 100% · 已用 0%\n"));
         assert!(title.contains(&format!("同步于 {{ago:{now_ms}}}")));
         assert!(title.contains("点击 bar 刷新"));
@@ -417,10 +428,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(warn["bar"]["color"], YELLOW);
-        assert_eq!(
-            warn["bar"]["text"],
-            "反重力 · Gemini: 5h 25% · 1wk 90% ⟳"
-        );
+        assert_eq!(warn["bar"]["text"], "反重力 · Gemini: 5h 25% · 1wk 90% ⟳");
         let crit = render(
             &json!({"command":{"data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"5h","remaining_fraction":0.08}]}]}}}),
             0,
@@ -430,6 +438,9 @@ mod tests {
         let unavail = unavailable_bar();
         assert_eq!(unavail["bar"]["text"], "反重力：用量暂不可用 · ⟳ 重试");
         assert_eq!(unavail["bar"]["color"], YELLOW);
-        assert_eq!(unavail["bar"]["states"]["loading"]["text"], "反重力：加载中…");
+        assert_eq!(
+            unavail["bar"]["states"]["loading"]["text"],
+            "反重力：加载中…"
+        );
     }
 }

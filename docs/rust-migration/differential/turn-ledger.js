@@ -110,7 +110,7 @@ const REPO = ${JSON.stringify(repo)};
 const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
 const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
 const { createTurnLedger } = require(path.join(REPO, 'src/turn-ledger/ledger'));
-const { normalizeEnvelope } = require(path.join(REPO, 'src/turn-ledger/contract'));
+const { normalizeEnvelope } = require(path.join(REPO, 'src/native/runtime')).getTurnLedgerContract();
 const { createTurnLedgerHost } = require(path.join(REPO, 'src/routes/turn-ledger-host'));
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
@@ -251,7 +251,7 @@ main({
   mount(app, { repo }) {
     const legacy = require(path.join(repo, 'tests/helpers/legacy-turn-ledger-routes.js'));
     const { createTurnLedger } = require(path.join(repo, 'src/turn-ledger/ledger'));
-    const { normalizeEnvelope } = require(path.join(repo, 'src/turn-ledger/contract'));
+    const { normalizeEnvelope } = require(path.join(repo, 'tests/helpers/legacy-turn-ledger-contract'));
     const ledger = buildLedger(createTurnLedger, normalizeEnvelope);
     legacy.mountTurnLedgerRoutes(app, {
       launches: LAUNCHES,

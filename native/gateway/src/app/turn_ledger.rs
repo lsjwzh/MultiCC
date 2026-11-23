@@ -122,14 +122,9 @@ fn is_session_id(text: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
-/// `projectLiveness` from `src/turn-ledger/contract.js`.
 fn liveness(ownership: &Value) -> Value {
-    match ownership.as_str() {
-        Some("running") => json!({ "state": "active", "reason": "turn_ledger_running" }),
-        Some("yielding") => json!({ "state": "inactive", "reason": "turn_ledger_yielding" }),
-        Some("ended") => json!({ "state": "inactive", "reason": "turn_ledger_ended" }),
-        _ => json!({ "state": "unknown", "reason": "turn_ledger_no_evidence" }),
-    }
+    let (state, reason) = multicc_core::turn_ledger_contract::liveness(ownership.as_str());
+    json!({ "state": state, "reason": reason })
 }
 
 /// `isAbnormalLetter(state) ? (boundary || 'unknown-interruption') : null`.

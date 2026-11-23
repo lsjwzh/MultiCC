@@ -1,4 +1,5 @@
 //! 纯计算内核。字符串规范化、UTF-16 高亮和本地化排序留在 JS 契约边界。
+use crate::search_tokens::weighted_terms as tokenize;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -49,60 +50,6 @@ struct Hit {
     matched_terms: Vec<String>,
     matched_fields: Vec<&'static str>,
 }
-fn cjk(c: char) -> bool {
-    matches!(c as u32, 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff | 0x3040..=0x30ff | 0xac00..=0xd7af)
-}
-fn latin(c: u8) -> bool {
-    c.is_ascii_lowercase() || c.is_ascii_digit()
-}
-fn latin_tail(c: u8) -> bool {
-    latin(c) || matches!(c, b'+' | b'.' | b'_' | b'-')
-}
-fn add(terms: &mut HashMap<String, f64>, term: &str, weight: f64) {
-    if terms.len() >= 8000 && !terms.contains_key(term) {
-        return;
-    }
-    let count = terms.entry(term.to_owned()).or_default();
-    *count = (*count + weight).min(32.0);
-}
-fn tokenize(text: &str) -> HashMap<String, f64> {
-    let mut terms = HashMap::new();
-    let bytes = text.as_bytes();
-    let mut at = 0;
-    while at < bytes.len() {
-        if !latin(bytes[at]) {
-            at += 1;
-            continue;
-        }
-        let start = at;
-        at += 1;
-        while at < bytes.len() && latin_tail(bytes[at]) {
-            at += 1;
-        }
-        if at - start >= 2 {
-            add(&mut terms, &text[start..at], 1.0);
-        }
-    }
-    let mut run = Vec::new();
-    let flush = |run: &mut Vec<char>, terms: &mut HashMap<String, f64>| {
-        for pair in run.windows(2) {
-            add(terms, &pair.iter().collect::<String>(), 1.0);
-        }
-        for c in run.iter() {
-            add(terms, &c.to_string(), 0.5);
-        }
-        run.clear();
-    };
-    for ch in text.chars() {
-        if cjk(ch) {
-            run.push(ch);
-        } else if !run.is_empty() {
-            flush(&mut run, &mut terms);
-        }
-    }
-    flush(&mut run, &mut terms);
-    terms
-}
 impl SearchIndex {
     pub fn build(json: &str) -> Result<Self, String> {
         // Oversized/truncated emoji leave lone surrogate escapes that JS
@@ -123,7 +70,7 @@ impl SearchIndex {
                 let field_terms = tokenize(text);
                 let mut length = 0.0;
                 for (term, tf) in field_terms {
-                    terms.entry(term).or_insert([0.0; 4])[i] = tf;
+                    terms.entry(term.to_owned()).or_insert([0.0; 4])[i] = tf;
                     length += tf;
                 }
                 lengths[i] = Some(length);

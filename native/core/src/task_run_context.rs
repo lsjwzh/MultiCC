@@ -10,7 +10,7 @@
 //! or a `Buffer` arrives intact and no wire markers are needed. Every string,
 //! number and JSON rule lives in [`crate::js`]; this module only composes them.
 //! Engine-defined behavior — `Date.parse` in particular — stays in JS and is
-//! precomputed by the bridge (`src/task-board/turn-context.js`).
+//! precomputed by the bridge (`native/addon/src/task_run_context.rs`).
 use crate::js::{
     js_string_to_number, js_to_number, js_to_string, json_quote, nullish, number_to_string,
     truthy_opt, JsString, JsValue,

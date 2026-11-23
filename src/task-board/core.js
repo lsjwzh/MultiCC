@@ -7,17 +7,24 @@
 //
 // The implementation is split by concern (all pure moves):
 //   normalize.js      board shape, validation, lookup, grouping invariants
-//   classification.js AI tagging/backfill prompts, parsers, board mutations
+//   native-bridge.js 宿主事实与常驻 Rust 看板的命令接口
 //   routing.js        panel-input routing and candidate ranking
 //   view.js           read-side DTO projection
 // planning.js (schema/stages/rank) stays a sibling. This
-// module only re-exports the stable surface every consumer already requires.
+// module exposes the stable surface every consumer already requires.
 
 const planning = require('./planning');
 const normalize = require('./normalize');
-const classification = require('./classification');
+const { getNative } = require('../native/runtime');
+const { recentTaskIds, classificationRule } = require('./native-bridge');
 const routing = require('./routing');
 const view = require('./view');
+
+// Rust 返回任务描述；公开接口返回当前看板上的同一对象。
+function classificationTask(action, board, args) {
+  const task = classificationRule(action, { board, ...args });
+  return task ? board.tasks[task.id] : null;
+}
 
 module.exports = {
   MAX_TAGS_PER_TURN: normalize.MAX_TAGS_PER_TURN,
@@ -32,25 +39,29 @@ module.exports = {
   deriveTaskTitle: normalize.deriveTaskTitle,
   createEmptyBoard: normalize.createEmptyBoard,
   normalizeBoard: normalize.normalizeBoard,
-  buildTagSystemPrompt: classification.buildTagSystemPrompt,
-  buildTagUserPrompt: classification.buildTagUserPrompt,
-  buildBackfillSystemPrompt: classification.buildBackfillSystemPrompt,
-  buildBackfillUserPrompt: classification.buildBackfillUserPrompt,
-  parseTagResult: classification.parseTagResult,
-  parseBackfillResult: classification.parseBackfillResult,
-  applyTagResult: classification.applyTagResult,
-  applyBackfillResult: classification.applyBackfillResult,
+  buildTagSystemPrompt: () => getNative().taskBoardSystemPrompt(false),
+  buildTagUserPrompt: options => getNative().taskBoardUserPrompt(options, recentTaskIds, false),
+  buildBackfillSystemPrompt: () => getNative().taskBoardSystemPrompt(true),
+  buildBackfillUserPrompt: options => getNative().taskBoardUserPrompt(options, recentTaskIds, true),
+  parseTagResult: value => classificationRule('parseTagResult', { value }),
+  parseBackfillResult: value => classificationRule('parseBackfillResult', { value }),
+  applyTagResult: (board, entries, ref, now = Date.now(), options = {}) =>
+    classificationRule('applyTagResult', { board, entries, ref, now, options }),
+  applyBackfillResult: (board, entries, refByTurn, now = Date.now()) =>
+    classificationRule('applyBackfillResult', { board, entries, refByTurn: Object.fromEntries(refByTurn), now }),
   addRefToTask: normalize.addRefToTask,
   groupRelatedTasks: normalize.groupRelatedTasks,
   relatedTaskGroup: normalize.relatedTaskGroup,
   reconcileTaskGroups: normalize.reconcileTaskGroups,
-  mergeTasks: classification.mergeTasks,
-  createPendingTask: classification.createPendingTask,
-  applyTaskClassification: classification.applyTaskClassification,
+  mergeTasks: (board, input = {}) => classificationRule('mergeTasks', { board, input: { now: Date.now(), ...input } }),
+  createPendingTask: (board, input) => classificationTask('createPendingTask', board, { input: { now: Date.now(), ...input } }),
+  applyTaskClassification: (board, taskId, entry, ref, now = Date.now(), options = {}) =>
+    classificationRule('applyTaskClassification', { board, taskId, entry, ref, now, options }),
   canonicalTaskTitle: normalize.canonicalTaskTitle,
   taskTitleSimilarity: normalize.taskTitleSimilarity,
   findModuleByName: normalize.findModuleByName,
-  findTaskByTitle: classification.findTaskByTitle,
+  findTaskByTitle: (board, moduleId, value, options = {}) =>
+    classificationTask('findTaskByTitle', board, { moduleId, value, options }),
   taskLastTs: normalize.taskLastTs,
   taskDirId: normalize.taskDirId,
   resolveTask: normalize.resolveTask,

@@ -960,15 +960,9 @@ mod tests {
 
         // Empty file is treated as {}
         fs::write(&cfg_path, "").unwrap();
-        assert_eq!(
-            ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap(),
-            true
-        );
+        assert!(ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap());
         // Second call is a no-op
-        assert_eq!(
-            ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap(),
-            false
-        );
+        assert!(!ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap());
 
         // Existing user server is preserved
         fs::write(
@@ -976,10 +970,7 @@ mod tests {
             r#"{"mcpServers":{"user_srv":{"command":"uvx","args":["foo"]}}}"#,
         )
         .unwrap();
-        assert_eq!(
-            ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap(),
-            true
-        );
+        assert!(ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap());
         let parsed: Value = serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
         assert_eq!(parsed["mcpServers"]["user_srv"]["command"], "uvx");
         assert_eq!(
@@ -993,10 +984,7 @@ mod tests {
 
         // Malformed JSON is never clobbered
         fs::write(&cfg_path, "{broken").unwrap();
-        assert_eq!(
-            ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap(),
-            false
-        );
+        assert!(!ensure_router_mcp(&home, "/opt/node", "/opt/router.js").unwrap());
         assert_eq!(fs::read_to_string(&cfg_path).unwrap(), "{broken");
 
         let _ = fs::remove_dir_all(&home);

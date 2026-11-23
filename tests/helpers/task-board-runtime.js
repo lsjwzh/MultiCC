@@ -9,6 +9,7 @@ function mkRuntime(overrides = {}, createRuntime = createTaskBoardRuntime) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-'));
   const file = path.join(tmp, 'task_board.json');
   const auxCalls = [];
+  const auxJobs = [];
   const broadcasts = [];
   const dispatches = [];
   const sessionMessages = [];
@@ -32,7 +33,9 @@ function mkRuntime(overrides = {}, createRuntime = createTaskBoardRuntime) {
       cancel: () => {},
       enqueue(task) {
         auxCalls.push(task);
-        return new Promise(resolve => { auxResolve = resolve; });
+        const promise = new Promise(resolve => { auxResolve = resolve; });
+        auxJobs.push({ task, promise, resolve: auxResolve });
+        return promise;
       },
     },
     records,
@@ -113,7 +116,7 @@ function mkRuntime(overrides = {}, createRuntime = createTaskBoardRuntime) {
   }
   runtime = createRuntime(deps);
   return {
-    runtime, deps, file, auxCalls, broadcasts, dispatches, sessionMessages, creates,
+    runtime, deps, file, auxCalls, auxJobs, broadcasts, dispatches, sessionMessages, creates,
     resolveAux: v => auxResolve(v),
   };
 }

@@ -33,6 +33,38 @@ const messageComposer = {
   buildVoiceInputPrompt: (voice, text) => getNative().messageVoicePrompt(voice, text),
 };
 
+// Keep the exported mutable hook set shared by the spool reader and its callers.
+const turnLedgerContracts = new WeakMap();
+function getTurnLedgerContract() {
+  const addon = getNative();
+  if (!turnLedgerContracts.has(addon)) {
+    const catalog = JSON.parse(addon.turnLedgerVocabulary());
+    const events = new Set(catalog.hookEvents);
+    turnLedgerContracts.set(addon, {
+      HOOK_EVENTS: events,
+      OWNERSHIP: Object.freeze(catalog.ownership),
+      E_REASONS: Object.freeze(catalog.errorReasons),
+      SILENT_E_REASONS: new Set(catalog.silentErrorReasons),
+      normalizeEnvelope: raw => addon.turnLedgerNormalize(raw, events),
+      transitionId: ({ sessionId, epoch, turnId, seq, state }) =>
+        addon.turnLedgerTransitionId(sessionId, epoch, turnId, seq, state),
+      projectLiveness: ownership => addon.turnLedgerLiveness(ownership),
+    });
+  }
+  return turnLedgerContracts.get(addon);
+}
+
+// 两个搜索入口在首次处理文本时加载同一原生分词器。
+const searchTokenizer = {
+  tokenize: text => getNative().searchTokenize(text),
+  normalizeText: text => getNative().searchNormalizeText(text),
+  indexTokens: text => getNative().searchIndexTokens(text),
+  matchGroups: text => getNative().searchMatchGroups(text),
+  matchExpression: text => getNative().searchMatchExpression(text),
+  get MAX_PHRASE_BIGRAMS() { return getNative().SEARCH_MAX_PHRASE_BIGRAMS; },
+  get MAX_MATCH_TERMS() { return getNative().SEARCH_MAX_MATCH_TERMS; },
+};
+
 // Startup decisions remain native; these forward existing synchronous host ports.
 const stateBootstrap = {
   isNewSchema: records => getNative().stateIsNewSchema(records),
@@ -352,7 +384,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   staticVersionedHtml, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

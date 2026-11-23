@@ -114,6 +114,10 @@ function probeAddon(file, node = process.execPath) {
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
+      'confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
+      .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3
+      || a.searchMatchExpression('缓存层')!=='("缓存" AND "存层")' || a.searchTokenize('缓存').get('缓')!==0.5) process.exit(1);
     if(['contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
       'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
       'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
@@ -289,6 +293,20 @@ function probeAddon(file, node = process.execPath) {
     const emptyBody=a.taskBoardCanonicalTaskBody([],['t1'],{},()=>[],()=>'x');
     if(emptyBody.text!=='' || emptyBody.messageId!==null || emptyBody.sessionId!==null
       || emptyBody.legacy!==true) process.exit(1);
+    if (['TaskBoardClassification','taskBoardTurnEnd','taskBoardClassifyGoal','taskBoardSystemPrompt','taskBoardUserPrompt']
+      .some(key => typeof a[key] !== 'function')) process.exit(1);
+    const followup = a.TaskBoardFollowup;
+    if (typeof followup !== 'function' || ['prepare','bound','send','sent'].some(k=>typeof followup[k]!=='function')
+      || followup.prepare({records:new Map(),resolvedTask:()=>null},'missing','id','',{}).code!=='commander_not_found'
+      || typeof a.taskBoardRunContext!=='function' || !a.taskBoardRunContext({task:{id:'t'},includeCurrent:false}).text.includes('Task ID: t')) process.exit(1);
+    const start = a.TaskBoardStart;
+    if (typeof start !== 'function' || ['prepare','route','bound','sent','worker','receipt','failure','complete']
+      .some(key => typeof start[key] !== 'function')
+      || start.prepare({records:new Map()},'missing','text',{}).code !== 'commander_not_found'
+      || start.failure({code:'OPERATION_CONFLICT'}).code !== 'idempotency_conflict') process.exit(1);
+    const classifier = new a.TaskBoardClassification();
+    if (classifier.scan({board:{tasks:{}}},0) !== 0
+      || classifier.settled({board:{tasks:{}}},'s','missing',[],{}).error !== 'task_not_found') process.exit(1);
     if(['taskBoardLegacyImportMessages','taskBoardContextMessages'].some(key=>typeof a[key]!=='function')) process.exit(1);
     const legacyImport=a.taskBoardLegacyImportMessages([{refs:[{sessionId:'s1'}],routing:null}],['t1'],{refs:[{sessionId:'s1',userMsgId:'u1'}]},sid=>[{id:'u1',role:'user',content:'正文',taskId:'t1',ts:7}],m=>m.content);
     if(legacyImport.length!==1 || legacyImport[0].messageId!=='legacy:014de01aab7cfabe87461cea77382ba3bbc10225'

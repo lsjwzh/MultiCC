@@ -1197,3 +1197,9 @@ app/lib/providers/chat_provider.dart，与本批改动文件无交集）。
 | `src/wait/` | 2 |
 | `src/workspace/` | 18 |
 | `src/ws/` | 4 |
+
+### 任务板自动分类
+
+Rust 接管每个看板的分类作业和归因去重记录，以及轮末取证、提示词生成、入队、回执应用和启动恢复。旧的 `src/task-board/classification.js` 已删除。调用方继续通过 `src/task-board/core.js` 访问归档与回填接口。自动分类最多尝试两次，启动扫描会复查缺失的历史，历史读取异常时保留任务卡。
+
+Aux 队列目前返回 JavaScript Promise，会话历史和看板变更通知也由现有 Node 运行时提供。因此 `src/routes/task-board.js` 保留这些端口，转发成功与失败的回执，并沿用现有持久化入口。Aux 执行器、会话历史和看板通知迁至 Rust 后可撤掉这些回调。`npm run test:task-board-auto` 对比冻结实现的任务卡、落盘内容、广播及入队载荷，并覆盖被取消作业的迟到回执。

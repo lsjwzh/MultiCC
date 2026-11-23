@@ -166,7 +166,7 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
   assert.doesNotMatch(gateway, /activeChat\.isStreaming|clients\.size > 0/);
   for (const file of [
     'src/task-board/core.js', 'src/task-board/normalize.js',
-    'src/task-board/classification.js', 'src/task-board/routing.js',
+    'src/task-board/native-bridge.js', 'src/task-board/routing.js',
     'src/task-board/view.js', 'src/task-board/planning.js',
     'src/routes/task-board.js',
   ]) {

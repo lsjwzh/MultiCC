@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { databaseConstructor } = require('../sqlite/driver');
-const { indexTokens, matchExpression, tokenize } = require('./tokenize');
+const { indexTokens, matchExpression, tokenize } = require('../native/runtime').searchTokenizer;
 
 // Durable full-text index for corpora too large to rank in memory.
 //
@@ -17,7 +17,7 @@ const { indexTokens, matchExpression, tokenize } = require('./tokenize');
 // SQLite supplies it, through the driver that already backs every other store
 // (src/sqlite/driver.js → Rust): FTS5 is bundled into the native SQLite engine.
 //
-// Tokenisation is the *same* bigram scheme the board ranks with (./tokenize.js),
+// Tokenisation is the *same* bigram scheme the board ranks with (native/core/src/search_tokens.rs),
 // fed in as pre-split tokens — FTS5 only stores and matches them. The postings
 // live in a contentless table (`content=''`), so the index holds terms and rowids
 // and nothing else; the original text is stored once, in search_chunk.

@@ -2,7 +2,7 @@
 
 // The tokenizer is shared with the durable message index (src/search/index-store.js)
 // so that a query means the same thing whichever corpus answers it.
-const { CJK_CHAR_RE, normalizeText, tokenize } = require('../search/tokenize');
+const { normalizeText, tokenize } = require('../native/runtime').searchTokenizer;
 
 // Full-text search over the task board.
 //
@@ -19,7 +19,7 @@ const { CJK_CHAR_RE, normalizeText, tokenize } = require('../search/tokenize');
 // search must stay cheap enough to run synchronously in that path, and remembering
 // *what a task was about* is exactly what the excerpts already record.
 //
-// Tokenization (bigram + latin-run) lives in src/search/tokenize.js: latin/digit
+// Tokenization (bigram + latin-run) lives in native/core/src/search_tokens.rs: latin/digit
 // runs become one token, CJK runs become overlapping bigrams *and* their single
 // characters. The bigrams carry the meaning ("搜索" ≠ "搜" + "索"); the single
 // characters exist only so a one-character query can still be answered, and a query
@@ -152,7 +152,8 @@ function analyzeQuery(query) {
   // is the closest thing to "what the sentence is about" once length has been
   // weighed: a term the user wrote first is a better subject than a later one.
   const collected = [...tokenize(raw).keys()]
-    .map(term => [term, CJK_CHAR_RE.test(term) ? WEAK_QUERY_WEIGHT : 1])
+    // Latin runs have at least two code units. Only a CJK unigram has length one.
+    .map(term => [term, term.length === 1 ? WEAK_QUERY_WEIGHT : 1])
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
     .slice(0, MAX_QUERY_TERMS);
   const strong = collected.filter(([term, weight]) => weight >= 1).map(([term]) => term);

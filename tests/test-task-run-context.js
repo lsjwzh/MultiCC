@@ -8,9 +8,29 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { buildTaskRunContext } = require('../src/task-board/turn-context');
+const { taskBoardRunContext: buildTaskRunContext } = require('../src/native/runtime').getNative();
 
 const HEADER = '[MultiCC task run context v1]';
+
+test('上下文字段读取、稀疏消息和历史日期与冻结的投影一致', () => {
+  const previous = require('./helpers/load-legacy-task-board-runtime').buildTaskRunContext;
+  function capture(build) {
+    const reads = [];
+    const observed = (name, value) => new Proxy(value, {
+      get(target, key, receiver) {
+        reads.push([name, String(key)]);
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const task = observed('任务', { id: 't', title: '标题' });
+    const first = observed('消息', { role: 'user', text: '旧消息', ts: null,
+      timestamp: 'July 19, 2026 12:00:00 GMT', createdAt: '1' });
+    const messages = [first, , { role: 'assistant', text: '后续', ts: '200' }];
+    const options = observed('入参', { task, messages, currentText: '继续' });
+    return { result: build(options), reads };
+  }
+  assert.deepEqual(capture(buildTaskRunContext), capture(previous));
+});
 
 test('renders the full context wall, manifest and digest', () => {
   const out = buildTaskRunContext({
