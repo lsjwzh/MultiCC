@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createTaskBoardRuntime } = require('../../src/routes/task-board');
 
-function mkRuntime(overrides = {}) {
+function mkRuntime(overrides = {}, createRuntime = createTaskBoardRuntime) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-'));
   const file = path.join(tmp, 'task_board.json');
   const auxCalls = [];
@@ -111,7 +111,7 @@ function mkRuntime(overrides = {}) {
       return reply;
     } };
   }
-  runtime = createTaskBoardRuntime(deps);
+  runtime = createRuntime(deps);
   return {
     runtime, deps, file, auxCalls, broadcasts, dispatches, sessionMessages, creates,
     resolveAux: v => auxResolve(v),

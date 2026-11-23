@@ -18,6 +18,7 @@ const { createColdStartSeed } = require('../task-board/cold-start-seed');
 const { createTaskRetention } = require('../task-board/retention');
 const { createTaskPlanningRuntime } = require('./task-planning');
 const { openBoardStore } = require('../task-board/board-store');
+const { getNative } = require('../native/runtime');
 
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
@@ -999,15 +1000,7 @@ function createTaskBoardRuntime(deps) {
   }
 
   function runStateForTurnOutcome(turnOutcome, classifyState) {
-    if (turnOutcome === 'succeeded') return 'succeeded';
-    if (turnOutcome === 'failed') return 'error';
-    // Same projection as the classify letter it came from, so a turn that idled
-    // on a background job reads `background` here too — never `waiting`, which
-    // would tell the user to answer something nobody asked.
-    if (turnOutcome === 'waiting_user') return runStateForLetter('W');
-    if (turnOutcome === 'waiting_background') return runStateForLetter('B');
-    if (turnOutcome === 'running') return 'running';
-    return runStateForClassify(classifyState);
+    return getNative().taskBoardTurnOutcome(turnOutcome, classifyState, runStateForLetter);
   }
 
   // A task-bound worker session runs exactly one task for its entire life, so

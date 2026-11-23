@@ -6386,6 +6386,11 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-task-board-runtime-differential.js",
+      "tier": "other",
+      "lane": "deterministic"
+    },
+    {
       "path": "tests/test-task-board-store.js",
       "tier": "core",
       "lane": "deterministic"
