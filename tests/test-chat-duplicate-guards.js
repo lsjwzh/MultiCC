@@ -25,31 +25,53 @@ const { createRig, scanDuplicates, scanEmptyBubbles, SCENARIOS } = require(
 );
 const { createTransportAdapter } = require('../public/chat-shell-entry');
 
-test('AGY shows the first tool before any prose, both live and after refresh', () => {
-  const tool = { id: 'agy_step_2', name: 'read_file', input: { Path: 'README.md' } };
-  const start = { type: 'assistant', message: { content: [{ type: 'tool_use', ...tool }] } };
-  const live = createRig('agy');
-  live.feed([{ type: 'stream_start' }, start]);
-  const refreshed = createRig('agy');
-  refreshed.feed([{ type: 'chat_history', messages: [
-    { role: 'assistant', streaming: true, content: '', tools: [tool] },
-  ] }]);
+for (const cli of ['agy', 'opencode', 'gemini', 'grok']) {
+  test(`${cli} 在正文前显示首个工具，刷新后继续使用同一张卡片`, () => {
+    const tool = { id: 'call-1', name: 'read_file', input: { Path: 'README.md' } };
+    const start = { type: 'assistant', message: { content: [{ type: 'tool_use', ...tool }] } };
+    const live = createRig(cli);
+    live.feed([{ type: 'stream_start' }, start]);
+    const refreshed = createRig(cli);
+    refreshed.feed([{ type: 'chat_history', messages: [
+      { role: 'assistant', streaming: true, content: '', tools: [tool] },
+    ] }]);
 
-  for (const rig of [live, refreshed]) {
-    const bubble = rig.messagesEl.querySelector('.msg.assistant');
-    assert.ok(bubble, 'the tool-only turn already has a visible assistant bubble');
-    const card = bubble.querySelector('.tool-card');
-    assert.equal(card.dataset.toolId, tool.id);
-    rig.feed([start, { type: 'user', message: { content: [
-      { type: 'tool_result', tool_use_id: tool.id, content: 'file contents' },
-    ] } }, { type: 'assistant', message: {
-      textSnapshot: true, content: [{ type: 'text', text: 'Finished reading.' }],
-    } }]);
-    assert.deepEqual(rig.messagesEl.querySelectorAll('.msg.assistant'), [bubble]);
-    assert.deepEqual(bubble.querySelectorAll('.tool-card'), [card]);
-    assert.equal(card.classList.contains('tool-running'), false);
-    assert.match(card.textContent, /file contents/);
-    assert.match(bubble.textContent, /Finished reading\./);
+    for (const rig of [live, refreshed]) {
+      const bubble = rig.messagesEl.querySelector('.msg.assistant');
+      assert.ok(bubble, '纯工具回合应立即显示助手气泡');
+      const card = bubble.querySelector('.tool-card');
+      assert.equal(card.dataset.toolId, tool.id);
+      rig.feed([start, { type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: tool.id, content: 'file contents' },
+      ] } }, { type: 'assistant', message: {
+        textSnapshot: true, content: [{ type: 'text', text: 'Finished reading.' }],
+      } }]);
+      assert.deepEqual(rig.messagesEl.querySelectorAll('.msg.assistant'), [bubble]);
+      assert.deepEqual(bubble.querySelectorAll('.tool-card'), [card]);
+      assert.equal(card.classList.contains('tool-running'), false);
+      assert.match(card.textContent, /file contents/);
+      assert.match(bubble.textContent, /Finished reading\./);
+    }
+  });
+}
+
+test('流式工具卡收到同一调用的完整快照时，复用卡片并补全参数', () => {
+  for (const cli of ['claude', 'opencode']) {
+    const rig = createRig(cli);
+    const id = 'call-1';
+    const name = 'Read';
+    const preview = cli === 'claude'
+      ? { type: 'stream_event', event: { type: 'content_block_start', index: 0,
+        content_block: { type: 'tool_use', id, name } } }
+      : { type: 'part_delta', delta: { type: 'tool', toolId: id, tool: { name, arguments: '{"path":' } } };
+    rig.feed([{ type: 'stream_start' }, preview]);
+    const card = rig.messagesEl.querySelector('.tool-card');
+    assert.ok(card);
+    rig.feed([{ type: 'assistant', message: { content: [
+      { type: 'tool_use', id, name, input: { path: 'README.md' } },
+    ] } }]);
+    assert.deepEqual(rig.messagesEl.querySelectorAll('.tool-card'), [card]);
+    assert.match(card.querySelector('.tool-input').textContent, /README\.md/);
   }
 });
 
