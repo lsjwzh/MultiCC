@@ -74,11 +74,16 @@ function readPidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error && error.code === 'EPERM'; }
 }
 
-// A minimal bundle: only Resources/app-server/server.js is needed to drive the
-// launcher end to end; the fixture replaces the real server.
+// Stage the gateway and its auth addon. Only the Node backend is a fixture.
 function stageFakeServer(resourcesDir) {
   const appServer = path.join(resourcesDir, 'app-server');
-  fs.mkdirSync(appServer, { recursive: true });
+  const { gatewayBinary } = require('../desktop/lib/desktop-env');
+  const source = gatewayBinary({ serverDir: ROOT });
+  const target = gatewayBinary({ serverDir: appServer, env: {} });
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(source, target, fs.constants.COPYFILE_FICLONE);
+  const addon = process.env.MULTICC_RUST_ADDON || path.join(path.dirname(source), 'multicc_core.node');
+  fs.copyFileSync(addon, path.join(path.dirname(target), 'multicc_core.node'), fs.constants.COPYFILE_FICLONE);
   fs.writeFileSync(path.join(appServer, 'server.js'), `require(${JSON.stringify(FIXTURE)});\n`);
   return appServer;
 }

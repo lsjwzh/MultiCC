@@ -78,7 +78,10 @@ test('a partial save preserves unknown fields and uses the legacy JSON format', 
   assert.deepEqual(res.payload.saved, saved);
   assert.equal(res.payload.config.enabled, false);
   assert.equal(fs.readFileSync(routes.file, 'utf8'), `${JSON.stringify(saved, null, 2)}\n`);
-  if (process.platform !== 'win32') assert.equal(fs.statSync(routes.file).mode & 0o777, 0o644);
+  if (process.platform !== 'win32') {
+    // Both implementations create the replacement with mode 0644; the OS applies the caller's umask.
+    assert.equal(fs.statSync(routes.file).mode & 0o777, 0o644 & ~process.umask());
+  }
   routes.noNode();
 });
 

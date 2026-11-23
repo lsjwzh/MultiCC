@@ -1,10 +1,10 @@
-# 独立版（standalone）—— MultiCC 唯一的发行形态
+# MultiCC 独立安装包
 
-> MultiCC 只以**独立包**发布：一个自包含的压缩包，内含官方 Node 运行时 + 服务端全部生产依赖。目标机器**不需要** Node、npm、Homebrew 或 Xcode，也不需要编译任何原生模块；MultiCC 运行时仍需要可用的 `git`，因为每个会话都有独立 worktree。解压后 `./multicc start` 即可；桌面版（Electron）也是在这同一个包上加了一层壳。
+独立包内置 Node 运行时、Rust 网关和兼容宿主的生产依赖。解压后运行 `./multicc start`，目标机需要 Git 来管理会话工作树。桌面版 Electron 也用这套后端资源，安装器和桌面壳启动随包提供的网关、Node 和原生模块。
 
-它为什么是唯一的形态：桌面版（Electron）与 Homebrew 都覆盖不到老 macOS，而 `git pull + npm install` 的源码装法还要求目标机器有 Node、能现场装生产依赖。独立包去掉的是这些构建前提；不会伪装 MultiCC 的 worktree 能力不需要 git。
+根源码发行包和 Linux 容器可以独立运行 Rust 网关。需要定时任务自动触发、Aux 消费或渠道投递的安装仍依赖兼容宿主。纯 Rust 的构建命令、部署配置和实测功能见[网关部署文档](gateway.md)和[兼容性验收记录](rust-migration/production-entry-2026-11-24.md)。
 
-独立包不是 macOS 专用，当前 Release 固定构建五个目标：
+独立包的发布配置有五个目标。
 
 | 系统 | 架构 | 压缩格式 | 原生安装入口 |
 |------|------|----------|--------------|

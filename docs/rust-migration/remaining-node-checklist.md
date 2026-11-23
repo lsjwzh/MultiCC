@@ -10,7 +10,7 @@
 | 源码管理器及其 launchd、独立包和桌面后端 | Node 兼容宿主 | 这些入口仍启动宿主。桌面与独立包按自己的安装目录选择网关和兼容模块。兼容性切换探针见下方命令 |
 | 旧插件与后台任务 | 原宿主拥有调度、队列和投递 | Rust 可读取 cron 列表、月历及单项运行历史。cron 自动触发、Aux 消费、渠道投递及多项写路径尚待接管 |
 
-运行 `node docs/rust-migration/differential/production-entry.js "$GATEWAY" "$FIXTURE_ADDON" --cutover` 可用隔离的真实双入口核对切换条件。只要抽样接口的状态码或错误码不同，该命令即退出 1。逐文件依赖仍由 `scripts/inventory-node-backend.js` 生成。
+运行 `node docs/rust-migration/differential/production-entry.js "$GATEWAY" "$FIXTURE_ADDON" --cutover` 可用隔离的真实双入口核对切换条件。只要抽样接口的状态码或错误码不同，该命令即退出 1。源码宿主的逐文件依赖由 `scripts/inventory-node-backend.js` 生成。macOS ARM64 两种安装包均附带 17 项必需、1 项可选 Node 依赖，服务端实际安装 331 个包位置。版本、路径和复查命令见[安装包逐项盘点](packaged-backend-darwin-arm64.md)。
 
 ## 2026-11-24 独立生产网关（上一批基线）
 
