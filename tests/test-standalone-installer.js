@@ -20,6 +20,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
+const stageDesktopKernels = require('./helpers/stage-desktop-kernels');
 const INSTALLER = path.join(ROOT, 'install.sh');
 const WINDOWS_INSTALLER = path.join(ROOT, 'install.ps1');
 const FIXTURE_SERVER = path.join(ROOT, 'tests', 'fixtures', 'desktop-fixture-server.js');
@@ -48,11 +49,12 @@ function resourcesRel(platform = PLATFORM) {
 // A bundle that is complete enough for install.sh (which checks the wrapper and
 // the runtime) and for the CLI's `config` command (which checks the launcher and
 // app-server/server.js before running anything).
-function buildFixtureBundle(version = '9.9.9') {
+function buildFixtureBundle({ bootable = false, version = '9.9.9' } = {}) {
   const scratch = tmpdir('multicc-installer-fixture-');
   const name = `multicc-standalone-${version}-${PLATFORM}-${ARCH}`;
   const root = path.join(scratch, name);
   const resources = path.join(root, resourcesRel());
+  if (bootable) stageDesktopKernels(ROOT, path.join(resources, 'app-server'));
   write(path.join(resources, 'runtime', 'bin', 'node'),
     `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, 0o755);
   write(path.join(resources, 'app-server', 'server.js'), `require(${JSON.stringify(FIXTURE_SERVER)});\n`);
@@ -142,7 +144,7 @@ function legacyData(session = 'legacy-session') {
 }
 
 test('install.sh unpacks, configures, starts, and safely replaces a previous install', t => {
-  const fixture = buildFixtureBundle();
+  const fixture = buildFixtureBundle({ bootable: true });
   const archive = archiveFixture(fixture);
   const home = tmpdir('multicc-installer-home-');
   const targetParent = tmpdir('multicc-installer-target-');
@@ -889,8 +891,8 @@ test('multiple standalone locations need --dir even with --target standalone', (
 
 // A launchctl substitute with a real plist and real standalone bundle. It
 // starts only the fixture server; no real login job is ever touched.
-function serviceFixture() {
-  const fixture = buildFixtureBundle();
+function serviceFixture(options) {
+  const fixture = buildFixtureBundle(options);
   const archive = archiveFixture(fixture);
   const home = tmpdir('multicc-service-user-');
   const target = path.join(home, 'MultiCC');
@@ -927,7 +929,7 @@ esac
 }
 
 test('upgrading a loaded service unloads before stop and reloads only after swap, retaining its port', { skip: PLATFORM !== 'darwin' }, t => {
-  const f = serviceFixture();
+  const f = serviceFixture({ bootable: true });
   t.after(() => spawnSync(path.join(f.target, 'multicc'), ['stop'], { env: { ...process.env, ...f.env } }));
   spawnSync(path.join(f.target, 'multicc'), ['config', 'set', 'PORT', '3421'], { env: { ...process.env, ...f.env } });
   const res = runInstaller(['--from', f.archive, '--dir', f.target, '--no-service', '--no-open'], { env: f.env });
@@ -992,7 +994,7 @@ esac
 });
 
 test('a failed replacement restores the previous files and reloads its service', { skip: PLATFORM !== 'darwin' }, t => {
-  const f = serviceFixture();
+  const f = serviceFixture({ bootable: true });
   t.after(() => spawnSync(path.join(f.target, 'multicc'), ['stop'], { env: { ...process.env, ...f.env } }));
   write(path.join(f.bin, 'mv'), `#!/bin/sh
 case "$1" in */unpacked) exit 1 ;; esac
@@ -1048,7 +1050,7 @@ esac
 });
 
 test('configuration failure rolls back the program before boot and restores the service', { skip: PLATFORM !== 'darwin' }, t => {
-  const f = serviceFixture();
+  const f = serviceFixture({ bootable: true });
   t.after(() => spawnSync(path.join(f.target, 'multicc'), ['stop'], { env: { ...process.env, ...f.env } }));
   const broken = buildFixtureBundle();
   const wrapper = path.join(broken.root, 'multicc');
