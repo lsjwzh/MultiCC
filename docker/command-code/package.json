@@ -4,5 +4,10 @@
   "version": "1.0.0",
   "dependencies": {
     "command-code": "1.74.1"
+  },
+  "overrides": {
+    "@ai-sdk/provider-utils": {
+      "undici": "8.12.2"
+    }
   }
 }
