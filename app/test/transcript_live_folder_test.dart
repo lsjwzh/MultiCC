@@ -277,4 +277,71 @@ void main() {
       expect(f.currentMsg!.content, '下一回答');
     },
   );
+
+  test(
+    'late assistant snapshots after finishStreaming do not open orphan bubbles',
+    () {
+      final f = folder(cli: SessionCli.claude);
+      f.messageStart();
+      f.contentBlockStart({
+        'index': 0,
+        'content_block': {'type': 'tool_use', 'id': 'tu-1', 'name': 'Read'},
+      });
+      f.contentBlockDelta({
+        'index': 1,
+        'delta': {'type': 'text_delta', 'text': '已完成回答'},
+      });
+      f.finishStreaming();
+      expect(f.messages, hasLength(1));
+
+      // Late textSnapshot + tool_use replay for the just-finished turn.
+      f.assistantSnapshot({
+        'textSnapshot': true,
+        'content': [
+          {'type': 'text', 'text': '已完成回答'},
+          {
+            'type': 'tool_use',
+            'id': 'tu-1',
+            'name': 'Read',
+            'input': {'path': 'a.dart'},
+          },
+        ],
+      });
+      expect(f.messages, hasLength(1));
+      expect(f.currentMsg, isNull);
+
+      // Once a new user message lands, an identical reply in the next turn still opens a bubble.
+      f.messages.add(ChatMessage(role: MessageRole.user, content: '再来一次'));
+      f.assistantSnapshot({
+        'textSnapshot': true,
+        'content': [
+          {'type': 'text', 'text': '已完成回答'},
+        ],
+      });
+      expect(f.messages, hasLength(3));
+      expect(f.currentMsg, same(f.messages.last));
+    },
+  );
+
+  test('assistantSnapshot settles open Thinking cards when a real tool arrives', () {
+    final f = folder(cli: SessionCli.opencode);
+    f.partDelta({
+      'delta': {'type': 'reasoning', 'text': '思考中'},
+    });
+    final thinking = f.currentMsg!.toolCalls.single;
+    expect(thinking.startedAt, isNotNull);
+    expect(thinking.endedAt, isNull);
+
+    f.assistantSnapshot({
+      'content': [
+        {
+          'type': 'tool_use',
+          'id': 'c-1',
+          'name': 'Read',
+          'input': {'path': 'a.dart'},
+        },
+      ],
+    });
+    expect(thinking.endedAt, isNotNull);
+  });
 }

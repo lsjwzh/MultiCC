@@ -160,11 +160,28 @@ class TranscriptLiveFolder {
   /// turn's bubble instead of being dropped on the floor.
   ChatMessage? lastAssistantMsg;
   final Map<int, ToolCall> activeTools = {};
+  bool _suppressLateReplay = false;
+  String _lastFinishedText = '';
+  Set<String> _lastFinishedToolIds = <String>{};
+
+  void _clearFinishedReplayGuard() {
+    _suppressLateReplay = false;
+    _lastFinishedText = '';
+    _lastFinishedToolIds = <String>{};
+  }
+
+  bool get _isAtJustFinishedTail =>
+      currentMsg == null &&
+      _suppressLateReplay &&
+      lastAssistantMsg != null &&
+      messages.isNotEmpty &&
+      identical(messages.last, lastAssistantMsg);
 
   void _emit() => _onChanged?.call();
 
   void ensureAssistantMsg() {
     if (currentMsg == null) {
+      _clearFinishedReplayGuard();
       currentMsg = ChatMessage(role: MessageRole.assistant, isStreaming: true);
       messages.add(currentMsg!);
       lastAssistantMsg = currentMsg;
@@ -267,13 +284,34 @@ class TranscriptLiveFolder {
   void assistantSnapshot(Map<String, dynamic> message) {
     final blocks = message['content'];
     if (blocks is! List) return;
+    final atFinishedTail = _isAtJustFinishedTail;
+    final lateFinishedTextSnapshot = atFinishedTail &&
+        message['textSnapshot'] == true &&
+        _lastFinishedText.isNotEmpty &&
+        blocks.any(
+          (raw) =>
+              raw is Map &&
+              raw['type'] == 'text' &&
+              raw['text']?.toString() == _lastFinishedText,
+        );
     var changed = false;
     for (final raw in blocks) {
       if (raw is! Map) continue;
       if (raw['type'] == 'text') {
         final text = raw['text']?.toString() ?? '';
         if (text.isEmpty) continue;
+        if (currentMsg == null &&
+            atFinishedTail &&
+            message['textSnapshot'] == true &&
+            _lastFinishedText.isNotEmpty &&
+            text == _lastFinishedText) {
+          continue;
+        }
         ensureAssistantMsg();
+        settleThinkingCalls(
+          currentMsg!,
+          now: DateTime.now().millisecondsSinceEpoch,
+        );
         if (message['textSnapshot'] == true) {
           currentMsg!.content = text;
         } else if (_cliOf().isCodexFamily) {
@@ -289,9 +327,20 @@ class TranscriptLiveFolder {
         // no tool cards live on non-claude CLIs until a history reload.
         final id = raw['id']?.toString() ?? '';
         if (id.isEmpty) continue;
+        if (currentMsg == null &&
+            atFinishedTail &&
+            (lateFinishedTextSnapshot || _lastFinishedToolIds.contains(id))) {
+          continue;
+        }
         final name = raw['name']?.toString() ?? 'Tool';
         final input = raw['input'];
         ensureAssistantMsg();
+        if (name != 'Thinking') {
+          settleThinkingCalls(
+            currentMsg!,
+            now: DateTime.now().millisecondsSinceEpoch,
+          );
+        }
         ToolCall? existing;
         for (final tc in currentMsg!.toolCalls) {
           if (tc.id == id) {
@@ -428,6 +477,8 @@ class TranscriptLiveFolder {
       if (row['content'] is String) target.content = row['content'] as String;
       attachResultUsage(row);
       finishStreaming();
+      // Equal text in the next held query is still a new answer.
+      _clearFinishedReplayGuard();
     }
     _emit();
   }
@@ -438,6 +489,12 @@ class TranscriptLiveFolder {
       for (final tc in currentMsg!.toolCalls) {
         tc.isDone = true;
       }
+      _suppressLateReplay = true;
+      _lastFinishedText = currentMsg!.content;
+      _lastFinishedToolIds = currentMsg!.toolCalls
+          .map((tc) => tc.id)
+          .where((id) => id.isNotEmpty)
+          .toSet();
       currentMsg = null;
     }
     activeTools.clear();
@@ -448,5 +505,6 @@ class TranscriptLiveFolder {
   void resetTail() {
     currentMsg = null;
     activeTools.clear();
+    _clearFinishedReplayGuard();
   }
 }

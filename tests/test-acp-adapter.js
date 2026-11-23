@@ -331,18 +331,78 @@ test('opencode defaults to ACP and grok launches its ACP server', () => {
   assert.ok(!grokArgs.includes('--model') && !grokArgs.includes('--effort'));
 });
 
-test('tool cards wait for real input and are announced once', () => {
+test('tool cards announce immediately, update when input arrives, and dedupe repeats', () => {
   const adapter = createAcpAdapter({ name: 'fake', label: 'Fake', cmd: 'fake' });
   const call = (update) => adapter.decodeEvent({ method: 'session/update', params: { sessionId: 's', update } });
-  assert.deepEqual(call({ sessionUpdate: 'tool_call', toolCallId: 't', kind: 'read', title: 'read', status: 'pending', rawInput: {} }), []);
-  const [started] = call({ sessionUpdate: 'tool_call_update', toolCallId: 't', status: 'in_progress', rawInput: { filePath: '/a' } });
-  assert.deepEqual(started.input, { filePath: '/a' });
-  assert.equal(started.completed, false);
+  const [announced] = call({ sessionUpdate: 'tool_call', toolCallId: 't', kind: 'read', title: 'read', status: 'pending', rawInput: {} });
+  assert.equal(announced.type, 'tool_update');
+  assert.equal(announced.id, 't');
+  assert.deepEqual(announced.input, {});
+  assert.equal(announced.completed, false);
+  const [updated] = call({ sessionUpdate: 'tool_call_update', toolCallId: 't', status: 'in_progress', rawInput: { filePath: '/a' } });
+  assert.deepEqual(updated.input, { filePath: '/a' });
+  assert.equal(updated.completed, false);
   assert.deepEqual(call({ sessionUpdate: 'tool_call_update', toolCallId: 't', status: 'in_progress', rawInput: { filePath: '/a' } }), []);
   const [done] = call({ sessionUpdate: 'tool_call_update', toolCallId: 't', status: 'failed', content: [{ type: 'content', content: { type: 'text', text: 'ENOENT' } }] });
   assert.equal(done.completed, true);
   assert.equal(done.isError, true);
   assert.equal(done.content, 'ENOENT');
+});
+
+test('Rust adapter reducer updates tool_update input in place and synthesizes missing tool_start/thinking ids', () => {
+  const { getNative } = require('../src/native/runtime');
+  const native = getNative();
+  const turn = { turnId: 'turn-1' };
+  const runner = { turnId: 'turn-1', runnerId: 'r-1' };
+  const cs = { currentAssistantText: '', currentToolCalls: [], currentTurn: turn, currentRunner: runner };
+  const persisted = { cli: 'opencode' };
+  const forwards = [];
+  const ports = {
+    isCurrent: () => true,
+    scrub: (_a, e) => e,
+    touchActivity() {},
+    observeAdapter() {},
+    updatePhase() {},
+    setSessionStatus() {},
+    backgroundRecordToolUseId() {},
+  };
+
+  // 1) Empty-input tool_update announces immediately, later non-empty input updates in place & forwards refreshed tool_use
+  native.chatApplyAdapterDecodedEvent({ name: 'opencode' }, cs, persisted, 's1',
+    { type: 'tool_update', id: 't1', name: 'read', input: {}, completed: false },
+    frame => forwards.push(frame), turn, runner, ports);
+  assert.equal(cs.currentToolCalls.length, 1);
+  assert.deepEqual(cs.currentToolCalls[0].input, {});
+  assert.equal(forwards.length, 1);
+
+  native.chatApplyAdapterDecodedEvent({ name: 'opencode' }, cs, persisted, 's1',
+    { type: 'tool_update', id: 't1', name: 'read', input: { filePath: '/a.js' }, completed: false },
+    frame => forwards.push(frame), turn, runner, ports);
+  assert.equal(cs.currentToolCalls.length, 1, 'same id must not create a second tool entry');
+  assert.deepEqual(cs.currentToolCalls[0].input, { filePath: '/a.js' });
+  assert.equal(forwards.length, 2);
+  assert.deepEqual(forwards[1].message.content[0].input, { filePath: '/a.js' });
+
+  // Identical repeat input must not emit redundant assistant frame
+  native.chatApplyAdapterDecodedEvent({ name: 'opencode' }, cs, persisted, 's1',
+    { type: 'tool_update', id: 't1', name: 'read', input: { filePath: '/a.js' }, completed: false },
+    frame => forwards.push(frame), turn, runner, ports);
+  assert.equal(forwards.length, 2);
+
+  // 2) Missing id on thinking and tool_start gets deterministic fallback id
+  native.chatApplyAdapterDecodedEvent({ name: 'dsh' }, cs, persisted, 's1',
+    { type: 'thinking', text: 'pondering' },
+    frame => forwards.push(frame), turn, runner, ports);
+  const thinkCall = cs.currentToolCalls.find(t => t.name === 'Thinking');
+  assert.equal(thinkCall.id, 'thinking_1');
+  const thinkFrame = forwards.find(f => f.type === 'assistant' && f.message?.content?.[0]?.name === 'Thinking');
+  assert.equal(thinkFrame.message.content[0].id, 'thinking_1');
+
+  native.chatApplyAdapterDecodedEvent({ name: 'pi' }, cs, persisted, 's1',
+    { type: 'tool_start', name: 'Bash', input: { command: 'pwd' } },
+    frame => forwards.push(frame), turn, runner, ports);
+  const bashCall = cs.currentToolCalls.find(t => t.name === 'Bash');
+  assert.equal(bashCall.id, 'call_2');
 });
 
 test('non-success stop reasons surface as errors', () => {

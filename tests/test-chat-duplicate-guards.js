@@ -75,6 +75,118 @@ test('流式工具卡收到同一调用的完整快照时，复用卡片并补�
   }
 });
 
+test('已完成工具卡再收到 tool_use 快照时，保留完成态标签且不污染流式状态栏', () => {
+  const rig = createRig('claude');
+  const tool = { id: 'call-done', name: 'Bash', input: { command: 'ls -la', description: 'List files' } };
+  rig.feed([
+    { type: 'stream_start' },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', ...tool }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: tool.id, content: 'ok' }] } },
+  ]);
+  const card = rig.messagesEl.querySelector('.tool-card');
+  const descBefore = card.querySelector('.tool-desc').textContent;
+  assert.match(descBefore, /^done/);
+  assert.equal(card.classList.contains('tool-running'), false);
+  const statusCountBefore = rig.statusCalls.length;
+  assert.equal(statusCountBefore, 1, '首次建卡应写入流式状态栏');
+
+  // 同一已完成卡片再次收到完整快照（如重连回放或 Claude 累计快照）
+  rig.feed([{ type: 'assistant', message: { textSnapshot: true, content: [{ type: 'tool_use', ...tool }] } }]);
+  assert.equal(card.querySelector('.tool-desc').textContent, descBefore, '完成态标签不得被参数摘要覆写');
+  assert.equal(card.classList.contains('tool-running'), false);
+  assert.equal(rig.statusCalls.length, statusCountBefore, '已完成工具不得再次覆盖底部流式状态栏');
+});
+
+test('刷新接管流式工具卡保留 startedAt/endedAt/isError，运行中工具补到结果后可算耗时', () => {
+  const rig = createRig('agy');
+  const startedAt = Date.now() - 1500;
+  rig.feed([{
+    type: 'chat_history',
+    messages: [{
+      role: 'assistant',
+      streaming: true,
+      content: '',
+      tools: [
+        { id: 't-done', name: 'Read', input: { file_path: 'a.js' }, result: 'ok', startedAt: startedAt - 500, endedAt: startedAt, is_error: false },
+        { id: 't-run', name: 'Bash', input: { command: 'npm test' }, startedAt },
+      ],
+    }],
+  }]);
+  const doneEntry = rig.state.currentToolCards.get('history:t-done');
+  const runEntry = rig.state.currentToolCards.get('history:t-run');
+  assert.equal(doneEntry.startedAt, startedAt - 500);
+  assert.equal(doneEntry.endedAt, startedAt);
+  assert.equal(runEntry.startedAt, startedAt);
+  assert.equal(runEntry.endedAt, null);
+
+  // 已完成卡片被回放快照命中时保留 done 标签
+  rig.feed([{ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't-done', name: 'Read', input: { file_path: 'a.js' } }] } }]);
+  assert.match(doneEntry.card.querySelector('.tool-desc').textContent, /^done/);
+
+  // 运行中卡片收到 tool_result 后应算出非空耗时（done · ...）
+  rig.feed([{ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't-run', content: 'passed' }] } }]);
+  assert.match(runEntry.card.querySelector('.tool-desc').textContent, /^done · /);
+});
+
+test('回合结束后迟到/回放的 assistant 快照（含 tool_use）不得新建孤儿气泡', () => {
+  // 1) Claude：textSnapshot + tool_use 混合快照在 result 后迟到
+  const claude = createRig('claude');
+  const tool = { id: 'tu-late', name: 'Read', input: { file_path: 'README.md' } };
+  claude.feed([
+    { type: 'stream_event', event: { type: 'message_start', message: {} } },
+    { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: tool.id, name: tool.name } } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: tool.id, content: 'hi' }] } },
+    { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '全部读取完毕。' } } },
+    { type: 'result', usage: { input_tokens: 10, output_tokens: 5 } },
+    { type: 'assistant', message: { textSnapshot: true, content: [
+      { type: 'text', text: '全部读取完毕。' },
+      { type: 'tool_use', ...tool },
+    ] } },
+  ]);
+  assert.equal(claude.messagesEl.querySelectorAll('.msg.assistant').length, 1);
+
+  // 2) AGY/ACP：纯工具回合在 result 后迟到同一 tool_use
+  const agy = createRig('agy');
+  agy.feed([
+    { type: 'stream_start' },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', ...tool }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: tool.id, content: 'hi' }] } },
+    { type: 'result', usage: { input_tokens: 10, output_tokens: 5 } },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', ...tool }] } },
+  ]);
+  assert.equal(agy.messagesEl.querySelectorAll('.msg.assistant').length, 1);
+});
+
+test('纯工具回合在 result 后、commit 前重连时，收养原气泡而非追加第二个气泡', () => {
+  const rig = createRig('agy');
+  const tool = { id: 'agy-t1', name: 'read_file', input: { Path: 'a.txt' } };
+  rig.feed([
+    { type: 'stream_start' },
+    { type: 'assistant', message: { content: [{ type: 'tool_use', ...tool }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: tool.id, content: 'ok' }] } },
+    { type: 'result', usage: { input_tokens: 5, output_tokens: 2 } },
+    { type: 'system', subtype: 'init', is_streaming: false, session_id: 'diag-session', cli: 'agy' },
+    { type: 'chat_history', hasMore: false, messages: [
+      { id: 'u1', role: 'user', content: '读一下' },
+      { id: 'a1', role: 'assistant', content: '', tools: [{ ...tool, result: 'ok' }] },
+    ] },
+  ]);
+  assert.equal(rig.messagesEl.querySelectorAll('.msg.assistant').length, 1);
+  assert.equal(rig.messagesEl.querySelector('.msg.assistant').dataset.msgId, 'a1');
+});
+
+test('finalizeAssistantMsg 收到正文或普通工具时结算未结束的 Thinking 卡片', () => {
+  const rig = createRig('opencode');
+  rig.feed([
+    { type: 'stream_start' },
+    { type: 'part_delta', sessionId: 's1', delta: { type: 'reasoning', text: '思考中' } },
+  ]);
+  const thinking = rig.state.currentToolCards.get('id:sidecar-reasoning-s1');
+  assert.ok(thinking && thinking.startedAt && !thinking.endedAt);
+  rig.feed([{ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'c1', name: 'Read', input: { path: 'a.js' } }] } }]);
+  assert.ok(Number.isFinite(thinking.endedAt), '普通工具快照到达后应结算 Thinking 卡片');
+});
+
 function shellRig() {
   const rig = createRig();
   const adapter = createTransportAdapter({ send: () => true });

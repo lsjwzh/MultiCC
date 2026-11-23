@@ -98,18 +98,17 @@ function createAcpAdapter({
       const out = closeThoughts(sessionId);
       const key = `${sessionId}:${update.toolCallId}`;
       const name = toolName(update);
-      const input = update.rawInput || {};
-      // turn-engine keeps the input a card was created with, and some agents
-      // (OpenCode) announce the call before its arguments are known — defer the
-      // card until an update carries real input or the call finishes.
-      const announced = Object.keys(input).length > 0;
-      tools.set(key, { sessionId, name, input, announced });
-      if (announced) {
-        out.push({
-          type: 'tool_update', id: update.toolCallId, name, input,
-          currentFile: currentFile(update), completed: false,
-        });
-      }
+      const input = update.rawInput && typeof update.rawInput === 'object' ? update.rawInput : {};
+      const inputJson = JSON.stringify(input);
+      // Announce the call immediately even when rawInput starts empty (for
+      // zero-arg tools or agents like OpenCode that fill arguments in a later
+      // tool_call_update); the Rust reducer updates the card in place once real
+      // input arrives.
+      tools.set(key, { sessionId, name, input, inputJson, announced: true });
+      out.push({
+        type: 'tool_update', id: update.toolCallId, name, input,
+        currentFile: currentFile(update), completed: false,
+      });
       if (update.status === 'completed' || update.status === 'failed') {
         out.push({
           type: 'tool_update', id: update.toolCallId, name, input, currentFile: currentFile(update),
@@ -121,12 +120,20 @@ function createAcpAdapter({
     }
     if (kind === 'tool_call_update') {
       const key = `${sessionId}:${update.toolCallId}`;
-      const known = tools.get(key) || { sessionId, name: toolName(update), input: {}, announced: false };
-      if (update.rawInput && typeof update.rawInput === 'object') known.input = update.rawInput;
+      const known = tools.get(key) || { sessionId, name: toolName(update), input: {}, inputJson: '{}', announced: false };
+      let inputChanged = false;
+      if (update.rawInput && typeof update.rawInput === 'object' && Object.keys(update.rawInput).length > 0) {
+        const nextJson = JSON.stringify(update.rawInput);
+        if (nextJson !== known.inputJson) {
+          known.input = update.rawInput;
+          known.inputJson = nextJson;
+          inputChanged = true;
+        }
+      }
       tools.set(key, known);
       const done = update.status === 'completed' || update.status === 'failed';
       if (!done) {
-        if (known.announced || !Object.keys(known.input).length) return [];
+        if (known.announced && !inputChanged) return [];
         known.announced = true;
         return [{
           type: 'tool_update', id: update.toolCallId, name: known.name, input: known.input,

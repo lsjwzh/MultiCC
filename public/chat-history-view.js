@@ -332,6 +332,7 @@
       const input = toolState.card.querySelector('.tool-input');
       const description = toolState.card.querySelector('.tool-desc');
       if (!input) return;
+      const settled = !toolState.card.classList.contains('tool-running') || Number.isFinite(toolState.endedAt);
       try {
         const parsed = JSON.parse(toolState.inputJson || '{}');
         // Thinking (reasoning) is prose, not a tool invocation — show its text
@@ -339,11 +340,11 @@
         const nameEl = toolState.card.querySelector('.tool-name');
         if (nameEl && nameEl.textContent === 'Thinking' && typeof parsed.text === 'string') {
           input.textContent = parsed.text;
-          if (description) description.textContent = truncate(parsed.text.replace(/\s+/g, ' ').trim(), 60);
+          if (description && !settled) description.textContent = truncate(parsed.text.replace(/\s+/g, ' ').trim(), 60);
           return;
         }
         const summary = parsed.description || parsed.command || parsed.pattern || parsed.file_path || '';
-        if (summary && description) description.textContent = truncate(summary, 60);
+        if (summary && description && !settled) description.textContent = truncate(summary, 60);
         input.textContent = renderToolInput(toolState.name, parsed);
       } catch (_) {
         input.textContent = asText(toolState.inputJson);
@@ -794,6 +795,9 @@
           inputJson: tool.input ? JSON.stringify(tool.input) : '',
           name: tool.name || 'Tool',
           id,
+          startedAt: Number.isFinite(tool.startedAt) ? tool.startedAt : null,
+          endedAt: Number.isFinite(tool.endedAt) ? tool.endedAt : null,
+          isError: !!(tool.isError || tool.is_error),
         });
       }
       return cards;
@@ -1003,22 +1007,33 @@
             existing = currentElement;
           }
           if (!existing && operation.message?.role === 'assistant'
-              && !operation.message?.streaming && hostState.currentText) {
+              && !operation.message?.streaming) {
             // Reconnect landing between turn finalize and the commit meta: the
             // browser still holds the just-finished id-less live bubble while
             // the authoritative page already carries that same message with its
             // durable id. Adopt the live bubble when the texts agree (identical,
-            // or one is a long-enough prefix of the other) instead of appending
-            // a second copy beside it.
+            // or one is a long-enough prefix of the other) — or, for a tool-only
+            // turn with no prose, when every live tool card id appears in the
+            // persisted message's tools — instead of appending a second copy.
             const liveBubble = currentElement?.classList.contains('assistant') && !currentElement.dataset.msgId
               ? currentElement
               : Array.from(messagesEl.querySelectorAll('.msg.assistant:not([data-msg-id])')).pop() || null;
             if (liveBubble) {
               const incoming = asText(operation.message.content);
               const live = String(hostState.currentText || '');
-              if (incoming && live && (incoming === live
+              const textMatches = !!(incoming && live && (incoming === live
                   || (live.length >= 16 && incoming.startsWith(live))
-                  || (incoming.length >= 16 && live.startsWith(incoming)))) {
+                  || (incoming.length >= 16 && live.startsWith(incoming))));
+              const incomingToolIds = !incoming && Array.isArray(operation.message.tools)
+                ? operation.message.tools.map(t => t && (t.id || t.tool_use_id)).filter(Boolean)
+                : [];
+              const liveToolIds = incomingToolIds.length
+                ? Array.from(liveBubble.querySelectorAll('.tool-card[data-tool-id]'))
+                    .map(el => el.dataset.toolId).filter(Boolean)
+                : [];
+              const toolsMatch = incomingToolIds.length > 0 && liveToolIds.length > 0
+                && liveToolIds.every(id => incomingToolIds.includes(id));
+              if (textMatches || toolsMatch) {
                 existing = liveBubble;
               }
             }

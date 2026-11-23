@@ -139,6 +139,7 @@ const controllerApi = require(path.join(PUBLIC, 'chat-event-controller.js'));
 
 function createRig(cli = 'claude') {
   const queues = [];
+  const statusCalls = [];
   const messagesEl = new El('div');
   messagesEl.className = 'messages';
   const state = {
@@ -163,6 +164,7 @@ function createRig(cli = 'claude') {
     accumulateLiveUsage: (u, acc) => acc || u || null,
     renderAuxClassify() {}, classifyDisplay: () => ({}),
     reconcileDanmakuTasks() {}, settleTurnScopedDanmaku() {},
+    setStreamStatus(bubble, slot, text, title) { statusCalls.push({ bubble, slot, text, title }); },
   };
   const host = {
     debug() {}, warn() {},
@@ -216,7 +218,7 @@ function createRig(cli = 'claude') {
   });
   const generation = controller.beginGeneration();
   return {
-    state, messagesEl, historyView, historyStore, controller, queues,
+    state, messagesEl, historyView, historyStore, controller, queues, statusCalls,
     feed(events) {
       for (const evt of events) controller.handleEvent(evt, generation);
     },
