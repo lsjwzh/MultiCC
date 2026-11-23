@@ -1529,8 +1529,7 @@ function createSessionRecord(input) {
     sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
     SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath: MULTICC_PATHS.loginWorkspacePath
   }, path)(input && typeof input === 'object' && input.cli != null ? { ...input, cli: canonicalCli(input.cli) } : input);
-  // 会话创建/复用是清墓碑的唯一时机（判定仍由 Rust 持有）。固定 id 的辅助
-  // 会话删除后重建时，这里让历史队列重新接受写入。
+  // 会话创建/复用是清墓碑的唯一时机；固定 id 的辅助会话重建时让历史队列重新接受写入。
   const registered = value => {
     if (value && value.ok && value.id && chatHistoryRuntime) chatHistoryRuntime.registerSession(value.id);
     return value;
@@ -1538,9 +1537,8 @@ function createSessionRecord(input) {
   return created && typeof created.then === 'function' ? created.then(registered) : registered(created);
 }
 
-// Login terminals are one-shot (native/addon/src/session_login_terminal.rs): each login
-// click disposes the flow's previous terminal — tmux pane included — so a saved
-// pane is never reattached, and the exit path drops the record.
+// Login terminals are one-shot (native/addon/src/session_login_terminal.rs): each click
+// disposes the previous tmux pane, and the exit path drops the record.
 const disposeLoginTerminal = getNative().sessionLoginTerminalDisposer({
   persistedSessions, tmuxKillSession, destroySessionCascade,
   saveSessions: savePersistedSessionsBestEffort,
