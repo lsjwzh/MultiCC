@@ -4,7 +4,7 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
-## v2.21.2 - Native session runtime and multi-account routing (2026-11-23)
+## v2.21.3 - Native session runtime and multi-account routing (2026-11-23)
 
 - Give each anti-gravity (agy) account its own HOME. agy keeps its whole login inside `$HOME/.gemini` and honours `HOME`, so an account is simply a separate home directory under `~/.multicc/official-accounts/agy/`, with `active.json` naming the pinned one. The layout and validation live in Rust (`agyAccountHome`, exposed as the `agyAccountHome` native binding), and Node reads the pinned home once, at spawn, instead of parsing the store itself. The account layout is the shared contract with the agy routes and the gateway, which read the same paths with no FFI in between. Account ids are checked as 16 hex characters, a missing or malformed account falls back to the real `HOME` instead of failing the launch, and login status reports only whether a usable credential is present, never the token.
 
@@ -21,6 +21,8 @@ All notable changes to MultiCC are documented in this file.
 - Keep the app remote-screen RFB transport, its service layer and their tests consistent with the current server contract.
 
 - Speed up the release test tier: the debug crypto and HTTP paths the suite exercises are cheaper, slow feature scripts are split so a single failure does not drag the rest, and the agy accounts boundary test is classified so the shared clippy gate stays green.
+
+- Keep the Windows build honest as the native addon probe grew: the verification script now runs from a temporary file instead of an inline `-e` argument, because Windows caps a process command line at 32767 characters and the probe had outgrown it, which made a failed spawn look like a version mismatch. A failed probe now also reports whether it could not run or an assertion failed. Format the native workspace so the shared rustfmt gate passes.
 
 ## v2.21.1 — Compatibility, routing, and reliability (2026-11-21)
 
