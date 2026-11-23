@@ -1199,7 +1199,8 @@
       return null;
     }
 
-    function finalizeAssistantMsg(message) {      if (!message?.content) return;
+    function finalizeAssistantMsg(message) {
+      if (!message?.content) return;
       liveUi.hideThinking();
       for (const block of message.content) {
         if (block.type === 'text' && block.text) {
@@ -1224,18 +1225,16 @@
           else if (!state.currentTextContent) state.currentTextContent = block.text;
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();
-        } else if (block.type === 'tool_use' && block.id
-            && (isCodexCli(state.currentCli) || state.currentCli === 'commandcode' || state.currentCli === 'agy')) {
+        } else if (block.type === 'tool_use' && block.id) {
           host.tokenRate?.noteOutputBoundary?.();
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
+          // ACP 等适配器可直接发工具快照；流式事件或历史回放已建卡时，按调用 ID 复用。
           let tool = findCurrentToolCardById(block.id);
           if (!tool) {
             const card = historyView.createToolCard(block.name || 'Tool', block.id);
             tool = {
               card, inputJson: block.input ? JSON.stringify(block.input) : '',
               name: block.name || 'Tool', id: block.id,
-              // These adapters announce tools in assistant blocks. The paired
-              // tool_result stamps endedAt on the same card.
               startedAt: Date.now(),
             };
             state.currentToolCards.set(`id:${block.id}`, tool);
