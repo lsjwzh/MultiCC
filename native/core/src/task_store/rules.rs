@@ -1,7 +1,7 @@
 use super::*;
 use crate::task_domain::{array, clean, truth};
 use sha2::{Digest, Sha256};
-fn hash(v: &Value) -> String {
+pub(super) fn hash(v: &Value) -> String {
     format!("{:x}", Sha256::digest(v.to_string().as_bytes()))
 }
 pub(super) fn fail(code: &str, message: &str, status: u16) -> String {
@@ -62,7 +62,7 @@ fn public_relation(r: &Value) -> Value {
     };
     json!({"id":r["id"],"shellId":r["shellId"],"kind":r["kind"],"fromTaskId":r["fromTaskId"],"toTaskId":r["toTaskId"],"fromTitle":null,"toTitle":null,"provenance":r.get("provenance").filter(|v|truth(v)).cloned().unwrap_or(json!("user")),"confirmed":r["confirmed"]!=false,"revision":revision,"createdAt":r["createdAt"],"resolvedAt":r.get("removedAt").filter(|v|truth(v)).cloned().unwrap_or(Value::Null),"createdBy":r.get("createdBy").filter(|v|truth(v)).cloned().unwrap_or(Value::Null)})
 }
-fn task_access(t: &Value, owner: &Value, lifecycle: &Value) -> Value {
+pub(super) fn task_access(t: &Value, owner: &Value, lifecycle: &Value) -> Value {
     if t.is_null() {
         return json!({"status":"active","readOnly":true,"ownerShellId":null,"sourceSessionId":null,"forkedFromTaskId":null});
     }

@@ -82,6 +82,14 @@ impl ChatHub {
             .collect()
     }
 
+    pub fn client_count(&self, session: &str) -> usize {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .map_or(0, |s| s.clients().len())
+    }
+
     pub fn clear_replay(&self, session: &str) {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if sessions.get(session).is_some() {

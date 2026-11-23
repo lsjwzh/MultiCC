@@ -364,6 +364,24 @@ fn assert_auth_required(response: &Response, what: &str) {
 }
 
 #[test]
+fn standalone_reads_the_deployed_settings_file_before_binding() {
+    let file = unique("external-config");
+    fs::write(&file, format!("ACCESS_TOKEN={TOKEN}\n")).unwrap();
+    let gateway = Gateway::start(
+        "mounted",
+        Some("ACCESS_TOKEN=unused-package-value\n"),
+        &[("MULTICC_ENV_FILE", file.to_str().unwrap())],
+    );
+    fs::remove_file(file).unwrap();
+    let path = "/api/claude/models";
+    assert_eq!(gateway.get(path, &[("X-Access-Token", TOKEN)]).status, 200);
+    assert_auth_required(
+        &gateway.get(path, &[("X-Access-Token", "unused-package-value")]),
+        "package setting must not override the deployment file",
+    );
+}
+
+#[test]
 fn a_local_access_token_answers_the_same_auth_shapes_as_node() {
     let gateway = Gateway::start("local-token", Some(&format!("ACCESS_TOKEN={TOKEN}\n")), &[]);
     let log = gateway.wait_for_log("authentication runtime owned locally (--no-node)");
@@ -475,11 +493,8 @@ fn sigterm_stops_a_local_runtime_with_exit_code_zero() {
     );
 }
 
-/// The two public server-core probes are the only routes in that cluster whose
-/// facts a Rust-only front door owns: with no child there is no
-/// `process.uptime()` and no `serviceReady` flag to report, and the front door
-/// itself is the process a deployment probes. They must answer with *no*
-/// authentication owner too, because they never needed the snapshot.
+/// The public probes report the front door's own uptime and readiness, even
+/// when no authentication owner is configured.
 #[test]
 fn the_public_health_probes_answer_without_a_node_child() {
     let gateway = Gateway::start("health-no-token", None, &[]);
@@ -526,8 +541,7 @@ fn the_public_health_probes_answer_without_a_node_child() {
     assert_eq!(head.status, 200);
     assert!(head.body.is_empty(), "{:?}", head.text());
 
-    // The gated half of the same cluster describes Node state, so it still
-    // fails closed on the missing authentication owner.
+    // Protected routes require an authentication owner before reading state.
     let metrics = gateway.get("/metrics", &[]);
     assert_eq!(metrics.status, 503, "{}", metrics.text());
     assert_eq!(metrics.text(), AUTH_ABSENT_BODY);
@@ -537,9 +551,7 @@ fn the_public_health_probes_answer_without_a_node_child() {
     assert!(!gateway.log().contains("panicked"), "{}", gateway.log());
 }
 
-/// With a local authentication owner the probes stay public (no credential
-/// needed) and keep answering from this process, while the gated routes reach
-/// the host port that does not exist and report the cluster's own 503.
+/// Health probes remain public. Reading gateway metrics requires authentication.
 #[test]
 fn the_health_probes_stay_public_with_a_local_auth_runtime() {
     let gateway = Gateway::start(
@@ -561,21 +573,19 @@ fn the_health_probes_stay_public_with_a_local_auth_runtime() {
     assert_eq!(credentialed.status, 200, "{}", credentialed.text());
     assert_eq!(credentialed.json()["status"], "ok");
 
-    // `/metrics` is gated and its table is the child's: authorized, then 503
-    // `rust_backend_unavailable` from the absent host port.
+    // The idle gateway reports its own counters.
     let metrics = gateway.get("/metrics", &[("X-Access-Token", TOKEN)]);
-    assert_eq!(metrics.status, 503, "{}", metrics.text());
-    assert!(
-        metrics
-            .text()
-            .contains(r#""code":"rust_backend_unavailable""#),
-        "{}",
-        metrics.text()
+    assert_eq!(metrics.status, 200, "{}", metrics.text());
+    assert_eq!(
+        metrics.text(),
+        concat!(
+            "multicc_active_turns 0\n",
+            "multicc_git_queue_depth 0\n",
+            "multicc_ready 1\n",
+            "multicc_ws_clients 0\n",
+        )
     );
-    // Without a credential the same gated route is refused by the gate, not by
-    // the missing host port: a non-API GET is Express's login redirect, exactly
-    // what `--node` answers (native/gateway/tests/server_core.rs
-    // `metrics_requires_authentication`).
+    // Anonymous requests keep the login redirect shared with the Node entry.
     let anonymous_metrics = gateway.get("/metrics", &[]);
     assert_eq!(
         anonymous_metrics.status,

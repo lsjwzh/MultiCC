@@ -3,17 +3,20 @@
 //! runs outside this lock, and connection loss does not abandon a turn.
 mod auth;
 mod codex;
+pub(crate) mod first_tasks;
 mod frames;
 mod launch;
 mod provider;
 mod question;
 mod route;
+pub(crate) mod session_list;
 mod shell;
 mod shell_http;
 mod store;
 mod usage;
 
 pub use auth::ConnectionRequest;
+pub(crate) use store::{lookup as find_session_record, records as session_records};
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -54,9 +57,10 @@ type SessionCell = Arc<OnceCell<Arc<Mutex<Session>>>>;
 
 #[derive(Default)]
 pub struct Host {
+    activity_cache: session_list::HistoryTimes,
     hub: Arc<ChatHub>,
     sessions: Mutex<HashMap<String, SessionCell>>,
-    records: Mutex<()>,
+    pub(crate) records: Mutex<()>,
     usage_lock: Mutex<()>,
     epoch: OnceLock<String>,
     route_generation: AtomicU64,
@@ -67,6 +71,7 @@ struct Session {
     native_started: bool,
     active: Option<Active>,
     shell_worker: bool,
+    last_activity: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +96,21 @@ struct Active {
 }
 
 impl Host {
+    pub(crate) async fn active_turns(&self) -> usize {
+        let sessions: Vec<_> = self
+            .sessions
+            .lock()
+            .await
+            .values()
+            .filter_map(|cell| cell.get().cloned())
+            .collect();
+        let mut active = 0;
+        for session in sessions {
+            active += usize::from(session.lock().await.active.is_some());
+        }
+        active
+    }
+
     async fn session(&self, app: &App, id: &str) -> Result<Arc<Mutex<Session>>, String> {
         let entry = self
             .sessions
@@ -128,6 +148,7 @@ impl Host {
                     native_started,
                     active: None,
                     shell_worker: false,
+                    last_activity: None,
                 })))
             })
             .await?;
@@ -611,6 +632,11 @@ pub(crate) async fn shell_delivery(app: &Arc<App>, request: Value) -> Result<Val
     shell_http::deliver(app, request).await
 }
 
+pub(crate) async fn adopt_first_tasks(app: &App) -> Result<(), String> {
+    let root = app.data_root.clone();
+    shell::blocking(move || first_tasks::migrate(&root)).await
+}
+
 pub(crate) async fn recover_shell_queue(app: &Arc<App>) -> Result<(), String> {
     let root = app.data_root.clone();
     let candidates = shell::blocking(move || {
@@ -1053,6 +1079,7 @@ async fn prepare_turn(
     let mut selected = route.event(id, "selected", "none");
     quota_guard::set(&mut selected, "reasonCode", V::from("route_resolved"));
     let attempt_id = store::text(&route.scope, "routeAttemptId");
+    state.last_activity = Some(auth_runtime::now_ms() as u64);
     state.active = Some(Active {
         id: turn_id.clone(),
         task: delivery.map(|delivery| delivery.task.clone()),
@@ -1403,6 +1430,7 @@ async fn finish(
     if !state.active.as_ref().is_some_and(|turn| turn.id == turn_id) {
         return ("failed", None);
     }
+    state.last_activity = Some(auth_runtime::now_ms() as u64);
     let mut turn = state.active.take().expect("owned turn");
     let codex = store::is_codex(&state.stored.record);
     let outcome = if turn.cancel.is_none() {

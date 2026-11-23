@@ -417,6 +417,12 @@ pub async fn handle(
     body: &Value,
     host: u16,
 ) -> Response<Body> {
+    if route == Route::DirsList && !app.node_enabled {
+        return match super::directory_list::list(app).await {
+            Ok(rows) => ok(ctx, rows),
+            Err(_) => internal_error(ctx),
+        };
+    }
     let write = matches!(
         route,
         Route::DirsCreate

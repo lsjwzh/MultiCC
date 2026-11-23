@@ -19,16 +19,21 @@ pub mod auth;
 pub mod auto_provider_routing;
 pub mod claude_models;
 pub mod cli_switch;
-pub mod directory_routes;
+pub(crate) mod cron_list;
+pub mod directory_list;
+mod directory_routes;
 pub mod docs_memory_routes;
 pub mod download;
 pub mod event_routes;
 pub mod express;
 pub mod external_workspaces;
 pub mod file_transfer;
+mod host_battery;
 pub mod host_ops_routes;
+mod host_power;
 pub mod host_read;
 pub mod model_catalogs;
+mod notification_reads;
 pub mod orchestration_routes;
 pub mod plugins;
 pub mod provider_balance;
@@ -43,6 +48,8 @@ pub mod quota_routes;
 pub mod release_history_routes;
 pub mod remote_annotation;
 pub mod remote_screen;
+mod repo_operations;
+pub(crate) mod resident_channels;
 pub mod run_config_presets;
 pub mod scan;
 pub mod scoped_auth;
@@ -52,8 +59,10 @@ mod service_transport;
 pub mod services;
 pub mod session_admin;
 pub mod session_git;
+pub(crate) mod session_merge;
 pub mod session_routes;
-pub mod share_machine_routes;
+pub mod share_entry;
+mod share_machine_routes;
 pub mod source_workspaces;
 pub mod static_assets_routes;
 pub mod static_web_root;
@@ -68,6 +77,7 @@ pub mod uploads;
 pub mod voice_gateway;
 pub mod voice_routes;
 pub mod voice_runtime;
+mod web_push;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -113,6 +123,7 @@ pub enum Route {
     /// cluster's share. A single-cluster path keeps its own cluster's
     /// responder (same answer, same error messages on host failure).
     AutoOptions,
+    StandaloneCron,
     Auth(auth::Route),
     Services(services::Route),
     ExternalWorkspaces(external_workspaces::Route),
@@ -647,6 +658,13 @@ pub struct App {
     /// local copy when `.env` supplied a usable ACCESS_TOKEN. A route that needs
     /// the snapshot with neither owner fails closed (docs/gateway.md §8.1).
     pub node_enabled: bool,
+    git_push_states: directory_list::PushStates,
+    pub(crate) ws_clients: repo_operations::Gauge,
+    battery: host_battery::Reader,
+    vapid_key: tokio::sync::OnceCell<String>,
+    notifications: notification_reads::Config,
+    bind_host: String,
+    public_port: u16,
     /// When this front door started. `--no-node` has no child whose
     /// `process.uptime()` the server-core probes could report, so `/healthz`
     /// answers this process's own uptime instead (`server_core::local_healthz`).
@@ -684,6 +702,9 @@ pub struct App {
     /// `src/routes/session-admin.js` ran each write handler to completion on
     /// the event loop; these routes await host round trips that mutate the
     /// classify state machine, so serialize them.
+    pub(crate) session_merge: Arc<session_merge::Cache>,
+    pub(crate) channels: resident_channels::Registry,
+    pub(crate) cron_lock: tokio::sync::Mutex<()>,
     pub session_admin_write: tokio::sync::Mutex<()>,
     /// `src/routes/session-memory.js`, `session-bundle.js`, `session-lifecycle.js`,
     /// `session-create.js`, `session-meta.js` and `session-profile.js` ran each
@@ -791,6 +812,9 @@ impl App {
     /// The Node package root is the directory of the script we run (Node's
     /// `__dirname` resolves symlinks, so canonicalize like it does).
     pub fn package_root(options: &ServeOptions) -> PathBuf {
+        if !options.node_enabled() {
+            return options.cwd.clone();
+        }
         let script = options.cwd.join(&options.script);
         std::fs::canonicalize(&script)
             .ok()
@@ -824,6 +848,13 @@ impl App {
             lan_only: policy.lan_only,
             allow_legacy_token_query: env_enabled(&env_text("MULTICC_ALLOW_LEGACY_TOKEN_QUERY")),
             node_enabled: options.node_enabled(),
+            git_push_states: directory_list::PushStates::default(),
+            ws_clients: Default::default(),
+            battery: host_battery::Reader::default(),
+            vapid_key: tokio::sync::OnceCell::new(),
+            notifications: notification_reads::Config::from_env(),
+            bind_host: policy.host.clone(),
+            public_port: policy.port,
             started: std::time::Instant::now(),
             store_lock: Mutex::new(()),
             tickets: Mutex::new(DownloadTickets::new()),
@@ -835,6 +866,9 @@ impl App {
             providers_write: tokio::sync::Mutex::new(()),
             session_git_write: tokio::sync::Mutex::new(()),
             task_shell_write: tokio::sync::Mutex::new(()),
+            session_merge: Default::default(),
+            channels: Default::default(),
+            cron_lock: Default::default(),
             session_admin_write: tokio::sync::Mutex::new(()),
             session_routes_write: tokio::sync::Mutex::new(()),
             share_machine_write: tokio::sync::Mutex::new(()),
@@ -1211,6 +1245,10 @@ pub async fn handle(
             )
             .await
         }
+        Route::StandaloneCron => return cron_list::handle(&app, &ctx).await,
+        Route::Plugins(plugins::Route::Channels) if !app.node_enabled => {
+            return resident_channels::list(&app, &ctx).await
+        }
         Route::Plugins(route) => return plugins::handle(route, &ctx, &body, &peer, host).await,
         Route::AutoOptions => return auto_options(&ctx, host).await,
         Route::ModelCatalogOptions(_)
@@ -1249,6 +1287,9 @@ pub async fn handle(
         Route::PresetsMergeOptions | Route::DownloadTicketOptions => return options(&ctx, "POST"),
         Route::SubagentDefaultsOptions => return options(&ctx, "GET,HEAD"),
         Route::SubagentDefaultsSyncOptions => return options(&ctx, "POST"),
+        Route::ServerInfoGet if !app.node_enabled => {
+            return system::local_server_info(&app, &ctx, !snapshot.secret.is_empty()).await;
+        }
         Route::ServerInfoGet => return system::server_info(&ctx, host).await,
         Route::VersionCheckGet => return system::version_check(&app, &ctx, host).await,
         Route::CodexProxyTraceGet => return system::codex_proxy_trace(&ctx, host).await,
@@ -1307,6 +1348,28 @@ pub async fn handle(
         // The host port is the Node child's internal listener; a route that
         // needs in-process Node state asks it only through that one call.
         Route::TokenUsageByRoleGet => return token_usage_by_role::get(&ctx, host).await,
+        Route::HostReadGet(host_read::Route::AccessToken) if !app.node_enabled => {
+            return host_read::access_token(&ctx, &snapshot.secret, &peer);
+        }
+        Route::HostReadGet(host_read::Route::VapidKey) if !app.node_enabled => {
+            return web_push::vapid(&ctx, &app.vapid_key).await;
+        }
+        Route::HostReadGet(host_read::Route::PushHealth) if !app.node_enabled => {
+            return web_push::health(&app, &ctx).await;
+        }
+        Route::HostReadGet(host_read::Route::Notify) if !app.node_enabled => {
+            return notification_reads::settings(&app, &ctx).await;
+        }
+        Route::HostReadGet(host_read::Route::Power) if !app.node_enabled => {
+            let local = http_gate::is_local_request(&peer, &ctx.headers);
+            return match host_power::settings(&app.home_dir, local).await {
+                Ok(settings) => express::json(&ctx, 200, &settings, &[]),
+                Err(()) => express::error(&ctx, 500, "cannot read power settings"),
+            };
+        }
+        Route::HostReadGet(host_read::Route::Battery) if !app.node_enabled => {
+            return express::json(&ctx, 200, &app.battery.read().await, &[]);
+        }
         Route::HostReadGet(route) => return host_read::handle(&ctx, route, host, &peer).await,
         Route::TurnLedger(route) => return turn_ledger::handle(&ctx, route, host).await,
         Route::FilesGet => return file_transfer::files(&ctx, host).await,

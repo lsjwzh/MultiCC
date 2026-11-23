@@ -737,6 +737,20 @@ test('Rust connection deadlines fire once and cancellation prevents delivery', a
   assert.equal(calls, 1);
 });
 
+test('the native scheduler normalizes delay and cancels callbacks already queued for JS', async () => {
+  const { scheduleRequestTimer } = require('../src/native/runtime').getNative();
+  let calls = 0;
+  const handle = scheduleRequestTimer(() => { calls++; }, 2n);
+  assert.equal(handle.unref(), handle);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  handle.cancel();
+  handle.cancel();
+  const invalid = scheduleRequestTimer(() => { calls += 10; }, Infinity);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  invalid.cancel();
+  assert.equal(calls, 10);
+});
+
 test('an outstanding Rust connection deadline does not keep Node alive', () => {
   const { spawnSync } = require('node:child_process');
   const runtime = require.resolve('../src/native/runtime');

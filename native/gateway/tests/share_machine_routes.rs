@@ -560,20 +560,10 @@ fn a_cross_site_page_cannot_borrow_the_machine_surface() {
 #[test]
 fn the_public_share_page_is_reachable_from_an_external_peer_without_a_token() {
     let html = "<html><body>chat page</body></html>";
-    let gateway = Gateway::start(
-        "share-page",
-        world(json!({
-            "share-page": {
-                "status": 200,
-                "body": html,
-                "contentType": "text/html; charset=utf-8",
-                "headers": [
-                    ["Cache-Control", "no-store, no-cache, must-revalidate"],
-                    ["Pragma", "no-cache"],
-                ],
-            }
-        })),
-    );
+    let gateway = Gateway::start("share-page", world(json!({})));
+    let public = gateway.dir.join("public");
+    fs::create_dir(&public).unwrap();
+    fs::write(public.join("chat.html"), html).unwrap();
     let response = gateway.get_with("/share/tok-abc", &external());
     assert_eq!(response.status, 200, "{}", gateway.log());
     assert_eq!(
@@ -588,18 +578,18 @@ fn the_public_share_page_is_reachable_from_an_external_peer_without_a_token() {
     // res.send() of a string still yields a weak ETag.
     assert!(response.header("etag").unwrap().starts_with("W/\""));
     assert_eq!(response.body, html);
-    assert_eq!(
-        gateway.calls(),
-        vec![json!({
-            "op": "share-page",
-            "method": "GET",
-            "originalUrl": "/share/tok-abc",
-            "token": "tok-abc",
-            "query": {},
-            "headers": { "host": "localhost" },
-            "body": {},
-        })]
+    let cached = gateway.get_with(
+        "/share/tok-abc",
+        &[("If-None-Match", response.header("etag").unwrap())],
     );
+    assert_eq!(cached.status, 304);
+    let head = gateway.head("/share/tok-abc");
+    assert_eq!(
+        head.header("content-length"),
+        Some(html.len().to_string().as_str())
+    );
+    assert!(head.body.is_empty());
+    assert!(gateway.calls().is_empty());
 }
 
 #[test]
@@ -728,10 +718,7 @@ fn the_share_admin_routes_keep_the_execution_slot_guard() {
 
 #[test]
 fn a_missing_share_page_renders_the_bare_500() {
-    let gateway = Gateway::start(
-        "share-bare",
-        world(json!({ "share-page": { "status": 500, "bare": true } })),
-    );
+    let gateway = Gateway::start("share-bare", world(json!({})));
     let response = gateway.get("/share/t1");
     assert_eq!(response.status, 500);
     // `res.status(500).end()`: no body, no Content-Type, no ETag.
@@ -739,6 +726,13 @@ fn a_missing_share_page_renders_the_bare_500() {
     assert_eq!(response.header("content-length"), Some("0"));
     assert_eq!(response.header("content-type"), None);
     assert_eq!(response.header("etag"), None);
+    let head = gateway.head("/share/t1");
+    assert_eq!(head.status, 500);
+    assert_eq!(head.header("content-length"), Some("0"));
+    assert_eq!(head.header("etag"), None);
+    assert_eq!(head.header("content-type"), None);
+    assert!(head.body.is_empty());
+    assert!(gateway.calls().is_empty());
 }
 
 // ── workspaces ──────────────────────────────────────────────────────────────
@@ -827,13 +821,11 @@ fn the_api_json_body_is_gzipped_and_the_share_page_is_not() {
         "gzip",
         world(json!({
             "machines-list": relay(200, json!({"machines": [], "padding": big})),
-            "share-page": {
-                "status": 200,
-                "body": format!("<html>{big}</html>"),
-                "contentType": "text/html; charset=utf-8",
-            },
         })),
     );
+    let public = gateway.dir.join("public");
+    fs::create_dir(&public).unwrap();
+    fs::write(public.join("chat.html"), format!("<html>{big}</html>")).unwrap();
     let api = gateway.get_with("/api/machines", &[("Accept-Encoding", "gzip")]);
     assert_eq!(api.header("content-encoding"), Some("gzip"));
     let page = gateway.get_with("/share/t1", &[("Accept-Encoding", "gzip")]);

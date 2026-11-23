@@ -1,5 +1,7 @@
 [workspace]
 members = ["core", "addon", "cpr", "remote", "cdpd", "desktop-agent", "gateway", "writer-launcher"]
+# The Node compatibility addon is built explicitly for legacy hosts and differential tests.
+default-members = ["core", "cpr", "remote", "cdpd", "desktop-agent", "gateway", "writer-launcher"]
 resolver = "2"
 
 # Optimize CPU-bound crypto, TLS certificate parsing, and compression crates in

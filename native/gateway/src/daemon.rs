@@ -33,12 +33,26 @@ fn log(message: &str) {
 }
 
 /// `--version` of the front door, printed by `main.rs`.
-pub async fn serve(options: ServeOptions) -> i32 {
+pub async fn serve(mut options: ServeOptions) -> i32 {
     if let Err(error) = std::env::set_current_dir(&options.cwd) {
         log(&format!("cannot enter {}: {error}", options.cwd.display()));
         return 1;
     }
-    let dotenv_keys = load_dotenv(Path::new("."));
+    options.cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            log(&format!(
+                "cannot resolve gateway working directory: {error}"
+            ));
+            return 1;
+        }
+    };
+    let env_file = if options.node_enabled() {
+        options.cwd.join(".env")
+    } else {
+        multicc_core::dotenv::config_path(&options.cwd)
+    };
+    let dotenv_keys = load_dotenv(&env_file);
     crate::egress_runtime::publish_host_runtime_manifest_default();
     let restart_exact_port = crate::init_restart_generation(&options.cwd);
     let mut policy = match resolve_network_policy(&current_env()) {
@@ -158,11 +172,29 @@ pub async fn serve(options: ServeOptions) -> i32 {
         }
     }
     if !options.node_enabled() {
+        let root = app.data_root.clone();
+        let package = app.package_root.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            crate::ws_chat_native::session_list::ensure_aux(&root, &package)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()))
+        {
+            log(&format!("cannot initialize Aux session: {error}"));
+        }
+        if let Err(error) = crate::ws_chat_native::adopt_first_tasks(&app).await {
+            log(&format!("cannot complete task-first adoption: {error}"));
+        }
         if let Err(error) = crate::ws_chat_native::recover_shell_queue(&app).await {
             log(&format!("cannot recover native task queue: {error}"));
             return 1;
         }
     }
+    let channel_worker = if options.node_enabled() {
+        None
+    } else {
+        Some(crate::app::resident_channels::start(&app, port).await)
+    };
     // One supervisor for the front door's own `multicc-remote` child. The HTTP
     // forwarder, the WS bridge and the annotation relay all share this `Arc`:
     // the process contract has exactly one owner of the child's stdin lifeline,
@@ -215,6 +247,10 @@ pub async fn serve(options: ServeOptions) -> i32 {
         }
     };
     let mut parent_lifeline = options.stdin_lifeline.then(watch_stdin);
+    let assist_dir =
+        crate::remote_child::assist_dir(&app.data_root, &app.package_root, &app.home_dir);
+    let (stop_assist, stopped) = tokio::sync::oneshot::channel();
+    let assist_worker = tokio::spawn(multicc_core::assist_snapshots::run(assist_dir, stopped));
     let mut shutting_down = false;
     let mut exit_code: Option<i32> = None;
 
@@ -330,6 +366,11 @@ pub async fn serve(options: ServeOptions) -> i32 {
     // (docs/remote-screen-process.md §1), so it exits with the front door
     // instead of lingering as an orphan. `--no-node` reaches here too, having no
     // Node to wait for.
+    if let Some(worker) = channel_worker {
+        worker.stop().await;
+    }
+    let _ = stop_assist.send(());
+    let _ = assist_worker.await;
     if let Some(remote) = app.remote_child.get() {
         remote.shutdown().await;
     }
@@ -339,8 +380,7 @@ pub async fn serve(options: ServeOptions) -> i32 {
 /// §2: returns the keys this front door took from `.env`, so the child does
 /// not inherit them: Node reads `.env` itself, and a value the UI rewrote
 /// there (ACCESS_TOKEN) must win when Node is relaunched.
-fn load_dotenv(directory: &Path) -> Vec<String> {
-    let path = directory.join(".env");
+fn load_dotenv(path: &Path) -> Vec<String> {
     // §2: a missing .env is not an error.
     let Ok(bytes) = std::fs::read(&path) else {
         return Vec::new();

@@ -44,17 +44,23 @@ pub fn encode_rows(messages: &[JsValue]) -> (Vec<u8>, Vec<u64>) {
 }
 
 pub fn read_transcript(path: &Path) -> io::Result<Vec<JsValue>> {
+    let mut messages = Vec::new();
+    visit_transcript(path, |value| messages.push(value))?;
+    Ok(messages)
+}
+
+/// Validate the whole transcript while retaining only the rows the caller needs.
+pub fn visit_transcript(path: &Path, mut visit: impl FnMut(JsValue)) -> io::Result<()> {
     use std::convert::Infallible;
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
     let mut reader = BufReader::new(file);
-    let mut messages = Vec::new();
     if starts_with_array(&mut reader)? {
         scan_legacy_array(&mut reader, |_, value| {
-            messages.push(value);
+            visit(value);
             Ok::<(), LegacyError<Infallible>>(())
         })
         .map_err(|error| match error {
@@ -66,7 +72,7 @@ pub fn read_transcript(path: &Path) -> io::Result<Vec<JsValue>> {
     } else {
         let limit = crate::chat_history_index::MAX_INDEX_RECORD_BYTES;
         scan_json_lines(&mut reader, true, Some(limit), |line| {
-            Ok::<_, Infallible>(visit_json_object(line, |value| messages.push(value)))
+            Ok::<_, Infallible>(visit_json_object(line, &mut visit))
         })
         .map_err(|error| match error {
             LineError::Io(error) => error,
@@ -75,7 +81,7 @@ pub fn read_transcript(path: &Path) -> io::Result<Vec<JsValue>> {
             other => invalid_data(&other.corruption_message().expect("history corruption")),
         })?;
     }
-    Ok(messages)
+    Ok(())
 }
 
 pub fn read_hidden_ids(path: &Path) -> io::Result<std::collections::HashSet<crate::js::JsString>> {
@@ -240,6 +246,14 @@ pub enum LegacyError<E> {
 
 pub fn scan_legacy_array<R: Read, E>(
     reader: &mut BufReader<R>,
+    on_value: impl FnMut(&str, JsValue) -> Result<(), LegacyError<E>>,
+) -> Result<(), LegacyError<E>> {
+    scan_legacy_records(reader, json_parse, on_value)
+}
+
+pub fn scan_legacy_records<R: Read, E, P>(
+    reader: &mut BufReader<R>,
+    parse: impl Fn(&str) -> Result<JsValue, P>,
     mut on_value: impl FnMut(&str, JsValue) -> Result<(), LegacyError<E>>,
 ) -> Result<(), LegacyError<E>> {
     use std::io::Bytes;
@@ -276,6 +290,7 @@ pub fn scan_legacy_array<R: Read, E>(
         return Err(LegacyError::Invalid);
     }
     let mut first = true;
+    let mut entry = Vec::new();
     loop {
         whitespace(&mut bytes)?;
         if matches!(bytes.peek(), Some(Ok(b']'))) {
@@ -285,7 +300,7 @@ pub fn scan_legacy_array<R: Read, E>(
             bytes.next();
             break;
         }
-        let mut entry = Vec::new();
+        entry.clear();
         let mut depth = 0usize;
         let mut quoted = false;
         let mut escaped = false;
@@ -321,7 +336,7 @@ pub fn scan_legacy_array<R: Read, E>(
             }
         }
         let source = String::from_utf8_lossy(&entry);
-        let value = json_parse(&source).map_err(|_| LegacyError::Invalid)?;
+        let value = parse(&source).map_err(|_| LegacyError::Invalid)?;
         on_value(&source, value)?;
         match next(&mut bytes)? {
             b']' => break,

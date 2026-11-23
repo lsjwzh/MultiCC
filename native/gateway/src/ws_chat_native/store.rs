@@ -80,6 +80,33 @@ fn read_messages(path: &Path, session: &str) -> Result<Vec<V>, String> {
     Ok(messages)
 }
 
+pub(super) fn last_task_message(
+    root: &Path,
+    id: &str,
+    board: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    transcript_stem(id)?;
+    let path = chat_history_file::transcript_path(&root.join("chat_history"), id);
+    let mut last = serde_json::Value::Null;
+    chat_history_file::visit_transcript(&path, |row| {
+        let task = text(&row, "taskId");
+        if !task.is_empty()
+            && !js::truthy_opt(row.get("inherited"))
+            && !board["deletedTaskIds"]
+                .as_array()
+                .is_some_and(|ids| ids.iter().any(|id| id == &task))
+        {
+            last = serde_json::json!({"taskId":task,
+            "taskName":row.get("taskName").map(js::to_serde),
+            "content":row.get("content").and_then(|content| match content {
+                V::String(text) => Some(text.truncate_units(120).to_string_lossy()), _ => None,
+            })});
+        }
+    })
+    .map_err(|error| format!("cannot read chat history: {error}"))?;
+    Ok(last)
+}
+
 pub(super) fn session_messages(root: &Path, id: &str) -> Result<Vec<V>, String> {
     transcript_stem(id)?;
     read_messages(
@@ -267,7 +294,7 @@ pub fn restore(root: &Path, home: &Path, package: &Path, session: &str) -> Resul
     })
 }
 
-fn resolve_cwd(
+pub(super) fn resolve_cwd(
     record: &V,
     root: &Path,
     home: &Path,
@@ -299,7 +326,12 @@ fn resolve_cwd(
         SessionDirectory::Worktree => tree.expect("existing worktree"),
         SessionDirectory::Login => path.expect("existing login workspace"),
         SessionDirectory::Home => home.to_owned(),
-        SessionDirectory::Unavailable => root.join("unavailable-workspaces").join(session),
+        SessionDirectory::Unavailable => {
+            root.join("unavailable-workspaces")
+                .join(session_records::unavailable_workspace_stem(
+                    &JsString::from(session),
+                ))
+        }
     })
 }
 

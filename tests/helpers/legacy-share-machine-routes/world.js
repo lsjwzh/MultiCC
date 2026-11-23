@@ -60,9 +60,9 @@ function buildWorld({ dataRoot, scenario, express, authSecurity, machinesModule,
   const machines = (machinesModule || require(path.join(repo, 'src/machines')))
     .createMachineRuntime({ root: dataRoot, authSecurity, getWss: () => null });
   const shareStore = require(path.join(repo, 'src/share'));
-  const { createStaticAssetsRoutes } = require(path.join(repo, 'src/routes/static-assets'));
+  const { createStaticAssetsRoutes } = require('../legacy-static-assets-routes');
   const { serveHtml } = createStaticAssetsRoutes({
-    express, fs, path, publicDir: path.join(repo, 'public'),
+    express, fs, path, publicDir: path.dirname(scenario.chatPageFile),
   });
   const sessions = new Map((scenario.sessions || []).map(record => [record.id, record]));
   const history = scenario.history || [];

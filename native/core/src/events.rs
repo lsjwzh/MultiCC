@@ -736,7 +736,7 @@ fn matches_filter(rule: Option<&Value>, event: Option<&Value>) -> Result<bool, S
 }
 
 /// The channel actions of a rule (main action and chain steps).
-pub(crate) fn channel_actions(rule: Option<&Value>) -> Value {
+pub fn channel_actions(rule: Option<&Value>) -> Value {
     let mut actions: Vec<&Value> = Vec::new();
     if truthy_opt(rule) {
         actions.extend(prop(rule, "action"));

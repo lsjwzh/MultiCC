@@ -1,5 +1,54 @@
 # 剩余 Node 后端清单
 
+## 默认构建与部署路径（2026-11-24）
+
+| 入口 | 迁移前 | 当前运行路径 |
+|---|---|---|
+| Cargo 默认构建 | 工作区默认包含 N-API addon | 默认成员只构建 Rust 程序和库。全工作区测试及兼容宿主显式选择 addon |
+| 网关命令 | 必须显式选择运行时 | `serve --cwd .` 直接运行 Rust，支持外置配置文件；显式 `--node` 用于宿主 |
+| 根源码包、PM2、根 Linux 镜像 | 根包曾声明 18 项 Node 运行依赖 | 启动 Rust 网关，独立入口的通知配置读写、设备视图和持久化由 Rust 处理 |
+| 源码管理器及其 launchd、独立包和桌面后端 | Node 兼容宿主 | 这些入口仍启动宿主。兼容性切换探针见下方命令 |
+| 旧插件与后台任务 | 原宿主拥有调度、队列和投递 | cron 自动触发、Aux 消费、渠道投递及多项写路径尚待接管 |
+
+运行 `node docs/rust-migration/differential/production-entry.js "$GATEWAY" "$FIXTURE_ADDON" --cutover` 可用隔离的真实双入口核对切换条件。只要抽样接口的状态码或错误码不同，该命令即退出 1。逐文件依赖仍由 `scripts/inventory-node-backend.js` 生成。
+
+## 2026-11-24 独立生产网关（上一批基线）
+
+- 根源码包和根镜像只启动 Rust。源码管理器、launchd、desktop 和 standalone 仍加载兼容宿主。
+- 23 个读请求中状态码一致 20 个，状态码和正文一致 12 个；两端各通过 19/19 项带数据检查，旧会话首次启动的搜索结果也一致。网关可读任务搜索和文档登记，提供四个运行指标及目录探针操作历史。旧会话首次领养复用 SQLite 身份事务，电源读接口直接查询平台状态。目前仍需迁移会话及 Aux、cron、渠道插件和后台消费者，并验证写入及重启。
+- 静态盘点共 530 个 `src/` JS/CJS/MJS 文件，518 个可经根宿主导入，9 个经脚本路径引用，另计根宿主。根包生产 Node 依赖为 0。动态加载点及每个文件的归类见[逐文件清单](node-module-dependencies.md)。带数据验收和未迁功能见[生产入口报告](production-entry-2026-11-24.md)。
+
+
+## 推送订阅、目录和分享入口（2026-11-24）
+
+纯 Rust 入口已接管订阅存储、VAPID 公钥、推送健康、目录列表和分享入口及口令校验。隔离双实例的 23 条读请求中，状态码一致 15 条，仍有 8 条有差异；两端各通过 15 项预置数据检查。本批沿用已有 JS/CJS/MJS 文件清单，`src/` 为 525 + 2 + 3 个，另有根宿主。源码包生产 Node 依赖为 0。部署范围与逐域缺口见[入口验收记录](production-entry-2026-11-24.md)。
+
+## 2026-11-24 根包生产启动入口
+
+`npm start`、`npm run start:gateway` 和 PM2 改为直接执行 Rust release 网关；根包运行依赖从 18 项降为 0 项。旧宿主依赖仍用于开发、对照测试和原安装包。当前 `src/` 留有 525 个 JS、2 个 CJS 和 3 个 MJS；另有 `server.js`。逐文件依赖、未迁路由以及入口差分分别见[依赖盘点](node-module-dependencies.md)和[本批验收](production-entry-2026-11-24.md)。
+
+## 2026-11-24 通知地址的读取与保存
+
+删除 `src/notify-settings.js` 后，`GET /api/settings/notify` 与 `POST /api/settings/notify` 在 Rust 共用地址掩码规则。写入仍通过宿主的同步配置事务比较当前值、持久化并更新推送服务。当前 `src/` 有 525 个 JS、2 个 CJS、3 个 MJS，根包有 18 项直接运行依赖。静态扫描含入口在内共 531 个文件、223 处注册候选。本批原生构建隔离启动后捕获了 128 个 Node 路由和 25 层中间件。 [批次记录](node-retirement-batches.md) · [部署说明](../gateway.md)
+
+## 2026-11-24 人机协助截图清理
+
+截图的启动扫描与周期扫描已迁至 Rust，删除生产文件 `src/assist-snapshots.js`。纯 Rust 网关和带 Node 子进程的网关均在自身进程内执行扫描；单独运行 `server.js` 使用同一 Rust 内核。当前 `src/` 为 526 个 JS、2 个 CJS、3 个 MJS，根包有 18 个直接运行依赖。静态注册扫描覆盖含 `server.js` 的 532 个文件，找到 223 个候选。默认启动和安装包仍需要 Node。 [批次记录](node-retirement-batches.md) · [逐文件清单](node-module-dependencies.md)
+
+## 2026-11-24 会话与环境诊断
+
+`src/routes/doctor.js` 和 `src/routes/env-doctor.js` 已从生产目录移除。七条公开路由在 Rust 网关里选择服务参数，生成状态码与 JSON。Node 仍持有诊断任务、取消句柄、会话历史与 Aux 执行器。端到端迁移需接管这些服务。新旧路由的对照程序为 `docs/rust-migration/differential/host-ops-routes.js`。
+
+当前 `src/` 有 527 个 JS、2 个 CJS 和 3 个 MJS。根包有 18 个直接运行依赖。静态扫描含 `server.js` 共 533 个文件和 223 处 HTTP 注册候选。隔离启动捕获了 128 个 Node 路由注册和 25 层中间件。源码默认入口由 Rust 网关拉起 Node，npm 包清单仍含 `server.js` 和 532 个 `src/` JS/CJS/MJS 文件。 [逐文件运行依赖](node-module-dependencies.md)
+
+## 2026-11-24 分享页、请求计时器与 Grok 配置
+
+`src/` 剩 531 个 JS/CJS（529 + 2），另有 3 个 MJS 入口。根包 `dependencies` 有 18 项。静态 HTTP 盘点覆盖含 `server.js` 的 535 个文件，列出 230 处注册候选。默认启动仍使用 `scripts/start-gateway.js` 的 `--node … server.js`。分享页模板已由 Rust 提供，分享数据接口仍需要宿主。
+
+隔离启动 `--no-node`、配置本地认证后，分享页 GET / HEAD 返回 200，带 ETag 的条件请求返回 304；同一网关的 `GET /api/share/example/entry` 返回 503（`rust_backend_unavailable`）。含 Node 宿主的隔离运行捕获到 128 个 Express 路由注册和 25 层中间件。`npm pack --dry-run --ignore-scripts` 列出全部 534 个 `src/` JS/CJS/MJS 文件以及 `server.js`。 [运行时捕获](../backend-runtime-inventory.md)
+
+从 `server.js` 沿字面量模块依赖可达 522 个文件，加上脚本路径可再达 9 个。两个独立运维和回测模块分别由 `scripts/task-workspace-inventory.js` 和 `scripts/backtest-task-attribution.js` 使用。`src/http/error-presenter.js` 目前只查到两个测试调用，仍单列在文件清单里。后续仍依赖任务壳和会话状态所有者、后台投递和恢复、Provider 执行及插件 SDK。切换默认入口需验证其 HTTP、WS、进程生命周期与安装包启动。 [逐文件依赖](node-module-dependencies.md) · [迁移顺序和批次记录](node-retirement-batches.md)
+
 ## 2026-11-24 任务板与任务壳更新
 
 任务板依赖校验和分组已移出 `src/task-board/runtime-helpers.js`，任务板与任务壳三处短码展示已移出 `src/task-display-attribution.js`。这两个生产文件均已删除，旧实现保留在测试目录。此时 `src/` 剩 531 个 JS、2 个 CJS 文件，根包有 19 个直接 Node 运行依赖。默认 `npm start` 启动 Rust 网关，再由网关运行 Node 子进程。 [批次与剩余宿主端口](node-retirement-batches.md#任务板分组与任务短码展示2026-11-24)

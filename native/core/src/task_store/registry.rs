@@ -61,6 +61,57 @@ fn runtime(record: &Value) -> Value {
 }
 
 impl TaskStore {
+    /// Read the current execution behind each visible session in one SQLite snapshot.
+    pub fn session_list_targets(
+        file: &std::path::Path,
+        records: &serde_json::Map<String, Value>,
+        visible: impl Fn(&Value) -> bool,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let mut targets = std::collections::HashMap::new();
+        let Some(store) = Self::open_chat_reader(file)? else {
+            return Ok(targets);
+        };
+        for (id, source) in records.iter().filter(|(_, row)| visible(row)) {
+            let source_id = source_shell_id(id);
+            let index = store.get("task-session", id)?;
+            let task = store.get("task", text(&index["taskId"]))?;
+            let mut shell = Value::Null;
+            if !task.is_null() && !truth(&task["adopted"]) {
+                let owner = store.get("shell", text(&task["ownerShellId"]))?;
+                if owner.get("dirId") == source.get("dirId") {
+                    shell = owner;
+                }
+            }
+            if shell.is_null() {
+                shell = store.get("shell", &source_id)?;
+            }
+            if shell.is_null() {
+                continue;
+            }
+            let selected = text(&shell["currentTaskId"]);
+            let task = store.get("task", selected)?;
+            if !selected.is_empty()
+                && (task.is_null()
+                    || task.get("dirId") != shell.get("dirId")
+                    || store
+                        .get("link", &format!("{}:{selected}", text(&shell["id"])))?
+                        .is_null())
+            {
+                return Err("invalid shell cursor".into());
+            }
+            let target = if task["ready"] == true {
+                text(&task["sessionId"])
+            } else {
+                text(&shell["sourceSessionId"])
+            };
+            if records.get(target).and_then(|r| r.get("dirId")) != shell.get("dirId") {
+                return Err("source_session_missing".into());
+            }
+            targets.insert(id.clone(), target.to_owned());
+        }
+        Ok(targets)
+    }
+
     pub fn shell_record(&self, shell_id: &str) -> Result<Value> {
         identifier(shell_id, "shellId")?;
         let value = self.get("shell", shell_id)?;
@@ -129,6 +180,59 @@ impl TaskStore {
             shell["cursorReceiptId"] = Value::Null;
             store.put("shell", shell_id, &shell)?;
             Ok(json!({"ok":true,"taskId":id,"cursorVersion":version,"changed":true}))
+        })
+    }
+
+    /// Durable restart point between the SQLite identity and the board projection.
+    pub fn first_task_is_indexed(&self, id: &str) -> Result<bool> {
+        Ok(self.body("task-first:indexed", id)?.is_some())
+    }
+
+    pub fn mark_first_task_indexed(&mut self, id: &str, session: &str) -> Result<()> {
+        self.put(
+            "task-first:indexed",
+            id,
+            &json!({"taskId":id,"sessionId":session,"version":1}),
+        )
+    }
+
+    pub fn adopt_first_task(&mut self, facts: &Value, directory: &Value) -> Result<Value> {
+        self.atomic(|store| {
+            let session = text(&facts["sessionId"]);
+            let bound = text(&facts["record"]["taskBoundTaskId"]);
+            if !bound.is_empty()
+                && session == format!("task-{}", bound.strip_prefix("tsk_").unwrap_or(bound))
+                && store.chat_task_for_session(session)?.is_null()
+            {
+                return Err(conflict("task_shell_state_unavailable"));
+            }
+            let shell = store.register_shell_in_tx(facts)?;
+            let mut adopt = facts.clone();
+            adopt["shellId"] = shell["id"].clone();
+            let mut task = store.adopt_shell_in_tx(&adopt)?;
+            let id = text(&task["id"]).to_owned();
+            let card = &facts["indexed"][&id];
+            if facts["deleted"]
+                .as_array()
+                .is_some_and(|ids| ids.contains(&task["id"]))
+                || truth(&card["mergedInto"])
+                || truth(&card["mergedIntoTaskId"])
+                || (truth(&card["chatSessionId"]) && card["chatSessionId"] != session)
+                || (truth(&card["dirId"]) && card["dirId"] != task["dirId"])
+                || (truth(&task["dirId"]) && task["dirId"] != directory["id"])
+                || (!bound.is_empty() && bound != id)
+            {
+                return Err(conflict("task_identity_mismatch"));
+            }
+            if task["taskFirst"] != true {
+                task["taskFirst"] = json!(true);
+                store.set("task", &id, &task.to_string())?;
+            }
+            store.snapshot_role(
+                &id,
+                &json!({"record":facts["record"],"directory":directory}),
+            )?;
+            Ok(task)
         })
     }
 

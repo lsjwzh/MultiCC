@@ -1219,7 +1219,7 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   const root = path.join(__dirname, '..');
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
-  assert.equal(manifest.dependencies['better-sqlite3'], undefined,
+  assert.equal(manifest.dependencies?.['better-sqlite3'], undefined,
     'a compiled addon must not be a production dependency: it is what forced every bundle to match an ABI');
   // Kept as a devDependency on purpose: tests/test-sqlite-driver.js runs the
   // same statements through both engines, so a behavior change in the built-in

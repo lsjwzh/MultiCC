@@ -42,11 +42,14 @@ pub fn verify_session_share_cookie(secret: &str, token: &str, cookie: &str) -> b
     if secret.is_empty() || token.is_empty() {
         return false;
     }
-    let expected: String = hmac_sha256(secret.as_bytes(), token.as_bytes())
+    timing_safe_equal_text(cookie, &session_share_cookie(secret, token))
+}
+
+pub fn session_share_cookie(secret: &str, token: &str) -> String {
+    hmac_sha256(secret.as_bytes(), token.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect();
-    timing_safe_equal_text(cookie, &expected)
+        .collect()
 }
 
 pub fn base64url(bytes: &[u8]) -> String {

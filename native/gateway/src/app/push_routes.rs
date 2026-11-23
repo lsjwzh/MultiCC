@@ -365,6 +365,9 @@ pub async fn handle(
     body: &Value,
     host: u16,
 ) -> Response<Body> {
+    if !app.node_enabled && route == Route::BarkList {
+        return super::notification_reads::bark_list(app, ctx).await;
+    }
     let write =
         ctx.method == Method::POST || ctx.method == Method::PUT || ctx.method == Method::DELETE;
     let _serialized = if write {
@@ -372,6 +375,14 @@ pub async fn handle(
     } else {
         None
     };
+    if !app.node_enabled
+        && matches!(
+            route,
+            Route::SubscribePost | Route::SubscribeDelete | Route::ValidatePost
+        )
+    {
+        return super::web_push::subscription(&app.data_root, ctx, route, body).await;
+    }
     answer(ctx, route, body, host).await
 }
 

@@ -147,15 +147,15 @@ assert.ok(manager.indexOf('rm -f "$LOG_DIR/cron-fanout-cleanup.log"') < manager.
 assert.ok(manager.indexOf('cat "$LOG_DIR/cron-fanout-cleanup.log"') > manager.indexOf('if ! wait_for_ready'),
   'the cleanup report is only printed after readiness');
 
-const cprSpec = pkg.dependencies['cli-provider-router'];
+const cprSpec = pkg.devDependencies['cli-provider-router'];
 assert.match(cprSpec, /^https:\/\/github\.com\/lsjwzh\/cli-provider-router\/archive\/[0-9a-f]{40}\.tar\.gz$/);
-assert.equal(lock.packages[''].dependencies['cli-provider-router'], cprSpec);
+assert.equal(lock.packages[''].devDependencies['cli-provider-router'], cprSpec);
 assert.equal(lock.packages['node_modules/cli-provider-router'].resolved, cprSpec);
 assert.match(fs.readFileSync(path.join(ROOT, '.gitignore'), 'utf8'), /^cli-provider-router\/$/m);
 
-const ciaoSpec = pkg.dependencies['@homebridge/ciao'];
+const ciaoSpec = pkg.devDependencies['@homebridge/ciao'];
 assert.equal(ciaoSpec, '^1.3.10');
-assert.equal(lock.packages[''].dependencies['@homebridge/ciao'], ciaoSpec);
+assert.equal(lock.packages[''].devDependencies['@homebridge/ciao'], ciaoSpec);
 assert.equal(lock.packages['node_modules/@homebridge/ciao'].version, '1.3.10');
 
 console.log('Release upgrade guard tests passed');

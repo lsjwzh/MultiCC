@@ -52,7 +52,7 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
-const { main } = require('./lib');
+const { main, send, waitForFixture } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-share-1' };
 // Both sides stamp share records from the event loop clock; the two processes
@@ -363,7 +363,10 @@ function mountOracle(app, { repo, work, dataRoot }) {
     workspaces: require(legacy('workspaces')),
   };
   buildWorld = require(legacy('world')).buildWorld;
-  pagePath = path.join(work, 'share-page.html');
+  const publicDir = path.join(work, 'gw', 'public');
+  fs.mkdirSync(publicDir);
+  pagePath = path.join(publicDir, 'chat.html');
+  fs.writeFileSync(path.join(publicDir, 'chat.css'), 'body{}');
   fs.writeFileSync(pagePath, '<html><head><link href="chat.css"></head><body>chat</body></html>');
   setOracle = (scenario) => {
     const inner = express();
@@ -513,8 +516,10 @@ server.listen(0, '127.0.0.1', () => {
   main({
     name: 'share-machine-routes',
     mount: mountOracle,
+    ready: waitForFixture,
     get upstream() { return upstreamText; },
     gatewayEnv: work => ({
+      HOST: '127.0.0.1',
       MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON,
       MULTICC_RUST_PREBUILT_DIR: process.env.MULTICC_RUST_PREBUILT_DIR,
       MULTICC_DATA_DIR: path.join(work, 'gw-data'),

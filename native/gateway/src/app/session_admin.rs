@@ -248,7 +248,11 @@ fn force_flag(ctx: &RequestCtx) -> bool {
 
 // ── sessionQuery.context (`includeHidden` / `includeTaskBound`) ────────────
 
-fn context_visible(record: &Value, include_hidden: bool, include_task_bound: bool) -> bool {
+pub(crate) fn context_visible(
+    record: &Value,
+    include_hidden: bool,
+    include_task_bound: bool,
+) -> bool {
     if !record.is_object() {
         return false;
     }
@@ -398,6 +402,12 @@ pub async fn handle(
     body: &Value,
     host: u16,
 ) -> Response<Body> {
+    if matches!(route, Route::SessionsGet) && !app.node_enabled {
+        return match crate::ws_chat_native::session_list::list(app).await {
+            Ok(rows) => ok(ctx, rows),
+            Err(_) => express::error(ctx, 500, "session list unavailable"),
+        };
+    }
     let write = matches!(ctx.method.as_str(), "POST" | "DELETE" | "PUT" | "PATCH");
     let _serialized = if write {
         Some(app.session_admin_write.lock().await)

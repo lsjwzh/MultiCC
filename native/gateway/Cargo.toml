@@ -41,6 +41,9 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 tokio-tungstenite = "0.29"
 tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
+if-addrs = "0.15"
+p256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

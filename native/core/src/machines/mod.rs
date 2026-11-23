@@ -333,6 +333,15 @@ async fn remove(root: &str, input: &Value) -> Result<Value, Error> {
     Ok(result(json!({ "ok": true, "remoteRevoked": revoked })))
 }
 
+fn reply(operation: Result<Value, Error>) -> Value {
+    operation.unwrap_or_else(|e| json!({ "status": e.status, "data": { "ok": false, "code": e.code, "error": e.message, "message": e.message } }))
+}
+
+/// File-backed operations run on the gateway's blocking pool.
+pub fn local_operation(root: &str, operation: &str, input: &Value) -> Value {
+    reply(local(root, operation, input))
+}
+
 pub async fn operate(root: &str, operation: &str, raw: &str) -> String {
     let input: Value = crate::json_lenient::from_str(raw).unwrap_or(Value::Null);
     let response = match operation {
@@ -342,7 +351,7 @@ pub async fn operate(root: &str, operation: &str, raw: &str) -> String {
         "remove" => remove(root, &input).await,
         _ => local(root, operation, &input),
     };
-    response.unwrap_or_else(|e| json!({ "status": e.status, "data": { "ok": false, "code": e.code, "error": e.message, "message": e.message } })).to_string()
+    reply(response).to_string()
 }
 
 /// Incremental SSE transport. Each chunk waits for the consumer's acknowledgement

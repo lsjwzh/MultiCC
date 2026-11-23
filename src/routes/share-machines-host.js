@@ -16,7 +16,7 @@
 //   GET|HEAD            /api/sessions/:id/shares
 //   DELETE              /api/sessions/:id/share/:token
 //   POST                /api/sessions/:id/share-messages
-//   GET|HEAD            /share/:token
+//   GET|HEAD            /share/:token（仅在前门渲染）
 //   POST                /api/share/:token/auth
 //   GET|HEAD            /api/share/:token/entry
 //   GET|HEAD            /api/share/:token/history
@@ -31,9 +31,9 @@
 //
 // 这里只剩 Node 独有的运行时事实与副作用：机器注册表与授权表（已经是
 // native/core/machines，经 addon 复用）、机器远端 HTTP 与 WS 票据表、分享记录与
-// 密码 cookie、工作区扫描/清扫、缓存击穿版 HTML 写入器。
+// 密码 cookie、工作区扫描/清扫。分享页面由前门读取并返回。
 //
-// 处理器仍按退休时的样子写 `res.set/status/json/send`；这里的捕获器把它们变成
+// 处理器仍按退休时的样子写 `res.set/status/json`；这里的捕获器把它们变成
 // `{ status, body, headers }`，前门原样回放 —— 两边不会各自长出第二套状态码、
 // 头或键序规则。
 //
@@ -66,7 +66,6 @@ const OPS = {
   'session-shares-list': { method: 'GET', path: '/api/sessions/:id/shares', params: ['id'] },
   'session-share-revoke': { method: 'DELETE', path: '/api/sessions/:id/share/:token', params: ['id', 'token'] },
   'session-share-messages': { method: 'POST', path: '/api/sessions/:id/share-messages', params: ['id'] },
-  'share-page': { method: 'GET', path: '/share/:token', params: ['token'] },
   'share-auth': { method: 'POST', path: '/api/share/:token/auth', params: ['token'] },
   'share-entry': { method: 'GET', path: '/api/share/:token/entry', params: ['token'] },
   'share-history': { method: 'GET', path: '/api/share/:token/history', params: ['token'] },
@@ -92,14 +91,6 @@ function createCaptureApp(handlers) {
   };
 }
 
-/** `res.type(value)` 的 Content-Type（-types 查表 + charset）。只有分享页用它。 */
-function contentTypeOf(value) {
-  const text = String(value || '');
-  if (text === 'html' || text === 'text/html') return 'text/html; charset=utf-8';
-  if (text.startsWith('text/') && !text.includes('charset=')) return `${text}; charset=utf-8`;
-  return text;
-}
-
 /**
  * `res` 当作退休处理器使用：它们渲染，我们取走状态码、正文与响应头。
  * 正文只可能是 JSON 值或字符串 —— 二进制 proxy 不在本端口，出现即视为编程错误。
@@ -118,22 +109,7 @@ function runHandler(handler, req) {
       status(code) { reply.status = code; return res; },
       set(name, value) { reply.headers.push([String(name), String(value)]); return res; },
       setHeader(name, value) { reply.headers.push([String(name), String(value)]); return res; },
-      type(value) { reply.contentType = contentTypeOf(value); return res; },
       json(body) { reply.body = body === undefined ? null : body; finish(); return res; },
-      send(body) {
-        if (Buffer.isBuffer(body)) throw new Error('share-machines host does not relay binary bodies');
-        reply.body = body === undefined ? null : body;
-        finish();
-        return res;
-      },
-      // `_serveVersionedHtml` 读文件失败时只 `status(500).end()`：没有正文、
-      // 没有 Content-Type、也没有 ETag。
-      end(body) {
-        if (body === undefined) reply.bare = true;
-        else reply.body = body;
-        finish();
-        return res;
-      },
     };
     // 成功由 res 的终止调用收尾；asyncHandler 只在拒绝时调用 next。
     const next = (error) => {

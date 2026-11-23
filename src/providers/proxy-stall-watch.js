@@ -4,7 +4,6 @@ const { proxyRequestKind } = require('./proxy-outcome');
 const { performance } = require('node:perf_hooks');
 
 const { createModelStreamProgress } = require('../native/runtime');
-const { scheduleRequestTimer } = require('../native/request-timer');
 const { getNative } = require('../native/runtime');
 
 // 每个已准入的模型请求独占计时器；请求结束即撤销，不计本地工具时间。
@@ -94,7 +93,7 @@ function createProxyStallWatch(options = {}) {
   const requestKind = options.requestKind || proxyRequestKind(protocol, options.req);
   const injectedClock = typeof options.setTimeout === 'function' || typeof options.clearTimeout === 'function';
   const schedule = typeof options.setTimeout === 'function' ? options.setTimeout
-    : injectedClock ? setTimeout : scheduleRequestTimer;
+    : injectedClock ? setTimeout : getNative().scheduleRequestTimer;
   const unschedule = typeof options.clearTimeout === 'function' ? options.clearTimeout
     : injectedClock ? clearTimeout : handle => handle.cancel();
   const onStall = typeof options.onStall === 'function' ? options.onStall : null;

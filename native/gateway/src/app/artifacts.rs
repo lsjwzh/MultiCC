@@ -79,7 +79,7 @@ fn strip_prefix(path: &str) -> Option<&str> {
 }
 
 /// The two roots in mount order, deduplicated like `servedRoots()`'s `Set`.
-fn served_roots(app: &App) -> Vec<PathBuf> {
+pub(super) fn served_roots(app: &App) -> Vec<PathBuf> {
     let primary = app.data_root.join("artifacts");
     let legacy = app.home_dir.join(".multicc").join("artifacts");
     if primary == legacy {

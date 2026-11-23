@@ -290,12 +290,13 @@ exactly as it is — nothing is copied from a directory you did not point the
 installer at without an answer — and `--adopt-data <path>` brings its sessions,
 chat history and memories over as a copy, leaving the original untouched.
 
-To hack on MultiCC itself, run it from a checkout — that path is for developers, and
-`./multicc update` there is a `git pull` + `npm install`:
+To run the Rust gateway from a checkout, install Rust, a C/C++ toolchain and libclang. Configure `ACCESS_TOKEN` and a writable `MULTICC_DATA_DIR` in the deployment environment.
 
 ```bash
 git clone https://github.com/lsjwzh/MultiCC.git
-cd MultiCC && npm install && node server.js
+cd MultiCC
+cargo build --locked --release --manifest-path native/Cargo.toml --target-dir native/target
+native/target/release/multicc-gateway serve --cwd .
 ```
 
 </details>
@@ -649,17 +650,16 @@ npm run test:native
 
 ### Run behind the Rust front door
 
-Every entry point — the source-checkout `./multicc` script, the standalone launcher, the desktop shell and `npm start` — already starts `multicc-gateway serve --cwd <checkout> --node <node> server.js`; the front door owns the public port and supervises Node behind it. `scripts/start-gateway.js` is the foreground launcher behind `npm start`; it refreshes the native artifacts and then runs the gateway with `--stdin-lifeline`.
+The root npm source package and the PM2 configuration start the Rust gateway directly. Build the binaries before the first start. Set `ACCESS_TOKEN` in the deployment environment and keep `MULTICC_DATA_DIR` on writable storage.
 
 ```bash
-npm start
-# or, against an already-built binary:
-native/target/release/multicc-gateway serve --cwd "$PWD" --node "$(command -v node)" server.js
-# Rust-owned routes only, no Node process at all:
-scripts/start-rust-only.sh
+cargo build --locked --release --manifest-path native/Cargo.toml --target-dir native/target
+native/target/release/multicc-gateway serve --cwd .
+# To start the same backend without npm:
+native/target/release/multicc-gateway serve --cwd . --no-node
 ```
 
-`--node` and `--no-node` are mutually exclusive and exactly one is mandatory: a front door told neither exits 2 instead of silently picking a runtime. `scripts/start-rust-only.sh` starts this checkout with `--no-node`, using `$MULTICC_GATEWAY_BIN` or `native/target/release/multicc-gateway`. Under `--no-node` the front door owns the authentication runtime itself when `.env` supplies a usable `ACCESS_TOKEN`: it reads the token with the same rules `server.js` used and answers auth-gated native routes through the same Rust gate (`403 AUTH_REQUIRED` / `302 /login` / `200`). Without a token (missing, empty, or over the 64 KiB control-frame limit) it fails closed: auth-gated native routes answer 503 `node_runtime_absent` with the documented text, and one diagnostic line is written to stderr. Every route the front door would forward — including every `/ws/*` upgrade, so a locally minted WS ticket cannot be redeemed yet — still answers 503 `node_runtime_absent` instead of reaching for a Node child. `--node` is unchanged: the Node child remains the only authentication owner.
+The release build includes the writer, restart supervisor, remote-screen and CDP helpers. The source manager (`./multicc` and its launchd job), standalone launcher and Electron bundle still start a compatibility host. The root Dockerfile builds a Rust runtime image. The migration report lists the endpoints verified on the standalone gateway and those that still require the compatibility host. [Production entry verification](docs/rust-migration/production-entry-2026-11-24.md)
 
 The front door reads `.env` from `--cwd` with the same rules `server.js` used, passes `MULTICC_GATEWAY_CHILD=1` and `MULTICC_GATEWAY_INTERNAL_PORT` to the child, and writes a PROXY v1 header on every upstream connection. `--version` prints the protocol and crate version; with no arguments it prints usage and exits 2. The full contract — arguments, supervision, the `--no-node` fail-closed shape and environment variables — is in [docs/gateway.md](docs/gateway.md).
 
@@ -689,7 +689,7 @@ CI builds and re-runs the smoke checks for this stage in the `node-free-runtime`
 
 ### What the Rust front door does not cover yet
 
-This is not yet a Rust-only product. The gateway owns the public port, request admission and the route groups listed in [docs/gateway.md §9](docs/gateway.md) (run-config presets, file transfer/upload/download, service routes, quota guard, subscription and limit history, token usage, model catalogs, agent resources, secrets vault, host routes, turn ledger, voice-gateway records and runtime, …). Everything else — most HTTP routes, the WebSocket hosts, static files and the chat turn coordinator — is still served by the `node server.js` upstream the gateway spawns. A Node-free start path now exists (`--no-node`, `scripts/start-rust-only.sh`, the `node-free-runtime` Docker stage and the `--no-node` CI smoke), but it only serves what needs no Node state: requests for an unmigrated route, and — when `.env` supplies no usable `ACCESS_TOKEN` — any native route that needs the authentication runtime, fail closed with 503 `node_runtime_absent`. With a token, the front door owns the token, WS-ticket table and shutdown flag locally and those auth-gated native routes answer normally, but forwarded routes and every `/ws/*` upgrade still need Node. The complete feature set therefore still needs `--node`, and the default entry points (`./multicc`, `npm start`, the standalone launcher and the desktop shell) keep passing it. How much has moved, what remains and the acceptance criteria for removing the Node upstream are tracked in [docs/backend-rust-exit-plan.md](docs/backend-rust-exit-plan.md); the front door itself is described in [docs/gateway.md](docs/gateway.md).
+The standalone gateway serves static pages and native API and WebSocket handlers. Several configured handlers still call Node for session state, scheduling, plugins, push delivery or repository operations. A successful readiness probe covers the running gateway. The route comparison and module inventory track the remaining product dependencies. [Production entry verification](docs/rust-migration/production-entry-2026-11-24.md) · [Node module inventory](docs/rust-migration/node-module-dependencies.md)
 
 **→ [Architecture](docs/architecture.md)**
 

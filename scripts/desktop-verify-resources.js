@@ -50,11 +50,13 @@ function verifyDesktopResources({ resourcesDir, execute = true, timeoutMs = 60_0
     // must open and execute a transaction. ESM-only dependencies are covered by
     // resolution rather than CommonJS require().
     const script = `const r = require('module').createRequire(${JSON.stringify(path.join(appServerDir, 'server.js'))});
-      if (r('@iarna/toml').parse('value = 1').value !== 1) throw new Error('TOML parse failed');
       if (!/^1\\./.test(r('cli-provider-router').API_VERSION || '')) throw new Error('CPR API major 1 required');
       let cpr;
       try { cpr = r('./src/native/runtime').getNative(); } catch (_) { throw new Error('Rust SQLite / CPR module unavailable'); }
       if (cpr.cprProtocolVersion?.() !== 1 || typeof cpr.cprCreateExchange !== 'function') throw new Error('Rust CPR module required');
+      if (!cpr.grokProviderModelConfig('smoke', 'https://example.invalid', 'responses').includes('[model.smoke]')) {
+        throw new Error('Rust Grok config unavailable');
+      }
       const db = new (r('./src/sqlite/driver').databaseConstructor())(':memory:');
       if (db.backend !== 'rust') throw new Error('Rust SQLite required');
       db.exec('create table smoke(x); create virtual table f using fts5(x)');

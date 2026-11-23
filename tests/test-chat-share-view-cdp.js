@@ -3,8 +3,8 @@
 // 分享出去的页面必须就是聊天页本身，只是按权限收掉一些东西。
 //
 // 这是一个端到端断言，不是一个面向前端模块的断言：真实 express 实例上挂着
-//   · 真实的 src/routes/static-assets.js（公开目录 + 带 ?v=<mtime> 的 HTML 写入器）
-//   · 真实的 src/routes/share.js（页面路由、entry、history、auth）
+//   · 冻结的静态服务器提供页面及其带版本号的资源
+//   · 真实的 src/routes/share.js（entry、history、auth）
 //   · 真实的 public/chat.html 及其全部脚本
 // 只有分享存储和 WebSocket 服务是假的。真 Chrome 打开 /share/<token>，看它渲染出
 // 来的到底是不是管理员那一套界面。
@@ -71,8 +71,8 @@ function parseCookies(header) {
   return cookies;
 }
 
-// 服务器上的接线跟 server.js 一致，包括次序：分享路由先挂，静态资源写入器先创建、
-// 后挂载。请求记录让我们能从服务端确认页面到底问了哪些接口。
+// 浏览器测试用冻结的写入器提供网关负责的页面，分享数据走生产处理器。
+// 请求记录让我们能从服务端确认页面到底问了哪些接口。
 async function startShareServer() {
   const requests = [];
   const app = express();
@@ -90,9 +90,8 @@ async function startShareServer() {
     loadChatHistory: () => MESSAGES.map((message, index) => ({ id: `m${index}`, ...message })),
     paginateChatHistory: () => ({ messages: [], hasMore: false }),
     parseCookies,
-    chatPageFile: path.join(PUBLIC_DIR, 'chat.html'),
-    serveHtml: staticAssetsRuntime.serveHtml,
   });
+  app.get('/share/:token', (_req, res) => staticAssetsRuntime.serveHtml(path.join(PUBLIC_DIR, 'chat.html'), res));
   staticAssetsRuntime.mountRoutes(app);
 
   const server = await new Promise((resolve) => {

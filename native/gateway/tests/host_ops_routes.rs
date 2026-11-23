@@ -763,11 +763,11 @@ fn skill_sync_and_the_two_doctor_run_families() {
         world(json!({
             "skill-sync-status": relay(200, json!({ "running": false, "lastRun": null })),
             "skill-sync-run": relay(202, json!({ "ok": true, "running": true })),
-            "env-doctor-start": relay(202, json!({ "ok": true, "runId": "env-1" })),
-            "env-doctor-run": relay(200, json!({ "ok": true, "status": "done" })),
-            "env-doctor-cancel": relay(200, json!({ "ok": true, "cancelled": true })),
-            "doctor-run": relay(200, json!({ "ok": true, "status": "done" })),
-            "doctor-cancel": relay(200, json!({ "ok": true, "cancelled": true })),
+            "env-doctor-start": json!({"result": { "ok": true, "runId": "env-1" }}),
+            "env-doctor-run": json!({"result": { "status": "done" }}),
+            "env-doctor-cancel": json!({"result": true}),
+            "doctor-run": json!({"result": { "status": "done" }}),
+            "doctor-cancel": json!({"result": true}),
         })),
     );
     assert_eq!(gateway.get("/api/skill-sync/status").status, 200);
@@ -779,18 +779,28 @@ fn skill_sync_and_the_two_doctor_run_families() {
     );
     assert_eq!(
         gateway
-            .send("POST", "/api/system/env-doctor", &json!({}))
-            .status,
-        202
+            .send(
+                "POST",
+                "/api/system/env-doctor",
+                &json!({"path":"/tmp", "fix":null, "unsafe": true})
+            )
+            .json(),
+        json!({"ok":true, "runId":"env-1"})
     );
-    assert_eq!(gateway.get("/api/system/env-doctor/env%201").status, 200);
+    assert_eq!(
+        gateway.get("/api/system/env-doctor/env%201").json(),
+        json!({"ok":true, "run":{"status":"done"}})
+    );
     assert_eq!(
         gateway
             .send("POST", "/api/system/env-doctor/env%201/cancel", &json!({}))
             .status,
         200
     );
-    assert_eq!(gateway.get("/api/doctor/runs/abc").status, 200);
+    assert_eq!(
+        gateway.get("/api/doctor/runs/abc").json(),
+        json!({"run":{"status":"done"}})
+    );
     assert_eq!(
         gateway
             .send("POST", "/api/doctor/runs/abc/cancel", &json!({}))
@@ -811,10 +821,11 @@ fn skill_sync_and_the_two_doctor_run_families() {
             "doctor-cancel",
         ]
     );
-    assert_eq!(calls[3]["runId"], "env 1");
-    assert_eq!(calls[4]["runId"], "env 1");
-    assert_eq!(calls[5]["runId"], "abc");
-    assert_eq!(calls[6]["runId"], "abc");
+    assert_eq!(calls[2]["input"], json!({"path":"/tmp","fix":null}));
+    assert_eq!(calls[3]["input"], "env 1");
+    assert_eq!(calls[4]["input"], "env 1");
+    assert_eq!(calls[5]["input"], "abc");
+    assert_eq!(calls[6]["input"], "abc");
 }
 
 #[test]
@@ -823,8 +834,8 @@ fn session_doctor_guard_refuses_internal_slots_before_the_host() {
         "session-doctor-guard",
         json!({
             "hostOps": { "ops": json!({
-                "session-doctor-start": relay(202, json!({ "ok": true, "runId": "doc-1" })),
-                "session-doctor-list": relay(200, json!({ "ok": true, "runs": [] })),
+                "session-doctor-start": json!({"result": { "ok": true, "runId": "doc-1" }}),
+                "session-doctor-list": json!({"result": []}),
             }) },
             "sessionAdmin": { "ops": json!({
                 "guard-record:s1": { "record": { "id": "s1" }, "internal": true, "taskStateWritable": true },
@@ -848,7 +859,7 @@ fn session_doctor_guard_refuses_internal_slots_before_the_host() {
         "/api/sessions/s2/doctor",
         &json!({ "kind": "quick" }),
     );
-    assert_eq!(start.status, 202, "{}", gateway.log());
+    assert_eq!(start.status, 200, "{}", gateway.log());
     assert_key_order(&start.body, &["ok", "runId"]);
     assert_eq!(gateway.get("/api/sessions/s2/doctor").status, 200);
 
@@ -857,9 +868,41 @@ fn session_doctor_guard_refuses_internal_slots_before_the_host() {
         ops_sent(&calls),
         vec!["session-doctor-start", "session-doctor-list"]
     );
-    assert_eq!(calls[0]["id"], "s2");
-    assert_eq!(calls[1]["id"], "s2");
-    assert_eq!(calls[1]["method"], "GET");
+    assert_eq!(calls[0]["input"], json!({"sessionId":"s2","autofix":false}));
+    assert_eq!(calls[1], json!({"op":"session-doctor-list","input":"s2"}));
+}
+
+#[test]
+fn doctor_refusals_and_missing_runs_are_projected_by_the_gateway() {
+    let gw = Gateway::start(
+        "doctor-refusals",
+        world(json!({
+            "env-doctor-start": {"result":{"ok":false, "status":503, "code":"AUX_UNAVAILABLE", "error":"unavailable", "private":"omit"}},
+            "doctor-run": {"result":null},
+            "env-doctor-run": {"result":null},
+            "doctor-cancel": {"result":false}
+        })),
+    );
+    let refused = gw.send("POST", "/api/system/env-doctor", &json!({"error":"test"}));
+    assert_eq!(refused.status, 503);
+    assert_eq!(
+        refused.json(),
+        json!({"ok":false, "code":"AUX_UNAVAILABLE","error":"unavailable"})
+    );
+    let missing = gw.get("/api/system/env-doctor/x");
+    assert_eq!(missing.status, 404);
+    assert_eq!(
+        missing.json(),
+        json!({"ok":false,"code":"NOT_FOUND","error":"diagnosis not found"})
+    );
+    let missing = gw.get("/api/doctor/runs/x");
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.json(), json!({"error":"doctor run not found"}));
+    assert_eq!(
+        gw.send("POST", "/api/doctor/runs/x/cancel", &json!({}))
+            .json(),
+        json!({"ok":false})
+    );
 }
 
 // ── OPTIONS union ───────────────────────────────────────────────────────────

@@ -7,7 +7,6 @@ const path = require('path');
 const { runToolLoop } = require('../src/doctor/llm-loop');
 const { createDoctorTools, checkCommand, redact } = require('../src/doctor/tools');
 const { createDoctorService } = require('../src/doctor/service');
-const { mountDoctorRoutes } = require('../src/routes/doctor');
 
 function fixture(autofix) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'doctor-')));
@@ -145,7 +144,7 @@ test('tool loop reports unknown tools back to the model and stops at maxTurns', 
   assert.match(seen[1].messages.at(-1).content, /未知工具/);
 });
 
-test('service runs a diagnosis end to end and routes expose it', async () => {
+test('session doctor completes a real run and exposes the report to its host port', async () => {
   const { tools: _ignore, ...fx } = fixture(false);
   const doctor = createDoctorService({
     getSession: id => (id === 's1' ? { id: 's1', worktreePath: fx.worktree } : null), loadHistory: () => [], cwdOf: () => fx.worktree,
@@ -157,17 +156,14 @@ test('service runs a diagnosis end to end and routes expose it', async () => {
       return { finished: true, turns: 2, report: { summary: 'ok', rootCause: 'stale lock' } };
     },
   });
-  const routes = {};
-  mountDoctorRoutes({ post: (p, h) => { routes['POST ' + p] = h; }, get: (p, h) => { routes['GET ' + p] = h; } }, { doctor });
-  const reply = () => { const r = { code: 200 }; r.status = c => { r.code = c; return r; }; r.json = b => { r.body = b; return r; }; return r; };
-  const missing = reply(); routes['POST /api/sessions/:id/doctor']({ params: { id: 'nope' }, body: {} }, missing);
-  assert.equal(missing.code, 404);
-  const started = reply(); routes['POST /api/sessions/:id/doctor']({ params: { id: 's1' }, body: { autofix: false } }, started);
-  assert.ok(started.body.runId);
+  const missing = doctor.start({ sessionId: 'nope', autofix: false });
+  assert.equal(missing.status, 404);
+  const started = doctor.start({ sessionId: 's1', autofix: false });
+  assert.ok(started.runId);
   await new Promise(r => setTimeout(r, 30));
-  const got = reply(); routes['GET /api/doctor/runs/:runId']({ params: { runId: started.body.runId } }, got);
-  assert.equal(got.body.run.status, 'done');
-  assert.equal(got.body.run.report.rootCause, 'stale lock');
+  const run = doctor.get(started.runId);
+  assert.equal(run.status, 'done');
+  assert.equal(run.report.rootCause, 'stale lock');
 });
 
 test('service refuses politely when Aux is unavailable', () => {

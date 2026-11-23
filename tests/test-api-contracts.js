@@ -852,8 +852,9 @@ test('/api share, machine and workspace routes are owned by the Rust front door;
   assert.ok(host.includes('runHandler'), 'the host port returns {ok,value} envelopes');
   assert.ok(host.includes('thrownEnvelope('),
     'handler exceptions cross the port as structured envelopes');
-  assert.ok(host.includes("reply.bare = true"),
-    'the versioned-HTML 500 (status().end()) crosses the port without a body');
-  assert.equal((host.match(/^  '[a-z0-9-]+': \{ method:/gm) || []).length, 21,
-    'the host port serves exactly the 21 migrated public routes');
+  assert.doesNotMatch(host, /'share-page'/);
+  assert.match(fs.readFileSync(path.join(ROOT, 'native/gateway/src/app/share_machine_routes.rs'), 'utf8'),
+    /HtmlPage::Share/, 'the gateway renders the share page and its empty 500 locally');
+  assert.equal((host.match(/^  '[a-z0-9-]+': \{ method:/gm) || []).length, 20,
+    'the other 20 routes use the host port');
 });

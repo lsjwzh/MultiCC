@@ -268,12 +268,16 @@ Windows 对应参数为 `-InstallDir`、`-Version`、`-From`、`-AccessToken`、
 
 独立包之前的旧安装如果就在要装的目录上，会被**原地升级**：停下来、整棵目录留作备份、设置和数据搬进新数据目录。如果它在别处，则只报告、原样不动——没人回答时不会从一个你没指定的目录里拷任何东西——用 `--adopt-data <path>` 可以把它的会话、聊天历史和 memories 拷进来，原件保持不动。
 
-想改 MultiCC 本身，就从源码检出运行——那条路是给开发者准备的，那里的 `./multicc update` 是 `git pull` + `npm install`：
+从源码检出运行 Rust 网关时，先安装 Rust、C/C++ 工具链和 libclang，在部署环境中配置 `ACCESS_TOKEN` 和可写的 `MULTICC_DATA_DIR`。
 
 ```bash
 git clone https://github.com/lsjwzh/MultiCC.git
-cd MultiCC && npm install && node server.js
+cd MultiCC
+cargo build --locked --release --manifest-path native/Cargo.toml --target-dir native/target
+native/target/release/multicc-gateway serve --cwd .
 ```
+
+构建后可直接执行 `native/target/release/multicc-gateway serve --cwd . --no-node`。当前纯 Rust 入口的接口覆盖率和缺失项见[迁移验收记录](docs/rust-migration/production-entry-2026-11-24.md)。
 
 </details>
 

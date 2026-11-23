@@ -116,21 +116,16 @@ function fakeLogger() {
 
   // ── coordinated budget < PM2 kill_timeout ────────────────────────
   {
-    const fs = require('node:fs');
-    const path = require('node:path');
-    const ecosystem = fs.readFileSync(path.join(__dirname, '..', 'ecosystem.config.js'), 'utf8');
-    const killTimeout = Number((/kill_timeout:\s*(\d+)/.exec(ecosystem) || [])[1]);
+    const service = require('../ecosystem.config').apps[0];
+    const killTimeout = service.kill_timeout;
     const {
       DEFAULT_TOTAL_BUDGET_MS, FINAL_FLUSH_RESERVE_MS, CLOSER_RESERVE_MS,
     } = require('../src/shutdown');
     ok(Number.isFinite(killTimeout) && killTimeout > 0, 'ecosystem.config.js declares kill_timeout');
-    // The pm2 definition must start the Rust front door's launcher. A bare
-    // `server.js` binds the public port itself and lacks every migrated route.
-    const script = (/script:\s*'([^']+)'/.exec(ecosystem) || [])[1];
-    ok(script === 'scripts/start-gateway.js',
-      `ecosystem.config.js starts the front door launcher, not bare Node (got ${script})`);
-    ok(fs.existsSync(path.join(__dirname, '..', script || 'missing')),
-      'the launcher named by ecosystem.config.js exists');
+    ok(service.script === 'native/target/release/multicc-gateway' && service.interpreter === 'none',
+      'PM2 runs the release binary directly');
+    ok(JSON.stringify(service.args) === JSON.stringify(['serve', '--cwd', service.cwd, '--no-node']),
+      'PM2 starts the standalone Rust runtime');
     ok(DEFAULT_TOTAL_BUDGET_MS < killTimeout - 3_000,
       `total shutdown budget ${DEFAULT_TOTAL_BUDGET_MS}ms keeps margin under kill_timeout ${killTimeout}ms`);
     ok(DEFAULT_TOTAL_BUDGET_MS >= FINAL_FLUSH_RESERVE_MS + CLOSER_RESERVE_MS,

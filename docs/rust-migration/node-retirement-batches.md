@@ -1,5 +1,12 @@
 # Node 后端分批搬迁计划
 
+## 独立网关的订阅、目录和分享（2026-11-24）
+
+纯 Rust 入口已接管订阅存储、VAPID 公钥、推送健康、目录列表和分享入口及口令校验。隔离双实例的 23 条读请求中，状态码一致 15 条，仍有 8 条有差异；两端各通过 15 项预置数据检查。本批沿用已有 JS/CJS/MJS 文件清单，`src/` 为 525 + 2 + 3 个，另有根宿主。源码包生产 Node 依赖为 0。部署范围与逐域缺口见[入口验收记录](production-entry-2026-11-24.md)。
+
+2026-11-24 的生产入口批次已将 npm 根包和 PM2 转为 Rust 直接启动；协议兼容与其它安装渠道仍在迁移。完整基线、缺口、源码包内容和实测结果见[生产入口验收](production-entry-2026-11-24.md)。
+
+
 盘点基线为 `main` 的 `c1be57b5`。聊天核心 `src/chat/` 有 68 个 JS 文件、14,352 行。加上 `src/session-work/` 和 `src/task-shell/` 后为 100 个文件、21,697 行。整个 `server.js` 和 `src/` 的 JS 源码为 607 个文件、136,103 行。数字按物理行统计，包含注释和桥接代码。
 
 `--no-node` 已独立跑通受支持的 Claude 回合，以及已登记任务的计划工作区物化、领取和完成。当前兼容启动路径仍经聊天桥交给 `node server.js` 执行。任务壳 HTTP 已由 Rust 匹配路由，部分操作仍经 `/api/__host/task-shell` 调用 Node。服务是否仍依赖 Node，要看操作最终由谁执行。 [聊天验收记录](ws-chat-native-runtime.md) · [网关聊天入口](../../native/gateway/src/ws_chat.rs) · [任务壳 HTTP 入口](../../native/gateway/src/app/task_shell.rs)
@@ -1214,3 +1221,46 @@ Aux 队列目前返回 JavaScript Promise，会话历史和看板变更通知也
 两个旧文件逐字节保留在 `tests/helpers/legacy-task-board-runtime-helpers.js` 和 `tests/helpers/legacy-task-display-attribution.js`。分组测试覆盖保存与回滚，短码测试对照输出、对象引用、回调顺序与异常，并经三个生产入口取回结果。
 
 按本批工作树统计，`src/` 有 531 个 `.js` 和 2 个 `.cjs`，共 533 个；根 `package.json` 的 `dependencies` 有 19 项。源码默认用 `npm start` 启动 Rust 网关及 `server.js` 子进程。分组保留 Node 保存和通知端口，短码展示读取宿主任务库和短码注册表；这些端口的持有者迁入 Rust 后可移除相应 N-API 调用。 [运行与部署](../gateway.md)
+
+### Grok 配置、会话分享页和模型请求计时器（2026-11-24）
+
+| 批次 | 迁入 Rust 的行为 | 宿主依赖与移除条件 |
+| --- | --- | --- |
+| Grok 模型配置 | `native/core/src/provider_settings_config.rs` 生成两个 API 协议所需的 TOML。模型名作为单个表键处理，输出中只有密钥环境变量名。根包移除直接依赖 `@iarna/toml`，直接依赖数从 19 降至 18。 | `src/providers/core.js` 仍持有会话目录、凭据与原子私有文件写入。Provider 启动所有者迁入 Rust 后可撤掉 N-API 调用。CPR 本身仍依赖 TOML 包。 |
+| 分享页 | `GET/HEAD /share/:token` 在 `native/gateway/src/app/share_machine_routes.rs` 完成路径校验后，复用静态文件服务读取并版本化 `public/chat.html`。删除 `src/routes/static-assets.js` 和对应的 addon 方法。 | 分享历史、密码和令牌数据由现有分享宿主提供。只加载 HTML 无需调用该宿主，接管分享库与会话历史后才可移除其余读写端口。 |
+| 请求计时器 | `native/addon/src/request_timer.rs` 负责延时归一化、Tokio 调度与回调交付前的取消判定。删除 `src/native/request-timer.js`。 | 两个网络观察器仍接收 Node HTTP/Undici 事件与响应生命周期通知。传输与响应所有权迁入 Rust 后可去掉这两个调用点。 |
+
+本批后 `src/` 有 529 个 JS、2 个 CJS 和 3 个 MJS。部署默认仍启动 Rust 网关与 Node 宿主。逐文件清单列出静态加载、本地脚本路径、内置模块、外部包及动态表达式。 [模块与依赖](node-module-dependencies.md) · [部署方式](../gateway.md)
+
+### 环境诊断和会话诊断（2026-11-24）
+
+Rust 网关接管七条诊断路由的参数、响应字段和状态码，保留会话访问检查、HEAD 和 OPTIONS。旧处理器共两个文件，已从生产目录删除，在 `tests/helpers/legacy-host-ops-routes/` 中保留原件。Node 的 `src/routes/host-ops-host.js` 只为这七个操作调用现有诊断服务。服务内的活动任务、可取消进程、Aux 和会话历史仍有 Node 所有者，全部迁移后可移除这些调用。
+
+本批后 `src/` 有 527 个 JS、2 个 CJS、3 个 MJS，根包直接运行依赖 18 项。网关与宿主需成套部署，双方的协议号为 14。 [逐文件运行依赖](node-module-dependencies.md) · [部署说明](../gateway.md)
+
+### 人机协助截图保留（2026-11-24）
+
+原 `src/assist-snapshots.js` 在 `server.js` 监听成功后同步扫描磁盘。现在 `multicc-gateway` 在启动时和每六小时调度 `multicc_core::assist_snapshots`，扫描在阻塞线程池串行执行，关闭时等待在途扫描结束。七天窗口按会话目录的直接子项计算，过期目录整棵移除。根目录和会话目录的符号链接不跟随。独立数据目录和历史默认目录沿用网关原有的路径解析。协议 15 的 Node 子进程不注册第二个清理器。直接运行 `node server.js` 时，宿主在监听和关闭两个生命周期点，通过 addon 启停同一 Rust 实现。直接启动模式退役后可删除该 N-API 入口。
+
+冻结旧实现位于 `tests/helpers/legacy-assist-snapshots.js`。运行 `node --test tests/test-assist-snapshots.js`，可对照带 Node 子进程的网关、纯 Rust 网关和直接使用 addon 的目录结果。运行 `cargo test --manifest-path native/Cargo.toml -p multicc-core assist_snapshots` 可核对七天边界和连续两次触发。
+
+本批后生产目录有 526 个 JS、2 个 CJS、3 个 MJS。根包仍有 18 个直接运行依赖。 [逐文件清单](node-module-dependencies.md) · [部署说明](../gateway.md)
+
+### 通知地址占位符（2026-11-24）
+
+`server.js → src/routes/host-ops-host.js → src/routes/host-write.js` 装配通知设置写接口。原先读接口在网关、写接口在 Node 分别生成 URL 掩码。现在两者共用 `multicc_core::notify_settings`。Rust addon 只读请求自有的两个通知字段，区分有效的修改、原样回传的占位符和显式清空。保留宿主内同一同步事务中的当前配置、URL 校验、文件写入、实时应用与失败补偿，避免并发请求使用过期配置。推送运行态和配置写入一起迁移后可撤去这处 addon 调用。
+
+`node --test tests/test-host-write-routes.js` 对照旧处理器逐次比较响应、磁盘写入参数和实时配置；`docs/rust-migration/differential/host-read.js` 与 `host-ops-routes.js` 分别覆盖新旧 HTTP 读写接口。原模块从生产树和 npm 打包清单删除。此时 `src/` 为 525 个 JS、2 个 CJS、3 个 MJS，直接运行依赖仍为 18 项。 [逐文件清单](node-module-dependencies.md) · [部署方式](../gateway.md)
+
+通知设置批次（原生源码指纹 `4d281597db9455be2bb19599`）串行 Rust 工作区通过 2,848 项。该次完整 npm 在制品清理测试退出 1。服务以 `setInterval(cleanupArtifacts, 6 * 3600 * 1000)` 注册定时器，测试只识别箭头函数包装。复测同时接受两种回调写法，仍拒绝错误周期和注册时立即执行。当前工作树定向复测 42/42；宿主读取、宿主操作、分享与电脑、静态资源四组差分分别为 36/36、96/96、66/66、172/172，另有 36 项预期差异全部符合记录。后续完整回归见[生产入口验收](production-entry-2026-11-24.md)。
+
+在仓库根目录可复核这两批的生产退出情况。第一条命令应无输出、退出 1，第二条应输出 `[]`。
+
+```sh
+rg -n '(/|^)(assist-snapshots|notify-settings)\b' server.js src scripts public plugins desktop docker multicc ecosystem.config.js package.json
+npm pack --dry-run --ignore-scripts --json | node -e 'let s=""; process.stdin.on("data", c => s += c).on("end", () => console.log(JSON.parse(s)[0].files.filter(f => /^src\/(assist-snapshots|notify-settings)\.js$/.test(f.path))))'
+```
+
+### 独立入口读模型和旧会话领养（2026-11-24）
+
+任务板搜索与文档登记 GET 已接入独立网关。搜索复用 Rust BM25，文档视图从登记文件、只读任务壳 SQLite 和制品引用构建。运行指标和目录 Git 操作读取网关本身的运行状态。旧会话领养依赖已迁的任务身份、角色快照和任务板版本检查。电源读接口区分用户设置与系统观测。当前根包生产依赖为零，兼容宿主可达源码为 518 个导入模块及 9 个脚本路径模块；该批复用已有模块，整文件删除数为零。验证记录与缺失清单见[生产入口报告](production-entry-2026-11-24.md)。

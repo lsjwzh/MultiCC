@@ -363,7 +363,9 @@ async fn dispatch(
         )
         .await;
     }
-    if let Some(route) = crate::app::claim_uri(request.method(), request.uri()) {
+    if let Some(route) = crate::app::claim_uri(request.method(), request.uri()).or_else(|| {
+        crate::app::cron_list::claim(!app.node_enabled, request.method(), request.uri().path())
+    }) {
         let host = upstream.state.port.load(Ordering::SeqCst);
         return crate::app::handle(app, route, request, upstream.state.client, host, upstream)
             .await;

@@ -1184,16 +1184,25 @@ async fn native_http_delivery_retries_and_conflicts_share_the_chat_receipt() {
 #[tokio::test]
 async fn native_http_failed_receipt_retries_after_repair_and_restart() {
     let mut gateway = Gateway::start_native();
+    assert_eq!(
+        native_shell_request(&gateway, "GET", "/readyz", Value::Null).0,
+        200
+    );
     let records = gateway.state.join("sessions.json");
-    let mut rows: Value = serde_json::from_slice(&fs::read(&records).unwrap()).unwrap();
-    let bound = rows
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|row| row["id"] == "bound")
-        .unwrap();
-    bound["cli"] = Value::from("codex");
-    fs::write(&records, rows.to_string()).unwrap();
+    let set_bound_cli = |cli: &str| {
+        use multicc_core::{durable_state, js::JsValue, quota_guard};
+        let mut data = durable_state::load_or_recover(&records).unwrap().unwrap();
+        let JsValue::Array(rows) = &mut data else {
+            panic!("expected session records")
+        };
+        let bound = rows
+            .iter_mut()
+            .find(|row| row.get("id") == Some(&JsValue::from("bound")))
+            .unwrap();
+        quota_guard::set(bound, "cli", JsValue::from(cli));
+        durable_state::save(&records, "sessions", &data).unwrap();
+    };
+    set_bound_cli("codex");
     let (status, rejected) = native_shell_request(
         &gateway,
         "POST",
@@ -1212,15 +1221,7 @@ async fn native_http_failed_receipt_retries_after_repair_and_restart() {
         "failed"
     );
     drop(tasks);
-    let mut rows: Value = serde_json::from_slice(&fs::read(&records).unwrap()).unwrap();
-    let bound = rows
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|row| row["id"] == "bound")
-        .unwrap();
-    bound["cli"] = Value::from("claude");
-    fs::write(&records, rows.to_string()).unwrap();
+    set_bound_cli("claude");
     gateway.restart_native();
     let mut socket = gateway
         .connect_with("/ws/chat?session=bound&shell=shell-bound", &[])

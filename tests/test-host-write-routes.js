@@ -71,7 +71,7 @@ function presentSafely(error) {
   return res;
 }
 
-function createHarness(overrides = {}) {
+function createHarness(overrides = {}, mount = mountHostWriteRoutes) {
   const routes = new Map();
   const app = {
     post(routePath, handler) { register('POST', routePath, handler); },
@@ -152,9 +152,42 @@ function createHarness(overrides = {}) {
   };
   Object.assign(deps, overrides);
   deps.unlockProbe = { desktopPermissions: async () => ({ state: 'authorized' }), ...deps.unlockProbe };
-  mountHostWriteRoutes(app, deps);
+  mount(app, deps);
   return { routes, deps, state };
 }
+
+test('notification edits match the retired handler including persisted and live values', async () => {
+  const legacy = require('./helpers/legacy-host-ops-routes').hostWrite();
+  const before = createHarness({}, legacy.mountHostWriteRoutes);
+  const after = createHarness();
+  const url = 'https://user:pass@測試.example:443/path?q=fake';
+  for (const body of [
+    { barkUrl: 'https://api.day.app/••••', webhookUrl: 1 },
+    { barkUrl: url, webhookUrl: '' },
+    { barkUrl: new URL(url).origin + '/••••' },
+    { barkUrl: 'https://example.test/\ud800' },
+    Object.create({ webhookUrl: 'https://inherited.invalid' }),
+    { webhookUrl: null }, { barkUrl: [], webhookUrl: {} },
+    { webhookUrl: 'invalid', barkUrl: '' }, { barkUrl: '' }, 'text', [],
+  ]) {
+    const [old, actual] = await Promise.all([before, after].map(h =>
+      invoke(h.routes, '/api/settings/notify', { body })));
+    assert.equal(actual.statusCode, old.statusCode);
+    assert.deepEqual(actual.body, old.body);
+    assert.equal(actual.nextError, undefined);
+    assert.deepEqual(after.state.envWrites, before.state.envWrites);
+    assert.deepEqual(after.deps.push.cfg, before.deps.push.cfg);
+    assert.deepEqual(after.state.events, before.state.events);
+  }
+  // A legacy opaque destination can only be shown as four bullets.
+  before.deps.push.cfg.BARK_URL = after.deps.push.cfg.BARK_URL = 'opaque';
+  for (const h of [before, after]) {
+    const count = h.state.envWrites.length;
+    const reply = await invoke(h.routes, '/api/settings/notify', { body: { barkUrl: '••••' } });
+    assert.equal(reply.statusCode, 200);
+    assert.equal(h.state.envWrites.length, count);
+  }
+});
 
 test('mounts the complete host write group behind a narrow dependency boundary', () => {
   const { routes } = createHarness();

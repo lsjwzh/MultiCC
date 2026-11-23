@@ -405,6 +405,7 @@ let upstreamText = '';
 
 const spec = {
   name: 'static-web-root',
+  gatewayEnv: () => ({ HOST: '127.0.0.1', MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON }),
   headers: HEADERS,
   mount(app, ctx) {
     // One tree, seeded into the gateway's own public/ and read by both sides,

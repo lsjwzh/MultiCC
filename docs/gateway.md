@@ -1,5 +1,25 @@
 # Rust 前门 multicc-gateway（进程结构倒置 + L7 转发）
 
+## 源码包部署（2026-11-24）
+
+根 npm 包提供 Rust 源码和 Web 静态资源。安装 Rust、Cargo、C/C++ 工具链与 libclang 后，在解包目录执行：
+
+```sh
+cargo build --locked --release --manifest-path native/Cargo.toml --target-dir native/target
+native/target/release/multicc-gateway serve --cwd .
+```
+
+构建后可在没有 Node 或 npm 的主机上直接运行同平台的产物。保留 `public/`、插件的静态资源及 `package.json`，在该目录启动 `native/target/release/multicc-gateway serve --cwd . --no-node`。目录卡从本地 Git 引用计算推送状态，部署主机需提供 Git。首次访问 Web Push 公钥时，网关在 `MULTICC_ENV_FILE` 指定的文件中原子保存密钥对，默认位置为部署目录的 `.env`；只读安装目录应显式指定数据卷内的配置文件。将 `multicc-writer`、`multicc-remote`、`multicc-cdpd` 和 `restart-supervisor` 放在网关旁边。在部署环境配置 `ACCESS_TOKEN` 和可写的 `MULTICC_DATA_DIR`。仅供本机使用时请显式设置 `HOST=127.0.0.1`。若未指定监听地址或远程策略，长度至少 6 的访问令牌会触发自动局域网监听。显式绑定非回环地址须设置 `MULTICC_ALLOW_REMOTE=1` 和访问令牌。PM2 的仓库配置也直接运行 release 网关。
+
+根目录的镜像配方可用 `docker build -t multicc-rust .` 构建。最终层包含 Rust 可执行文件、静态页面、CA 证书和运行用户。数据卷挂到 `/var/lib/multicc/data`。通过 Docker 发布端口时需在容器内设置非回环监听，例如：
+
+```sh
+docker run --rm -p 127.0.0.1:3000:3000 -e HOST=0.0.0.0 -e PORT=3000 \
+  -e MULTICC_ALLOW_REMOTE=1 -e ACCESS_TOKEN -v multicc-data:/var/lib/multicc/data multicc-rust
+```
+
+纯 Rust 部署可读取任务板搜索、文档登记、主机信息和推送配置。会话、定时任务、渠道列表和通知设置读写可在独立网关运行。定时任务执行、渠道消息投递和多项写操作仍需兼容宿主。上线范围和实测状态见[生产入口验收记录](rust-migration/production-entry-2026-11-24.md)。
+
 ## 目标与边界
 
 把 MultiCC 的进程结构从「Node 占端口、Node 当主人」倒过来：
@@ -16,7 +36,9 @@
 - 前门解析 HTTP，先匹配**原生路由**（由 Rust 直接应答，对应的 Node 路由已删除，见 §9），其余请求经 fallback 转发给 Node。
 - 转发仍然逐帧流式、不缓冲：8MB 上传下载、SSE / chunked 响应逐块到达客户端；WebSocket 升级把两侧字节流对接。
 - 进程管理、端口策略、PROXY 约定、看护与信号原样复用，与 L4 时代完全一致。
-- **所有启动入口、三个平台都经前门启动**：源码检出的 `./multicc`（start/restart、launchd 登录服务）、独立包启动器（含它的 launchd / systemd / Windows 登录自启）、桌面壳（`MULTICC_DESKTOP=1`），macOS / Linux / Windows 一样。没有任何「起不来就直接跑 `node server.js`」的退路，前门和原生模块一样是必需件（见 §8）。开发者的 `npm start` 也经前门前台运行（`scripts/start-gateway.js`）。直接 `node server.js` 只剩集成测试在用：它缺少 §9 里已经搬进前门的路由，不是完整的服务。
+- **所有启动入口、三个平台都经前门启动**：源码检出的 `./multicc`（start/restart、launchd 登录服务）、独立包启动器（含它的 launchd / systemd / Windows 登录自启）、桌面壳（`MULTICC_DESKTOP=1`），macOS / Linux / Windows 一样。没有任何「起不来就直接跑 `node server.js`」的退路，前门和原生模块一样是必需件（见 §8）。根包的 `npm start` 直接运行纯 Rust 网关。直接 `node server.js` 只剩集成测试在用：它缺少 §9 里已经搬进前门的路由，不是完整的服务。
+
+兼容宿主仍负责分享授权、通知配置写入、任务调度与部分路由所需的数据。源码管理脚本、desktop 和 standalone 的生产依赖见[逐文件清单](rust-migration/node-module-dependencies.md)。协议 15 网关每六小时清理过期的人机协助截图。
 
 ## 为什么用 PROXY 协议而不是 X-Forwarded-For
 
@@ -34,7 +56,7 @@
 
 ### 1. 命令行
 
-- `multicc-gateway --version` → 输出一行 `multicc-gateway 12 <crate 版本>`，退出码 0。`12` 是协议版本（2 = 加了 `--stdin-lifeline`、Node 以 0 退出时前门随之退出；3 = 前门改为 L7，按客户端连接独占上游 HTTP 连接；4 = 私有认证控制流及前门认证端点；5 = service 配置及 HTTP/WS 代理；6 = 外部工作区 HTTP 与文件所有者；7 = 分享源管理专用 Rust 控制通道；8 = 创建接口与双向分帧 source 请求；9 = 状态 HTTP 与实时上下文读端口；10 = 密码导入 HTTP 与原生校验/消费调用链；11 = 分享 WS 票据 HTTP 与共享认证状态引用；12 = 分享落地页与分享源 Express 路由模块退役）；三处必须一致：这里、`scripts/build-rust-kernels.js` 的探测、`src/gateway-child.js` 的 `GATEWAY_PROTOCOL`。
+- `multicc-gateway --version` → 输出一行 `multicc-gateway 15 <crate 版本>`，退出码 0。`15` 是协议版本（2 = 加了 `--stdin-lifeline`、Node 以 0 退出时前门随之退出；3 = 前门改为 L7，按客户端连接独占上游 HTTP 连接；4 = 私有认证控制流及前门认证端点；5 = service 配置及 HTTP/WS 代理；6 = 外部工作区 HTTP 与文件所有者；7 = 分享源管理专用 Rust 控制通道；8 = 创建接口与双向分帧 source 请求；9 = 状态 HTTP 与实时上下文读端口；10 = 密码导入 HTTP 与原生校验/消费调用链；11 = 分享 WS 票据 HTTP 与共享认证状态引用；12 = 分享落地页与分享源 Express 路由模块退役；13 = 会话分享页改由网关读取，移除 share-page 宿主操作；14 = 诊断操作向宿主传单个服务参数，由网关处理诊断结果；15 = 截图清理由网关调度，Node 子进程停止重复调度）；三处必须一致：这里、`scripts/build-rust-kernels.js` 的探测、`src/gateway-child.js` 的 `GATEWAY_PROTOCOL`。
 - `multicc-gateway serve --cwd <目录> (--no-node | --node <node 可执行文件>) [--stdin-lifeline] [--ephemeral-loopback] [--] <脚本> [参数…]`，脚本缺省为 `server.js`。`--node` 与 `--no-node` 必须恰好给一个：都不给、同时给、或 `--no-node` 之后还带脚本/参数，都以退出码 2 拒绝，没有静默默认值（§8.1）。`--node` 模式下进程 cwd 切到 `--cwd`，argv 里必须出现 `server.js`（管理脚本按 cmdline 里的 `server.js` + cwd 认领端口占用者）；`--no-node` 模式没有子进程也没有脚本 argv，进程识别按 §8 的 `serve` + cwd（或 `--cwd`）规则。
 
 ### 2. 端口策略（唯一实现在 Rust）
@@ -114,22 +136,23 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 - `src/server-processes.js`：`serve` 模式、cwd 为本检出的 `multicc-gateway` 认作服务根进程；父进程是这种前门的 `node server.js` **不算**根（它是前门的后代，排空后由 `stopServers` 的 SIGTERM 兜底）。这样 stop/restart 只给前门发 SIGINT，前门转给 Node，不会出现「Node 先退、前门以为崩溃又拉起来」的竞态。
 - `list` / `status` / `lock-alive` / `owner` 一并认得前门。
 
-2026-11-24 任务板分组和任务短码展示已由 Rust 原生模块提供。源码部署时，`npm start` 执行 `node scripts/start-gateway.js`，启动 `multicc-gateway serve --cwd <检出> --node <node> --stdin-lifeline server.js`。分组保存、变更通知、任务查询和短码注册表仍由 Node 宿主提供。该版本的 `src/` 剩 531 个 `.js`、2 个 `.cjs`，根包仍有 19 个直接 Node 运行依赖。 [迁移批次清单](rust-migration/node-retirement-batches.md#任务板分组与任务短码展示2026-11-24)
+2026-11-24 任务板分组和任务短码展示已由 Rust 原生模块提供。该批次切换前，`npm start` 执行 `node scripts/start-gateway.js`，启动 `multicc-gateway serve --cwd <检出> --node <node> --stdin-lifeline server.js`。分组保存、变更通知、任务查询和短码注册表仍由 Node 宿主提供。该版本的 `src/` 剩 531 个 `.js`、2 个 `.cjs`，根包仍有 19 个直接 Node 运行依赖。 [迁移批次清单](rust-migration/node-retirement-batches.md#任务板分组与任务短码展示2026-11-24)
 
-构建与本地启动的 npm 入口：`npm run build:gateway`（cargo 构建 `multicc-gateway` 与 `multicc-writer-launcher` 的 release 产物）、`npm run test:gateway`（对应两个 crate 的 cargo 测试）、`npm run start:gateway`（即 `scripts/start-gateway.js`，等价于 `npm start` 的前台路径）。**Node-free 运行镜像**：`npm run docker:node-free` 构建 `docker/task-shell/Dockerfile` 的 `node-free-runtime` 阶段（debian:bookworm-slim + CA 证书 + 前门与写者启动器两个二进制，镜像内无 Node）。默认 CMD 是 `multicc-gateway serve --cwd /srv/multicc --no-node`，即 §8.1 的 Rust-only 形态：不需要 Node 状态的 Rust 代码照常运行；该镜像不带 `.env`，没有 `ACCESS_TOKEN` 可交给本地鉴权运行态，所以需要鉴权快照的原生路由与 §9 之外的路由一律立即 503 `node_runtime_absent`（带上合法 token 的 `--no-node` 会启用前门自持的鉴权运行态，见 §8.1）。构建期冒烟断言 `--version` 形状、无 node、裸前门退出 2、裸 writer 退出 64，并调用 `scripts/smoke-no-node-gateway.sh`；CI 的 `rust-kernels.yml` 的 `node-free-runtime` job 会构建并复跑这些冒烟。它不能替代 `--node`：完整功能仍需 Node 上游（见 README「What the Rust front door does not cover yet」）。
+构建与本地启动的 npm 入口：`npm run build:gateway`（cargo 构建 `multicc-gateway` 与 `multicc-writer-launcher` 的 release 产物）、`npm run test:gateway`（对应两个 crate 的 cargo 测试）、`npm run start:gateway`（同 `npm start`，执行 release 网关的 `--no-node` 模式）。**Node-free 运行镜像**：`npm run docker:node-free` 构建 `docker/task-shell/Dockerfile` 的 `node-free-runtime` 阶段（debian:bookworm-slim + CA 证书 + 前门与写者启动器两个二进制，镜像内无 Node）。默认 CMD 是 `multicc-gateway serve --cwd /srv/multicc --no-node`，即 §8.1 的 Rust-only 形态：不需要 Node 状态的 Rust 代码照常运行；该镜像不带 `.env`，没有 `ACCESS_TOKEN` 可交给本地鉴权运行态，所以需要鉴权快照的原生路由与 §9 之外的路由一律立即 503 `node_runtime_absent`（带上合法 token 的 `--no-node` 会启用前门自持的鉴权运行态，见 §8.1）。构建期冒烟断言 `--version` 形状、无 node、裸前门退出 2、裸 writer 退出 64，并调用 `scripts/smoke-no-node-gateway.sh`；CI 的 `rust-kernels.yml` 的 `node-free-runtime` job 会构建并复跑这些冒烟。它不能替代 `--node`：完整功能仍需 Node 上游（见 README「What the Rust front door does not cover yet」）。
 
 ### 8.1 `--no-node`：Rust-only 前门（不拉起 Node）
 
-`serve` 必须显式二选一。`--no-node` 是唯一不需要 Node 的启动形态，用于无 Node 镜像、冒烟，以及逐组迁路由时的验证：
+`serve --cwd <目录>` 默认使用 Rust。`--no-node` 可显式选择同一模式。兼容宿主需显式指定 Node 可执行文件。
 
 ```
 multicc-gateway serve --cwd <目录> [--stdin-lifeline] [--ephemeral-loopback] --no-node
 multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-lifeline] [--ephemeral-loopback] [--] <脚本> [参数…]
 ```
 
-- **二选一**：两者都不给 → 退出码 2，stderr `[multicc-gateway] serve needs --no-node (Rust-only, unmigrated routes fail closed) or --node <node executable>`；同时给 → 退出码 2 并指出冲突；`--no-node` 之后还带脚本或参数（含 `--` 之后的裸 token）→ 退出码 2。没有静默默认值。
-- **不 spawn 任何子进程**：不构造 supervisor、不设置 `MULTICC_GATEWAY_CHILD`、不开内部端口。公开端口照旧绑定（含开发模式顺延与 `--ephemeral-loopback`）、`.env` 照旧读取、原生路由的代码与 Express 语义照常参与匹配。**鉴权运行态（访问令牌、关停标志、revision、WS 票据表）在 `--no-node` 下由前门进程自己持有**：启动时按与 `server.js` 相同的 `.env` 规则（`--cwd/.env` + 进程环境，已存在的非空环境变量优先）读取 `ACCESS_TOKEN`，交给进程内的 `multicc_core::auth_runtime::AuthRuntime`；需要该快照的原生路由因此照常应答，闸门规则与 `--node` 是同一份 Rust 实现。`ACCESS_TOKEN` 缺失、为空或超出私有控制帧上限（64 KiB）时 **fail-closed**：不安装本地实例，行为与旧版一致——这些路由不等 3 秒控制流超时，立即返回下面「需鉴权的 Rust 路由」那条 503，并在 stderr 写一行诊断；不会用空 token 或默认 token 放行。`--node` **永不**安装本地实例：Node 子进程仍是唯一持有者，避免两个持有者对 revision、票据和关停标志产生分叉。只有不需要鉴权快照的原生路由（如 `MULTICC_GATEWAY_TEST_ROUTES` 的探针）在没有 token 时才会真正应答。包根与数据根仍按 `--cwd` 推导，脚本名取缺省 `server.js`（文件本身不需要存在）。
-- **两条公开健康探针由前门自答**：`GET|HEAD /healthz` 与 `/readyz` 是 §8.1 下唯一「事实本来就属于本进程」的 server-core 路由——没有子进程就没有 `process.uptime()`、没有 `serviceReady` 标志，被部署探测的就是前门自己。`--no-node` 时它们不再走宿主端口，而是由 `native/gateway/src/app/server_core.rs` 的 `local_healthz` / `local_readyz` 作答：`{"status":"ok","uptimeSeconds":<前门自身 uptime，向下取整>,"requestId":…}` 与 `{"status":"ready","requestId":…}`（没有子进程就没有 `checks` 可抄，这个键按退役实现 `readinessDetails()` 返回空时的形状省略），响应头仍是 `Cache-Control: no-store`。**没有 `ACCESS_TOKEN` 也照答**：这两条路径本来就不需要鉴权快照，所以它们在「无 Node 子进程且无本地鉴权运行态」时跳过那条 fail-closed 分支（局域网对端白名单照旧先跑）。同簇的 `/metrics` 与 `/api/repo-operations/:operationId` 描述的是 Node 的事实（合并指标表、仓储 actor 进度），仍旧立即 503。`--node` 行为逐字节不变：照旧问子进程的宿主端口。
+- 同时给出两种运行模式，或在独立网关模式附带宿主脚本时，启动器以退出码 2 报错。
+- **不 spawn 任何子进程**：不构造 supervisor、不设置 `MULTICC_GATEWAY_CHILD`、不开内部端口。公开端口照旧绑定（含开发模式顺延与 `--ephemeral-loopback`）、`.env` 照旧读取、原生路由的代码与 Express 语义照常参与匹配。**鉴权运行态（访问令牌、关停标志、revision、WS 票据表）在 `--no-node` 下由前门进程自己持有**：启动时按与 `server.js` 相同的 `.env` 规则（设置了 `MULTICC_ENV_FILE` 时读取该文件，否则读取 `--cwd/.env`；已存在的非空环境变量优先）读取 `ACCESS_TOKEN`，交给进程内的 `multicc_core::auth_runtime::AuthRuntime`；需要该快照的原生路由因此照常应答，闸门规则与 `--node` 是同一份 Rust 实现。`ACCESS_TOKEN` 缺失、为空或超出私有控制帧上限（64 KiB）时 **fail-closed**：不安装本地实例，行为与旧版一致——这些路由不等 3 秒控制流超时，立即返回下面「需鉴权的 Rust 路由」那条 503，并在 stderr 写一行诊断；不会用空 token 或默认 token 放行。`--node` **永不**安装本地实例：Node 子进程仍是唯一持有者，避免两个持有者对 revision、票据和关停标志产生分叉。只有不需要鉴权快照的原生路由（如 `MULTICC_GATEWAY_TEST_ROUTES` 的探针）在没有 token 时才会真正应答。包根与数据根仍按 `--cwd` 推导，脚本名取缺省 `server.js`（文件本身不需要存在）。
+- **公开健康探针**。在 `--no-node` 下，`GET|HEAD /healthz` 与 `/readyz` 由网关回答。前者返回 `status: "ok"`、进程运行秒数和请求 ID，后者返回 `status: "ready"` 和请求 ID。二者均设置 `Cache-Control: no-store`。局域网对端检查通过后，即使没有配置 `ACCESS_TOKEN` 也能访问。
+- **受保护的运行指标和仓库操作**。在 `--no-node` 下配置访问令牌并通过鉴权后，`/metrics` 返回网关自身的活跃回合数、Git 队列深度、就绪状态和 WebSocket 客户端数。`/api/repo-operations/:operationId` 返回网关记录的目录 Git 操作，未知 ID 返回 404。缺少本地鉴权运行态时，两条路由均返回 503。`--node` 模式通过宿主端口获取这些数据。
 - **落 Node 的请求立即失败关闭**：所有 fallback（含 WebSocket 升级）**不进入** §6 的 30 秒等待窗口，直接回：
 
   ```
@@ -156,7 +179,7 @@ multicc-gateway serve --cwd <目录> --node <node 可执行文件> [--stdin-life
 - **宿主端口调用立即失败**：经 `host_port` 找 Node 子进程的 Rust 路由（§9 里依赖会话表、provider 存储等 Node 事实的组）不再等 60 秒预算，立即返回该路由原有的 503 `rust_backend_unavailable` 形状。
 - **生命周期**：`SIGINT` / `SIGTERM` / `--stdin-lifeline` 的 EOF 都只停止接受新连接并以 **0** 退出；没有子进程要转发信号或等待排空。日志分别写 `stop signal received; no node to stop, no longer accepting` 与 `stdin closed by our parent; no node to stop, no longer accepting`。
 - **日志行**：绑定成功后紧跟一行 `[multicc-gateway] node runtime disabled (--no-node): routes not owned by Rust answer 503 node_runtime_absent`；运维和冒烟脚本以它判断运行模式。
-- **入口**：`scripts/start-rust-only.sh`（`$MULTICC_GATEWAY_BIN`，否则 `native/target/release/multicc-gateway`，`--cwd` 为本检出）与 `scripts/smoke-no-node-gateway.sh <二进制>`（空 `PATH` + `--ephemeral-loopback`，断言测试钩子路由 200、需鉴权的 claim 路由 503 且文案为「鉴权状态在 Node」、落 Node 路由 503 `node_runtime_absent`、SIGTERM 退出 0；冒烟刻意不设 `ACCESS_TOKEN`，所以走的是「本地无持有者」的失败关闭分支；macOS 与 Linux 可跑）。**默认入口不变**：`./multicc`、`npm start`、独立包启动器与桌面壳仍传 `--node`，因为 §9 之外的路由与 WS 宿主仍需 Node。
+- **入口**：`scripts/start-rust-only.sh`（`$MULTICC_GATEWAY_BIN`，否则 `native/target/release/multicc-gateway`，`--cwd` 为本检出）与 `scripts/smoke-no-node-gateway.sh <二进制>`（空 `PATH` + `--ephemeral-loopback`，断言测试钩子路由 200、需鉴权的 claim 路由 503 且文案为「鉴权状态在 Node」、落 Node 路由 503 `node_runtime_absent`、SIGTERM 退出 0；冒烟刻意不设 `ACCESS_TOKEN`，所以走的是「本地无持有者」的失败关闭分支；macOS 与 Linux 可跑）。根包的 `npm start`、PM2 和根镜像使用 `--no-node`。源码管理器 `./multicc`、独立包启动器与桌面壳使用 `--node` 来提供仍依赖宿主的路由和 WS 功能。
 
 ### 9. 原生路由（已从 Node 删除）
 
@@ -2802,7 +2825,7 @@ asr-model、settings POST）逐个跑完，恢复旧单线程的逐请求语义�
 经宿主端口的 Rust 路由立即走各自的 503 `rust_backend_unavailable`。**结论要说准**：`--no-node`
 证明的是「前门启动路径可以不依赖 node 可执行文件，并且显式失败关闭」，不是「可用的纯 Rust 服务」。
 鉴权运行态（访问令牌、会话、WS 票据、关停标志）仍由 Node 持有，是删除 Node 进程的第一个阻塞项，
-完整清单见 `docs/backend-rust-exit-plan.md`。现有入口（`./multicc`、`npm start`、桌面壳、独立包、
+完整清单见 `docs/backend-rust-exit-plan.md`。当时的入口（`./multicc`、`npm start`、桌面壳、独立包、
 launchd）仍传 `--node`，因为 Node 仍持有未迁路由，把默认翻成 `--no-node` 会让聊天等全部 503。
 新入口 `scripts/start-rust-only.sh`、镜像 `node-free-runtime` 的默认命令与 CI 的 no-node 冒烟走 `--no-node`。
 
@@ -4268,7 +4291,7 @@ api key / cookie / password」只有一处实现，迁移不会放宽或改写�
 | GET/HEAD | `/api/sessions/:id/shares` | `src/routes/share.js` | 执行槽 404 | `session-shares-list` |
 | DELETE | `/api/sessions/:id/share/:token` | `src/routes/share.js` | 双参数解码、`400 token does not belong to this session` | `session-share-revoke` |
 | POST | `/api/sessions/:id/share-messages` | `src/routes/share.js` | 执行槽 404、`400 no valid messages selected` | `session-share-messages` |
-| GET/HEAD | `/share/:token` | `src/routes/share.js` | **公共路径免鉴权**、`no-store`/`Pragma`、`text/html`、读文失败裸 500 | `share-page` → 版本化 HTML 读取与改写 |
+| GET/HEAD | `/share/:token` | `src/routes/share.js` | **公共路径免鉴权**、`no-store`/`Pragma`、`text/html`、读取并版本化 `public/chat.html`，读文失败裸 500 | 无 |
 | POST | `/api/share/:token/auth` | `src/routes/share.js` | `Set-Cookie` 回放、`401 needPassword`、`403 密码错误` | `share-auth` → scrypt 校验与 cookie 签名 |
 | GET/HEAD | `/api/share/:token/entry` | `src/routes/share.js` | 免鉴权、`access` 投影（view/operate） | `share-entry` |
 | GET/HEAD | `/api/share/:token/history` | `src/routes/share.js` | `?limit`/`?before`/`?around` 子集、`{messages,hasMore,found,hasNewer}` 键序 | `share-history` |
@@ -4288,17 +4311,17 @@ api key / cookie / password」只有一处实现，迁移不会放宽或改写�
   `OPS` 里声明的名字平铺；`query` 只带 `before`/`around`/`limit`/`orphans` 四个键；`headers`
   只带 `host`、`x-forwarded-proto`、`cookie`、`x-access-token`、`x-multicc-machine-grant`。
 * 成功应答：`{ ok: true, value }`，`value` 是退休处理器渲染出的
-  `{ status, body, headers?, contentType?, bare? }`；处理器抛出时是
+  `{ status, body, headers? }`；处理器抛出时是
   `{ threw: true, status, code, message }`。
 * 非回环调用 → `404 {"error":"not found"}`；未知 op 或没有对应处理器 →
   `400 {"error":"unknown host operation"}`（前门按宿主失败渲染 500）；op 执行抛错 →
   子进程 `console.error` + `500 {"error":"internal_error"}`（前门按 `safeErrorHandler`
   用自己的 request id 重建信封）。
 
-`OPS` 共 21 条，逐条钉死 `(method, 模板, 参数名)`：`machines-list`/`machines-self`/`machines-grants`/
+`OPS` 共 20 条，逐条钉死 `(method, 模板, 参数名)`：`machines-list`/`machines-self`/`machines-grants`/
 `machines-pair`/`machines-connection-delete`/`machines-grant-revoke`/`machines-add`/`machines-rename`/
 `machines-remove`/`machines-ws-ticket`/`session-share-create`/`session-shares-list`/
-`session-share-revoke`/`session-share-messages`/`share-page`/`share-auth`/`share-entry`/
+`session-share-revoke`/`session-share-messages`/`share-auth`/`share-entry`/
 `share-history`/`share-session`/`workspaces-overview`/`workspaces-sweep`。捕获应用按
 `<method> <模板>` 取处理器，前门已解好的参数直接塞进 `req.params`，宿主不再匹配第二遍路径。
 
@@ -4979,7 +5002,7 @@ stub 子进程要先加载原生模块、建读模型，才监听内部端口；
 `mountRoutes`（版本化 HTML 中间件与 `express.static(public/)` 两层）与
 `src/routes/system.js` 的 `mountApkDownload`（`GET /multicc.apk`）。迁移后 Node 不再注册任何
 静态处理器，公开注册 129 → 128、中间件 31 → 29；`static-assets.js` 只剩 `serveHtml` 薄桥
-（share 页仍由宿主端口的 Express 渲染），重写规则唯一源是
+（11 月 24 日随分享页迁移删除），重写规则唯一源是
 `multicc_core::static_assets_routes::version_html`，Node 经原生模块调用它，没有第二份正则。
 
 ### 61.1 边界
@@ -4987,7 +5010,7 @@ stub 子进程要先加载原生模块、建读模型，才监听内部端口；
 | 在前门 | 在 Node 宿主 |
 |---|---|
 | `multicc_core::static_web`：serve-static/send 的解析规则（percent-decode、归一化、UP_PATH 拒绝、隐藏文件 `dotfiles:'ignore'`、`index.html`、`extensions:['html']`、目录尾斜杠 301、`encodeUrl` 重定向目标） | `apk-download` op 的判定：本地 `public/multicc.apk` 存在性、发布资产 GitHub 核验状态（`apkDistribution`/`iosOta` 实例） |
-| `native/gateway/src/app/static_web_root.rs`：真实 fs 解析与应答（200 / 206 / 304 / 301 / 412 / 416 / 500），`http_send::plan_with_preset` 的 `setHeaders` 钩子（`.apk` → `application/vnd.android.package-archive` + attachment + no-store，`.ipa` → `application/octet-stream` + attachment + no-store） | share 页的 HTML 渲染（`serveSharePage` 调 `serveHtml` 薄桥） |
+| `native/gateway/src/app/static_web_root.rs`：真实 fs 解析与应答（200 / 206 / 304 / 301 / 412 / 416 / 500），`http_send::plan_with_preset` 的 `setHeaders` 钩子（`.apk` → `application/vnd.android.package-archive` + attachment + no-store，`.ipa` → `application/octet-stream` + attachment + no-store） | — |
 | 版本化 HTML 重写（`version_html`：`?v=<mtimeMs>`、no-store/no-cache/Pragma 三头）、`chat`/`task-shell` 入口的 `task-entry.html` 改写 | — |
 
 `static_web_root` 接在认领链**末端**：通用 claim、`release_history_routes`、`static_assets_routes`

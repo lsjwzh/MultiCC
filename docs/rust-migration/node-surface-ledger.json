@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "capturedAt": "2026-11-19",
+  "capturedAt": "2026-11-24",
   "capture": {
     "routes": 128,
-    "middleware": 26,
-    "fingerprint": "c5890742b80f537374f1a24e"
+    "middleware": 25,
+    "fingerprint": "4d281597db9455be2bb19599"
   },
   "websocket": {
     "state": "in-progress",
@@ -131,7 +131,7 @@
       "files": [
         "src/routes/system.js"
       ],
-      "note": "2026-11-19 清零：GET /multicc.apk 由前门认领（native/gateway/src/app/release_history_routes.rs 的 ApkDownload），判定经既有 release-history 宿主端口的 apk-download op；fellThrough（本地文件）由前门按退休链续走守卫、static_web_root 发文件、转发 Node（docs/gateway.md §61）。同批 versioned-HTML 与 express.static(public/) 迁入 native/gateway/src/app/static_web_root.rs（规则 multicc_core::static_web），真实 app 不再注册任何静态处理器；src/routes/static-assets.js 只剩 serveHtml 薄桥（share 页用，重写规则唯一源 multicc_core::static_assets_routes::version_html）。system.js 的 mountApkDownload 改挂 release-history-host 捕获应用。"
+      "note": "2026-11-19 清零：GET /multicc.apk 由前门认领（native/gateway/src/app/release_history_routes.rs 的 ApkDownload），判定经既有 release-history 宿主端口的 apk-download op；fellThrough（本地文件）由前门按退休链续走守卫、static_web_root 发文件、转发 Node（docs/gateway.md §61）。同批 versioned-HTML 与 express.static(public/) 迁入 native/gateway/src/app/static_web_root.rs（规则 multicc_core::static_web），真实 app 不再注册任何静态处理器；src/routes/static-assets.js 只剩 serveHtml 薄桥（share 页用，重写规则唯一源 multicc_core::static_assets_routes::version_html）。system.js 的 mountApkDownload 改挂 release-history-host 捕获应用。 2026-11-24 分享页接入同一个前门渲染器，static-assets.js 与 serveHtml 薄桥删除。"
     },
     {
       "id": "router-tools",
@@ -146,7 +146,7 @@
     }
   ],
   "middleware": {
-    "total": 26,
+    "total": 25,
     "keyFormat": "<name>@<mount>#<同名同挂载的出现序号>；位置号易变不作键",
     "groups": [
       {
@@ -212,16 +212,15 @@
       },
       {
         "id": "bridges-and-remote",
-        "count": 6,
+        "count": 5,
         "layers": [
           "router@/api/wechat#1",
           "router@/api/feishu#1",
           "router@/api/telegram#1",
           "router@/api/discord#1",
-          "router@/api/slack#1",
-          "<anonymous>@/api/remote-screen#1"
+          "router@/api/slack#1"
         ],
-        "terminal": "IM bridge router x5 与 /api/remote-screen；属插件/远控"
+        "terminal": "IM bridge router x5；/api/remote-screen 已由网关 remote_screen.rs 接管"
       },
       {
         "id": "terminal-error",

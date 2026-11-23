@@ -85,14 +85,35 @@ async function call(handler, body, req = {}) {
   return { status, payload };
 }
 
-test('the op table names exactly the 40 retired routes and every one is registered', () => {
-  assert.equal(Object.keys(OPS).length, 40);
+test('the 33 captured HTTP handlers and seven native doctor service calls cover the retired routes', () => {
+  assert.equal(Object.keys(OPS).length, 33);
   const { host } = build();
-  assert.equal(new Set(Object.values(OPS).map(spec => `${spec.method} ${spec.path}`)).size, 40);
+  assert.equal(new Set(Object.values(OPS).map(spec => `${spec.method} ${spec.path}`)).size, 33);
   for (const [op, spec] of Object.entries(OPS)) {
     assert.equal(typeof host.handlers.get(`${spec.method} ${spec.path}`), 'function', `${op} has no handler`);
   }
   assert.equal(typeof host.mountRoute, 'function');
+});
+
+test('the seven doctor operations each forward one argument to the selected service', async () => {
+  const seen = [];
+  const service = name => Object.fromEntries(['start', 'list', 'get', 'cancel'].map(method => [
+    method, input => { seen.push([name, method, input]); return name; },
+  ]));
+  const handler = mount(build({ doctor: service('session'), envDoctor: service('env') }).host);
+  for (const [op, name, method, input] of [
+    ['env-doctor-start', 'env', 'start', { error: 'diagnose' }],
+    ['env-doctor-run', 'env', 'get', 'e1'],
+    ['env-doctor-cancel', 'env', 'cancel', 'e1'],
+    ['session-doctor-start', 'session', 'start', { sessionId: 's1', autofix: false }],
+    ['session-doctor-list', 'session', 'list', 's1'],
+    ['doctor-run', 'session', 'get', 'd1'],
+    ['doctor-cancel', 'session', 'cancel', 'd1'],
+  ]) {
+    const { payload } = await call(handler, { op, input });
+    assert.deepEqual(seen.splice(0), [[name, method, input]]);
+    assert.deepEqual(payload, { ok: true, value: { result: name } });
+  }
 });
 
 test('non-loopback callers get the same 404 as an unknown path', async () => {

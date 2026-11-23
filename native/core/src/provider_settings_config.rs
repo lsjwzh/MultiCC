@@ -472,11 +472,47 @@ pub fn build_settings_config(app_type: Option<&str>, input: &SettingsInput<'_>) 
     Value::Object(cfg)
 }
 
+/// A Grok profile consists of one model table. Model IDs are TOML keys,
+/// including when they contain dots, whitespace or quotes.
+pub fn grok_model_config(model: &str, base_url: &str, api_backend: &str) -> String {
+    use toml_edit::{value, DocumentMut, Item, Table};
+
+    let mut entry = Table::new();
+    entry["model"] = value(model);
+    entry["base_url"] = value(base_url);
+    entry["api_backend"] = value(api_backend);
+    entry["env_key"] = value("MULTICC_GROK_API_KEY");
+
+    let mut models = Table::new();
+    models.set_implicit(true);
+    models.insert(model, Item::Table(entry));
+    let mut document = DocumentMut::new();
+    document["model"] = Item::Table(models);
+    document.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::js::serde::js_json_stringify;
     use serde_json::json;
+
+    #[test]
+    fn grok_models_round_trip_as_one_literal_table() {
+        let base = "https://example.invalid/v1?q=\"x\"&s=路径";
+        for model in ["grok-4", "grok.2", r#"引号 "和\路径"#] {
+            let config = grok_model_config(model, base, "responses");
+            let doc = config.parse::<toml_edit::DocumentMut>().unwrap();
+            let models = doc["model"].as_table().unwrap();
+            assert_eq!(models.len(), 1);
+            let entry = models[model].as_table().unwrap();
+            assert_eq!(entry.len(), 4);
+            assert_eq!(entry["model"].as_str(), Some(model));
+            assert_eq!(entry["base_url"].as_str(), Some(base));
+            assert_eq!(entry["api_backend"].as_str(), Some("responses"));
+            assert_eq!(entry["env_key"].as_str(), Some("MULTICC_GROK_API_KEY"));
+        }
+    }
 
     fn text(value: &str) -> Value {
         Value::String(value.to_string())

@@ -50,7 +50,7 @@
 // TCC 与电源服务、Agent 安装器、shell 环境探测与修复终端、.env 写入器与
 // tunnel/push 运行时、skill sync 运行时、doctor 与环境 doctor 服务。
 //
-// 处理器仍按退休时的样子写 `res.set/status/json/send`；这里的捕获器把它们变成
+// 诊断服务只接收一个参数并返回执行结果。其余处理器按退休时的样子写 `res.set/status/json/send`；这里的捕获器把它们变成
 // `{ status, body, headers }`，前门原样回放 —— 两边不会各自长出第二套状态码、
 // 头或键序规则。
 //
@@ -103,13 +103,6 @@ const OPS = {
   'settings-task-attribution': { method: 'POST', path: '/api/settings/task-attribution', params: [] },
   'skill-sync-status': { method: 'GET', path: '/api/skill-sync/status', params: [] },
   'skill-sync-run': { method: 'POST', path: '/api/skill-sync/run', params: [] },
-  'env-doctor-start': { method: 'POST', path: '/api/system/env-doctor', params: [] },
-  'env-doctor-run': { method: 'GET', path: '/api/system/env-doctor/:runId', params: ['runId'] },
-  'env-doctor-cancel': { method: 'POST', path: '/api/system/env-doctor/:runId/cancel', params: ['runId'] },
-  'session-doctor-start': { method: 'POST', path: '/api/sessions/:id/doctor', params: ['id'] },
-  'session-doctor-list': { method: 'GET', path: '/api/sessions/:id/doctor', params: ['id'] },
-  'doctor-run': { method: 'GET', path: '/api/doctor/runs/:runId', params: ['runId'] },
-  'doctor-cancel': { method: 'POST', path: '/api/doctor/runs/:runId/cancel', params: ['runId'] },
 };
 
 /** 一个只记录路由的 Express 替身：十个模块在它上面注册，按 (method, 模板) 取用。 */
@@ -203,9 +196,18 @@ function thrownEnvelope(error) {
   };
 }
 
-async function invoke(handlers, body) {
+async function invoke(handlers, doctorOperations, body) {
+  // The gateway supplies the single argument used by the live service.
+  if (doctorOperations.has(body.op)) {
+    try {
+      return { result: await doctorOperations.get(body.op)(body.input) };
+    } catch (error) {
+      console.error(`[host-ops-host] ${body.op} threw: ${error?.stack || error}`);
+      return thrownEnvelope(error);
+    }
+  }
+  if (!Object.hasOwn(OPS, body.op)) return UNKNOWN;
   const spec = OPS[body.op];
-  if (!spec) return UNKNOWN;
   const handler = handlers.get(`${spec.method} ${spec.path}`);
   if (typeof handler !== 'function') return UNKNOWN;
   const params = {};
@@ -266,8 +268,7 @@ function createHostOpsHost(deps = {}) {
   const handlers = new Map();
   const app = createCaptureApp(handlers);
   // 原挂载顺序（server.js）：restart、update、system（developer-tools →
-  // macos-privacy → ops-terminal）、host-write（内含 host-power）、skill-sync、
-  // env-doctor、doctor。顺序只影响 Express 的 Allow 并集，这里同样保留。
+  // macos-privacy → ops-terminal）、host-write（内含 host-power）、skill-sync。
   serverRestart.mountRoutes(app);
   update.mountRoutes(app);
   require('./developer-tools').createDeveloperToolsRoutes(deps.developerTools || {}).mountRoutes(app);
@@ -277,8 +278,15 @@ function createHostOpsHost(deps = {}) {
   // 看到的是前门的内网回环连接，真实的 isLocalRequest 在这里永远误判。
   require('./host-write').mountHostWriteRoutes(app, { ...hostWrite, isLocalRequest: req => req.local === true });
   require('./skill-sync').mountSkillSyncRoutes(app, skillSync);
-  require('./env-doctor').mountEnvDoctorRoutes(app, { doctor: envDoctor });
-  require('./doctor').mountDoctorRoutes(app, { doctor });
+  const doctorOperations = new Map([
+    ['env-doctor-start', input => envDoctor.start(input)],
+    ['env-doctor-run', runId => envDoctor.get(runId)],
+    ['env-doctor-cancel', runId => envDoctor.cancel(runId)],
+    ['session-doctor-start', input => doctor.start(input)],
+    ['session-doctor-list', id => doctor.list(id)],
+    ['doctor-run', runId => doctor.get(runId)],
+    ['doctor-cancel', runId => doctor.cancel(runId)],
+  ]);
 
   function mountRoute(expressApp, options = {}) {
     if (!expressApp || typeof expressApp.post !== 'function') {
@@ -291,7 +299,7 @@ function createHostOpsHost(deps = {}) {
       const body = (req.body && typeof req.body === 'object' && !Array.isArray(req.body))
         ? req.body : {};
       return Promise.resolve()
-        .then(() => invoke(handlers, body))
+        .then(() => invoke(handlers, doctorOperations, body))
         .then(
           (value) => {
             if (value === UNKNOWN) return res.status(400).json({ error: 'unknown host operation' });

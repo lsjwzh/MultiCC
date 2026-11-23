@@ -161,7 +161,6 @@ const { createSessionMetaRuntime } = require('./src/routes/session-meta');
 const { createServerRestartRoute } = require('./src/routes/server-restart-route');
 const { createUpdateRoute } = require('./src/routes/update-route');
 const { createAuthRuntime } = require('./src/routes/auth');
-const { createStaticAssetsRoutes } = require('./src/routes/static-assets');
 const { createNotesStore } = require('./src/notes-store');
 const {
   listInstalledSkills,
@@ -1855,14 +1854,10 @@ const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
 const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
 const share = require('./src/share');
-// Created here — the factory is a pure closure until mounted — so the share
-// route below can serve a recipient the same chat document through the same
-// cache-busting writer. Mounting still happens at its original point below.
-const staticAssetsRuntime = createStaticAssetsRoutes({ express, fs, path, publicDir: path.join(__dirname, 'public') });
 // The Rust front door owns the 21 share / machines / workspaces routes. Its
 // Node child keeps the runtime facts — the machine registry (already
 // native/core/machines), the share store and password cookies, the workspace
-// scan/sweep runtime and the versioned-HTML writer — behind one loopback host
+// scan/sweep runtime — behind one loopback host
 // port (`src/routes/share-machines-host.js`). The three retired modules are
 // mounted on that capture app, in their original order; none of them stays on
 // the public app. Only the raw/SSE machine proxy is still a public route
@@ -1874,10 +1869,6 @@ const shareMachinesHost = createShareMachinesHost({
     // Read-only paging for a recipient scrolling up; the chat history runtime is
     // assembled later in this file, so it is read at request time.
     paginateChatHistory: (...args) => chatHistoryRuntime.paginate(...args),
-    // A share link opens the real chat renderer, narrowed by the share's own
-    // authority (see src/routes/share.js) — not a second, lesser page.
-    chatPageFile: path.join(__dirname, 'public', 'chat.html'),
-    serveHtml: staticAssetsRuntime.serveHtml,
   },
   workspaces: {
     records: persistedSessions, directories,
@@ -2217,10 +2208,6 @@ mountZcodeAuthLoginRoute(app); mountKimiAuthLoginRoute(app);
 // Temp artifacts are served by the Rust front door's dual-root static mount
 // (docs/gateway.md §62); the capability <id> bypass lives in
 // http_entry::public_path. Only the startup cleanup below reads this module.
-
-// 静态资源（public/ 的 express.static、版本化 HTML 中间件、`GET /` 重定向和
-// .apk/.ipa 守卫）已由 Rust 前门独占，这里不再注册任何静态处理器；
-// `staticAssetsRuntime` 只剩 `serveHtml`，给宿主端口上的分享页用。
 
 // Display state is independent from canonical messages and native CLI transcripts.
 const CHAT_HISTORY_SOFT_CAP = 10000;
@@ -3020,7 +3007,6 @@ app.use(safeErrorHandler(logger));
   } else {
     gatewayChild.listenBehindGateway(server, { port: gatewayChild.internalPort(process.env), logger, onListening });
   }
-  // Hoisted: the listen calls above reference it before this definition.
   function onListening() {
     logger.info('server_listening', { host: BIND_HOST, port: PORT, remote: !networkPolicy.allowRemote ? false : true, development: networkPolicy.development });
     void lanDiscovery.reconcile();
@@ -3042,7 +3028,6 @@ app.use(safeErrorHandler(logger));
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
     // Resident children are a machine-wide process budget, not a per-directory one.
     const residentPool = require('./src/chat/resident-composition').createResidentPoolComposition({ chatStream, backgroundTaskRuntime, sessionWorkHost, logger, getWorkspaceAdmission: () => workspaceAdmission }); trackServiceTimer(setInterval(() => residentPool.sweep(), residentPool.policy().sweepMs));
-    // Periodic scan retries unresolved task attribution; first tick waits for Aux warm-up.
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
     trackServiceTimer(setInterval(() => processingWatchdog.sweep()
@@ -3054,9 +3039,11 @@ app.use(safeErrorHandler(logger));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
 const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsRegistry.listPermanentArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
-    trackServiceTimer(setInterval(() => cleanupArtifacts(), 6 * 3600 * 1000)); require('./src/assist-snapshots').startAssistSweep({ assistDir: MULTICC_PATHS.assistDir, trackTimer: trackServiceTimer, log: (message) => logger.info('assist_snapshot_cleanup', { message }) });
-    // Stale CLI session sandboxes (codex/zcode per-session CODEX_HOME dirs) grow
-    // without bound; same boot+interval contract as the assist sweep above.
+    trackServiceTimer(setInterval(cleanupArtifacts, 6 * 3600 * 1000));
+    if (!gatewayChildMode) {
+      const retention = new (getNative().AssistSnapshotRetention)(MULTICC_PATHS.assistDir);
+      shutdownCoordinator.onClose(() => retention.stop());
+    }
     const runtimeHomesJanitor = require('./src/runtime-homes-janitor');
     runtimeHomesJanitor.startRuntimeHomesJanitor({ ttlDays: envNumber(process.env.MULTICC_RUNTIME_HOME_TTL_DAYS, runtimeHomesJanitor.DEFAULT_TTL_DAYS), trackTimer: trackServiceTimer, log: (message) => logger.info('runtime_home_cleanup', { message }) });
     // Keep the official OAuth credential alive. The check is a credential read;

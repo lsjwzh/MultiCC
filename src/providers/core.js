@@ -21,7 +21,6 @@ const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const TOML = require('@iarna/toml');
 const cliProviderRouter = require('cli-provider-router');
 const { createSqliteRuntime } = require('../sqlite-runtime');
 const { createPaths } = require('../paths');
@@ -1501,16 +1500,7 @@ function buildGrokRoute(provider, session) {
   const home = grokSessionHome(session);
   ensurePrivateDir(home);
   const configFile = path.join(home, 'config.toml');
-  atomicWriteText(configFile, TOML.stringify({
-    model: {
-      [selected]: {
-        model: selected,
-        base_url: baseUrl,
-        api_backend: apiBackend,
-        env_key: 'MULTICC_GROK_API_KEY',
-      },
-    },
-  }));
+  atomicWriteText(configFile, getNative().grokProviderModelConfig(selected, baseUrl, apiBackend));
   secureFile(configFile);
   return {
     env: { GROK_HOME: home, MULTICC_GROK_API_KEY: key },

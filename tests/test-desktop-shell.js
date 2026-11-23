@@ -728,7 +728,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   const pkg = JSON.parse(fs.readFileSync(path.join(staged, 'package.json'), 'utf8'));
   assert.ok(pkg.optionalDependencies['sherpa-onnx-node'], 'sherpa becomes optional (graceful ASR degrade)');
   assert.equal(pkg.dependencies['sherpa-onnx-node'], undefined);
-  assert.ok(pkg.dependencies['@iarna/toml'], 'the server imports TOML directly, so it must be a direct production dependency');
+  assert.equal(pkg.dependencies['@iarna/toml'], undefined, 'the packaged server uses the native Grok config writer');
   assert.equal(pkg.version, require(path.join(ROOT, 'package.json')).version);
   assert.equal(require(path.join(staged, 'src/memory/builtin-rules')).DOCS_REGISTRY_RULE,
     require('../src/memory/builtin-rules').DOCS_REGISTRY_RULE);
@@ -846,7 +846,7 @@ function writeBundleFile(resources, rel, content = '') {
 function dependencyFixture(resources) {
   writeBundleFile(resources, 'app-server/server.js');
   writeBundleFile(resources, 'app-server/package.json', JSON.stringify({ dependencies: {
-    '@iarna/toml': '^2.2.5', 'cli-provider-router': '0.5.1',
+    'cli-provider-router': '0.5.1',
   } }));
   writeBundleFile(resources, 'app-server/node_modules/@iarna/toml/index.js',
     'exports.parse = () => ({ value: 1 });');
@@ -872,7 +872,7 @@ test('packaged dependency gate rejects missing modules and build-host fallback r
   t.after(() => fs.rmSync(resources, { recursive: true, force: true }));
   dependencyFixture(resources);
   const server = path.join(resources, 'app-server');
-  assert.equal(verifyServerDependencies(server).length, 2);
+  assert.equal(verifyServerDependencies(server).length, 1);
   fs.rmSync(path.join(server, 'node_modules/cli-provider-router'), { recursive: true });
   assert.throws(() => verifyServerDependencies(server), /cli-provider-router.*missing/);
   // A development checkout can make a broken installed tree appear healthy:
@@ -926,7 +926,9 @@ test('packaged dependency gate checks cross-arch trees and detects transitive lo
     "require('./missing-transitive'); exports.API_VERSION = '1.1.0';");
   assert.throws(() => verifyDesktopResources({ resourcesDir: resources }), /smoke failed:[\s\S]*missing-transitive/);
   fs.rmSync(path.join(resources, 'app-server/node_modules/@iarna/toml'), { recursive: true });
-  assert.throws(() => verifyDesktopResources({ resourcesDir: resources, execute: false }), /@iarna\/toml.*missing/);
+  writeBundleFile(resources, 'app-server/node_modules/cli-provider-router/index.js',
+    "require('@iarna/toml'); exports.API_VERSION = '1.1.0';");
+  assert.throws(() => verifyDesktopResources({ resourcesDir: resources }), /smoke failed:[\s\S]*@iarna\/toml/);
 });
 
 test('packaged Rust gate rejects missing and wrong-target addons without executing them', t => {

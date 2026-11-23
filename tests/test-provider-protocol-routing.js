@@ -288,6 +288,20 @@ test('DSH route injects DEEPSEEK_* env only; Grok materializes a private GROK_HO
   assert.notEqual(grokResponses.env.GROK_HOME, grokAnthropic.env.GROK_HOME, 'each session gets an isolated GROK_HOME');
 });
 
+test('Grok model profiles match the retired TOML writer for literal keys and escaped values', () => {
+  const toml = require('node:module').createRequire(require.resolve('cli-provider-router'))('@iarna/toml');
+  const { grokProviderModelConfig } = require('../src/native/runtime').getNative();
+  for (const model of ['grok-4', 'a.b', '含 "引号" 和\\路径', '__proto__']) {
+    const base = 'https://example.invalid/api?q="quoted"&text=模型';
+    for (const backend of ['messages', 'responses']) {
+      const payload = { model: { [model]: {
+        model, base_url: base, api_backend: backend, env_key: 'MULTICC_GROK_API_KEY',
+      } } };
+      assert.deepEqual(toml.parse(grokProviderModelConfig(model, base, backend)), toml.parse(toml.stringify(payload)));
+    }
+  }
+});
+
 test('the pool fixes the protocol: contradictory apiFormat is rejected, legacy mislabels are repaired', () => {
   assert.throws(() => providers.createProvider({
     appType: 'codex', name: 'Codex Anthropic', baseUrl: 'https://api.deepseek.com/anthropic',

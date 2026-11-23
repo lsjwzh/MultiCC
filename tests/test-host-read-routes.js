@@ -5,7 +5,7 @@
 // host port (src/routes/host-read-host.js) that hands over the runtime facts
 // Rust cannot see: push Maps and config, tunnel clients, macOS power services
 // and the battery probe. This file covers that port and the notify helpers
-// that the write path still shares (src/notify-settings.js). Response shapes,
+// that the gateway and write-side addon share. Response shapes,
 // masking and classification are covered by the Rust tests and the
 // differential run (docs/rust-migration/differential/host-read.js).
 
@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { createHostReadHost, mountHostReadHostRoute, HOST_PATH } = require('../src/routes/host-read-host');
-const { resolveNotifySettingsUpdates } = require('../src/notify-settings');
+const { resolveNotifySettingsUpdates } = require('../src/native/runtime').getNative();
 
 function createDeps(overrides = {}) {
   return {
@@ -285,7 +285,7 @@ test('server mounts the host port and retains no inline host read GETs', () => {
   // port; server.js only builds the dependency table and asks the host to mount.
   assert.match(source, /createHostOpsHost\(\{/);
   assert.match(hostOpsSource, /mountHostWriteRoutes\(app, \{ \.\.\.hostWrite, isLocalRequest: req => req\.local === true \}\)/);
-  assert.match(writeSource, /resolveNotifySettingsUpdates\(req\.body \|\| \{\}, current\)/);
+  assert.match(writeSource, /getNative\(\)\.resolveNotifySettingsUpdates\(req\.body \|\| \{\}, current\)/);
   assert.equal(fs.existsSync(path.join(__dirname, '..', 'src', 'routes', 'host-read.js')), false);
   for (const routePath of [
     '/api/push/vapid-key',

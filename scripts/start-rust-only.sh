@@ -1,8 +1,7 @@
 #!/bin/sh
 # Start this checkout's Rust front door in `--no-node` mode: no Node child is
 # spawned, Rust-owned routes answer, and every route still served by the Node
-# server answers 503 node_runtime_absent. This is intentionally not the default
-# entry point. The Rust gateway runs supported Claude chat sessions using
+# server answers 503 node_runtime_absent. The npm entry point selects the same runtime. The Rust gateway runs supported Claude chat sessions using
 # MULTICC_CLAUDE_BIN or claude on PATH. Routes still owned by the compatibility
 # host require --node (docs/backend-rust-exit-plan.md).
 #

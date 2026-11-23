@@ -48,7 +48,7 @@
 // test still exists.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-dir-1' };
 const JSONH = { ...L, 'Content-Type': 'application/json' };
@@ -204,7 +204,7 @@ function corpus() {
   add('POST commit default message', dirRequest('POST', () => 'dir-1/commit', {}), {
     before: side => fs.writeFileSync(path.join(worldPath(side, 'ws'), 'dirty2.txt'), 'two\n'),
   });
-  add('POST commit invalid message', dirRequest('POST', () => 'dir-1/commit', { message: 'bad → arrow' }), {
+  add('POST commit Unicode message', dirRequest('POST', () => 'dir-1/commit', { message: '更新 → 文档' }), {
     before: side => fs.writeFileSync(path.join(worldPath(side, 'ws'), 'dirty3.txt'), 'three\n'),
   });
   add('POST commit explicit message', dirRequest('POST', () => 'dir-1/commit', { message: 'chore: tidy the tree' }), {
@@ -271,6 +271,7 @@ const { createDirectoryHost } = require(path.join(REPO, 'src/routes/directory-ho
 
 const state = world.state(process.env.MULTICC_DATA_DIR);
 const app = express();
+app.get('/__health', (_req, res) => res.send('ok'));
 app.use(requestIdMiddleware, jsonCompression);
 app.use(express.json({ limit: '50mb' }));
 createDirectoryHost({
@@ -319,6 +320,11 @@ main({
   name: 'directory-routes',
   seed: dataRoot => require(path.join(__dirname, '../../../tests/helpers/directory-scripted-world')).seed(dataRoot),
   mount(app, { repo, work }) {
+    const home = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'directory-diff-home-'));
+    fs.mkdirSync(path.join(home, '.ssh'));
+    fs.mkdirSync(path.join(home, 'projects'));
+    process.env.HOME = process.env.USERPROFILE = home;
+    process.once('exit', () => fs.rmSync(home, { recursive: true, force: true }));
     repoPath = repo;
     nodeData = path.join(work, 'node-data');
     gwData = path.join(work, 'gw-data');
@@ -331,10 +337,12 @@ main({
     legacy.mountLegacyDirectory(app, world.state(nodeData));
     upstreamText = upstreamSource(repo);
   },
+  ready: waitForFixture,
   get upstream() {
     return upstreamText;
   },
   gatewayEnv: () => ({
+    HOST: '127.0.0.1', USERPROFILE: process.env.HOME,
     MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON,
     MULTICC_RUST_PREBUILT_DIR: process.env.MULTICC_RUST_PREBUILT_DIR,
     MULTICC_DATA_DIR: gwData,
@@ -539,18 +547,18 @@ main({
       const answer = body(view);
       return (answer.committed === true && answer.pushState.dirty === 0) || `unexpected ${view.node.body.slice(0, 200)}`;
     });
-    pinned('POST commit invalid message', view =>
-      (view.node.status === 400 && !!body(view).error) || 'the non-ASCII arrow was accepted');
+    pinned('POST commit Unicode message', view =>
+      (view.node.status === 200 && body(view).committed === true && body(view).pushState.ahead === 3) || 'Unicode commit did not advance the branch');
     pinned('POST commit explicit message', view => {
       const answer = body(view);
-      return (view.node.status === 200 && answer.committed === true && answer.pushState.ahead === 3)
+      return (view.node.status === 200 && answer.committed === true && answer.pushState.ahead === 4)
         || `unexpected ${view.node.body.slice(0, 200)}`;
     });
     pinned('POST commit clean tree', view => body(view).committed === false || 'a clean tree still committed');
     pinned('POST push', view => {
       if (both200(view) !== true) return both200(view);
       const answer = body(view);
-      return (answer.pushed === true && answer.before.ahead === 3 && answer.after.ahead === 0)
+      return (answer.pushed === true && answer.before.ahead === 4 && answer.after.ahead === 0)
         || `unexpected ${view.node.body.slice(0, 200)}`;
     });
     pinned('POST push again', view => body(view).pushed === false || 'an empty push claimed to push');

@@ -150,3 +150,8 @@ pub fn provider_zhipu_fable_alias(env: Env) -> Result<sys::napi_value> {
     let value = multicc_core::js::serde::from_serde(&rules::zhipu_fable_alias());
     unsafe { crate::js_bridge::write_value(env.raw(), &value) }
 }
+
+#[napi]
+pub fn grok_provider_model_config(model: String, base_url: String, api_backend: String) -> String {
+    rules::grok_model_config(&model, &base_url, &api_backend)
+}
