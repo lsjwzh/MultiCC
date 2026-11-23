@@ -147,7 +147,10 @@ fn active_round_trips_and_clears_on_delete() {
     assert!(active_home(&home).is_none());
     set_active(&home, Some(id)).unwrap();
     assert_eq!(active_id(&home).as_deref(), Some(id));
-    assert_eq!(active_home(&home).unwrap(), account_home(&home, id).unwrap());
+    assert_eq!(
+        active_home(&home).unwrap(),
+        account_home(&home, id).unwrap()
+    );
     // Clearing the pin sends agy back to the machine's own login.
     set_active(&home, None).unwrap();
     assert!(active_id(&home).is_none());
