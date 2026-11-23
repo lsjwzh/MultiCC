@@ -992,17 +992,6 @@ function createTaskBoardRuntime(deps) {
     }
   }
 
-  // Classify letter → turn run state. Same fold as session-work-host.getRunState
-  // and task-context-host.runState, so the task card, the session card and the
-  // chat bar cannot disagree about what one verdict means.
-  function runStateForClassify(classifyState) {
-    return runStateForLetter(classifyState || 'D');
-  }
-
-  function runStateForTurnOutcome(turnOutcome, classifyState) {
-    return getNative().taskBoardTurnOutcome(turnOutcome, classifyState, runStateForLetter);
-  }
-
   // A task-bound worker session runs exactly one task for its entire life, so
   // every queue event it emits belongs to that task. Per-turn lineage alone is
   // not enough: an E verdict (cancel, abnormal end) ends the turn that carried
@@ -1024,20 +1013,9 @@ function createTaskBoardRuntime(deps) {
   // 两者被当成同一件事，就是卡片永远停在「排队中」的原因：delivery_deferred
   // 的投递重试每分钟 claimed → claim_released 各一次，每次 release 都把卡片刷
   // 成「排队中」，而事件自己写着 queued:0 / queuedItems:[]。重试停下之后没人再
-  // 写这张卡，它就把最后那一笔「排队」一直挂下去。
-  //
-  // 事件里带着 release 之后调度器的真实样子，所以这里不需要猜。
-  function runStateForClaimReleased(event) {
-    // 中途释放那一支不是清空而是冻结（调度器会继续往前推，对 UI 就是 running）；
-    // 原因→状态走和 `frozen` 事件同一张共享映射表。
-    if (event.freezeReason) return runStateForFreezeReason(event.freezeReason);
-    // 释放之后还压着东西 —— 那才叫排队。
-    const depth = Array.isArray(event.queuedItems) ? event.queuedItems.length : null;
-    // 读不到深度时保守退回旧投影，不猜。当前没有生产者会漏 queuedItems。
-    if (depth === null || depth > 0) return 'queued';
-    // 一条都不剩：卡片读这个会话真正落定的判定 —— 交还的占用不等于排队。
-    return runStateForClassify(event.queueSummary?.classifyState);
-  }
+  // 写这张卡，它就把最后那一笔「排队」一直挂下去。事件里带着 release 之后调度
+  // 器的真实样子；整条事件类型→runState 分支链在
+  // native/core/src/task_board_queue.rs（活值查表仍走下方宿主回调）。
 
   function onQueueEvent(event = {}) {
     const taskId = String(event.taskId || '') || boundTaskId(event.sessionId);
@@ -1054,25 +1032,13 @@ function createTaskBoardRuntime(deps) {
     if (type === 'queued' && event.workKind !== 'task') {
       return { ok: true, changed: false };
     }
-    if (type === 'claim_released') runState = runStateForClaimReleased(event);
-    else if (type === 'queued') runState = 'queued';
-    else if (type === 'claimed' || type === 'started' || type === 'resumed') runState = 'running';
-    else if (type === 'completed') {
-      // `completed` is scheduler bookkeeping: the active slot was released.
-      // The explicit turnOutcome drives this runtime projection; it NEVER
-      // changes task.status. Only handleStatus's user action can mark done.
-      runState = runStateForTurnOutcome(event.turnOutcome, event.classifyState);
-    } else if (type === 'reconcile') {
-      // Formal re-publish: the canonical state was recomputed elsewhere (e.g. a
-      // cancel that found no active scheduler entry). Always notifies, even when
-      // the value is unchanged, so a stale projection is repaired rather than
-      // silently kept — and no caller has to hand-roll a second broadcast.
-      runState = runStateForClassify(event.classifyState);
-    } else if (type === 'frozen') {
-      // Explicit reason→state map, shared with getRunState. Not the old substring
-      // heuristic (mislabelled interruption/recovery/settling as "waiting").
-      runState = runStateForFreezeReason(event.freezeReason);
-    } else if (type === 'cancelled' || type === 'skipped') runState = 'idle';
+    // 事件类型→runState 的整条分支链（completed 的 turnOutcome 显式投影、
+    // reconcile 的正式重发布、frozen/claim_released 的冻结原因映射）在
+    // native/core/src/task_board_queue.rs；冻结原因与分类字母的活值查表仍以
+    // 宿主回调传入，JS 值同一性与异常行为不变。`completed` 只是调度簿记，
+    // 永不改 task.status；能标记完成的只有 handleStatus 的用户动作。
+    runState = getNative().taskBoardQueueRunState(type, event,
+      runStateForFreezeReason, runStateForLetter);
     if (!runState) return { ok: true, changed: false };
     // Monotonic guard: a heartbeat that was already in flight when the turn
     // reached a terminal verdict must not resurrect `running`. `at` is the

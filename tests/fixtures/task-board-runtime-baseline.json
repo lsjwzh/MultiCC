@@ -1,9 +1,34 @@
 [
   false,
-  { "ok": true, "archived": [], "skipped": [] },
-  { "ok": true, "taskId": null },
-  { "ok": false, "error": "task_identity_conflict" },
-  { "ok": false, "code": "commander_not_found" },
-  { "ok": false, "code": "empty_text" },
-  { "ok": true, "archived": [], "skipped": [{ "taskId": "missing", "error": "task_busy_or_missing" }] }
+  {
+    "ok": true,
+    "archived": [],
+    "skipped": []
+  },
+  {
+    "ok": true,
+    "taskId": null
+  },
+  {
+    "ok": false,
+    "error": "task_identity_conflict"
+  },
+  {
+    "ok": false,
+    "code": "commander_not_found"
+  },
+  {
+    "ok": false,
+    "code": "empty_text"
+  },
+  {
+    "ok": true,
+    "archived": [],
+    "skipped": [
+      {
+        "taskId": "missing",
+        "error": "task_busy_or_missing"
+      }
+    ]
+  }
 ]

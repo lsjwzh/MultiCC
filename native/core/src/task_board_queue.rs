@@ -21,9 +21,38 @@ pub fn turn_outcome(outcome: Option<&str>) -> OutcomeProjection {
     }
 }
 
+/// Event-type dispatch of the queue projection. The live-value reads and the
+/// freeze/classify lookups stay with the host adapter; this only names which
+/// projection branch a scheduler event type selects, exactly the chain the
+/// host ran before the move.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QueueBranch {
+    ClaimReleased,
+    Queued,
+    Running,
+    Completed,
+    Reconcile,
+    Frozen,
+    Idle,
+    Ignore,
+}
+
+pub fn queue_branch(event_type: &str) -> QueueBranch {
+    match event_type {
+        "claim_released" => QueueBranch::ClaimReleased,
+        "queued" => QueueBranch::Queued,
+        "claimed" | "started" | "resumed" => QueueBranch::Running,
+        "completed" => QueueBranch::Completed,
+        "reconcile" => QueueBranch::Reconcile,
+        "frozen" => QueueBranch::Frozen,
+        "cancelled" | "skipped" => QueueBranch::Idle,
+        _ => QueueBranch::Ignore,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{turn_outcome, OutcomeProjection as P};
+    use super::{queue_branch, turn_outcome, OutcomeProjection as P, QueueBranch as B};
 
     #[test]
     fn explicit_and_unknown_outcomes_select_the_original_branches() {
@@ -34,5 +63,23 @@ mod tests {
         assert_eq!(turn_outcome(Some("running")), P::State("running"));
         assert_eq!(turn_outcome(Some("unknown")), P::Fallback);
         assert_eq!(turn_outcome(None), P::Fallback);
+    }
+
+    #[test]
+    fn queue_event_types_select_the_original_chain() {
+        assert_eq!(queue_branch("claim_released"), B::ClaimReleased);
+        assert_eq!(queue_branch("queued"), B::Queued);
+        for event_type in ["claimed", "started", "resumed"] {
+            assert_eq!(queue_branch(event_type), B::Running);
+        }
+        assert_eq!(queue_branch("completed"), B::Completed);
+        assert_eq!(queue_branch("reconcile"), B::Reconcile);
+        assert_eq!(queue_branch("frozen"), B::Frozen);
+        for event_type in ["cancelled", "skipped"] {
+            assert_eq!(queue_branch(event_type), B::Idle);
+        }
+        for event_type in ["", "unknown", "Queued", "done"] {
+            assert_eq!(queue_branch(event_type), B::Ignore);
+        }
     }
 }

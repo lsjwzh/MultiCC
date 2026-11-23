@@ -259,8 +259,14 @@ function probeAddon(file, node = process.execPath) {
       || ['isInternalExecutionSlot','createPublicSessionAccessGuard','mountPublicSessionAccessGuard'].some(key=>typeof pubApi[key]!=='function')
       || !a.sessionIsInternalExecutionSlot({taskExecutionSlot:true})
       || a.sessionIsInternalExecutionSlot({taskExecutionSlot:false})) process.exit(1);
-    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration','sessionLoginTerminalDisposer','sessionDeliveryApi','sessionHibernationReclaimerCreate','sessionPersistenceCreate','sessionPersistenceErrorClass','sessionPersistenceJsonClone','acpBridgeKernel','taskBoardTurnOutcome'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(a.taskBoardTurnOutcome('failed',null,()=>{throw new Error('unexpected classify');})!=='error' || a.taskBoardTurnOutcome('waiting_background',null,x=>x)!=='B' || a.taskBoardTurnOutcome(null,null,x=>x)!=='D') process.exit(1);
+    if(['sessionAssertSessionRecordsPort','sessionAssertSessionRuntimePort','sessionAssertWorkspaceFactsPort','sessionAssertDirectoryRecordsPort','sessionAssertChatHistoryPort','sessionPortsApi','createTaskHistoryRetention','taskHistoryRefusal','taskHistoryRetentionApi','claudeExpHasNativeHistory','chatHistoryFileRepositoryCreate','sessionCreateRecordFactory','sessionRuntimeIsChatStateBusy','sessionRuntimeProcessAlive','sessionPendingConfigurationFields','sessionPendingReadConfiguration','sessionPendingDesiredSession','sessionPendingConfigurationBusy','sessionPendingStageConfiguration','sessionLoginTerminalDisposer','sessionDeliveryApi','sessionHibernationReclaimerCreate','sessionPersistenceCreate','sessionPersistenceErrorClass','sessionPersistenceJsonClone','acpBridgeKernel','taskBoardQueueRunState'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(a.taskBoardQueueRunState('completed',{turnOutcome:'failed'},null,()=>{throw new Error('unexpected classify');})!=='error'
+      || a.taskBoardQueueRunState('completed',{turnOutcome:'waiting_background'},null,x=>x)!=='B'
+      || a.taskBoardQueueRunState('completed',{},null,x=>x)!=='D'
+      || a.taskBoardQueueRunState('claim_released',{queuedItems:['i']},null,x=>x)!=='queued'
+      || a.taskBoardQueueRunState('claim_released',{queuedItems:[],queueSummary:{classifyState:'B'}},null,x=>x)!=='B'
+      || a.taskBoardQueueRunState('frozen',{freezeReason:'x'},value=>'frozen:'+value,null)!=='frozen:x'
+      || a.taskBoardQueueRunState('mystery',{},null,x=>x)!==null) process.exit(1);
     const acpProbe=JSON.parse(a.acpBridgeKernel(JSON.stringify({operation:'pickPermissionOption',options:[{kind:'allow_once',optionId:'ok'}]})));
     if(!acpProbe.ok || acpProbe.value.optionId!=='ok') process.exit(1);
     if(a.sessionPersistenceJsonClone(undefined)!==undefined || a.sessionPersistenceJsonClone({x:1}).x!==1) process.exit(1);

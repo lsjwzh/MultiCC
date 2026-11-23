@@ -21,9 +21,30 @@ const queueEvents = [
   { type: 'claim_released' },
   { type: 'claim_released', queuedItems: ['item'] },
   { type: 'claim_released', queuedItems: [], queueSummary: { classifyState: 'D' } },
+  { type: 'claim_released', queueSummary: { classifyState: 'W' } },
+  { type: 'claim_released', queueSummary: {} },
+  { type: 'claim_released', queuedItems: null },
+  { type: 'claim_released', queuedItems: { length: 3 } },
   { type: 'claim_released', freezeReason: 'incomplete_requires_resume' },
+  { type: 'claim_released', freezeReason: 'configuration_required' },
+  { type: 'claim_released', freezeReason: 'future_reason_with_error_inside' },
+  { type: 'claim_released', freezeReason: 'future_reason_calm' },
+  { type: 'frozen', freezeReason: 'incomplete_requires_resume' },
+  { type: 'frozen', freezeReason: 'mystery_error_xyz' },
+  { type: 'frozen', freezeReason: 'mystery_calm' },
+  { type: 'frozen' },
+  { type: 'started' },
+  { type: 'resumed' },
+  { type: 'skipped' },
+  { type: 'mystery_type' },
+  { type: 'queued', workKind: 'chat' },
+  { type: 'completed', turnOutcome: 'made_up_outcome', classifyState: 'B' },
   { type: 'reconcile', classifyState: 'W' },
   { type: 'cancelled' },
+  // A reconcile bypasses the stale guard on purpose (formal re-publish); the
+  // trailing heartbeat with an old clock must then be rejected as stale.
+  { type: 'reconcile', classifyState: 'B', at: 1 },
+  { type: 'started', at: 1 },
 ];
 
 // The clock and identifiers are controlled on both sides; output includes the
@@ -47,7 +68,7 @@ async function capture(createRuntime) {
     results.push(await runtime.archiveTasks(['missing']));
     const queue = queueEvents.map((event, index) => {
       const result = runtime.onQueueEvent({ ...event, taskId: input.id,
-        sessionId: input.sessionId, at: 1700000000001 + index });
+        sessionId: input.sessionId, at: event.at ?? (1700000000001 + index) });
       return { result, runState: runtime.getBoard().tasks[input.id].runState };
     });
     const board = JSON.parse(JSON.stringify(runtime.getBoard()));
@@ -88,22 +109,68 @@ test('queue result mutation is detected by the baseline', async () => {
   assert.notDeepEqual(mutated.queue, queueBaseline);
 });
 
-test('native outcome adapter preserves live classifier inputs and exceptions', () => {
-  const project = require('../src/native/runtime').getNative().taskBoardTurnOutcome;
+test('native queue run-state adapter preserves live reads and exceptions', () => {
+  const run = require('../src/native/runtime').getNative().taskBoardQueueRunState;
   const calls = [];
   const classify = value => { calls.push(value); return value; };
-  for (const [outcome, expected] of [['succeeded', 'succeeded'], ['failed', 'error'], ['running', 'running']]) {
-    assert.equal(project(outcome, 'ignored', classify), expected);
-  }
+  const freeze = value => { calls.push(value); return value; };
+  // completed reads turnOutcome then classifyState, both eagerly, and the
+  // matched-outcome branches never consult the classifier.
+  const reads = [];
+  const eager = {};
+  Object.defineProperties(eager, {
+    turnOutcome: { get() { reads.push('turnOutcome'); return 'succeeded'; } },
+    classifyState: { get() { reads.push('classifyState'); return 'W'; } },
+  });
+  assert.equal(run('completed', eager, freeze, classify), 'succeeded');
+  assert.deepEqual(reads, ['turnOutcome', 'classifyState']);
   assert.deepEqual(calls, []);
-  assert.equal(project('waiting_user', 'ignored', classify), 'W');
-  assert.equal(project('waiting_background', 'ignored', classify), 'B');
+  for (const [outcome, expected] of [['failed', 'error'], ['running', 'running']]) {
+    assert.equal(run('completed', { turnOutcome: outcome }, freeze, classify), expected);
+  }
+  assert.equal(run('completed', { turnOutcome: 'waiting_user' }, freeze, classify), 'W');
+  assert.equal(run('completed', { turnOutcome: 'waiting_background' }, freeze, classify), 'B');
   for (const value of [undefined, null, false, 0, NaN, '']) {
-    assert.equal(project('unknown', value, classify), 'D');
+    assert.equal(run('completed', { classifyState: value }, freeze, classify), 'D');
   }
   const token = { state: 'W' };
-  assert.equal(project(new String('succeeded'), token, classify), token);
+  assert.equal(run('completed', { turnOutcome: new String('succeeded'), classifyState: token },
+    freeze, classify), token);
   assert.equal(calls.at(-1), token);
-  const error = new Error('classifier failed');
-  assert.throws(() => project('unknown', 'W', () => { throw error; }), value => value === error);
+  // reconcile reads classifyState exactly once.
+  const reconcileReads = [];
+  const reconcileEvent = {};
+  Object.defineProperty(reconcileEvent, 'classifyState',
+    { get() { reconcileReads.push('classifyState'); return 'B'; } });
+  assert.equal(run('reconcile', reconcileEvent, freeze, classify), 'B');
+  assert.deepEqual(reconcileReads, ['classifyState']);
+  // frozen forwards the raw reason; callback exceptions propagate untouched.
+  const reason = { why: 'auth' };
+  assert.equal(run('frozen', { freezeReason: reason }, freeze, classify), reason);
+  const error = new Error('lookup failed');
+  assert.throws(() => run('frozen', { freezeReason: 'x' }, () => { throw error; }, classify),
+    value => value === error);
+  assert.throws(() => run('reconcile', { classifyState: 'W' }, freeze, () => { throw error; }),
+    value => value === error);
+  // claim_released reads freezeReason twice when set (check + argument) and
+  // then short-circuits before touching queuedItems.
+  const releaseReads = [];
+  const release = {};
+  Object.defineProperties(release, {
+    freezeReason: { get() { releaseReads.push('freezeReason'); return 'configuration_required'; } },
+    queuedItems: { get() { releaseReads.push('queuedItems'); return undefined; } },
+  });
+  assert.equal(run('claim_released', release, freeze, classify), 'configuration_required');
+  assert.deepEqual(releaseReads, ['freezeReason', 'freezeReason']);
+  // Depth rules: a non-empty array queues; an empty one falls back to the
+  // queue summary's classify verdict; a missing summary selects 'D'.
+  assert.equal(run('claim_released', { queuedItems: ['i'] }, freeze, classify), 'queued');
+  assert.equal(run('claim_released', { queuedItems: [] }, freeze, classify), 'D');
+  assert.equal(run('claim_released', { queuedItems: [], queueSummary: { classifyState: 'B' } },
+    freeze, classify), 'B');
+  assert.equal(run('claim_released', {}, freeze, classify), 'queued');
+  assert.equal(run('queued', {}, freeze, classify), 'queued');
+  assert.equal(run('claimed', {}, freeze, classify), 'running');
+  assert.equal(run('skipped', {}, freeze, classify), 'idle');
+  assert.equal(run('mystery', {}, freeze, classify), null);
 });
