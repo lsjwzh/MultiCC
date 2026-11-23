@@ -245,6 +245,14 @@ test('buildChildEnv: dotenv fills gaps, desktop knobs always win, bundled runtim
   // app-server/ + runtime/ + launcher/), so the backend carries an explicit
   // marker; the standalone launcher calls the same module without it.
   assert.equal(env.MULTICC_DESKTOP_SHELL, undefined, 'standalone-style children carry no shell marker');
+  const stale = { MULTICC_RUST_ADDON: '/old/kernel.node', MULTICC_RUST_PREBUILT_DIR: '/old/prebuilt' };
+  const packaged = desktopEnv.buildChildEnv({ port: 3457, desktopEnv: layout, baseEnv: stale });
+  const kernels = path.join(layout.serverDir, 'native', 'prebuilt');
+  assert.equal(packaged.MULTICC_RUST_PREBUILT_DIR, kernels);
+  assert.equal(packaged.MULTICC_RUST_ADDON, path.join(kernels, `${process.platform}-${process.arch}`, 'multicc_core.node'));
+  const launch = desktopEnv.gatewayLaunch({ serverEntry: layout.serverEntry, node: layout.runtimeNode,
+    packaged: true, env: stale, platform: 'darwin', arch: 'arm64', exists: () => true });
+  assert.equal(launch.command, path.join(kernels, 'darwin-arm64', 'multicc-gateway'));
   const shellEnv = desktopEnv.buildChildEnv({
     port: 3457, desktopEnv: layout, baseEnv: { MULTICC_DESKTOP_SHELL: 'stale' }, dotenv: {}, desktopShell: true,
   });

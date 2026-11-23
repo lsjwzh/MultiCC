@@ -18,7 +18,7 @@ docker run --rm -p 127.0.0.1:3000:3000 -e HOST=0.0.0.0 -e PORT=3000 \
   -e MULTICC_ALLOW_REMOTE=1 -e ACCESS_TOKEN -v multicc-data:/var/lib/multicc/data multicc-rust
 ```
 
-纯 Rust 部署可读取任务板搜索、文档登记、主机信息和推送配置。会话、定时任务、渠道列表和通知设置读写可在独立网关运行。定时任务执行、渠道消息投递和多项写操作仍需兼容宿主。上线范围和实测状态见[生产入口验收记录](rust-migration/production-entry-2026-11-24.md)。
+纯 Rust 部署可读取任务板搜索、文档登记、主机信息和推送配置。会话、定时任务和渠道列表、通知设置读写可在独立网关运行。定时任务月历支持本地时区和订阅提示，单项历史最多返回 20 条，保留最近 2,000 个 UTF-16 单元的脚本输出。定时任务执行、渠道消息投递和多项写操作仍需兼容宿主。上线范围和实测状态见[生产入口验收记录](rust-migration/production-entry-2026-11-24.md)。
 
 ## 目标与边界
 

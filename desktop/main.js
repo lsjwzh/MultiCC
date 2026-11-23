@@ -272,7 +272,7 @@ async function startBackend() {
     logLine(`starting backend on 127.0.0.1:${port}${pinnedPort !== null ? ' (pinned)' : ''} (server: ${desktopEnv.serverEntry}, runtime: ${desktopEnv.runtimeNode})`);
     // The server only ever runs behind the Rust front door (docs/gateway.md §8),
     // on the runtime staged next to the shell.
-    const launch = gatewayLaunch({ serverEntry: desktopEnv.serverEntry, node: desktopEnv.runtimeNode, env: process.env });
+    const launch = gatewayLaunch({ serverEntry: desktopEnv.serverEntry, node: desktopEnv.runtimeNode, packaged: app.isPackaged, env: process.env });
     supervisor = createBackendSupervisor({
       spawn: childProcess.spawn,
       command: launch.command,

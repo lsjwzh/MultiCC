@@ -578,7 +578,7 @@ function createLauncher({
     // The server only ever runs behind the Rust front door (docs/gateway.md §8).
     let launch;
     try {
-      launch = gatewayLaunch({ serverEntry: desktopEnv.serverEntry, node: process.execPath, env });
+      launch = gatewayLaunch({ serverEntry: desktopEnv.serverEntry, node: process.execPath, packaged: true, env });
     } catch (error) {
       clearPidFile();
       throw error;

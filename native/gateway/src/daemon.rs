@@ -382,7 +382,7 @@ pub async fn serve(mut options: ServeOptions) -> i32 {
 /// there (ACCESS_TOKEN) must win when Node is relaunched.
 fn load_dotenv(path: &Path) -> Vec<String> {
     // §2: a missing .env is not an error.
-    let Ok(bytes) = std::fs::read(&path) else {
+    let Ok(bytes) = std::fs::read(path) else {
         return Vec::new();
     };
     // Node's readFileSync(path, 'utf8') replaces invalid sequences.

@@ -19,6 +19,7 @@ pub mod auth;
 pub mod auto_provider_routing;
 pub mod claude_models;
 pub mod cli_switch;
+mod cron_calendar;
 pub(crate) mod cron_list;
 pub mod directory_list;
 mod directory_routes;
@@ -123,7 +124,7 @@ pub enum Route {
     /// cluster's share. A single-cluster path keeps its own cluster's
     /// responder (same answer, same error messages on host failure).
     AutoOptions,
-    StandaloneCron,
+    StandaloneCron(cron_list::Read),
     Auth(auth::Route),
     Services(services::Route),
     ExternalWorkspaces(external_workspaces::Route),
@@ -1245,7 +1246,7 @@ pub async fn handle(
             )
             .await
         }
-        Route::StandaloneCron => return cron_list::handle(&app, &ctx).await,
+        Route::StandaloneCron(read) => return cron_list::handle(&app, &ctx, read).await,
         Route::Plugins(plugins::Route::Channels) if !app.node_enabled => {
             return resident_channels::list(&app, &ctx).await
         }

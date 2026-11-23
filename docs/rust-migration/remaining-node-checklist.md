@@ -7,8 +7,8 @@
 | Cargo 默认构建 | 工作区默认包含 N-API addon | 默认成员只构建 Rust 程序和库。全工作区测试及兼容宿主显式选择 addon |
 | 网关命令 | 必须显式选择运行时 | `serve --cwd .` 直接运行 Rust，支持外置配置文件；显式 `--node` 用于宿主 |
 | 根源码包、PM2、根 Linux 镜像 | 根包曾声明 18 项 Node 运行依赖 | 启动 Rust 网关，独立入口的通知配置读写、设备视图和持久化由 Rust 处理 |
-| 源码管理器及其 launchd、独立包和桌面后端 | Node 兼容宿主 | 这些入口仍启动宿主。兼容性切换探针见下方命令 |
-| 旧插件与后台任务 | 原宿主拥有调度、队列和投递 | cron 自动触发、Aux 消费、渠道投递及多项写路径尚待接管 |
+| 源码管理器及其 launchd、独立包和桌面后端 | Node 兼容宿主 | 这些入口仍启动宿主。桌面与独立包按自己的安装目录选择网关和兼容模块。兼容性切换探针见下方命令 |
+| 旧插件与后台任务 | 原宿主拥有调度、队列和投递 | Rust 可读取 cron 列表、月历及单项运行历史。cron 自动触发、Aux 消费、渠道投递及多项写路径尚待接管 |
 
 运行 `node docs/rust-migration/differential/production-entry.js "$GATEWAY" "$FIXTURE_ADDON" --cutover` 可用隔离的真实双入口核对切换条件。只要抽样接口的状态码或错误码不同，该命令即退出 1。逐文件依赖仍由 `scripts/inventory-node-backend.js` 生成。
 

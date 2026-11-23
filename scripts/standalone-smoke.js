@@ -105,7 +105,7 @@ async function smokeBundle({ bundleDir, timeoutMs = DEFAULT_TIMEOUT_MS, keepData
   // user's sessions, and removing it proves the bundle keeps state outside
   // its own (read-only) tree.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-standalone-smoke-'));
-  const env = { ...process.env, MULTICC_STANDALONE_HOME: home };
+  const env = { ...process.env, HOME: home, USERPROFILE: home, MULTICC_STANDALONE_HOME: home };
   const infoFile = path.join(home, 'desktop-runtime.json');
   const result = { home, origin: null, steps: [] };
   const record = step => { result.steps.push(step); logger.log(`[standalone-smoke] ${step}`); };
@@ -159,6 +159,9 @@ async function smokeBundle({ bundleDir, timeoutMs = DEFAULT_TIMEOUT_MS, keepData
     result.ok = true;
     return result;
   } finally {
+    // A failed readiness probe can leave the supervisor retrying forever.
+    // Stop our private instance while its pid and control files still exist.
+    if (!result.ok) runLauncher({ ...layout, args: ['--stop'], env, timeoutMs });
     if (!keepData) fs.rmSync(home, { recursive: true, force: true });
   }
 }

@@ -18,16 +18,34 @@ use multicc_core::{
 };
 use serde_json::{json, Value};
 use std::{path::Path, sync::Arc};
-pub(crate) fn claim(standalone: bool, method: &Method, path: &str) -> Option<Route> {
-    (standalone
-        && path
-            .strip_prefix("/api/")
-            .and_then(|s| s.strip_suffix('/').or(Some(s)))
-            .is_some_and(|s| s.eq_ignore_ascii_case("cron"))
-        && matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS"))
-    .then_some(Route::StandaloneCron)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Read {
+    List,
+    Calendar,
+    Runs,
 }
-fn fallback(v: &Value, default: Value) -> Value {
+
+pub(crate) fn claim(standalone: bool, method: &Method, path: &str) -> Option<Route> {
+    if !standalone || !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+        return None;
+    }
+    let path = path.strip_prefix("/api/")?;
+    let mut parts = path.strip_suffix('/').unwrap_or(path).split('/');
+    if !parts.next()?.eq_ignore_ascii_case("cron") {
+        return None;
+    }
+    let read = match (parts.next(), parts.next(), parts.next()) {
+        (None, None, None) => Read::List,
+        (Some(segment), None, None) if segment.eq_ignore_ascii_case("calendar") => Read::Calendar,
+        (Some(id), Some(suffix), None) if !id.is_empty() && suffix.eq_ignore_ascii_case("runs") => {
+            Read::Runs
+        }
+        _ => return None,
+    };
+    Some(Route::StandaloneCron(read))
+}
+
+pub(super) fn fallback(v: &Value, default: Value) -> Value {
     if truthy(v) {
         v.clone()
     } else {
@@ -66,7 +84,7 @@ fn field(field: &str, min: u32, max: u32) -> Option<u64> {
     }
     Some(mask)
 }
-fn next(expr: &str, now: i64) -> Option<i64> {
+pub(super) fn next_before(expr: &str, now: i64, end: Option<i64>) -> Option<i64> {
     let fields = expr.split_whitespace().collect::<Vec<_>>();
     if fields.len() != 5 {
         return None;
@@ -83,8 +101,14 @@ fn next(expr: &str, now: i64) -> Option<i64> {
         .naive_local()
         .with_second(0)?
         .with_nanosecond(0)?;
+    let stop = end
+        .and_then(|ms| Local.timestamp_millis_opt(ms).single())
+        .map(|t| t.naive_local());
     for n in 1..=366 * 1440 {
         let dt = start + chrono::Duration::minutes(n);
+        if stop.is_some_and(|end| dt >= end) {
+            break;
+        }
         if has(0, dt.minute()) && has(1, dt.hour()) && has(3, dt.month()) {
             let dom = has(2, dt.day());
             let dow = has(4, dt.weekday().num_days_from_sunday());
@@ -101,11 +125,63 @@ fn next(expr: &str, now: i64) -> Option<i64> {
     }
     None
 }
-fn output_tail(v: &Value) -> js::JsValue {
+fn output_tail(v: &Value, limit: usize) -> js::JsValue {
     let raw = js::js_to_string(&js::from_serde(v));
     let n = raw.as_units().len();
-    js::JsValue::String(raw.slice_units(n.saturating_sub(400), n))
+    js::JsValue::String(raw.slice_units(n.saturating_sub(limit), n))
 }
+fn recent_runs(task: &Value, count: usize, limit: usize) -> Result<Vec<js::JsValue>, String> {
+    let mut rows = Vec::new();
+    for run in task["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rev()
+        .take(count)
+    {
+        if run.is_null() {
+            return Err("invalid run".into());
+        }
+        let mut row = js::from_serde(run);
+        let output = &run["output"];
+        if output
+            .as_str()
+            .is_some_and(|s| s.encode_utf16().count() > limit)
+        {
+            multicc_core::quota_guard::set(&mut row, "output", output_tail(output, limit));
+        } else if let Some(items) = output.as_array().filter(|items| items.len() > limit) {
+            let tail = items[items.len() - limit..]
+                .iter()
+                .map(js::from_serde)
+                .collect();
+            multicc_core::quota_guard::set(&mut row, "output", js::JsValue::Array(tail));
+        }
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn history(tasks: &[Value], id: &str) -> Result<(u16, js::JsValue), String> {
+    let Some(t) = tasks.iter().find(|t| t["id"].as_str() == Some(id)) else {
+        return Ok((404, js::from_serde(&json!({"error":"task not found"}))));
+    };
+    let mut fields = json!({"ok":true, "id":id});
+    if let Some(name) = t.get("name") {
+        fields["name"] = name.clone();
+    }
+    fields["runCount"] = fallback(&t["runCount"], json!(0));
+    fields["lastRunAt"] = fallback(&t["lastRunAt"], Value::Null);
+    fields["lastStatus"] = fallback(&t["lastStatus"], Value::Null);
+    fields["limit"] = 20.into();
+    let mut row = js::from_serde(&fields);
+    multicc_core::quota_guard::set(
+        &mut row,
+        "runs",
+        js::JsValue::Array(recent_runs(t, 20, 2000)?),
+    );
+    Ok((200, row))
+}
+
 fn view(t: &Value, dir: Option<&Value>, s: &Value, at: i64) -> Result<js::JsValue, String> {
     let script = t["kind"] == "script";
     let rt = &s["runtime"];
@@ -205,22 +281,9 @@ fn view(t: &Value, dir: Option<&Value>, s: &Value, at: i64) -> Result<js::JsValu
         encode_uri_component(text(&t["dirId"]))
     )));
     v["runCount"] = fallback(&t["runCount"], json!(0));
-    let mut recent = vec![];
-    for run in t["runs"].as_array().into_iter().flatten().rev().take(10) {
-        if run.is_null() {
-            return Err("invalid run".into());
-        }
-        let mut row = js::from_serde(run);
-        if run["output"]
-            .as_str()
-            .is_some_and(|s| s.encode_utf16().count() > 400)
-        {
-            multicc_core::quota_guard::set(&mut row, "output", output_tail(&run["output"]));
-        }
-        recent.push(row);
-    }
+    let mut recent = recent_runs(t, 10, 400)?;
     v["nextRunAt"] = json!(if truthy(&t["enabled"]) {
-        next(text(&t["cron"]), at)
+        next_before(text(&t["cron"]), at, None)
     } else {
         None
     });
@@ -265,7 +328,9 @@ fn view(t: &Value, dir: Option<&Value>, s: &Value, at: i64) -> Result<js::JsValu
     let mut fields = vec![];
     for k in order {
         let value = match k {
-            "lastOutput" if script && truthy(&t["lastOutput"]) => output_tail(&t["lastOutput"]),
+            "lastOutput" if script && truthy(&t["lastOutput"]) => {
+                output_tail(&t["lastOutput"], 400)
+            }
             "lastOutput" => js::JsValue::from(""),
             "recentRuns" => js::JsValue::Array(std::mem::take(&mut recent)),
             _ => {
@@ -405,7 +470,12 @@ impl Bindings<'_> {
         Ok(())
     }
 }
-fn load(root: &Path, package: &Path) -> Result<String, String> {
+fn load(
+    root: &Path,
+    package: &Path,
+    read: Read,
+    param: &str,
+) -> Result<(u16, js::JsValue), String> {
     let path = root.join("scheduled_tasks.json");
     let legacy = package.join("plugins/cron/scheduled_tasks.json");
     let source = if !path.exists() && legacy.exists() {
@@ -419,6 +489,12 @@ fn load(root: &Path, package: &Path) -> Result<String, String> {
         Err(e) => return Err(e.to_string()),
     };
     let mut tasks = raw.as_array().cloned().unwrap_or_default();
+    if read == Read::Runs {
+        if source != &path {
+            state_file::write_json_atomic(&path, &json!(tasks)).map_err(|e| e.to_string())?;
+        }
+        return history(&tasks, param);
+    }
     let dirs = super::directory_list::records(&root.join("directories.json"))?;
     let mut binding = None;
     let mut rows = vec![];
@@ -452,20 +528,53 @@ fn load(root: &Path, package: &Path) -> Result<String, String> {
                 t["taskBindingBrokenAt"] = fallback(&t["taskBindingBrokenAt"], now.into());
                 t["taskBindingNotifiedFor"] = fallback(&t["taskId"], json!("unbound"));
             }
-            if let Some(id) = t["taskId"].as_str() {
-                summary = b.summary(id)?;
+            if read == Read::List {
+                if let Some(id) = t["taskId"].as_str() {
+                    summary = b.summary(id)?;
+                }
             }
         }
-        rows.push(view(t, dir, &summary, now)?);
+        if read == Read::List {
+            rows.push(view(t, dir, &summary, now)?);
+        }
     }
     if raw.as_array() != Some(&tasks) || source != &path {
         state_file::write_json_atomic(&path, &json!(tasks)).map_err(|e| e.to_string())?;
     }
-    js::json_stringify(&js::JsValue::Array(rows)).ok_or_else(|| "invalid schedule response".into())
+    if read == Read::Calendar {
+        let (status, body) = super::cron_calendar::render(&tasks, param, now);
+        Ok((status, js::from_serde(&body)))
+    } else {
+        Ok((200, js::JsValue::Array(rows)))
+    }
 }
-pub(crate) async fn handle(app: &Arc<App>, ctx: &RequestCtx) -> Response<Body> {
+pub(crate) async fn handle(app: &Arc<App>, ctx: &RequestCtx, read: Read) -> Response<Body> {
+    use multicc_core::http_gate::{query_string, query_value};
+    let param = match read {
+        Read::List => String::new(),
+        Read::Calendar => query_string(&query_value(&ctx.original_url, "month")),
+        Read::Runs => {
+            let raw = ctx
+                .path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .nth(1)
+                .unwrap_or_default();
+            let Some(id) = super::download::decode_uri_component(raw) else {
+                return express::error(ctx, 400, "Failed to decode param");
+            };
+            id
+        }
+    };
     if ctx.method == "OPTIONS" {
-        return super::options(ctx, "GET,HEAD,POST");
+        return super::options(
+            ctx,
+            match read {
+                Read::List => "GET,HEAD,POST",
+                Read::Calendar => "PATCH,DELETE,GET,HEAD",
+                Read::Runs => "GET,HEAD",
+            },
+        );
     }
     let app = app.clone();
     let result = tokio::spawn(async move {
@@ -473,17 +582,23 @@ pub(crate) async fn handle(app: &Arc<App>, ctx: &RequestCtx) -> Response<Body> {
         let _records = app.native_chat.records.lock().await;
         let root = app.data_root.clone();
         let package = app.package_root.clone();
-        tokio::task::spawn_blocking(move || load(&root, &package)).await
+        tokio::task::spawn_blocking(move || {
+            let (status, body) = load(&root, &package, read, &param)?;
+            js::json_stringify(&body)
+                .map(|s| (status, s))
+                .ok_or_else(|| String::from("invalid schedule response"))
+        })
+        .await
     })
     .await;
     match result {
-        Ok(Ok(Ok(rows))) => express::send(
+        Ok(Ok(Ok((status, body)))) => express::send(
             ctx,
-            200,
+            status,
             "application/json; charset=utf-8",
-            rows.into_bytes(),
+            body.into_bytes(),
             &[],
         ),
-        _ => express::error(ctx, 500, "schedule list unavailable"),
+        _ => express::error(ctx, 500, "schedule read unavailable"),
     }
 }
