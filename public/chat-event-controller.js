@@ -433,6 +433,7 @@
       settleThinkingCards();
       finishStreaming();
       state.lastFinishedText = ''; // Equal text in the next query is still a new answer.
+      state.lastFinishedToolIds = null;
       host.updateUI?.();
     }
 
@@ -951,6 +952,7 @@
           pendingAdmissionIds.clear();
           state.isStreaming = true;
           state.lastFinishedText = '';
+          state.lastFinishedToolIds = null;
           liveUi.showThinking(tr(ADMISSION_PROGRESS_LABELS.processing));
           host.startTitleAnimation?.();
           host.updateUI?.();
@@ -1080,6 +1082,7 @@
         case 'message_start':
           state.isStreaming = true;
           state.lastFinishedText = '';
+          state.lastFinishedToolIds = null;
           liveUi.hideThinking();
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
           else if (state.currentTextContent && !state.currentTextContent.endsWith('\n\n')) state.currentTextContent += '\n\n';
@@ -1191,7 +1194,8 @@
 
     function updateToolInput(tool) {
       historyView.updateToolInput(tool);
-      noteToolActivity(tool);
+      const running = !tool?.card?.classList || tool.card.classList.contains('tool-running');
+      if (running && !Number.isFinite(tool?.endedAt)) noteToolActivity(tool);
     }
 
     function findCurrentToolCardById(id) {
@@ -1202,7 +1206,11 @@
     function finalizeAssistantMsg(message) {
       if (!message?.content) return;
       liveUi.hideThinking();
-      for (const block of message.content) {
+      const blocks = Array.isArray(message.content) ? message.content : [];
+      const lateFinishedTextSnapshot = !state.currentMsgEl && !state.isStreaming
+        && message.textSnapshot === true && !!state.lastFinishedText
+        && blocks.some(b => b && b.type === 'text' && b.text === state.lastFinishedText);
+      for (const block of blocks) {
         if (block.type === 'text' && block.text) {
           if (!state.currentMsgEl) {
             // Late/replayed full snapshot arriving after the turn finalized:
@@ -1213,6 +1221,7 @@
                 && state.lastFinishedText && block.text === state.lastFinishedText) continue;
             state.currentMsgEl = createAssistantBubble();
           }
+          settleThinkingCards();
           if (message.textSnapshot === true) state.currentTextContent = block.text;
           else if (isCodexCli(state.currentCli)) {
             // A duplicated WS frame appends the same block twice; codex blocks
@@ -1226,8 +1235,13 @@
           host.renderCurrentText?.();
           host.maybeScrollToBottom?.();
         } else if (block.type === 'tool_use' && block.id) {
+          if (!state.currentMsgEl && !state.isStreaming
+              && (lateFinishedTextSnapshot || state.lastFinishedToolIds?.has(block.id))) {
+            continue;
+          }
           host.tokenRate?.noteOutputBoundary?.();
           if (!state.currentMsgEl) state.currentMsgEl = createAssistantBubble();
+          if (block.name !== 'Thinking') settleThinkingCards();
           // ACP 等适配器可直接发工具快照；流式事件或历史回放已建卡时，按调用 ID 复用。
           let tool = findCurrentToolCardById(block.id);
           if (!tool) {
@@ -1386,6 +1400,11 @@
       // this same text can be recognized as a duplicate instead of opening a
       // second bubble (cleared when the next turn starts streaming).
       state.lastFinishedText = state.currentTextContent || state.lastFinishedText || '';
+      const finishedToolIds = new Set();
+      for (const tool of state.currentToolCards.values()) {
+        if (tool && tool.id) finishedToolIds.add(tool.id);
+      }
+      if (finishedToolIds.size) state.lastFinishedToolIds = finishedToolIds;
       state.currentMsgEl = null;
       state.currentTextContent = '';
       state.currentToolCards = new Map();

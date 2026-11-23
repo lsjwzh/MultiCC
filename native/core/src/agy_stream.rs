@@ -233,6 +233,7 @@ impl StepUsage {
 #[derive(Debug, Default)]
 struct TurnAccumulator {
     seen_steps: HashSet<u64>,
+    thoughts: HashMap<String, String>,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
@@ -485,24 +486,54 @@ impl AgyStreamDecoder {
     ) -> Vec<Value> {
         let mut out = Vec::new();
 
+        let thought_id = match step_index {
+            Some(idx) => format!("agy_think_{idx}"),
+            None => "agy_think".to_string(),
+        };
+        let mut emitted_thought = false;
         if let Some(thought) = step
             .get("thought_delta")
             .or_else(|| step.get("thinking_delta"))
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
         {
-            let thought_id = match step_index {
-                Some(idx) => format!("agy_think_{idx}"),
-                None => "agy_think".to_string(),
+            let acc = self.turn_mut(conv_key);
+            let full_thought = {
+                let entry = acc.thoughts.entry(thought_id.clone()).or_default();
+                entry.push_str(thought);
+                entry.clone()
             };
+            if state == "DONE" {
+                acc.thoughts.remove(&thought_id);
+            }
+            emitted_thought = true;
             out.push(json!({
                 "type": "thinking",
                 "id": thought_id,
-                "text": thought,
+                "text": full_thought,
+                "snapshot": true,
                 "delta": true,
                 "completed": state == "DONE",
             }));
+        } else if state == "DONE" {
+            if let Some(full_thought) = self
+                .turn_mut(conv_key)
+                .thoughts
+                .remove(&thought_id)
+                .filter(|s| !s.is_empty())
+            {
+                emitted_thought = true;
+                out.push(json!({
+                    "type": "thinking",
+                    "id": thought_id,
+                    "text": full_thought,
+                    "snapshot": true,
+                    "delta": true,
+                    "completed": true,
+                }));
+            }
         }
+        let _ = emitted_thought;
 
         if let Some(delta) = step
             .get("text_delta")
@@ -969,5 +1000,66 @@ mod tests {
         assert_eq!(fs::read_to_string(&cfg_path).unwrap(), "{broken");
 
         let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn thought_deltas_accumulate_as_snapshots_and_close_on_done() {
+        let mut decoder = AgyStreamDecoder::new();
+        decoder.decode(&json!({
+            "event": "init",
+            "conversation_id": "c-think"
+        }));
+
+        let first = decoder.decode(&json!({
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "c-think",
+                "step_index": 1,
+                "state": "ACTIVE",
+                "step_type": "agent_response",
+                "thought_delta": "先看"
+            }
+        }));
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["type"], "thinking");
+        assert_eq!(first[0]["id"], "agy_think_1");
+        assert_eq!(first[0]["text"], "先看");
+        assert_eq!(first[0]["snapshot"], true);
+        assert_eq!(first[0]["completed"], false);
+
+        let second = decoder.decode(&json!({
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "c-think",
+                "step_index": 1,
+                "state": "ACTIVE",
+                "step_type": "agent_response",
+                "thought_delta": "代码结构"
+            }
+        }));
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0]["text"], "先看代码结构");
+        assert_eq!(second[0]["snapshot"], true);
+        assert_eq!(second[0]["completed"], false);
+
+        // DONE without another thought_delta still closes the accumulated thought.
+        let done = decoder.decode(&json!({
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "c-think",
+                "step_index": 1,
+                "state": "DONE",
+                "step_type": "agent_response",
+                "text_delta": "看完了"
+            }
+        }));
+        assert_eq!(done.len(), 2);
+        assert_eq!(done[0]["type"], "thinking");
+        assert_eq!(done[0]["id"], "agy_think_1");
+        assert_eq!(done[0]["text"], "先看代码结构");
+        assert_eq!(done[0]["snapshot"], true);
+        assert_eq!(done[0]["completed"], true);
+        assert_eq!(done[1]["type"], "assistant_text");
+        assert_eq!(done[1]["text"], "看完了");
     }
 }

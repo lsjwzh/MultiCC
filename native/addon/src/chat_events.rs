@@ -2083,19 +2083,23 @@ fn apply_adapter_one<'a>(
             ],
         )?;
         let tools = cs.get(c"currentToolCalls")?;
+        let raw_id = evt.optional(c"id")?;
+        let id = if raw_id.truthy()? {
+            raw_id
+        } else {
+            let length = tools.get(c"length")?.number()? as u64;
+            string_value(anchor, JsString::from_rust_str(&format!("call_{length}")))?
+        };
         let tool = object(anchor)?;
         tool.set(c"name", evt.optional(c"name")?)?;
         tool.set(
             c"input",
             or_chain(&[evt.optional(c"input")?, object(anchor)?])?,
         )?;
-        tool.set(c"id", evt.optional(c"id")?)?;
+        tool.set(c"id", id)?;
         tool.set(c"startedAt", number(anchor, now(anchor)?)?)?;
         push(tools, tool)?;
-        call(
-            ports.get(c"backgroundRecordToolUseId")?,
-            &[session, evt.optional(c"id")?],
-        )?;
+        call(ports.get(c"backgroundRecordToolUseId")?, &[session, id])?;
         let frame = object(anchor)?;
         frame.set(c"type", text(anchor, "assistant")?)?;
         let message = object(anchor)?;
@@ -2103,7 +2107,7 @@ fn apply_adapter_one<'a>(
         let block = object(anchor)?;
         block.set(c"type", text(anchor, "tool_use")?)?;
         block.set(c"name", evt.optional(c"name")?)?;
-        block.set(c"id", evt.optional(c"id")?)?;
+        block.set(c"id", id)?;
         block.set(
             c"input",
             or_chain(&[evt.optional(c"input")?, object(anchor)?])?,
@@ -2174,7 +2178,38 @@ fn apply_adapter_one<'a>(
             string_value(anchor, JsString::from_rust_str(&format!("call_{length}")))?
         };
         let tool = match find_tool_by_id(tools, id)? {
-            Some(tool) => tool,
+            Some(tool) => {
+                let incoming_input = evt.optional(c"input")?;
+                if incoming_input.kind()? == sys::ValueType::napi_object
+                    && !incoming_input.is_array()?
+                    && number_truthy(object_keys_len(anchor, incoming_input)?)
+                {
+                    let next_json = multicc_core::js::json::json_stringify(&read(incoming_input)?);
+                    let prev_json = multicc_core::js::json::json_stringify(&read(
+                        tool.optional(c"input")?,
+                    )?);
+                    if next_json != prev_json {
+                        tool.assign(c"input", incoming_input)?;
+                        let frame = object(anchor)?;
+                        frame.set(c"type", text(anchor, "assistant")?)?;
+                        let message = object(anchor)?;
+                        let content = array(anchor)?;
+                        let block = object(anchor)?;
+                        block.set(c"type", text(anchor, "tool_use")?)?;
+                        block.set(
+                            c"name",
+                            or_chain(&[evt.optional(c"name")?, tool.optional(c"name")?])?,
+                        )?;
+                        block.set(c"id", id)?;
+                        block.set(c"input", incoming_input)?;
+                        push(content, block)?;
+                        message.set(c"content", content)?;
+                        frame.set(c"message", message)?;
+                        forward.call_plain(&[frame])?;
+                    }
+                }
+                tool
+            }
             None => {
                 let tool = object(anchor)?;
                 tool.set(c"name", evt.optional(c"name")?)?;
@@ -2263,12 +2298,17 @@ fn apply_adapter_one<'a>(
             forward.call_plain(&[reasoning])?;
         }
         let tools = cs.get(c"currentToolCalls")?;
-        let id = evt.optional(c"id")?;
-        let found = if id.truthy()? {
-            find_tool_by_id(tools, id)?
+        let raw_id = evt.optional(c"id")?;
+        let id = if raw_id.truthy()? {
+            raw_id
         } else {
-            None
+            let length = tools.get(c"length")?.number()? as u64;
+            string_value(
+                anchor,
+                JsString::from_rust_str(&format!("thinking_{length}")),
+            )?
         };
+        let found = find_tool_by_id(tools, id)?;
         let snapshot = evt.optional(c"snapshot")?.is_true()?;
         let tool_input = object(anchor)?;
         tool_input.set(
