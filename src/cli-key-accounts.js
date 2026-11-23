@@ -25,9 +25,11 @@ const path = require('node:path');
 
 const { atomicWriteJson, ensurePrivateDir } = require('./runtime-security');
 const { DEFAULT_ROOT, ACCOUNT_ID_PATTERN } = require('./official-accounts');
+const { hasAccount: hasAgyAccountNative } = require('./agy-accounts');
 
 const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);
-const CLI_NAMES = Object.freeze({ commandcode: 'Command Code', opencode: 'OpenCode' });
+const SESSION_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode', 'agy']);
+const CLI_NAMES = Object.freeze({ commandcode: 'Command Code', opencode: 'OpenCode', agy: 'Antigravity' });
 // The key travels as its own env var and the config only names it, so the
 // merged OPENCODE_CONFIG_CONTENT never carries the secret itself.
 const OPENCODE_KEY_ENV = 'MULTICC_OPENCODE_ACCOUNT_KEY';
@@ -48,6 +50,10 @@ function invalid(message, code = 'CLI_KEY_ACCOUNT_INVALID') {
 
 function isKeyAccountCli(cli) {
   return KEY_ACCOUNT_CLIS.includes(String(cli || ''));
+}
+
+function isSessionAccountCli(cli) {
+  return SESSION_ACCOUNT_CLIS.includes(String(cli || ''));
 }
 
 function sanitizeLabel(value) {
@@ -216,16 +222,19 @@ function applyCliKeyAccountEnv(env, session, store, cli = session && session.cli
 // onto the session's current map; null/'' clears that lane, a bare null clears
 // every lane. The map is keyed by lane, so a session switching CLIs keeps each
 // lane's pick and the order of switch-cli vs PATCH does not matter.
-function mergeCliAccountsPatch(current, patch, store) {
+function mergeCliAccountsPatch(current, patch, store, { hasAgyAccount = hasAgyAccountNative } = {}) {
   if (patch === null) return { ok: true, value: null };
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     return { ok: false, error: 'cliAccounts must be an object of {cli: accountId}' };
   }
   const next = { ...plainMap(current) };
   for (const [cli, value] of Object.entries(patch)) {
-    if (!isKeyAccountCli(cli)) return { ok: false, error: `cliAccounts only supports ${KEY_ACCOUNT_CLIS.join(', ')}` };
+    if (!isSessionAccountCli(cli)) return { ok: false, error: `cliAccounts only supports ${SESSION_ACCOUNT_CLIS.join(', ')}` };
     if (value == null || value === '') { delete next[cli]; continue; }
-    if (typeof value !== 'string' || !store.has(cli, value)) return { ok: false, error: `${CLI_NAMES[cli]} 账户不存在` };
+    const exists = cli === 'agy'
+      ? (typeof value === 'string' && !!hasAgyAccount(value))
+      : (typeof value === 'string' && store.has(cli, value));
+    if (!exists) return { ok: false, error: `${CLI_NAMES[cli]} 账户不存在` };
     next[cli] = value;
   }
   return { ok: true, value: Object.keys(next).length ? next : null };
@@ -233,10 +242,11 @@ function mergeCliAccountsPatch(current, patch, store) {
 
 // What a copied configuration (fork) may carry: only picks whose account still
 // exists. A dropped pick means "the CLI's own login", which the caller states.
-function retainExistingCliAccounts(map, store) {
+function retainExistingCliAccounts(map, store, { hasAgyAccount = hasAgyAccountNative } = {}) {
   const kept = {};
   for (const [cli, id] of Object.entries(plainMap(map))) {
-    if (isKeyAccountCli(cli) && typeof id === 'string' && store.has(cli, id)) kept[cli] = id;
+    if (typeof id !== 'string') continue;
+    if (cli === 'agy' ? hasAgyAccount(id) : (isKeyAccountCli(cli) && store.has(cli, id))) kept[cli] = id;
   }
   return Object.keys(kept).length ? kept : null;
 }
@@ -259,9 +269,11 @@ function releaseCliAccountReferences(records, cli, id) {
 
 module.exports = {
   KEY_ACCOUNT_CLIS,
+  SESSION_ACCOUNT_CLIS,
   OPENCODE_KEY_ENV,
   OPENCODE_ACCOUNT_PROVIDERS,
   isKeyAccountCli,
+  isSessionAccountCli,
   createCliKeyAccountStore,
   sharedCliKeyAccountStore,
   selectedAccountId,

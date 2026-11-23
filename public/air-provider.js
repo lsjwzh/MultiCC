@@ -255,7 +255,7 @@
         <p>${t('airProviderFormIntro')}</p>
         <div id="air-provider-create-choice" class="air-provider-create-choice">
           <section><strong>${t('airProviderAddByKey')}</strong><span>${t('airProviderAddByKeyDesc')}</span><div><button type="button" data-provider-key="claude">Claude · Anthropic</button><button type="button" data-provider-key="codex">Codex · OpenAI</button></div></section>
-          <section><strong>${t('airProviderAddAccount')}</strong><span>${t('airProviderAddAccountDesc')}</span><div><button type="button" data-provider-account="claude">Claude</button><button type="button" data-provider-account="codex">Codex</button></div></section>
+          <section><strong>${t('airProviderAddAccount')}</strong><span>${t('airProviderAddAccountDesc')}</span><div><button type="button" data-provider-account="claude">Claude</button><button type="button" data-provider-account="codex">Codex</button><button type="button" data-provider-account="agy">Antigravity</button></div></section>
           <section><strong>${t('airProviderVirtual')}</strong><span>${t('airProviderVirtualDesc')}</span><div><button type="button" data-provider-virtual>${t('airProviderVirtualCreate')}</button></div></section>
         </div>
         <div id="air-provider-api-fields">
@@ -313,7 +313,8 @@
     dialog.querySelectorAll('[data-provider-account]').forEach(control => {
       control.onclick = () => {
         dialog.close();
-        root.MultiCCOfficialAccounts?.add(control.dataset.providerAccount);
+        if (control.dataset.providerAccount === 'agy') void createAgyAccount();
+        else root.MultiCCOfficialAccounts?.add(control.dataset.providerAccount);
       };
     });
     return dialog;
@@ -1207,15 +1208,17 @@
     toolbar.append(tabs, importButton);
     toolbar.append(button(`＋ ${t('airProviderVirtual')}`, () => root.MultiCCVirtualProvider?.open({ providers: data?.providers || [], api: context.api, onSaved: load })));
     const cards = make('div', null, 'air-provider-cards'); cards.id = 'air-provider-cards';
+    const agySection = agyAccountsPanel();
     const advanced = make('section', null, 'air-provider-advanced'); advanced.id = 'air-provider-advanced'; advanced.hidden = !advancedOpen;
     const note = make('div', null, 'air-migration-note'); note.append(make('strong', t('airProviderAdvancedTitle')), make('span', t('airProviderAdvancedBody')));
     // 官方多账号 / 借道 / ZCode / Kimi 那四块正文由 air-provider-advanced.js 画进这个空壳，
     // 而且要等真正展开才画：它开四个接口，默认折叠的那一格不该替用户付这笔。
     const advancedBody = make('div'); advancedBody.id = 'air-provider-advanced-body';
     advanced.append(note, advancedBody);
-    page.append(intro, defaults, toolbar, cards, quotaGuardCard(), advanced);
+    page.append(intro, defaults, toolbar, cards, agySection, quotaGuardCard(), advanced);
     el('admin-content').replaceChildren(page);
     void loadQuotaGuard();
+    void loadAgyAccounts();
     setProtocol(activeProtocol);
     if (advancedOpen) {
       root.MultiCCAirProviderAdvanced?.render(advancedBody, context);
@@ -1278,9 +1281,155 @@
     if (advancedOpen) advanced.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
+  // ── Antigravity (agy) 多账号管理面板 ────────────────────────────────────────
+  // agy 使用独立 HOME（~/.gemini）隔离多账号，不在 Claude/Codex provider 表中；
+  // 若服务端未开启 `/api/agy/accounts`（旧前门或无 agy 夹具），面板保持隐藏。
+  let agyState = null;
+
+  function agyAccountsPanel() {
+    const panel = make('section', null, 'admin-panel');
+    panel.id = 'air-provider-agy-accounts';
+    panel.hidden = true;
+    const head = make('div', null, 'admin-panel-head');
+    const titleWrap = make('div');
+    titleWrap.append(make('h3', t('airOfficialAcctAgySection')), make('p', t('airOfficialAcctAgySectionHint')));
+    const actions = make('div', null, 'air-provider-card-actions');
+    actions.append(
+      button(t('airOfficialAcctAgyCreate'), () => void createAgyAccount(), 'primary'),
+      button(t('airOfficialAcctAgyImport'), () => void importAgyAccount()),
+    );
+    head.append(titleWrap, actions);
+    const list = make('div');
+    list.id = 'air-provider-agy-list';
+    list.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:8px';
+    panel.append(head, list);
+    return panel;
+  }
+
+  function renderAgyAccounts() {
+    const panel = el('air-provider-agy-accounts');
+    const host = el('air-provider-agy-list');
+    if (!panel || !host) return;
+    if (!agyState) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const rows = [];
+    const local = agyState.local || { loggedIn: false };
+    const localInUse = !agyState.active;
+    const localRow = make('div');
+    localRow.dataset.agyAccount = 'local';
+    localRow.style.cssText = 'border:1px dashed var(--line, #d8e5f2);border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+    localRow.append(make('strong', t('airOfficialAcctAgyLocal')));
+    localRow.append(make('span', local.loggedIn
+      ? (local.email ? `${t('airOfficialAcctSignedIn')} · ${local.email}` : t('airOfficialAcctSignedIn'))
+      : `${t('airOfficialAcctSignedOut')} · ${t('airOfficialAcctAgyNoLocal')}`));
+    if (localInUse) localRow.append(make('span', t('airOfficialAcctAgyLocalActive'), 'default'));
+    if (!localInUse) {
+      const useLocal = button(t('airOfficialAcctAgyUseLocal'), () => void deactivateAgyAccount());
+      useLocal.style.marginLeft = 'auto';
+      localRow.append(useLocal);
+    }
+    rows.push(localRow);
+    if (!agyState.accounts.length) {
+      rows.push(make('p', t('airOfficialAcctAgyEmpty'), 'admin-empty'));
+    }
+    for (const account of agyState.accounts) {
+      const row = make('div');
+      row.dataset.agyAccount = account.id;
+      row.style.cssText = 'border:1px solid var(--line, #d8e5f2);border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+      const label = account.label || t('airOfficialAcctAgyAccount', { id: account.id.slice(0, 6) });
+      row.append(make('strong', label));
+      const statusText = account.loggedIn
+        ? [t('airOfficialAcctSignedIn'), account.email, account.expiresAt && account.expiresAt <= Date.now() ? t('airOfficialAcctAgyExpired') : ''].filter(Boolean).join(' · ')
+        : t('airOfficialAcctSignedOut');
+      row.append(make('span', statusText));
+      if (account.active) row.append(make('span', t('airOfficialAcctActive'), 'default'));
+      const ops = make('div', null, 'air-provider-card-actions');
+      ops.style.marginLeft = 'auto';
+      if (!account.active) ops.append(button(t('airOfficialAcctActivate'), () => void activateAgyAccount(account.id)));
+      ops.append(button(t(account.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin'), () => void loginAgyAccount(account.id)));
+      ops.append(button(t('airOfficialAcctDelete'), () => void deleteAgyAccount(account.id), 'danger'));
+      row.append(ops);
+      rows.push(row);
+    }
+    host.replaceChildren(...rows);
+  }
+
+  function applyAgyResponse(payload) {
+    if (!payload || !Array.isArray(payload.accounts)) return null;
+    agyState = {
+      accounts: payload.accounts.filter(item => item && /^[a-f0-9]{16}$/.test(String(item.id || ''))),
+      active: payload.active || null,
+      local: payload.local || null,
+    };
+    renderAgyAccounts();
+    return agyState;
+  }
+
+  async function loadAgyAccounts() {
+    try {
+      const payload = await context.api('/api/agy/accounts');
+      applyAgyResponse(payload);
+    } catch (_) {
+      agyState = null;
+      renderAgyAccounts();
+    }
+  }
+
+  async function createAgyAccount() {
+    const label = root.prompt ? root.prompt(t('airOfficialAcctAgyLabelPrompt'), '') : '';
+    if (label === null) return;
+    const before = new Set((agyState?.accounts || []).map(item => item.id));
+    try {
+      const next = applyAgyResponse(await context.api('/api/agy/accounts', { label }, 'POST'));
+      const created = next?.accounts.find(item => !before.has(item.id));
+      context?.notice(t('airOfficialAcctAgyCreated'));
+      if (created) await loginAgyAccount(created.id);
+    } catch (error) { context?.notice(t('airOfficialAcctFailed', { message: error.message })); }
+  }
+
+  async function importAgyAccount() {
+    const label = root.prompt ? root.prompt(t('airOfficialAcctAgyLabelPrompt'), '') : '';
+    if (label === null) return;
+    try {
+      applyAgyResponse(await context.api('/api/agy/accounts/import', { label }, 'POST'));
+      context?.notice(t('airOfficialAcctAgyCreated'));
+    } catch (error) { context?.notice(t('airOfficialAcctFailed', { message: error.message })); }
+  }
+
+  async function activateAgyAccount(id) {
+    try {
+      applyAgyResponse(await context.api(`/api/agy/accounts/${encodeURIComponent(id)}/activate`, {}, 'POST'));
+      context?.notice(t('airOfficialAcctSwitched'));
+    } catch (error) { context?.notice(t('airOfficialAcctSwitchFailed', { message: error.message })); }
+  }
+
+  async function deactivateAgyAccount() {
+    try {
+      applyAgyResponse(await context.api('/api/agy/accounts/deactivate', {}, 'POST'));
+      context?.notice(t('airOfficialAcctSwitched'));
+    } catch (error) { context?.notice(t('airOfficialAcctSwitchFailed', { message: error.message })); }
+  }
+
+  async function loginAgyAccount(id) {
+    try {
+      const data = await context.api(`/api/agy/accounts/${encodeURIComponent(id)}/login-terminal`, {}, 'POST');
+      if (data?.url && root.open) root.open(root.MultiCCMachineScope?.navigation(data.url) || data.url, '_blank');
+      context?.notice(t('airOfficialAcctAgyLoginOpened'));
+    } catch (error) { context?.notice(t('airOfficialAcctAgyLoginFailed', { message: error.message })); }
+  }
+
+  async function deleteAgyAccount(id) {
+    if (typeof confirm === 'function' && !confirm(t('airOfficialAcctDeleteConfirm'))) return;
+    try {
+      applyAgyResponse(await context.api(`/api/agy/accounts/${encodeURIComponent(id)}`, undefined, 'DELETE'));
+      context?.notice(t('airOfficialAcctDeleted'));
+    } catch (error) { context?.notice(t('airOfficialAcctDeleteFailed', { message: error.message })); }
+  }
+
   // 顶栏的「刷新」两处一起刷：线路和用量都会变，只刷一半会让人以为没生效。
   function refresh() {
     void load();
+    void loadAgyAccounts();
     void loadTrend();
     return root.MultiCCAirUsage?.reload();
   }

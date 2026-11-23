@@ -180,9 +180,11 @@ const MIGRATION_DEBT = Object.freeze({
   // extraction target is unchanged.
   // 2026-11-21 Move subagent sync summaries to run-config-controls.js.
   // Merge with the latest main further reduced this to 3332 lines / 169269 bytes.
+  // 2026-11-23 Move account selector (Command Code / OpenCode / Antigravity) to
+  // run-config-controls.js; measured 3090 lines / 155175 bytes, ratchet down.
   'public/run-config.js': Object.freeze({
-    ceiling: 3332,
-    byteCeiling: 169269,
+    ceiling: 3090,
+    byteCeiling: 155175,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

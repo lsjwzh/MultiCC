@@ -283,6 +283,17 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             match store::delete_account(&home, &id) {
                 Ok(()) => {
                     invalidate_spawn_caches().await;
+                    if host != 0 {
+                        // Best-effort: release persisted session picks bound to this account so
+                        // their next turn falls back cleanly instead of failing closed.
+                        let payload = json!({
+                            "op": "agy-release-account",
+                            "method": "POST",
+                            "id": id,
+                            "body": {},
+                        });
+                        let _ = super::session_routes::call(ctx, host, payload).await;
+                    }
                     express::json(ctx, 200, &state(&home), &[("Cache-Control", "no-store")])
                 }
                 Err(error) => failure(400, error),

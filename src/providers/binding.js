@@ -7,7 +7,7 @@
 const BINDING_BRAND = Symbol('MultiCC.ProviderBinding');
 const ALLOWED_KEYS = new Set([
   'sessionId', 'cli', 'providerId', 'model',
-  'roleKind', 'agentRole', 'routeName',
+  'roleKind', 'agentRole', 'routeName', 'accountId',
 ]);
 // Must track the chat CLI roster (cli-switch.js SUPPORTED_CHAT_CLIS). Providerless
 // CLIs (qoder, codebuddy, dsh, gemini, grok) still cross this boundary; omitting
@@ -61,6 +61,7 @@ function createProviderBinding(input) {
   }
   const providerId = cleanString(input.providerId, 'providerId');
   const model = cleanString(input.model, 'model');
+  const accountId = cleanString(input.accountId, 'accountId', { max: 64 });
   const roleKind = cleanString(input.roleKind || 'main', 'roleKind', { required: true, max: 16 }).toLowerCase();
   if (!ROLE_KINDS.has(roleKind)) {
     throw new ProviderBindingError('roleKind must be main, sub, or aux');
@@ -94,6 +95,7 @@ function createProviderBinding(input) {
     roleKind,
     agentRole,
     routeName,
+    accountId,
   };
   Object.defineProperty(binding, BINDING_BRAND, { value: true });
   return Object.freeze(binding);
@@ -123,6 +125,7 @@ function toLegacyProviderView(value) {
     roleKind: binding.roleKind,
     agentRole: binding.agentRole,
     routeName: binding.routeName,
+    accountId: binding.accountId,
   });
 }
 
