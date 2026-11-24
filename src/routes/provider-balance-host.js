@@ -4,7 +4,7 @@
 // 公开路由、厂商 HTTP、查询编排、去重和失败回退由 Rust 前门执行。
 const { sanitizePublicText } = require('../http/public-safety');
 const { isLocalRequest } = require('../request-locality');
-const { providerLimitSnapshot } = require('../quota/provider-limit-sync');
+const { providerLimitSnapshot } = require('../native/runtime');
 const HOST_PATH = '/api/__host/provider-balance';
 const mounts = new WeakMap();
 

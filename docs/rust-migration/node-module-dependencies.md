@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 519 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 517 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -72,8 +72,8 @@
 | `src/chat/process-close.js` | server.js | — | — | — | — | — |
 | `src/chat/process-watchdog.js` | server.js | `src/classify/vocab.js` | — | — | — | — |
 | `src/chat/provider-attempt-runtime.js` | server.js | `src/native/runtime.js`, `src/observability.js` | — | — | — | — |
-| `src/chat/provider-log-watchdog.js` | server.js | `src/chat/api-error-policy.js`, `src/quota/quota-bar-view.js` | — | `fs`, `os`, `path` | — | — |
-| `src/chat/proxy-broadcast.js` | server.js | `src/observability.js`, `src/quota/claude-bar-state.js`, `src/quota/quota-bar-view.js` | — | — | — | — |
+| `src/chat/provider-log-watchdog.js` | server.js | `src/chat/api-error-policy.js`, `src/native/runtime.js` | — | `fs`, `os`, `path` | — | — |
+| `src/chat/proxy-broadcast.js` | server.js | `src/native/runtime.js`, `src/observability.js`, `src/quota/claude-bar-state.js` | — | — | — | — |
 | `src/chat/resident-composition.js` | server.js | `src/chat/resident-pool.js` | — | — | — | — |
 | `src/chat/resident-pool.js` | server.js | — | — | — | — | — |
 | `src/chat/retry-policy.js` | server.js | `src/chat/api-error-policy.js`, `src/native/runtime.js` | — | — | — | — |
@@ -89,7 +89,7 @@
 | `src/chat/turn-lifecycle.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/chat/turn-progress.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/chat/turn-request.js` | server.js | `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/providers/binding.js` | — | — | — | — |
-| `src/chat/usage-limit-wiring.js` | server.js | `src/quota/claude-bar-state.js`, `src/quota/claude-usage-queue.js`, `src/quota/quota-bar-view.js` | — | — | — | — |
+| `src/chat/usage-limit-wiring.js` | server.js | `src/native/runtime.js`, `src/quota/claude-bar-state.js`, `src/quota/claude-usage-queue.js` | — | — | — | — |
 | `src/chat/workspace-residency.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/chrome-cdp.js` | server.js | `src/cdp-relay.js` | — | `fs`, `http`, `os`, `path` | `ws` | — |
 | `src/classify/aux-run-log.js` | server.js | — | — | `fs`, `path` | — | — |
@@ -225,7 +225,7 @@
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/memory/task-distill.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/model-history-converter.js` | server.js | — | — | `crypto` | — | — |
-| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/classify/task-short-code.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `130 require(file)` |
+| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/classify/task-short-code.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `145 require(file)` |
 | `src/native/task-domain.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-search.js` | server.js | `src/native/runtime.js`, `src/task-board/search.js` | — | — | — | — |
@@ -294,7 +294,7 @@
 | `src/quota-managed-browser.js` | server.js | `src/chrome-cdp.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
 | `src/quota/account-subscription-cache.js` | server.js | `src/native/runtime.js` | — | `fs` | — | — |
 | `src/quota/account-subscription-reader.js` | server.js | `src/providers/native-subscription.js`, `src/quota/account-subscription-cache.js`, `src/quota/claude-cli-oauth.js` | — | `os`, `path` | — | — |
-| `src/quota/claude-bar-state.js` | server.js | `src/native/runtime.js`, `src/quota/claude-usage-queue.js`, `src/quota/quota-bar-view.js` | — | — | — | — |
+| `src/quota/claude-bar-state.js` | server.js | `src/native/runtime.js`, `src/quota/claude-usage-queue.js` | — | — | — | — |
 | `src/quota/claude-cli-oauth.js` | server.js | `src/claude-auth/official-oauth.js`, `src/native/runtime.js`, `src/network/outbound.js` | — | `fs`, `os`, `path` | — | — |
 | `src/quota/claude-usage-queue.js` | server.js | — | — | — | — | — |
 | `src/quota/codex-usage-request.js` | server.js | `src/native/runtime.js`, `src/network/outbound.js` | — | `os`, `path` | — | — |
@@ -302,11 +302,9 @@
 | `src/quota/official-account-usage.js` | server.js | `src/providers/official-catalog.js`, `src/usage-limit-poller.js` | — | `path` | — | — |
 | `src/quota/opencode-zen.js` | server.js | `src/network/outbound.js` | — | `fs`, `os`, `path` | — | — |
 | `src/quota/provider-limit-cache-native-host.js` | server.js | `src/native/runtime.js` | — | — | — | — |
-| `src/quota/provider-limit-sync.js` | server.js | `src/quota/provider-limit-cache-native-host.js`, `src/quota/quota-bar-view.js` | — | — | — | — |
 | `src/quota/provider-quota-history.js` | server.js | `src/native/runtime.js` | — | `fs` | — | — |
-| `src/quota/provider-runtime.js` | server.js | `src/providers/virtual-provider.js`, `src/quota/account-subscription-cache.js`, `src/quota/limit-cache-recorder.js`, `src/quota/provider-limit-cache-native-host.js`, `src/quota/provider-limit-sync.js`, `src/quota/provider-quota-history.js`, `src/quota/quota-bar-cache.js`, `src/quota/quota-guard.js` | — | — | — | — |
+| `src/quota/provider-runtime.js` | server.js | `src/native/runtime.js`, `src/providers/virtual-provider.js`, `src/quota/account-subscription-cache.js`, `src/quota/limit-cache-recorder.js`, `src/quota/provider-limit-cache-native-host.js`, `src/quota/provider-quota-history.js`, `src/quota/quota-bar-cache.js`, `src/quota/quota-guard.js` | — | — | — | — |
 | `src/quota/quota-bar-cache.js` | server.js | `src/state/store.js` | — | — | — | — |
-| `src/quota/quota-bar-view.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/quota/quota-guard.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/quota/quota-self-heal.js` | server.js | `src/providers/virtual-provider.js`, `src/usage-limit-poller.js` | — | `os`, `path` | — | — |
 | `src/repo-actor.js` | server.js | `src/portable-git.js` | — | `child_process`, `crypto`, `fs`, `path`, `util` | — | — |
@@ -358,11 +356,11 @@
 | `src/routes/orchestration.js` | server.js | — | — | — | — | — |
 | `src/routes/plugins-host.js` | server.js | `src/request-locality.js` | — | — | — | — |
 | `src/routes/plugins.js` | server.js | `src/network/outbound.js`, `src/plugins/catalog.js`, `src/plugins/channel-host.js`, `src/plugins/channel-registry.js`, `src/plugins/installer.js`, `src/request-locality.js`, `src/routes/plugins-host.js` | — | `child_process`, `fs`, `path` | — | — |
-| `src/routes/provider-balance-host.js` | server.js | `src/claude-auth/account-credentials.js`, `src/http/public-safety.js`, `src/official-accounts.js`, `src/providers/egress-ip-policy.js`, `src/providers/virtual-provider.js`, `src/quota/claude-cli-oauth.js`, `src/quota/codex-usage-request.js`, `src/quota/provider-limit-sync.js`, `src/request-locality.js`, `src/usage-limit-poller.js` | — | — | — | — |
+| `src/routes/provider-balance-host.js` | server.js | `src/claude-auth/account-credentials.js`, `src/http/public-safety.js`, `src/native/runtime.js`, `src/official-accounts.js`, `src/providers/egress-ip-policy.js`, `src/providers/virtual-provider.js`, `src/quota/claude-cli-oauth.js`, `src/quota/codex-usage-request.js`, `src/request-locality.js`, `src/usage-limit-poller.js` | — | — | — | — |
 | `src/routes/provider-balance.js` | server.js | `src/network/outbound.js`, `src/routes/provider-balance-host.js` | — | — | — | — |
 | `src/routes/provider-models.js` | server.js | `src/providers/core.js` | — | — | — | — |
 | `src/routes/provider-relay-host.js` | server.js | `src/request-locality.js` | — | — | — | — |
-| `src/routes/providers-host.js` | server.js | `src/claude-models.js`, `src/cli/cli-capability.js`, `src/http/public-safety.js`, `src/native/runtime.js`, `src/official-accounts.js`, `src/provider-reassign.js`, `src/providers/force-detach.js`, `src/providers/virtual-provider.js`, `src/quota/account-subscription-cache.js`, `src/quota/provider-limit-cache-native-host.js`, `src/quota/quota-bar-view.js`, `src/request-locality.js` | — | — | — | — |
+| `src/routes/providers-host.js` | server.js | `src/claude-models.js`, `src/cli/cli-capability.js`, `src/http/public-safety.js`, `src/native/runtime.js`, `src/official-accounts.js`, `src/provider-reassign.js`, `src/providers/force-detach.js`, `src/providers/virtual-provider.js`, `src/quota/account-subscription-cache.js`, `src/quota/provider-limit-cache-native-host.js`, `src/request-locality.js` | — | — | — | — |
 | `src/routes/providers.js` | server.js | `src/http/public-safety.js`, `src/native/runtime.js`, `src/providers/defaults-port.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/routes/providers-host.js`, `src/routes/subagent-defaults-host.js` | — | — | — | — |
 | `src/routes/push-host.js` | server.js | `src/push/bark-devices.js`, `src/push/business.js`, `src/push/channel-subscriptions.js`, `src/request-locality.js` | — | — | — | — |
 | `src/routes/qoder-models.js` | server.js | `src/cli-adapters/commands.js` | — | `child_process` | — | — |

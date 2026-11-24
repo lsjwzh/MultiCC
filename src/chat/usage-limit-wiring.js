@@ -18,7 +18,7 @@
 const {
   normalizeWindowEvent, windowEventBar, normalizeBalance, balanceBar,
   labelRoutedProvider, labelRoutedBalance,
-} = require('../quota/quota-bar-view');
+} = require('../native/runtime').getQuotaBarView();
 const { rememberClaudeLive, renderClaudeBar } = require('../quota/claude-bar-state');
 const { DEFAULT_KEY, configureClaudeKeyResolver } = require('../quota/claude-usage-queue');
 

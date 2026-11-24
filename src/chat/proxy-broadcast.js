@@ -12,7 +12,7 @@
 
 const {
   normalizeWindowEvent, windowEventBar, labelRoutedProvider,
-} = require('../quota/quota-bar-view');
+} = require('../native/runtime').getQuotaBarView();
 const { rememberClaudeLive, renderClaudeBar } = require('../quota/claude-bar-state');
 const { redactProviderRouteCapability } = require('../observability');
 

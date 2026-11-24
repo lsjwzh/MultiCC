@@ -194,7 +194,7 @@ test('the claude bar only scrapes when the front door says force', async () => {
     // door can read it, at the same instant the reading is stamped.
     assert.equal(state.live, null);
     assert.equal(state.nowMs, 1_700_000_000_000);
-    const { normalizeWindowEvent } = require('../src/quota/quota-bar-view');
+    const { normalizeWindowEvent } = require('../src/native/runtime').getQuotaBarView();
     BarState.rememberClaudeLive('s1', normalizeWindowEvent({
       rateLimitType: 'five_hour',
       status: 'allowed',

@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
-const { providerLimitBar } = require('../src/quota/quota-bar-view');
+const { providerLimitBar } = require('../src/native/runtime').getQuotaBarView();
 
 const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 

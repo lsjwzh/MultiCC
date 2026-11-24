@@ -36,6 +36,21 @@ function getPushNotificationCopy() {
   return notificationWords;
 }
 
+let quotaBarView;
+function getQuotaBarView() { return quotaBarView ||= getNative().quotaBarViewApi(); }
+// Use the JS arithmetic operator for timestamps supplied by host extensions.
+const elapsedTime = (now, since) => now - since;
+function providerLimitSnapshot(entry, now = Date.now()) {
+  const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+  return getNative().providerLimitSnapshot(entry, now, STALE_MS_DEFAULT, elapsedTime);
+}
+function connectProviderLimitSync({ cache, persistedSessions, providers, broadcast }) {
+  const native = getNative();
+  const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+  return cache.subscribe(entry => native.broadcastProviderLimit(entry, Date.now(), STALE_MS_DEFAULT,
+    elapsedTime, persistedSessions, providers, broadcast, native.providerLimitCandidateMatches));
+}
+
 const counts = { search: 0, usage: 0 };
 // Compatibility value for Node modules that must load before the addon; the
 // native delivery API is the policy owner and preflight verifies this marker.
@@ -405,7 +420,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getPushNotificationCopy, getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
