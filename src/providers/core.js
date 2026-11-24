@@ -188,8 +188,16 @@ const WIRE_DEFAULT_MODEL = process.env.CLAUDE_WIRE_DEFAULT_MODEL || 'claude-sonn
 // ── multicc store (providers.json) ───────────────────────────────────────────
 
 const nativeProviderStore = require('./native-store').createNativeProviderStore(STORE_FILE);
+// CLI 可用性探测（isCommandAvailable）会高频调用 hasCliRelayProvider，而 store 读取
+// 是全量反序列化。这里做 1s TTL 缓存，写入时立即失效。
+const CLI_RELAY_SCAN_TTL_MS = 1000;
+let cliRelayScanCache = null;
+function invalidateCliRelayScan() { cliRelayScanCache = null; }
 function loadStore() { return nativeProviderStore.read(); }
-function saveStore(list, source = list) { nativeProviderStore.write(list, source); }
+function saveStore(list, source = list) {
+  nativeProviderStore.write(list, source);
+  invalidateCliRelayScan();
+}
 
 function getCcSwitchStatus() {
   return sqliteRuntime.getStatus(resolveCcDb());
@@ -681,12 +689,21 @@ function resolveCliRelayTarget(appType, id) {
 // 供 CLI 可用性探测放行：本机未安装 claude / codex 二进制时也能正常使用远程 CLI。
 function hasCliRelayProvider(appType) {
   if (appType !== 'claude' && appType !== 'codex') return false;
-  try {
-    const records = loadStore();
-    return records.some(p => p && p.appType === appType && !p.virtual && !!resolveCliRelayTarget(appType, p.id));
-  } catch (_) {
-    return false;
+  const now = Date.now();
+  if (!cliRelayScanCache || now - cliRelayScanCache.at > CLI_RELAY_SCAN_TTL_MS) {
+    try {
+      const appTypes = new Set();
+      for (const p of loadStore()) {
+        if (!p || p.virtual || (p.appType !== 'claude' && p.appType !== 'codex')) continue;
+        if (appTypes.has(p.appType)) continue;
+        if (resolveCliRelayTarget(p.appType, p.id)) appTypes.add(p.appType);
+      }
+      cliRelayScanCache = { at: now, appTypes };
+    } catch (_) {
+      return false;
+    }
   }
+  return cliRelayScanCache.appTypes.has(appType);
 }
 
 function getProviderSummary(appType, id) {

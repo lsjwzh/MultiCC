@@ -382,3 +382,22 @@ test('Flutter Provider settings put accounts in New Provider and keep only low-f
   assert.match(app, /'providerConnection': section/);
   assert.match(app, /buildHttpUrl\('\/air'\)/);
 });
+
+test('远程 CLI 开关在新建时就能出现，可见性跟随 Base URL 输入而不是已保存的 provider', () => {
+  const web = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
+  // 可见性按当前输入现算：类型 + Base URL，新建（provider 为 null）同样生效。
+  assert.match(web, /function syncCliRelayVisibility\(\)/);
+  assert.match(web, /form\.elements\.baseUrl\.value\.trim\(\)/);
+  assert.match(web, /box\.hidden = !relay/);
+  assert.match(web, /form\.elements\.baseUrl\.addEventListener\('input', syncCliRelayVisibility\)/);
+  assert.match(web, /form\.elements\.cliRelay\.checked = provider\?\.cliRelay === true;\s+syncCliRelayVisibility\(\);/);
+  // 旧的「只有已保存的借道线路才显示」判断必须消失。
+  assert.doesNotMatch(web, /const isRelayImport = !!provider/);
+
+  const app = fs.readFileSync(path.join(ROOT, 'app', 'lib', 'screens', 'provider_screen.dart'), 'utf8');
+  assert.match(app, /bool get _showCliRelay =>/);
+  assert.match(app, /isRelayBaseUrl\(_baseUrl\.text\.trim\(\)\)/);
+  assert.match(app, /_baseUrl\.addListener\(_onBaseUrlChanged\)/);
+  assert.match(app, /if \(_showCliRelay\) \.\.\.\[/);
+  assert.equal((app.match(/cliRelay: _showCliRelay \? _cliRelay : null/g) || []).length, 2);
+});

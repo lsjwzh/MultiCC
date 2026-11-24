@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -49,8 +49,9 @@ pub struct HostExecServerConfig {
 struct ServerState {
     local_root: PathBuf,
     canonical_root: Option<PathBuf>,
-    readonly_roots: Vec<PathBuf>,
     canonical_temp_dir: Option<PathBuf>,
+    /// 只读技能根目录，在服务启动时（每回合一次）快照。
+    readonly_roots: Vec<PathBuf>,
     remote_root: String,
     file_mode: String,
     token: String,
@@ -105,6 +106,21 @@ fn verify_no_symlink_escape(target: &Path, canonical_root: Option<&Path>) -> Res
     }
 }
 
+/// 共享临时目录下只认自己创建的条目：仅看文件名前缀挡不住同机其他用户
+/// 抢先放置同名文件。
+#[cfg(unix)]
+fn temp_entry_owned_by_current_user(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .map(|meta| meta.uid() == unsafe { libc::geteuid() })
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn temp_entry_owned_by_current_user(_path: &Path) -> bool {
+    true
+}
+
 fn expand_tilde_path(raw: &str) -> String {
     let trimmed = raw.trim();
     if let Some(rest) = trimmed
@@ -143,6 +159,8 @@ fn resolve_readonly_path(
     }
     let canonical =
         std::fs::canonicalize(candidate).map_err(|_| format!("路径越界或文件不存在 ({raw})"))?;
+    // 只读根目录用启动快照：本服务每回合重建，技能目录在回合间新建也能在下一回合可见；
+    // 同时环境变量配置（MULTICC_HOST_EXEC_READONLY_DIRS）按启动时的语义固定，不受中途清空影响。
     if state
         .readonly_roots
         .iter()
@@ -157,6 +175,7 @@ fn resolve_readonly_path(
                     .file_name()
                     .and_then(|s| s.to_str())
                     .is_some_and(|n| n.starts_with("multicc_"))
+                && temp_entry_owned_by_current_user(&canonical)
             {
                 return Ok(canonical);
             }
@@ -604,7 +623,18 @@ async fn handle_fs_view_image(
         )
             .into_response();
     };
-    let meta = match tokio::fs::metadata(&path).await {
+    // 打开后在同一句柄上取元数据再限长读取，避免「先 stat 后按路径重开」的 TOCTOU。
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(f) => f,
+        Err(err) => {
+            return (
+                StatusCode::OK,
+                Json(json!({ "ok": false, "error": format!("打开图片失败: {err}") })),
+            )
+                .into_response();
+        }
+    };
+    let meta = match file.metadata().await {
         Ok(m) => m,
         Err(err) => {
             return (
@@ -631,8 +661,22 @@ async fn handle_fs_view_image(
         )
             .into_response();
     }
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => (
+    // 即使 stat 通过也按上限截断读取：文件可能在检查后被追加。
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    match file
+        .take(MAX_RELAY_IMAGE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .await
+    {
+        Ok(_) if bytes.len() > MAX_RELAY_IMAGE_BYTES => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "ok": false,
+                "error": format!("图片体积超过 {} MiB 限制", MAX_RELAY_IMAGE_BYTES / (1024 * 1024))
+            })),
+        )
+            .into_response(),
+        Ok(_) => (
             StatusCode::OK,
             Json(json!({
                 "ok": true,
@@ -656,13 +700,13 @@ pub async fn start_host_exec_server(
     config: HostExecServerConfig,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), String> {
     let canonical_root = std::fs::canonicalize(&config.local_root).ok();
-    let readonly_roots = default_readonly_skill_roots();
     let canonical_temp_dir = std::fs::canonicalize(std::env::temp_dir()).ok();
+    let readonly_roots = default_readonly_skill_roots();
     let state = Arc::new(ServerState {
         local_root: config.local_root,
         canonical_root,
-        readonly_roots,
         canonical_temp_dir,
+        readonly_roots,
         remote_root: config.remote_root,
         file_mode: config.file_mode,
         token: config.token,
@@ -1382,5 +1426,26 @@ mod tests {
 
         handle.abort();
         let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn temp_entry_ownership_only_accepts_entries_we_created() {
+        let dir = std::env::temp_dir().join(format!(
+            "multicc-host-exec-owner-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mine = dir.join("multicc_shot.png");
+        std::fs::write(&mine, b"x").unwrap();
+
+        assert!(temp_entry_owned_by_current_user(&mine));
+        // 不存在的路径不能因为前缀而放行。
+        assert!(!temp_entry_owned_by_current_user(&dir.join("multicc_missing.png")));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

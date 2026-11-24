@@ -2,7 +2,7 @@
 //!
 //! 架构（与 `multicc_router` WSS 桥同构，零凭据外泄）：
 //! 1. **Client 发现与门禁**：扫描项目 `.mcp.json`、用户 `~/.claude.json`、`~/.claude/settings.json`、
-//!    `~/.gemini/config/mcp_config.json`、`~/.codex/config.toml`（以及测试/显式覆盖 `MULTICC_RELAY_MCP_CONFIG_JSON`），
+//!    `~/.gemini/config/mcp_config.json`（以及测试/显式覆盖 `MULTICC_RELAY_MCP_CONFIG_JSON`），
 //!    排除内置 `multicc_*` 服务，按可选 `MULTICC_RELAY_MCP_ALLOWLIST` 过滤；
 //!    **仅将合法服务名列表 `["playwright", ...]` 随 `start` 帧发往 Host**，命令/环境变量/API Key 100% 留在 Client！
 //! 2. **Host 轻量代理**：Host 为每个名称挂载 `multicc-gateway mcp-relay-proxy --server <name>`，
@@ -14,19 +14,26 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, Semaphore};
 
 use crate::cli_relay_skills::client_home_dir;
 
 pub const MAX_BRIDGED_MCP_SERVERS: usize = 16;
+/// 单条 MCP JSON-RPC 消息（请求或响应）的体积上限。超过即拒绝，避免一次超大
+/// 响应撑爆 32 MiB 的 WSS 帧上限连带断掉整个回合。
+pub const MAX_MCP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+/// 同一回合内同时在途的 MCP 调用上限，防止 Host 无节制并发把 Client 打爆。
+pub const MAX_CONCURRENT_MCP_CALLS: usize = 4;
 const CLIENT_MCP_CALL_TIMEOUT: Duration = Duration::from_secs(300);
+const CLIENT_MCP_QUEUE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub enum ClientMcpTransport {
@@ -251,9 +258,53 @@ pub fn discover_client_mcp_servers(local_root: &Path) -> HashMap<String, ClientM
     found
 }
 
+/// 按行读取，单行超过 `limit` 字节时整行丢弃并返回 `Ok(Some(false))`；
+/// 返回 `Ok(None)` 表示 EOF。读到换行为止，因此丢弃后下一次仍从新行开始。
+async fn read_line_capped<R>(
+    reader: &mut R,
+    out: &mut Vec<u8>,
+    limit: usize,
+) -> std::io::Result<Option<bool>>
+where
+    R: AsyncBufRead + Unpin,
+{
+    out.clear();
+    let mut truncated = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(None);
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            if !truncated {
+                if out.len() + pos > limit {
+                    out.clear();
+                    truncated = true;
+                } else {
+                    out.extend_from_slice(&available[..pos]);
+                }
+            }
+            reader.consume(pos + 1);
+            return Ok(Some(!truncated));
+        }
+        let len = available.len();
+        if !truncated {
+            if out.len() + len > limit {
+                out.clear();
+                truncated = true;
+            } else {
+                out.extend_from_slice(available);
+            }
+        }
+        reader.consume(len);
+    }
+}
+
 struct LiveStdioMcp {
     stdin_tx: mpsc::UnboundedSender<String>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
+    /// 子进程读端已退出（EOF / 协议损坏被主动终止）即为 false，后续调用应重建实例。
+    alive: Arc<AtomicBool>,
     next_id: AtomicU64,
     _child: Mutex<Child>,
 }
@@ -272,12 +323,16 @@ impl LiveStdioMcp {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .env_remove("MULTICC_HOST_EXEC_TOKEN")
-            .env_remove("MULTICC_ROUTER_CAPABILITY")
-            .env_remove("MULTICC_CLAUDE_CLI_RELAY_JSON")
-            .env_remove("MULTICC_CODEX_CLI_RELAY_JSON")
-            .env_remove("MULTICC_AGY_REMOTE_ACCOUNT_JSON");
+            .kill_on_drop(true);
+        // 第三方 MCP 是外部进程：本进程携带的全部 `MULTICC_*` 控制面变量
+        // （宿主席位 token、router capability、各 CLI 借道凭据）一律不往下传。
+        for (key, _) in std::env::vars_os() {
+            if let Some(key) = key.to_str() {
+                if key.starts_with("MULTICC_") {
+                    cmd.env_remove(key);
+                }
+            }
+        }
         for (k, v) in extra_env {
             if !k.starts_with("MULTICC_") {
                 cmd.env(k, v);
@@ -289,6 +344,8 @@ impl LiveStdioMcp {
         let mut child_stdin = child.stdin.take().ok_or("MCP stdin unavailable")?;
         let child_stdout = child.stdout.take().ok_or("MCP stdout unavailable")?;
 
+        let alive = Arc::new(AtomicBool::new(true));
+        let alive_writer = alive.clone();
         let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
         tokio::spawn(async move {
             while let Some(mut line) = stdin_rx.recv().await {
@@ -300,15 +357,25 @@ impl LiveStdioMcp {
                 }
                 let _ = child_stdin.flush().await;
             }
+            alive_writer.store(false, Ordering::SeqCst);
         });
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         let pending_reader = pending.clone();
+        let alive_reader = alive.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(child_stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let trimmed = line.trim();
+            let mut reader = BufReader::new(child_stdout);
+            let mut buf = Vec::new();
+            loop {
+                match read_line_capped(&mut reader, &mut buf, MAX_MCP_MESSAGE_BYTES).await {
+                    // 单行超过上限：协议流已不可信，结束本会话让调用方立即失败并在下次重建。
+                    Ok(Some(false)) => break,
+                    Ok(Some(true)) => {}
+                    Ok(None) | Err(_) => break,
+                }
+                let text = String::from_utf8_lossy(&buf);
+                let trimmed = text.trim();
                 if !trimmed.starts_with('{') {
                     continue;
                 }
@@ -321,15 +388,25 @@ impl LiveStdioMcp {
                     }
                 }
             }
+            alive_reader.store(false, Ordering::SeqCst);
             pending_reader.lock().await.clear();
         });
 
         Ok(Arc::new(Self {
             stdin_tx,
             pending,
+            alive,
             next_id: AtomicU64::new(1),
             _child: Mutex::new(child),
         }))
+    }
+
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
+    fn mark_dead(&self) {
+        self.alive.store(false, Ordering::SeqCst);
     }
 
     async fn send_notification(&self, msg: &Value) -> Result<(), String> {
@@ -337,8 +414,15 @@ impl LiveStdioMcp {
         if let Some(obj) = clean.as_object_mut() {
             obj.remove("id");
         }
+        let encoded = clean.to_string();
+        if encoded.len() > MAX_MCP_MESSAGE_BYTES {
+            return Err(format!(
+                "MCP 请求超过 {} MiB 上限",
+                MAX_MCP_MESSAGE_BYTES / (1024 * 1024)
+            ));
+        }
         self.stdin_tx
-            .send(clean.to_string())
+            .send(encoded)
             .map_err(|_| "本机 MCP 进程已退出".to_string())
     }
 
@@ -349,10 +433,18 @@ impl LiveStdioMcp {
         if let Some(obj) = rewritten.as_object_mut() {
             obj.insert("id".to_string(), json!(internal_id));
         }
+        let encoded = rewritten.to_string();
+        if encoded.len() > MAX_MCP_MESSAGE_BYTES {
+            return Err(format!(
+                "MCP 请求超过 {} MiB 上限",
+                MAX_MCP_MESSAGE_BYTES / (1024 * 1024)
+            ));
+        }
         let (tx, rx) = oneshot::channel::<Value>();
         self.pending.lock().await.insert(internal_id, tx);
-        if self.stdin_tx.send(rewritten.to_string()).is_err() {
+        if self.stdin_tx.send(encoded).is_err() {
             self.pending.lock().await.remove(&internal_id);
+            self.mark_dead();
             return Err("本机 MCP 进程输入管道已关闭".to_string());
         }
         match tokio::time::timeout(CLIENT_MCP_CALL_TIMEOUT, rx).await {
@@ -377,11 +469,14 @@ pub struct ClientMcpManager {
     local_root: PathBuf,
     live_stdio: Mutex<HashMap<String, Arc<LiveStdioMcp>>>,
     http_client: reqwest::Client,
+    calls: Semaphore,
 }
 
 impl ClientMcpManager {
     pub fn new(specs: HashMap<String, ClientMcpSpec>, local_root: PathBuf) -> Self {
+        // 本机 MCP 常常是本地服务：走 HTTP 时不能落到用户代理上。
         let http_client = reqwest::Client::builder()
+            .no_proxy()
             .timeout(CLIENT_MCP_CALL_TIMEOUT)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
@@ -390,6 +485,7 @@ impl ClientMcpManager {
             local_root,
             live_stdio: Mutex::new(HashMap::new()),
             http_client,
+            calls: Semaphore::new(MAX_CONCURRENT_MCP_CALLS),
         }
     }
 
@@ -422,7 +518,11 @@ impl ClientMcpManager {
     ) -> Result<Arc<LiveStdioMcp>, String> {
         let mut map = self.live_stdio.lock().await;
         if let Some(existing) = map.get(&spec.name) {
-            return Ok(existing.clone());
+            if existing.is_alive() {
+                return Ok(existing.clone());
+            }
+            // 上一实例已退出：丢弃（`kill_on_drop` 负责收尸）后重建。
+            map.remove(&spec.name);
         }
         let spawned = LiveStdioMcp::spawn(spec, command, args, env, &self.local_root).await?;
         map.insert(spec.name.clone(), spawned.clone());
@@ -444,6 +544,30 @@ impl ClientMcpManager {
                     "error": { "code": -32601, "message": format!("Unknown Client MCP server: {server_name}") }
                 })
             });
+        };
+
+        // 并发闸：Host 侧若一口气发来大量 `mcp_rpc_req`，在这里排队而不是全部 spawn 出去。
+        let _permit = match tokio::time::timeout(CLIENT_MCP_QUEUE_TIMEOUT, self.calls.acquire()).await
+        {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                return expect_reply.then(|| {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": orig_id,
+                        "error": { "code": -32000, "message": "MCP 隧道已关闭" }
+                    })
+                });
+            }
+            Err(_) => {
+                return expect_reply.then(|| {
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": orig_id,
+                        "error": { "code": -32000, "message": "MCP 调用排队超时，请减少并发" }
+                    })
+                });
+            }
         };
 
         match &spec.transport {
@@ -483,26 +607,62 @@ impl ClientMcpManager {
                     req = req.header(k, v);
                 }
                 let payload = serde_json::to_vec(message).unwrap_or_default();
+                if payload.len() > MAX_MCP_MESSAGE_BYTES {
+                    return expect_reply.then(|| {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": orig_id,
+                            "error": { "code": -32000, "message": format!("MCP 请求超过 {} MiB 上限", MAX_MCP_MESSAGE_BYTES / (1024 * 1024)) }
+                        })
+                    });
+                }
                 let sent = req.body(payload).send().await;
                 if !expect_reply {
                     return None;
                 }
+                let over_limit = |orig_id: Value| {
+                    Some(json!({
+                        "jsonrpc": "2.0",
+                        "id": orig_id,
+                        "error": { "code": -32000, "message": format!("MCP 响应超过 {} MiB 上限", MAX_MCP_MESSAGE_BYTES / (1024 * 1024)) }
+                    }))
+                };
                 match sent {
-                    Ok(resp) => match resp.bytes().await {
-                        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(resp) => {
+                        if resp
+                            .content_length()
+                            .is_some_and(|n| n > MAX_MCP_MESSAGE_BYTES as u64)
+                        {
+                            return over_limit(orig_id);
+                        }
+                        let mut body: Vec<u8> = Vec::new();
+                        let mut stream = resp.bytes_stream();
+                        while let Some(chunk) = stream.next().await {
+                            match chunk {
+                                Ok(bytes) => {
+                                    if body.len() + bytes.len() > MAX_MCP_MESSAGE_BYTES {
+                                        return over_limit(orig_id);
+                                    }
+                                    body.extend_from_slice(&bytes);
+                                }
+                                Err(err) => {
+                                    return Some(json!({
+                                        "jsonrpc": "2.0",
+                                        "id": orig_id,
+                                        "error": { "code": -32000, "message": format!("Read MCP HTTP body failed: {err}") }
+                                    }));
+                                }
+                            }
+                        }
+                        match serde_json::from_slice::<Value>(&body) {
                             Ok(val) => Some(val),
                             Err(err) => Some(json!({
                                 "jsonrpc": "2.0",
                                 "id": orig_id,
                                 "error": { "code": -32000, "message": format!("Invalid MCP HTTP JSON: {err}") }
                             })),
-                        },
-                        Err(err) => Some(json!({
-                            "jsonrpc": "2.0",
-                            "id": orig_id,
-                            "error": { "code": -32000, "message": format!("Read MCP HTTP body failed: {err}") }
-                        })),
-                    },
+                        }
+                    }
                     Err(err) => Some(json!({
                         "jsonrpc": "2.0",
                         "id": orig_id,
@@ -592,7 +752,17 @@ pub async fn serve_mcp_relay_proxy(args: &[String]) -> i32 {
             }
             let reply = match res {
                 Ok(r) if r.status().as_u16() == 204 => return,
+                Ok(r) if r.status().as_u16() == 413 => json!({
+                    "jsonrpc": "2.0",
+                    "id": orig_id,
+                    "error": { "code": -32603, "message": "MCP 请求体超过中转桥上限，请减小参数体积" }
+                }),
                 Ok(r) => match r.bytes().await {
+                    Ok(bytes) if bytes.len() > MAX_MCP_MESSAGE_BYTES => json!({
+                        "jsonrpc": "2.0",
+                        "id": orig_id,
+                        "error": { "code": -32603, "message": format!("MCP 响应超过 {} MiB 上限", MAX_MCP_MESSAGE_BYTES / (1024 * 1024)) }
+                    }),
                     Ok(bytes) => serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|err| {
                         json!({
                             "jsonrpc": "2.0",
@@ -624,6 +794,31 @@ pub async fn serve_mcp_relay_proxy(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn capped_line_reader_keeps_the_boundary_and_drops_oversize_lines() {
+        let data = b"{\"ok\":1}\n{\"big\":\"aaaaaaaaaa\"}\n{\"ok\":2}\n";
+        let mut reader = BufReader::new(&data[..]);
+        let mut buf = Vec::new();
+
+        assert_eq!(
+            read_line_capped(&mut reader, &mut buf, 8).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(buf, b"{\"ok\":1}");
+        // 超限整行丢弃，但下一个气泡从新行重新开始。
+        assert_eq!(
+            read_line_capped(&mut reader, &mut buf, 8).await.unwrap(),
+            Some(false)
+        );
+        assert!(buf.is_empty());
+        assert_eq!(
+            read_line_capped(&mut reader, &mut buf, 8).await.unwrap(),
+            Some(true)
+        );
+        assert_eq!(buf, b"{\"ok\":2}");
+        assert_eq!(read_line_capped(&mut reader, &mut buf, 8).await.unwrap(), None);
+    }
 
     #[test]
     fn validates_external_mcp_names_and_excludes_multicc_reserved_servers() {
