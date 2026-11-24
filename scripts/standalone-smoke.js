@@ -105,7 +105,16 @@ async function smokeBundle({ bundleDir, timeoutMs = DEFAULT_TIMEOUT_MS, keepData
   // user's sessions, and removing it proves the bundle keeps state outside
   // its own (read-only) tree.
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-standalone-smoke-'));
-  const env = { ...process.env, HOME: home, USERPROFILE: home, MULTICC_STANDALONE_HOME: home };
+  // Do not autostart the detached per-user cdpd daemon into this throwaway home:
+  // on Windows its cwd/lock inside <home>\.multicc\cdpd keeps fs.rmSync(home)
+  // failing with EBUSY after the server itself has stopped cleanly.
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    MULTICC_STANDALONE_HOME: home,
+    MULTICC_CDP_AUTOSTART: '0',
+  };
   const infoFile = path.join(home, 'desktop-runtime.json');
   const result = { home, origin: null, steps: [] };
   const record = step => { result.steps.push(step); logger.log(`[standalone-smoke] ${step}`); };
@@ -162,7 +171,7 @@ async function smokeBundle({ bundleDir, timeoutMs = DEFAULT_TIMEOUT_MS, keepData
     // A failed readiness probe can leave the supervisor retrying forever.
     // Stop our private instance while its pid and control files still exist.
     if (!result.ok) runLauncher({ ...layout, args: ['--stop'], env, timeoutMs });
-    if (!keepData) fs.rmSync(home, { recursive: true, force: true });
+    if (!keepData) fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 

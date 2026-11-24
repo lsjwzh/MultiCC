@@ -4,7 +4,7 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
-## v2.22.2 - Standalone Rust production gateway, unified WSS CLI relay, and hardened source upgrades (2026-11-24)
+## v2.22.3 - Standalone Rust production gateway, unified WSS CLI relay, and hardened source upgrades (2026-11-24)
 
 - Ship a standalone Rust production gateway and node-free runtime. `multicc-gateway serve` now owns the production entry point (including `--no-node` mode and a node-free container image), moving cron scheduling, script and fan-out execution, the task calendar and run history, Aux job execution and goal/transport routes, notification preferences, provider catalog snapshots and statistics, secrets vault metadata, standalone update status, and voice runtime routes into Rust, verified against clean-install and real package layouts.
 
@@ -26,7 +26,7 @@ All notable changes to MultiCC are documented in this file.
 
 - Clear stale Codex native session IDs when switching providers after rollout cleanup. Changing a Codex session's provider after its native rollout file was swept now drops the stale `cliSessionId` inside the session patch transaction instead of failing with `500 internal_error`, while surfacing genuine multi-rollout conflicts as `409`. Tail-append chat history writes also preserve concurrent appends cleanly.
 
-- Keep the release gates honest. Build the workspace Node compatibility addon explicitly in the clean-install container image, keep desktop and standalone bundles defaulting to the bundled compatibility host (with `MULTICC_NO_NODE=1` opt-in) while pure-Rust deployments ship as `multicc-service-*` and the root image, wait for `/readyz` and use `durable_state` session envelopes in gateway WebSocket tests, gate Unix-only test locks cleanly on Windows, match `multicc-gateway` by argv in `./multicc status`, rewrite the agy adapter isolation test against `multicc_core::agy_stream`, align the `electron-builder` extraResources dependency fixture count with the single packaged direct dependency (`cli-provider-router`), give Windows runners startup margin in the Rust CPR cancel-race test, format all native crates, re-record the source line budget ratchet, and include the task-board auto suite in the exact core manifest.
+- Keep the release gates honest. Build the workspace Node compatibility addon explicitly in the clean-install container image, keep desktop and standalone bundles defaulting to the bundled compatibility host (with `MULTICC_NO_NODE=1` opt-in) while pure-Rust deployments ship as `multicc-service-*` and the root image, wait for `/readyz` and use `durable_state` session envelopes in gateway WebSocket tests, gate Unix-only test locks cleanly on Windows, match `multicc-gateway` by argv in `./multicc status`, rewrite the agy adapter isolation test against `multicc_core::agy_stream`, align the `electron-builder` extraResources dependency fixture count with the single packaged direct dependency (`cli-provider-router`), give Windows runners startup margin in the Rust CPR cancel-race test, disable detached `cdpd` autostart in `scripts/standalone-smoke.js` so temporary smoke homes clean up cleanly on Windows, format all native crates, re-record the source line budget ratchet, and include the task-board auto suite in the exact core manifest.
 
 ## v2.21.3 - Native session runtime and multi-account routing (2026-11-23)
 
