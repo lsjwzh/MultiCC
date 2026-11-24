@@ -406,7 +406,7 @@ function createAirRuntime(rawDeps) {
     // task metadata covers detached/task-bound worktrees whose session record
     // may already be gone. This is inventory only — no cleanup is attempted.
     lap('boardMs');
-    // 与任务板同一条自愈规则（见 task-board/view.js 的 deadDispatchClaim /
+    // 与任务板同一条自愈规则（见 task-board/core.js 的 deadDispatchClaim /
     // sessionHasTurn）：派发时写下的乐观 runState，如果名下会话拿不出受理物证，
     // 就证明这一轮从没被受理过 —— 不把这类卡片继续报成「执行中」（否则它会挂在
     // 控制台上直到天荒地老）。折叠本身在 projectRunStateOf，与「手动忽略」共用。

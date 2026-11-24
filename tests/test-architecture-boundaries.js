@@ -167,7 +167,7 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
   for (const file of [
     'src/task-board/core.js', 'src/task-board/normalize.js',
     'src/task-board/native-bridge.js', 'src/task-board/routing.js',
-    'src/task-board/view.js', 'src/task-board/planning.js',
+    'native/addon/src/task_board_view.rs', 'src/task-board/planning.js',
     'src/routes/task-board.js',
   ]) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);

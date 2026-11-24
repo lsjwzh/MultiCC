@@ -1,5 +1,7 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
+const { getNative } = require('../native/runtime');
+const planning = require('./planning');
 const { taskDomain, replace } = require('../native/task-domain');
 // 原生返回值回填已有对象，保持宿主观察者持有的任务引用。
 function boardRule(action, args = {}) {
@@ -30,4 +32,34 @@ function classificationRule(action, args) {
   return boardRule(action, { op: 'classification', ...args, newIds, idOrder });
 }
 
-module.exports = { boardRule, classificationRule, recentTaskIds, MAX_TASKS_IN_PROMPT };
+const taskRunSessionIds = task => boardRule('taskRunSessionIds', { task });
+const soleRunSessionId = task => boardRule('soleRunSessionId', { task });
+const sessionHasTurn = record => boardRule('sessionHasTurn', { record });
+const deadDispatchClaim = (task, hasTurnState, now = Date.now()) => boardRule('deadDispatchClaim', { task, hasTurnState, now });
+const foreignRunSession = (task, sessionId) => boardRule('foreignRunSession', { task, sessionId });
+function staleWorkerClaim(task, getSessionRunState, now = Date.now()) {
+  let state = null;
+  try { state = getSessionRunState?.(soleRunSessionId(task)); } catch (_) {}
+  return boardRule('staleWorkerClaim', { task, state, now });
+}
+function buildBoardDto(board, getSessionRunState, options = {}) {
+  const readFact = getNative().taskBoardSessionFact;
+  const facts = {}, dates = [];
+  for (const task of Object.values(board.tasks)) {
+    dates.push([task.dueAt, planning.wireDate(task.dueAt)]);
+    for (const id of new Set([...(task.refs || []).map(ref => ref.sessionId), task.routing?.workerSessionId, task.chatSessionId].filter(Boolean))) {
+      if (Object.hasOwn(facts, id)) continue;
+      facts[id] = readFact(options, getSessionRunState, id);
+    }
+  }
+  const idOrder = Object.values(board.taskGroups || {}).map(group => group.id).sort((a, b) => a.localeCompare(b));
+  return taskDomain({ op: 'view', board, facts, dates, idOrder, now: Number(options.now) || Date.now(),
+    hasTurnPort: typeof options.sessionHasTurn === 'function', hasRunPort: typeof getSessionRunState === 'function' });
+}
+function aggregateTaskRunState(sessionIds, getSessionRunState) {
+  return buildBoardDto({ modules: {}, tasks: { aggregate: { id: 'aggregate', refs: sessionIds.map(sessionId => ({ sessionId })) } } }, getSessionRunState).tasks[0].runState;
+}
+const boardView = { DISPATCH_CLAIM_GRACE_MS: 60000, aggregateTaskRunState, buildBoardDto,
+  deadDispatchClaim, foreignRunSession, sessionHasTurn, soleRunSessionId, staleWorkerClaim, taskRunSessionIds };
+
+module.exports = { boardRule, boardView, classificationRule, recentTaskIds, MAX_TASKS_IN_PROMPT };

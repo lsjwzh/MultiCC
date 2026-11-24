@@ -9,16 +9,14 @@
 //   normalize.js      board shape, validation, lookup, grouping invariants
 //   native-bridge.js 宿主事实与常驻 Rust 看板的命令接口
 //   routing.js        panel-input routing and candidate ranking
-//   view.js           read-side DTO projection
 // planning.js (schema/stages/rank) stays a sibling. This
 // module exposes the stable surface every consumer already requires.
 
 const planning = require('./planning');
 const normalize = require('./normalize');
 const { getNative } = require('../native/runtime');
-const { recentTaskIds, classificationRule } = require('./native-bridge');
+const { recentTaskIds, classificationRule, boardView: view } = require('./native-bridge');
 const routing = require('./routing');
-const view = require('./view');
 
 // Rust 返回任务描述；公开接口返回当前看板上的同一对象。
 function classificationTask(action, board, args) {

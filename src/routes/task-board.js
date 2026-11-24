@@ -561,7 +561,7 @@ function createTaskBoardRuntime(deps) {
   // add a transport-locality check here.
 
   // 卡片自愈的证据：会话记录里拿不出受理物证 = 这一轮从来没被受理过（见
-  // task-board/view.js 的 sessionHasTurn / deadDispatchClaim）。读侧把这类卡片的
+  // task-board/core.js 的 sessionHasTurn / deadDispatchClaim）。读侧把这类卡片的
   // 乐观「执行中」投影成空闲 —— 只影响这一份 DTO，卡片本身与落盘数据都不动。
   const sessionHasTurn = sessionId => core.sessionHasTurn(records.get(sessionId));
 
