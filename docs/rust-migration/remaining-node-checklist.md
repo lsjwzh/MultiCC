@@ -1,5 +1,11 @@
 # 剩余 Node 后端清单
 
+## Codex 终端会话 ID 查找（2026-11-25）
+
+在合入版本 `a94bf826`，src 内 530 个 JS/CJS/MJS 文件中有 527 个可从兼容宿主到达，2 个供离线工具使用，1 个仅见测试引用。逐文件职责和直接调用方已固定在[530 项基线清单](src-classification-2026-11-25.md)。本批删除 Codex rollout 查找器后，工作树 src 内为 529 个文件（524 JS、2 CJS、3 MJS），其中 517 个沿模块导入可达，9 个沿宿主脚本路径可达。终端创建和保存仍经兼容宿主，rollout 读取、筛选和 ID 匹配已交给 Rust 工作线程。[工作树实时依赖](node-module-dependencies.md)
+
+旧查找器逐字节冻结在 tests/helpers/legacy-codex-session-file.js。tests/test-codex-session-file.js 的 12 组差分场景把相同目录、cwd、时间阈值同时交给旧实现和生产入口，32 次比较均一致，另有 2 项轮询生命周期测试通过。与会话策略和生命周期路由一起执行共 59/59 通过。Rust 共享 JSON 读取回归 2/2 通过，release 原生模块通过接口预检，指纹为 `c1b062cf6e2211e63188c36c`。本批验证范围为定向回归。[差分测试](../../tests/test-codex-session-file.js) · [Rust 实现](../../native/core/src/codex_session_file.rs)
+
 ## 默认构建与部署路径（2026-11-24）
 
 | 默认生产服务中逐项计数 | 数量 |

@@ -75,8 +75,7 @@ const {
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative, findProviderReferences, messageComposer, bootstrapState } = require('./src/native/runtime');
 const { createCliAdapters } = require('./src/cli-adapters');
 
-const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
-const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
+const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf, isAlias, nameOf: canonicalCli, watchEffortCatalog } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { synchronizeCodexProfileRoute } = require('./src/cli/switch-preparation');
@@ -486,7 +485,6 @@ const {
   CODEX_STREAM_DISCONNECT_CONTINUE_MAX,
 } = sessionPolicy;
 const CODEX_ARGS = process.env.CODEX_ARGS ? process.env.CODEX_ARGS.split(' ') : [];
-const CODEX_SESSIONS_DIR = sessionPolicy.codexSessionsDir;
 
 // ── CLI provider abstraction ──
 // Each provider knows how to (1) build the interactive terminal command line for tmux,
@@ -558,14 +556,6 @@ function cliAvailabilitySummary() {
 function providerFor(session) {
   return cliAdapterRegistry.get(session?.cli);
 }
-
-// ── Codex session-id capture: scans ~/.codex/sessions for a JSONL with matching cwd whose
-// session_meta.timestamp is newer than `sinceMs`. Returns the session id or null. ──
-// codex session-file lookup (extracted to src/cli-adapters/codex-session-file.js).
-// Pure fs read; CODEX_SESSIONS_DIR is the default root when a call omits one.
-const { findCodexSessionId } = createCodexSessionFinder({
-  fs, path, defaultSessionsDir: CODEX_SESSIONS_DIR,
-});
 
 // ── tmux helpers (extracted to src/tmux.js) ──
 // Pure primitives, destructured so existing call sites are unchanged. The
@@ -797,7 +787,7 @@ async function destroySessionCascade(s, d, opts = {}) {
   }
   if (active) {
     if (active.exitCheckTimer) clearInterval(active.exitCheckTimer);
-    if (active.captureTimer) clearInterval(active.captureTimer);
+    if (active.captureTimer) { clearInterval(active.captureTimer); active.captureTimer = null; }
     cleanupPushMonitor(s.id);
     await stopOutputCapture(active);
     await tmuxKillSession(s.id);
@@ -1111,26 +1101,23 @@ async function createSession(id) {
     exitCheckTimer: null,
   };
 
-  // Schedule async session-id capture for codex (file-watch on ~/.codex/sessions).
-  // Polls every 1s for up to 30s. Persists the captured id so subsequent reattach can use `codex resume`.
   if (provider.needsAsyncSessionIdCapture && !persisted.cliSessionId && !isRecovery) {
-    let attempts = 0;
-    const captureTimer = setInterval(() => {
-      attempts++;
-      const codexSessionsDir = provEnv.codexHome ? path.join(provEnv.codexHome, 'sessions') : null;
-      const captured = findCodexSessionId(cwd, launchTime - 2000, codexSessionsDir);
-      if (captured) {
-        clearInterval(captureTimer);
-        persisted.cliSessionId = captured;
-        session.cliSessionId = captured;
+    const root = provEnv.codexHome && path.join(provEnv.codexHome, 'sessions');
+    const timer = pollCodexSessionId(
+      () => sessionPolicy.findCodexSessionId(cwd, launchTime - 2000, root),
+      () => session.captureTimer === timer && sessions.get(id) === session
+        && persistedSessions.get(id) === persisted && !persisted.cliSessionId,
+      (captured, error) => {
+        session.captureTimer = null;
+        if (!captured) {
+          console.warn(`[multicc] Failed to capture codex session id for ${id}: ${error?.message || 'no match after 30s'}`);
+          return;
+        }
+        persisted.cliSessionId = session.cliSessionId = captured;
         savePersistedSessionsBestEffort('timer.codex-session-id-capture');
         console.log(`[multicc] Captured codex session id for ${id}: ${captured}`);
-      } else if (attempts >= 30) {
-        clearInterval(captureTimer);
-        console.warn(`[multicc] Failed to capture codex session id for ${id} after 30s`);
-      }
-    }, 1000);
-    session.captureTimer = captureTimer;
+      });
+    session.captureTimer = timer;
   }
 
   // Output stream → broadcast to all WebSocket clients

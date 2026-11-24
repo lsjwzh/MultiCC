@@ -10,6 +10,30 @@ const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../claude-mode
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
 const API_NETWORK_CONTINUE_MAX = 2;
 
+// Terminal capture owns one live timer; the native lookup scans rollout files off-thread.
+function pollCodexSessionId(lookup, isCurrent, finish) {
+  let ticks = 0;
+  let scanning = false;
+  const timer = setInterval(async () => {
+    if (!isCurrent()) { clearInterval(timer); return; }
+    if (++ticks === 30) clearInterval(timer);
+    if (scanning) return;
+    scanning = true;
+    let captured;
+    try { captured = await lookup(); }
+    catch (error) {
+      clearInterval(timer);
+      if (isCurrent()) finish(null, error);
+      return;
+    } finally { scanning = false; }
+    if (isCurrent() && (captured || ticks >= 30)) {
+      clearInterval(timer);
+      finish(captured);
+    }
+  }, 1000);
+  return timer;
+}
+
 function assertProviderDependencies(options) {
   if (!options || typeof options !== 'object') throw new TypeError('[session-policy] options are required');
   if (!options.providerRouter || typeof options.providerRouter.getProviderSummary !== 'function') {
@@ -320,8 +344,12 @@ function createSessionPolicy(options) {
     return String(session?.model || '').toLowerCase() === 'xopglm52';
   }
 
+  const codexSessionsDir = path.join(homeDir(), '.codex', 'sessions');
   return Object.freeze({
-    codexSessionsDir: path.join(homeDir(), '.codex', 'sessions'),
+    codexSessionsDir,
+    async findCodexSessionId(cwd, sinceMs, sessionsDir) {
+      return JSON.parse(await getNative().codexFindSessionIdJson(cwd, sinceMs, sessionsDir || codexSessionsDir));
+    },
     effectiveSessionModel,
     effectiveSubagentModel,
     serializeSubagent,
@@ -449,4 +477,5 @@ module.exports = {
   apiNetworkContinuePrompt,
   createSessionPolicy,
   createReportedModelRuntime,
+  pollCodexSessionId,
 };
