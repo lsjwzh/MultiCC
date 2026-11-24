@@ -12,8 +12,7 @@ const crypto = require('node:crypto');
 const core = require('../../src/task-board/core');
 const { taskDomain, taskDomainAsync } = require('../../src/native/task-domain');
 const { isAbnormalLetter, isGoalState } = require('../../src/classify/vocab');
-const { createAirPinRuntime, createAirTodoRuntime } = require('../../src/native/task-domain');
-const { createAirTodoIgnoreRuntime } = require('../../src/workspace/todo-ignores');
+const { createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../../src/native/task-domain');
 const { pendingAttention } = require('./legacy-task-attention');
 const { createAirCardCache } = require('../../src/workspace/air-card-cache');
 

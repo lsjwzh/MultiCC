@@ -97,7 +97,7 @@ function probeAddon(file, node = process.execPath) {
   // The path rides an env var: the script is written to a temp file (see below),
   // so argv[1] is the script itself, not the addon.
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
-    if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function'
+    if(a.protocolVersion?.()!==1 || a.AIR_TODO_IGNORE_LIMIT!==500 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function'
       || typeof a.voiceReadiness!=='function' || a.VOICE_NOT_READY!=='voice_not_ready' || typeof a.RustDatabase!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
       || typeof a.observeCodeFiles!=='function' || typeof a.RustWorkspaceRelease!=='function'
@@ -118,6 +118,7 @@ function probeAddon(file, node = process.execPath) {
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
+      'airTodoIgnoreKinds','airNormalizeIgnores','airTodoIgnoreRun',
       'airTaskListSpec','airNormalizeTaskIds','airStoredPins','RustAirTaskList',
       'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
       .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3

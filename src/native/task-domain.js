@@ -178,8 +178,67 @@ function createAirList(deps, todo) {
 const createAirPinRuntime = deps => createAirList(deps, false);
 const createAirTodoRuntime = deps => createAirList(deps, true);
 
+// Embedders can extend the shared set of problem kinds. Pass that exact Set
+// into Rust on each call; native code owns filtering, timestamps and updates.
+let ignoreKinds;
+function todoIgnoreKinds() { return ignoreKinds ||= new Set(getNative().airTodoIgnoreKinds()); }
+function normalizeIgnores(value, limit = getNative().AIR_TODO_IGNORE_LIMIT) {
+  return getNative().airNormalizeIgnores(value, limit, todoIgnoreKinds());
+}
+function createAirTodoIgnoreRuntime(rawDeps) {
+  const deps = rawDeps || {};
+  const file = deps.file || require('../paths').createPaths().airTodoIgnoresFile;
+  if (typeof deps.listTasks !== 'function') throw new TypeError('[air-todo-ignores] listTasks() is required');
+  const logger = deps.logger || console;
+  const store = createStore({ file, kind: 'air-todo-ignores', schemaVersion: 1, legacyIsArray: false });
+  const native = getNative();
+  const ports = {
+    deps, kinds: todoIgnoreKinds(), items: null,
+    taskViews() {
+      // Keep board iteration within V8. Rust consults only the views needed
+      // by this operation, including the task object passed to problemOf.
+      const views = new Map();
+      for (const task of deps.listTasks() || []) {
+        if (!task || !task.id) continue;
+        const raw = task.updatedAt;
+        const updatedAt = typeof raw === 'number' ? raw : Number(raw);
+        views.set(task.id, { task, updatedAt, problem: null });
+      }
+      return views;
+    },
+    load() {
+      try {
+        const result = store.loadOrRecover();
+        return normalizeIgnores(result.present ? result.data?.items : null);
+      } catch (e) {
+        logger.warn(`[multicc/air-todo-ignores] unreadable file, starting empty: ${e.message}`);
+        return [];
+      }
+    },
+    save(items) {
+      try { store.save({ items }); }
+      catch (e) {
+        logger.warn(`[multicc/air-todo-ignores] save failed: ${e.message}`);
+        throw Object.assign(new Error('忽略状态无法保存'), { code: 'todo_ignore_save_failed', status: 500 });
+      }
+    },
+  };
+  const read = () => native.airTodoIgnoreRun(ports, 'read', undefined);
+  const toggle = id => native.airTodoIgnoreRun(ports, 'toggle', id);
+  function mountRoutes(target) {
+    target.post('/api/air/todos/ignore', (req, res) => {
+      try { res.json({ ok: true, ...toggle((req.body || {}).taskId) }); }
+      catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code || 'todo_ignore_failed', message: e.status ? e.message : 'Request failed' }); }
+    });
+  }
+  return { file, limit: native.AIR_TODO_IGNORE_LIMIT, read, toggle, mountRoutes };
+}
+
 module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes,
   readStoredPinIds, normalizePins, createTaskIdListRuntime, createAirPinRuntime, createAirTodoRuntime,
+  createAirTodoIgnoreRuntime, normalizeIgnores,
+  get TODO_IGNORE_LIMIT() { return getNative().AIR_TODO_IGNORE_LIMIT; },
+  get IGNORE_KINDS() { return todoIgnoreKinds(); },
   get PIN_LIMIT() { return getNative().airTaskListSpec(false).limit; },
   get TODO_LIMIT() { return getNative().airTaskListSpec(true).limit; },
 };

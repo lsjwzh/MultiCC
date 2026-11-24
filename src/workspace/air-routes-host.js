@@ -26,9 +26,8 @@
 const crypto = require('node:crypto');
 const nodePath = require('node:path');
 const core = require('../task-board/core');
-const { taskDomain, taskDomainAsync, createAirPinRuntime, createAirTodoRuntime } = require('../native/task-domain');
+const { taskDomain, taskDomainAsync, createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../native/task-domain');
 const { isAbnormalLetter } = require('../classify/vocab');
-const { createAirTodoIgnoreRuntime } = require('./todo-ignores');
 const { createAirCardCache } = require('./air-card-cache');
 
 const HOST_PATH = '/api/__host/air';
@@ -208,7 +207,7 @@ function createAirRuntime(rawDeps) {
     }
     return todoRuntime;
   };
-  // 手动忽略（./todo-ignores.js）：只对「出错 / 等待回复」这两类待办来源有意义。
+  // 手动忽略：只对「出错 / 等待回复」这两类待办来源有意义。
   // 类别和「这一次问题何时发生」都由下面 projectRunStateOf / todoProblemOf 折出，
   // 与快照里 tasks[].runState 是同一份口径（客户端只读不推）。
   let todoIgnoreRuntime = null;
