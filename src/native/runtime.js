@@ -139,6 +139,17 @@ function getTurnLedgerContract() {
   return turnLedgerContracts.get(addon);
 }
 
+// Empty searches finish before addon loading. V8 map preserves holes, species,
+// and getter timing while Rust projects candidates and selects original hits.
+function rerankSearchHits(hits, { limit = 20, perRefQuota = 3, dedupeContentHash = true } = {}) {
+  if (!Array.isArray(hits) || !hits.length) return [];
+  const wanted = Math.max(0, Math.min(hits.length, Math.floor(Number(limit)) || 0));
+  if (!wanted) return [];
+  const native = getNative();
+  const candidates = hits.map(hit => native.searchDiversityCandidate(hit));
+  return native.searchDiversityPick(hits, candidates, wanted, perRefQuota, dedupeContentHash);
+}
+
 // 两个搜索入口在首次处理文本时加载同一原生分词器。
 const searchTokenizer = {
   tokenize: text => getNative().searchTokenize(text),
@@ -464,7 +475,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
