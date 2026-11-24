@@ -91,3 +91,43 @@ test('attribution mode live inputs agree with the frozen host', () => {
     assert.deepEqual(result(live), result(old));
   }
 });
+
+test('归属设置保留模式、拒绝错误与回滚前的内存值', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const assert = require('node:assert/strict');
+  const { createHash } = require('node:crypto');
+  const { createRequire } = require('node:module');
+  const { compileFunction } = require('node:vm');
+  const file = path.resolve(__dirname, '../src/task-shell/attribution-settings.js');
+  const resolve = createRequire(file);
+  const bytes = fs.readFileSync(path.join(__dirname, 'helpers/frozen-attribution-settings.js'));
+  const hash = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+  assert.equal(hash, 'ebbf73b31408052f35d644e59f8db80406e50184');
+  const original = { exports: {} };
+  compileFunction(bytes.toString(), ['module', 'require'], {filename:file})(original,resolve);
+  const api = require('../src/native/task-domain');
+  const table = resolve('../native/task-domain').getAttributionModePolicy().MODES;
+  const values = [undefined, null, '', false, 0, 1, Symbol('mode'), new String('auto'), {},
+    { toString(){ throw Error('coercion'); } }, '\u0085auto\u0085', '\ud800auto', 'deny', ...table,
+    ...table.map(m => '\ufeff' + m.toUpperCase() + '\u00a0')];
+  let comparisons = 0;
+  for (const initial of values) {
+    const settings = [original.exports, api].map(a => a.createAttributionSettings({initial}));
+    for (const value of [...values, ...values].reverse()) {
+      const output = settings.map(s => {
+        const {getMode,setMode} = s;
+        const before = getMode();
+        try {
+          const result = setMode(value);
+          return [before, Object.keys(result), result, getMode()];
+        } catch (err) {
+          return [before, err.constructor.name, err.message, err.status, err.code, Object.keys(err), getMode()];
+        }
+      });
+      assert.deepEqual(...output);
+      comparisons++;
+    }
+  }
+  assert.equal(comparisons, 2 * values.length ** 2);
+});

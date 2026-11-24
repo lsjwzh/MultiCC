@@ -383,7 +383,7 @@ function currentHostOptions(bag) {
   const graph = require('../../src/routes/task-graph')
     .createTaskGraphRoutes(deps.graph);
   const goal = require('../../src/routes/task-goal');
-  const attribution = require('../../src/task-shell/attribution-settings')
+  const attribution = require('../../src/native/task-domain')
     .createAttributionSettings({ initial: deps.attributionMode });
   return {
     ports: board.routePorts,
