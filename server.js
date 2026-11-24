@@ -189,7 +189,7 @@ const {
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex/oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
-const { taskShortCode, initTaskShortCodeRegistry } = require('./src/native/task-domain');
+const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/task-domain');
 const { createTaskStateStore } = require('./src/routes/task-state-store');
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/host');
@@ -2016,7 +2016,7 @@ const taskBoardRuntime = createTaskBoardRuntime({
     // Late-bound: taskStates is composed below; deletion only runs at runtime.
     resetTaskState: id => taskStates.resetTaskState(id), workspaceBroadcast, chatBroadcast, getHibernation: () => sessionHibernationRuntime }),
   file: MULTICC_PATHS.taskBoardFile,
-  getPinnedTaskIds: () => require('./src/workspace/pins').readStoredPinIds(MULTICC_PATHS.airPinsFile),
+  getPinnedTaskIds: () => readStoredPinIds(MULTICC_PATHS.airPinsFile),
   listShellTasks: () => taskShellHost.listTasks(),
   isSessionBusy: sid => dispatchTargetBusy(sid),
   auxQueue, records: persistedSessions, createSessionRecord, releaseTaskBoundSession: sessionLifecycleRuntime.releaseTaskBoundSession,

@@ -26,10 +26,8 @@
 const crypto = require('node:crypto');
 const nodePath = require('node:path');
 const core = require('../task-board/core');
-const { taskDomain, taskDomainAsync } = require('../native/task-domain');
+const { taskDomain, taskDomainAsync, createAirPinRuntime, createAirTodoRuntime } = require('../native/task-domain');
 const { isAbnormalLetter } = require('../classify/vocab');
-const { createAirPinRuntime } = require('./pins');
-const { createAirTodoRuntime } = require('./todos');
 const { createAirTodoIgnoreRuntime } = require('./todo-ignores');
 const { createAirCardCache } = require('./air-card-cache');
 
@@ -197,7 +195,7 @@ function createAirRuntime(rawDeps) {
     }
     return pinRuntime;
   };
-  // 手动待办（./todos.js）：和 pin 同一种清单、同一个可见集合，同样懒建。
+  // 手动待办：和 pin 同一种清单、同一个可见集合，同样懒建。
   let todoRuntime = null;
   const todos = () => {
     if (!todoRuntime) {

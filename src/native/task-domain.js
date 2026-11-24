@@ -115,4 +115,71 @@ function getAttributionModePolicy() {
   };
   return attributionModePolicy;
 }
-module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes };
+
+function normalizePins(value, limit) { return getNative().airNormalizeTaskIds(value, limit); }
+
+function readStoredPinIds(file) {
+  let raw;
+  try { raw = JSON.parse(require('node:fs').readFileSync(file, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  return getNative().airStoredPins(raw);
+}
+
+function createTaskIdListRuntime(rawDeps, spec) {
+  const deps = rawDeps || {};
+  const { kind, route, limit, codes, label } = spec;
+  const file = deps.file || spec.defaultFile();
+  if (typeof deps.listTaskIds !== 'function') throw new TypeError(`[${kind}] listTaskIds() is required`);
+  const logger = deps.logger || console;
+  const store = createStore({ file, kind, schemaVersion: 1, legacyIsArray: false });
+  const owner = new (getNative().RustAirTaskList)();
+  const ports = {
+    spec: { limit, codes, label },
+    listTaskIds: () => deps.listTaskIds(),
+    load() {
+      try { const state = store.loadOrRecover(); return state.present ? state.data?.taskIds : null; }
+      catch (e) { logger.warn(`[multicc/${kind}] unreadable ${kind} file, starting empty: ${e.message}`); return null; }
+    },
+    save(taskIds) {
+      try { store.save({ taskIds }); }
+      catch (e) {
+        logger.warn(`[multicc/${kind}] save failed: ${e.message}`);
+        throw Object.assign(new Error(`${label.trim()} state could not be saved`), { code: codes.saveFailed, status: 500 });
+      }
+    },
+  };
+  const read = () => owner.run('read', ports, undefined);
+  const replace = ids => owner.run('replace', ports, ids);
+  const toggle = id => owner.run('toggle', ports, id);
+  // Legacy embedders mount Express callbacks; the production Air HTTP surface is in the Rust gateway.
+  function mountRoutes(target) {
+    target.get(route, (req, res) => { res.json({ ok: true, taskIds: read() }); });
+    target.post(route, (req, res) => {
+      const body = req.body || {};
+      if (!Array.isArray(body.taskIds)) {
+        return res.status(400).json({ ok: false, code: 'task_ids_required', message: 'taskIds 必须是数组' });
+      }
+      try { res.json({ ok: true, taskIds: replace(body.taskIds) }); }
+      catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code || codes.failed, message: 'Request failed' }); }
+    });
+    target.post(`${route}/toggle`, (req, res) => {
+      try { res.json({ ok: true, taskIds: toggle((req.body || {}).taskId) }); }
+      catch (e) { res.status(e.status || 500).json({ ok: false, code: e.code || codes.failed, message: e.status ? e.message : 'Request failed' }); }
+    });
+  }
+  return { file, limit, read, replace, toggle, mountRoutes };
+}
+
+function createAirList(deps, todo) {
+  const spec = getNative().airTaskListSpec(todo);
+  spec.defaultFile = () => require('../paths').createPaths()[spec.fileKey];
+  return createTaskIdListRuntime(deps, spec);
+}
+const createAirPinRuntime = deps => createAirList(deps, false);
+const createAirTodoRuntime = deps => createAirList(deps, true);
+
+module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes,
+  readStoredPinIds, normalizePins, createTaskIdListRuntime, createAirPinRuntime, createAirTodoRuntime,
+  get PIN_LIMIT() { return getNative().airTaskListSpec(false).limit; },
+  get TODO_LIMIT() { return getNative().airTaskListSpec(true).limit; },
+};

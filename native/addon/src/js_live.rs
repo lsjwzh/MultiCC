@@ -423,24 +423,35 @@ impl<'env> LiveValue<'env> {
     /// original exception wins even if the iterator's return hook also throws.
     /// No native owner borrow may be held while this enters host code.
     pub fn for_each(self, mut visit: impl FnMut(Self) -> Result<()>) -> Result<()> {
+        self.for_each_while(|value| visit(value).map(|()| true))
+    }
+
+    /// Returning false breaks a for-of loop, including IteratorClose.
+    pub fn for_each_while(self, mut visit: impl FnMut(Self) -> Result<bool>) -> Result<()> {
         let (iterator, next) = self.iterator()?;
         while let Some(value) = iterator.iterator_step(next)? {
-            if let Err(error) = visit(value) {
-                let mut pending = false;
-                check_status!(unsafe { sys::napi_is_exception_pending(self.env, &mut pending) })?;
-                let mut exception = ptr::null_mut();
-                if pending {
+            match visit(value) {
+                Ok(true) => continue,
+                Ok(false) => return iterator.iterator_close(),
+                Err(error) => {
+                    let mut pending = false;
                     check_status!(unsafe {
-                        sys::napi_get_and_clear_last_exception(self.env, &mut exception)
+                        sys::napi_is_exception_pending(self.env, &mut pending)
                     })?;
-                }
-                let _ = iterator.catch(|| iterator.iterator_close());
-                if !exception.is_null() {
-                    unsafe {
-                        sys::napi_throw(self.env, exception);
+                    let mut exception = ptr::null_mut();
+                    if pending {
+                        check_status!(unsafe {
+                            sys::napi_get_and_clear_last_exception(self.env, &mut exception)
+                        })?;
                     }
+                    let _ = iterator.catch(|| iterator.iterator_close());
+                    if !exception.is_null() {
+                        unsafe {
+                            sys::napi_throw(self.env, exception);
+                        }
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
         }
         Ok(())
