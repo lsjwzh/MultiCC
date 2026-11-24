@@ -114,7 +114,7 @@ function probeAddon(file, node = process.execPath) {
     || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
-      'codexOfficialError','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
       'confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
       .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3

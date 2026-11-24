@@ -245,6 +245,7 @@ pub mod codex_adapter;
 pub mod codex_app_adapter;
 pub mod codex_background;
 pub mod codex_models;
+pub mod codex_session_file;
 
 pub mod provider_host;
 

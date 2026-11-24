@@ -18,6 +18,7 @@ pub mod buffer;
 pub mod coerce;
 pub mod json;
 pub mod number;
+pub(crate) mod raw_record;
 pub mod regex;
 pub mod serde;
 pub mod string;

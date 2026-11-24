@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 525 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 524 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -115,7 +115,6 @@
 | `src/cli-adapters/agy.js` | server.js | `src/cli-adapters/completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | 宿主脚本路径 | `src/cli-adapters/result-completion.js`, `src/cli/claude-bundled-binary.js`, `src/native/runtime.js` | — | `fs`, `module`, `os`, `path`, `url` | — | — |
 | `src/cli-adapters/codebuddy.js` | server.js | `src/cli-adapters/result-completion.js`, `src/cli-adapters/router-mcp.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | — | — | — |
-| `src/cli-adapters/codex-session-file.js` | server.js | — | — | — | — | — |
 | `src/cli-adapters/command-code.js` | server.js | `src/cli-adapters/completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/cli-adapters/commands.js` | server.js | `src/agy-accounts.js`, `src/native/runtime.js`, `src/providers/core.js`, `src/windows-env.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
 | `src/cli-adapters/completion.js` | server.js | `src/native/runtime.js` | — | — | — | — |

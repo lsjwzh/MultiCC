@@ -1,67 +1,13 @@
 //! 从 CLI 转录的尾部倒查停止证据。任何一条旧回合的回执都不能越过新提示词。
-use crate::js::{js_to_string, js_trim, json_parse, truthy, JsString, JsValue};
-use serde::de::{Deserialize, Deserializer, Visitor};
+use crate::js::raw_record::{flag, record, string, Record};
+use crate::js::{js_to_string, js_trim, json_parse, truthy, JsString};
 use serde_json::value::RawValue;
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const TAIL_BYTES: u64 = 256 * 1024;
 const INTERRUPT: &str = "[Request interrupted by user";
-// JSON.parse 接受含孤立代理项的字段名。只按 ASCII 协议字段查找，
-// 其他名字即使无法表示为 Rust 字符串，也不应让整条停止回执失效。
-#[derive(PartialEq, Eq, Hash)]
-struct FieldName(String);
-
-impl Borrow<str> for FieldName {
-    fn borrow(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for FieldName {
-    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        struct NameVisitor;
-        impl Visitor<'_> for NameVisitor {
-            type Value = FieldName;
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("JSON 字段名")
-            }
-            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<FieldName, E> {
-                Ok(FieldName(String::from_utf8_lossy(bytes).into_owned()))
-            }
-        }
-        de.deserialize_bytes(NameVisitor)
-    }
-}
-
-type Record<'a> = HashMap<FieldName, &'a RawValue>;
-
-fn record(text: &str) -> Option<Record<'_>> {
-    // RawValue 会校验整行，未使用的工具输出即使很深也不用递归展开。
-    serde_json::from_str(text).ok()
-}
-
-fn string(raw: Option<&&RawValue>) -> Option<JsString> {
-    let raw = raw?.get();
-    if !raw.starts_with('"') {
-        return None;
-    }
-    match json_parse(raw).ok()? {
-        JsValue::String(value) => Some(value),
-        _ => None,
-    }
-}
-
-fn flag(raw: Option<&&RawValue>) -> bool {
-    raw.is_some_and(|raw| match raw.get().as_bytes()[0] {
-        b'{' | b'[' => true,
-        _ => json_parse(raw.get()).is_ok_and(|v| truthy(&v)),
-    })
-}
 
 fn prompt_text(content: &RawValue) -> Option<String> {
     if let Some(text) = string(Some(&content)) {
