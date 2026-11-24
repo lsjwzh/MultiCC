@@ -5,6 +5,7 @@ use napi_derive::napi;
 use std::{sync::Arc, time::Instant};
 pub mod agy_accounts;
 pub mod agy_stream;
+pub mod air_task_list;
 pub mod api_error_policy;
 pub mod api_error_text;
 pub mod assist_snapshots;

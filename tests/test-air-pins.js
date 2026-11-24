@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { PIN_LIMIT, normalizePins, readStoredPinIds, createAirPinRuntime } = require('../src/workspace/pins');
+const { PIN_LIMIT, normalizePins, readStoredPinIds, createAirPinRuntime, createAirTodoRuntime } = require('../src/native/task-domain');
 const { mountAir } = require('./helpers/air-host');
 
 function tempFile() {
@@ -153,4 +153,124 @@ test('/api/air 快照带着 pin，客户端不用为它多打一次接口', asyn
   const snapshot = (await air.snapshot()).json;
   assert.deepEqual(snapshot.taskPins, ['t1']);
   assert.equal(snapshot.tasks.some(t => t.id === 't2'), false);
+});
+
+test('Air pinned and todo lists match the frozen state machines', () => {
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  function frozen(name, hash, override = {}) {
+    const file = path.resolve(__dirname, '../src/workspace', name + '.js');
+    const source = fs.readFileSync(path.join(__dirname, 'helpers', 'legacy-air-' + name + '.js'));
+    assert.equal(createHash('sha1').update('blob ' + source.length + '\0').update(source).digest('hex'), hash);
+    const mod = { exports: {} };
+    const local = createRequire(file);
+    compileFunction(source.toString(), ['require', 'module'], { filename: file })(id => override[id] || local(id), mod);
+    return mod.exports;
+  }
+  const oldPins = frozen('pins', '4967f6324d789b66525afcd200f8f01abb7243f0');
+  const oldTodos = frozen('todos', 'ab6b09c8ebe495aeef8157adb542a042c218dd6c', { './pins': oldPins });
+  function run(make, kind, cap) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'air-list-diff-'));
+    const file = path.join(dir, 'list.json');
+    const out = [];
+    let available = true, known = ['x', 'y', 'z', 'lost', '\ud800', '✨'], count = 0;
+    const logger = { warn(msg) { out.push(['warning', msg.split(':')[0]]); } };
+    const deps = { file, logger, listTaskIds() {
+      assert.equal(this, deps);
+      count++;
+      if (!available) throw Error('board offline');
+      return count % 3 === 0 ? known.filter(id => id !== 'lost') : new Set(known);
+    } };
+    const observe = fn => {
+      try { out.push({ value: fn(), count }); }
+      catch (err) { out.push({ error: [err.name, err.message, err.code, err.status], count }); }
+    };
+    try {
+      const api = make(deps);
+      assert.equal(api.limit, cap);
+      assert.equal(api.file, file);
+      observe(api.read);
+      observe(() => api.replace([' x ', {}, 'x', 'lost', 'ghost', '\ud800', '✨', '\ufeffz']));
+      observe(api.read);
+      for (const id of ['x', 'ghost', {}, '   ', '\ud800', 'y']) observe(() => api.toggle(id));
+      available = false;
+      observe(() => api.replace(['offline', 'y']));
+      observe(api.read);
+      available = true;
+      observe(api.read);
+      known = Array.from({ length: cap + 2 }, (_, i) => 't' + i);
+      observe(() => api.replace(known));
+      observe(() => api.toggle(known[cap]));
+      observe(() => api.toggle(known[0]));
+      observe(() => api.toggle(known[cap]));
+      out.push(JSON.parse(fs.readFileSync(file, 'utf8')).data);
+      fs.writeFileSync(file, '{broken');
+      observe(() => make(deps).read());
+      const handlers = new Map();
+      api.mountRoutes({ get: (url, cb) => handlers.set('GET ' + url, cb), post: (url, cb) => handlers.set('POST ' + url, cb) });
+      for (const [method, body] of [['GET ', null], ['POST ', {}], ['POST ', { taskIds: [] }],
+        ['toggle', { taskId: {} }], ['toggle', { taskId: 'missing' }], ['toggle', { taskId: 't2' }]]) {
+        const res = { code: 200, status(n) { this.code = n; return this; }, json(payload) { out.push([this.code, payload]); } };
+        handlers.get(method === 'toggle' ? 'POST /api/air/' + kind + '/toggle' : method + '/api/air/' + kind)({ body }, res);
+      }
+      const before = api.read();
+      fs.rmSync(dir, { recursive: true });
+      fs.writeFileSync(dir, 'blocked');
+      observe(() => api.replace(['t4']));
+      assert.deepEqual(api.read(), before);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    return out;
+  }
+  for (const [live, old, kind, cap] of [[createAirPinRuntime, oldPins.createAirPinRuntime, 'pins', 100],
+    [createAirTodoRuntime, oldTodos.createAirTodoRuntime, 'todos', 500]]) {
+    assert.deepEqual(run(live, kind, cap), run(old, kind, cap), kind);
+  }
+  const opaque = { toString() { throw Error('unexpected coercion'); } };
+  for (const limit of [undefined, null, 0, -1, 1, 1.5, 2n, '3', Infinity, NaN, { valueOf: () => 2 }]) {
+    const list = Object.freeze(['', ' a ', opaque, 42, 'a', '\ud800', '\ufffd', '\ufeffb', '👩‍🔬']);
+    assert.deepEqual(normalizePins(list, limit), oldPins.normalizePins(list, limit));
+  }
+  // for-of stops and closes the iterator as soon as the accepted count reaches
+  // the caller's limit; a coercion failure must also close it.
+  for (const limit of [1, Symbol('limit')]) {
+    function iteratorTrace(normalize) {
+      const log = [];
+      const input = [];
+      input[Symbol.iterator] = function* () {
+        try { for (const id of ['a', 'b', 'c']) { log.push(id); yield id; } }
+        finally { log.push('close'); }
+      };
+      try { return [normalize(input, limit), log]; }
+      catch (err) { return [[err.name, err.message], log]; }
+    }
+    assert.deepEqual(iteratorTrace(normalizePins), iteratorTrace(oldPins.normalizePins));
+  }
+  function reentry(make) {
+    const file = tempFile();
+    let nested = false, armed = false, runtime;
+    const seen = [];
+    try {
+      runtime = make({ file, listTaskIds() {
+        if (armed && !nested) {
+          nested = true;
+          seen.push(runtime.toggle('nested'));
+        }
+        return ['outer', 'nested'];
+      } });
+      runtime.read();
+      armed = true;
+      seen.push(runtime.toggle('outer'), runtime.read(), JSON.parse(fs.readFileSync(file, 'utf8')).data);
+    } finally { fs.rmSync(path.dirname(file), { recursive: true, force: true }); }
+    return seen;
+  }
+  assert.deepEqual(reentry(createAirPinRuntime), reentry(oldPins.createAirPinRuntime));
+  for (const body of [{}, { data: { taskIds: {} } }, { taskIds: ['a', ' a ', 'b'] }, { data: { taskIds: ['x'] } }]) {
+    const file = tempFile();
+    try {
+      fs.writeFileSync(file, JSON.stringify(body));
+      if (Array.isArray(body.taskIds || body.data?.taskIds)) assert.deepEqual(readStoredPinIds(file), oldPins.readStoredPinIds(file));
+      else assert.throws(() => readStoredPinIds(file), { message: 'air pins unavailable' });
+    } finally { fs.rmSync(path.dirname(file), { recursive: true, force: true }); }
+  }
 });

@@ -118,6 +118,7 @@ function probeAddon(file, node = process.execPath) {
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
+      'airTaskListSpec','airNormalizeTaskIds','airStoredPins','RustAirTaskList',
       'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
       .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3
       || a.searchMatchExpression('缓存层')!=='("缓存" AND "存层")' || a.searchTokenize('缓存').get('缓')!==0.5) process.exit(1);

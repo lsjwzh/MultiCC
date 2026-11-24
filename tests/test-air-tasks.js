@@ -326,7 +326,7 @@ test('Air reclaims worktrees on demand: idles first, force only when asked, unkn
 test('Air lists and pins hide unseparated tasks across decisions and restarts, then show the same identity after separation', async t => {
   const { createTaskShellRuntime } = require('../src/task-shell/runtime');
   const path = require('node:path');
-  const { createAirPinRuntime } = require('../src/workspace/pins');
+  const { createAirPinRuntime } = require('../src/native/task-domain');
   for (const decision of ['pending', 'defer', 'keep']) await t.test(decision, async t => {
     const board = { tasks: {} };
     const f = fixture(t, {
