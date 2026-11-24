@@ -113,9 +113,7 @@ fn extract_wikilinks(excerpt: &str) -> Vec<String> {
 }
 
 fn normalize_posix_join(base_dir: &str, rel: &str) -> String {
-    let combined = if base_dir.is_empty() || base_dir == "." {
-        rel.to_string()
-    } else if rel.starts_with('/') {
+    let combined = if base_dir.is_empty() || base_dir == "." || rel.starts_with('/') {
         rel.to_string()
     } else {
         format!("{base_dir}/{rel}")
