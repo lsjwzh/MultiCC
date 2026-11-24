@@ -212,7 +212,7 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.chatHistoryPublicCommittedMessage!=='function' || typeof a.chatHistoryBuildReplayMessages!=='function'
       || a.chatHistoryPublicCommittedMessage({role:'assistant',id:'x'})!==null
       || a.chatHistoryPublicCommittedMessage({role:'user',id:'u',content:'c'}).role!=='user') process.exit(1);
-    if(['chatFrozenFinalization','chatValidateFinalizationPorts','chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
+    if(['prepareOpencodeRotationHandoff','chatFrozenFinalization','chatValidateFinalizationPorts','chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
       'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure','chatExecuteTurnFinalization',
       'chatCommitTurnFinalization'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['transcriptPruneDefaults','transcriptProjectDir','transcriptFind','transcriptPruneFile',

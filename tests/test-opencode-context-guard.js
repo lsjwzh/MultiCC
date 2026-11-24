@@ -5,8 +5,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const Database = require('better-sqlite3');
-const { createOpencodeContextReader, clampThreshold, resolveThreshold } = require('../src/chat/opencode-context');
-const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('../src/chat/opencode-context-guard');
+const readerApi = require('../src/chat/opencode-context');
+const { createOpencodeContextReader, clampThreshold, resolveThreshold,
+  createOpencodeContextGuard, enforceOpencodeContextForTurn } = readerApi;
 const { getNative } = require('../src/native/runtime');
 
 function fixture(t, catalog = { provider: { models: { model: { limit: { context: 1000, output: 100 } } } } }) {
@@ -181,4 +182,129 @@ test('异步检查期间原生目标改变时不清除新目标', async () => {
   } } });
   assert.equal(result.reason, 'native_changed');
   assert.equal(persisted.cliSessionId, 'replacement');
+});
+
+test('OpenCode 上下文读取器保持冻结工厂的参数读取顺序与异步错误边界', async () => {
+  const { compileFunction } = require('node:vm'), { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const file = path.resolve(__dirname, '../src/chat/opencode-context.js');
+  const body = fs.readFileSync(path.join(__dirname, 'helpers/frozen-opencode-context.js'));
+  assert.equal(createHash('sha1').update('blob ' + body.length + '\0').update(body).digest('hex'),
+    'b659c82bc585047fc5d32feb1362a0994b133494');
+  const mod = {exports:{}};
+  compileFunction(body.toString(), ['module','require'], {filename:file})(mod,createRequire(file));
+  async function trace(api) {
+    const log = [], observed = [];
+    for (const v of [undefined, null, '', 0, -1, 0.5, '0.9', 0.95, 2, NaN, Infinity, 9n, false]) {
+      log.push([api.clampThreshold(v), api.resolveThreshold({ MULTICC_OPENCODE_CONTEXT_THRESHOLD:v })]);
+    }
+    const sentinel = Error('threshold');
+    assert.throws(() => api.createOpencodeContextReader({ env:{HOME:'/home'},threshold:{valueOf(){throw sentinel;}} }),e=>e===sentinel);
+    const env = new Proxy({HOME:'/x',XDG_DATA_HOME:'/d',XDG_CACHE_HOME:'/c'}, {get(o,k){observed.push(k);return o[k];}});
+    let failure;
+    const backend = {async readOpencodeContext(s) { assert.equal(this, backend); log.push(s); if(failure)throw failure; return '{"found":true}'; }};
+    const reader = api.createOpencodeContextReader({env,
+      get threshold(){ observed.push('threshold');return undefined; },
+      getNative(){ observed.push('native');return backend; },
+      logger: {warn(event, fields){log.push([event,fields]);}},
+    });
+    assert.ok(Object.isFrozen(reader));
+    const key = { toJSON(){observed.push('toJSON');return 'id';} };
+    log.push(await reader.read(key, 'a/b'), await reader.cursor(key), await reader.turnUsage(key, { sequence:2 }));
+    failure=Object.assign(Error('private'),{code:'db_unready'});
+    log.push(await reader.read('id', null),await reader.cursor('id'));
+    const throws = api.createOpencodeContextReader({ env:{HOME:'/x'},getNative(){throw failure;},
+      logger:{warn(){throw sentinel;}} });
+    await assert.rejects(throws.turnUsage('id',{}), e => e===sentinel);
+    return [log,observed];
+  }
+  assert.deepEqual(await trace(readerApi), await trace(mod.exports));
+});
+
+test('OpenCode 轮换与冻结实现保持目标复核、交接引用和宿主副作用顺序', async () => {
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const legacy = fs.readFileSync(path.join(__dirname, 'helpers/frozen-opencode-context-guard.js'));
+  assert.equal(createHash('sha1').update('blob ' + legacy.length + '\0').update(legacy).digest('hex'),
+    '91e2b4543c95c896e271399432ea0b87e7175ca0');
+  function loadGuard(file, body, trace, failure) {
+    const local = createRequire(file), module = { exports: {} };
+    const cliSwitch = {
+      buildHandoffCheckpoint({ session, fromCli, toCli, history }) {
+        trace.push(['build', session.cliSessionId, fromCli, toCli, history]);
+        return { createdAt: 42, history };
+      },
+      clearAllNativeCliStates(persisted) {
+        trace.push('clear');
+        if (failure === 'clear') throw failure;
+        persisted.cliSessionId = null;
+        return ['old'];
+      },
+    };
+    const crypto = { randomBytes(size) { trace.push(['random', size]); return Buffer.alloc(size, 25); } };
+    compileFunction(body.toString(), ['module', 'require'], {filename:file})(module, id =>
+      id === '../cli-switch' ? cliSwitch : id === 'node:crypto' ? crypto : local(id));
+    return module.exports;
+  }
+  const oldPath = path.resolve(__dirname, '../src/chat/opencode-context-guard.js');
+  const currentPath = typeof readerApi.enforceOpencodeContextForTurn === 'function'
+    ? require.resolve('../src/chat/opencode-context') : require.resolve('../src/chat/opencode-context-guard');
+  async function run(file, body, mode, failure) {
+    const trace = [], guardApi = loadGuard(file, body, trace, failure);
+    const ref = Symbol('opaque'), token = { toJSON() { throw Error('opaque value serialized'); } };
+    const checkpoint = { createdAt: 21, token, [ref]: token };
+    const pending = Object.assign(Object.create({ inherited: true }), {
+      status: mode === 'expired' ? 'done' : 'pending', checkpoint, id: 'saved', fromCli: 'claude',
+      extra: token, [ref]: token,
+    });
+    if (mode === 'empty') Object.assign(pending, { id: '', checkpoint: false, fromCli: 0, createdAt: '' });
+    const observed = obj => new Proxy(obj, {
+      get(target, key, receiver) { trace.push(['get', String(key)]); return Reflect.get(target, key, receiver); },
+      ownKeys(target) { trace.push('keys'); return Reflect.ownKeys(target); },
+      getOwnPropertyDescriptor(target, key) { trace.push(['desc', String(key)]); return Reflect.getOwnPropertyDescriptor(target, key); },
+    });
+    if (pending.checkpoint) pending.checkpoint = observed(checkpoint);
+    let stored = mode === 'missing' ? null : observed(pending);
+    const persisted = { cliSessionId: 'old', model: 'one', dirId: 'dir',
+      get pendingCliHandoff() { trace.push('getPending'); return stored; },
+      set pendingCliHandoff(value) { trace.push('setPending'); if (failure === 'set') throw failure; stored = value; },
+    };
+    const verdict = { action: mode === 'allow' ? 'allow' : 'rotate', cliSessionId:'old', reason:'high',
+      tokensTotal:80, contextLimit:100, ratio:.8, threshold:.7, message:'rotate now' };
+    const record = (name, ...args) => {
+      trace.push([name, ...args]);
+      if (failure === name) throw failure;
+    };
+    const args = { guard:{async enforce(p) {
+      assert.equal(p, persisted); record('enforce');
+      if (mode === 'stale') persisted.model = 'two';
+      return verdict;
+    }}, persisted, sessionName:'logical', assertCurrent:() => record('assert'),
+      history() { record('history'); return ['visible']; },
+      rememberActiveCliState(p) { assert.equal(p, persisted); record('remember'); },
+      savePersistedSessionsBestEffort:reason => record('save',reason),
+      logger:{ warn(...values) { assert.equal(this, args.logger); record('warn', ...values); } },
+      appendEvent:(...values) => record('event', ...values), chatBroadcast:(...values) => record('broadcast', ...values) };
+    let result, rejection;
+    try { result = await guardApi.enforceOpencodeContextForTurn(args); }
+    catch (err) { if (failure === null) throw err; assert.equal(err, failure); rejection = err; }
+    const ops = trace.slice();
+    if (result && mode !== 'stale') assert.equal(result, verdict);
+    if (result === verdict && verdict.action === 'rotate' && mode === 'reuse') {
+      assert.equal(stored.checkpoint.token, token);
+      assert.equal(stored.checkpoint[ref], token);
+      assert.equal(stored[ref], token);
+      assert.equal(stored.inherited, undefined);
+      assert.notEqual(stored.checkpoint, pending.checkpoint);
+    }
+    return { ops, rejection, same: result === verdict, action: result?.action, reason: result?.reason,
+      session: persisted.cliSessionId, handoff: stored && [stored.id, stored.createdAt, stored.fromCli, stored.reason, stored.reusedTarget, stored.checkpoint?.reason] };
+  }
+  const current = fs.readFileSync(currentPath);
+  for (const mode of ['missing','expired','empty','reuse','allow','stale']) {
+    for (const failure of [null,'enforce','assert','history','set','clear','remember','save','warn','event','broadcast']) {
+      assert.deepEqual(await run(currentPath,current,mode,failure), await run(oldPath,legacy,mode,failure), mode + '/' + failure);
+    }
+  }
 });
