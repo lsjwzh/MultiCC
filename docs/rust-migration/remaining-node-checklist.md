@@ -1,5 +1,11 @@
 # 剩余 Node 后端清单
 
+## 首页持久化告警（2026-11-25）
+
+冻结 `air-sync-issue.js` 的 Git blob 为 `9e87bfa162e03ce54055db1c6198f7273cae92f3`，`air-storage-notice.js` 为 `8fd890d1a9232acdcdd2b97cec66920879b88105`。Rust 在最多五层错误链中选择公开诊断，识别需要发布的磁盘写满告警，生成带时间戳的告警并指定五分钟有效期。Node 保留 V8 字符串转换和截断、可变告警对象的引用、模块无法加载时的固定文案，以及 StateStore、会话写入、日志和推送回调的接线。这些回调与对象身份随宿主调用方迁出后可移除。[Rust 实现](../../native/addon/src/air_storage_notice.rs)
+
+两个定向套件迁前与迁后均通过 52/52。另用相同输入核对 UTF-16 截断边界、getter 异常、时钟回退、告警引用修改，以及原生模块加载失败后的指标和日志。相对 `eec9c9e3`，src 从 512 个文件降至 510 个（505 JS、2 CJS、3 MJS），业务或宿主编排从 322 降至 320。server.js 加 src 从 127,822 降至 127,803 行，净减 19 行。[差分用例](../../tests/test-air-sync.js) · [实时依赖清单](node-module-dependencies.md)
+
 ## Air 待办忽略状态（2026-11-25）
 
 旧实现的 Git blob 为 `a70c9b85bdd82b8a360f5d34fc73e9dda2b4f961`。Rust 按任务与问题发生时刻判断忽略是否有效，读取时仅在用到对应任务时查询问题状态。状态所有者暂不可用时，读取保留已有条目，写入则传播原错误。只有保存成功后才更新内存。为避免每个任务多次跨越 N-API，宿主把任务引用和时间整理为一次调用可用的 V8 Map。兼容宿主仍提供问题状态、手动待办、StateStore 与 Express 接线，宿主调用方迁出后可移除这些端口。[Rust 实现](../../native/addon/src/air_todo_ignore.rs)

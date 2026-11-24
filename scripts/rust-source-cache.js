@@ -118,7 +118,7 @@ function probeAddon(file, node = process.execPath) {
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
-      'airTodoIgnoreKinds','airNormalizeIgnores','airTodoIgnoreRun',
+      'airDescribeIssue','airRecordStorageNotice','airTodoIgnoreKinds','airNormalizeIgnores','airTodoIgnoreRun',
       'airTaskListSpec','airNormalizeTaskIds','airStoredPins','RustAirTaskList',
       'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
       .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3

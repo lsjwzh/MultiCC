@@ -1,6 +1,5 @@
 'use strict';
-const { createAirIndex } = require('./air-index-port');
-const { describeAirIssue } = require('./air-sync-issue');
+const { createAirIndex, describeAirIssue } = require('./air-index-port');
 
 // One producer supplies host-authorized cards. The Rust index owns summaries;
 // this host owns socket lifetimes and the atomic replay-to-live handoff.

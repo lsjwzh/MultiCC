@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createAirReadIndex } = require('./helpers/legacy-air-read-index');
 const { createAirSyncRuntime } = require('../src/workspace/air-sync-runtime');
-const { createAirStorageNotice } = require('../src/workspace/air-sync-issue');
+const airIssueApi = require('../src/workspace/air-index-port');
+const { airNotices: airNoticeHooks } = airIssueApi;
+const { createAirStorageNotice } = airIssueApi;
 const { create } = require('../public/air-sync');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
 
@@ -540,4 +542,74 @@ test('syncHttp/pageHttp：关闭后是 air_closed，串行队列满时是 air_bu
   const first = runtime.syncHttp({ cursor: 'c' });
   await assert.rejects(runtime.syncHttp({ cursor: 'c' }), e => e.status === 503 && e.code === 'air_busy');
   release(); await first;
+});
+
+test('Air persistence notices match the frozen cause traversal, lifetime and callbacks', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const { compileFunction } = require('node:vm'), { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  function legacy(name, hash, overrides = {}) {
+    const file = path.resolve(__dirname, '../src/workspace', name + '.js');
+    const src = fs.readFileSync(path.join(__dirname, 'helpers', 'legacy-' + name + '.js'));
+    assert.equal(createHash('sha1').update('blob ' + src.length + '\0').update(src).digest('hex'), hash);
+    const mod = { exports: {} }, local = createRequire(file);
+    compileFunction(src.toString(), ['module', 'require'], { filename: file })(mod, id => overrides[id] || local(id));
+    return mod.exports;
+  }
+  const old = legacy('air-sync-issue', '9e87bfa162e03ce54055db1c6198f7273cae92f3');
+  const oldHooks = legacy('air-storage-notice', '8fd890d1a9232acdcdd2b97cec66920879b88105', { './air-sync-issue': old });
+  const now = Date.now;
+  function trace(issues, hooks) {
+    let at = 19000;
+    Date.now = () => at;
+    const n = issues.createAirStorageNotice(), out = [];
+    assert.equal(n.current(), null);
+    function chain(size, fail) {
+      let next;
+      for (let i = size - 1; i >= 0; --i) {
+        const tail = next;
+        next = { get code() { out.push('c' + i); return i === fail ? 'SQLITE_FULL' : ''; },
+          get message() { out.push('m' + i); return i === 2 ? 'x'.repeat(1023) + '✨ SQLITE_FULL' : ''; },
+          get cause() { out.push('n' + i); return tail; } };
+      }
+      return next;
+    }
+    for (let size = 0; size <= 7; ++size) {
+      for (let hit = -1; hit <= size; ++hit) out.push(issues.describeAirIssue(chain(size, hit)));
+    }
+    const cycle = { code: Symbol('code'), message: 123n };
+    cycle.cause = cycle;
+    for (const error of [cycle, null, { get message() { throw Error('broken'); } }, { code: 'EIO' }]) {
+      out.push(issues.describeAirIssue(error), n.record(error));
+    }
+    assert.equal(n.record({ code: 'ENOSPC', message: 'private path' }), true);
+    const ref = n.current();
+    ref.marker = true;
+    for (const delta of [-1, 299999, 300000, 300001]) {
+      at = 19000 + delta;
+      const notice = n.current();
+      out.push([delta, notice === ref, notice?.marker, notice?.message]);
+    }
+    at = 19001;
+    const flow = [];
+    const publisher = () => { flow.push('publish'); };
+    hooks.bindPublisher(publisher);
+    const logger = { error(event, facts) { flow.push([event, facts]); } };
+    const metrics = { inc(key) { flow.push(key); } };
+    let failStore;
+    hooks.installStateStoreReporter({ setFailureReporter(fn) { failStore = fn; } }, { metrics, logger });
+    failStore({ code: 'ENOSPC', message: 'path' }, { get file() { flow.push('meta'); return 'data'; } });
+    const failSession = hooks.sessionPersistenceOnFailure({ metrics, logger });
+    failSession({ error: { code: 'SQLITE_FULL', message: 'db' }, mode: 'atomic', source: 1, attempt: 2, dirty: false });
+    failSession({ error: null });
+    const sentinel = Error('publisher');
+    hooks.bindPublisher(() => { throw sentinel; });
+    assert.throws(() => failStore({ code: 'ENOSPC' }, {}), err => err === sentinel);
+    hooks.bindPublisher(null);
+    out.push(flow, hooks.storageNotice());
+    return out;
+  }
+  try {
+    assert.deepEqual(trace(airIssueApi, airNoticeHooks), trace(old, oldHooks));
+  } finally { Date.now = now; airNoticeHooks.bindPublisher(null); }
 });
