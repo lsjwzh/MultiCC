@@ -140,6 +140,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   }
 
   bool get _isQoder => _pickedCli == SessionCli.qoder;
+  List<String> get _modelEfforts => _pickedCli.effortOptionsForModel(
+    _customModel ? _customModelCtrl.text : _pickedModel,
+  );
+
   String get _defaultEffort => _pickedCli.defaultEffort;
   bool get _hasConcreteDefaultProvider =>
       _defaultProviderId != null &&
@@ -550,7 +554,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     }
 
     final effort = preset.defaultEffort;
-    final validEfforts = _pickedCli.effortOptions;
+    final validEfforts = _modelEfforts;
     if (validEfforts.contains(effort)) _pickedEffort = effort;
   }
 
@@ -745,7 +749,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           ? _pickedProvider
           : null,
       model: model,
-      effort: _pickedEffort,
+      effort: _modelEfforts.contains(_pickedEffort) ? _pickedEffort : null,
       agent: _pickedCli.supportsAgent && _agentCtrl.text.trim().isNotEmpty
           ? _agentCtrl.text.trim()
           : null,
@@ -1104,6 +1108,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 const SizedBox(height: 6),
                 TextField(
                   controller: _customModelCtrl,
+                  onChanged: (_) => setState(() {}),
                   style: const TextStyle(
                     color: Color(0xFF233249),
                     fontSize: 13,
@@ -1130,7 +1135,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   autofocus: true,
                 ),
               ],
-              if (_pickedCli.supportsEffort) ...[
+              if (_modelEfforts.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Text(
                   _pickedCli.effortFieldLabel,
@@ -1141,7 +1146,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 ),
                 const SizedBox(height: 4),
                 DropdownButtonFormField<String>(
-                  value: _pickedEffort,
+                  value: _modelEfforts.contains(_pickedEffort) ? _pickedEffort : null,
                   isExpanded: true,
                   dropdownColor: const Color(0xFFffffff),
                   style: const TextStyle(
@@ -1149,7 +1154,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                     fontSize: 13,
                   ),
                   decoration: sheetInputDecoration(),
-                  items: _pickedCli.effortOptions
+                  items: _modelEfforts
                       .map(
                         (e) => DropdownMenuItem(
                           value: e,

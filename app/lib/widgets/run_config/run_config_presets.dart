@@ -53,15 +53,17 @@ void _rememberPresets(
 /// 预设指纹里的一行：只比真正决定路由的线路、模型、是否自动挑模型，外加优先级
 /// 顺序；车道只在两边都写了时才比（老版编辑器存预设时会把 cli 丢掉）。
 class _PoolRow {
-  const _PoolRow(this.providerId, this.model, this.autoModel, this.cli);
+  const _PoolRow(this.providerId, this.model, this.effort, this.autoModel, this.cli);
   final String providerId;
   final String model;
+  final String effort;
   final bool autoModel;
   final String cli;
 
   bool same(_PoolRow other) =>
       providerId == other.providerId &&
       model == other.model &&
+      effort == other.effort &&
       autoModel == other.autoModel &&
       (cli.isEmpty || other.cli.isEmpty || cli == other.cli);
 }
@@ -79,6 +81,7 @@ List<_PoolRow> _rawPoolRows(Object? candidates) {
       _PoolRow(
         (c['providerId'] ?? '').toString().trim(),
         (c['model'] ?? '').toString().trim(),
+        (c['effort'] ?? '').toString(),
         c['autoModel'] == true,
         canonicalCliLane((c['cli'] ?? '').toString()),
       ),
@@ -93,6 +96,7 @@ List<_PoolRow> _selectionPoolRows(SessionProviderSelection selection) {
       _PoolRow(
         c.providerId.trim(),
         (c.model ?? '').trim(),
+        c.effort ?? '',
         c.autoModel,
         canonicalCliLane(c.cli),
       ),
@@ -300,6 +304,7 @@ class RunConfigPreset {
         lane: row.lane,
         providerId: row.providerId,
         model: row.model,
+        effort: row.effort,
         autoModel: row.autoModel,
         markedTier: row.markedTier,
       ),
@@ -323,6 +328,7 @@ class RunConfigPreset {
         {
           'providerId': rows[index].providerId,
           'cli': rows[index].lane,
+          if (rows[index].selectedEffort != null) 'effort': rows[index].selectedEffort,
           'model': rows[index].model.isEmpty ? null : rows[index].model,
           'priority': index + 1,
           if (rows[index].autoModel) 'autoModel': true,
@@ -372,6 +378,7 @@ class RunConfigPreset {
         RunPoolRow(
           lane: lane,
           providerId: providerId,
+          effort: (candidate['effort'] ?? '').toString(),
           model: (candidate['model'] ?? '').toString(),
           autoModel: candidate['autoModel'] == true,
           markedTier: tier == null ? null : int.parse(tier.group(1)!),

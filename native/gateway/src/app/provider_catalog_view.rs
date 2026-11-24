@@ -80,7 +80,9 @@ pub(in crate::app) fn project(facts: &Value, cli: &str) -> Value {
         })
         .collect::<Vec<_>>();
     projected["providers"] = Value::Array(providers);
-    provider_registry::catalog_body(&projected)
+    let mut catalog = provider_registry::catalog_body(&projected);
+    catalog["efforts"] = json!(multicc_core::cli_capability::effort_catalog());
+    catalog
 }
 
 pub(super) fn refresh_ids(catalog: &Value) -> Vec<Value> {
@@ -110,6 +112,11 @@ mod tests {
             "nowMs":200
         });
         let catalog = project(&facts, "codex");
+        assert_eq!(catalog["efforts"]["claude"]["levels"][5], "ultracode");
+        assert_eq!(
+            catalog["efforts"]["agy"]["disabledModelFamily"],
+            "gemini-pro-orchestrator"
+        );
         assert_eq!(catalog["providers"].as_array().unwrap().len(), 2);
         assert_eq!(catalog["providers"][0]["id"], "b");
         assert_eq!(catalog["providers"][0]["subscription"]["autoRenew"], false);

@@ -154,6 +154,9 @@ pub fn launch(input: &LaunchInput) -> Launch {
         Value::Object(map) => map.clone(),
         _ => Map::new(),
     };
+    if input.effort.as_deref() == Some("ultracode") {
+        settings.insert("ultracode".into(), Value::Bool(true));
+    }
     let mut settings_env = match settings.get("env") {
         Some(Value::Object(map)) => map.clone(),
         _ => Map::new(),
@@ -196,7 +199,15 @@ pub fn launch(input: &LaunchInput) -> Launch {
         "stream-json".into(),
     ];
     if let Some(effort) = input.effort.as_deref().filter(|v| !v.is_empty()) {
-        push_eq(&mut argv, "--effort", effort);
+        push_eq(
+            &mut argv,
+            "--effort",
+            if effort == "ultracode" {
+                "xhigh"
+            } else {
+                effort
+            },
+        );
     }
     if let Some(turns) = input.max_turns.filter(|turns| *turns > 0) {
         push_eq(&mut argv, "--max-turns", &turns.to_string());
@@ -698,6 +709,18 @@ mod tests {
             "--session-id=853caea9-a074-4b21-929b-f7ef15395852",
             "--settings", "/tmp/multicc-sdk-X/settings.json",
         ]);
+    }
+
+    #[test]
+    fn ultracode_launch_sets_the_cli_flag_and_settings_together() {
+        let mut input = launch_input();
+        input.effort = Some("ultracode".into());
+        let launched = launch(&input);
+        assert!(launched.argv.iter().any(|arg| arg == "--effort=xhigh"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&launched.settings).unwrap()["ultracode"],
+            true
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ const {
   capabilities: CAPABILITIES,
   clis: CLIS,
   display: DISPLAY,
+  efforts: EFFORTS,
   aliases: ALIASES,
 } = SNAPSHOT;
 
@@ -84,6 +85,10 @@ function shortMarkOf(cli) {
 function colourOf(cli) {
   const entry = displayOf(cli);
   return entry ? entry.colour : DEFAULT_COLOUR;
+}
+
+function effortOf(cli) {
+  return own(EFFORTS, nameOf(cli)) || null;
 }
 
 // Vendor-auth CLIs sign in with their own account, so no multicc provider is
@@ -220,6 +225,7 @@ module.exports = {
   DEFAULT_COLOUR,
   DEFAULT_KINDS,
   DISPLAY,
+  EFFORTS,
   KINDS,
   bundledEnginesOf,
   cancelStopsProcess,
@@ -228,6 +234,8 @@ module.exports = {
   deprecationOf,
   displayNameOf,
   displayOf,
+  effortOf,
+  supportsEffort: (cli, model, level) => getNative().cliSupportsEffort(cli, model || '', level),
   engineOf,
   familiesFor,
   familyNameOf,

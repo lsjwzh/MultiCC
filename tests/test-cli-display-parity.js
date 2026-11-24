@@ -596,6 +596,16 @@ test('every CLI the server accepts has a display entry', () => {
   }
 });
 
+// ── 3b. One strength table, not a private ladder per picker ────────────────
+
+test('the effort table is one fact on server and web', () => {
+  for (const [cli, spec] of Object.entries(CAP.EFFORTS)) {
+    assert.deepEqual(CATALOG.cliEffort(cli), spec, cli);
+  }
+  assert.deepEqual(CATALOG.cliEffort('claude-exp'), CAP.effortOf('claude'));
+  assert.equal(CATALOG.cliEffort('gemini'), null);
+});
+
 // ── 4. Unknown ids keep their own spelling ──────────────────────────────────
 
 test('an unknown CLI id falls back to the raw id, never to another product', () => {

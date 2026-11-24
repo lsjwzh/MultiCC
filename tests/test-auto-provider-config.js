@@ -71,6 +71,18 @@ test('Auto Provider validates a same-protocol concrete candidate pool', () => {
   });
 });
 
+test('线路强度按 CLI 和模型校验，保存后可重新读取', () => {
+  const pool = selection();
+  pool.candidates[0].effort = 'ultracode';
+  const opts = { cli: 'claude', providers: catalog() };
+  const saved = validateProviderSelection(pool, opts);
+  assert.equal(saved.ok, true);
+  assert.equal(providerSelectionDto(saved.value).candidates[0].effort, 'ultracode');
+  assert.equal('effort' in saved.value.candidates[1], false);
+  pool.candidates[0].effort = 'ultra';
+  assert.equal(validateProviderSelection(pool, opts).code, 'invalid_provider_candidate');
+});
+
 test('lone-surrogate input reaches the validation rules, not a parse error', () => {
   // JSON.stringify keeps a sliced emoji as the escape "\ud834"; the old JS
   // implementation passed it straight into the rules, so the native side must

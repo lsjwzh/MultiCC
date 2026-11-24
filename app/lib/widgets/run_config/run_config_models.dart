@@ -130,35 +130,21 @@ String runModelOptionLabel(
 String runLineName(String id, List<Map<String, dynamic>> providers) =>
     _providerById(providers, id) ?? (id.isEmpty ? '官方 Provider' : id);
 
-/// 推理强度阶梯：低 / 中 / 高 / 最高，逐档挑这条车道真有的值。不足两档就没有
-/// 分段控件可画（一档等于没得选）。空列表 = 这条车道不暴露推理强度。
-List<(String value, String label)> effortRungsFor(SessionCli cli) {
-  if (!cli.supportsEffort) return const [];
-  if (cli == SessionCli.pi) {
-    return const [('', '默认'), ('off', '关闭'), ('minimal', '最低'), ('low', '低'), ('medium', '中'), ('high', '高'), ('xhigh', '最高')];
-  }
-  final opts = cli.effortOptions.where((e) => e.isNotEmpty).toList();
-  if (opts.isEmpty) return const [];
-  String pick(List<String> prefer) {
-    for (final p in prefer) {
-      if (opts.contains(p)) return p;
-    }
-    return '';
-  }
+List<(String value, String label)> effortRungsFor(SessionCli cli, [String? model]) =>
+    [for (final value in cli.effortOptionsForModel(model)) (value, effortLevelLabel(value))];
 
-  final rungs = <(String, String)>[];
-  void add(String value, String label) {
-    if (value.isEmpty) return;
-    if (rungs.any((rung) => rung.$1 == value)) return;
-    rungs.add((value, label));
-  }
-
-  add(pick(['low', 'minimal']), '低');
-  add(pick(['medium']), '中');
-  add(pick(['high']), '高');
-  add(pick(['xhigh', 'max', 'ultra']), '最高');
-  return rungs.length >= 2 ? rungs : const [];
-}
+String effortLevelLabel(String value) => switch (value) {
+  '' || 'default' => '默认',
+  'none' => '无',
+  'off' => '关闭',
+  'minimal' => '最低',
+  'low' => '低',
+  'medium' => '中',
+  'high' => '高',
+  'xhigh' => '超高',
+  'max' => '最高',
+  _ => value,
+};
 
 /// 当前强度落在阶梯的第几档（找不到就用车道默认那一档，再找不到就第一档）。
 int effortRungIndexFor(SessionCli cli, String? effort, List<(String, String)> rungs) {
@@ -175,16 +161,7 @@ int effortRungIndexFor(SessionCli cli, String? effort, List<(String, String)> ru
 String effortChipLabel(SessionCli cli, String? effort) {
   if (!cli.supportsEffort) return '';
   final value = (effort == null || effort.isEmpty) ? cli.defaultEffort : effort;
-  return switch (value) {
-    '' || 'default' => '默认',
-    'off' => '关闭',
-    'minimal' => '最低',
-    'low' => '低',
-    'medium' => '中',
-    'high' => '高',
-    'xhigh' || 'max' || 'ultra' || 'ultracode' => '最高',
-    _ => value,
-  };
+  return effortLevelLabel(value);
 }
 
 /// 候选模型所属的厂商分组（Command Code 的 Open Source / Anthropic / OpenAI …），

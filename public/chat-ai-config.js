@@ -137,32 +137,38 @@
     };
   }
 
-  function defaultEffort(cli) {
-    if (isCodexCli(cli)) return 'xhigh';
-    if (isClaudeCli(cli)) return 'medium';
-    return '';
+  const descriptions = {
+    claude: EFFORT_OPTIONS, 'claude-exp': EFFORT_OPTIONS,
+    codex: CODEX_REASONING_OPTIONS, 'codex-exp': CODEX_REASONING_OPTIONS,
+    opencode: OPENCODE_VARIANT_OPTIONS, pi: PI_THINKING_OPTIONS,
+    qoder: QODER_REASONING_OPTIONS, codebuddy: CODEBUDDY_REASONING_OPTIONS,
+  };
+
+  function effortSpec(cli) {
+    const catalog = root?.MultiCCProviderCatalog ||
+      (typeof require === 'function' ? require('./provider-catalog') : null);
+    return catalog?.cliEffort(cli);
   }
 
-  function effortOptions(cli) {
-    if (isCodexCli(cli)) return CODEX_REASONING_OPTIONS;
-    if (cli === 'opencode') return OPENCODE_VARIANT_OPTIONS;
-    if (cli === 'pi') return PI_THINKING_OPTIONS;
-    if (cli === 'agy') return [
-      { value: '', label: 'Default', desc: 'Follow Antigravity settings' },
-      ...['low', 'medium', 'high', 'xhigh'].map(value => ({ value, label: value })),
-    ];
-    if (cli === 'qoder') return QODER_REASONING_OPTIONS;
-    if (cli === 'codebuddy') return CODEBUDDY_REASONING_OPTIONS;
-    if (isClaudeCli(cli)) return EFFORT_OPTIONS;
-    return [];
+  function defaultEffort(cli) {
+    return effortSpec(cli)?.default || '';
+  }
+
+  function effortOptions(cli, model) {
+    const spec = effortSpec(cli);
+    if (!spec) return [];
+    const selected = model || (cli === 'agy' ? root?.readAgyCurrentSync?.()?.model : '');
+    const id = String(selected || '').split('[')[0].trim().toLowerCase();
+    if (spec.disabledModelFamily && (id === spec.disabledModelFamily || id.startsWith(spec.disabledModelFamily + '-'))) return [];
+    if (spec.tierSuffixes?.some(suffix => id.endsWith(suffix))) return [];
+    const levels = Object.hasOwn(spec.modelLevels || {}, id) ? spec.modelLevels[id] : spec.levels;
+    return levels.map(value => descriptions[cli]?.find(item => item.value === value)
+      || { value, label: value || 'Default' });
   }
 
   function effortLabel(cli) {
-    if (isCodexCli(cli)) return 'Reasoning Level';
-    if (cli === 'opencode') return 'Variant';
-    if (cli === 'pi' || cli === 'agy') return 'Thinking Level';
-    if (cli === 'qoder' || cli === 'codebuddy') return 'Reasoning Effort';
-    return 'Effort';
+    const spec = effortSpec(cli);
+    return (spec && spec.label) || 'Effort';
   }
 
   function effortShortName(cli, effort) {

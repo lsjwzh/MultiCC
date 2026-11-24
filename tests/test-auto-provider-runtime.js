@@ -1016,6 +1016,7 @@ test('a failover pool switches lanes once its own lane is spent', () => {
 
 test('an unapplied CLI switch rejects the old lane and preserves the reservation for recovery', () => {
   const { runtime, session, events } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
+  session.providerSelection.candidates.find(row => row.providerId === 'codex-b').effort = 'minimal';
   assert.equal(runtime.pendingCliSwitch(session.id, session.cli), null);
   const planned = runtime.planTurn({ session, text: '继续' });
   const pending = runtime.pendingCliSwitch(session.id, session.cli);
@@ -1038,7 +1039,9 @@ test('an unapplied CLI switch rejects the old lane and preserves the reservation
 
   session.cli = planned.cli;
   const recovered = runtime.beginTurn({ session, turnId: 'recovered' });
-  assert.equal(recovered.initial().providerId, planned.providerId);
+  const invocation = recovered.initial();
+  assert.equal(invocation.providerId, planned.providerId);
+  assert.equal(invocation.effort, 'minimal');
   assert.equal(runtime.pendingCliSwitch(session.id, 'claude'), null, 'selection consumes the reservation');
 });
 

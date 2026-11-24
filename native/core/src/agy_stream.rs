@@ -25,6 +25,7 @@ const USAGE_SOURCE: &str = "agy_stream";
 pub struct InvocationInput {
     pub cmd: String,
     pub model: Option<String>,
+    pub effective_model: Option<String>,
     pub effort: Option<String>,
     pub conversation_id: Option<String>,
     pub is_first_turn: bool,
@@ -55,8 +56,13 @@ pub fn build_invocation(input: &InvocationInput) -> InvocationOutput {
         args.push(model.to_string());
     }
     if let Some(effort) = non_empty(input.effort.as_deref()) {
-        args.push("--effort".to_string());
-        args.push(effort.to_string());
+        let model = non_empty(input.model.as_deref())
+            .or(input.effective_model.as_deref())
+            .unwrap_or("");
+        if crate::cli_capability::supports_effort("agy", model, effort) {
+            args.push("--effort".to_string());
+            args.push(effort.to_string());
+        }
     }
     if !input.is_first_turn {
         if let Some(conversation_id) = non_empty(input.conversation_id.as_deref()) {
@@ -737,6 +743,7 @@ mod tests {
     fn invocation_puts_print_flag_last_and_wraps_first_turn_role() {
         let first = build_invocation(&InvocationInput {
             cmd: "/bin/agy".into(),
+            effective_model: None,
             model: Some("gemini-4-neon".into()),
             effort: Some("high".into()),
             conversation_id: Some("ignored-on-first".into()),
@@ -764,6 +771,7 @@ mod tests {
 
         let resume = build_invocation(&InvocationInput {
             cmd: "/bin/agy".into(),
+            effective_model: None,
             model: Some("gemini-4-neon".into()),
             effort: Some("low".into()),
             conversation_id: Some("conv-123".into()),
@@ -787,6 +795,49 @@ mod tests {
             ]
         );
         assert_eq!(resume.payload, "- follow up");
+    }
+
+    #[test]
+    fn effort_is_omitted_for_models_that_encode_their_own_tier() {
+        // `agy models` enumerates a concrete model per rung; the Orchestrator
+        // family is single-tier. Handing either one `--effort` fails the whole
+        // invocation, so the flag must never be built for them.
+        for model in [
+            "gemini-pro-orchestrator",
+            "gemini-pro-orchestrator-neon",
+            "gemini-pro-orchestrator-argon",
+            "gemini-4-neon-high",
+            "gemini-3.8-flash-medium",
+            "claude-opus-5-5-low",
+            "gpt-oss-120b-medium",
+        ] {
+            assert!(
+                !crate::cli_capability::supports_effort("agy", model, "high"),
+                "{model}"
+            );
+            let invocation = build_invocation(&InvocationInput {
+                cmd: "/bin/agy".into(),
+                effective_model: None,
+                model: Some(model.into()),
+                effort: Some("high".into()),
+                conversation_id: None,
+                is_first_turn: true,
+                role_prompt: None,
+                prompt: "hello".into(),
+            });
+            assert!(
+                !invocation.args.iter().any(|arg| arg == "--effort"),
+                "{model} must not receive --effort"
+            );
+        }
+        let supports = |model, level| crate::cli_capability::supports_effort("agy", model, level);
+        assert!(supports("gemini-4-neon", "xhigh"));
+        assert!(!supports("gemini-4-carbon", "xhigh"));
+        assert!(!supports("gemini-4-neon", "max"));
+        assert!(supports("gpt-oss-120b", "medium"));
+        assert!(!supports("gpt-oss-120b", "high"));
+        // No pinned model: leave the user's setting alone.
+        assert!(crate::cli_capability::supports_effort("agy", "", "high"));
     }
 
     #[test]

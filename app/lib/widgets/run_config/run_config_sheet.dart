@@ -751,7 +751,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       if (_choicesFor(_provider).contains(seeded)) _model = seeded;
     }
     if (_model.isEmpty) _model = _defaultModelFor(_provider);
-    final rungs = effortRungsFor(widget.cli);
+    final rungs = effortRungsFor(widget.cli, _model);
     final values = rungs.map((rung) => rung.$1).toList();
     _effort = values.contains(widget.effort) || widget.effort.isEmpty
         ? widget.effort
@@ -847,6 +847,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           lane: lane,
           providerId: candidate.providerId,
           model: candidate.model ?? '',
+          effort: candidate.effort ?? '',
           autoModel: candidate.autoModel,
           markedTier: rung > 0 ? rung : null,
           problem: wrongLane
@@ -1158,7 +1159,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       currentCli: widget.cli.name,
       providerId: _provider,
       model: model,
-      effort: _effort,
+      effort: _cli.effortOptionsForModel(model).contains(_effort) ? _effort : '',
       providerLabel: providerLabel,
       modelLabel: model.isEmpty
           ? '默认'
@@ -1480,7 +1481,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       ],
       const SizedBox(height: 12),
       _modelPicker(),
-      if (effortRungsFor(_cli).isNotEmpty) ...[
+      if (effortRungsFor(_cli, _customModel ? _customCtrl.text : _model).isNotEmpty) ...[
         const SizedBox(height: 12),
         _effortPicker(),
       ],
@@ -1790,6 +1791,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           const SizedBox(height: 8),
           TextField(
             controller: _customCtrl,
+            onChanged: (_) => setState(() {}),
             autofocus: true,
             style: const TextStyle(
               color: AppColors.text,
@@ -1806,7 +1808,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   }
 
   Widget _effortPicker() {
-    final rungs = effortRungsFor(_cli);
+    final rungs = effortRungsFor(_cli, _customModel ? _customCtrl.text : _model);
     final index = effortRungIndexFor(_cli, _effort, rungs);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1816,36 +1818,19 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           style: TextStyle(color: AppColors.faint, fontSize: 12),
         ),
         const SizedBox(height: 5),
-        if (_cli == SessionCli.pi)
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (var i = 0; i < rungs.length; i += 1)
-                _segmentedButton(
-                  key: Key('run-effort-${rungs[i].$1}'),
-                  label: rungs[i].$2,
-                  selected: i == index,
-                  onTap: () => setState(() => _effort = rungs[i].$1),
-                ),
-            ],
-          )
-        else
-          Row(
-            children: [
-              for (var i = 0; i < rungs.length; i += 1) ...[
-                if (i > 0) const SizedBox(width: 6),
-                Expanded(
-                  child: _segmentedButton(
-                    key: Key('run-effort-${rungs[i].$1}'),
-                    label: rungs[i].$2,
-                    selected: i == index,
-                    onTap: () => setState(() => _effort = rungs[i].$1),
-                  ),
-                ),
-              ],
-            ],
-          ),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (var i = 0; i < rungs.length; i++)
+              _segmentedButton(
+                key: Key('run-effort-${rungs[i].$1}'),
+                label: rungs[i].$2,
+                selected: i == index,
+                onTap: () => setState(() => _effort = rungs[i].$1),
+              ),
+          ],
+        ),
       ],
     );
   }

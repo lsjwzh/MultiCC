@@ -12,6 +12,7 @@ use std::path::Path;
 pub struct AgyInvocationInput {
     pub cmd: String,
     pub model: Option<String>,
+    pub effective_model: Option<String>,
     pub effort: Option<String>,
     pub conversation_id: Option<String>,
     pub is_first_turn: bool,
@@ -31,6 +32,7 @@ pub fn agy_build_invocation(input: AgyInvocationInput) -> AgyInvocationOutput {
     let out = agy_stream::build_invocation(&InvocationInput {
         cmd: input.cmd,
         model: input.model,
+        effective_model: input.effective_model,
         effort: input.effort,
         conversation_id: input.conversation_id,
         is_first_turn: input.is_first_turn,

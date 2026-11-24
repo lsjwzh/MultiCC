@@ -65,18 +65,13 @@ fn effort(record: &Value, cli: &str, home: &Path, effective: &Value) -> Value {
         .unwrap_or("")
         .trim()
         .to_lowercase();
-    let levels: &[&str] = match cli {
-        "codex" | "codex-exp" => &[
-            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
-        ],
-        "qoder" => &["low", "medium", "high", "xhigh", "max"],
-        "codebuddy" => &["minimal", "low", "medium", "high", "xhigh", "max"],
-        "pi" => &["off", "minimal", "low", "medium", "high", "xhigh"],
-        "opencode" => &["minimal", "low", "medium", "high", "max"],
-        "agy" => &["low", "medium", "high", "xhigh"],
-        "zcode" | "kimi" | "dsh" | "gemini" | "grok" | "commandcode" => return Value::Null,
-        _ => &["low", "medium", "high", "xhigh", "max", "ultracode"],
+    let Some(spec) = cli_capability::effort_of(cli) else {
+        return Value::Null;
     };
+    let levels = spec.levels_for_model(effective.as_str().unwrap_or(""));
+    if levels.is_empty() {
+        return Value::Null;
+    }
     let codex = matches!(cli, "codex" | "codex-exp");
     let supported = |level: &str, name: &str| {
         if codex && matches!(level, "max" | "ultra") {
@@ -91,7 +86,7 @@ fn effort(record: &Value, cli: &str, home: &Path, effective: &Value) -> Value {
         }
         json!(level)
     };
-    if levels.contains(&s.as_str()) {
+    if !s.is_empty() && levels.contains(&s) {
         return supported(&s, effective.as_str().unwrap_or(""));
     }
     if codex {
@@ -112,7 +107,7 @@ fn effort(record: &Value, cli: &str, home: &Path, effective: &Value) -> Value {
                     .unwrap_or("")
             };
             let level = setting("model_reasoning_effort").to_ascii_lowercase();
-            if levels.contains(&level.as_str()) {
+            if !level.is_empty() && levels.contains(&level) {
                 return supported(&level, setting("model"));
             }
         }
