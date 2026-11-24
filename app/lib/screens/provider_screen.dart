@@ -1079,8 +1079,15 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   bool _obscureKey = true;
   bool _saving = false;
   bool _cliRelay = false;
-  bool _isRelayImport = false;
   String? _err;
+
+  // 「远程 CLI」开关只对能落成借道线路的输入开放：类型是 claude/codex 且当前
+  // Base URL 已是借道端点。直接看输入而不是已保存的 provider，新建时填完地址
+  // 就能勾，编辑时换成借道地址也会即时出现/消失。
+  bool get _showCliRelay =>
+      widget.provider?['isOfficial'] != true &&
+      (_appType == 'claude' || _appType == 'codex') &&
+      isRelayBaseUrl(_baseUrl.text.trim());
 
   bool get _isEdit => widget.provider != null;
 
@@ -1089,10 +1096,11 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     super.initState();
     final p = widget.provider;
     _appType = (p?['appType'] as String?) ?? widget.initialAppType ?? 'claude';
-    _isRelayImport = p != null && _isRelayImportProvider(p);
-    _cliRelay = _isRelayImport && p?['cliRelay'] == true;
+    _cliRelay = p?['cliRelay'] == true;
     _name = TextEditingController(text: p?['name'] as String? ?? '');
     _baseUrl = TextEditingController(text: p?['baseUrl'] as String? ?? '');
+    // 地址一改，远程 CLI 开关的可见性要跟着变。
+    _baseUrl.addListener(_onBaseUrlChanged);
     _token = TextEditingController();
     _model = TextEditingController(text: p?['model'] as String? ?? '');
     final modelOptions = (p?['modelOptions'] as List? ?? [])
@@ -1111,6 +1119,10 @@ class _ProviderEditorState extends State<_ProviderEditor> {
         t: TextEditingController(
             text: (aliasMap[t] as Map?)?['name'] as String? ?? ''),
     };
+  }
+
+  void _onBaseUrlChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -1164,7 +1176,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           model: _model.text.trim(),
           models: _modelList(),
           aliasMap: _appType == 'claude' ? _aliasMapPayload() : null,
-          cliRelay: _isRelayImport ? _cliRelay : null,
+          cliRelay: _showCliRelay ? _cliRelay : null,
         );
       } else {
         await widget.manage.createProvider(
@@ -1175,7 +1187,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           model: _model.text.trim(),
           models: _modelList(),
           aliasMap: _appType == 'claude' ? _aliasMapPayload() : null,
-          cliRelay: _isRelayImport ? _cliRelay : null,
+          cliRelay: _showCliRelay ? _cliRelay : null,
         );
       }
       if (mounted) Navigator.pop(context, true);
@@ -1253,7 +1265,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             const SizedBox(height: 14),
             const _FieldLabel('可用模型列表（每行一个，可选）'),
             _input(_models, hint: 'deepseek-v4-pro\ndeepseek-flash', mono: true, maxLines: 3),
-            if (_isRelayImport) ...[
+            if (_showCliRelay) ...[
               const SizedBox(height: 14),
               Container(
                 decoration: BoxDecoration(

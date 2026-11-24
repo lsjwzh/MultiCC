@@ -68,6 +68,29 @@ pub fn default_readonly_skill_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// 下发给 Host 的路径把用户主目录折叠成 `~/`：Host 侧 `expand_tilde_path` 能原样还原，
+/// 但远端模型上下文里不会出现真实用户名与主目录绝对路径。
+fn host_visible_path_with_home(path: &Path, home: Option<&Path>) -> String {
+    if let Some(home) = home {
+        let canonical_home = std::fs::canonicalize(home).ok();
+        for base in [Some(home), canonical_home.as_deref()].into_iter().flatten() {
+            if let Ok(rest) = path.strip_prefix(base) {
+                let rel = rest.to_string_lossy().replace('\\', "/");
+                return if rel.is_empty() {
+                    "~".to_string()
+                } else {
+                    format!("~/{rel}")
+                };
+            }
+        }
+    }
+    path.to_string_lossy().into_owned()
+}
+
+fn host_visible_path(path: &Path) -> String {
+    host_visible_path_with_home(path, client_home_dir().as_deref())
+}
+
 fn truncate_chars(text: &str, max_chars: usize) -> String {
     let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= max_chars {
@@ -228,8 +251,8 @@ pub fn collect_skills_from_roots(roots: &[PathBuf]) -> Vec<RelaySkillSummary> {
             out.push(RelaySkillSummary {
                 name,
                 description,
-                skill_md_path: canon_md.to_string_lossy().into_owned(),
-                skill_dir: canon_dir.to_string_lossy().into_owned(),
+                skill_md_path: host_visible_path(&canon_md),
+                skill_dir: host_visible_path(canon_dir),
             });
         }
     }
@@ -297,6 +320,28 @@ pub fn format_skills_guidance(skills: &[RelaySkillSummary]) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn host_visible_path_folds_the_home_prefix_but_leaves_other_paths_alone() {
+        let home = Path::new("/Users/alice");
+        assert_eq!(
+            host_visible_path_with_home(Path::new("/Users/alice/.claude/skills/x/SKILL.md"), Some(home)),
+            "~/.claude/skills/x/SKILL.md"
+        );
+        assert_eq!(
+            host_visible_path_with_home(Path::new("/Users/alice"), Some(home)),
+            "~"
+        );
+        // 不是主目录前缀时不改写（避免 `/Users/alice2` 被误折叠）。
+        assert_eq!(
+            host_visible_path_with_home(Path::new("/Users/alice2/x"), Some(home)),
+            "/Users/alice2/x"
+        );
+        assert_eq!(
+            host_visible_path_with_home(Path::new("/srv/project/skills/a"), None),
+            "/srv/project/skills/a"
+        );
+    }
 
     #[test]
     fn parses_inline_and_multiline_yaml_frontmatter_and_dedupes_project_over_user() {

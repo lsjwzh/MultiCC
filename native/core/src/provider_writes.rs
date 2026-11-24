@@ -34,6 +34,7 @@ pub const APP_TYPE_REQUIRED: &str = "appType must be claude or codex";
 pub const PROVIDER_NOT_FOUND: &str = "provider not found";
 pub const OFFICIAL_IS_OAUTH_MANAGED: &str = "请在官方账号中管理登录和切换账号";
 pub const VIRTUAL_IS_NOT_CONVERTIBLE: &str = "普通线路不能直接转换成虚拟线路，请新建组合";
+pub const CLI_RELAY_FLAG_INVALID: &str = "cliRelay 必须是布尔值";
 
 /// What the caller must still do once the decision is made. The host performs
 /// these in the order the retired code did.
@@ -235,7 +236,7 @@ pub fn assemble_create_record(
             },
         ),
     };
-    apply_cli_relay_flag(&mut config, input);
+    apply_cli_relay_flag(&mut config, input)?;
     let format = normalize_api_format(api_format, Some(&app_type));
 
     let mut record = Map::new();
@@ -453,7 +454,7 @@ pub fn update_provider(
     } else {
         rebuild_codex_config(&mut config, input, id, facts);
     }
-    apply_cli_relay_flag(&mut config, input);
+    apply_cli_relay_flag(&mut config, input)?;
 
     let mut record = stored.as_object().cloned().unwrap_or_default();
     // `if (name)`: an empty or absent name keeps the stored one.
@@ -827,15 +828,21 @@ fn rebuild_codex_config(
 /// Apply the optional top-level `cliRelay` toggle onto `settingsConfig`:
 /// `true` persists `cliRelay: true`, `false` / `null` clears both `cliRelay`
 /// and the legacy `relayMode`, and omission leaves any stored setting intact.
-fn apply_cli_relay_flag(config: &mut Value, input: &Map<String, Value>) {
+/// Anything other than a boolean/null is rejected: silently ignoring it would
+/// leave the editor claiming "on" while the runtime still routes over HTTP.
+fn apply_cli_relay_flag(config: &mut Value, input: &Map<String, Value>) -> Result<(), String> {
     let Some(flag) = present(input, "cliRelay") else {
-        return;
+        return Ok(());
     };
+    match flag {
+        Value::Bool(true) | Value::Bool(false) | Value::Null => {}
+        _ => return Err(CLI_RELAY_FLAG_INVALID.to_string()),
+    }
     if !config.is_object() {
         *config = Value::Object(Map::new());
     }
     let Some(object) = config.as_object_mut() else {
-        return;
+        return Ok(());
     };
     match flag {
         Value::Bool(true) => {
@@ -847,6 +854,7 @@ fn apply_cli_relay_flag(config: &mut Value, input: &Map<String, Value>) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1244,6 +1252,45 @@ mod tests {
         // `([^"]+)` needs at least one character.
         let empty = Value::String("model = \"\"\n".to_string());
         assert_eq!(toml_value(Some(&empty), "model"), "");
+    }
+
+    #[test]
+    fn cli_relay_flag_rejects_non_boolean_values_instead_of_ignoring_them() {
+        let input = obj(json!({
+            "appType": "claude",
+            "name": "Relay",
+            "cliRelay": "true"
+        }));
+        assert_eq!(
+            create_provider(&json!([]), &input, &facts()),
+            Err(CLI_RELAY_FLAG_INVALID.to_string())
+        );
+
+        let created = create_provider(
+            &json!([]),
+            &obj(json!({
+                "appType": "claude",
+                "name": "Relay",
+                "baseUrl": "https://host.example/claude-proxy/abc/remote",
+                "authToken": "mcr1.secret"
+            })),
+            &facts(),
+        )
+        .unwrap();
+        let Commit::Save { records, .. } = created else {
+            panic!("expected Save");
+        };
+        assert_eq!(
+            update_provider(
+                &records,
+                "claude",
+                "fixed-id",
+                &obj(json!({ "cliRelay": 1 })),
+                None,
+                &facts(),
+            ),
+            Err(CLI_RELAY_FLAG_INVALID.to_string())
+        );
     }
 
     #[test]

@@ -299,6 +299,7 @@
     el('air-provider-cancel').onclick = () => dialog.close();
     form.elements.preset.onchange = () => applyPreset(form.elements.preset.value);
     form.elements.appType.onchange = changeDialogAppType;
+    form.elements.baseUrl.addEventListener('input', syncCliRelayVisibility);
     renderPresetOptions();
     renderPresetStatus();
     el('air-provider-preset-refresh').onclick = () => { void refreshPresets(true); };
@@ -309,6 +310,7 @@
         el('air-provider-create-choice').hidden = true;
         el('air-provider-api-fields').hidden = false;
         syncDialogProtocol();
+        syncCliRelayVisibility();
         form.elements.preset.focus();
       };
     });
@@ -337,6 +339,7 @@
     form.elements.apiFormat.disabled = true;
     el('air-provider-protocol-hint').textContent = t(claude ? 'airProviderProtocolHintClaude' : 'airProviderProtocolHintCodex');
     el('air-provider-aliases').hidden = !claude;
+    syncCliRelayVisibility();
   }
 
   // 同一厂商两种协议的模板按 id 约定成对：`claude-<vendor>` / `codex-<vendor>`。
@@ -382,6 +385,7 @@
       .filter(Boolean).join('\n');
     fillAliases(form, preset.aliasMap || null);
     syncDialogProtocol();
+    syncCliRelayVisibility();
     form.elements.authToken.focus();
   }
 
@@ -475,6 +479,21 @@
     hint.textContent = profiles.length ? '' : t('airProviderEgressBindingNoProfiles');
   }
 
+  // 「远程 CLI」开关只对能落成借道线路的输入开放：类型是 claude/codex 且当前
+  // Base URL 已是 `…/claude-proxy/<id>/remote` 或 `…/codex-proxy/<id>`。
+  // 直接看输入而不是已保存的 provider，新建时填完地址就能勾，编辑时换成借道
+  // 地址也会即时出现/消失。
+  function syncCliRelayVisibility() {
+    const form = el('air-provider-form');
+    const box = el('air-provider-cli-relay');
+    if (!form || !box) return;
+    const appType = form.elements.appType.value;
+    const baseUrl = form.elements.baseUrl.value.trim();
+    const relay = (appType === 'claude' || appType === 'codex')
+      && !!root.isRelayImportProvider?.({ appType, hasToken: true, baseUrl });
+    box.hidden = !relay;
+  }
+
   function openEditor(provider = null) {
     if (provider?.virtual) return root.MultiCCVirtualProvider?.open({ provider, providers: data.providers, api: context.api, onSaved: load });
     const dialog = ensureDialog();
@@ -496,9 +515,8 @@
     const egressIpAllowlist = provider?.egressIpAllowlist || [];
     form.elements.egressIpAllowlist.value = egressIpAllowlist.join('\n');
     el('air-provider-egress-ip').open = egressIpAllowlist.length > 0;
-    const isRelayImport = !!provider && !!root.isRelayImportProvider?.(provider);
-    el('air-provider-cli-relay').hidden = !isRelayImport;
-    form.elements.cliRelay.checked = !!(isRelayImport && provider.cliRelay);
+    form.elements.cliRelay.checked = provider?.cliRelay === true;
+    syncCliRelayVisibility();
     // 专用出口只对官方账号线路开放（别的线路自己就指明了上游）。
     const binding = locked && provider?.egressBinding ? provider.egressBinding : null;
     el('air-provider-egress-binding').hidden = !locked;

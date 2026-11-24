@@ -21,7 +21,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{DefaultBodyLimit, Path as AxumPath, State};
 use axum::http::{HeaderMap, HeaderValue, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::post;
@@ -41,6 +41,9 @@ use crate::host_exec::generate_token;
 use crate::ws_handshake;
 
 pub const MAX_WS_PAYLOAD: usize = 32 * 1024 * 1024;
+/// 环回 RPC 桥的 HTTP 请求体上限。axum 默认 2 MB，会把 base64 图片附件和
+/// 大参数 MCP `tools/call` 拦成 413；这里放宽到仍小于 WSS 单帧上限的 24 MiB。
+pub const MAX_RELAY_HTTP_BODY: usize = 24 * 1024 * 1024;
 pub const START_FRAME_TIMEOUT: Duration = Duration::from_secs(15);
 pub const HOST_EXEC_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// `dispatch_master(mode="sync")` 最长可等待 6 小时（21600s），留 60s 余量。
@@ -407,6 +410,7 @@ impl HostRelayBridge {
             .route("/fs/view_image", post(rpc_view_image))
             .route("/mcp/{server}", post(rpc_mcp_tunnel))
             .route("/api/internal/router-tools/{tool}", post(rpc_router_tool))
+            .layer(DefaultBodyLimit::max(MAX_RELAY_HTTP_BODY))
             .with_state(state.clone());
 
         let task = tokio::spawn(async move {
