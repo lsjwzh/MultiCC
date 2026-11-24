@@ -27,6 +27,8 @@ const {
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { createSliceRunner } = require('../src/search/slice-runner');
 
+const { rerankSearchHits: rerank } = require('../src/native/runtime');
+
 const logger = { warn() {}, log() {}, info() {} };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -448,4 +450,92 @@ test('the shared runtime is one instance per data directory, and can be reset', 
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(other, { recursive: true, force: true });
   }
+});
+
+test('search diversity preserves frozen ranking, original hits and host errors', () => {
+  const crypto = require('node:crypto');
+  const { createRequire } = require('node:module');
+  const { compileFunction } = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-search-diversity.js'));
+  const blob = crypto.createHash('sha1').update('blob ' + source.length + '\0').update(source).digest('hex');
+  assert.equal(blob, '37f8e334c937c92cc0227a0bb8ea588be6d1f74e');
+  const filename = path.resolve(__dirname, '../src/search/diversity.js');
+  const frozen = { exports: {} };
+  compileFunction(source.toString(), ['module', 'require'], { filename })(frozen, createRequire(filename));
+  const old = frozen.exports.rerank;
+  const hits = Object.freeze(Array.from({ length: 21 }, (_, i) => Object.freeze({
+    refId: 'r' + i % 5, sessionId: i % 3 ? 's' + i % 4 : '', contentHash: 'h' + i % 6,
+    score: i % 3 ? String(i % 4) : -2, updatedAt: 100 - i % 7,
+    taskId: ['T'], dirId: 4n, snippet: { i },
+  })));
+  for (const limit of [undefined, null, -2.1, 0, 2n, 3.7, '6', NaN, Infinity]) {
+    for (const perRefQuota of [undefined, null, 0, -1, 1, 2.5, 20]) {
+      for (const dedupeContentHash of [true, false]) {
+        const opts = { limit, perRefQuota, dedupeContentHash };
+        const expected = old(hits, opts);
+        const actual = rerank(hits, opts);
+        assert.equal(actual.length, expected.length);
+        for (let i = 0; i < actual.length; i++) assert.strictEqual(actual[i], expected[i]);
+      }
+    }
+  }
+
+  function trace(fn, scenario) {
+    const reads = [];
+    const sentinel = new Error('candidate field');
+    const hit = new Proxy({ sessionId: '', refId: 1n, contentHash: Symbol('h'), score: true, updatedAt: '4' }, {
+      get(target, key) {
+        reads.push(key);
+        if (scenario === key) throw sentinel;
+        return Reflect.get(target, key);
+      },
+    });
+    let list = [hit];
+    let opts;
+    switch (scenario) {
+      case 'empty': list = []; opts = { limit: Symbol() }; break;
+      case 'non-array': list = {}; opts = { limit: Symbol() }; break;
+      case 'zero': opts = { limit: 0 }; break;
+      case 'symbol-limit': opts = { limit: Symbol('limit') }; break;
+      case 'lone': list = [{ dirId: '\ud800' }]; break;
+      case 'bad-score': list = [{ score: Infinity }]; break;
+      case 'null-hit': list = [null]; break;
+      case 'hole': list = new Array(2); break;
+      case 'null-options': opts = null; break;
+      case 'toJSON': opts = { perRefQuota: { toJSON(key) { reads.push(key); return 1; } } }; break;
+      case 'bigint': opts = { perRefQuota: 1n }; break;
+      case 'invalid-flag': opts = { dedupeContentHash: 'yes' }; break;
+      case 'shrink': opts = { perRefQuota: { toJSON() { list.pop(); return 1; } } }; break;
+      case 'getters': opts = new Proxy({}, { get(o, k) { reads.push(k); return undefined; } }); break;
+    }
+    let result;
+    try { result = fn(list, opts); }
+    catch (e) { return [reads, e === sentinel, e.name, e.code, e.message]; }
+    return [reads, result.map(item => {
+      const i = list.indexOf(item);
+      assert.notEqual(i, -1, 'ranked hit must be an original object');
+      return i;
+    })];
+  }
+  for (const key of ['empty', 'non-array', 'zero', 'symbol-limit', 'lone', 'bad-score', 'null-hit', 'hole',
+    'null-options', 'toJSON', 'bigint', 'invalid-flag', 'shrink', 'getters',
+    'sessionId', 'refId', 'contentHash', 'score', 'updatedAt', 'taskId', 'dirId']) {
+    assert.deepEqual(trace(rerank, key), trace(old, key), key);
+  }
+});
+
+test('findMessages counts rank failures and returns the original relevance order', () => {
+  const warnings = [];
+  const { runtime, cleanup } = fixture({
+    sessions: { rank: [turn('m1', 'test ranking fallback')] },
+    logger: { warn: message => warnings.push(message) },
+  });
+  try {
+    runtime.syncSession('rank');
+    const before = runtime.status().failures;
+    const actual = runtime.findMessages({ text: 'ranking', perRefQuota: 1n });
+    assert.deepEqual(actual.map(hit => hit.messageId), ['m1']);
+    assert.equal(runtime.status().failures, before + 1);
+    assert.ok(warnings.some(message => message.startsWith('search_index_rerank_failed:')));
+  } finally { cleanup(); }
 });

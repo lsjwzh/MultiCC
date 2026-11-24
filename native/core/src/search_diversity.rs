@@ -195,12 +195,18 @@ fn remember<'a>(
 /// `{ order }` out. Errors are the caller's — a request that is not JSON at all is a
 /// bug, not a corpus condition.
 pub fn rerank(input: &str) -> Result<String, String> {
-    let request: Request =
-        serde_json::from_str(input).map_err(|error| format!("invalid_rerank_request: {error}"))?;
     let answer = Response {
-        order: order_of(&request),
+        order: rerank_order(input)?,
     };
     serde_json::to_string(&answer).map_err(|error| format!("invalid_rerank_response: {error}"))
+}
+
+/// Both the JSON caller and the live compatibility port use the same decoder
+/// so invalid projections report the same field and wire position.
+pub fn rerank_order(input: &str) -> Result<Vec<usize>, String> {
+    let request: Request =
+        serde_json::from_str(input).map_err(|error| format!("invalid_rerank_request: {error}"))?;
+    Ok(order_of(&request))
 }
 
 #[cfg(test)]
