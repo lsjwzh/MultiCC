@@ -14,7 +14,7 @@ const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/s
 const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
-const { getNative, gatewayPath, deliveryClassForItem } = require('../native/runtime');
+const { getNative, gatewayPath, deliveryClassForItem, historyFrame: { fitHistoryFrame } } = require('../native/runtime');
 const writerGroup = require('../workspace/writer-group');
 const {
   TurnRequestError,
@@ -63,7 +63,6 @@ const {
 const { cliHandoffSummary } = require('../cli/switch-runtime');
 const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
-const { fitHistoryFrame } = require('./history-frame-budget');
 const chatStream = require('./chat-stream');
 const { resolveCliRelayTarget, applyCliRelaySpawn } = require('./cli-relay-spawn');
 const { spawnContractOf } = require('./held-turn-injection');

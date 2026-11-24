@@ -21,7 +21,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { DEFAULT_MAX_BYTES, fitHistoryFrame } = require('../src/chat/history-frame-budget');
+const { DEFAULT_MAX_BYTES, fitHistoryFrame } = require('../src/native/runtime').historyFrame;
 const { createChatHistoryRuntime } = require('../src/routes/chat-history');
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 

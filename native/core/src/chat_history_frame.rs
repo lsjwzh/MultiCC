@@ -253,7 +253,7 @@ pub fn message_bytes(message: &JsValue) -> usize {
 /// `{ sizes, hasMore, maxBytes? }` in, `{ dropped, hasMore, clipped }` out.
 /// This is the bridge the connect path uses: only numbers cross it, so a
 /// megabyte page is never copied.
-pub fn plan_json(input: &str) -> Result<String, String> {
+pub fn plan_request(input: &str) -> Result<Plan, String> {
     let value =
         json_parse(input).map_err(|e| format!("chat_history_frame_invalid_input: {e:?}"))?;
     let sizes: Vec<usize> = match property(&value, "sizes") {
@@ -268,11 +268,15 @@ pub fn plan_json(input: &str) -> Result<String, String> {
             .collect(),
         _ => Vec::new(),
     };
-    let decision = plan(
+    Ok(plan(
         &sizes,
         truthy(property(&value, "hasMore")),
         size_option(property(&value, "maxBytes"), DEFAULT_MAX_BYTES),
-    );
+    ))
+}
+
+pub fn plan_json(input: &str) -> Result<String, String> {
+    let decision = plan_request(input)?;
     let out = JsValue::Object(vec![
         (
             JsString::from_rust_str("dropped"),

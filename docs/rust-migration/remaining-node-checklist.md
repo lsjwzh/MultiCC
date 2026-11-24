@@ -1,5 +1,11 @@
 # 剩余 Node 后端清单
 
+## 聊天重连历史帧（2026-11-25）
+
+冻结的生产门面 Git blob 为 `abadda7b01f4834a31cfd5b6b21170f38bdcf185`。Rust 按每条消息的序列化字节数执行原有预算规则，决定是否切去页首、裁剪工具内容，以及向重连客户端返回哪个数组。V8 接线保留真实消息的 JSON 字节测量和选项访问语义，传入 Rust 的常规请求只包含数字和上限。仅在需要裁剪时才序列化保留下来的消息。重连运行时迁出后可移除这处接线。[Rust 接口](../../native/addon/src/chat_connect_frames.rs)
+
+三套定向回归迁前与迁后均通过 23/23，包含 144 个冻结预算场景、getter 顺序、循环与稀疏输入、未裁剪页的数组和元素引用，以及大历史文件分页。相对 `1e3afa22`，src 文件由 510 降至 509（504 JS、2 CJS、3 MJS），业务或宿主编排由 320 降至 319，server.js 加 src 从 127,803 降至 127,732 行，净减 71 行。[差分用例](../../tests/test-history-frame-budget.js) · [实时依赖表](node-module-dependencies.md)
+
 ## 首页持久化告警（2026-11-25）
 
 冻结 `air-sync-issue.js` 的 Git blob 为 `9e87bfa162e03ce54055db1c6198f7273cae92f3`，`air-storage-notice.js` 为 `8fd890d1a9232acdcdd2b97cec66920879b88105`。Rust 在最多五层错误链中选择公开诊断，识别需要发布的磁盘写满告警，生成带时间戳的告警并指定五分钟有效期。Node 保留 V8 字符串转换和截断、可变告警对象的引用、模块无法加载时的固定文案，以及 StateStore、会话写入、日志和推送回调的接线。这些回调与对象身份随宿主调用方迁出后可移除。[Rust 实现](../../native/addon/src/air_storage_notice.rs)

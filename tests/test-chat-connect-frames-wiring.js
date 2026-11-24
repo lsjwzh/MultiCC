@@ -35,7 +35,7 @@ test.mock.method(require('../src/native/task-domain'), 'taskShortCode', taskId =
   shortCodeCalls.push(taskId);
   return shortCode;
 });
-const { fitHistoryFrame, DEFAULT_MAX_BYTES, messageBytes } = require('../src/chat/history-frame-budget');
+const { fitHistoryFrame, DEFAULT_MAX_BYTES, messageBytes } = require('../src/native/runtime').historyFrame;
 
 // JSON cannot carry `undefined`, so the corpus marks those slots and both
 // sides rehydrate them (see chat-history-frame-oracle.js).
