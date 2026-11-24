@@ -389,8 +389,12 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
       return result;
     })().catch(error => {
       // captureCodeRevision (inside the writer barrier) refuses with the stable
-      // code only in .message; lift it so the client sees code_* not a 500.
-      if (error instanceof Error && !error.code && /^code_[a-z_]{1,60}$/.test(error.message)) Object.assign(error, { code: error.message, status: 409 });
+      // code in .message (and napi-rs attaches code: 'GenericFailure');
+      // lift both code and HTTP 409 so the client never sees GenericFailure / 500.
+      if (error instanceof Error && /^code_[a-z_]{1,60}$/.test(error.message)
+        && (!error.code || error.code === 'GenericFailure' || (error.code === error.message && !error.status))) {
+        Object.assign(error, { code: error.message, status: 409 });
+      }
       const saved = store.get('task-separation', id);
       if (saved && ['pending', 'kept'].includes(saved.state)) store.set('task-separation', id, { ...saved, phase: 'blocked',
         lastError: { code: safeErrorCode(error) } });

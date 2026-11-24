@@ -16,7 +16,7 @@ async function observeCodeRevision(cwd, execGit, { maxBytes = 256 * 1024 * 1024,
   const head = await git(['rev-parse', 'HEAD']);
   const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all']);
   const gitDir = path.resolve(cwd, await git(['rev-parse', '--git-dir']));
-  for (const marker of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer', 'index.lock']) {
+  for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer', 'index.lock']) {
     if (await fs.lstat(path.join(gitDir, marker)).then(() => true, e => { if (e.code === 'ENOENT') return false; throw e; })) throw new Error('code_git_operation');
   }
   const entries = await git(['ls-files', '--stage', '-z']);

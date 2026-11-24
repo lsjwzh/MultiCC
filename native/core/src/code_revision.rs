@@ -175,9 +175,13 @@ pub const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_MAX_FILES: usize = 50000;
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 const GIT_MAX_BUFFER: usize = 32 * 1024 * 1024;
-const OPERATION_MARKERS: [&str; 8] = [
+// Active Git operation markers. `REBASE_HEAD` is intentionally omitted: Git
+// leaves a stale `REBASE_HEAD` file behind after a conflicted `git rebase`
+// finishes via `--continue`/`--skip` (e.g. Apple Git 2.39.x), whereas Git
+// itself (`wt-status.c`) only considers a rebase active while `rebase-merge`
+// or `rebase-apply` exists.
+const OPERATION_MARKERS: [&str; 7] = [
     "MERGE_HEAD",
-    "REBASE_HEAD",
     "CHERRY_PICK_HEAD",
     "REVERT_HEAD",
     "rebase-merge",
@@ -537,5 +541,68 @@ mod tests {
         assert_eq!(resolve_lexical(cwd, "nested"), cwd.join("nested"));
         assert_eq!(resolve_lexical(cwd, "a/../nested"), cwd.join("nested"));
         assert_eq!(resolve_lexical(cwd, "./nested"), cwd.join("nested"));
+    }
+
+    #[test]
+    fn stale_rebase_head_does_not_block_observation_while_active_rebase_does() {
+        let dir = std::env::temp_dir().join(format!(
+            "multicc-code-revision-rebase-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .env("GIT_EDITOR", "true")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            status.success()
+        };
+        assert!(git(&["init", "-b", "main"]));
+        assert!(git(&["config", "user.name", "MultiCC Test"]));
+        assert!(git(&["config", "user.email", "test@multicc.invalid"]));
+        fs::write(dir.join("f"), "base\n").unwrap();
+        assert!(git(&["add", "f"]));
+        assert!(git(&["commit", "-m", "init"]));
+        assert!(git(&["checkout", "-b", "feat"]));
+        fs::write(dir.join("f"), "feat\n").unwrap();
+        assert!(git(&["add", "f"]));
+        assert!(git(&["commit", "-m", "feat"]));
+        assert!(git(&["checkout", "main"]));
+        fs::write(dir.join("f"), "main\n").unwrap();
+        assert!(git(&["add", "f"]));
+        assert!(git(&["commit", "-m", "main"]));
+        assert!(git(&["checkout", "feat"]));
+
+        // Start a conflicted rebase: `rebase-merge` exists -> must fail closed.
+        assert!(!git(&["rebase", "main"]));
+        assert_eq!(
+            observe_revision(&dir, DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, 0).err(),
+            Some("code_git_operation".to_string())
+        );
+
+        // Finish the rebase via --continue. Apple Git leaves `.git/REBASE_HEAD`
+        // behind even though the rebase is finished; observation must succeed.
+        fs::write(dir.join("f"), "resolved\n").unwrap();
+        assert!(git(&["add", "f"]));
+        assert!(git(&["rebase", "--continue"]));
+        let head = git_trimmed(&dir, &["rev-parse", "HEAD"]).unwrap();
+        // Ensure a stale REBASE_HEAD is tested on every Git version as well.
+        fs::write(dir.join(".git").join("REBASE_HEAD"), format!("{head}\n")).unwrap();
+        let observed = observe_revision(&dir, DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, 0).unwrap();
+        assert_eq!(observed.head, head);
+        assert!(!observed.dirty);
+
+        // Active MERGE_HEAD still fails closed.
+        fs::write(dir.join(".git").join("MERGE_HEAD"), format!("{head}\n")).unwrap();
+        assert_eq!(
+            observe_revision(&dir, DEFAULT_MAX_BYTES, DEFAULT_MAX_FILES, 0).err(),
+            Some("code_git_operation".to_string())
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

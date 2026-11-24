@@ -348,6 +348,16 @@ test('a code-snapshot refusal carried only in the message surfaces as its stable
   await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'code_index_unsupported', status: 409 });
   assert.deepEqual(f.store.get('task-separation', p.id).lastError, { code: 'code_index_unsupported' });
 });
+test('a native GenericFailure carrying a code_* message lifts both code and 409 status', async t => {
+  for (const raw of [
+    Object.assign(new Error('code_git_operation'), { code: 'GenericFailure' }),
+    Object.assign(new Error('code_git_operation'), { code: 'code_git_operation' }),
+  ]) {
+    const f = await setup(t, { withSeparationBarrier: async () => { throw raw; } }), p = await f.propose();
+    await assert.rejects(f.runtime.separation.decide('a', p.id, 'separate'), { code: 'code_git_operation', status: 409 });
+    assert.deepEqual(f.store.get('task-separation', p.id).lastError, { code: 'code_git_operation' });
+  }
+});
 test('an anchor changed during code capture prevents shell checkout', async t => {
   const f = await setup(t);
   f.ports.withSeparationBarrier = async (input, work) => {
