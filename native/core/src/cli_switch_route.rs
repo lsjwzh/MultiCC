@@ -363,32 +363,8 @@ pub fn prepare(input: &Input) -> Result<Prepared, String> {
 }
 
 pub fn request(input: &str) -> Result<String, String> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Request {
-        #[serde(flatten)]
-        route: Input,
-        #[serde(default)]
-        synchronize_profile: bool,
-    }
-    let request: Request = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
-    let prepared = prepare(&request.route)?;
-    if request.synchronize_profile && prepared.native_session_exists != Some(true) {
-        let managed = request
-            .route
-            .from_provider_id
-            .as_deref()
-            .is_some_and(|provider| !provider.trim().is_empty());
-        return Err(failure(
-            if managed {
-                "CODEX_SESSION_ROLLOUT_NOT_FOUND"
-            } else {
-                "CODEX_SESSION_ROUTE_SOURCE_NOT_FOUND"
-            },
-            "Codex native session rollout was not found",
-        ));
-    }
-    serde_json::to_string(&prepared).map_err(|e| e.to_string())
+    let input: Input = crate::json_lenient::from_str(input).map_err(|e| e.to_string())?;
+    serde_json::to_string(&prepare(&input)?).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -550,5 +526,23 @@ mod tests {
     fn canonical_names_match_the_host_hash_and_prefix_contract() {
         let f = Fixture::new();
         assert!(canonical_home(&f.0, "task-1").ends_with("task-1-7afaa346b4bf92bf9dc2"));
+    }
+
+    #[test]
+    fn profile_synchronization_reports_missing_history_instead_of_failing() {
+        let f = Fixture::new();
+        let raw = serde_json::json!({
+            "cli": "codex",
+            "logicalSessionId": "task-1",
+            "homeDir": f.0,
+            "nativeSessionId": "thread-missing",
+            "fromProviderId": "codex-official",
+            "toProviderId": "chosen-provider",
+            "synchronizeProfile": true,
+        })
+        .to_string();
+        let out: serde_json::Value = serde_json::from_str(&request(&raw).unwrap()).unwrap();
+        assert_eq!(out["nativeSessionExists"], serde_json::Value::Bool(false));
+        assert_eq!(out["synchronized"], serde_json::Value::Bool(false));
     }
 }

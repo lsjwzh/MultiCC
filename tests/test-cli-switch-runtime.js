@@ -1375,9 +1375,23 @@ test('Codex profile preparation copies the requested rollout on the Rust worker'
   fs.appendFileSync(managed, '\nsecond turn');
   await synchronizeCodexProfileRoute({ ...input, fromProviderId: 'managed', toProviderId: null });
   assert.equal(fs.readFileSync(source, 'utf8'), 'first turn\nsecond turn');
+  for (const fromProviderId of [null, 'codex-official']) {
+    const missing = await synchronizeCodexProfileRoute({
+      ...input, nativeSessionId: 'missing', fromProviderId, toProviderId: 'managed',
+    });
+    assert.equal(missing.nativeSessionExists, false);
+    assert.equal(missing.synchronized, false);
+  }
+  const duplicate = path.join(home, '.multicc/codex-homes/old-provider/sessions/2026/11/07/rollout-now-thread-ambig.jsonl');
+  const globalDup = path.join(home, '.codex/sessions/2026/11/07/rollout-now-thread-ambig.jsonl');
+  for (const file of [duplicate, globalDup]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'dup');
+  }
   await assert.rejects(synchronizeCodexProfileRoute({
-    ...input, nativeSessionId: 'missing', fromProviderId: null, toProviderId: 'managed',
-  }), { code: 'CODEX_SESSION_ROUTE_SOURCE_NOT_FOUND' });
+    ...input, logicalSessionId: 's-ambig', nativeSessionId: 'thread-ambig',
+    fromProviderId: 'old-provider', toProviderId: 'managed',
+  }), { code: 'CODEX_SESSION_ROLLOUT_AMBIGUOUS', status: 409, safe: true });
 });
 
 test('ambiguous Rust history preserves the pending choice and a later retry consumes it once', async t => {
