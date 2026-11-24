@@ -491,7 +491,7 @@ pub async fn serve_host_exec(args: &[String]) -> i32 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(all(test, unix))]
