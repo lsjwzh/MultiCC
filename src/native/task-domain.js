@@ -100,4 +100,19 @@ const taskShortCodes = {
   labelWithCode: (id, text) => getNative().taskCodeLabel(id, text, taskShortCode),
   CODE_LEN: 4, CODE_ALPHABET: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
 };
-module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, ...taskShortCodes };
+
+let attributionModePolicy;
+function getAttributionModePolicy() {
+  if (attributionModePolicy) return attributionModePolicy;
+  const native = getNative();
+  const { attributionModes, defaultAttributionMode } = JSON.parse(native.taskRoutingCatalog());
+  attributionModePolicy = {
+    MODES: Object.freeze(attributionModes),
+    DEFAULT_MODE: defaultAttributionMode,
+    normalizeAttributionMode: (value, fallback = defaultAttributionMode) => native.normalizeHostAttributionMode(value, fallback),
+    planAttributionAction: ({ mode, relation, targetTaskId, currentTaskId } = {}) =>
+      native.planHostAttributionAction(mode, relation, targetTaskId, currentTaskId),
+  };
+  return attributionModePolicy;
+}
+module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes };

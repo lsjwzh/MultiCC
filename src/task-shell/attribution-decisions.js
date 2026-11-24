@@ -1,7 +1,7 @@
 'use strict';
 
 const { hash } = require('../native/runtime').taskShellContext;
-const { planAttributionAction } = require('../task-routing/attribution-mode');
+const { planAttributionAction } = require('../native/task-domain').getAttributionModePolicy();
 
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 // A queued apply is a durable request, not a retry loop: it waits for the turn
