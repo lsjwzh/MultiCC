@@ -312,6 +312,20 @@
     } catch (_) { /* best-effort */ }
   }
 
+  // `/api/agy/models` also reports which model agy would run with nothing
+  // pinned (a tiered id such as `gemini-4-neon-high`). Pickable ids are family
+  // names, so this is the only way the default row can say what "默认" means.
+  function agyCurrentModel() {
+    try {
+      const read = root && root.readAgyCurrentSync;
+      if (typeof read !== 'function') return null;
+      const current = read();
+      return current && current.label ? current : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function buildModelChoices(providerId, state) {
     nudgeModelCatalog(state);
     if (state && state.cli === 'pi') return ['', '__custom__'];
@@ -926,7 +940,11 @@
       if (state && state.cli === 'qoder') return localized(state, 'aiConfigDefaultFollowQoder', '默认（跟随 Qoder CN 设置）');
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
-      if (state && state.cli === 'agy') return localized(state, 'aiConfigDefaultFollowAgy', '默认（跟随 Antigravity 配置）');
+      if (state && state.cli === 'agy') {
+        const current = agyCurrentModel();
+        if (current) return `默认 · ${current.label}`;
+        return localized(state, 'aiConfigDefaultFollowAgy', '默认（跟随 Antigravity 配置）');
+      }
       if (state && state.cli === 'pi') return localized(state, 'aiConfigDefaultFollowPi', '默认（跟随 Pi 配置）');
       if (state && state.cli === 'gemini') return localized(state, 'aiConfigDefaultFollowGemini', '默认（跟随 Gemini 配置）');
       if (state && state.cli === 'commandcode') return '默认（DeepSeek Flash）';

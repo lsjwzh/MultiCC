@@ -915,7 +915,7 @@ fn relay_share_builds_the_code_from_the_host_answer() {
     assert_eq!(
         decode_code(body["code"].as_str().unwrap()),
         json!({
-            "v": 2,
+            "v": 3,
             "kind": "multicc-relay",
             "name": "Foo · 远程共享",
             "appType": "claude",
@@ -923,7 +923,8 @@ fn relay_share_builds_the_code_from_the_host_answer() {
             "model": "m1",
             "models": ["m1", "m2"],
             "relayShareId": "share-1",
-            "authToken": "cred-1"
+            "authToken": "cred-1",
+            "mode": "proxy"
         })
     );
     let create = gateway
@@ -940,6 +941,7 @@ fn relay_share_builds_the_code_from_the_host_answer() {
             "providerName": "Foo",
             "publicBaseUrl": "https://example.com",
             "relayBaseUrl": "https://example.com/claude-proxy/p1/remote",
+            "mode": "proxy",
             "token": "tok",
             "label": "l"
         })
@@ -968,6 +970,46 @@ fn relay_share_builds_the_code_from_the_host_answer() {
     assert_eq!(
         response.json(),
         json!({ "error": "relay share create failed" })
+    );
+}
+
+#[test]
+fn relay_share_mode_is_chosen_at_share_time() {
+    let gateway = Gateway::start(
+        "relay-mode",
+        json!({ "providers": { "answers": {
+            "relayShareFacts": { "ok": true, "provider": { "name": "Foo" }, "summary": { "model": "m1" } },
+            "relayShareCreate": { "ok": true, "share": { "id": "share-1" }, "credential": "cred-1" }
+        } } }),
+    );
+    let response = gateway.send(
+        "POST",
+        "/api/providers/claude/p1/relay-share",
+        &json!({ "publicBaseUrl": "https://example.com", "token": "tok", "mode": "cli" }),
+    );
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = response.json();
+    assert_eq!(
+        decode_code(body["code"].as_str().unwrap())["mode"],
+        json!("cli")
+    );
+    let create = gateway
+        .provider_calls()
+        .into_iter()
+        .find(|call| call["op"] == "relayShareCreate")
+        .unwrap();
+    assert_eq!(create["mode"], json!("cli"));
+
+    // 不认识的分享方式必须在建记录之前拒掉，不能默默降级成反代。
+    let response = gateway.send(
+        "POST",
+        "/api/providers/claude/p1/relay-share",
+        &json!({ "publicBaseUrl": "https://example.com", "token": "tok", "mode": "bogus" }),
+    );
+    assert_eq!(response.status, 400, "{}", response.body);
+    assert_eq!(
+        response.json(),
+        json!({ "error": "mode must be \"proxy\" or \"cli\"" })
     );
 }
 
@@ -1068,7 +1110,7 @@ fn relay_shares_list_and_revoke_and_copy() {
     assert_eq!(
         decode_code(body["code"].as_str().unwrap()),
         json!({
-            "v": 2,
+            "v": 3,
             "kind": "multicc-relay",
             "name": "Foo · 远程共享",
             "appType": "claude",
@@ -1076,7 +1118,8 @@ fn relay_shares_list_and_revoke_and_copy() {
             "model": "m1",
             "models": ["m1"],
             "relayShareId": "s1",
-            "authToken": "cred-1"
+            "authToken": "cred-1",
+            "mode": "proxy"
         })
     );
 
@@ -1148,7 +1191,7 @@ fn relay_import_code_rebuilds_only_relay_lines() {
     assert_eq!(
         decode_code(body["code"].as_str().unwrap()),
         json!({
-            "v": 2,
+            "v": 3,
             "kind": "multicc-relay",
             "name": "Foo",
             "appType": "claude",
@@ -1156,7 +1199,8 @@ fn relay_import_code_rebuilds_only_relay_lines() {
             "model": "m1",
             "models": ["m1"],
             "relayShareId": "abcdefghijklmnop",
-            "authToken": token
+            "authToken": token,
+            "mode": "proxy"
         })
     );
 

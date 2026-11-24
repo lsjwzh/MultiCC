@@ -1416,11 +1416,13 @@
       ? (local.email ? `${t('airOfficialAcctSignedIn')} · ${local.email}` : t('airOfficialAcctSignedIn'))
       : `${t('airOfficialAcctSignedOut')} · ${t('airOfficialAcctAgyNoLocal')}`));
     if (localInUse) localRow.append(make('span', t('airOfficialAcctAgyLocalActive'), 'default'));
-    if (!localInUse) {
-      const useLocal = button(t('airOfficialAcctAgyUseLocal'), () => void deactivateAgyAccount());
-      useLocal.style.marginLeft = 'auto';
-      localRow.append(useLocal);
+    const localOps = make('div', null, 'air-provider-card-actions');
+    localOps.style.marginLeft = 'auto';
+    if (local.loggedIn) {
+      localOps.append(button(t('airOfficialAcctAgyShareLocal'), ev => void shareLocalAgyAccount(ev.currentTarget)));
     }
+    if (!localInUse) localOps.append(button(t('airOfficialAcctAgyUseLocal'), () => void deactivateAgyAccount()));
+    if (localOps.childElementCount) localRow.append(localOps);
     rows.push(localRow);
     if (!agyState.accounts.length) {
       rows.push(make('p', t('airOfficialAcctAgyEmpty'), 'admin-empty'));
@@ -1638,6 +1640,23 @@
     } catch (error) { context?.notice(t('airOfficialAcctFailed', { message: error.message })); }
   }
 
+  // 本机 `~/.gemini` 不是可编号账号，借道分享必须绑定账号 id：先导入成独立账号，再直接打开分享弹窗。
+  async function shareLocalAgyAccount(trigger) {
+    if (trigger) trigger.disabled = true;
+    try {
+      const payload = await context.api('/api/agy/accounts/import', { label: '' }, 'POST');
+      applyAgyResponse(payload);
+      const created = payload && payload.created;
+      if (!created || !created.id) throw new Error(t('airOfficialAcctAgyShareLocalFailed'));
+      root.MultiCCAirProviderAdvanced?.prepare(context);
+      root.shareAgyAccount?.(created.id, created.label || t('airOfficialAcctAgyLocal'));
+    } catch (error) {
+      context?.notice(t('airOfficialAcctFailed', { message: error.message }));
+    } finally {
+      if (trigger) trigger.disabled = false;
+    }
+  }
+
   function openRemoteAgyModal() {
     const overlay = make('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px';
@@ -1651,16 +1670,10 @@
       elInput.style.cssText = ctlStyle;
       return elInput;
     };
-    const machineSel = document.createElement('select'); machineSel.style.cssText = ctlStyle;
-    const machineHint = make('div'); machineHint.style.cssText = 'font-size:11px;color:#b45309;line-height:1.5'; machineHint.hidden = true;
-    const accountSel = document.createElement('select'); accountSel.style.cssText = ctlStyle;
-    const accountHint = make('div'); accountHint.style.cssText = 'font-size:11px;color:#b45309;line-height:1.5'; accountHint.hidden = true;
     const labelIn = input(t('airOfficialAcctLabelPlaceholder'));
     const sshIn = input(t('airOfficialAcctAgyRemoteSshLabel'));
     const portIn = input(t('airOfficialAcctAgyRemotePortLabel'), 'number');
     const keyIn = input(t('airOfficialAcctAgyRemoteKeyLabel'));
-    const manualHostIdIn = input(t('airOfficialAcctAgyHostAccountIdLabel'));
-    manualHostIdIn.maxLength = 16;
     const binIn = input(t('airOfficialAcctAgyRemoteBinLabel'));
     const homeIn = input(t('airOfficialAcctAgyRemoteHomeLabel'));
     const modeSel = document.createElement('select'); modeSel.style.cssText = ctlStyle;
@@ -1671,100 +1684,24 @@
     adv.style.cssText = 'font-size:12px;border-top:1px solid var(--line, #d8e5f2);padding-top:6px';
     const advSum = document.createElement('summary'); advSum.textContent = t('airOfficialAcctAgyHostAdvanced'); advSum.style.cursor = 'pointer';
     const advBox = make('div'); advBox.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-top:6px';
-    advBox.append(manualHostIdIn, binIn, homeIn);
+    advBox.append(binIn, homeIn);
     adv.append(advSum, advBox);
     const errEl = make('div'); errEl.style.cssText = 'font-size:12px;color:#d1242f';
-    let hostAccounts = [];
-
-    const syncPicked = () => {
-      const picked = hostAccounts.find(a => a.id === accountSel.value);
-      if (picked && !labelIn.value.trim()) labelIn.value = picked.label || picked.email || '';
-    };
-    const prefillSsh = (machineId) => {
-      if (!machineId || sshIn.value.trim()) return;
-      const prev = (agyState?.accounts || []).find(a => a.kind === 'remote' && a.remote && a.remote.hostMachineId === machineId);
-      if (!prev) return;
-      if (prev.remote.sshTarget) sshIn.value = prev.remote.sshTarget;
-      if (prev.remote.sshPort && !portIn.value.trim()) portIn.value = String(prev.remote.sshPort);
-      if (prev.remote.sshIdentityFile && !keyIn.value.trim()) keyIn.value = prev.remote.sshIdentityFile;
-    };
-    const loadHostAccounts = async (machineId) => {
-      hostAccounts = [];
-      accountSel.innerHTML = '';
-      if (!machineId) { accountSel.disabled = true; accountHint.hidden = true; return; }
-      accountSel.disabled = true; accountHint.hidden = false; accountHint.textContent = t('airOfficialAcctAgyHostAccountLoading');
-      try {
-        const data = await context.api(`/api/machines/${encodeURIComponent(machineId)}/proxy/api/agy/accounts`);
-        hostAccounts = (Array.isArray(data && data.accounts) ? data.accounts : [])
-          .filter(a => a && a.kind !== 'remote' && /^[a-f0-9]{16}$/.test(String(a.id || '')));
-        accountSel.innerHTML = '';
-        if (!hostAccounts.length) { accountHint.hidden = false; accountHint.textContent = t('airOfficialAcctAgyHostAccountEmpty'); return; }
-        for (const a of hostAccounts) {
-          const opt = document.createElement('option');
-          opt.value = a.id;
-          opt.textContent = [
-            a.label || a.id.slice(0, 8),
-            a.email || '',
-            a.loggedIn ? t('airOfficialAcctSignedIn') : t('airOfficialAcctSignedOut'),
-            a.egressBinding && a.egressBinding.profileId ? `🌐 ${a.egressBinding.profileId}` : '',
-          ].filter(Boolean).join(' · ');
-          accountSel.append(opt);
-        }
-        accountSel.disabled = false; accountHint.hidden = true;
-        syncPicked();
-      } catch (error) {
-        accountHint.hidden = false; accountHint.textContent = t('airOfficialAcctFailed', { message: error.message });
-      }
-    };
-    const loadMachines = async () => {
-      machineSel.innerHTML = '';
-      try {
-        const data = await context.api('/api/machines');
-        const peers = Array.isArray(data && data.machines) ? data.machines : [];
-        if (!peers.length) {
-          machineSel.disabled = true; accountSel.disabled = true;
-          machineHint.hidden = false; machineHint.textContent = t('airOfficialAcctAgyHostMachineNone');
-          return;
-        }
-        machineHint.hidden = true;
-        for (const m of peers) {
-          const opt = document.createElement('option');
-          opt.value = m.id; opt.textContent = m.name + (m.origin ? ` (${m.origin})` : '');
-          machineSel.append(opt);
-        }
-        machineSel.disabled = false;
-        prefillSsh(machineSel.value);
-        await loadHostAccounts(machineSel.value);
-      } catch (error) {
-        machineSel.disabled = true;
-        machineHint.hidden = false; machineHint.textContent = t('airOfficialAcctFailed', { message: error.message });
-      }
-    };
-    machineSel.onchange = () => { prefillSsh(machineSel.value); void loadHostAccounts(machineSel.value); };
-    accountSel.onchange = syncPicked;
-
-    const acctHeader = make('div');
-    acctHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:6px';
-    acctHeader.append(make('label', t('airOfficialAcctAgyHostAccountLabel')), button(t('refresh'), () => void loadHostAccounts(machineSel.value)));
     const foot = make('div', null, 'air-provider-card-actions'); foot.style.justifyContent = 'flex-end';
     const close = () => overlay.remove();
     foot.append(
       button(t('airOfficialAcctCancel'), close),
       button(t('airOfficialAcctAgyRemoteSave'), async () => {
         errEl.textContent = '';
+        const sshTarget = sshIn.value.trim();
+        if (!sshTarget) { errEl.textContent = t('airOfficialAcctAgyRemoteSshRequired'); return; }
         const portVal = portIn.value.trim();
-        const picked = hostAccounts.find(a => a.id === accountSel.value);
-        const hostAccountId = manualHostIdIn.value.trim() || (picked && picked.id) || '';
         const remote = {
-          sshTarget: sshIn.value.trim(),
+          sshTarget,
           ...(portVal ? { sshPort: Number(portVal) } : {}),
           ...(keyIn.value.trim() ? { sshIdentityFile: keyIn.value.trim() } : {}),
           ...(homeIn.value.trim() ? { remoteHome: homeIn.value.trim() } : {}),
           ...(binIn.value.trim() ? { remoteAgyBin: binIn.value.trim() } : {}),
-          ...(machineSel.value && hostAccountId ? { hostMachineId: machineSel.value } : {}),
-          ...(hostAccountId ? { hostAccountId } : {}),
-          ...(picked && picked.label ? { hostAccountLabel: picked.label } : {}),
-          ...(picked && picked.egressBinding && picked.egressBinding.profileId ? { hostEgressProfile: picked.egressBinding.profileId } : {}),
           fileMode: modeSel.value || 'mutagen',
         };
         try {
@@ -1780,8 +1717,6 @@
     card.append(
       make('h3', t('airOfficialAcctAgyRemoteTitle')),
       make('p', t('airOfficialAcctAgyRemoteDesc')),
-      make('label', t('airOfficialAcctAgyHostMachineLabel')), machineSel, machineHint,
-      acctHeader, accountSel, accountHint,
       labelIn, sshIn, portIn, keyIn,
       make('label', t('airOfficialAcctAgyRemoteModeLabel')), modeSel,
       adv,
@@ -1790,7 +1725,6 @@
     overlay.append(card);
     overlay.onclick = e => { if (e.target === overlay) close(); };
     document.body.append(overlay);
-    void loadMachines();
   }
 
   async function startRemoteAgyLogin(id, label) {

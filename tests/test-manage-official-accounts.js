@@ -403,3 +403,32 @@ test('with no egress profile the sheet says so and points at the isolation plugi
   open.onclick();
   assert.deepEqual(h.opened, ['/air?view=plugins']);
 });
+
+test('反重力远端账号只认「手填 SSH」和「导入分享码」两条路，Host 不再来自多电脑', () => {
+  const sources = {
+    air: fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8'),
+    manage: fs.readFileSync(SOURCE_PATH, 'utf8'),
+  };
+  for (const [name, source] of Object.entries(sources)) {
+    assert.doesNotMatch(source, /\/api\/machines/, `${name}: 远端 Host 不能从多电脑取`);
+    assert.doesNotMatch(source, /hostMachineId/, `${name}: 不再写 hostMachineId`);
+    assert.doesNotMatch(source, /manualHostAccountId|manualHostIdIn/, `${name}: 不再允许手填 Host 账号 ID`);
+  }
+  // SSH 目标是手填模式唯一的必填项
+  assert.match(sources.air, /if \(!sshTarget\) \{ errEl\.textContent = t\('airOfficialAcctAgyRemoteSshRequired'\); return; \}/);
+  assert.match(sources.manage, /if \(!sshTarget\) \{ st\.textContent = tr\('airOfficialAcctAgyRemoteSshRequired'\); st\.className = 'status-text err'; return; \}/);
+  // 本机 `~/.gemini` 一键分享 = 先 import 拿到新账号 id，再打开分享弹窗
+  assert.match(sources.air, /async function shareLocalAgyAccount/);
+  assert.match(sources.air, /context\.api\('\/api\/agy\/accounts\/import', \{ label: '' \}, 'POST'\)/);
+  assert.match(sources.air, /root\.shareAgyAccount\?\.\(created\.id/);
+  assert.match(sources.manage, /async function agyShareLocal/);
+  assert.match(sources.manage, /json: \{ label: '' \}/);
+  assert.match(sources.manage, /window\.shareAgyAccount\(created\.id/);
+  assert.match(sources.manage, /data-act="agy-share-local"/);
+});
+
+test('反重力 import 路由把新建账号回传给前端（一键分享依赖 created.id）', () => {
+  const rust = fs.readFileSync(path.join(ROOT, 'native', 'gateway', 'src', 'app', 'agy_accounts.rs'), 'utf8');
+  assert.match(rust, /Route::ImportPost => match store::import_account\(&home, &label\(\)\) \{\s+Ok\(created\)/);
+  assert.match(rust, /obj\.insert\("created"\.to_string\(\), created\)/);
+});

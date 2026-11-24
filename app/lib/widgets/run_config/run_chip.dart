@@ -16,6 +16,7 @@ import '../../models/message.dart';
 import '../../providers/chat_provider.dart';
 import '../../providers/session_manager.dart';
 import '../../services/codex_models_service.dart';
+import '../../services/agy_models_service.dart';
 import '../../services/manage_service.dart';
 import '../../services/codebuddy_models_service.dart';
 import '../../services/commandcode_grok_models_service.dart';
@@ -124,6 +125,10 @@ class _RunChipState extends State<RunChip> {
       if (cli == SessionCli.grok) {
         await GrokModelsService(settings: widget.settings).load();
       }
+      // agy 的「默认模型」由账号里的当前档位决定，只有目录回报才知道。
+      if (cli == SessionCli.agy) {
+        await AgyModelsService(settings: widget.settings).load();
+      }
       final d = await ManageService(
         settings: widget.settings,
       ).fetchProvidersForCli(cli.name);
@@ -173,7 +178,9 @@ class _RunChipState extends State<RunChip> {
   }
 
   String _modelLabel(SessionCli cli, SessionCliConfig? s) {
-    if (s == null) return '默认';
+    if (s == null) {
+      return cli == SessionCli.agy ? AgyModelsService.defaultLabel : '默认';
+    }
     String? model;
     if (s.effectiveModel != null && s.effectiveModel!.isNotEmpty) {
       model = s.effectiveModel;
@@ -191,7 +198,9 @@ class _RunChipState extends State<RunChip> {
         }
       }
     }
-    if (model == null || model.isEmpty) return '默认';
+    if (model == null || model.isEmpty) {
+      return cli == SessionCli.agy ? AgyModelsService.defaultLabel : '默认';
+    }
     if (cli.isCodexFamily) return CodexModelsService.labelFor(model);
     return modelDisplayName(cli, model, aliasMap: _aliasMapFor(s.provider));
   }

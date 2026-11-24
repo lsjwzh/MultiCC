@@ -37,7 +37,22 @@ test('provider relay shares are scoped, hashed, durable, revocable and usage-acc
     relayBaseUrl: 'https://relay.example/claude-proxy/glm-provider/remote',
     token: 'second-manual-secret',
     label: 'home mac',
+    mode: 'cli',
   }));
+  // 分享方式在分享时定下并落盘：重新编码分享码、列表展示都得读同一个值。
+  assert.equal(first.share.mode, 'proxy', '未选方式的老调用按反代保存');
+  assert.equal(second.share.mode, 'cli');
+  await assert.rejects(
+    () => store.create({
+      appType: 'claude',
+      providerId: 'glm-provider',
+      publicBaseUrl: 'https://relay.example',
+      relayBaseUrl: 'https://relay.example/claude-proxy/glm-provider/remote',
+      token: 'third-secret',
+      mode: 'bogus',
+    }),
+    error => error.code === 'RELAY_MODE_INVALID' && /proxy or cli/.test(error.message),
+  );
 
   assert.equal(parseCredential(first.credential).id, first.share.id);
   assert.deepEqual(routeTarget('/claude-proxy/glm-provider/remote/v1/messages'), {
@@ -239,6 +254,17 @@ function relayFixture(t) {
   return { root, file: path.join(root, 'shares.json') };
 }
 const jsonValue = value => JSON.parse(JSON.stringify(value));
+// 冻结的旧实现还不知道分享方式字段；比对时必须先剥掉，但每条记录都得带上它。
+const recordsWithoutMode = records => records.map(record => {
+  const { mode, ...rest } = record;
+  assert.ok(mode === 'proxy' || mode === 'cli', 'every record reports a share mode');
+  return rest;
+});
+const envelopeWithoutMode = envelope => {
+  const { mode, ...share } = envelope.share;
+  assert.ok(mode === 'proxy' || mode === 'cli', 'the copied envelope reports a share mode');
+  return { ...envelope, share };
+};
 
 test('native relay parser matches the old URL and credential boundary contracts', () => {
   const segments = ['p', 'my%20provider', '%2F', '%00', '%E4%B8%AD', '%F0%9F%98%80', '%ED%A0%80', '%FF', '%', '..', '%2e', 'x%2Fy', "a!b'()", ''];
@@ -270,21 +296,21 @@ test('legacy and native owners mutually read sealed credentials, usage, revocati
   disk.data[0].future = { '10': 'ten', '2': 'two', surrogate: '\ud800', nested: [null, '😀'] };
   fs.writeFileSync(file, JSON.stringify(disk));
   const native = createProviderRelayShareStore({ file, now });
-  assert.deepEqual(await native.getCredential(first.share.id), old.getCredential(first.share.id));
-  assert.deepEqual(await native.list(), jsonValue(old.list()));
+  assert.deepEqual(envelopeWithoutMode(await native.getCredential(first.share.id)), old.getCredential(first.share.id));
+  assert.deepEqual(recordsWithoutMode(await native.list()), jsonValue(old.list()));
   assert.equal((await native.authorize({ credential: first.credential,
     pathname: '/claude-proxy/%E6%8F%90%E4%BE%9B%E6%96%B9%F0%9F%98%80/remote/v1' })).ok, true);
   const second = await native.create(relayInput({ token: 'native-created-fixture', appType: 'codex', providerId: 'native' }));
   const rollback = legacyRelay.createProviderRelayShareStore({ file, now });
-  assert.deepEqual(rollback.getCredential(second.share.id), await native.getCredential(second.share.id));
-  assert.deepEqual(rollback.list(), await native.list());
+  assert.deepEqual(rollback.getCredential(second.share.id), envelopeWithoutMode(await native.getCredential(second.share.id)));
+  assert.deepEqual(rollback.list(), recordsWithoutMode(await native.list()));
   assert.equal(rollback.authorize({ credential: second.credential, pathname: '/codex-proxy/native/responses' }).ok, true);
   rollback.revoke(first.share.id);
   const restart = createProviderRelayShareStore({ file, now });
   assert.equal((await restart.getCredential(first.share.id)).code, 'revoked');
   assert.equal((await restart.authorize({ credential: first.credential,
     pathname: '/claude-proxy/%E6%8F%90%E4%BE%9B%E6%96%B9%F0%9F%98%80/remote/v1' })).code, 'relay_share_inactive');
-  assert.deepEqual(await restart.list(), rollback.list());
+  assert.deepEqual(recordsWithoutMode(await restart.list()), rollback.list());
   assert.equal(await restart.revokeProvider('codex', 'native'), 1);
   assert.equal((await restart.authorize({ credential: second.credential, pathname: '/codex-proxy/native/responses' })).ok, false);
   disk = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -325,7 +351,13 @@ test('raw legacy arrays, damaged primaries and rolling backups have identical re
       assert.throws(() => createProviderRelayShareStore({ file, ...options }), error => error.name === expected.name, `case ${i}`);
     } else {
       const store = createProviderRelayShareStore({ file, ...options });
-      assert.deepEqual(await store.list(), expected, `case ${i}`);
+      // 冻结的旧实现还没有分享方式字段；其余字段必须逐字段一致。
+      const withoutMode = records => records.map(record => {
+        const { mode, ...rest } = record;
+        assert.ok(mode === 'proxy' || mode === 'cli', 'every record reports a share mode');
+        return rest;
+      });
+      assert.deepEqual(withoutMode(await store.list()), expected, `case ${i}`);
       if (expected.length) assert.equal((await store.getCredential(first.share.id)).credential, first.credential);
     }
   }

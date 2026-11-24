@@ -332,6 +332,23 @@ fn sanitize_relay_models(raw: Option<&Value>) -> Vec<Value> {
     out
 }
 
+/// The lender's "model in effect" marker, passed through for display only.
+fn sanitize_relay_current(raw: Option<&Value>) -> Option<Value> {
+    let item = raw?.as_object()?;
+    let id = item
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.len() <= 100 && !s.chars().any(char::is_control))?;
+    let label = item
+        .get("label")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.len() <= 160 && !s.chars().any(char::is_control))
+        .unwrap_or(id);
+    Some(json!({ "model": id, "label": label }))
+}
+
 /// 通过借道分享码向 Host 透传查询反重力模型目录（`GET <relayBaseUrl>/models[?refresh=1]`）。
 ///
 /// 禁用 HTTP 重定向跟随（防 `Authorization` 外泄），把 `401/403` 与跳向 `/login`
@@ -339,7 +356,7 @@ fn sanitize_relay_models(raw: Option<&Value>) -> Vec<Value> {
 pub async fn fetch_relay_models(
     target: &RemoteAgyTarget,
     refresh: bool,
-) -> Result<Vec<Value>, RelayCatalogError> {
+) -> Result<(Vec<Value>, Option<Value>), RelayCatalogError> {
     let base_url = target
         .relay_base_url
         .as_deref()
@@ -398,7 +415,7 @@ pub async fn fetch_relay_models(
             .to_string();
         return Err(RelayCatalogError::Unavailable(detail));
     }
-    Ok(models)
+    Ok((models, sanitize_relay_current(body.get("current"))))
 }
 
 /// 探测借道分享码连通性（`GET <relayBaseUrl>/ping`）。
@@ -701,6 +718,7 @@ exit 0
                     { "model": "  ", "label": "Blank" },
                     { "model": "claude-sonnet-5-5" }
                 ],
+                "current": { "model": "gemini-4-neon-high", "label": "Gemini 4 Neon (High)" },
                 "source": "cli",
                 "cached": false
             })
@@ -718,13 +736,17 @@ exit 0
             "relayAuthToken": "mcr1.0123456789abcdef.secret9999",
         }))
         .unwrap();
-        let models = fetch_relay_models(&target, true).await.unwrap();
+        let (models, current) = fetch_relay_models(&target, true).await.unwrap();
         let _ = srv.await;
         assert_eq!(models.len(), 2);
         assert_eq!(models[0]["model"], "gemini-4-neon");
         assert_eq!(models[0]["label"], "Gemini 4 Neon");
         assert_eq!(models[1]["model"], "claude-sonnet-5-5");
         assert_eq!(models[1]["label"], "claude-sonnet-5-5");
+        assert_eq!(
+            current,
+            Some(json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"}))
+        );
 
         // 302 /login -> Revoked
         let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();

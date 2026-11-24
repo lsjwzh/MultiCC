@@ -196,6 +196,14 @@ fn public(record: &V) -> V {
     ] {
         fields.push((key, get(record, key).clone()));
     }
+    // 分享方式：记录创建时写定；旧版记录没有该字段，按当时唯一可能的语义补全。
+    let mode = match text(get(record, "mode")).as_str() {
+        "cli" => "cli",
+        "proxy" => "proxy",
+        _ if text(get(record, "appType")) == "agy" => "cli",
+        _ => "proxy",
+    };
+    fields.push(("mode", V::string(mode)));
     let revoked = js::truthy(get(record, "revokedAt"));
     fields.push((
         "status",
@@ -476,6 +484,13 @@ impl Store {
         if app != "claude" && app != "codex" && app != "agy" {
             return Err("RELAY_TYPE_INVALID: relay share appType is invalid".into());
         }
+        // 分享方式在创建时写定并随分享码下发；agy 没有 HTTP 反代，固定远程 CLI。
+        let mode = match clean(get(input, "mode")).to_string_lossy().as_str() {
+            "cli" => "cli",
+            "" | "proxy" => "proxy",
+            _ => return Err("RELAY_MODE_INVALID: relay share mode must be proxy or cli".into()),
+        };
+        let mode = if app == "agy" { "cli" } else { mode };
         if provider.is_empty() || provider.len() > 256 {
             return Err("RELAY_PROVIDER_INVALID: relay share provider is invalid".into());
         }
@@ -517,6 +532,7 @@ impl Store {
             ("label", label),
             ("publicBaseUrl", V::String(base)),
             ("relayBaseUrl", V::String(relay)),
+            ("mode", V::string(mode)),
             ("tokenSalt", V::string(&salt)),
             ("tokenHash", V::string(&digest)),
             ("tokenFingerprint", V::string(&fingerprint)),

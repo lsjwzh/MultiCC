@@ -396,6 +396,8 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             payload.insert("providerName".into(), json!(acct_label));
             payload.insert("publicBaseUrl".into(), json!(urls.base));
             payload.insert("relayBaseUrl".into(), json!(urls.relay_base_url));
+            // 反重力没有 HTTP 反代，分享方式固定为远程 CLI，随分享码一起下发。
+            payload.insert("mode".into(), json!("cli"));
             if let Some(token) = body.get("token") {
                 payload.insert("token".into(), token.clone());
             }
@@ -422,6 +424,7 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
                     &[],
                     share_id,
                     credential,
+                    "cli",
                 );
                 return express::json(
                     ctx,
@@ -519,14 +522,14 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")])
         }
         Route::ImportPost => match store::import_account(&home, &label()) {
-            Ok(_) => {
+            Ok(created) => {
                 invalidate_spawn_caches().await;
-                express::json(
-                    ctx,
-                    200,
-                    &state_with_mutagen(&home).await,
-                    &[("Cache-Control", "no-store")],
-                )
+                // 与 create / create_remote 保持一致，回传 `created`，前端「导入并分享」要靠它拿到新账号 id。
+                let mut out = state_with_mutagen(&home).await;
+                if let Some(obj) = out.as_object_mut() {
+                    obj.insert("created".to_string(), created);
+                }
+                express::json(ctx, 200, &out, &[("Cache-Control", "no-store")])
             }
             Err(error) => failure(400, error),
         },

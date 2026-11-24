@@ -23,10 +23,30 @@ function parseRelayShareCode(raw) {
   if (payload.appType !== 'claude' && payload.appType !== 'codex' && payload.appType !== 'agy') return { error: '分享码 appType 无效' };
   if (!/^https?:\/\//.test(String(payload.baseUrl || ''))) return { error: '分享码缺少 baseUrl' };
   if (!String(payload.authToken || '').trim()) return { error: '分享码缺少安全凭据' };
-  return { payload };
+  // 分享方式由出借方在生成分享码时选定（v3 起）。agy 没有 HTTP 反代，只能是远程 CLI。
+  if (payload.mode !== undefined && payload.mode !== 'proxy' && payload.mode !== 'cli') {
+    return { error: '分享码的分享方式无效' };
+  }
+  let mode;
+  if (payload.appType === 'agy') mode = 'cli';
+  else if (payload.mode === 'cli' || payload.mode === 'proxy') mode = payload.mode;
+  return { payload: mode ? { ...payload, mode } : payload };
 }
 
-function relayProviderInput(payload, opts = {}) {
+// 分享方式的中文说明；提示与导入共用一份，避免两处措辞漂移。
+function relayModeLabel(mode) {
+  if (mode === 'cli') return '远程 CLI 分享';
+  return '反代分享';
+}
+
+function relayModeHint(mode) {
+  return mode === 'cli'
+    ? '对方免装 Claude / Codex CLI：由出借方运行原装 CLI，文件读写与命令回调到本机真机执行。'
+    : '对方本机照常安装 CLI：API 请求经出借方代理转发，只共享这一条 AI 线路。';
+}
+
+// 分享码已经写明分享方式；导入端不再自行决定，直接按码建线路。
+function relayProviderInput(payload) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const models = (Array.isArray(source.models) ? source.models : [])
     .map(value => String(value || '').trim())
@@ -41,7 +61,7 @@ function relayProviderInput(payload, opts = {}) {
     baseUrl: source.baseUrl,
     authToken: source.authToken,
     ...(model ? { model, models: models.slice(0, 100) } : {}),
-    ...(opts && opts.cliRelay === true ? { cliRelay: true } : {}),
+    ...(source.mode === 'cli' ? { cliRelay: true } : {}),
   };
 }
 
@@ -187,7 +207,7 @@ function manageRelayShares(appType = '', providerId = '') {
             <span style="font-size:11px;color:${share.status === 'active' ? '#3fb950' : '#8b949e'}">${share.status === 'active' ? '有效' : '已撤销'}</span>
           </div>
           <div style="font-size:11px;color:var(--faint);line-height:1.65;margin-top:5px;word-break:break-all">
-            ${escapeHtml(share.appType)} · ${escapeHtml(share.providerName || share.providerId)}<br>
+            ${escapeHtml(share.appType)} · ${escapeHtml(share.providerName || share.providerId)} · ${escapeHtml(relayModeLabel(share.mode))}<br>
             地址：${escapeHtml(share.relayBaseUrl)}<br>
             指纹：${escapeHtml(share.tokenFingerprint)} · 创建：${escapeHtml(_relayDate(share.createdAt))}<br>
             访问：${Number(share.accessCount) || 0} 次 · 最后使用：${escapeHtml(_relayDate(share.lastUsedAt))}
@@ -226,6 +246,17 @@ function shareRelayProvider(appType, id) {
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">共享到其他设备 · ${escapeHtml(p.name)}</div>
       <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:10px">系统会自动生成这次分享专用的安全凭据。对方只能使用这条 AI 线路，不能看到你的上游密钥；以后可单独查看使用次数或撤销。</div>
+      <div style="margin-bottom:10px">
+        <div style="font-size:12px;color:var(--faint);margin-bottom:4px">分享方式（写进分享码，接收方导入时不用再选）</div>
+        <label style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid #30363d;border-radius:6px;margin-bottom:6px;cursor:pointer">
+          <input type="radio" name="relay-mode" value="proxy" style="margin-top:2px">
+          <span style="font-size:12px;color:#c9d1d9"><strong>反代分享</strong><br><span style="color:var(--faint)">接收方本机照常安装 CLI；API 请求经本机代理转发，只共享这一条 AI 线路。</span></span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid #30363d;border-radius:6px;cursor:pointer">
+          <input type="radio" name="relay-mode" value="cli" style="margin-top:2px">
+          <span style="font-size:12px;color:#c9d1d9"><strong>远程 CLI 分享</strong><br><span style="color:var(--faint)">接收方免装 CLI：由本机运行原装 CLI，文件读写与命令回调到接收方真机执行。</span></span>
+        </label>
+      </div>
       <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">链接备注（建议填写接收设备或用途）</div>
         <input data-k="label" type="text" maxlength="100" placeholder="例如：办公室 Mac" autocomplete="off" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>
       <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">其他设备访问本机时使用的地址</div>
@@ -244,6 +275,13 @@ function shareRelayProvider(appType, id) {
   const codeEl = overlay.querySelector('[data-k="code"]');
   const st = overlay.querySelector('[data-k="status"]');
   let shareCredential = _newRelayCredential();
+  // 默认跟这条线路当前的用法一致：已经是远程 CLI 线路就默认远程 CLI 分享。
+  const initialMode = p.cliRelay === true ? 'cli' : 'proxy';
+  overlay.querySelectorAll('input[name="relay-mode"]').forEach(el => { el.checked = el.value === initialMode; });
+  const selectedMode = () => {
+    const picked = overlay.querySelector('input[name="relay-mode"]:checked');
+    return picked && picked.value === 'cli' ? 'cli' : 'proxy';
+  };
   const hint = overlay.querySelector('[data-k="network-hint"]');
   const updateHint = () => multiccMountExternalAccessHint(hint, sel.value === '__custom' ? customEl.value : sel.value);
   updateHint();
@@ -271,7 +309,7 @@ function shareRelayProvider(appType, id) {
     const base = sel.value === '__custom' ? customEl.value : sel.value;
     try {
       const d = await providerApi.json(`/api/providers/${encodeURIComponent(appType)}/${encodeURIComponent(id)}/relay-share`, {
-        method: 'POST', json: { publicBaseUrl: String(base || '').trim(), token: shareCredential, label: labelInput.value.trim() },
+        method: 'POST', json: { publicBaseUrl: String(base || '').trim(), token: shareCredential, label: labelInput.value.trim(), mode: selectedMode() },
       });
       shareCredential = _newRelayCredential();
       codeEl.value = d.code;
@@ -287,6 +325,7 @@ function shareAgyAccount(accountId, accountLabel) {
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">反重力借道分享 · ${escapeHtml(displayName)}</div>
       <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:10px">生成独立可撤销的反重力分享码。对方免装 agy、免配 SSH 即可直接使用此账号，流量自动锁定本 Host 绑定的出口 IP；命令与文件读写仍在对方真机执行，绝不暴露你的 VPS 权限或 OAuth 凭据。</div>
+      <div style="font-size:12px;color:#c9d1d9;padding:8px 10px;border:1px solid #30363d;border-radius:6px;margin-bottom:10px">分享方式：<strong>远程 CLI 分享</strong><br><span style="color:var(--faint)">反重力没有 HTTP 反代通道，只能以远程 CLI 方式借道；分享码里已写定，对方导入即生效。</span></div>
       <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">链接备注（建议填写接收设备或用途）</div>
         <input data-k="label" type="text" maxlength="100" placeholder="例如：办公室 Mac / 同事试用" autocomplete="off" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>
       <label style="display:block;margin-bottom:10px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">其他设备访问本机时使用的地址</div>
@@ -332,7 +371,7 @@ function shareAgyAccount(accountId, accountLabel) {
     const base = sel.value === '__custom' ? customEl.value : sel.value;
     try {
       const d = await providerApi.json(`/api/agy/accounts/${encodeURIComponent(accountId)}/relay-share`, {
-        method: 'POST', json: { publicBaseUrl: String(base || '').trim(), token: shareCredential, label: labelInput.value.trim() },
+        method: 'POST', json: { publicBaseUrl: String(base || '').trim(), token: shareCredential, label: labelInput.value.trim(), mode: 'cli' },
       });
       shareCredential = _newRelayCredential();
       codeEl.value = d.code;
@@ -361,13 +400,10 @@ function importRelayProvider() {
   const { overlay, close } = _relayOverlay(`
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">使用其他设备的线路</div>
-      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">粘贴另一台 MultiCC 生成的分享码（支持 Claude / Codex / 反重力 agy）。连接后可像本机账号一样直接使用。</div>
+      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">粘贴另一台 MultiCC 生成的分享码（支持 Claude / Codex / 反重力 agy）。分享码里已经写明对方选择的分享方式（反代 / 远程 CLI），导入即可直接使用。</div>
       <textarea data-k="code" rows="5" placeholder="mcrelay1.…"
         style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
-      <label data-k="cli-relay-wrap" style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;padding:8px 10px;border:1px solid #30363d;border-radius:6px;font-size:12px;color:#c9d1d9;cursor:pointer">
-        <input type="checkbox" data-k="cli-relay" style="margin-top:2px">
-        <span><strong>启用远程 CLI 模式（Remote CLI）</strong><br><span data-k="cli-relay-desc" style="color:var(--faint)">远端运行原装 Claude / Codex CLI，文件读写与命令回调到本机执行（可随时在卡片上开关）。</span></span>
-      </label>
+      <div data-k="mode-line" style="display:none;margin-top:10px;padding:8px 10px;border:1px solid #30363d;border-radius:6px;font-size:12px;color:#c9d1d9;line-height:1.6"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
         <button class="btn" data-act="close" style="font-size:13px">取消</button>
         <button class="btn btn-green" data-act="import" style="font-size:13px">导入</button>
@@ -376,18 +412,15 @@ function importRelayProvider() {
     </div>`);
   const st = overlay.querySelector('[data-k="status"]');
   const codeEl = overlay.querySelector('[data-k="code"]');
-  const cliRelayEl = overlay.querySelector('[data-k="cli-relay"]');
-  const cliRelayDesc = overlay.querySelector('[data-k="cli-relay-desc"]');
+  const modeLine = overlay.querySelector('[data-k="mode-line"]');
+  // 分享方式随分享码下发，导入端只负责展示，不再让人二次猜测。
   const syncRelayHint = () => {
-    const parsed = parseRelayShareCode(codeEl.value);
-    const isAgy = parsed.payload && parsed.payload.appType === 'agy';
-    cliRelayEl.disabled = !!isAgy;
-    if (isAgy) {
-      cliRelayEl.checked = true;
-      cliRelayDesc.textContent = '反重力（agy）共享账号默认即使用远程 CLI 模式。';
-    } else {
-      cliRelayDesc.textContent = '远端运行原装 Claude / Codex CLI，文件读写与命令回调到本机执行（可随时在卡片上开关）。';
-    }
+    const { payload } = parseRelayShareCode(codeEl.value);
+    if (!payload) { modeLine.style.display = 'none'; return; }
+    modeLine.style.display = 'block';
+    modeLine.innerHTML = payload.mode
+      ? `<strong>分享方式：${escapeHtml(relayModeLabel(payload.mode))}</strong><br><span style="color:var(--faint)">${escapeHtml(relayModeHint(payload.mode))}</span>`
+      : '<strong>分享方式：未标注（旧版分享码）</strong><br><span style="color:var(--faint)">旧版分享码没有记录分享方式，将按反代分享导入；需要远程 CLI 可在导入后于卡片上开启。</span>';
   };
   codeEl.oninput = syncRelayHint;
   overlay.querySelector('[data-act="import"]').onclick = async () => {
@@ -421,7 +454,7 @@ function importRelayProvider() {
       }
       await providerApi.json('/api/providers', {
         method: 'POST',
-        json: relayProviderInput(payload, { cliRelay: !!cliRelayEl.checked }),
+        json: relayProviderInput(payload),
       });
       showToast('已连接其他设备的线路：' + (payload.name || payload.baseUrl));
       close();

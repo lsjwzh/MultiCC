@@ -757,6 +757,30 @@ test('Antigravity exposes only its live ACP models and its own thinking levels',
     assert.deepEqual(localAi.buildModelChoices('relay', state({ cli: 'agy' })), ['', 'gemini-4-argon', '__custom__']);
     assert.deepEqual(localAi.effortOptions('agy').map(item => item.value), ['', 'low', 'medium', 'high', 'xhigh']);
     assert.deepEqual((await localAi.refreshModelsForCli('agy')).map(m => m.model), ['gemini-4-argon']);
+    // 目录没回报当前档位时，「默认」行只说跟随配置。
+    assert.equal(localAi.modelChoiceLabel('', '', state({ cli: 'agy' })), '默认（跟随 Antigravity 配置）');
+  } finally {
+    delete globalThis.window;
+    delete require.cache[modulePath];
+  }
+});
+
+test('Antigravity default row names the tier the CLI is actually running', async () => {
+  const modulePath = require.resolve('../public/chat-ai-config');
+  const cache = JSON.stringify({ at: Date.now(), models: [{ model: 'gemini-4-neon', label: 'Gemini 4 Neon' }] });
+  globalThis.window = {
+    localStorage: { getItem: key => key === 'multicc.agy.models.v1' ? cache : null },
+    readAgyCurrentSync() { return { model: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' }; },
+  };
+  delete require.cache[modulePath];
+  const localAi = require(modulePath);
+  try {
+    assert.equal(
+      localAi.modelChoiceLabel('', '', state({ cli: 'agy' })),
+      '默认 · Gemini 4 Neon (High)',
+    );
+    // 其它 CLI 的默认行不受影响。
+    assert.equal(localAi.modelChoiceLabel('', '', state({ cli: 'pi' })), '默认（跟随 Pi 配置）');
   } finally {
     delete globalThis.window;
     delete require.cache[modulePath];

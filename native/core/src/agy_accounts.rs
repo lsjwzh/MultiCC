@@ -578,6 +578,7 @@ pub fn get_relay_import_code(home: &Path, id: &str) -> Result<(String, String), 
         &[],
         share_id,
         token,
+        "cli",
     );
     Ok((code, base_url.to_string()))
 }
