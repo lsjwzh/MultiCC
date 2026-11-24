@@ -4,7 +4,7 @@ const { clipTokens } = require('../context/selection');
 
 // Preserve parseable provenance and explicit truncation when an imported turn
 // is larger than the automatic budget. Full history remains available by cursor.
-function boundedSnapshot(snapshot, budget = 2000) {
+function boundedSnapshot(snapshot, budget = 1600) {
   const original = renderSnapshots([snapshot]);
   if (estimateTokens(original) <= budget) return { text: original, truncated: false, messageCount: snapshot.messages.length };
   let rows = snapshot.messages.slice(-6), perMessage = 400;
@@ -30,7 +30,7 @@ function boundedSnapshot(snapshot, budget = 2000) {
 }
 module.exports = { boundedSnapshot };
 
-function boundedHandoff(handoff, budget = 2200) {
+function boundedHandoff(handoff, budget = 1500) {
   const { renderHandoffPrompt } = require('../cli-switch');
   const original = renderHandoffPrompt(handoff);
   if (estimateTokens(original) <= budget) return { text: original, truncated: false };

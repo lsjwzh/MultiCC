@@ -402,3 +402,29 @@ test('task title steers only the cold start, not every continuation', async t =>
   assert.ok(queries[0].endsWith('\n' + title), 'cold start includes the title');
   assert.equal(queries[1], '数据库性能 cache', 'continuation queries only the turn text');
 });
+
+test('cold start keeps genuine header rules, skips unrelated _shared/MEMORY.md dumps and mid-body 【必须】 gotchas', async t => {
+  const f = fixture(t), memory = memoryFor(f), first = await delivery(f, 'cold-slim');
+  const record = { ...f.records.get(first.sessionId), cli: 'claude', taskBoundTaskId: first.taskId };
+  const shared = memory.sharedDir('d1');
+  fs.appendFileSync(path.join(shared, 'MEMORY.md'), [
+    '',
+    '[规则][后端语言] 新增后端默认使用 Rust。',
+    '[gotcha][Flutter 单测] 桩响应【必须回带请求的 path】，否则静默重连。',
+    '[fact] 园艺笔记：番茄要搭架。',
+    '[fact] 数据库性能 cache 命中率目标 95%。',
+  ].join('\n§\n') + '\n');
+  const got = memory.retrieve(record, '数据库性能 cache');
+  const excerpts = got.candidates.map(s => s.excerpt).join('\n');
+  assert.match(excerpts, /新增后端默认使用 Rust/);
+  assert.match(excerpts, /命中率目标 95%/);
+  assert.doesNotMatch(excerpts, /Flutter 单测/, 'mid-body 【必须】 inside a gotcha must not auto-pin');
+  assert.doesNotMatch(excerpts, /番茄要搭架/, 'unmatched _shared/MEMORY.md fact must not auto-dump on cold start');
+  // The Flutter gotcha still surfaces when the turn actually asks about Flutter.
+  const flutterHit = memory.retrieve(record, 'Flutter 单测 WsTicketClient');
+  assert.match(flutterHit.candidates.map(s => s.excerpt).join('\n'), /Flutter 单测/);
+  // Default managed context budget is tightened from 8000 to 4800.
+  const plan = prepare(f, first, memory, { isFirstTurn: true });
+  assert.equal(plan.budget.limit, 4800);
+  assert.ok(plan.budget.used <= 4800);
+});

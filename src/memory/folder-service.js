@@ -312,7 +312,8 @@ ${sections.join('\n\n')}
         { machineDir, cliDir, sharedDir, taskDir, sessionDir, skillDir, safeSegment }, persisted, query);
     },
     guidance(persisted) {
-      return `记忆文件位于 ${deps.memoryStoreRoot}，作用域：_machine、_cli/${persisted.cli}、${persisted.dirId}/_shared、${persisted.dirId}/tasks/${persisted.taskBoundTaskId || persisted.taskState?.taskId}、${persisted.dirId}/sessions/${persisted.id}、${persisted.dirId}/skills。只按需读取已授权作用域。保存稳定事实用 POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/memory/action，JSON {"action":"add","scope":"own|shared|task|skill|machine|cli","content":"事实"}；replace/remove 使用 oldText，skill 使用 skill 参数。`;
+      const taskId = persisted.taskBoundTaskId || persisted.taskState?.taskId;
+      return `记忆目录 ${deps.memoryStoreRoot}（作用域：_machine、_cli/${persisted.cli}、${persisted.dirId}/_shared、${persisted.dirId}/tasks/${taskId}、${persisted.dirId}/sessions/${persisted.id}、${persisted.dirId}/skills，按需读取）。写稳定事实：POST $MULTICC_BASE_URL/api/sessions/$MULTICC_SESSION_ID/memory/action，JSON {"action":"add|replace|remove","scope":"own|shared|task|skill|machine|cli","content":"..."}（replace/remove 加 oldText，skill 加 skill）。`;
     },
     buildBlock,
     cliDir,
