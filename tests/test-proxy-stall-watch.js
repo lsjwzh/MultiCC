@@ -710,7 +710,7 @@ const { resolveModelRequestPolicy } = require('../src/native/runtime');
 // The retired `auto-stall-timeout` host entry point only forwarded here, so
 // the stall budget is read straight off the Rust-owned policy value.
 const stallBudget = (session, env) => resolveModelRequestPolicy(session, env).stallTimeoutMs;
-const { recoverModelTimeout } = require('../src/chat/model-timeout-recovery');
+const { recoverModelTimeout } = require('../src/providers/proxy-stall-watch');
 const { withModelConnectWatch } = require('../src/providers/model-connect-watch');
 const { createModelStreamProgress } = require('../src/native/runtime');
 
@@ -1320,4 +1320,71 @@ test('native progress callbacks and cycles are collectible and do not keep Node 
   assert.equal(child.error, undefined, child.error?.message);
   assert.equal(child.status, 0, child.stderr);
   assert.match(child.stdout, /progress readers collected/);
+});
+
+test('模型超时恢复按冻结版本核对尝试身份、进程定时器与原错误引用', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const filename = path.resolve(__dirname, '../src/chat/model-timeout-recovery.js');
+  const bytes = fs.readFileSync(path.join(__dirname, 'helpers/frozen-model-timeout-recovery.js'));
+  const blob = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+  assert.equal(blob, '00e0e2184ba600805028cc1a5f617eace55940af');
+  const original = { exports: {} };
+  compileFunction(bytes.toString(), ['module', 'require'], { filename })(original, createRequire(filename));
+
+  function exercise(recover, scenario) {
+    const log = [];
+    const failure = { code: scenario.code, retryBudgetExhausted: scenario.exhausted };
+    const event = { sessionId: 's', runtimeEpoch: 1, turnId: 't', routeAttemptId: 'r',
+      routeGeneration: 4, decisionId: 'd', attemptNo: 1, providerRevision: {} };
+    const attempt = { ...event };
+    if (scenario.mismatch) attempt[scenario.mismatch] = Symbol('stale');
+    const runner = { kind: scenario.kind, providerAttempt: attempt,
+      killReason: scenario.killed, modelTimeoutStopping: scenario.stopping };
+    let fire;
+    const error = Error('host');
+    const proc = {
+      exitCode: scenario.exited ? 0 : null, signalCode: null,
+      kill(signal) {
+        log.push(['signal', signal]);
+        if (scenario.killThrows) throw error;
+      },
+      once(name, callback) {
+        log.push(['once', name]);
+        callback(); // The mock handle does not own a real system timer.
+      },
+    };
+    const session = { _activeTurn: { turnId: scenario.staleTurn ? 'previous' : 't' },
+      _activeRunner: runner, claudeProc: scenario.noProcess ? null : proc };
+    const input = {
+      event, outcome: { accepted: scenario.accepted, failure },
+      chatSessions: { get(id) { log.push(['lookup', id]); return scenario.noSession ? null : session; } },
+      chatStream: { cancel(id) { log.push(['cancel', id]); if (scenario.cancelThrows) throw error; } },
+      setTimeout(fn, delay) { fire = fn; log.push(['schedule', delay]); return { unref() { log.push('unref'); } }; },
+    };
+    let result;
+    try { result = recover(input); } catch (thrown) { assert.equal(thrown, error); result = 'exception'; }
+    if (fire) fire();
+    if (runner.sawApiError) assert.equal(runner.apiErrorRaw, failure);
+    return { result, log, marked: runner.sawApiError, stopping: runner.modelTimeoutStopping };
+  }
+
+  const options = [
+    {}, { noSession: true }, { staleTurn: true }, { killed: 'user' }, { stopping: true },
+    { noProcess: true }, { exited: true }, { killThrows: true }, { cancelThrows: true },
+    ...['runtimeEpoch', 'turnId', 'routeAttemptId', 'routeGeneration', 'decisionId',
+      'attemptNo', 'providerRevision'].map(mismatch => ({ mismatch })),
+  ];
+  for (const kind of ['stream', 'child']) {
+    for (const changes of options) {
+      for (const [accepted, exhausted, code] of [[true, false, ' MODEL_CONNECT_TIMEOUT '],
+        [true, true, 'ordinary'], [true, false, 'ordinary'], [false, true, 'model_request_deadline']]) {
+        const scenario = { kind, accepted, exhausted, code, ...changes };
+        assert.deepEqual(exercise(recoverModelTimeout, scenario), exercise(original.exports.recoverModelTimeout, scenario));
+      }
+    }
+  }
 });

@@ -1275,7 +1275,7 @@ function handleProxyUsage(event) {
     recordUsageObserved(tagged);
   }
 }
-const { recoverModelTimeout } = require('./src/chat/model-timeout-recovery');
+const { recoverModelTimeout } = require('./src/providers/proxy-stall-watch');
 function handleProxyOutcome(event) {
   const outcome = providerAttemptRuntime.observeProxyOutcome(event);
   recoverModelTimeout({ event, outcome, chatSessions, chatStream });

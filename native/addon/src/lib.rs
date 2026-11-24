@@ -269,6 +269,7 @@ pub mod cli_upstream_version;
 pub mod homebrew_takeover;
 mod js_host_value;
 pub mod limit_cache_recorder;
+pub mod model_timeout_recovery;
 pub mod operation_admit_live;
 pub mod outbox_claim_live;
 pub mod provider_balance_target;
