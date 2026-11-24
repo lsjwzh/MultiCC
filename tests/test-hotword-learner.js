@@ -240,3 +240,41 @@ test('语音纠错按冻结输入对拍 UTF-16 边界、重复片段和拼音回
   const current=fs.readFileSync(filename);
   for(const mode of ['absent','present','throw']) assert.deepEqual(exercise(current,mode),exercise(frozen,mode),mode);
 });
+
+test('输入词汇统计与冻结版本保持出现次数、拼写顺序及会话集合身份', () => {
+  const { compileFunction } = require('node:vm'), { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const filename = path.resolve(__dirname, '../src/voice/hotword-miner.js');
+  const bytes = fs.readFileSync(path.join(__dirname,'helpers/frozen-hotword-typed-terms.js'));
+  assert.equal(createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex'), 'b7e9a263ea334c3426e29b773262f9f308099d5b');
+  const original = {exports:{}};
+  compileFunction(bytes.toString(), ['module','require'], {filename})(original,createRequire(filename));
+  const opaque = Object.freeze({toJSON(){throw Error('session must stay opaque');}});
+  const id = Symbol('session'), stop = Error('message');
+  function run(api) {
+    const log=[];
+    const messages = [
+      [opaque,'MultiCC MultiCC cc-Switch CC-Switch STT'],
+      [opaque,'multicc multicc CC-switch cc-switch STT'],
+      [id,'STT STT FooBar FooBar fooBar FOO1 foo1 API CLI HELLO'],
+      [NaN,'MultiCC CLI CLI CLI'],[NaN,'MultiCC'],
+      [null,'`FooBar` https://FooBar/x /FooBar/x $UPPER FooBar'],
+      ['x','```\nAbcDef AbcDef\n``` A-B-A A-B-A'],
+      [-0,'\ud800FooBar\udc00MultiCC\u00a0pm2 \ufeffpm2'],
+      [id,{toString(){log.push('toString');return 'FooBar';}}],
+    ];
+    const iterable = { *[Symbol.iterator]() {
+      try { for (const [session,text] of messages) yield {
+        get session(){log.push('session');return session;},get text(){log.push('text');return text;},
+      }; } finally {log.push('close');}
+    }};
+    const map=api.mineTypedTerms(iterable);
+    assert.ok(map instanceof Map);
+    assert.equal([...map.get('multicc').sessions][0],opaque);
+    assert.ok(map.get('stt').sessions.has(id));assert.ok(map.get('multicc').sessions.has(NaN));
+    for(const entry of map.values()){assert.ok(entry.forms instanceof Map);assert.ok(entry.sessions instanceof Set);}
+    assert.throws(()=>api.mineTypedTerms({ *[Symbol.iterator](){ try {yield {text:{toString(){throw stop;}}};} finally {log.push('failed-close');} }}),e=>e===stop);
+    return [log,[...map].map(([k,e])=>[k,Object.keys(e),e.term,e.count,[...e.sessions],[...e.forms]])];
+  }
+  assert.deepEqual(run(miner),run(original.exports));
+});
