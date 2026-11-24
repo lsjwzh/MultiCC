@@ -77,7 +77,7 @@ const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createCodexSessionFinder } = require('./src/cli-adapters/codex-session-file');
 const { createSessionPolicy, createReportedModelRuntime } = require('./src/cli/session-policy');
-const { isResidentSession, displayNameOf } = require('./src/cli/cli-capability');
+const { isResidentSession, displayNameOf, isAlias, nameOf: canonicalCli, watchEffortCatalog } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { synchronizeCodexProfileRoute } = require('./src/cli/switch-preparation');
 const { renderPrompt } = messageComposer;
@@ -97,7 +97,6 @@ const {
   buildHandoffCheckpoint,
   renderHandoffPrompt,
 } = require('./src/cli-switch');
-const { isAlias, nameOf: canonicalCli } = require('./src/cli/cli-capability');
 const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
 // MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
 const { createPaths } = require('./src/paths');
@@ -2959,7 +2958,7 @@ shutdownCoordinator.onClose(async () => { await workspaceRuntime.close(); taskSh
 app.use(safeErrorHandler(logger));
 
 (async () => {
-  // Gate readiness on quota initialization and repository recovery.
+  shutdownCoordinator.onClose(await watchEffortCatalog(MULTICC_PATHS.cliEffortCatalogFile));
   await providerLimitCache.ready();
   await startupRepoReady;
   for (const id of persistedSessions.keys()) await userInputSignalHost.pendingAsync(id);

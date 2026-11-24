@@ -141,7 +141,7 @@ function createCliSwitchRuntime(options) {
   }
   function cliSwitchDefaults(cli) {
     const plan = call('defaults', { cli, providerDefaults: options.getProviderDefaults() || {} });
-    if (plan.needsCodexEffort) plan.fields.effort = options.codexDefaultReasoningLevel();
+    if (plan.needsCodexEffort) plan.fields.effort = options.codexDefaultReasoningLevel(cli);
     return plan.fields;
   }
   async function cliSwitchGitSnapshot(session) {

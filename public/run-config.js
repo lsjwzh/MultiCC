@@ -1763,33 +1763,12 @@
       show(custom, select.value === '__custom__');
     }
 
-    // 推理强度只有档位值（wire value）是权威的，界面说的是中文档名 —— 值一样，
-    // 所以保存出去的东西没变。表里没有的档位回落到模块给的英文名。
-    const EFFORT_CN = Object.freeze({
-      '': '默认', default: '默认', minimal: '最低', low: '低', medium: '中',
-      high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra', none: '无', off: '关闭',
-    });
-
     function renderEffort() {
-      // Some lanes encode strength in the model id (Antigravity): the control
-      // exists only while the chosen model can actually take one.
-      const options = aiApi.effortOptions(currentCli, currentModelValue() || providerById(currentCli, providerValue)?.model);
+      const model = currentModelValue() || providerById(currentCli, providerValue)?.model;
+      const options = aiApi.effortOptions(currentCli, model);
       show(effortField, !!options.length);
-      effortSeg.replaceChildren();
-      for (const choice of options) {
-        const key = String(choice.value == null ? '' : choice.value);
-        const label = EFFORT_CN[key] || choice.label;
-        const button = segButton(doc, effortSeg, `rc-effort-${choice.value}`, label, choice.desc);
-        button.dataset.value = choice.value;
-        button.onclick = () => { effortValue = choice.value; renderEffort(); renderFooter(); };
-        button.setAttribute('aria-checked', String(choice.value === effortValue));
-      }
-      if (!options.length) { effortValue = null; return; }
-      if (!options.some(choice => choice.value === effortValue)) effortValue = aiApi.defaultEffort(currentCli);
-      for (const button of effortSeg.children) {
-        button.setAttribute('aria-checked', String(button.dataset.value === effortValue));
-        button.classList.toggle('on', button.dataset.value === effortValue);
-      }
+      effortValue = controls.renderEffortPicker(effortSeg, segButton, options, effortValue, aiApi.defaultEffort(currentCli),
+        value => { effortValue = value; renderEffort(); renderFooter(); });
     }
 
     // ── 账户（Command Code / OpenCode / Antigravity）──────────────────────────
@@ -2177,7 +2156,7 @@
         ? TIERS.map(value => ({ value, label: tierLabelOf(value) })) : [];
       if (tiers.length && !TIERS.includes(row.tier)) row.tier = 'medium';
       const efforts = aiApi.effortOptions(row.cli, row.model || providerById(row.cli, row.providerId)?.model)
-        .filter(choice => choice.value).map(choice => ({ value: choice.value, label: EFFORT_CN[choice.value] || choice.label }));
+        .filter(choice => choice.value).map(choice => ({ value: choice.value, label: controls.effortChoiceLabel(choice) }));
       if (!efforts.some(choice => choice.value === row.effort)) row.effort = '';
       if (efforts.length) efforts.unshift({ value: '', label: tt('runConfigRowEffortDefault', '推理强度（跟随会话）') });
       return { key: row, id: row.providerId, cli: row.cli, cliTitle: cliChoiceLabel(row.cli), clis, efforts, effort: row.effort,

@@ -599,10 +599,19 @@ test('every CLI the server accepts has a display entry', () => {
 // ── 3b. One strength table, not a private ladder per picker ────────────────
 
 test('the effort table is one fact on server and web', () => {
-  for (const [cli, spec] of Object.entries(CAP.EFFORTS)) {
-    assert.deepEqual(CATALOG.cliEffort(cli), spec, cli);
+  // 未提供目录的旧服务只使用发布时的兼容档位。新服务的规则以 /api/providers 为准。
+  assert.ok(CATALOG.cliEffort('claude-exp').levels.includes('medium'));
+  const efforts = structuredClone(CAP.EFFORTS);
+  efforts.claude.levels.push('extended');
+  try {
+    CATALOG.normalizeCatalog({ efforts });
+    for (const [cli, spec] of Object.entries(efforts)) {
+      assert.deepEqual(CATALOG.cliEffort(cli), spec, cli);
+    }
+    assert.deepEqual(CATALOG.cliEffort('claude-exp'), efforts.claude);
+  } finally {
+    CATALOG.normalizeCatalog({ efforts: CAP.EFFORTS });
   }
-  assert.deepEqual(CATALOG.cliEffort('claude-exp'), CAP.effortOf('claude'));
   assert.equal(CATALOG.cliEffort('gemini'), null);
 });
 

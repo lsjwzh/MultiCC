@@ -331,7 +331,7 @@ impl Outbound {
             if let Some(body) = &body {
                 builder = builder.body(body.clone());
             }
-            let response = builder.send().await.map_err(map_reqwest)?;
+            let mut response = builder.send().await.map_err(map_reqwest)?;
             let status = response.status().as_u16();
             let location = if request.follow_redirects && follows(status) {
                 response
@@ -343,14 +343,19 @@ impl Outbound {
                 None
             };
             let Some(location) = location else {
-                let bytes = response.bytes().await.map_err(map_reqwest)?;
-                if matches!(request.max_body, Some(cap) if bytes.len() > cap) {
-                    return Err(Kind::TooLarge);
-                }
-                return Ok(Reply {
-                    status,
-                    body: bytes.to_vec(),
-                });
+                let body = if let Some(cap) = request.max_body {
+                    let mut body = Vec::new();
+                    while let Some(chunk) = response.chunk().await.map_err(map_reqwest)? {
+                        if chunk.len() > cap - body.len() {
+                            return Err(Kind::TooLarge);
+                        }
+                        body.extend_from_slice(&chunk);
+                    }
+                    body
+                } else {
+                    response.bytes().await.map_err(map_reqwest)?.to_vec()
+                };
+                return Ok(Reply { status, body });
             };
             // `new URL(location, url)`: an unusable target behaves like a
             // transport failure, which is how fetch reports it.

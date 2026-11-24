@@ -6,7 +6,7 @@ const { createCompletionTracker } = require('./completion');
 const { getNative } = require('../native/runtime');
 const { extractUpstreamError } = require('../upstream-error');
 
-const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const { supportsEffort, effortOf } = require('../cli/cli-capability');
 const ROUTER_EXTENSION = path.join(__dirname, 'pi-router-extension.mjs');
 const textContent = content => Array.isArray(content)
   ? content.filter(item => item.type === 'text').map(item => item.text || '').join('\n') : '';
@@ -35,7 +35,7 @@ function createPiAdapter({ cmd = 'pi', routerMcpNode, routerMcpScript } = {}) {
     buildTerminalCmd(session = {}) {
       return [quote(cmd),
         ...(session.model ? ['--model', quote(session.model)] : []),
-        ...(PI_THINKING_LEVELS.includes(session.effort) ? ['--thinking', session.effort] : []),
+        ...(session.effort && supportsEffort('pi', session.model, session.effort) ? ['--thinking', session.effort] : []),
         ...(session.cliSessionId ? ['--session', quote(session.cliSessionId)] : []),
       ].join(' ');
     },
@@ -43,7 +43,7 @@ function createPiAdapter({ cmd = 'pi', routerMcpNode, routerMcpScript } = {}) {
       const so = env.spawnOpts || {};
       const args = ['--mode', 'json', '--print'];
       if (so.rawModel) args.push('--model', so.rawModel);
-      if (PI_THINKING_LEVELS.includes(so.rawEffort)) args.push('--thinking', so.rawEffort);
+      if (so.rawEffort && supportsEffort('pi', so.rawModel || so.effectiveModel, so.rawEffort)) args.push('--thinking', so.rawEffort);
       if (!env.historyHandle.isFirstTurn && env.historyHandle.cliSessionId) {
         args.push('--session', env.historyHandle.cliSessionId);
       }
@@ -110,4 +110,4 @@ function createPiAdapter({ cmd = 'pi', routerMcpNode, routerMcpScript } = {}) {
   };
 }
 
-module.exports = { createPiAdapter, PI_THINKING_LEVELS };
+module.exports = { createPiAdapter, get PI_THINKING_LEVELS() { return effortOf('pi').levels.filter(Boolean); } };

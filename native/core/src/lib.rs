@@ -47,6 +47,7 @@ pub mod directory_routes;
 pub mod docs_memory_routes;
 pub mod dotenv;
 pub mod download_ticket;
+pub mod effort_catalog;
 pub mod egress_plugin;
 pub mod event_routes;
 pub mod events;

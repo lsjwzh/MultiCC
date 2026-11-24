@@ -10,11 +10,11 @@ const { claudeLikeMcpArgs } = require('./router-mcp');
  * line and session lifecycle are distinct. Keep those details here instead of
  * teaching the host about another vendor protocol.
  */
-const QODER_REASONING_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const { supportsEffort } = require('../cli/cli-capability');
 
 function qoderEffortLevel(session) {
   const value = String(session?.effort || '').trim().toLowerCase();
-  return QODER_REASONING_LEVELS.has(value) ? value : null;
+  return value && supportsEffort('qoder', session?.model, value) ? value : null;
 }
 
 // Qoder rides the Claude protocol but its own error frames carry the facts in
@@ -88,7 +88,7 @@ function createQoderAdapter({ cmd, routerMcpNode, routerMcpScript }) {
         '--append-system-prompt', env.systemPrompt,
       ];
       if (so.rawModel) args.push('--model', so.rawModel);
-      const effort = qoderEffortLevel({ effort: so.rawEffort });
+      const effort = qoderEffortLevel({ effort: so.rawEffort, model: so.rawModel || so.effectiveModel });
       if (effort) args.push('--reasoning-effort', effort);
       if (so.rawAgent) args.push('--agent', so.rawAgent);
       if (!env.historyHandle.isFirstTurn && env.historyHandle.cliSessionId) {

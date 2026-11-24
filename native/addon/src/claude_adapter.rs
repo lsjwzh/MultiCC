@@ -43,6 +43,18 @@ fn push(array: L<'_>, values: &[L<'_>]) -> Result<()> {
     Ok(())
 }
 
+fn supports_ultracode(model: L<'_>) -> Result<bool> {
+    let model = model
+        .string()?
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    Ok(multicc_core::cli_capability::supports_effort(
+        "claude",
+        &model,
+        "ultracode",
+    ))
+}
+
 #[napi]
 pub fn claude_adapter_ports(
     env: Env,
@@ -119,6 +131,7 @@ pub fn claude_adapter_terminal(
         )?;
     } else if port(ports, c"normalizeEffort", &[session.optional(c"effort")?])?
         .is_string("ultracode")?
+        && supports_ultracode(session.optional(c"model")?)?
     {
         command = concat(
             session,
@@ -167,7 +180,10 @@ pub fn claude_adapter_invocation(
     let effort = port(
         ports,
         c"cliEffortLevel",
-        &[object(input, &[(c"effort", so.get(c"rawEffort")?)])?],
+        &[object(
+            input,
+            &[(c"effort", so.get(c"rawEffort")?), (c"model", model)],
+        )?],
     )?;
     let args = input.from_value(&V::Array(vec![]))?;
     push(args, &[ports.get(c"bridge")?])?;
@@ -232,8 +248,9 @@ pub fn claude_adapter_invocation(
         )?;
     }
     push(args, &[text(input, "--")?])?;
-    let ultracode =
-        port(ports, c"normalizeEffort", &[so.get(c"rawEffort")?])?.is_string("ultracode")?;
+    let ultracode = port(ports, c"normalizeEffort", &[so.get(c"rawEffort")?])?
+        .is_string("ultracode")?
+        && supports_ultracode(model)?;
     let debug = ports.get(c"debugLogClaudeInvoke")?;
     if !debug.nullish()? {
         let meta = object(

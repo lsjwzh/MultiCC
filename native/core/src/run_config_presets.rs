@@ -132,6 +132,7 @@ impl Candidate {
                 crate::cli_capability::supports_effort(lane, model.as_deref().unwrap_or(""), level)
             }
             None => crate::cli_capability::effort_catalog()
+                .efforts
                 .values()
                 .any(|spec| spec.levels.contains(level)),
         });
