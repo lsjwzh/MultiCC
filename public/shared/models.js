@@ -233,7 +233,13 @@
   // GET /api/commandcode/models (`commandcode --list-models`, entries carry the
   // vendor's own `group`) and GET /api/grok/models (`grok models`). Same
   // 1-hour contract as WorkBuddy; one small factory instead of a third copy.
-  function createLiveCatalog(key, url) {
+  //
+  // `keepCurrent` additionally mirrors the response's `current` entry — the
+  // model the CLI would run right now with nothing pinned. agy is the one
+  // catalog whose pickable ids are family names, so its "default" is only
+  // knowable by asking (`gemini-4-neon` vs. the tiered `gemini-4-neon-high`
+  // actually in effect).
+  function createLiveCatalog(key, url, options) {
     const ttl = 60 * 60 * 1000;
     let inflight = null;
     function read() {
@@ -244,7 +250,7 @@
         const at = Number(obj && obj.at) || 0;
         const models = obj && Array.isArray(obj.models) ? obj.models : [];
         if (!at || (Date.now() - at) >= ttl || !models.length) return null;
-        return { at, models };
+        return { at, models, current: (obj && obj.current) || null };
       } catch (_) { return null; }
     }
     async function load(options) {
@@ -259,18 +265,29 @@
           const models = data && Array.isArray(data.models) ? data.models : [];
           // fallback / unauthenticated lists are served but never pinned for an hour
           if (models.length && data.source === 'cli') {
-            try { window.localStorage.setItem(key, JSON.stringify({ at: Date.now(), models })); } catch (_) { /* quota */ }
+            const entry = { at: Date.now(), models };
+            if (options && options.keepCurrent && data.current && typeof data.current === 'object') {
+              entry.current = {
+                model: String(data.current.model || ''),
+                label: String(data.current.label || data.current.model || ''),
+              };
+            }
+            try { window.localStorage.setItem(key, JSON.stringify(entry)); } catch (_) { /* quota */ }
           }
           return models;
         } catch (_) { return []; } finally { inflight = null; }
       })();
       return inflight;
     }
-    return { load, readSync: () => { const c = read(); return c ? c.models : []; } };
+    return {
+      load,
+      readSync: () => { const c = read(); return c ? c.models : []; },
+      currentSync: () => { const c = read(); return (c && c.current) || null; },
+    };
   }
   const commandcodeCatalog = createLiveCatalog('multicc.commandcode.models.v1', '/api/commandcode/models');
   const grokCatalog = createLiveCatalog('multicc.grok.models.v1', '/api/grok/models');
-  const agyCatalog = createLiveCatalog('multicc.agy.models.v1', '/api/agy/models');
+  const agyCatalog = createLiveCatalog('multicc.agy.models.v1', '/api/agy/models', { keepCurrent: true });
 
   // ── Codex account model list ───────────────────────────────────────────
   // 服务端按账号持久缓存一天，并检查 CLI 升级；浏览器只镜像结果，
@@ -468,6 +485,22 @@
   window.loadCommandcodeModels = commandcodeCatalog.load;
   window.loadGrokModels = grokCatalog.load;
   window.loadAgyModels = agyCatalog.load;
+  window.readAgyCurrentSync = agyCatalog.currentSync;
+  // agy 不传 --model 时由它自己用账号里当前那一档（目录回报的 current，如
+  // gemini-4-neon-high）。空模型时药丸要把这一档写出来，否则「默认模型」什么也没说。
+  // 没有缓存就先拉一次目录，拿到了让调用方重画 —— air.js 已经贴着行长上限，逻辑放这。
+  let agyWarm = null;
+  window.agyDefaultModelSuffix = (cli, onReady) => {
+    if (cli !== 'agy') return '';
+    const current = agyCatalog.currentSync();
+    if (current) return current.label ? ` · ${current.label}` : '';
+    if (!agyWarm) {
+      agyWarm = Promise.resolve(agyCatalog.load())
+        .then(() => { agyWarm = null; if (agyCatalog.currentSync() && typeof onReady === 'function') onReady(); })
+        .catch(() => { agyWarm = null; });
+    }
+    return '';
+  };
   window.readCodebuddyModelsSync = readCodebuddyModelsSync;
   window.loadCodexModels = loadCodexModels;
   window.watchCodexModels = watchCodexModels;

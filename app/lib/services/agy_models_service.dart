@@ -14,8 +14,18 @@ class AgyModelsService {
 
   static List<LiveModel> get cached => catalog.cached;
 
+  /// 不传 `--model` 时 agy 实际会跑的那一档（如 `gemini-4-neon-high`）。
+  /// 可选项全是族名（`gemini-4-neon`），所以「默认」到底是哪个只能靠目录回报。
+  static LiveModel? get current => catalog.current;
+
+  /// 「默认」行的人话：目录已回报当前档位就写出来，否则只写跟随配置。
+  static String get defaultLabel {
+    final now = current;
+    return now == null ? '默认（跟随 Antigravity 配置）' : '默认 · ${now.label}';
+  }
+
   static List<MapEntry<String, String>> options() => [
-    const MapEntry('', '默认（跟随 Antigravity 配置）'),
+    MapEntry('', defaultLabel),
     for (final m in cached) MapEntry(m.id, m.label),
   ];
 

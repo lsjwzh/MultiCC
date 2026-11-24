@@ -763,7 +763,37 @@ pub fn relay_models_of(summary: Option<&Value>) -> Vec<String> {
     models
 }
 
-/// `encodeRelayShareCode`: `mcrelay1.` + base64url of the v2 JSON payload.
+/// 借道分享的两种方式，由出借方在分享时选定并写进分享码：
+/// `proxy` 反代分享（接收方本机跑 CLI，请求经出借方代理转发）；
+/// `cli` 远程 CLI 分享（出借方跑原装 CLI，接收方免装、工具回调真机）。
+pub const RELAY_MODE_PROXY: &str = "proxy";
+pub const RELAY_MODE_CLI: &str = "cli";
+
+/// 校验分享方式。agy 没有 HTTP 反代，永远按远程 CLI 分享；其余只认两个合法值。
+pub fn relay_share_mode(app_type: &str, value: Option<&Value>) -> Option<&'static str> {
+    if app_type == "agy" {
+        return Some(RELAY_MODE_CLI);
+    }
+    match value.and_then(Value::as_str).map(str::trim) {
+        Some(RELAY_MODE_CLI) => Some(RELAY_MODE_CLI),
+        Some(RELAY_MODE_PROXY) | None => Some(RELAY_MODE_PROXY),
+        _ => None,
+    }
+}
+
+/// 旧版分享记录没有 `mode` 字段：按当时唯一的默认推断（agy 只能是远程 CLI）。
+pub fn stored_relay_mode(app_type: &str, value: Option<&Value>) -> &'static str {
+    if app_type == "agy" {
+        return RELAY_MODE_CLI;
+    }
+    match value.and_then(Value::as_str).map(str::trim) {
+        Some(RELAY_MODE_CLI) => RELAY_MODE_CLI,
+        _ => RELAY_MODE_PROXY,
+    }
+}
+
+/// `encodeRelayShareCode`: `mcrelay1.` + base64url of the v3 JSON payload.
+/// `mode` 是分享方式（`proxy` / `cli`），接收方据此直接导入，不再自己猜。
 pub fn encode_relay_share_code(
     name: &str,
     app_type: &str,
@@ -771,9 +801,10 @@ pub fn encode_relay_share_code(
     models: &[String],
     relay_share_id: &str,
     auth_token: &str,
+    mode: &str,
 ) -> String {
     let mut payload = Map::new();
-    payload.insert("v".into(), json!(2));
+    payload.insert("v".into(), json!(3));
     payload.insert("kind".into(), json!("multicc-relay"));
     payload.insert("name".into(), json!(name));
     payload.insert("appType".into(), json!(app_type));
@@ -784,6 +815,12 @@ pub fn encode_relay_share_code(
     }
     payload.insert("relayShareId".into(), json!(relay_share_id));
     payload.insert("authToken".into(), json!(auth_token));
+    let mode = if app_type == "agy" || mode == RELAY_MODE_CLI {
+        RELAY_MODE_CLI
+    } else {
+        RELAY_MODE_PROXY
+    };
+    payload.insert("mode".into(), json!(mode));
     let text = js_json_stringify(&Value::Object(payload));
     format!("{RELAY_CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(text))
 }
@@ -1483,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_share_code_round_trips_the_v2_payload() {
+    fn relay_share_code_round_trips_the_v3_payload() {
         let models = vec!["m1".to_string(), "m2".to_string()];
         let code = encode_relay_share_code(
             "Name · 远程共享",
@@ -1492,15 +1529,16 @@ mod tests {
             &models,
             "share-1",
             "secret-token",
+            RELAY_MODE_CLI,
         );
         assert!(code.starts_with(RELAY_CODE_PREFIX));
         let encoded = &code[RELAY_CODE_PREFIX.len()..];
         let decoded = URL_SAFE_NO_PAD.decode(encoded).unwrap();
         assert_eq!(
             String::from_utf8(decoded).unwrap(),
-            r#"{"v":2,"kind":"multicc-relay","name":"Name · 远程共享","appType":"claude","baseUrl":"https://host/claude-proxy/p%2F1/remote","model":"m1","models":["m1","m2"],"relayShareId":"share-1","authToken":"secret-token"}"#
+            r#"{"v":3,"kind":"multicc-relay","name":"Name · 远程共享","appType":"claude","baseUrl":"https://host/claude-proxy/p%2F1/remote","model":"m1","models":["m1","m2"],"relayShareId":"share-1","authToken":"secret-token","mode":"cli"}"#
         );
-        let empty = encode_relay_share_code("n", "codex", "https://h", &[], "s", "t");
+        let empty = encode_relay_share_code("n", "codex", "https://h", &[], "s", "t", "");
         let text = String::from_utf8(
             URL_SAFE_NO_PAD
                 .decode(&empty[RELAY_CODE_PREFIX.len()..])
@@ -1509,10 +1547,27 @@ mod tests {
         .unwrap();
         assert_eq!(
             text,
-            r#"{"v":2,"kind":"multicc-relay","name":"n","appType":"codex","baseUrl":"https://h","relayShareId":"s","authToken":"t"}"#
+            r#"{"v":3,"kind":"multicc-relay","name":"n","appType":"codex","baseUrl":"https://h","relayShareId":"s","authToken":"t","mode":"proxy"}"#
         );
+        // 反重力没有 HTTP 反代通道，选什么方式都得落成 cli。
+        let agy = encode_relay_share_code("g", "agy", "https://h", &[], "s", "t", RELAY_MODE_PROXY);
+        let text = String::from_utf8(
+            URL_SAFE_NO_PAD
+                .decode(&agy[RELAY_CODE_PREFIX.len()..])
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(text.ends_with(r#""mode":"cli"}"#), "{text}");
         // JSON escaping is JSON.stringify's, not serde's pretty form.
-        let escaped = encode_relay_share_code("a\"b\\c\n", "claude", "https://h", &[], "s", "t");
+        let escaped = encode_relay_share_code(
+            "a\"b\\c\n",
+            "claude",
+            "https://h",
+            &[],
+            "s",
+            "t",
+            RELAY_MODE_PROXY,
+        );
         let text = String::from_utf8(
             URL_SAFE_NO_PAD
                 .decode(&escaped[RELAY_CODE_PREFIX.len()..])

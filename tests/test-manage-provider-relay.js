@@ -71,13 +71,56 @@ test('relayProviderInput carries the shared model catalog into provider creation
     models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
   });
 
+  // 分享方式写在分享码里（v3 起），导入端照着建线路，不再自己勾选。
   const withCliRelay = ctx.relayProviderInput({
     appType: 'claude',
     name: 'Claude · 借道',
     baseUrl: 'https://relay.example/claude-proxy/abc/remote',
     authToken: 'mcr1.tok',
-  }, { cliRelay: true });
+    mode: 'cli',
+  });
   assert.equal(withCliRelay.cliRelay, true);
+  const withProxy = ctx.relayProviderInput({
+    appType: 'claude',
+    name: 'Claude · 借道',
+    baseUrl: 'https://relay.example/claude-proxy/abc/remote',
+    authToken: 'mcr1.tok',
+    mode: 'proxy',
+  });
+  assert.equal(withProxy.cliRelay, undefined);
+});
+
+test('v3 share codes carry the share mode chosen at share time', () => {
+  const ctx = loadModule();
+  for (const [appType, mode, expected] of [
+    ['claude', 'proxy', 'proxy'],
+    ['claude', 'cli', 'cli'],
+    ['codex', 'cli', 'cli'],
+    // 反重力没有 HTTP 反代通道：码里写什么都没用，解析结果必须是 cli。
+    ['agy', 'proxy', 'cli'],
+    ['agy', undefined, 'cli'],
+  ]) {
+    const payload = {
+      v: 3,
+      kind: 'multicc-relay',
+      name: 'X · 借道',
+      appType,
+      baseUrl: 'https://relay.example/a/remote',
+      authToken: 'mcr1.abcdefghijklmnop.secret',
+      ...(mode ? { mode } : {}),
+    };
+    const parsed = ctx.parseRelayShareCode(encode(payload));
+    assert.equal(parsed.error, undefined, `${appType}/${mode}`);
+    assert.equal(parsed.payload.mode, expected, `${appType}/${mode}`);
+  }
+  // 旧版分享码没有 mode：导入仍看成反代，但界面要如实说明而不是猜。
+  const legacy = ctx.parseRelayShareCode(encode({
+    v: 2, kind: 'multicc-relay', name: 'GLM', appType: 'claude',
+    baseUrl: 'https://relay.example/claude-proxy/glm/remote', authToken: 'mcr1.a.b',
+  }));
+  assert.equal(legacy.error, undefined);
+  assert.equal(legacy.payload.mode, undefined);
+  assert.match(fs.readFileSync(SOURCE_PATH, 'utf8'), /旧版分享码没有记录分享方式/);
 });
 
 test('v2 share codes preserve the independently-scoped relay credential', () => {

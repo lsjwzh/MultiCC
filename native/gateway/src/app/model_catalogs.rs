@@ -233,6 +233,7 @@ pub async fn catalog(catalog: Catalog, ctx: &RequestCtx, host_port_num: u16) -> 
                 200,
                 &json!({
                     "models": found.models,
+                    "current": found.current,
                     "source": found.source,
                     "cached": found.cached,
                 }),

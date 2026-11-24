@@ -36,6 +36,13 @@ class LiveModelCatalog {
   DateTime? _cachedAt;
   Future<List<LiveModel>>? _inflight;
 
+  /// The catalog's `current` entry: the model the CLI would run right now with
+  /// nothing pinned. Only some catalogs report it (agy does — its pickable ids
+  /// are family names, so this is the only way to say what "默认" means).
+  LiveModel? _current;
+
+  LiveModel? get current => cached.isEmpty ? null : _current;
+
   List<LiveModel> get cached {
     final at = _cachedAt;
     final list = _cache;
@@ -87,10 +94,19 @@ class LiveModelCatalog {
       if (out.isNotEmpty && body['source']?.toString() == 'cli') {
         _cache = out;
         _cachedAt = DateTime.now();
+        _current = _parseCurrent(body['current']);
       }
       return out;
     } catch (_) {
       return const [];
     }
+  }
+
+  static LiveModel? _parseCurrent(Object? raw) {
+    if (raw is! Map) return null;
+    final id = raw['model']?.toString() ?? '';
+    if (id.isEmpty) return null;
+    final label = raw['label']?.toString() ?? '';
+    return LiveModel(id, label.isNotEmpty ? label : id);
   }
 }

@@ -45,8 +45,8 @@ use multicc_core::provider_registry::{
     encode_relay_share_code, finish_provider_lookup, import_error_dto, invalid_defaults_error,
     normalize_probe_candidates, plan_delete, provider_cli_facts_from_json, provider_id_step,
     provider_in_use_response, reassign_dry_run, reassign_precheck, reassign_target_id,
-    relay_models_of, relay_route_from_base_url, relay_share_urls, update_payload, DeletePlan,
-    ProviderIdStep,
+    relay_models_of, relay_route_from_base_url, relay_share_mode, relay_share_urls,
+    stored_relay_mode, update_payload, DeletePlan, ProviderIdStep,
 };
 use multicc_core::public_safety::{public_error, public_text, sanitize_public_text};
 use serde_json::{json, Map, Value};
@@ -826,6 +826,17 @@ async fn relay_share(
     };
     let summary = facts.get("summary").cloned().unwrap_or_else(|| json!({}));
     let models = relay_models_of(Some(&summary));
+    let Some(mode) = relay_share_mode(
+        &app_type,
+        body_map(body).and_then(|object| object.get("mode")),
+    ) else {
+        return express::json(
+            ctx,
+            400,
+            &json!({ "error": "mode must be \"proxy\" or \"cli\"" }),
+            &[],
+        );
+    };
     let provider_name = {
         let name = value_or_empty(provider.get("name"));
         if name.is_empty() {
@@ -842,6 +853,7 @@ async fn relay_share(
     payload.insert("providerName".into(), json!(provider_name));
     payload.insert("publicBaseUrl".into(), json!(urls.base));
     payload.insert("relayBaseUrl".into(), json!(urls.relay_base_url));
+    payload.insert("mode".into(), json!(mode));
     if let Some(token) = body_map(body).and_then(|object| object.get("token")) {
         payload.insert("token".into(), token.clone());
     }
@@ -862,6 +874,7 @@ async fn relay_share(
             &models,
             &share_id,
             &credential,
+            mode,
         );
         return express::json(
             ctx,
@@ -1120,6 +1133,7 @@ async fn relay_share_code(ctx: &RequestCtx, host_port_num: u16) -> Response<Body
         &relay_models_of(Some(&summary)),
         &value_or_empty(share.get("id")),
         &value_or_empty(found.get("credential")),
+        stored_relay_mode(&share_app_type, share.get("mode")),
     );
     express::json(
         ctx,
@@ -1179,6 +1193,12 @@ async fn relay_import_code(ctx: &RequestCtx, host_port_num: u16) -> Response<Bod
         }
     };
     let url = value_or_empty(route.get("url"));
+    // 复制原始导入信息：按这条线路实际启用的方式重编码，接收方不用再猜。
+    let mode = if summary.get("cliRelay") == Some(&Value::Bool(true)) {
+        "cli"
+    } else {
+        "proxy"
+    };
     let code = encode_relay_share_code(
         &name,
         &app_type,
@@ -1186,6 +1206,7 @@ async fn relay_import_code(ctx: &RequestCtx, host_port_num: u16) -> Response<Bod
         &relay_models_of(Some(&summary)),
         &relay_share_id_value,
         &js_string(&token),
+        mode,
     );
     express::json(
         ctx,
