@@ -11,7 +11,7 @@ const {
   planTurnFinalization,
   planRetryBlockedFinalization,
   resolveTurnFinalization,
-} = require('../src/chat/finalize-plan');
+} = require('../src/native/runtime').finalizationPlan;
 
 function base(overrides = {}) {
   return {
@@ -519,7 +519,9 @@ test('handoff HTTP evidence yields only with an open replay fence', () => {
 });
 
 test('finalize planner remains pure and exported from chat index', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-plan.js'), 'utf8');
+  const runtime = fs.readFileSync(path.join(__dirname, '..', 'src', 'native', 'runtime.js'), 'utf8');
+  const source = runtime.match(/const finalizationPlan = \{[\s\S]*?\n\};/)[0];
+  assert.match(source, /chatFrozenFinalization/);
   assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false);
   const chat = require('../src/chat');
   assert.equal(chat.planTurnFinalization, planTurnFinalization);

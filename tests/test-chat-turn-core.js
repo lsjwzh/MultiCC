@@ -1253,7 +1253,7 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
 test('chat core modules import no runtime I/O dependencies', () => {
   for (const file of [
     'turn-request.js', 'retry-policy.js', 'post-turn-router.js',
-    'runtime-store.js', 'turn-lifecycle.js', 'finalize-plan.js',
+    'runtime-store.js', 'turn-lifecycle.js',
     'finalize-host.js',
   ]) {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', file), 'utf8');

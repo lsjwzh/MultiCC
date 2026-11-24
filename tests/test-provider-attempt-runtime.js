@@ -12,7 +12,7 @@ const {
 } = require('../src/chat/provider-attempt-runtime');
 const { createUsageObserved } = require('../src/usage-observed');
 const { canPersistAdapterCompletion } = require('../src/chat/adapter-completion');
-const { planTurnFinalization, resolveTurnFinalization } = require('../src/chat/finalize-plan');
+const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/runtime').finalizationPlan;
 const { resolveTurnState } = require('../src/classify/turn-state');
 const { normalizeProxyOutcome } = require('../src/providers/proxy-outcome');
 

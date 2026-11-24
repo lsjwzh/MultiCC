@@ -12,6 +12,6 @@ module.exports = {
   ...require('../native/runtime').providerInvocation,
   ...require('./host-coordinator'),
   ...require('./host-runtime'),
-  ...require('./finalize-plan'),
+  ...require('../native/runtime').finalizationPlan,
   ...require('./finalize-host'),
 };

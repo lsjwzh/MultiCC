@@ -231,7 +231,7 @@ test('auth failures carry the agent login hint', async () => {
 
 test('OpenCode ACP context errors survive the bridge and fail without replaying the prompt', async () => {
   const { createApiErrorPolicyRuntime, retryNotice } = require('../src/chat/api-error-policy');
-  const { planTurnFinalization, resolveTurnFinalization } = require('../src/chat/finalize-plan');
+  const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/runtime').finalizationPlan;
   for (const mode of ['context', 'context-name']) {
     const { code, events, requests } = await runBridge([mode, '--session-id', 'ses_old', '--', 'continue']);
     assert.equal(code, 1);

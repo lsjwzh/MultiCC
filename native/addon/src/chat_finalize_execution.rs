@@ -359,20 +359,57 @@ impl<'a> Host<'a> {
     }
 }
 
-fn freeze_plan(value: V<'_>) -> Result<V<'_>> {
-    for name in [c"append", c"facts", c"retry", c"result"] {
-        let field = value.get(name)?;
-        if field.truthy()? {
-            field.freeze()?;
+// The order is observable when ports are provided by a Proxy.
+#[napi]
+pub fn chat_validate_finalization_ports(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
+    let ports = V::new(&env, ports);
+    if ports.kind()? != sys::ValueType::napi_object {
+        return Err(ports.type_error("finalize host ports are required"));
+    }
+    for name in [
+        c"persistAssistant",
+        c"commitUsage",
+        c"broadcast",
+        c"cancelClassify",
+        c"clearReplay",
+        c"clearIncrementalSave",
+        c"setStatus",
+        c"completeSessionTurn",
+        c"classifyTurnEnd",
+        c"resetInterrupted",
+        c"resumeInterrupted",
+        c"emitTurnOutcome",
+        c"runPostTurn",
+    ] {
+        if ports.get(name)?.kind()? != sys::ValueType::napi_function {
+            return Err(ports.type_error(&format!(
+                "finalize host port missing: {}",
+                name.to_string_lossy()
+            )));
         }
+    }
+    Ok(ports.raw())
+}
+
+// JavaScript Object.freeze accepts primitive fields in older stored plans.
+fn freeze_member(value: V<'_>) -> Result<()> {
+    if matches!(
+        value.kind()?,
+        sys::ValueType::napi_object | sys::ValueType::napi_function
+    ) {
+        value.freeze()?;
+    }
+    Ok(())
+}
+
+pub(crate) fn freeze_plan(value: V<'_>) -> Result<V<'_>> {
+    for name in [c"append", c"facts", c"retry", c"result"] {
+        freeze_member(value.get(name)?)?;
     }
     let effects = value.get(c"effects")?;
     if effects.truthy()? {
-        effects.for_each(|entry| {
-            entry.freeze()?;
-            Ok(())
-        })?;
-        effects.freeze()?;
+        effects.for_each(freeze_member)?;
+        freeze_member(effects)?;
     }
     value.freeze()
 }
