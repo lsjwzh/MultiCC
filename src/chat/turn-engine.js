@@ -10,7 +10,6 @@
 const crypto = require('crypto');
 const { createTurnTimingRecorder, createDeliveryProbeRegistry, createTurnTimelinePort,
   shouldReexecutePersistedDelivery } = require('./turn-progress');
-const claudeApiError = require('./claude-api-error-message');
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
 const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
@@ -1676,7 +1675,7 @@ function createChatTurnEngine(deps) {
         const completionOutcome = settleAdapterCompletion(runner, { kind: 'process', code, signal, killReason }, logger);
         const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
           attemptRuntime, runner.providerAttempt, provider?.name || cs.cli, cs,
-          claudeApiError.boundaryEnvelope(runner, provider?.name || cs.cli, cs),
+          getNative().chatClaudeBoundaryEnvelope(runner, provider?.name || cs.cli, cs),
         );
         // Wait for the buffered result (and any reducer-started append) to
         // finish before the diagnostics snapshot and the plan read
@@ -2465,7 +2464,7 @@ function createChatTurnEngine(deps) {
     const boundaryErrorEnvelope = reconcileBoundaryErrorEnvelope(
       attemptRuntime, runner.providerAttempt,
       provider?.name || persisted.cli || 'claude', cs,
-      claudeApiError.boundaryEnvelope(runner, provider?.name || persisted.cli || 'claude', cs),
+      getNative().chatClaudeBoundaryEnvelope(runner, provider?.name || persisted.cli || 'claude', cs),
     );
     // Apply the buffered native result and wait for its durable append before
     // reading `resultDurable`. The turn must not be planned or classified from a

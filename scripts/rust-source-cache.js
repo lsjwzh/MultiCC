@@ -192,7 +192,7 @@ function probeAddon(file, node = process.execPath) {
   'dispatchExplicitlyNamesTerminal','providerRevision','providerEncodeProxySession','providerDecodeProxySession','providerValidateAttemptTransition', 'providerBackgroundLingers', 'providerAuthorizeProxyRequest', 'providerTerminalValidate', 'providerTerminalSessionSegment', 'providerTerminalLookup', 'claudeProxyEnvRequired', 'assertClaudeProxyEnvApplied',
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
       'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(['chatApplyClaudeEvent','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',
+    if(['chatApplyClaudeEvent','chatClaudeBoundaryEnvelope','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',
       'chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.chatWsControlAction!=='function' || a.chatWsControlAction('ping','view')!=='pong'

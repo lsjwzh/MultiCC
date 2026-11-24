@@ -571,16 +571,15 @@ fn api_error_state<'a>(anchor: LV<'a>, runner: LV<'a>) -> Result<Option<LV<'a>>>
     if !runner.truthy()? || runner.kind()? != sys::ValueType::napi_object {
         return Ok(None);
     }
-    let state = runner.get(c"claudeApiError")?;
-    if state.truthy()? {
-        return Ok(Some(state));
+    if !runner.get(c"claudeApiError")?.truthy()? {
+        let fresh = object(anchor)?;
+        let seen = anchor.global()?.get(c"Set")?.construct(&[])?;
+        fresh.set(c"seen", seen)?;
+        fresh.set(c"pending", null(anchor)?)?;
+        runner.assign(c"claudeApiError", fresh)?;
     }
-    let fresh = object(anchor)?;
-    let seen = anchor.global()?.get(c"Set")?.construct(&[])?;
-    fresh.set(c"seen", seen)?;
-    fresh.set(c"pending", null(anchor)?)?;
-    runner.assign(c"claudeApiError", fresh)?;
-    Ok(Some(fresh))
+    let state = runner.get(c"claudeApiError")?;
+    Ok(state.truthy()?.then_some(state))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -740,30 +739,27 @@ fn api_error_envelope<'a>(
     if !pending.truthy()? {
         return null(anchor);
     }
-    let pending_text = string_or_empty(pending.get(c"text")?)?;
+    let pending_text = crate::api_error_text::string_or_empty(pending.get(c"text")?)?;
     let message_value = string_value(anchor, pending_text)?;
     let parsed = detect(anchor, provider_name, message_value)?;
     let body = if pending.get(c"appended")?.truthy()? {
-        let before = string_or_empty(pending.get(c"bodyBefore")?)?;
+        let before = crate::api_error_text::string_or_empty(pending.get(c"bodyBefore")?)?;
         if before.trim().is_empty() {
             null(anchor)?
         } else {
-            string_value(anchor, before)?
+            pending.get(c"bodyBefore")?
         }
     } else {
-        let current = string_or_empty(current_text)?;
+        let current = crate::api_error_text::string_or_empty(current_text)?;
         if current.trim().is_empty() {
             null(anchor)?
         } else {
             current_text
         }
     };
-    let http_status = nullish_or(
-        pending.get(c"httpStatus")?,
-        nullish_or(parsed.optional(c"httpStatus")?, null(anchor)?)?,
-    )?;
+    let source = api_error_policy::envelope_source_for(&read(provider_name)?);
     let provider = if provider_name.truthy()? {
-        provider_name.coerce_string()?
+        crate::api_error_text::js_string(provider_name)?
     } else {
         JsString::from_rust_str("claude")
     };
@@ -771,7 +767,10 @@ fn api_error_envelope<'a>(
     let lowered = provider_value
         .get(c"toLowerCase")?
         .call(provider_value, &[])?;
-    let source = api_error_policy::envelope_source_for(&read(provider_name)?);
+    let mut http_status = pending.get(c"httpStatus")?;
+    if http_status.nullish()? {
+        http_status = nullish_or(parsed.optional(c"httpStatus")?, null(anchor)?)?;
+    }
     let out = object(anchor)?;
     out.set(c"source", string_value(anchor, source)?)?;
     out.set(c"provider", lowered)?;
@@ -781,6 +780,29 @@ fn api_error_envelope<'a>(
     out.set(c"structured", boolean(anchor, true)?)?;
     out.set(c"cliError", pending.get(c"cliError")?)?;
     out.freeze()
+}
+
+/// Finalize a process or resident stream using the same structured error as
+/// the per-event reducer. Only write back when the envelope has a partial answer.
+#[napi]
+pub fn chat_claude_boundary_envelope(
+    env: Env,
+    runner: Unknown<'_>,
+    provider: Unknown<'_>,
+    cs: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let cs = LV::new(&env, cs);
+    let envelope = api_error_envelope(
+        cs,
+        LV::new(&env, runner),
+        LV::new(&env, provider),
+        cs.optional(c"currentAssistantText")?,
+    )?;
+    let body = envelope.optional(c"body")?;
+    if !body.nullish()? {
+        cs.assign(c"currentAssistantText", body)?;
+    }
+    Ok(envelope.raw())
 }
 
 /// `recordResultEvent(turn, runner, { current: true, persisted: false })`.

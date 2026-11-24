@@ -281,4 +281,10 @@ function applyClaudeChatEventLegacy(ports, cs, sessionName, evt, forward, turn, 
   forward(evt);
 }
 
-module.exports = { applyClaudeChatEventLegacy, apiErrorMessageOf, statusOf };
+function boundaryEnvelope(runner, providerName, cs) {
+  const envelope = apiErrorEnvelope(runner, providerName, cs?.currentAssistantText);
+  if (envelope && envelope.body != null) cs.currentAssistantText = envelope.body;
+  return envelope;
+}
+
+module.exports = { applyClaudeChatEventLegacy, apiErrorMessageOf, boundaryEnvelope, statusOf };

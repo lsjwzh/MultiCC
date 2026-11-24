@@ -5,7 +5,7 @@
 // "API Error: …" assistant message was appended to the answer, and the held
 // turn was released as SUCCESS. The last upstream request of the turn decides
 // (background-hold), and the synthetic message is structured evidence handled
-// by src/chat/claude-api-error-message.js rather than model output.
+// by the native chat reducer.
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -15,7 +15,6 @@ const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createBackgroundHold } = require('../src/chat/background-hold');
 const { isMainResult } = require('../src/cli-adapters/result-completion');
 const { detectErrorEnvelope } = require('../src/chat/api-error-policy');
-const { apiErrorMessageOf } = require('../src/chat/claude-api-error-message');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 const noop = () => {};
@@ -267,18 +266,23 @@ test('watchdog: a synthetic API-error message followed by a success result is st
 });
 
 test('synthetic message recognition accepts wire and camelCase transcript spellings', () => {
-  const wire = apiErrorMessageOf(textEvent(ENVELOPE, { is_api_error_message: true, api_error_status: 429,
+  function pendingAfter(event) {
+    const env = build();
+    runStream(env, [event], { hold: false });
+    return env.runner.claudeApiError?.pending ?? null;
+  }
+  const wire = pendingAfter(textEvent(ENVELOPE, { is_api_error_message: true, api_error_status: 429,
     error: 'rate_limit', request_id: 'req_9' }));
   assert.equal(wire.text, ENVELOPE);
   assert.equal(wire.httpStatus, 429);
   assert.equal(wire.cliError, 'rate_limit');
   assert.equal(wire.key, 'req_9\0' + ENVELOPE);
-  const camel = apiErrorMessageOf(textEvent(ENVELOPE, { isApiErrorMessage: true, apiErrorStatus: 429,
+  const camel = pendingAfter(textEvent(ENVELOPE, { isApiErrorMessage: true, apiErrorStatus: 429,
     uuid: 'uuid-9' }));
   assert.equal(camel.httpStatus, 429);
   assert.equal(camel.key, 'uuid-9');
-  assert.equal(apiErrorMessageOf({ type: 'assistant', error: 'rate_limit',
+  assert.equal(pendingAfter({ type: 'assistant', error: 'rate_limit',
     message: { model: '<synthetic>', content: [{ type: 'text', text: ENVELOPE }] } }).httpStatus, null);
-  assert.equal(apiErrorMessageOf(realAnswer('plain')), null);
-  assert.equal(apiErrorMessageOf({ type: 'user', is_api_error_message: true }), null);
+  assert.equal(pendingAfter(realAnswer('plain')), null);
+  assert.equal(pendingAfter({ type: 'user', is_api_error_message: true }), null);
 });
