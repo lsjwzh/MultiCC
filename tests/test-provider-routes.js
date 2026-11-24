@@ -782,6 +782,7 @@ test('relayShareCreate mints a provider-scoped credential or reports RELAY_TOKEN
     providerName: 'Claude One',
     publicBaseUrl: 'https://relay.example',
     relayBaseUrl: 'https://relay.example/claude-proxy/claude-one/remote',
+    mode: '',
     token: 'manual-secret',
     label: 'office mac',
   });
