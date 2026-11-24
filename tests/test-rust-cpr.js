@@ -656,11 +656,15 @@ rustTest('Rust 流持续输出时总截止仍生效且不被空闲续期延长',
 });
 
 rustTest('Rust 流的客户端取消与计时竞争只终结一次，不留下上游连接', async t => {
+  // Leave enough room for response headers + AbortController teardown on loaded
+  // shared runners (especially Windows), while still waiting past stallTimeoutMs
+  // afterwards to prove the cancelled watchdog never fires a second outcome.
+  const stallTimeoutMs = 800;
   let closed;
   const upstreamClosed = new Promise(resolve => { closed = resolve; });
   const h = await harness(t, {
     authorize: () => ({ ok: true, attempt: { sessionId: 'fixture', turnId: 't1', routeAttemptId: 'r1',
-      connectTimeoutMs: 1000, stallTimeoutMs: 220, requestTimeoutMs: 2000 } }),
+      connectTimeoutMs: 1000, stallTimeoutMs, requestTimeoutMs: 4000 } }),
     upstream: (_req, res) => {
       res.writeHead(200, { 'content-type': 'text/event-stream' }); res.flushHeaders();
       res.write(': ready\n\n'); res.once('close', closed);
@@ -673,7 +677,7 @@ rustTest('Rust 流的客户端取消与计时竞争只终结一次，不留下�
   controller.abort();
   await res.text().catch(() => {});
   await Promise.race([upstreamClosed, new Promise((_, reject) => setTimeout(() => reject(new Error('upstream not closed')), 2500))]);
-  await new Promise(resolve => setTimeout(resolve, 300));
+  await new Promise(resolve => setTimeout(resolve, stallTimeoutMs + 150));
   assert.equal(h.outcomes.length, 1);
   assert.notEqual(h.outcomes[0].errorCode, 'stream_idle_timeout');
   assert.notEqual(h.outcomes[0].errorCode, 'response_stalled_before_response');
