@@ -9,7 +9,7 @@ const { createTaskShellRuntime, failure, cleanError } = require('./runtime');
 const { getNative } = require('../native/runtime');
 const { createArtifactsMemo, collectTaskArtifacts, artifactFileExists } = require('./artifacts');
 const { clearShellHistory, shellHistoryPage, watchShellHistory } = require('./chat-history');
-const { createAttributionSettingsFromEnv } = require('./attribution-settings');
+const { createAttributionSettingsFromEnv } = require('../native/task-domain');
 const { isTerminalLetter } = require('../classify/vocab');
 
 function createTaskShellHost(deps) {

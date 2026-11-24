@@ -116,6 +116,15 @@ function getAttributionModePolicy() {
   return attributionModePolicy;
 }
 
+function createAttributionSettings({ initial = null } = {}) {
+  const state = new (getNative().HostAttributionSettings)(initial);
+  return { getMode: () => state.getMode(), setMode: value => state.setMode(value) };
+}
+
+function createAttributionSettingsFromEnv() {
+  return createAttributionSettings({ initial: process.env.MULTICC_TASK_ATTRIBUTION_MODE });
+}
+
 function normalizePins(value, limit) { return getNative().airNormalizeTaskIds(value, limit); }
 
 function readStoredPinIds(file) {
@@ -235,6 +244,7 @@ function createAirTodoIgnoreRuntime(rawDeps) {
 }
 
 module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes,
+  createAttributionSettings, createAttributionSettingsFromEnv,
   readStoredPinIds, normalizePins, createTaskIdListRuntime, createAirPinRuntime, createAirTodoRuntime,
   createAirTodoIgnoreRuntime, normalizeIgnores,
   get TODO_IGNORE_LIMIT() { return getNative().AIR_TODO_IGNORE_LIMIT; },

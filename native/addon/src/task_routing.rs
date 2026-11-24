@@ -61,3 +61,54 @@ pub fn plan_host_attribution_action(
         .from_value(&from_serde(&task_routing::plan_attribution_action(&input)))?
         .raw())
 }
+
+// Each host owns an independent live setting. File persistence and its
+// compensating write stay with the settings route.
+#[napi]
+pub struct HostAttributionSettings {
+    mode: std::cell::Cell<&'static str>,
+}
+
+#[napi]
+impl HostAttributionSettings {
+    #[napi(constructor)]
+    pub fn new(env: Env, initial: Unknown<'_>) -> Result<Self> {
+        let initial = policy_text(LiveValue::new(&env, initial))?;
+        let mode =
+            task_routing::normalize_mode(initial.as_deref()).unwrap_or(task_routing::DEFAULT_MODE);
+        Ok(Self {
+            mode: std::cell::Cell::new(mode),
+        })
+    }
+
+    #[napi]
+    pub fn get_mode(&self) -> String {
+        self.mode.get().to_owned()
+    }
+
+    #[napi]
+    pub fn set_mode(&self, env: Env, value: Unknown<'_>) -> Result<sys::napi_value> {
+        let value = LiveValue::new(&env, value);
+        let text = policy_text(value)?;
+        let Some(requested) = task_routing::normalize_mode(text.as_deref()) else {
+            let message = format!("mode must be one of {}", task_routing::MODES.join(", "));
+            let error = value
+                .global()?
+                .get(c"Error")?
+                .construct(&[value.from_value(&JsValue::string(&message))?])?;
+            error.set(c"code", value.from_value(&JsValue::string("invalid_mode"))?)?;
+            error.set(c"status", value.from_value(&JsValue::Number(400.0))?)?;
+            return Err(error.throw_error());
+        };
+        let previous = self.mode.replace(requested);
+        let changed = previous != requested;
+        let mut fields = vec![
+            ("mode", JsValue::string(requested)),
+            ("changed", JsValue::Bool(changed)),
+        ];
+        if changed {
+            fields.push(("previous", JsValue::string(previous)));
+        }
+        Ok(value.from_value(&JsValue::object(fields))?.raw())
+    }
+}

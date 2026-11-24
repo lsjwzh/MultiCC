@@ -656,9 +656,9 @@ test('/api task-board, search, task-graph, mark-achieved and task-attribution ro
     const text = fs.readFileSync(path.join(ROOT, 'src', 'routes', `${file}.js`), 'utf8');
     assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false, `${file}.js must not register routes`);
   }
-  const attribution = fs.readFileSync(path.join(ROOT, 'src', 'task-shell', 'attribution-settings.js'), 'utf8');
+  const attribution = fs.readFileSync(path.join(ROOT, 'src', 'native', 'task-domain.js'), 'utf8');
   assert.equal(/app\.(get|post|put|patch|delete)\(/.test(attribution), false,
-    'attribution-settings.js must not register routes');
+    'the task domain compatibility port must not register routes');
   assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
   assert.ok(host.includes("'/api/__host/task-routes'"), 'and it is not a public path');
   assert.ok(host.includes("case 'mark-achieved-facts':"),
