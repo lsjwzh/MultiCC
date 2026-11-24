@@ -23,6 +23,19 @@ function fanOutAuxVerdictStaleness({ sessions, getTaskState, chatBroadcast, work
   return getNative().fanOutAuxVerdictStaleness(auxHealthProvider, sessions, getTaskState, chatBroadcast, workspaceBroadcast);
 }
 
+let notificationWords;
+function getPushNotificationCopy() {
+  if (notificationWords) return notificationWords;
+  const native = getNative();
+  const tables = native.pushNotificationTables();
+  notificationWords = {
+    COPY: tables.COPY, KEY_OF: tables.KEY_OF,
+    copyKeyFor: spec => native.pushNotificationKey(spec, tables.KEY_OF),
+    notificationCopy: (spec, locale, goalState) => native.pushNotificationCopy(spec, locale, goalState, tables),
+  };
+  return notificationWords;
+}
+
 const counts = { search: 0, usage: 0 };
 // Compatibility value for Node modules that must load before the addon; the
 // native delivery API is the policy owner and preflight verifies this marker.
@@ -392,7 +405,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getPushNotificationCopy, getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

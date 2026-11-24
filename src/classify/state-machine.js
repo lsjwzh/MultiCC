@@ -337,7 +337,7 @@ function createClassifyStateMachine(rawDeps) {
       let fallbackPush = null;
       if (isTerminal) {
         // The succeeded push carries the letter + the D sub-state so the lock
-        // screen can say 达成目标/需要交互 (see ./push/notification-copy). Only
+        // screen can say 达成目标/需要交互 (see push_notification_copy.rs). Only
         // this branch fires it — the W/B/E pushes below never carry a goalState.
         if (!dismissedQuestion) {
           if (holdPush) fallbackPush = () => triggerPush(sessionId, 'succeeded', msg, { classifyState: 'D', goalState });

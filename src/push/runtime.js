@@ -3,7 +3,7 @@
 const { sanitizePublicText } = require('../http/public-safety');
 const { isSettledLetter } = require('../classify/vocab');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
-const { notificationCopy } = require('./notification-copy');
+const { notificationCopy } = require('../native/runtime').getPushNotificationCopy();
 const channelRegistry = require('../plugins/channel-registry');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
@@ -255,7 +255,7 @@ function createPushRuntime(options) {
     const cwd = session ? String(session.cwd || '') : '';
     const shortCwd = cwd.length > 30 ? `...${cwd.slice(-27)}` : cwd;
     const spec = (options && options.classifyState) || type;
-    // Title copy comes from the one table in ./notification-copy (which reads
+    // Title copy comes from the Rust notification table (which reads
     // the classify vocab) — no per-type string branches here any more.
     // `goalState` (the D sub-state, only ever sent on the succeeded push)
     // picks the finer title word and rides along in the payload for webhook /
