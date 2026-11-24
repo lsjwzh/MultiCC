@@ -4094,6 +4094,15 @@
       ]
     },
     {
+      "path": "tests/test-large-context-prefix.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-shells"
+      ]
+    },
+    {
       "path": "tests/test-lid-display-guard.js",
       "tier": "core",
       "lane": "deterministic",

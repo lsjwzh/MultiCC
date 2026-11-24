@@ -4,7 +4,7 @@ const { selectContext } = require('../context/selection');
 const { boundedSnapshot, boundedHandoff } = require('./context-snapshot');
 
 function createContextPlanner({ store, getRecord, getHistory, getTask, graphContextOf }) {
-  function prepare(task, { receiptId, turnId, text = '', isFirstTurn = false, fallback = '', memory, budget = 8000, force = false }) {
+  function prepare(task, { receiptId, turnId, text = '', isFirstTurn = false, fallback = '', memory, budget = 4800, force = false }) {
     const receipt = store.get('receipt', receiptId);
     if (!receipt || receipt.taskId !== task.id) throw new Error('context_receipt_mismatch');
     // 已提交的计划压缩过（没有注入文本），同一轮再来只能重新准备。
