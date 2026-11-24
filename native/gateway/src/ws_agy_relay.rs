@@ -12,32 +12,21 @@
 //!      `agy`，所有终端命令与文件操作经 Host 临时环回代理通过同一条 WebSocket 发回 Client 真机执行
 //!      —— 借用方拿不到 VPS SSH 权限、看不到 Host 文件、也接触不到 Host 的 Google OAuth 凭据。
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{HeaderMap, Request, Response, StatusCode};
-use axum::response::IntoResponse;
-use axum::routing::post;
-use axum::{Json, Router};
+use axum::http::{Request, Response, StatusCode};
 use futures_util::{SinkExt, StreamExt};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::TcpListener;
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{
-    tungstenite::{
-        protocol::{Role, WebSocketConfig},
-        Message,
-    },
+    tungstenite::{protocol::Role, Message},
     WebSocketStream,
 };
 
@@ -48,23 +37,14 @@ use multicc_core::agy_remote::{
     FILE_MODE_REMOTE_MCP,
 };
 use multicc_core::egress_plugin::LOOPBACK_NO_PROXY;
-use multicc_core::host_exec::verify_bearer_token;
 use multicc_core::state_file;
 
 use crate::app::express::{self, RequestCtx};
 use crate::app::provider_relay;
-use crate::host_exec::generate_token;
-use crate::ws_handshake;
-
-const MAX_WS_PAYLOAD: usize = 32 * 1024 * 1024;
-const START_FRAME_TIMEOUT: Duration = Duration::from_secs(15);
-const HOST_EXEC_RPC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-
-fn ws_config() -> WebSocketConfig {
-    WebSocketConfig::default()
-        .max_frame_size(Some(MAX_WS_PAYLOAD))
-        .max_message_size(Some(MAX_WS_PAYLOAD))
-}
+use crate::cli_relay_bridge::{
+    resolve_host_exec_mcp_bin, stable_session_scratch_dir, upgrade_ws, ws_config, HostRelayBridge,
+    RouterContext, RouterMcpSpec, START_FRAME_TIMEOUT,
+};
 
 fn home_dir() -> Option<PathBuf> {
     std::env::var_os("MULTICC_AGY_ACCOUNTS_HOME")
@@ -345,6 +325,7 @@ pub async fn handle_ping(ctx: &RequestCtx, peer: &str, host_port: u16) -> Respon
 pub async fn handle_ws(
     peer: SocketAddr,
     host_port: u16,
+    router_mcp: Option<RouterMcpSpec>,
     mut request: Request<Body>,
 ) -> Response<Body> {
     let path = request.uri().path().to_string();
@@ -379,39 +360,11 @@ pub async fn handle_ws(
     }
 
     request = Request::from_parts(parts, body);
-    let header = |name| {
-        request
-            .headers()
-            .get(name)
-            .and_then(|value| value.to_str().ok())
+    let (response, upgrade) = match upgrade_ws(&mut request) {
+        Ok(pair) => pair,
+        Err(rejected) => return rejected,
     };
-    let plan = ws_handshake::plan(&ws_handshake::Request {
-        method: request.method().as_str(),
-        upgrade: header("upgrade"),
-        key: header("sec-websocket-key"),
-        version: header("sec-websocket-version"),
-        protocol: header("sec-websocket-protocol"),
-    });
-    let raw = String::from_utf8(plan.response).expect("handshake is ASCII");
-    let (head, resp_body) = raw.split_once("\r\n\r\n").expect("complete handshake");
-    let mut lines = head.split("\r\n");
-    let status = lines
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .expect("handshake status");
-    let mut builder = Response::builder().status(status);
-    for line in lines {
-        let (name, value) = line.split_once(": ").expect("handshake header");
-        builder = builder.header(name, value);
-    }
-    if !plan.accepted {
-        return builder
-            .body(Body::from(resp_body.to_owned()))
-            .expect("handshake response");
-    }
 
-    let upgrade = hyper::upgrade::on(&mut request);
     tokio::spawn(async move {
         let Ok(upgraded) = upgrade.await else { return };
         let socket = WebSocketStream::from_raw_socket(
@@ -420,115 +373,16 @@ pub async fn handle_ws(
             Some(ws_config()),
         )
         .await;
-        serve_relay_session(socket, home, account_id).await;
+        serve_relay_session_with_router(socket, home, account_id, router_mcp).await;
     });
-    builder
-        .status(StatusCode::SWITCHING_PROTOCOLS)
-        .body(Body::empty())
-        .expect("handshake response")
+    response
 }
 
-struct RelayRpcBridgeState {
-    token: String,
-    ws_tx: mpsc::UnboundedSender<String>,
-    pending: Mutex<HashMap<String, oneshot::Sender<(u16, Value)>>>,
-    next_id: AtomicU64,
-}
-
-async fn forward_rpc_to_client(
-    state: Arc<RelayRpcBridgeState>,
-    headers: HeaderMap,
-    path: &'static str,
-    body: Value,
-) -> axum::response::Response {
-    let auth = headers.get("authorization").and_then(|v| v.to_str().ok());
-    if !verify_bearer_token(auth, &state.token) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "ok": false, "error": "unauthorized" })),
-        )
-            .into_response();
-    }
-    let req_id = format!("r{}", state.next_id.fetch_add(1, Ordering::Relaxed) + 1);
-    let (tx, rx) = oneshot::channel::<(u16, Value)>();
-    state.pending.lock().await.insert(req_id.clone(), tx);
-
-    let frame = json!({
-        "type": "host_exec_req",
-        "reqId": req_id,
-        "path": path,
-        "body": body,
-    })
-    .to_string();
-    if state.ws_tx.send(frame).is_err() {
-        state.pending.lock().await.remove(&req_id);
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "ok": false, "error": "借用方 WebSocket 连接已断开" })),
-        )
-            .into_response();
-    }
-
-    match tokio::time::timeout(HOST_EXEC_RPC_TIMEOUT, rx).await {
-        Ok(Ok((status_code, payload))) => {
-            let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
-            (status, Json(payload)).into_response()
-        }
-        Ok(Err(_)) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "ok": false, "error": "借用方未返回执行结果" })),
-        )
-            .into_response(),
-        Err(_) => {
-            state.pending.lock().await.remove(&req_id);
-            (
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(json!({ "ok": false, "error": "等待借用方本机执行超时" })),
-            )
-                .into_response()
-        }
-    }
-}
-
-async fn rpc_exec(
-    State(state): State<Arc<RelayRpcBridgeState>>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> axum::response::Response {
-    forward_rpc_to_client(state, headers, "/exec", body).await
-}
-async fn rpc_read_file(
-    State(state): State<Arc<RelayRpcBridgeState>>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> axum::response::Response {
-    forward_rpc_to_client(state, headers, "/fs/read", body).await
-}
-async fn rpc_write_file(
-    State(state): State<Arc<RelayRpcBridgeState>>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> axum::response::Response {
-    forward_rpc_to_client(state, headers, "/fs/write", body).await
-}
-async fn rpc_list_dir(
-    State(state): State<Arc<RelayRpcBridgeState>>,
-    headers: HeaderMap,
-    Json(body): Json<Value>,
-) -> axum::response::Response {
-    forward_rpc_to_client(state, headers, "/fs/list", body).await
-}
-
-fn ensure_host_relay_mcp_config(account_home: &Path) -> Result<(), String> {
-    let mcp_bin = std::env::var("MULTICC_HOST_EXEC_MCP_BIN")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned())
-        })
-        .ok_or_else(|| "无法定位 Host multicc-gateway 路径".to_string())?;
+fn ensure_host_relay_mcp_config(
+    account_home: &Path,
+    router_mcp: Option<&RouterMcpSpec>,
+) -> Result<(), String> {
+    let mcp_bin = resolve_host_exec_mcp_bin()?;
     let cfg_path = account_home
         .join(".gemini")
         .join("config")
@@ -548,7 +402,7 @@ fn ensure_host_relay_mcp_config(account_home: &Path) -> Result<(), String> {
     } else {
         json!({})
     };
-    let desired = json!({
+    let desired_exec = json!({
         "command": mcp_bin,
         "args": ["host-exec-mcp"],
     });
@@ -561,8 +415,22 @@ fn ensure_host_relay_mcp_config(account_home: &Path) -> Result<(), String> {
         *servers = json!({});
     }
     let map = servers.as_object_mut().expect("mcpServers");
-    if map.get("multicc_host_exec") != Some(&desired) {
-        map.insert("multicc_host_exec".to_string(), desired);
+    let mut changed = false;
+    if map.get("multicc_host_exec") != Some(&desired_exec) {
+        map.insert("multicc_host_exec".to_string(), desired_exec);
+        changed = true;
+    }
+    if let Some(spec) = router_mcp {
+        let desired_router = json!({
+            "command": spec.node_bin,
+            "args": [spec.script_path.to_string_lossy().into_owned()],
+        });
+        if map.get("multicc_router") != Some(&desired_router) {
+            map.insert("multicc_router".to_string(), desired_router);
+            changed = true;
+        }
+    }
+    if changed {
         state_file::write_json_atomic(&cfg_path, &root)
             .map_err(|err| format!("写入 Host mcp_config.json 失败: {err}"))?;
     }
@@ -589,6 +457,18 @@ pub async fn serve_relay_session<S>(
     socket: WebSocketStream<S>,
     host_home: PathBuf,
     account_id: String,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    serve_relay_session_with_router(socket, host_home, account_id, None).await;
+}
+
+/// 在已认证的 WebSocket 连接上运行一次 Host 侧 `agy` 回合，并可选桥接 `multicc_router` MCP。
+pub async fn serve_relay_session_with_router<S>(
+    socket: WebSocketStream<S>,
+    host_home: PathBuf,
+    account_id: String,
+    router_mcp: Option<RouterMcpSpec>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
@@ -658,6 +538,7 @@ pub async fn serve_relay_session<S>(
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
+    let router_ctx = RouterContext::from_start_frame(&start_val);
 
     // 校验 Host 本地账号存在 + 实时解析 Host 绑定的出口代理（fail-closed）。
     let (account_home, egress_binding) =
@@ -691,15 +572,16 @@ pub async fn serve_relay_session<S>(
         None
     };
 
-    if let Err(err) = ensure_host_relay_mcp_config(&account_home) {
+    let active_router_mcp = router_ctx.as_ref().and_then(|_| router_mcp.as_ref());
+    if let Err(err) = ensure_host_relay_mcp_config(&account_home, active_router_mcp) {
         send_agy_error_and_exit(&ws_tx, &err);
         drop(ws_tx);
         let _ = writer_task.await;
         return;
     }
 
-    let turn_token = match generate_token() {
-        Ok(t) => t,
+    let bridge = match HostRelayBridge::start(ws_tx.clone()).await {
+        Ok(b) => b,
         Err(err) => {
             send_agy_error_and_exit(&ws_tx, &err);
             drop(ws_tx);
@@ -708,44 +590,8 @@ pub async fn serve_relay_session<S>(
         }
     };
 
-    let rpc_state = Arc::new(RelayRpcBridgeState {
-        token: turn_token.clone(),
-        ws_tx: ws_tx.clone(),
-        pending: Mutex::new(HashMap::new()),
-        next_id: AtomicU64::new(0),
-    });
-
-    let listener = match TcpListener::bind("127.0.0.1:0").await {
-        Ok(l) => l,
-        Err(err) => {
-            send_agy_error_and_exit(&ws_tx, &format!("无法启动 Host 环回执行桥: {err}"));
-            drop(ws_tx);
-            let _ = writer_task.await;
-            return;
-        }
-    };
-    let bridge_addr = match listener.local_addr() {
-        Ok(a) => a,
-        Err(err) => {
-            send_agy_error_and_exit(&ws_tx, &format!("读取环回执行桥端口失败: {err}"));
-            drop(ws_tx);
-            let _ = writer_task.await;
-            return;
-        }
-    };
-    let router = Router::new()
-        .route("/exec", post(rpc_exec))
-        .route("/fs/read", post(rpc_read_file))
-        .route("/fs/write", post(rpc_write_file))
-        .route("/fs/list", post(rpc_list_dir))
-        .with_state(rpc_state.clone());
-    let bridge_task = tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
-    });
-
     // 为本轮对话创建空隔离目录，禁止 agy 触碰 Host 的任何业务文件。
-    let scratch_dir =
-        std::env::temp_dir().join(format!("multicc-agy-relay-scratch-{}", &turn_token[..16]));
+    let (scratch_dir, _) = stable_session_scratch_dir("agy", &account_id, None, bridge.token());
     let _ = std::fs::create_dir_all(&scratch_dir);
 
     let settings_json = build_remote_permissions_settings(FILE_MODE_REMOTE_MCP);
@@ -783,20 +629,16 @@ pub async fn serve_relay_session<S>(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .env("HOME", &account_home)
-        .env(
-            "MULTICC_HOST_EXEC_URL",
-            format!("http://127.0.0.1:{}", bridge_addr.port()),
-        )
-        .env("MULTICC_HOST_EXEC_TOKEN", &turn_token)
-        .env("MULTICC_HOST_EXEC_LOCAL_ROOT", &local_root)
-        .env(
-            "MULTICC_HOST_EXEC_REMOTE_ROOT",
-            scratch_dir.to_string_lossy().as_ref(),
-        )
-        .env("MULTICC_HOST_EXEC_OS", &local_os)
-        .env("MULTICC_HOST_EXEC_FILE_MODE", FILE_MODE_REMOTE_MCP)
         .env_remove("MULTICC_AGY_REMOTE_ACCOUNT_JSON")
         .env_remove("MULTICC_AGY_EGRESS_JSON");
+    bridge.apply_child_env(
+        &mut cmd,
+        &local_root,
+        &scratch_dir.to_string_lossy(),
+        &local_os,
+        FILE_MODE_REMOTE_MCP,
+        router_ctx.as_ref(),
+    );
 
     if let Some(url) = proxy_url.as_deref() {
         cmd.env("HTTP_PROXY", url)
@@ -812,7 +654,7 @@ pub async fn serve_relay_session<S>(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(err) => {
-            bridge_task.abort();
+            bridge.shutdown().await;
             let _ = std::fs::remove_dir_all(&scratch_dir);
             send_agy_error_and_exit(&ws_tx, &format!("Host 启动 agy 失败（{agy_bin}）: {err}"));
             drop(ws_tx);
@@ -824,36 +666,23 @@ pub async fn serve_relay_session<S>(
     let child_stdout = child.stdout.take();
     let child_stderr = child.stderr.take();
 
-    // 读 Client 发回的 host_exec_res / 监听断连取消。
+    // 读 Client 发回的 host_exec_res / router_tool_* / 监听断连取消。
     let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-    let rpc_reader_state = rpc_state.clone();
+    let bridge_handle = bridge.handle();
     let reader_task = tokio::spawn(async move {
         while let Some(msg_res) = ws_stream.next().await {
             let Ok(msg) = msg_res else { break };
             match msg {
                 Message::Text(text) => {
                     if let Ok(val) = serde_json::from_str::<Value>(&text) {
-                        if val.get("type").and_then(Value::as_str) == Some("host_exec_res") {
-                            if let Some(req_id) = val.get("reqId").and_then(Value::as_str) {
-                                let status = val
-                                    .get("status")
-                                    .and_then(Value::as_u64)
-                                    .and_then(|n| u16::try_from(n).ok())
-                                    .unwrap_or(200);
-                                let body = val.get("body").cloned().unwrap_or_else(|| json!({}));
-                                if let Some(tx) =
-                                    rpc_reader_state.pending.lock().await.remove(req_id)
-                                {
-                                    let _ = tx.send((status, body));
-                                }
-                            }
-                        }
+                        bridge_handle.handle_client_frame(&val).await;
                     }
                 }
                 Message::Close(_) => break,
                 _ => {}
             }
         }
+        bridge_handle.fail_all_pending().await;
         let _ = cancel_tx.send(());
     });
 
@@ -908,9 +737,7 @@ pub async fn serve_relay_session<S>(
     let stderr_text = stderr_task.await.unwrap_or_default();
     reader_task.abort();
     let _ = reader_task.await;
-    bridge_task.abort();
-    let _ = bridge_task.await;
-    drop(rpc_state);
+    bridge.shutdown().await;
     let _ = std::fs::remove_dir_all(&scratch_dir);
 
     if !client_cancelled {

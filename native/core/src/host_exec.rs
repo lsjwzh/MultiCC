@@ -59,9 +59,59 @@ pub struct HostFsWriteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HostFsEditRequest {
+    pub path: String,
+    pub old_text: String,
+    pub new_text: String,
+    #[serde(default)]
+    pub replace_all: bool,
+}
+
+/// 在纯文本内容上执行精确字符串替换（默认要求唯一匹配，防止误改）。
+pub fn apply_fs_edit(
+    content: &str,
+    old_text: &str,
+    new_text: &str,
+    replace_all: bool,
+) -> Result<(String, usize), String> {
+    if old_text.is_empty() {
+        return Err("old_text 不能为空".to_string());
+    }
+    let count = content.matches(old_text).count();
+    if count == 0 {
+        return Err("未在目标文件中找到匹配的 old_text".to_string());
+    }
+    if !replace_all && count > 1 {
+        return Err(format!(
+            "在目标文件中匹配到 {count} 处 old_text，请提供更长上下文或设置 replace_all=true"
+        ));
+    }
+    if replace_all {
+        Ok((content.replace(old_text, new_text), count))
+    } else {
+        Ok((content.replacen(old_text, new_text, 1), 1))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HostFsListRequest {
     #[serde(default)]
     pub path: Option<String>,
+}
+
+/// 恒定时间校验原始密钥头（如 `x-multicc-router-capability`）。
+pub fn verify_raw_token(actual: Option<&str>, expected: &str) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
+    let Some(token) = actual.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    if token.len() != expected.len() {
+        return false;
+    }
+    bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
 }
 
 /// 恒定时间校验 `Authorization: Bearer <token>`。
@@ -79,10 +129,7 @@ pub fn verify_bearer_token(header: Option<&str>, expected: &str) -> bool {
     else {
         return false;
     };
-    if token.len() != expected.len() {
-        return false;
-    }
-    bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
+    verify_raw_token(Some(token), expected)
 }
 
 /// 词法规范化路径（不依赖磁盘存在性），禁止 `..` 越过根路径。
@@ -413,6 +460,10 @@ mod tests {
         assert!(!verify_bearer_token(Some("Basic secret123"), "secret123"));
         assert!(!verify_bearer_token(None, "secret123"));
         assert!(!verify_bearer_token(Some("Bearer "), ""));
+        assert!(verify_raw_token(Some("cap_tok_abc"), "cap_tok_abc"));
+        assert!(!verify_raw_token(Some("cap_tok_xyz"), "cap_tok_abc"));
+        assert!(!verify_raw_token(Some(""), "cap_tok_abc"));
+        assert!(!verify_raw_token(Some("cap_tok_abc"), ""));
     }
 
     #[test]
@@ -456,5 +507,20 @@ mod tests {
         let truncated = truncate_utf8_bytes(s.as_bytes(), 7);
         assert!(truncated.contains("output truncated"));
         assert_eq!(truncate_utf8_bytes(b"hello", 10), "hello");
+    }
+
+    #[test]
+    fn apply_fs_edit_enforces_uniqueness_unless_replace_all() {
+        assert_eq!(
+            apply_fs_edit("foo bar baz", "bar", "BAR", false).unwrap(),
+            ("foo BAR baz".to_string(), 1)
+        );
+        assert!(apply_fs_edit("foo foo", "foo", "bar", false).is_err());
+        assert_eq!(
+            apply_fs_edit("foo foo", "foo", "bar", true).unwrap(),
+            ("bar bar".to_string(), 2)
+        );
+        assert!(apply_fs_edit("hello", "missing", "x", false).is_err());
+        assert!(apply_fs_edit("hello", "", "x", false).is_err());
     }
 }

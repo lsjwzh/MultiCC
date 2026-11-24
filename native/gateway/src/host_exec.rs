@@ -23,9 +23,9 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use multicc_core::host_exec::{
-    clamp_timeout_ms, map_remote_to_local_cwd, map_remote_to_local_path, truncate_utf8_bytes,
-    verify_bearer_token, HostExecRequest, HostExecResponse, HostFsListRequest, HostFsReadRequest,
-    HostFsWriteRequest, MAX_OUTPUT_BYTES,
+    apply_fs_edit, clamp_timeout_ms, map_remote_to_local_cwd, map_remote_to_local_path,
+    truncate_utf8_bytes, verify_bearer_token, HostExecRequest, HostExecResponse, HostFsEditRequest,
+    HostFsListRequest, HostFsReadRequest, HostFsWriteRequest, MAX_OUTPUT_BYTES,
 };
 
 pub type AsyncHook =
@@ -195,7 +195,8 @@ async fn handle_exec(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .env_remove("MULTICC_AGY_REMOTE_ACCOUNT_JSON")
-        .env_remove("MULTICC_HOST_EXEC_TOKEN");
+        .env_remove("MULTICC_HOST_EXEC_TOKEN")
+        .env_remove("MULTICC_ROUTER_CAPABILITY");
     if let Some(extra_env) = &req.env {
         for (k, v) in extra_env {
             let key = k.trim();
@@ -393,6 +394,70 @@ async fn handle_fs_write(
     }
 }
 
+async fn handle_fs_edit(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(req): Json<HostFsEditRequest>,
+) -> Response {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
+        return resp;
+    }
+    let path =
+        match map_remote_to_local_path(Some(&req.path), &state.remote_root, &state.local_root) {
+            Ok(path) => path,
+            Err(err) => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "ok": false, "error": err })),
+                )
+                    .into_response();
+            }
+        };
+    if let Err(err) = verify_no_symlink_escape(&path, state.canonical_root.as_deref()) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "ok": false, "error": err })),
+        )
+            .into_response();
+    }
+    let raw = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => s,
+        Err(err) => {
+            return (
+                StatusCode::OK,
+                Json(json!({ "ok": false, "error": format!("读取待编辑文件失败: {err}") })),
+            )
+                .into_response();
+        }
+    };
+    let (updated, replacements) =
+        match apply_fs_edit(&raw, &req.old_text, &req.new_text, req.replace_all) {
+            Ok(pair) => pair,
+            Err(err) => {
+                return (StatusCode::OK, Json(json!({ "ok": false, "error": err })))
+                    .into_response();
+            }
+        };
+    let bytes = updated.as_bytes();
+    match tokio::fs::write(&path, bytes).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "path": path.to_string_lossy(),
+                "replacements": replacements,
+                "bytes": bytes.len(),
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::OK,
+            Json(json!({ "ok": false, "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 async fn handle_fs_list(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
@@ -485,6 +550,7 @@ pub async fn start_host_exec_server(
         .route("/exec", post(handle_exec))
         .route("/fs/read", post(handle_fs_read))
         .route("/fs/write", post(handle_fs_write))
+        .route("/fs/edit", post(handle_fs_edit))
         .route("/fs/list", post(handle_fs_list))
         .with_state(state);
 
@@ -562,6 +628,20 @@ pub async fn serve_mcp_stdio() -> i32 {
                 "properties": {
                     "path": { "type": "string" },
                     "content": { "type": "string" }
+                }
+            }
+        }));
+        tools.push(json!({
+            "name": "host_edit_file",
+            "description": "Perform an exact search-and-replace edit on a file in the user's real local machine workspace (much cheaper than rewriting whole files).",
+            "inputSchema": {
+                "type": "object",
+                "required": ["path", "old_text", "new_text"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "old_text": { "type": "string" },
+                    "new_text": { "type": "string" },
+                    "replace_all": { "type": "boolean" }
                 }
             }
         }));
@@ -804,6 +884,35 @@ async fn call_mcp_tool(
                 }),
             }
         }
+        "host_edit_file" => {
+            let body = json!({
+                "path": args.get("path").and_then(Value::as_str).unwrap_or(""),
+                "oldText": args.get("old_text").or_else(|| args.get("oldText")).and_then(Value::as_str).unwrap_or(""),
+                "newText": args.get("new_text").or_else(|| args.get("newText")).and_then(Value::as_str).unwrap_or(""),
+                "replaceAll": args.get("replace_all").or_else(|| args.get("replaceAll")).and_then(Value::as_bool).unwrap_or(false),
+            });
+            match post_json("/fs/edit", body).await {
+                Ok(res) if res.get("ok").and_then(Value::as_bool) == Some(true) => json!({
+                    "content": [{
+                        "type": "text",
+                        "text": format!(
+                            "Applied {} replacement(s) to {} ({} bytes)",
+                            res["replacements"],
+                            res["path"].as_str().unwrap_or(""),
+                            res["bytes"]
+                        )
+                    }]
+                }),
+                Ok(res) => json!({
+                    "isError": true,
+                    "content": [{ "type": "text", "text": format!("Error: {}", res.get("error").and_then(Value::as_str).unwrap_or("edit failed")) }]
+                }),
+                Err(err) => json!({
+                    "isError": true,
+                    "content": [{ "type": "text", "text": format!("Error: {err}") }]
+                }),
+            }
+        }
         "host_list_dir" => {
             let body = json!({ "path": args.get("path").and_then(Value::as_str) });
             match post_json("/fs/list", body).await {
@@ -927,6 +1036,43 @@ mod tests {
         .unwrap();
         assert_eq!(r["ok"], true);
         assert_eq!(r["content"], "hello host");
+
+        // Authorized fs/edit replaces exact text in-place
+        let e: Value = serde_json::from_slice(
+            &post_raw(
+                format!("{base}/fs/edit"),
+                Some(&auth),
+                json!({
+                    "path": "/remote/ws/demo/sub/hello.txt",
+                    "oldText": "host",
+                    "newText": "edited-host",
+                }),
+            )
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(e["ok"], true);
+        assert_eq!(e["replacements"], 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("sub/hello.txt")).unwrap(),
+            "hello edited-host"
+        );
+        // Restore original content before subsequent cat assertion
+        let _ = post_raw(
+            format!("{base}/fs/edit"),
+            Some(&auth),
+            json!({
+                "path": "sub/hello.txt",
+                "oldText": "edited-host",
+                "newText": "host",
+            }),
+        )
+        .await
+        .unwrap();
 
         // Escape attempt must be 403
         let esc = post_raw(

@@ -635,3 +635,94 @@ test('parseRelayShareCode accepts appType=agy share codes and rejects invalid pa
   const badType = Buffer.from(JSON.stringify({ ...payload, appType: 'unknown' }), 'utf8').toString('base64url');
   assert.match(ctx.parseRelayShareCode(`mcrelay1.${badType}`).error, /appType/);
 });
+
+test('cli-relay-spawn builds claude-remote-bridge and codex-remote-bridge invocations cleanly', () => {
+  const { resolveCliRelayTarget, applyCliRelaySpawn } = require('../src/chat/cli-relay-spawn');
+  const mockProviders = {
+    resolveCliRelayTarget(appType, id) {
+      if (id === 'relay-1') {
+        return {
+          appType,
+          relayBaseUrl: appType === 'claude'
+            ? 'https://vps.example.com/claude-proxy/claude-official/remote'
+            : 'https://vps.example.com/codex-proxy/codex-official',
+          relayAuthToken: 'mcr1.0123456789abcdef.secret1234',
+        };
+      }
+      return null;
+    },
+  };
+  assert.equal(resolveCliRelayTarget(mockProviders, 'agy', 'relay-1'), null);
+  const claudeTarget = resolveCliRelayTarget(mockProviders, 'claude', 'relay-1');
+  assert.equal(claudeTarget.appType, 'claude');
+
+  const persisted = {};
+  let saved = 0;
+  const env1 = {};
+  const turn1 = applyCliRelaySpawn({
+    target: claudeTarget,
+    childEnv: env1,
+    cwd: '/Users/dev/proj',
+    persisted,
+    prepared: {
+      invocation: { payload: 'hello claude', sdkOptions: { systemPromptAppend: 'extra hint' } },
+      invocationEnvelope: {
+        spawnOpts: { rawModel: 'claude-sonnet-4-6', rawEffort: 'high' },
+        historyHandle: { isFirstTurn: true },
+      },
+    },
+    gatewayBin: '/opt/multicc-gateway',
+    rememberActiveCliState: () => {},
+    savePersistedSessionsBestEffort: () => { saved += 1; },
+  });
+  assert.equal(turn1.spawnCmd, '/opt/multicc-gateway');
+  assert.ok(persisted.cliSessionId);
+  assert.equal(saved, 1);
+  assert.equal(turn1.finalSpawnArgs[0], 'claude-remote-bridge');
+  assert.ok(!turn1.finalSpawnArgs.includes('--resume'));
+  assert.ok(turn1.finalSpawnArgs.includes('--system-prompt-append'));
+  assert.equal(JSON.parse(env1.MULTICC_CLAUDE_CLI_RELAY_JSON).relayAuthToken, 'mcr1.0123456789abcdef.secret1234');
+
+  const env2 = {};
+  const turn2 = applyCliRelaySpawn({
+    target: claudeTarget,
+    childEnv: env2,
+    cwd: '/Users/dev/proj',
+    persisted,
+    prepared: {
+      invocation: { payload: 'follow up' },
+      invocationEnvelope: {
+        spawnOpts: { effectiveModel: 'claude-sonnet-4-6' },
+        historyHandle: { isFirstTurn: false },
+      },
+    },
+    gatewayBin: '/opt/multicc-gateway',
+    rememberActiveCliState: () => {},
+    savePersistedSessionsBestEffort: () => { saved += 1; },
+  });
+  assert.ok(turn2.finalSpawnArgs.includes('--resume'));
+  assert.equal(saved, 1);
+
+  const codexTarget = resolveCliRelayTarget(mockProviders, 'codex-exp', 'relay-1');
+  const env3 = {};
+  const codexTurn = applyCliRelaySpawn({
+    target: codexTarget,
+    childEnv: env3,
+    cwd: '/Users/dev/proj',
+    persisted: { cliSessionId: 'thr_abc' },
+    prepared: {
+      invocation: { payload: 'run tests' },
+      invocationEnvelope: {
+        spawnOpts: { rawModel: 'gpt-5.4', rawEffort: 'high' },
+        historyHandle: { isFirstTurn: false },
+      },
+    },
+    gatewayBin: '/opt/multicc-gateway',
+    rememberActiveCliState: () => {},
+    savePersistedSessionsBestEffort: () => {},
+  });
+  assert.equal(codexTurn.finalSpawnArgs[0], 'codex-remote-bridge');
+  assert.ok(codexTurn.finalSpawnArgs.includes('--thread-id'));
+  assert.ok(codexTurn.finalSpawnArgs.includes('thr_abc'));
+  assert.equal(JSON.parse(env3.MULTICC_CODEX_CLI_RELAY_JSON).appType, 'codex');
+});
