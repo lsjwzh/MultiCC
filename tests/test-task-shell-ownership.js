@@ -68,7 +68,7 @@ test('queued successors cannot cancel an ended turn; live turns and pending ques
   // 2a20600f added goalState to the task-state seed (validated, null when unset);
   // this record carries none, so the projection pins the explicit null. The
   // apiError/cancelledAt pair mirrors the WS task_state contract
-  // (src/chat/task-state-payload.js) so a reopened read-only page can repaint
+  // (multicc_core::chat_task_state_frame) so a reopened read-only page can repaint
   // the API-error bar and say 已取消 for user-stopped turns.
   assert.deepEqual(projected.classify, { state: 'W', goal: '恢复完整聊天能力', phase: 'verifying', updatedAt: 123, goalState: null,
     apiError: null, cancelledAt: null,

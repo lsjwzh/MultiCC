@@ -14,6 +14,11 @@ let sessionDeliveryApi = null;
 let auxHealthProvider = null;
 function installAuxHealthProvider(fn) { auxHealthProvider = typeof fn === 'function' ? fn : null; }
 function auxVerdictStaleness() { return getNative().auxVerdictStaleness(auxHealthProvider); }
+function taskStateFrame(task, seedOnly) {
+  return getNative().chatTaskStateFrame(task, seedOnly, require('../classify/task-short-code').taskShortCode, auxVerdictStaleness);
+}
+const taskStateSeed = task => taskStateFrame(task, true);
+const taskStatePayload = task => taskStateFrame(task, false);
 function fanOutAuxVerdictStaleness({ sessions, getTaskState, chatBroadcast, workspaceBroadcast }) {
   return getNative().fanOutAuxVerdictStaleness(auxHealthProvider, sessions, getTaskState, chatBroadcast, workspaceBroadcast);
 }
@@ -388,7 +393,7 @@ function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
 module.exports = { getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
-  installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness,
+  installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

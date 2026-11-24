@@ -129,7 +129,7 @@ function createTaskShellHost(deps) {
             goal: shortText(taskState.goal, 500), phase: shortText(taskState.phase, 80),
             // ✅ 的子状态（达成目标 / 需要交互），聊天栏和任务卡读同一个值。
             goalState: shortText(taskState.goalState, 16) || null,
-            // 与 WS task_state 同源（src/chat/task-state-payload.js）：只读页
+            // 与 WS task_state 同源（multicc_core::chat_task_state_frame）：只读页
             // 重开也要能重画 API 异常横幅、并把用户停的轮次说成「已取消」。
             apiError: taskState.apiError || null,
             cancelledAt: Number(taskState.cancelledAt) || null,
