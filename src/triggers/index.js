@@ -1,7 +1,7 @@
 'use strict';
 
 const { sanitizePublicText } = require('../http/public-safety');
-const { validateEventRule, channelProblem } = require('../events/rules');
+const { validateEventRule, channelProblem } = require('../native/runtime').getEventPolicy().rules;
 const channelRegistry = require('../plugins/channel-registry');
 
 const DEFAULT_TRIGGER_PROMPT =

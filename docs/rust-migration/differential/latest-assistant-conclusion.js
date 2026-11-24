@@ -22,7 +22,7 @@ const path = require('node:path');
 
 const root = path.resolve(process.argv[2] || path.join(__dirname, '..', '..', '..'));
 const native = require(path.join(root, 'src/session/chat-history-service'));
-const envelope = require(path.join(root, 'src/events/envelope'));
+const envelope = require(path.join(root, 'src/native/runtime')).getEventPolicy().envelope;
 const legacy = require(path.join(root, 'tests/helpers/legacy-event-conclusion'));
 
 const HOME = os.homedir();

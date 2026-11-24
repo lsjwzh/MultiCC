@@ -1,5 +1,20 @@
 # 剩余 Node 后端清单
 
+## 事件引擎的目录、规则、通知与状态转换（2026-11-25）
+
+额度批次 `21105b9b` 经 MultiCC 合入 `e4ebc062`，任务分支同步后工作区干净、差距 0/0。事件引擎、触发器和通知接线现在共用 Rust 对事件输入的处理，包括惰性读取任务状态、限制对外字段、规则校验后才分配 ID 和时间、按顺序检查渠道并返回第一个问题。宿主提供时钟和 ID 工厂、渠道验证回调及系统家目录。四个旧业务文件已从 src 删除。[Rust 实现](../../native/addon/src/event_host.rs) · [冻结实现同输入差分](../../tests/test-event-system.js)
+
+| 旧文件（src/events 下） | 迁前 Git blob |
+|---|---|
+| catalog | `deceb5ecf2ee39b8bcaa20ab5fb53de4a47d505e` |
+| rules | `2902477343f97c51a90c196399a1b097fb7a463c` |
+| task-transitions | `4e10d745b7bbbc4f5776417a8a78df8dad75f084` |
+| envelope | `adbb4eac0fc00c8fb19264296a8f2ab7d83344a4` |
+
+迁前两个定向套件 65/65。release 原生模块预检通过，迁后连同宿主端口和会话触发器共 80/80。Rust 事件相关测试 19/19。历史结论差分 35/35、语义断言 20/20、分支见证 24/24，格式与源码行数检查通过。
+
+src 内的 JS/CJS/MJS 文件 522 → 518（513 JS、2 CJS、3 MJS），业务或宿主编排文件 332 → 328。server.js 加 src 的物理行数 128,533 → 128,353，净减 180 行。[实时盘点](node-module-dependencies.md)
+
 ## 额度展示与会话广播（2026-11-25）
 
 以推送文案合并提交 `80bed22d` 为基线，两个旧入口已从生产目录删除。展示入口的 Git blob 为 `46298904b4987a6e0a050764ec27206031cbf8ad`，广播入口为 `e97dd0b1d8ed136a343d1be2de1cc7e136f63740`。Rust 负责展示对象的冻结、过期判定、对外字段选择以及按供应商和 CLI 筛选订阅会话。兼容宿主传入缓存订阅、时钟和广播回调。[展示实现](../../native/addon/src/quota_bar_view.rs) · [广播实现](../../native/addon/src/provider_limit_sync.rs)

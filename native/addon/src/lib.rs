@@ -48,6 +48,7 @@ pub mod cli_switch_runtime;
 pub mod cli_tools_runtime;
 pub mod codex_provider_home;
 pub mod cpr;
+pub mod event_host;
 pub mod events;
 pub mod exact_secret;
 pub mod guard;

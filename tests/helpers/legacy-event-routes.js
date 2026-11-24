@@ -14,8 +14,8 @@
 
 'use strict';
 
-const { EVENT_TYPES, ALIASES } = require('../../src/events/catalog');
-const { ACTION_KINDS } = require('../../src/events/rules');
+const { EVENT_TYPES, ALIASES } = require('../../src/native/runtime').getEventPolicy().catalog;
+const { ACTION_KINDS } = require('../../src/native/runtime').getEventPolicy().rules;
 const { SUPPORTED_CHAT_CLIS } = require('../../src/cli-switch');
 const { isAlias } = require('../../src/cli/cli-capability');
 const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
@@ -58,7 +58,7 @@ function mountEventRoutes(app, { hub, engine }) {
 'use strict';
 
 const { sanitizePublicText } = require('../../src/http/public-safety');
-const { validateEventRule, channelProblem } = require('../../src/events/rules');
+const { validateEventRule, channelProblem } = require('../../src/native/runtime').getEventPolicy().rules;
 const channelRegistry = require('../../src/plugins/channel-registry');
 
 const DEFAULT_TRIGGER_PROMPT =

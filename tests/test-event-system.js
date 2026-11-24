@@ -4,11 +4,11 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
 
-const { matchesPattern, isKnownPattern, EVENT_TYPES } = require('../src/events/catalog');
-const { deriveTaskEvents } = require('../src/events/task-transitions');
+const { matchesPattern, isKnownPattern, EVENT_TYPES } = require('../src/native/runtime').getEventPolicy().catalog;
+const { deriveTaskEvents } = require('../src/native/runtime').getEventPolicy().transitions;
 const { createEventHub } = require('../src/events/hub');
 const { createEventRuleEngine } = require('../src/events/engine');
-const { validateEventRule } = require('../src/events/rules');
+const { validateEventRule } = require('../src/native/runtime').getEventPolicy().rules;
 const { isPrivateAddress, sign } = require('../src/events/actions');
 const { createSessionTriggers } = require('../src/triggers');
 const { createChatHostRuntime } = require('../src/chat/host-runtime');
@@ -312,7 +312,7 @@ test('session triggers accept type:event and reject bad event rules', () => {
 });
 
 // ── event envelope ──────────────────────────────────────────────────────────
-const envelope = require('../src/events/envelope');
+const envelope = require('../src/native/runtime').getEventPolicy().envelope;
 
 test('envelope: conclusion = last non-empty assistant reply, clipped and redacted', () => {
   // The conclusion is computed inside the history runtime, against the cached
@@ -907,4 +907,89 @@ test('engine: a failed action leaves a one-shot rule armed', async () => {
   h.hub.emit('task.failed', 's1', { goal: 'g' });
   await h.settle(); await h.settle();
   assert.equal(h.engine.listGlobal()[0].enabled, true, '没跑成就还有下一次机会');
+});
+
+test('event host adapters preserve the frozen module contracts on identical inputs', () => {
+  const path = require('node:path'), fs = require('node:fs');
+  const { compileFunction } = require('node:vm'), { createRequire } = require('node:module');
+  function oracle(name) {
+    const filename = path.resolve(__dirname, '../src/events', name + '.js');
+    const record = { exports: {} };
+    const source = fs.readFileSync(path.join(__dirname, 'helpers', 'legacy-event-host-' + name + '.js'), 'utf8');
+    compileFunction(source, ['require', 'module'], { filename })(createRequire(filename), record);
+    return record.exports;
+  }
+  const current = {
+    catalog: require('../src/native/runtime').getEventPolicy().catalog, rules: require('../src/native/runtime').getEventPolicy().rules,
+    envelope: require('../src/native/runtime').getEventPolicy().envelope, transition: require('../src/native/runtime').getEventPolicy().transitions,
+  };
+  const old = { catalog: oracle('catalog'), rules: oracle('rules'), envelope: oracle('envelope'), transition: oracle('task-transitions') };
+  function observe(fn) {
+    try { return { returned: fn() }; } catch (error) { return { name: error.name, message: error.message }; }
+  }
+  const same = (group, fn) => assert.deepEqual(observe(() => fn(current[group])), observe(() => fn(old[group])));
+  for (const group of Object.keys(old)) {
+    assert.deepEqual(Object.keys(current[group]), Object.keys(old[group]));
+    for (const [key, value] of Object.entries(old[group])) {
+      if (typeof value === 'function') assert.equal(current[group][key].length, value.length, key);
+      else {
+        assert.deepEqual(current[group][key], value, key);
+        assert.equal(Object.isFrozen(current[group][key]), Object.isFrozen(value), key);
+      }
+    }
+  }
+  const types = [...old.catalog.EVENT_TYPES, 'task.*', '*', 'attention', 'missing', undefined, null, 4, {}];
+  for (const type of types) {
+    same('catalog', api => api.isKnownPattern(type));
+    for (const pattern of types) {
+      same('catalog', api => api.matchesPattern(pattern, type));
+      same('catalog', api => api.matchesAny([null, , pattern], type));
+    }
+  }
+  const states = [null, {}, 'old', ...['D', 'W', 'B', 'E', 'P', 'C'].flatMap(classifyState =>
+    ['achieved', 'interact', undefined].map(goalState => ({ classifyState, goalState, taskId: 't',
+      cancelledAt: classifyState === 'E' ? 1 : undefined, apiError: { category: 'upstream' } })))];
+  for (const state of states) {
+    for (const key of ['letterOf', 'goalOf', 'segmentKey']) same('transition', api => api[key](state));
+    for (const next of states) same('transition', api => api.deriveTaskEvents(state, next));
+  }
+  const trace = api => {
+    const reads = []; let sequence = 0;
+    const state = { get taskId() { reads.push('id'); return String(++sequence); },
+      get classifyState() { reads.push('state'); return 'E'; },
+      apiError: { get category() { reads.push('category'); return 'api'; } },
+      get classifyHistory() { throw Error('unrelated history read'); } };
+    return [api.deriveTaskEvents({}, state), reads];
+  };
+  same('transition', trace);
+  for (const text of [undefined, null, '  中文🚀', '\ud800', false, 0, 4n, Symbol('x'), { toString: () => 'from host' }]) {
+    same('envelope', api => api.summaryOf({ lastSummary: text }));
+    same('envelope', api => api.redactText(text));
+    for (const limit of [0, 1, 4, undefined, Infinity, -1]) same('envelope', api => api.clipText(text, limit));
+  }
+  for (const event of [null, undefined, { sessionId: 's', data: { goalState: 'achieved', cancelled: 1 } }, { data: [] }]) {
+    same('envelope', api => api.renderInjection(event, 'instruction'));
+    for (const rule of [null, {}, { filter: { sessionId: 's', goalState: 'achieved' } }]) {
+      same('rules', api => api.matchesFilter(rule, event));
+    }
+  }
+  const actions = [null, { kind: 'notify' }, { kind: 'channel', plugin: 'p', target: 't' },
+    { kind: 'webhook', url: 'https://test.invalid/hook' }, { kind: 'inject', instruction: 'run' }];
+  for (const action of actions) {
+    const body = { on: ['task.failed'], action };
+    same('rules', api => api.validateAction(action));
+    same('rules', api => api.channelActions(body));
+    same('rules', api => {
+      const reads = [];
+      const result = api.validateEventRule(body, { idFactory() { reads.push('id'); return 'new'; },
+        nowIso() { reads.push('clock'); return 'now'; } });
+      return [result, reads];
+    });
+    same('rules', api => api.validateEventRule(body, {}));
+    same('rules', api => {
+      const marker = { failed: true }, calls = [];
+      const result = api.channelProblem({ action, then: [actions[2]] }, (...args) => { calls.push(args); return marker; });
+      return [result === marker, calls];
+    });
+  }
 });
