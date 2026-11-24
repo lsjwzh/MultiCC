@@ -3,7 +3,7 @@
 
 const { safeCode, sanitizePublicText } = require('../../src/http/public-safety');
 const { STALE_MS_DEFAULT } = require('./legacy-provider-limit-cache-entry');
-const { providerLimitBar } = require('../../src/quota/quota-bar-view');
+const { providerLimitBar } = require('../../src/native/runtime').getQuotaBarView();
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
 const MAX_PROBE_CANDIDATES = 20;

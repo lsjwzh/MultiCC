@@ -30,7 +30,7 @@ const {
 const {
   createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS,
 } = require('../src/quota/limit-cache-recorder');
-const { compactBarText } = require('../src/quota/quota-bar-view');
+const { compactBarText } = require('../src/native/runtime').getQuotaBarView();
 const { writeJsonAtomic } = require('../src/state/store');
 
 let pass = 0, fail = 0;
@@ -642,7 +642,7 @@ async function withFetch(body, fn) {
 }
 
 function testSharedSnapshots() {
-  const { connectProviderLimitSync } = require('../src/quota/provider-limit-sync');
+  const { connectProviderLimitSync } = require('../src/native/runtime');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file: tmpDb('shared'), now: clock.now });
   const sessions = new Map([

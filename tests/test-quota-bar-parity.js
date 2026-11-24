@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { resolveQuotaBar, renderQuotaParts } = require('../public/quota-bar-view');
-const Renderer = require('../src/quota/quota-bar-view');
+const Renderer = require('../src/native/runtime').getQuotaBarView();
 const rateLimitApi = require('../public/chat-rate-limit');
 const fixture = require('./fixtures/quota-bar-golden.json');
 const zhCatalog = require('../app/assets/i18n/zh.json');
@@ -595,5 +595,65 @@ test('window values preserve each event and vendor normalization contract', () =
     const claude = { status: 'ok', summary: windows };
     assert.deepEqual(Renderer.claudeBar(claude, null, now), legacy.claudeBar(claude, null, now),
       `Claude enum ${JSON.stringify(window)}`);
+  }
+});
+
+test('quota snapshots and subscriptions match the pre-migration host on identical cache rows', t => {
+  const { createRequire } = require('node:module');
+  const { compileFunction } = require('node:vm');
+  function frozenSource(name, snapshot, overrides = {}) {
+    const file = path.resolve(__dirname, '../src/quota', name);
+    const source = fs.readFileSync(path.resolve(__dirname, 'helpers', snapshot), 'utf8');
+    const local = createRequire(file), record = { exports: {} };
+    compileFunction(source, ['require', 'module'], { filename: file })(
+      id => Object.hasOwn(overrides, id) ? overrides[id] : local(id), record);
+    return record.exports;
+  }
+  const legacyBar = frozenSource('quota-bar-view.js', 'legacy-quota-bar-host.js');
+  const legacy = frozenSource('provider-limit-sync.js', 'legacy-provider-limit-sync.js', { './quota-bar-view': legacyBar });
+  const live = require('../src/native/runtime');
+  const now = 1700000000000;
+  t.mock.method(Date, 'now', () => now);
+  const rows = [];
+  for (const kind of ['balance', 'window', 'availability', 'claude', 'unknown']) {
+    for (const age of [0, 599999, 600000, 600001, null, undefined, 'invalid']) {
+      rows.push({ appType: 'claude', providerId: 'pool', kind, fetchedAt: typeof age === 'number' ? now-age : age,
+        updatedAt: now, diagnostics: 'private', summary: { provider: 'glm', usedPercentage: 21,
+          windows: [{ window: '5h', usedPercent: 21 }], private: 'local-only' } });
+    }
+  }
+  for (const row of [...rows, {}, null, undefined]) {
+    const expected = legacy.providerLimitSnapshot(row, now);
+    const actual = live.providerLimitSnapshot(row, now);
+    assert.deepEqual(actual, expected);
+    if (actual) {
+      assert.equal(Object.isFrozen(actual.bar), Object.isFrozen(expected.bar));
+      assert.doesNotMatch(JSON.stringify(actual), /local-only|diagnostics/);
+    }
+  }
+  function deliver(owner, entry, plural) {
+    const log = [], sent = [];
+    const cache = { subscribe(fn) { this.listener = fn; return () => { log.push('stop'); }; } };
+    const providers = { appTypeForCli(cli) { log.push(['one', cli, this === providers]); return cli; } };
+    if (plural) providers.appTypesForCli = function(cli) {
+      log.push(['many', cli, this === providers]); return cli === 'alias' ? ['claude', 'codex'] : null;
+    };
+    const sessions = new Map([
+      ['direct', { provider: 'pool' }], ['failure', { cli: 'claude', provider: 'pool' }],
+      ['fallback', { cli: 'alias', providerSelection: { candidates: [{providerId: 'other'}, {providerId: 'pool'}] } }],
+      ['miss', { cli: 'codex', provider: 'pool' }], ['unassigned', {}], ['last', { provider: 'pool' }],
+    ]);
+    const stop = owner.connectProviderLimitSync({ cache, persistedSessions: sessions, providers,
+      broadcast(id, data) { log.push(['broadcast', id]); if (id === 'failure') throw Error('closed'); sent.push(data); } });
+    cache.listener(entry);
+    stop();
+    if (sent.length > 1) {
+      assert.notEqual(sent[0], sent.at(-1));
+      assert.equal(sent[0].bar, sent.at(-1).bar);
+    }
+    return { log, sent };
+  }
+  for (const entry of rows) {
+    for (const plural of [true, false]) assert.deepEqual(deliver(live, entry, plural), deliver(legacy, entry, plural));
   }
 });

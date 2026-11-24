@@ -13,7 +13,7 @@ const CHAT_JS = fs.readFileSync(path.join(ROOT, 'public', 'chat.js'), 'utf8');
 // Bars are rendered once on the server (src/quota/quota-bar-view.js); the client
 // only resolves their time-relative tokens. The harness seeds/restores the same
 // `{status, fetchedAt, usage, bar}` shape the live routes return.
-const Renderer = require('../src/quota/quota-bar-view');
+const Renderer = require('../src/native/runtime').getQuotaBarView();
 const { resolveQuotaBar } = require('../public/quota-bar-view');
 const opencodeView = (value) => resolveQuotaBar(Renderer.renderQuotaBar('opencode', value), { now: (value && value.fetchedAt) || Date.now() });
 

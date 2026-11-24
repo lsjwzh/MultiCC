@@ -6,7 +6,7 @@ const { createProviderQuotaHistory } = require('./provider-quota-history');
 const { createLimitRecorder } = require('./limit-cache-recorder');
 const { createQuotaBarCache } = require('./quota-bar-cache');
 const { createQuotaGuard } = require('./quota-guard');
-const { connectProviderLimitSync } = require('./provider-limit-sync');
+const { connectProviderLimitSync } = require('../native/runtime');
 
 function createProviderQuotaRuntime({ paths, persistedSessions, providers, broadcast, logger }) {
   const providerQuotaHistory = createProviderQuotaHistory({ file: paths.providerQuotaHistoryDbFile });

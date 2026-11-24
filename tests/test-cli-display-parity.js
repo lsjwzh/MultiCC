@@ -765,8 +765,8 @@ test('no page file defines its own CLI id → label map', () => {
 });
 
 test('native quota labels name the provider subscription rather than a CLI display map', () => {
-  const quota = require('../src/quota/quota-bar-view');
-  assert.match(read('src/quota/quota-bar-view.js'), /getNative\(\)\.quotaBarViewRequest/);
+  const quota = require('../src/native/runtime').getQuotaBarView();
+  assert.match(read('src/native/runtime.js'), /getNative\(\)\.quotaBarViewApi/);
   assert.match(read('native/addon/src/quota_bar_view.rs'), /multicc_core::quota_bar_view::request/);
   assert.equal(SERVER.ark, undefined, 'Ark is a quota vendor, not a CLI');
   assert.equal(SERVER.zhipu, undefined, 'Zhipu is a quota vendor, not a CLI');

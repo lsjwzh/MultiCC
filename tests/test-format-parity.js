@@ -25,7 +25,7 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const FMT = require('../public/shared/format.js');
 const DART = fs.readFileSync(path.join(ROOT, 'app/lib/utils/format.dart'), 'utf8');
-const QUOTA = require('../src/quota/quota-bar-view.js');
+const QUOTA = require('../src/native/runtime').getQuotaBarView();
 const ZHS = require('../app/assets/i18n/zh.json');
 const ENS = require('../app/assets/i18n/en.json');
 
@@ -218,9 +218,9 @@ test('the Rust quota renderer keeps the canonical colours and complementary rema
     }, { nowMs: now });
     assert.equal(maximum.color, FMT.usageColor(used, 'quota'), `fractional maximum used ${used}%`);
   }
-  const host = fs.readFileSync(path.join(ROOT, 'src/quota/quota-bar-view.js'), 'utf8');
+  const host = fs.readFileSync(path.join(ROOT, 'src/native/runtime.js'), 'utf8');
   const addon = fs.readFileSync(path.join(ROOT, 'native/addon/src/quota_bar_view.rs'), 'utf8');
-  assert.match(host, /getNative\(\)\.quotaBarViewRequest/, 'the host delegates presentation to Rust');
+  assert.match(host, /getNative\(\)\.quotaBarViewApi/, 'the host delegates presentation to Rust');
   assert.match(addon, /multicc_core::quota_bar_view::request/, 'the addon invokes the canonical core renderer');
 });
 

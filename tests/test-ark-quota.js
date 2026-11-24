@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { parseArkcliJsonStream } = require('../src/routes/ark-quota');
-const { renderQuotaBar } = require('../src/quota/quota-bar-view');
+const { renderQuotaBar } = require('../src/native/runtime').getQuotaBarView();
 
 test('parses a clean JSON payload', () => {
   const parsed = parseArkcliJsonStream('{"ok":true,"items":[]}');
