@@ -138,6 +138,7 @@ fn expand_tilde_path(raw: &str) -> String {
 /// 1. 工作区 `local_root` 内的常规路径；
 /// 2. 只读白名单根目录（如 `~/.agents/skills`、`~/.claude/skills` 等）内的已存在路径；
 /// 3. （仅 `allow_multicc_temp=true` 时）OS 临时目录中以 `multicc_` 开头的截图/上传图片。
+///
 /// 写操作（`host_write_file`/`host_edit_file`）绝不调用此函数，保持 100% 锁定在 `local_root` 内。
 fn resolve_readonly_path(
     requested: Option<&str>,

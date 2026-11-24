@@ -378,7 +378,7 @@ pub async fn serve_claude_relay_session<S>(
         }
     };
 
-    let active_router_mcp = router_ctx.as_ref().and_then(|_| router_mcp.as_ref());
+    let active_router_mcp = router_ctx.as_ref().and(router_mcp.as_ref());
     let mcp_config_json = match build_inline_mcp_servers_json_with_external(
         active_router_mcp,
         &bridged_mcp_servers,

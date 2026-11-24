@@ -267,6 +267,7 @@ pub fn stable_session_scratch_dir(
 }
 
 /// 执行 HTTP → WebSocket 101 握手规划，返回响应与 `OnUpgrade`（或拒绝响应）。
+#[allow(clippy::result_large_err)]
 pub fn upgrade_ws(
     request: &mut Request<Body>,
 ) -> Result<(Response<Body>, hyper::upgrade::OnUpgrade), Response<Body>> {
