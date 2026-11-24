@@ -547,28 +547,28 @@ impl ClientMcpManager {
         };
 
         // 并发闸：Host 侧若一口气发来大量 `mcp_rpc_req`，在这里排队而不是全部 spawn 出去。
-        let _permit = match tokio::time::timeout(CLIENT_MCP_QUEUE_TIMEOUT, self.calls.acquire()).await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) => {
-                return expect_reply.then(|| {
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": orig_id,
-                        "error": { "code": -32000, "message": "MCP 隧道已关闭" }
-                    })
-                });
-            }
-            Err(_) => {
-                return expect_reply.then(|| {
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": orig_id,
-                        "error": { "code": -32000, "message": "MCP 调用排队超时，请减少并发" }
-                    })
-                });
-            }
-        };
+        let _permit =
+            match tokio::time::timeout(CLIENT_MCP_QUEUE_TIMEOUT, self.calls.acquire()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    return expect_reply.then(|| {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": orig_id,
+                            "error": { "code": -32000, "message": "MCP 隧道已关闭" }
+                        })
+                    });
+                }
+                Err(_) => {
+                    return expect_reply.then(|| {
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": orig_id,
+                            "error": { "code": -32000, "message": "MCP 调用排队超时，请减少并发" }
+                        })
+                    });
+                }
+            };
 
         match &spec.transport {
             ClientMcpTransport::Stdio { command, args, env } => {
@@ -817,7 +817,10 @@ mod tests {
             Some(true)
         );
         assert_eq!(buf, b"{\"ok\":2}");
-        assert_eq!(read_line_capped(&mut reader, &mut buf, 8).await.unwrap(), None);
+        assert_eq!(
+            read_line_capped(&mut reader, &mut buf, 8).await.unwrap(),
+            None
+        );
     }
 
     #[test]

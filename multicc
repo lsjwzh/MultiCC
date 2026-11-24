@@ -48,6 +48,95 @@ configured_port() {
   echo "${port:-3000}"
 }
 
+configured_host() {
+  local host="${HOST:-}"
+  [ -n "$host" ] || host=$(sed -n 's/^HOST=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "${MULTICC_ENV_FILE:-$SCRIPT_DIR/.env}" 2>/dev/null | head -1)
+  case "$host" in
+    ''|0.0.0.0) echo "127.0.0.1" ;;
+    ::) echo "[::1]" ;;
+    *[!A-Za-z0-9.:-]*) return 1 ;;
+    *:*) echo "[$host]" ;;
+    *) echo "$host" ;;
+  esac
+}
+
+configured_data_dir() {
+  local dir="${MULTICC_DATA_DIR:-}"
+  [ -n "$dir" ] || dir=$(sed -n 's/^MULTICC_DATA_DIR=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "${MULTICC_ENV_FILE:-$SCRIPT_DIR/.env}" 2>/dev/null | head -1)
+  if [ -z "$dir" ]; then
+    echo "$SCRIPT_DIR"
+  elif [[ "$dir" = /* ]]; then
+    echo "$dir"
+  else
+    echo "$SCRIPT_DIR/$dir"
+  fi
+}
+
+header_value() {
+  local headers="$1" name="$2"
+  printf '%s\n' "$headers" | awk -v k="$name" 'tolower($1)==k {sub(/\r$/, "", $2); print $2; exit}'
+}
+
+collect_old_pids() {
+  local host port headers ready_pid pid seen="" out=""
+  for pid in $(get_pids); do
+    case " $seen " in *" $pid "*) continue ;; esac
+    seen="$seen $pid"
+    out="${out:+$out }$pid"
+  done
+  if host=$(configured_host 2>/dev/null) && port=$(configured_port 2>/dev/null); then
+    if headers=$(curl --noproxy '*' --silent --fail --max-time 2 -D - -o /dev/null "http://$host:$port/readyz" 2>/dev/null); then
+      ready_pid=$(header_value "$headers" "x-multicc-gateway-pid:")
+      if [[ "$ready_pid" =~ ^[0-9]+$ ]] && is_checkout_gateway "$ready_pid"; then
+        case " $seen " in
+          *" $ready_pid "*) ;;
+          *) out="${out:+$out }$ready_pid" ;;
+        esac
+      fi
+    fi
+  fi
+  echo "$out"
+}
+
+begin_restart_generation() {
+  local data_dir gen_file gen
+  data_dir=$(configured_data_dir)
+  mkdir -p "$data_dir" || return 1
+  gen_file="$data_dir/.restart-generation"
+  if command -v openssl >/dev/null 2>&1; then
+    gen="upd-$(openssl rand -hex 12 2>/dev/null)" || gen=""
+  fi
+  [ -n "${gen:-}" ] || gen="upd-$(date +%s)-$$-${RANDOM:-0}-${RANDOM:-0}"
+  printf '%s\n' "$gen" > "$gen_file" || return 1
+  echo "$gen"
+}
+
+clear_restart_generation() {
+  local expected="${1:-}" data_dir gen_file current
+  [ -n "$expected" ] || return 0
+  data_dir=$(configured_data_dir)
+  gen_file="$data_dir/.restart-generation"
+  current=$(tr -d '\r\n' < "$gen_file" 2>/dev/null) || return 0
+  if [ "$current" = "$expected" ]; then
+    rm -f "$gen_file" 2>/dev/null || true
+  fi
+}
+
+wait_pids_exit() {
+  local pid attempt
+  for pid in "$@"; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    for ((attempt=0; attempt<140; attempt++)); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "Old MultiCC gateway PID $pid is still running; refusing to report success." >&2
+      return 1
+    fi
+  done
+}
+
 owns_launch_agent() {
   local directory
   [ -f "$PLIST" ] || return 1
@@ -72,28 +161,37 @@ check_runtime_dependencies() {
 }
 
 wait_for_ready() {
-  local port attempt host headers pid
+  local expected_generation="${1:-}" old_pids="${2:-}"
+  local port attempt host headers pid gen old_pid old_alive is_old
   port=$(configured_port) || return 1
-  host=${HOST:-}
-  [ -n "$host" ] || host=$(sed -n 's/^HOST=[[:space:]]*\([^[:space:]#]*\).*$/\1/p' "${MULTICC_ENV_FILE:-$SCRIPT_DIR/.env}" 2>/dev/null | head -1)
-  case "$host" in
-    ''|0.0.0.0) host=127.0.0.1 ;;
-    ::) host='[::1]' ;;
-    *[!A-Za-z0-9.:-]*) return 1 ;;
-    *:*) host="[$host]" ;;
-  esac
+  host=$(configured_host) || return 1
   echo "Waiting for startup migrations and readiness..."
   for ((attempt=0; attempt<120; attempt++)); do
     if headers=$(curl --noproxy '*' --silent --fail --max-time 2 -D - -o /dev/null "http://$host:$port/readyz"); then
-      pid=$(printf '%s\n' "$headers" | awk 'tolower($1)=="x-multicc-gateway-pid:" {sub(/\r$/, "", $2); print $2}')
+      pid=$(header_value "$headers" "x-multicc-gateway-pid:")
+      gen=$(header_value "$headers" "x-multicc-restart-generation:")
       if [[ "$pid" =~ ^[0-9]+$ ]] && is_checkout_gateway "$pid"; then
-        echo "MultiCC readiness confirmed (PID $pid)."
-        return 0
+        is_old=0
+        old_alive=0
+        for old_pid in $old_pids; do
+          if [ "$pid" = "$old_pid" ]; then is_old=1; fi
+          if kill -0 "$old_pid" 2>/dev/null; then old_alive=1; fi
+        done
+        if [ "$is_old" = 0 ] && [ "$old_alive" = 0 ]; then
+          if [ -z "$expected_generation" ] || [ "$gen" = "$expected_generation" ]; then
+            echo "MultiCC readiness confirmed (PID $pid)."
+            return 0
+          fi
+        fi
       fi
     fi
     sleep 0.5
   done
-  echo "Readiness timed out. Check $ERR_LOG" >&2
+  if [ -n "$expected_generation" ]; then
+    echo "Readiness timed out waiting for verified new generation ($expected_generation). Check $ERR_LOG" >&2
+  else
+    echo "Readiness timed out. Check $ERR_LOG" >&2
+  fi
   return 1
 }
 
@@ -155,13 +253,26 @@ stop_gateways() {
 }
 
 do_restart() {
+  local old_pids generation rc=0
   check_runtime_dependencies || return 1
+  old_pids=$(collect_old_pids)
+  generation=$(begin_restart_generation) || return 1
   if owns_launch_agent && launchctl list "$LABEL" >/dev/null 2>&1; then
-    launchctl unload "$PLIST" && launchctl load "$PLIST" || return 1
+    launchctl unload "$PLIST" || { clear_restart_generation "$generation"; return 1; }
+    if [ -n "$old_pids" ]; then
+      wait_pids_exit $old_pids || { clear_restart_generation "$generation"; return 1; }
+    fi
+    launchctl load "$PLIST" || { clear_restart_generation "$generation"; return 1; }
   else
-    stop_gateways && do_start || return 1
+    stop_gateways || { clear_restart_generation "$generation"; return 1; }
+    if [ -n "$old_pids" ]; then
+      wait_pids_exit $old_pids || { clear_restart_generation "$generation"; return 1; }
+    fi
+    do_start || { clear_restart_generation "$generation"; return 1; }
   fi
-  wait_for_ready
+  wait_for_ready "$generation" "$old_pids" || rc=$?
+  clear_restart_generation "$generation"
+  return "$rc"
 }
 
 do_status() {
@@ -519,6 +630,33 @@ do_update() {
     fi
   fi
 
+  local pre_update_pids
+  pre_update_pids=$(collect_old_pids)
+  if [ "${MULTICC_UPDATE_REEXEC:-0}" != "1" ]; then
+    MULTICC_UPDATE_REEXEC=1 \
+    MULTICC_UPDATE_BEFORE="$before" \
+    MULTICC_UPDATE_AFTER="$after" \
+    MULTICC_UPDATE_LOCAL_VERSION="$local_version" \
+    MULTICC_UPDATE_OLD_PIDS="$pre_update_pids" \
+      exec /bin/bash "$SCRIPT_DIR/multicc" _update-apply
+  fi
+  do_update_apply "$before" "$after" "$local_version" "$pre_update_pids"
+}
+
+do_update_apply() {
+  cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; return 1; }
+  local before="${1:-${MULTICC_UPDATE_BEFORE:-}}"
+  local after="${2:-${MULTICC_UPDATE_AFTER:-}}"
+  local local_version="${3:-${MULTICC_UPDATE_LOCAL_VERSION:-0.0.0}}"
+  local old_pids="${4:-${MULTICC_UPDATE_OLD_PIDS:-}}"
+  local live_pids pid generation
+
+  compare_versions() {
+    [ "$1" = "$2" ] && return 1
+    [ "$(printf '%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ] && return 0
+    return 1
+  }
+
   # Cargo uses the lockfile from the newly selected revision.
   update_step install start
   check_runtime_dependencies || return 1
@@ -538,21 +676,38 @@ do_update() {
   update_step restart start
   echo "Restarting to apply update..."
   echo "  (sessions that are still streaming get up to 65s to save their output)"
+  live_pids=$(collect_old_pids)
+  for pid in $live_pids; do
+    case " $old_pids " in
+      *" $pid "*) ;;
+      *) old_pids="${old_pids:+$old_pids }$pid" ;;
+    esac
+  done
+  generation=$(begin_restart_generation) || return 1
   if owns_launch_agent; then
-    # Installed as a launchd service — reload the selected Rust binary
-    set_launchd_program || return 1
+    # Installed as a launchd service — stop and verify old PIDs exited before reload.
+    set_launchd_program || { clear_restart_generation "$generation"; return 1; }
     launchctl unload "$PLIST" 2>/dev/null
-    launchctl load "$PLIST" || return 1
+    if [ -n "$old_pids" ]; then
+      wait_pids_exit $old_pids || { clear_restart_generation "$generation"; return 1; }
+    fi
+    launchctl load "$PLIST" || { clear_restart_generation "$generation"; return 1; }
     echo "Service reloaded."
   else
-    do_restart || return 1
+    stop_gateways || { clear_restart_generation "$generation"; return 1; }
+    if [ -n "$old_pids" ]; then
+      wait_pids_exit $old_pids || { clear_restart_generation "$generation"; return 1; }
+    fi
+    do_start || { clear_restart_generation "$generation"; return 1; }
   fi
   update_step restart done
   update_step ready start
-  if ! wait_for_ready; then
+  if ! wait_for_ready "$generation" "$old_pids"; then
+    clear_restart_generation "$generation"
     echo "Update code was applied, but startup migration/readiness needs operator attention."
     return 1
   fi
+  clear_restart_generation "$generation"
   # One-time data migrations run right after readiness. Only installs that may
   # carry the residue wait for the report, so unaffected updates pay nothing.
   if [ "$local_version" != "0.0.0" ] && ! compare_versions "2.0.2" "$local_version"; then
@@ -665,6 +820,7 @@ case "${1:-}" in
   status)    do_status ;;
   log|logs)  do_log ;;
   update)    shift; do_update "$@" ;;
+  _update-apply) shift; do_update_apply "$@" ;;
   install)   do_install ;;
   install-terminal) /bin/bash "$SCRIPT_DIR/scripts/install-terminal-deps.sh" ;;
   uninstall) do_uninstall ;;

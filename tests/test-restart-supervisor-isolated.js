@@ -244,6 +244,19 @@ test('real source-cli restarts its Rust gateway and verifies the replacement', {
     assert.notEqual(replacementPid, oldPid);
     assert.throws(() => process.kill(oldPid, 0), { code: 'ESRCH' });
     assert.ok(result.stdout.includes(`readiness confirmed (PID ${replacementPid})`));
+    assert.equal(fs.existsSync(path.join(root, 'data', '.restart-generation')), false,
+      'restart generation marker must be cleaned up after readiness verification');
+    // Verify _update-apply also replaces the running gateway and verifies a fresh generation.
+    const applyResult = await run('/bin/bash', [manager, '_update-apply', 'aaaaaaa', 'bbbbbbb', '2.22.0', String(replacementPid)], {
+      ...options,
+      env: { ...options.env, MULTICC_UPDATE_REEXEC: '1' },
+    });
+    const updatedPid = await readyPid();
+    assert.notEqual(updatedPid, replacementPid);
+    assert.throws(() => process.kill(replacementPid, 0), { code: 'ESRCH' });
+    assert.ok(applyResult.stdout.includes(`readiness confirmed (PID ${updatedPid})`));
+    assert.ok(applyResult.stdout.includes('Update complete (aaaaaaa → bbbbbbb).'));
+    assert.equal(fs.existsSync(path.join(root, 'data', '.restart-generation')), false);
   } finally {
     try { await run('/bin/bash', [manager, 'stop'], options); }
     finally { fs.rmSync(root, { recursive: true, force: true }); }

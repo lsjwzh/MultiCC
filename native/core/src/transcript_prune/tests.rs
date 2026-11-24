@@ -399,12 +399,8 @@ fn prune_session_claude_governs_dormant_claude_without_cross_session_fallback() 
         claude_stream_session_id: Some("aeab47dc".into()),
         ..ClaudeSessionRef::default()
     };
-    let mixed_outcome = prune_session_claude(
-        cwd,
-        &mixed,
-        &home.to_string_lossy(),
-        &Options::default(),
-    );
+    let mixed_outcome =
+        prune_session_claude(cwd, &mixed, &home.to_string_lossy(), &Options::default());
     assert!(!mixed_outcome.active_claude);
     assert!(mixed_outcome.any_context_affected);
     assert_eq!(mixed_outcome.pruned.len(), 1);
@@ -444,12 +440,8 @@ fn prune_session_claude_governs_dormant_claude_without_cross_session_fallback() 
         claude_exp_cli_session_id: Some("secondary-compact".into()),
         ..ClaudeSessionRef::default()
     };
-    let multi_outcome = prune_session_claude(
-        cwd,
-        &multi,
-        &home.to_string_lossy(),
-        &Options::default(),
-    );
+    let multi_outcome =
+        prune_session_claude(cwd, &multi, &home.to_string_lossy(), &Options::default());
     assert!(multi_outcome.active_claude);
     assert_eq!(multi_outcome.pruned.len(), 2);
     assert!(multi_outcome.pruned[0].report.context_affected);

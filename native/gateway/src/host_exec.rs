@@ -1444,7 +1444,9 @@ mod tests {
 
         assert!(temp_entry_owned_by_current_user(&mine));
         // 不存在的路径不能因为前缀而放行。
-        assert!(!temp_entry_owned_by_current_user(&dir.join("multicc_missing.png")));
+        assert!(!temp_entry_owned_by_current_user(
+            &dir.join("multicc_missing.png")
+        ));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
