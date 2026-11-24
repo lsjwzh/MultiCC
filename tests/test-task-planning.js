@@ -439,3 +439,54 @@ test('the current v2 recovery sidecar restores planning data after a downgraded 
   assert.equal(restored.getBoard().schemaVersion, planning.TASK_BOARD_SCHEMA_VERSION);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('计划变更与冻结实现使用相同的日期、时钟、ID 和任务对象', () => {
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const filename = path.resolve(__dirname, '../src/task-board/planning.js');
+  const bytes = fs.readFileSync(path.join(__dirname, 'helpers/frozen-task-board-planning.js'));
+  assert.equal(createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex'),
+    '5d2e1b24ae127b25f1b28d386931396d041b88a1');
+  const original = { exports: {} };
+  compileFunction(bytes.toString(), ['module','require'], { filename })(original,createRequire(filename));
+  function trace(api) {
+    const savedNow = Date.now, reads = [], snapshots = [];
+    Date.now = () => { reads.push('clock'); return 101; };
+    try {
+      const board = { schemaVersion:2, tasks:{}, modules:{}, taskGroups:{} };
+      for (const value of [undefined,null,'',false,0,-0,9,NaN,Infinity,'bad','Jan 1 2000',
+        new Date(20),new Date(NaN)]) {
+        snapshots.push([api.wireDate(value), api.normalizeDueAt(value),
+          api.normalizeRank(value), api.planningRevision(value), api.normalizePriority(value)]);
+      }
+      for (const id of ['é','z','Ä']) {
+        const opts = { id, get now() { reads.push('now'); return 100; } };
+        const result = api.createPlannedTask(board,{title:'plan',dirId:'dir',workflowStage:'inbox'},opts);
+        assert.equal(result.ok,true); assert.equal(result.task,board.tasks[id]);
+      }
+      const first = board.tasks['é'];
+      for (const mutate of [
+        () => api.updatePlannedTask(board, 'é', {priority:'urgent'}, {now:2,expectedRevision:first.planningRevision}),
+        () => api.renameTask(board, 'é', 'title', {now:3}),
+        () => api.movePlannedTask(board, 'é', {workflowStage:'ready'}, {now:4,expectedRevision:first.planningRevision}),
+      ]) {
+        const result=mutate();
+        assert.equal(result.ok,true); assert.equal(result.task,first); assert.equal(board.tasks['é'],first);
+        snapshots.push([result.ok,result.error,structuredClone(result.task)]);
+      }
+      for (const stage of ['inbox','ready','missing']) {
+        for (const method of ['plannedTasksInStage','renumberStage']) {
+          const rows=api[method](board,stage);
+          for (const row of rows) assert.equal(row,board.tasks[row.id]);
+          snapshots.push(rows.map(row=>row.id));
+        }
+      }
+      assert.equal(api.normalizePlanningTask(first),first);
+      snapshots.push(api.planningFields(first),api.rankAtEnd(board,'inbox'),
+        api.validateExpectedRevision(first,1000));
+      return { reads, snapshots, board };
+    } finally { Date.now=savedNow; }
+  }
+  assert.deepEqual(trace(planning),trace(original.exports));
+});
