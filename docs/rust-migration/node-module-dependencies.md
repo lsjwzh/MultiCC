@@ -435,7 +435,7 @@
 | `src/task-board/lifecycle.js` | server.js | `src/native/runtime.js`, `src/task-board/native-bridge.js` | — | — | — | — |
 | `src/task-board/native-bridge.js` | server.js | `src/native/runtime.js`, `src/native/task-domain.js`, `src/task-board/planning.js` | — | `crypto` | — | — |
 | `src/task-board/normalize.js` | server.js | `src/classify/vocab.js`, `src/task-board/native-bridge.js`, `src/task-board/planning.js` | — | `crypto` | — | — |
-| `src/task-board/planning.js` | server.js | `src/native/task-domain.js` | — | `crypto` | — | — |
+| `src/task-board/planning.js` | server.js | `src/native/runtime.js`, `src/native/task-domain.js` | — | `crypto` | — | — |
 | `src/task-board/relocate.js` | server.js | — | — | — | — | — |
 | `src/task-board/repository.js` | server.js | `src/native/runtime.js`, `src/native/task-domain.js` | — | — | — | — |
 | `src/task-board/retention.js` | server.js | `src/classify/vocab.js`, `src/native/runtime.js`, `src/native/task-domain.js` | — | — | — | — |
