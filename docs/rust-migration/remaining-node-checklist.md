@@ -17,7 +17,7 @@
 | 构建与启动 | `make production` 使用 Cargo；`make start`、源码管理器、launchd 和根镜像直接运行网关。服务归档的入口为 `bin/multicc-gateway`。 |
 | cron | 网关解析五字段规则，持久化触发分钟、在途记录和运行历史。脚本与固定任务投递均有手动及恢复覆盖。 |
 | Aux | Rust 消费 SQLite 队列，管理并发与取消，发送 Messages、Chat Completions 或 Responses 请求，保留终态、健康信息和历史。服务原生接入手动入队、Goal 预检及语音进度摘要。 |
-| 兼容发行物 | 带 Electron 的客户端和由旧安装器下载的 `multicc-standalone-*` 仍包含 Node 管理程序与兼容宿主文件；默认后端选用 Rust。要部署零 Node 的服务，使用 `multicc-service-*`、根镜像或 `make stage`。 |
+| 兼容发行物 | 带 Electron 的客户端和由安装器下载的 `multicc-standalone-*` 仍包含 Node 管理程序与兼容宿主文件，在目录/会话写操作迁完前默认挂载随包兼容宿主（支持 `MULTICC_NO_NODE=1` 显式切纯 Rust）。要部署零 Node 的服务，使用 `multicc-service-*`、根镜像或 `make stage`。 |
 | 其他产品功能 | 渠道消息投递、部分会话及仓库写操作仍依赖兼容宿主。旧宿主的记忆复盘、终端意图分类和任务板分类仍由各自的宿主模块发起。 |
 
 [源码兼容宿主清单](node-module-dependencies.md) · [旧式安装包盘点](packaged-backend-darwin-arm64.md)

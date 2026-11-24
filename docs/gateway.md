@@ -143,7 +143,7 @@ PROXY TCP6 <客户端IP> <前门本地IP> <客户端端口> <前门本地端口>
 
 ### 8. 启动入口与进程识别
 
-`./multicc start` 使用 Cargo release 网关；可用 `MULTICC_GATEWAY_BIN` 指定已构建的绝对路径。源码管理器按可执行文件与工作目录识别进程，launchd 的 ProgramArguments 直接调用网关。服务归档和镜像使用 `bin/multicc-gateway`。桌面和旧式独立包通过 supervisor 传入 `--stdin-lifeline`；只在显式选择 `MULTICC_COMPAT_HOST=1` 时启动随包的兼容宿主。
+`./multicc start` 使用 Cargo release 网关；可用 `MULTICC_GATEWAY_BIN` 指定已构建的绝对路径。源码管理器按可执行文件与工作目录识别进程，launchd 的 ProgramArguments 直接调用网关。服务归档和镜像使用 `bin/multicc-gateway`。桌面和独立包通过 supervisor 传入 `--stdin-lifeline`，在目录/会话写接口迁完前默认启动随包兼容宿主，可设置 `MULTICC_NO_NODE=1` 显式切纯 Rust 模式。
 
 2026-11-24 任务板分组和任务短码展示已由 Rust 原生模块提供。该批次切换前，`npm start` 执行 `node scripts/start-gateway.js`，启动 `multicc-gateway serve --cwd <检出> --node <node> --stdin-lifeline server.js`。分组保存、变更通知、任务查询和短码注册表仍由 Node 宿主提供。该版本的 `src/` 剩 531 个 `.js`、2 个 `.cjs`，根包仍有 19 个直接 Node 运行依赖。 [迁移批次清单](rust-migration/node-retirement-batches.md#任务板分组与任务短码展示2026-11-24)
 
