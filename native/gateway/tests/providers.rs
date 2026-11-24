@@ -342,6 +342,7 @@ fn decode_code(code: &str) -> Value {
 fn catalog_keeps_the_legacy_body_order_and_query() {
     let facts = json!({
         "ok": true,
+        "efforts": {"claude": {"label": "Effort", "default": "high", "levels": ["high", "extended"]}},
         "ccSwitchStatus": { "available": true, "note": "x" },
         "providers": [{ "appType": "claude", "id": "p1", "compatibleClis": ["claude"] }],
         "stats": { "requests": 3 },
@@ -354,6 +355,7 @@ fn catalog_keeps_the_legacy_body_order_and_query() {
     );
     let response = gateway.get("/api/providers?appType=%20claude%20&cli=claude");
     assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(response.json()["efforts"], facts["efforts"]);
     assert_key_order(
         &response.body,
         &[

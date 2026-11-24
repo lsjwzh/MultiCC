@@ -112,8 +112,8 @@ pub const CAPABILITIES: &[(&str, Capability)] = &[
 ];
 
 /// 可调档位和模型限制随 Provider 目录下发，启动参数也查同一份数据。
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EffortSpec {
     pub label: String,
     pub levels: Vec<String>,
@@ -149,20 +149,17 @@ impl EffortSpec {
     }
 }
 
-pub fn effort_catalog() -> &'static std::collections::BTreeMap<String, EffortSpec> {
-    static TABLE: std::sync::OnceLock<std::collections::BTreeMap<String, EffortSpec>> =
-        std::sync::OnceLock::new();
-    TABLE.get_or_init(|| {
-        serde_json::from_str(include_str!("cli_efforts.json")).expect("valid CLI effort catalogue")
-    })
-}
+pub use crate::effort_catalog::snapshot as effort_catalog;
 
-pub fn effort_of(cli: &str) -> Option<&'static EffortSpec> {
-    effort_catalog().get(&name_of(cli))
+pub fn effort_of(cli: &str) -> Option<EffortSpec> {
+    effort_catalog().efforts.get(&name_of(cli)).cloned()
 }
 
 pub fn supports_effort(cli: &str, model: &str, level: &str) -> bool {
-    effort_of(cli).is_some_and(|spec| spec.levels_for_model(model).iter().any(|v| v == level))
+    effort_catalog()
+        .efforts
+        .get(&name_of(cli))
+        .is_some_and(|spec| spec.levels_for_model(model).iter().any(|v| v == level))
 }
 
 /// Which upstream API dialect a CLI's protocol talks. Deliberately not the
@@ -977,7 +974,7 @@ fn build(families: &[Family]) -> Result<Value, String> {
         "defaultCapability": capability_record(&DEFAULT_CAPABILITY),
         "capabilities": capabilities,
         "protocolFamilies": protocol_families,
-        "efforts": effort_catalog(),
+        "efforts": effort_catalog().efforts,
         "aliases": Map::from_iter(ALIASES.iter().map(|(alias, canonical)| ((*alias).to_string(), json!(canonical)))),
         "clis": clis,
         "display": display,

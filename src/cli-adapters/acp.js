@@ -1,5 +1,7 @@
 'use strict';
 
+const { supportsEffort } = require('../cli/cli-capability');
+
 // Shared adapter for every CLI that speaks ACP (Agent Client Protocol). The
 // host starts the Rust gateway ACP bridge, which drives the agent's own `acp`/`stdio`
 // server and prints its `session/update` notifications plus the synthetic
@@ -166,7 +168,10 @@ function createAcpAdapter({
     for (const arg of argv) args.push('--agent-arg', arg);
     if (env.historyHandle.cliSessionId) args.push('--session-id', env.historyHandle.cliSessionId);
     if (so.rawModel && !modelViaArgv) args.push('--model', so.rawModel);
-    if (so.rawEffort && effortViaConfig && !effortViaArgv) args.push('--effort', so.rawEffort);
+    if (so.rawEffort && effortViaConfig && !effortViaArgv
+        && (name !== 'opencode' || supportsEffort(name, so.rawModel || so.effectiveModel, so.rawEffort))) {
+      args.push('--effort', so.rawEffort);
+    }
     if (so.rawAgent && agentViaMode) args.push('--mode', so.rawAgent);
     if (routerMcpNode && routerMcpScript) args.push('--router-mcp', routerMcpNode, routerMcpScript);
     return args;

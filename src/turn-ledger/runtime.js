@@ -22,6 +22,7 @@ const os = require('os');
 const { normalizeEnvelope } = require('../native/runtime').getTurnLedgerContract();
 const { createTurnLedger } = require('./ledger');
 const { getNative } = require('../native/runtime');
+const { supportsEffort } = require('../cli/cli-capability');
 const { createHookInstaller } = require('./hook-install');
 
 const HOOKED_CLIS = new Set(['claude', 'codex']);
@@ -93,7 +94,9 @@ function createTurnLedgerRuntime(deps = {}) {
       if (session.cli === 'claude') {
         fs.mkdirSync(settingsDir, { recursive: true, mode: 0o700 });
         const file = path.join(settingsDir, `${sid}.json`);
-        const extra = String(session.effort || '').trim().toLowerCase() === 'ultracode' ? { ultracode: true } : {};
+        const ultra = String(session.effort || '').trim().toLowerCase() === 'ultracode'
+          && supportsEffort('claude', session.model, 'ultracode');
+        const extra = ultra ? { ultracode: true } : {};
         fs.writeFileSync(file, JSON.stringify(installer.claudeSettings(extra)), { mode: 0o600 });
         return { ...session, turnHookSettingsArg: shellQuote(file) };
       }

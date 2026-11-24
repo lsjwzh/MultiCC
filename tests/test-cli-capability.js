@@ -310,3 +310,35 @@ test('Pi is a providerless per-turn CLI with its own install artifact', () => {
   assert.equal(updateOf('pi').package, '@earendil-works/pi-coding-agent');
   assert.equal(updateOf('pi').command, 'npm install -g @earendil-works/pi-coding-agent');
 });
+
+test('宿主启动从缓存恢复，同一进程后续切换到更高修订的档位', async t => {
+  const cap = require('../src/cli/cli-capability');
+  const native = require('../src/native/runtime').getNative();
+  const pi = require('../src/cli-adapters/pi').createPiAdapter();
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'effort-catalog-'));
+  const file = path.join(dir, 'cache.json');
+  const data = JSON.parse(fs.readFileSync(path.join(ROOT, 'native/core/src/cli_efforts.json')));
+  data.revision++;
+  data.efforts.pi.levels.push('extended');
+  data.efforts['codex-exp'].modelLevels = { future: ['max'] };
+  fs.writeFileSync(file, JSON.stringify(data));
+  assert.equal(cap.knownEffort('extended'), false);
+  const stop = await cap.watchEffortCatalog(file);
+  t.after(() => { stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+  assert.equal(cap.knownEffort('extended'), true);
+  assert.equal(native.cliCodexReasoningLevel('codex-exp', 'max', 'future'), 'max');
+  assert.equal(native.cliCodexReasoningLevel('codex', 'max', 'future'), 'xhigh');
+  assert.match(pi.buildTerminalCmd({ effort: 'extended' }), /--thinking extended/);
+  data.revision++;
+  data.efforts.pi.modelLevels = { fixed: [] };
+  fs.writeFileSync(file + '.new', JSON.stringify(data));
+  fs.renameSync(file + '.new', file);
+  for (let i = 0; i < 60 && cap.supportsEffort('pi', 'fixed', 'extended'); i++) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(cap.EFFORTS.pi.modelLevels.fixed, []);
+  assert.doesNotMatch(pi.buildTerminalCmd({ model: 'fixed', effort: 'extended' }), /--thinking/);
+  fs.writeFileSync(file, '{');
+  await assert.rejects(native.cliReloadEffortCatalog(file));
+  assert.deepEqual(cap.effortOf('pi').modelLevels.fixed, []);
+});

@@ -78,6 +78,30 @@
     syncChildren(select, children);
   }
 
+  const effortLabels = Object.freeze({
+    '': '默认', default: '默认', minimal: '最低', low: '低', medium: '中',
+    high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra', none: '无', off: '关闭',
+  });
+
+  function effortChoiceLabel(choice) {
+    return Object.hasOwn(effortLabels, choice.value) ? effortLabels[choice.value] : choice.label;
+  }
+
+  function renderEffortPicker(host, segButton, options, selected, fallback, onSelect) {
+    host.replaceChildren();
+    if (!options.length) return null;
+    const values = options.map(choice => choice.value);
+    if (!values.includes(selected)) selected = values.includes(fallback) ? fallback : values[0];
+    for (const choice of options) {
+      const button = segButton(host.ownerDocument, host, `rc-effort-${choice.value}`, effortChoiceLabel(choice), choice.desc);
+      button.dataset.value = choice.value;
+      button.onclick = () => onSelect(choice.value);
+      button.setAttribute('aria-checked', String(choice.value === selected));
+      button.classList.toggle('on', choice.value === selected);
+    }
+    return selected;
+  }
+
   function createModelPicker({ select, custom, search, ai, customLabel }) {
     let binding = null, entries = [], customEdited = false;
     select.addEventListener('change', () => { customEdited = select.value === '__custom__'; });
@@ -692,5 +716,5 @@
     };
   }
 
-  return Object.freeze({ createAccountSection, createCatalogLoader, createModelPicker, createPoolList, createSubagentSummaries, syncOptions });
+  return Object.freeze({ createAccountSection, createCatalogLoader, createModelPicker, createPoolList, createSubagentSummaries, effortChoiceLabel, renderEffortPicker, syncOptions });
 });

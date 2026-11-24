@@ -1688,6 +1688,7 @@ fn run_selection(
                 Some(cli) => crate::cli_capability::supports_effort(cli, model, level),
                 // 旧式单 CLI 池在无会话信息的存储读模型中没有车道。
                 None => crate::cli_capability::effort_catalog()
+                    .efforts
                     .values()
                     .any(|s| s.levels_for_model(model).iter().any(|v| v == level)),
             };

@@ -1012,17 +1012,21 @@ async fn prepare_turn(
         let home = app.home_dir.clone();
         let effort = options.effort.clone();
         let model = options.model.clone();
-        options.effort = Some(
-            shell::blocking(move || {
-                Ok(launch::codex_effort(
-                    &home,
-                    effort.as_deref(),
-                    model.as_deref(),
-                ))
-            })
-            .await
-            .map_err(|error| ("chat_provider_unavailable", error))?,
-        );
+        let cli = if options.app_server {
+            "codex-exp"
+        } else {
+            "codex"
+        };
+        options.effort = shell::blocking(move || {
+            Ok(launch::codex_effort(
+                cli,
+                &home,
+                effort.as_deref(),
+                model.as_deref(),
+            ))
+        })
+        .await
+        .map_err(|error| ("chat_provider_unavailable", error))?;
     }
     let mut user = value(
         json!({"role":"user", "content":prompt, "ts":auth_runtime::now_ms(), "turnId":turn_id}),

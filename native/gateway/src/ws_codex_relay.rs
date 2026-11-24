@@ -435,7 +435,9 @@ pub async fn serve_codex_relay_session<S>(
             .map(str::to_owned)
     };
     let model = clean_opt("model");
-    let effort = clean_opt("effort");
+    let effort = clean_opt("effort").and_then(|level| {
+        multicc_core::codex_provider_home::reasoning_level("codex-exp", &level, model.as_deref())
+    });
     let thread_id_req = clean_opt("threadId");
     let prompt = start_val
         .get("prompt")

@@ -3,15 +3,10 @@
 const defaultFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { isResidentSession, EFFORTS, supportsEffort } = require('./cli-capability');
-const { createModelDefaultResolver } = require('../native/runtime');
+const { isResidentSession, knownEffort, supportsEffort, effortOf } = require('./cli-capability');
+const { createModelDefaultResolver, getNative } = require('../native/runtime');
 const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../claude-models');
 
-const KNOWN_EFFORTS = new Set(Object.values(EFFORTS).flatMap(spec => spec.levels));
-// Codex 5.6 supports the product tiers `max` and `ultra`; older models top out
-// at `xhigh`. Keep the tiers in persisted state and normalize only at the wire
-// boundary, using the model that will actually handle the turn.
-const CODEX_REASONING_56_LEVELS = new Set(['max', 'ultra']);
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;
 const API_NETWORK_CONTINUE_MAX = 2;
 
@@ -210,7 +205,7 @@ function createSessionPolicy(options) {
   function normalizeEffort(value) {
     const normalized = (value == null ? '' : String(value)).trim().toLowerCase();
     if (!normalized) return null;
-    return KNOWN_EFFORTS.has(normalized) ? normalized : undefined;
+    return knownEffort(normalized) ? normalized : undefined;
   }
 
   function validEffortForCli(cli, effort) {
@@ -219,32 +214,26 @@ function createSessionPolicy(options) {
 
   function cliEffortLevel(session) {
     const effort = normalizeEffort(session?.effort);
-    if (!effort || !supportsEffort('claude', '', effort)) return null;
+    if (!effort || !supportsEffort('claude', session?.model, effort)) return null;
     return effort === 'ultracode' ? 'xhigh' : effort;
-  }
-
-  function isCodex56Model(model) {
-    const normalized = String(model || '').trim().toLowerCase().replace(/\[[^\]]*\]$/, '');
-    const basename = normalized.split('/').pop();
-    return /^gpt[-_.]?5[.]6(?:$|[-_.])/.test(basename);
   }
 
   function codexReasoningLevel(session) {
     const effort = normalizeEffort(session?.effort);
-    if (!effort || !supportsEffort('codex', '', effort)) return null;
-    if (!CODEX_REASONING_56_LEVELS.has(effort)) return effort;
-    const model = session?.effectiveModel || effectiveSessionModel(session);
-    return isCodex56Model(model) ? effort : 'xhigh';
+    if (!effort) return null;
+    const cli = session?.cli === 'codex-exp' ? 'codex-exp' : 'codex';
+    const model = session?.effectiveModel || session?.model || effectiveSessionModel(session);
+    return getNative().cliCodexReasoningLevel(cli, effort, model);
   }
 
   function qoderEffortLevel(session) {
     const effort = normalizeEffort(session?.effort);
-    return effort && supportsEffort('qoder', '', effort) ? effort : null;
+    return effort && supportsEffort('qoder', session?.model, effort) ? effort : null;
   }
 
   function codebuddyEffortLevel(session) {
     const effort = normalizeEffort(session?.effort);
-    return effort && supportsEffort('codebuddy', '', effort) ? effort : null;
+    return effort && supportsEffort('codebuddy', session?.model, effort) ? effort : null;
   }
 
   function codexReasoningConfigArg(session) {
@@ -257,44 +246,43 @@ function createSessionPolicy(options) {
     return model ? `model="${model}"` : null;
   }
 
-  function claudeDefaultEffort() {
+  function claudeDefaultEffort(model) {
     for (const file of ['settings.local.json', 'settings.json']) {
       try {
         const settings = JSON.parse(fs.readFileSync(path.join(homeDir(), '.claude', file), 'utf8'));
         const effort = normalizeEffort(settings.effort || settings.thinkingEffort);
-        if (effort) return effort;
+        if (effort && supportsEffort('claude', model, effort)) return effort;
       } catch (_) {}
     }
-    return 'medium';
+    const fallback = effortOf('claude').default;
+    return fallback && supportsEffort('claude', model, fallback) ? fallback : null;
   }
 
-  function codexDefaultReasoningLevel() {
+  function codexDefaultReasoningLevel(cli = 'codex', model) {
     const homes = [env.CODEX_HOME, path.join(homeDir(), '.codex')].filter(Boolean);
     for (const home of homes) {
       try {
         const toml = fs.readFileSync(path.join(home, 'config.toml'), 'utf8');
         const match = toml.match(/^\s*model_reasoning_effort\s*=\s*["']?([A-Za-z0-9_-]+)["']?\s*$/m);
         const modelMatch = toml.match(/^\s*model\s*=\s*["']([^"']+)["']\s*$/m);
-        const effort = codexReasoningLevel({
-          effort: match && match[1],
-          effectiveModel: modelMatch && modelMatch[1],
-        });
+        const effort = match && getNative().cliCodexReasoningLevel(cli, match[1], model || (modelMatch && modelMatch[1]));
         if (effort) return effort;
       } catch (_) {}
     }
-    return 'xhigh';
+    const fallback = effortOf(cli).default;
+    return fallback && supportsEffort(cli, model, fallback) ? fallback : null;
   }
 
   function effectiveSessionEffort(session) {
     if (!session) return null;
     const cli = session.cli || 'claude';
-    if (cli === 'codex' || cli === 'codex-exp') return codexReasoningLevel(session) || codexDefaultReasoningLevel();
+    if (cli === 'codex' || cli === 'codex-exp') return codexReasoningLevel(session) || codexDefaultReasoningLevel(cli, session.effectiveModel || session.model);
     const effort = normalizeEffort(session.effort);
     if (effort) {
       const model = session.model || (cli === 'agy' ? effectiveSessionModel(session) : '');
       if (supportsEffort(cli, model, effort)) return effort;
     }
-    return cli === 'claude' || cli === 'claude-exp' ? claudeDefaultEffort() : null;
+    return cli === 'claude' || cli === 'claude-exp' ? claudeDefaultEffort(session.effectiveModel || session.model) : null;
   }
 
   function effortLabel(effort) {

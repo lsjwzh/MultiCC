@@ -87,10 +87,19 @@ pub(super) async fn init_facts(
     let model = effective_model.map(str::to_owned);
     let claude = super::store::is_claude(record);
     let codex = super::store::is_codex(record);
+    let cli = optional_text(record, "cli").unwrap_or_else(|| "claude".into());
     let home = app.home_dir.clone();
     tokio::task::spawn_blocking(move || {
         let effort = if claude {
+            let allowed = |s: &String| {
+                multicc_core::cli_capability::supports_effort(
+                    &cli,
+                    model.as_deref().unwrap_or(""),
+                    s,
+                )
+            };
             effort
+                .filter(allowed)
                 .or_else(|| {
                     ["settings.local.json", "settings.json"]
                         .iter()
@@ -104,11 +113,16 @@ pub(super) async fn init_facts(
                                 .map(str::trim)
                                 .filter(|value| !value.is_empty())
                                 .map(str::to_ascii_lowercase)
+                                .filter(allowed)
                         })
                 })
-                .or_else(|| Some("medium".into()))
+                .or_else(|| {
+                    multicc_core::cli_capability::effort_of(&cli)
+                        .map(|s| s.default)
+                        .filter(allowed)
+                })
         } else if codex {
-            Some(codex_effort(&home, effort.as_deref(), model.as_deref()))
+            codex_effort(&cli, &home, effort.as_deref(), model.as_deref())
         } else {
             effort
         };
@@ -125,17 +139,26 @@ pub(super) async fn init_facts(
     .unwrap_or_default()
 }
 
-pub(super) fn codex_effort(home: &Path, effort: Option<&str>, model: Option<&str>) -> String {
+pub(super) fn codex_effort(
+    cli: &str,
+    home: &Path,
+    effort: Option<&str>,
+    model: Option<&str>,
+) -> Option<String> {
     use multicc_core::codex_provider_home::{home_reasoning_level, reasoning_level};
     effort
-        .and_then(|effort| reasoning_level(effort, model))
+        .and_then(|effort| reasoning_level(cli, effort, model))
         .or_else(|| {
             std::env::var_os("CODEX_HOME")
                 .filter(|path| !path.is_empty())
-                .and_then(|path| home_reasoning_level(Path::new(&path)))
+                .and_then(|path| home_reasoning_level(cli, Path::new(&path), model))
         })
-        .or_else(|| home_reasoning_level(&home.join(".codex")))
-        .unwrap_or_else(|| "xhigh".into())
+        .or_else(|| home_reasoning_level(cli, &home.join(".codex"), model))
+        .or_else(|| multicc_core::cli_capability::effort_of(cli).map(|spec| spec.default))
+        .filter(|v| {
+            !v.is_empty()
+                && multicc_core::cli_capability::supports_effort(cli, model.unwrap_or(""), v)
+        })
 }
 
 fn available(path: &Path) -> bool {

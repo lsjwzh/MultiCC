@@ -13,11 +13,11 @@ const { claudeLikeMcpArgs } = require('./router-mcp');
  * `--resume <sessionId>`. Vendor auth lives in ~/.codebuddy (`codebuddy`
  * TUI /login), so this CLI is providerless like qoder.
  */
-const CODEBUDDY_REASONING_LEVELS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const { supportsEffort, effortOf } = require('../cli/cli-capability');
 
 function codebuddyEffortLevel(session) {
   const value = String(session?.effort || '').trim().toLowerCase();
-  return CODEBUDDY_REASONING_LEVELS.has(value) ? value : null;
+  return value && supportsEffort('codebuddy', session?.model, value) ? value : null;
 }
 
 // CodeBuddy 2.177.1 terminal failures are a single `result` frame built by
@@ -82,7 +82,7 @@ function createCodebuddyAdapter({ cmd, routerMcpNode, routerMcpScript }) {
         '--append-system-prompt', env.systemPrompt,
       ];
       if (so.rawModel) args.push('--model', so.rawModel);
-      const effort = codebuddyEffortLevel({ effort: so.rawEffort });
+      const effort = codebuddyEffortLevel({ effort: so.rawEffort, model: so.rawModel || so.effectiveModel });
       if (effort) args.push('--effort', effort);
       if (so.rawAgent) args.push('--agent', so.rawAgent);
       if (!env.historyHandle.isFirstTurn && env.historyHandle.cliSessionId) {
@@ -108,4 +108,7 @@ function createCodebuddyAdapter({ cmd, routerMcpNode, routerMcpScript }) {
   };
 }
 
-module.exports = { createCodebuddyAdapter, CODEBUDDY_REASONING_LEVELS };
+module.exports = {
+  createCodebuddyAdapter,
+  get CODEBUDDY_REASONING_LEVELS() { return new Set(effortOf('codebuddy').levels.filter(Boolean)); },
+};

@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderPrompt } = require('../native/runtime').messageComposer;
+const { supportsEffort } = require('../cli/cli-capability');
 const { errorFields } = require('../provider-error');
 const { createStepCompletionTracker } = require('./step-completion');
 
@@ -15,7 +16,7 @@ function createOpencodeLikeAdapter({
     buildTerminalCmd(session) {
       let command = cmd;
       if (session.model) command += ` --model ${session.model}`;
-      if (supportsAgentVariant && session.effort) command += ` --variant ${session.effort}`;
+      if (supportsAgentVariant && session.effort && supportsEffort(name, session.model, session.effort)) command += ` --variant ${session.effort}`;
       if (supportsAgentVariant && session.agent) command += ` --agent ${session.agent}`;
       if (session.cliSessionId) command += ` --session ${session.cliSessionId}`;
       return command;
@@ -26,7 +27,7 @@ function createOpencodeLikeAdapter({
       const args = ['run', '--format', 'json', '--auto'];
       if (includeThinking) args.push('--thinking');
       if (so.rawModel) args.push('--model', so.rawModel);
-      if (supportsAgentVariant && so.rawEffort) args.push('--variant', so.rawEffort);
+      if (supportsAgentVariant && so.rawEffort && supportsEffort(name, so.rawModel || so.effectiveModel, so.rawEffort)) args.push('--variant', so.rawEffort);
       if (supportsAgentVariant && so.rawAgent) args.push('--agent', so.rawAgent);
       if (!isFirstTurn && env.historyHandle.cliSessionId) {
         args.push('--session', env.historyHandle.cliSessionId);
