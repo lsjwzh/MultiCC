@@ -57,6 +57,7 @@ function createPaths({ dataDir } = {}) {
     // 推送设置「插件渠道」一栏的订阅（插件 id + 接收人编号 + 收哪几类）。
     channelSubscriptionsFile: path.join(root, 'channel-subscriptions.json'),
     pkgRoot: PKG_ROOT,
+    cliEffortCatalogFile: path.join(root === PKG_ROOT ? path.join(os.homedir(), '.multicc') : root, 'catalogs', 'cli-efforts.json'),
     sessionsFile: path.join(root, 'sessions.json'),
     directoriesFile: path.join(root, 'directories.json'),
     // Journal directory for cross-file transactions. .journal/ under the same

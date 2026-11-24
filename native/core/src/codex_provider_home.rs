@@ -175,10 +175,25 @@ pub fn configured_model(raw: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub fn reasoning_level(effort: &str, model: Option<&str>) -> Option<String> {
+pub fn reasoning_level(cli: &str, effort: &str, model: Option<&str>) -> Option<String> {
     let level = effort.trim().to_ascii_lowercase();
+    let catalog = crate::cli_capability::effort_catalog();
+    let spec = catalog.efforts.get(cli)?;
+    let model_id = model
+        .unwrap_or("")
+        .split('[')
+        .next()?
+        .trim()
+        .to_ascii_lowercase();
+    let allowed = spec.levels_for_model(&model_id);
+    if level.is_empty() || !allowed.contains(&level) {
+        return None;
+    }
+    // 目录可以显式给新型号开放档位，未知型号延续 CLI 的兼容映射。
+    if spec.model_levels.contains_key(&model_id) {
+        return Some(level);
+    }
     match level.as_str() {
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => Some(level),
         "max" | "ultra" => {
             static MODEL: LazyLock<Regex> = LazyLock::new(|| {
                 Regex::new(r"^gpt[-_.]?5\.6(?:$|[-_.])").expect("Codex model prefix")
@@ -191,22 +206,23 @@ pub fn reasoning_level(effort: &str, model: Option<&str>) -> Option<String> {
                 .rsplit('/')
                 .next()
                 .unwrap_or("");
-            Some(if MODEL.is_match(name) {
-                level
+            if MODEL.is_match(name) {
+                Some(level)
             } else {
-                "xhigh".into()
-            })
+                allowed.iter().find(|v| v.as_str() == "xhigh").cloned()
+            }
         }
-        _ => None,
+        _ => Some(level),
     }
 }
 
-pub fn home_reasoning_level(home: &Path) -> Option<String> {
+pub fn home_reasoning_level(cli: &str, home: &Path, model: Option<&str>) -> Option<String> {
     let bytes = read(&home.join("config.toml")).ok()??;
     let config = parse_config(std::str::from_utf8(&bytes).ok()?).ok()?;
     reasoning_level(
+        cli,
         config.get("model_reasoning_effort")?.as_str()?,
-        config.get("model").and_then(Item::as_str),
+        model.or_else(|| config.get("model").and_then(Item::as_str)),
     )
 }
 

@@ -81,7 +81,12 @@ pub(in crate::app) fn project(facts: &Value, cli: &str) -> Value {
         .collect::<Vec<_>>();
     projected["providers"] = Value::Array(providers);
     let mut catalog = provider_registry::catalog_body(&projected);
-    catalog["efforts"] = json!(multicc_core::cli_capability::effort_catalog());
+    // 有宿主时，与实际构造 CLI 参数的进程返回同一份快照。
+    catalog["efforts"] = facts
+        .get("efforts")
+        .filter(|v| v.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!(multicc_core::cli_capability::effort_catalog().efforts));
     catalog
 }
 

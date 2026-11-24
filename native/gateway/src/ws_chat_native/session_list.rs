@@ -72,46 +72,16 @@ fn effort(record: &Value, cli: &str, home: &Path, effective: &Value) -> Value {
     if levels.is_empty() {
         return Value::Null;
     }
-    let codex = matches!(cli, "codex" | "codex-exp");
-    let supported = |level: &str, name: &str| {
-        if codex && matches!(level, "max" | "ultra") {
-            let name = name.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
-            let name = name.split('[').next().unwrap_or("");
-            let version = ["gpt-5.6", "gpt5.6", "gpt_5.6", "gpt.5.6"]
-                .iter()
-                .find_map(|prefix| name.strip_prefix(prefix));
-            if !version.is_some_and(|v| v.is_empty() || v.starts_with(['-', '_', '.'])) {
-                return json!("xhigh");
-            }
-        }
-        json!(level)
-    };
-    if !s.is_empty() && levels.contains(&s) {
-        return supported(&s, effective.as_str().unwrap_or(""));
+    if matches!(cli, "codex" | "codex-exp") {
+        return json!(super::launch::codex_effort(
+            cli,
+            home,
+            Some(&s),
+            effective.as_str()
+        ));
     }
-    if codex {
-        for dir in std::env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .into_iter()
-            .chain(Some(home.join(".codex")))
-        {
-            let Ok(config) = std::fs::read_to_string(dir.join("config.toml")) else {
-                continue;
-            };
-            let setting = |key: &str| {
-                config
-                    .lines()
-                    .filter_map(|line| line.split_once('='))
-                    .find(|(k, _)| k.trim() == key)
-                    .map(|(_, v)| v.trim().trim_matches(['"', '\'']))
-                    .unwrap_or("")
-            };
-            let level = setting("model_reasoning_effort").to_ascii_lowercase();
-            if !level.is_empty() && levels.contains(&level) {
-                return supported(&level, setting("model"));
-            }
-        }
-        return json!("xhigh");
+    if !s.is_empty() && levels.contains(&s) {
+        return json!(s);
     }
     if !matches!(cli, "claude" | "claude-exp") {
         return Value::Null;
@@ -124,25 +94,12 @@ fn effort(record: &Value, cli: &str, home: &Path, effective: &Value) -> Value {
             .filter(|s| !s.is_empty())
         {
             let s = s.trim().to_ascii_lowercase();
-            if [
-                "none",
-                "off",
-                "low",
-                "minimal",
-                "medium",
-                "high",
-                "xhigh",
-                "max",
-                "ultra",
-                "ultracode",
-            ]
-            .contains(&s.as_str())
-            {
+            if levels.contains(&s) {
                 return json!(s);
             }
         }
     }
-    json!("medium")
+    json!(Some(&spec.default).filter(|v| !v.is_empty() && levels.contains(v)))
 }
 
 fn selection(record: &Value) -> Result<Value, String> {

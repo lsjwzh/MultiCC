@@ -336,7 +336,13 @@ pub async fn serve_claude_relay_session<S>(
             .map(str::to_owned)
     };
     let model = clean_opt("model");
-    let effort = clean_opt("effort");
+    let effort = clean_opt("effort").filter(|level| {
+        multicc_core::cli_capability::supports_effort(
+            "claude",
+            model.as_deref().unwrap_or(""),
+            level,
+        )
+    });
     let session_id = clean_opt("sessionId");
     let resume = start_val
         .get("resume")

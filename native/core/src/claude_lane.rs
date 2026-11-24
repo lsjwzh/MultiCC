@@ -154,7 +154,15 @@ pub fn launch(input: &LaunchInput) -> Launch {
         Value::Object(map) => map.clone(),
         _ => Map::new(),
     };
-    if input.effort.as_deref() == Some("ultracode") {
+    let effort = input.effort.as_deref().filter(|level| {
+        !level.is_empty()
+            && crate::cli_capability::supports_effort(
+                "claude",
+                input.model.as_deref().unwrap_or(""),
+                level,
+            )
+    });
+    if effort == Some("ultracode") {
         settings.insert("ultracode".into(), Value::Bool(true));
     }
     let mut settings_env = match settings.get("env") {
@@ -198,7 +206,7 @@ pub fn launch(input: &LaunchInput) -> Launch {
         "--input-format".into(),
         "stream-json".into(),
     ];
-    if let Some(effort) = input.effort.as_deref().filter(|v| !v.is_empty()) {
+    if let Some(effort) = effort {
         push_eq(
             &mut argv,
             "--effort",

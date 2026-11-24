@@ -26,6 +26,7 @@ pub mod cli_relay_skills;
 pub mod codex_bridge;
 pub mod codex_relay_client;
 pub mod daemon;
+pub mod effort_catalog_update;
 pub mod egress_runtime;
 pub mod forward;
 pub mod host_exec;

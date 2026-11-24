@@ -5,8 +5,8 @@
 // → lane) with everything derived from it — live in
 // native/core/src/cli_capability.rs, the authoritative table. This module asks
 // the native addon for one snapshot at load, freezes it, and from then on every
-// question is a lookup by normalized id: nothing here crosses the native
-// boundary per call, and nothing here re-derives a fact.
+// static fact is a lookup by normalized id. Effort rules can be replaced
+// while running. The native core checks the active rules at invocation time.
 //
 // The mirrors are public/provider-catalog.js (web) and
 // app/lib/utils/cli_display.dart (app); tests/test-cli-display-parity.js reads
@@ -23,6 +23,7 @@ function deepFreeze(value) {
 }
 
 const SNAPSHOT = deepFreeze(JSON.parse(getNative().cliCatalog()));
+let activeEfforts = SNAPSHOT.efforts;
 const {
   kinds: KINDS,
   defaultKinds: DEFAULT_KINDS,
@@ -31,7 +32,6 @@ const {
   capabilities: CAPABILITIES,
   clis: CLIS,
   display: DISPLAY,
-  efforts: EFFORTS,
   aliases: ALIASES,
 } = SNAPSHOT;
 
@@ -88,7 +88,18 @@ function colourOf(cli) {
 }
 
 function effortOf(cli) {
-  return own(EFFORTS, nameOf(cli)) || null;
+  return own(activeEfforts, nameOf(cli)) || null;
+}
+
+// 文件通知是 Node 宿主的桥接。校验、版本比较与快照替换均在 Rust。
+async function watchEffortCatalog(file) {
+  const fs = require('node:fs');
+  const reload = () => getNative().cliReloadEffortCatalog(file)
+    .then(() => { activeEfforts = deepFreeze(JSON.parse(getNative().cliEffortCatalog())); })
+    .catch(err => console.warn('[multicc] 强度目录缓存不可用：', err.message));
+  fs.watchFile(file, { persistent: false, interval: 1000 }, reload);
+  await reload();
+  return () => fs.unwatchFile(file, reload);
 }
 
 // Vendor-auth CLIs sign in with their own account, so no multicc provider is
@@ -225,7 +236,9 @@ module.exports = {
   DEFAULT_COLOUR,
   DEFAULT_KINDS,
   DISPLAY,
-  EFFORTS,
+  get EFFORTS() { return activeEfforts; },
+  watchEffortCatalog,
+  knownEffort: level => getNative().cliKnownEffort(level),
   KINDS,
   bundledEnginesOf,
   cancelStopsProcess,

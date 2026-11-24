@@ -11,7 +11,7 @@ const { gatewayPath } = require('../native/runtime');
 // session/cancel. Session ids (ses_…) are the same ids `opencode run --session`
 // uses, so conversations started on the old JSON lane resume unchanged.
 // MULTICC_OPENCODE_LEGACY_JSON=1 restores the `run --format json` lane.
-const { displayNameOf } = require('../cli/cli-capability');
+const { displayNameOf, supportsEffort } = require('../cli/cli-capability');
 
 const LABEL = displayNameOf('opencode');
 
@@ -69,7 +69,7 @@ function createOpencodeAdapter({
     terminalCmd(session) {
       let command = cmd;
       if (session.model) command += ` --model ${session.model}`;
-      if (session.effort) command += ` --variant ${session.effort}`;
+      if (session.effort && supportsEffort('opencode', session.model, session.effort)) command += ` --variant ${session.effort}`;
       if (session.agent) command += ` --agent ${session.agent}`;
       if (session.cliSessionId) command += ` --session ${session.cliSessionId}`;
       return command;

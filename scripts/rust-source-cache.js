@@ -101,6 +101,7 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
       || typeof a.observeCodeFiles!=='function' || typeof a.RustWorkspaceRelease!=='function'
       || typeof a.windowsToolsDiscover!=='function' || typeof a.cliCatalog!=='function'
+      || ['cliSupportsEffort','cliKnownEffort','cliCodexReasoningLevel','cliEffortCatalog','cliReloadEffortCatalog'].some(key=>typeof a[key]!=='function')
       || ['autoProviderLimitState','autoProviderChooseCandidate','autoProviderFailoverSafety','autoProviderPolicyFacts','providerErrorFacts','autoProviderFacts'].some(key=>typeof a[key]!=='function')
     || ['networkPolicyResolve','networkPolicyEnvEnabled','networkPolicyIsLoopbackHost','networkPolicyFindAvailablePort'].some(key=>typeof a[key]!=='function')
     || ['classifyVocabCatalog','parseClassifyResult','classifyVocabRequest','sessionWorkSelect',

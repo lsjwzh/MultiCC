@@ -162,6 +162,7 @@ function mountProvidersHostRoute(app, options = {}) {
       ccSwitchStatus,
       providers,
       subscriptions: subscriptions.snapshot(),
+      efforts: require('../cli/cli-capability').EFFORTS,
       limits,
       limitBars,
       virtualInputs,

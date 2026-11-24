@@ -282,6 +282,7 @@ pub async fn serve(mut options: ServeOptions) -> i32 {
         crate::remote_child::assist_dir(&app.data_root, &app.package_root, &app.home_dir);
     let (stop_assist, stopped) = tokio::sync::oneshot::channel();
     let assist_worker = tokio::spawn(multicc_core::assist_snapshots::run(assist_dir, stopped));
+    let effort_worker = crate::effort_catalog_update::start(Arc::clone(&app)).await;
     let mut shutting_down = false;
     let mut exit_code: Option<i32> = None;
 
@@ -409,6 +410,8 @@ pub async fn serve(mut options: ServeOptions) -> i32 {
         worker.stop().await;
     }
     let _ = stop_assist.send(());
+    effort_worker.abort();
+    let _ = effort_worker.await;
     let _ = assist_worker.await;
     if let Some(remote) = app.remote_child.get() {
         remote.shutdown().await;

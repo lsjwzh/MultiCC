@@ -304,6 +304,7 @@ test('目录宿主只提供事实，公开筛选和投影由 Rust 完成', async
     ok: true,
     ccSwitchStatus: { available: true, dbFound: true, dbPath: '/private/cc-switch.db' },
     providers: [{ id: 'claude-one', appType: 'claude', name: 'One' }],
+    efforts: require('../src/cli/cli-capability').EFFORTS,
     subscriptions: {}, limits: null, limitBars: {}, virtualInputs: {}, nowMs: 100,
     stats: [{ providerId: 'claude-one', totalTokens: 3 }],
     defaults: { claude: 'claude-one', codex: null },
