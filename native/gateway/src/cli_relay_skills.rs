@@ -73,7 +73,10 @@ pub fn default_readonly_skill_roots() -> Vec<PathBuf> {
 fn host_visible_path_with_home(path: &Path, home: Option<&Path>) -> String {
     if let Some(home) = home {
         let canonical_home = std::fs::canonicalize(home).ok();
-        for base in [Some(home), canonical_home.as_deref()].into_iter().flatten() {
+        for base in [Some(home), canonical_home.as_deref()]
+            .into_iter()
+            .flatten()
+        {
             if let Ok(rest) = path.strip_prefix(base) {
                 let rel = rest.to_string_lossy().replace('\\', "/");
                 return if rel.is_empty() {
@@ -325,7 +328,10 @@ mod tests {
     fn host_visible_path_folds_the_home_prefix_but_leaves_other_paths_alone() {
         let home = Path::new("/Users/alice");
         assert_eq!(
-            host_visible_path_with_home(Path::new("/Users/alice/.claude/skills/x/SKILL.md"), Some(home)),
+            host_visible_path_with_home(
+                Path::new("/Users/alice/.claude/skills/x/SKILL.md"),
+                Some(home)
+            ),
             "~/.claude/skills/x/SKILL.md"
         );
         assert_eq!(
