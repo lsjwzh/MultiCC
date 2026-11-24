@@ -15,7 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { TODO_IGNORE_LIMIT, createAirTodoIgnoreRuntime } = require('../src/workspace/todo-ignores');
+const { TODO_IGNORE_LIMIT, IGNORE_KINDS, normalizeIgnores, createAirTodoIgnoreRuntime } = require('../src/native/task-domain');
 const { mountAir } = require('./helpers/air-host');
 // `POST /api/air/tasks/mark-achieved` 的公开挂载点已搬到 Rust 前门
 // （native/gateway/src/app/task_routes.rs），eligibility 阶梯的单元/集成用例在
@@ -375,4 +375,104 @@ test('标记达成：需要交互 → 200，快照 goalState=achieved；非交�
   assert.equal(streaming.statusCode, 409);
   assert.equal(streaming.body.code, 'task_streaming');
   assert.equal(mark().statusCode, 400);
+});
+
+test('Air todo ignore reads and writes agree with the frozen host state machine', () => {
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-air-todo-ignores.js'));
+  const blob = createHash('sha1').update('blob ' + source.length + '\0').update(source).digest('hex');
+  assert.equal(blob, 'a70c9b85bdd82b8a360f5d34fc73e9dda2b4f961');
+  const filename = path.resolve(__dirname, '../src/workspace/todo-ignores.js');
+  const frozen = { exports: {} };
+  compileFunction(source.toString(), ['require', 'module'], { filename })(createRequire(filename), frozen);
+
+  function trace(make) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'air-ignore-diff-'));
+    const file = path.join(dir, 'state.json');
+    const events = [], todos = { manual: true };
+    const ownerError = Object.assign(Error('offline'), { code: 'SESSION_WORK_OWNER_UNAVAILABLE' });
+    const tasks = ['a', 'b', 'c', '\ud800'].map((id, i) => ({ id, updatedAt: i + 4, kind: i % 2 ? 'waiting' : 'error', occurredAt: i + 30 }));
+    let boardAvailable = true, failingProblem = '', failTodos = false;
+    const deps = { file, logger: { warn(s) { events.push(['warn', s.split(':')[0]]); } },
+      listTasks() {
+        assert.strictEqual(this, deps);
+        events.push('list');
+        if (!boardAvailable) throw Error('unavailable');
+        return tasks;
+      },
+      problemOf(t) {
+        assert.strictEqual(this, deps);
+        events.push(['problem', t.id]);
+        if (failingProblem === 'owner') throw ownerError;
+        if (failingProblem === 'ordinary') throw Error('unavailable');
+        return t;
+      },
+      readTodos() {
+        assert.strictEqual(this, deps);
+        events.push('todos');
+        if (failTodos) throw Error('missing');
+        return todos;
+      },
+    };
+    try {
+      const runtime = make(deps);
+      const read = () => events.push(['read', runtime.read()]);
+      const toggle = id => {
+        let got;
+        try { got = runtime.toggle(id); }
+        catch (e) { events.push(['error', e === ownerError, e.status, e.code, e.message]); return; }
+        if (!failTodos) assert.strictEqual(got.todos, todos);
+        events.push(['toggle', Object.keys(got), got, readItems(file)]);
+      };
+      for (const id of [' a ', 'b', 'c', '\ud800', '', {}, 'ghost', 'b']) toggle(id);
+      for (const who of [0, 2]) {
+        for (const kind of ['waiting', null, 'error']) {
+          for (const occurredAt of [0, 29, 30, 32, 900]) {
+            Object.assign(tasks[who], { kind, occurredAt, updatedAt: 800 });
+            read();
+          }
+        }
+      }
+      boardAvailable = false; read(); toggle('a');
+      boardAvailable = true; failingProblem = 'owner'; read(); toggle('a');
+      failingProblem = 'ordinary'; read(); toggle('c');
+      failingProblem = ''; failTodos = true; toggle('b');
+      const handler = new Map();
+      runtime.mountRoutes({ post(p, cb) { handler.set(p, cb); } });
+      const res = { status(n) { events.push(['status', n]); return this; }, json(v) { events.push(['http', v]); } };
+      handler.get('/api/air/todos/ignore')({ body: { taskId: 12n } }, res);
+      tasks.push({ id: 'blocked', kind: 'waiting', occurredAt: 101, updatedAt: 100 });
+      const previous = runtime.read();
+      fs.rmSync(dir, { recursive: true }); fs.writeFileSync(dir, 'blocked');
+      toggle('blocked'); assert.deepEqual(runtime.read(), previous);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    return events;
+  }
+  assert.deepEqual(trace(createAirTodoIgnoreRuntime), trace(frozen.exports.createAirTodoIgnoreRuntime));
+
+  function normalization(api) {
+    const events = [], extraKind = {};
+    api.IGNORE_KINDS.add(extraKind);
+    try {
+      const row = new Proxy({ taskId: ' \ud800 ', kind: extraKind, stamp: 11n }, {
+        get(obj, key) { events.push(key); return Reflect.get(obj, key); },
+      });
+      const withIterator = [];
+      withIterator[Symbol.iterator] = function* () {
+        try { yield null; yield row; yield row; yield { taskId: '\ufffd', kind: 'other', stamp: NaN }; }
+        finally { events.push('close'); }
+      };
+      for (const limit of [undefined, 1, 0, 2n, Symbol('limit')]) {
+        let got;
+        try { got = api.normalizeIgnores(withIterator, limit); }
+        catch (e) { events.push([e.name, e.message]); continue; }
+        assert.strictEqual(got[0].kind, extraKind);
+        events.push(got.map(({ taskId, kind, stamp }) => [taskId, kind === extraKind, stamp]));
+      }
+      return events;
+    } finally { api.IGNORE_KINDS.delete(extraKind); }
+  }
+  assert.deepEqual(normalization({ IGNORE_KINDS, normalizeIgnores }), normalization(frozen.exports));
 });
