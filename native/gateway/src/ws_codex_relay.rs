@@ -496,7 +496,7 @@ pub async fn serve_codex_relay_session<S>(
     );
     let _ = std::fs::create_dir_all(&scratch_dir);
 
-    let active_router_mcp = router_ctx.as_ref().and_then(|_| router_mcp.as_ref());
+    let active_router_mcp = router_ctx.as_ref().and(router_mcp.as_ref());
     let mcp_cfg_args =
         build_codex_mcp_config_args(&exec_bin, active_router_mcp, &bridged_mcp_servers);
 

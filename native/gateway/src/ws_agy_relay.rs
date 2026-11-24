@@ -591,7 +591,7 @@ pub async fn serve_relay_session_with_router<S>(
         None
     };
 
-    let active_router_mcp = router_ctx.as_ref().and_then(|_| router_mcp.as_ref());
+    let active_router_mcp = router_ctx.as_ref().and(router_mcp.as_ref());
     if let Err(err) =
         ensure_host_relay_mcp_config(&account_home, active_router_mcp, &bridged_mcp_servers)
     {
