@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 523 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 522 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -82,7 +82,7 @@
 | `src/chat/sessions.js` | server.js | `src/ws/ws-host.js` | — | — | — | — |
 | `src/chat/stalled-turn-recovery.js` | server.js | `src/classify/vocab.js` | — | — | — | — |
 | `src/chat/stream-router.js` | server.js | `src/chat/workspace-residency.js` | — | — | — | — |
-| `src/chat/task-state-payload.js` | server.js | `src/classify/aux-verdict-health.js`, `src/classify/task-short-code.js`, `src/native/runtime.js` | — | — | — | — |
+| `src/chat/task-state-payload.js` | server.js | `src/classify/task-short-code.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/chat/task-state-seed.js` | server.js | `src/chat/task-state-payload.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/chat/transcript-prune.js` | server.js | `src/native/runtime.js` | — | `os` | — | — |
 | `src/chat/turn-engine.js` | server.js | `src/chat/adapter-completion.js`, `src/chat/admission-progress.js`, `src/chat/auto-provider-runtime.js`, `src/chat/auto-route-notes.js`, `src/chat/chat-stream.js`, `src/chat/cli-relay-spawn.js`, `src/chat/codex-rollout-guard.js`, `src/chat/held-turn-injection.js`, `src/chat/history-frame-budget.js`, `src/chat/host-coordinator.js`, `src/chat/host-prompts.js`, `src/chat/index.js`, `src/chat/managed-context.js`, `src/chat/native-session-guard.js`, `src/chat/opencode-context-guard.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/session-notices.js`, `src/chat/task-state-seed.js`, `src/chat/transcript-prune.js`, `src/chat/turn-event-replay.js`, `src/chat/turn-progress.js`, `src/classify/task-short-code.js`, `src/cli-adapters/completion.js`, `src/cli-switch.js`, `src/cli/cli-capability.js`, `src/cli/session-policy.js`, `src/cli/switch-runtime.js`, `src/codex/usage.js`, `src/native/runtime.js`, `src/observability.js`, `src/providers/auto-provider-config.js`, `src/providers/core.js`, `src/providers/egress-ip-policy.js`, `src/routes/chat-history.js`, `src/secrets-vault.js`, `src/wait/injector.js`, `src/workspace/writer-group.js` | — | `child_process`, `crypto` | — | — |
@@ -95,7 +95,6 @@
 | `src/chat/workspace-residency.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/chrome-cdp.js` | server.js | `src/cdp-relay.js` | — | `fs`, `http`, `os`, `path` | `ws` | — |
 | `src/classify/aux-run-log.js` | server.js | — | — | `fs`, `path` | — | — |
-| `src/classify/aux-verdict-health.js` | server.js | — | — | — | — | — |
 | `src/classify/history-backtest.js` | 归属离线回测 | `src/classify/task-attribution.js` | — | — | — | — |
 | `src/classify/state-machine.js` | server.js | `src/classify/task-attribution.js`, `src/classify/task-short-code.js`, `src/classify/turn-state.js`, `src/classify/vocab.js`, `src/native/runtime.js`, `src/task-board/core.js` | — | `crypto` | — | — |
 | `src/classify/task-attribution.js` | server.js | `src/memory/task-distill.js`, `src/task-board/search.js` | — | — | — | — |
@@ -228,7 +227,7 @@
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/memory/task-distill.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/model-history-converter.js` | server.js | — | — | `crypto` | — | — |
-| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `104 require(file)` |
+| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `112 require(file)` |
 | `src/native/task-domain.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-search.js` | server.js | `src/native/runtime.js`, `src/task-board/search.js` | — | — | — | — |
@@ -378,7 +377,7 @@
 | `src/routes/server-core-host.js` | server.js | `src/chat/sessions.js`, `src/request-locality.js` | — | — | — | — |
 | `src/routes/server-restart-route.js` | server.js | `src/server-restart.js` | — | — | — | — |
 | `src/routes/session-admin-host.js` | server.js | `src/classify/vocab.js`, `src/providers/auto-provider-config.js`, `src/request-locality.js` | — | — | — | — |
-| `src/routes/session-admin.js` | server.js | `src/classify/aux-verdict-health.js`, `src/classify/task-short-code.js`, `src/classify/vocab.js`, `src/routes/session-admin-host.js`, `src/routes/task-goal.js`, `src/session/query-service.js`, `src/session/workspace-service.js`, `src/unattended/routes.js` | — | — | — | — |
+| `src/routes/session-admin.js` | server.js | `src/classify/task-short-code.js`, `src/classify/vocab.js`, `src/native/runtime.js`, `src/routes/session-admin-host.js`, `src/routes/task-goal.js`, `src/session/query-service.js`, `src/session/workspace-service.js`, `src/unattended/routes.js` | — | — | — | — |
 | `src/routes/session-bundle.js` | server.js | `src/git/service.js`, `src/memory/builtin-rules.js`, `src/native/runtime.js`, `src/session/handoff-env.js` | — | `child_process`, `crypto`, `fs`, `os`, `path`, `util` | `express` | `771 require(file.zipRef)`, `779 require(file.zipRef)`, `782 require(zipPayload.gitBundleZip.zipRef)` |
 | `src/routes/session-create.js` | server.js | `src/cli-adapters/vendor-login.js`, `src/cli-key-accounts.js`, `src/routes/agy-accounts.js` | — | `crypto` | — | — |
 | `src/routes/session-git-host.js` | server.js | `src/request-locality.js` | — | `path` | — | — |
@@ -386,7 +385,7 @@
 | `src/routes/session-lifecycle.js` | server.js | `src/chat/codex-rollout-guard.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/routes/session-memory.js` | server.js | — | — | — | — | — |
 | `src/routes/session-meta.js` | server.js | — | — | `crypto` | — | — |
-| `src/routes/session-profile.js` | server.js | `src/classify/aux-verdict-health.js`, `src/classify/task-short-code.js`, `src/classify/vocab.js`, `src/cli-key-accounts.js`, `src/cli/cli-capability.js`, `src/memory/runtime.js`, `src/native/runtime.js`, `src/providers/auto-provider-config.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js` | — | `crypto`, `fs`, `path` | — | — |
+| `src/routes/session-profile.js` | server.js | `src/classify/task-short-code.js`, `src/classify/vocab.js`, `src/cli-key-accounts.js`, `src/cli/cli-capability.js`, `src/memory/runtime.js`, `src/native/runtime.js`, `src/providers/auto-provider-config.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js` | — | `crypto`, `fs`, `path` | — | — |
 | `src/routes/session-routes-host.js` | server.js | `src/request-locality.js` | — | — | — | — |
 | `src/routes/share-machines-host.js` | server.js | `src/request-locality.js`, `src/routes/share.js`, `src/routes/workspaces.js` | — | — | — | — |
 | `src/routes/share.js` | server.js | `src/http/public-safety.js` | — | — | — | — |

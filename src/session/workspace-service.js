@@ -36,7 +36,7 @@ function workspaceEntry(session, facts = {}) {
     taskShortCode: boundedString(facts.taskShortCode, 8, ''),
     phase: boundedString(facts.phase, 80, 'idle'),
     // Whether Aux is still revising this judgement; a frozen verdict must not
-    // read as a current one. See src/classify/aux-verdict-health.js.
+    // read as a current one. See native/addon/src/aux_verdict_health.rs.
     auxUnhealthy: facts.auxUnhealthy === true,
     auxUnhealthySince: Number.isFinite(Number(facts.auxUnhealthySince))
       ? Number(facts.auxUnhealthySince) : null,

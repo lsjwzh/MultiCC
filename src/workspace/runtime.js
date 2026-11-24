@@ -148,7 +148,7 @@ function createWorkspaceRuntime(options) {
     broadcastRaw(record.dirId, { type: 'task_state', ...envelope,
       classifyState: view.classifyState, goal: view.goal, phase: view.phase, taskShortCode: view.taskShortCode,
       // Fleet cards show judgements Aux may no longer be revising; the card has
-      // to be able to say so. See src/classify/aux-verdict-health.js.
+      // to be able to say so. See native/addon/src/aux_verdict_health.rs.
       auxUnhealthy: view.auxUnhealthy === true,
       auxUnhealthySince: view.auxUnhealthySince || null });
     broadcastRaw(record.dirId, { type: 'status', ...envelope,

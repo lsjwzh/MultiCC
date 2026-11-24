@@ -13,9 +13,8 @@
 // the kernel cannot derive — the persisted short code and the live Aux health
 // — and forwards the rest.
 
-const { getNative } = require('../native/runtime');
+const { getNative, auxVerdictStaleness } = require('../native/runtime');
 const { taskShortCode } = require('../classify/task-short-code');
-const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 
 // `taskShortCode` reads (and can mint into) the persisted registry and
 // `auxVerdictStaleness` reads live Aux health, so both are resolved here and

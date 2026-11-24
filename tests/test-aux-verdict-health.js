@@ -15,7 +15,7 @@ const {
   installAuxHealthProvider,
   auxVerdictStaleness,
   fanOutAuxVerdictStaleness,
-} = require('../src/classify/aux-verdict-health');
+} = require('../src/native/runtime');
 const { taskStateSeed } = require('../src/chat/task-state-seed');
 const { workspaceEntry } = require('../src/session/workspace-service');
 const { createWorkspaceRuntime } = require('../src/workspace/runtime');
@@ -188,4 +188,89 @@ test('the workspace task_state broadcast carries the pair to every client', () =
   assert.equal(state.auxUnhealthySince, 1_700_000_000_000);
   // The queue card is the same projection: a stale judgement is not a queue state.
   assert.equal(messages.some(m => m.type === 'session_queue_status'), true);
+});
+
+const oldHealth = require('./helpers/legacy-aux-verdict-health');
+const liveHealth = { installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness };
+
+test('same health provider values produce the same two public fields and access order', () => {
+  const stamp = { at: 17 };
+  function project(api, unhealthy, sinceAt) {
+    const reads = [];
+    const health = {
+      get unhealthy() { reads.push('unhealthy'); return unhealthy; },
+      get sinceAt() { reads.push('sinceAt'); return sinceAt; },
+      get diagnosis() { assert.fail('private diagnosis was accessed'); },
+    };
+    api.installAuxHealthProvider(() => { reads.push('provider'); return health; });
+    try {
+      const value = api.auxVerdictStaleness();
+      assert.deepEqual(Object.keys(value), ['auxUnhealthy', 'auxUnhealthySince']);
+      if (unhealthy && sinceAt) assert.strictEqual(value.auxUnhealthySince, sinceAt);
+      return { value, reads };
+    } finally { api.installAuxHealthProvider(null); }
+  }
+  for (const flag of [false, null, 0, '', true, 1, [], {}]) {
+    for (const since of [undefined, null, 0, '', 12345, 'then', stamp]) {
+      assert.deepStrictEqual(project(liveHealth, flag, since), project(oldHealth, flag, since));
+    }
+  }
+  for (const source of [null, {}, () => null, () => true, () => Object.assign(() => {}, { unhealthy: true }),
+    () => { throw new Error('queue offline'); }]) {
+    const read = api => {
+      api.installAuxHealthProvider(source);
+      try { return api.auxVerdictStaleness(); } finally { api.installAuxHealthProvider(null); }
+    };
+    assert.deepStrictEqual(read(liveHealth), read(oldHealth));
+  }
+});
+
+test('same session iterator preserves broadcast selection, sequence, reference sharing and failures', () => {
+  const entries = [
+    ['empty', null], ['aux', { type: 'aux' }], ['gateway', { type: 'gateway' }],
+    ['idle', { task: {} }], ['goal', { dirId: 'dir', task: { goal: 'ship' } }],
+    ['class', { dirId: 'dir', task: { classifyState: 'W' } }], ['solo', { task: { goal: 1 } }],
+  ];
+  function run(api, failChat, failWorkspace, failRead) {
+    const trace = [];
+    const sentinel = new Error('task lookup failed');
+    let shared;
+    const tag = Symbol('consumer addition');
+    function* sessions() {
+      try { yield* entries; } finally { trace.push('iterator closed'); }
+    }
+    api.installAuxHealthProvider(() => { trace.push('health'); return { unhealthy: true, sinceAt: 17 }; });
+    try {
+      const count = api.fanOutAuxVerdictStaleness({
+        sessions: sessions(),
+        getTaskState(record) {
+          trace.push(['read', record.task]);
+          if (failRead && record === entries[5][1]) throw sentinel;
+          return record.task;
+        },
+        chatBroadcast(id, payload) {
+          trace.push(['reused chat payload', shared ? payload === shared : true]);
+          shared = payload;
+          trace.push(['chat', id, payload.auxUnhealthy, payload.auxUnhealthySince, payload[tag]]);
+          payload[tag] = id;
+          payload.sessionId = 'from chat';
+          if (failChat) throw new Error('chat closed');
+        },
+        workspaceBroadcast(dir, payload) {
+          trace.push(['separate workspace payload', payload !== shared]);
+          trace.push(['workspace', dir, payload.sessionId, payload[tag]]);
+          if (failWorkspace) throw new Error('workspace closed');
+        },
+      });
+      return { count, trace };
+    } catch (error) {
+      assert.strictEqual(error, sentinel);
+      return { failed: true, trace };
+    } finally { api.installAuxHealthProvider(null); }
+  }
+  for (const chat of [false, true]) for (const workspace of [false, true]) for (const read of [false, true]) {
+    const expected = run(oldHealth, chat, workspace, read);
+    assert.equal(expected.count, read ? undefined : 3);
+    assert.deepStrictEqual(run(liveHealth, chat, workspace, read), expected);
+  }
 });

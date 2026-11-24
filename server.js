@@ -72,7 +72,9 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
-const { createProviderRouterRuntime } = require('./src/providers/router-runtime'); const { getNative, findProviderReferences, messageComposer, bootstrapState } = require('./src/native/runtime');
+const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
+const { getNative, findProviderReferences, messageComposer, bootstrapState,
+  installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/native/runtime');
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
@@ -188,7 +190,6 @@ const {
 } = require('./src/codex/oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
-const { installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/classify/aux-verdict-health');
 const { createTaskStateStore } = require('./src/routes/task-state-store');
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/host');
@@ -1954,9 +1955,7 @@ const {
   getClaudeOfficialViaProxy: () => CLAUDE_OFFICIAL_VIA_PROXY,
   executeAuxHttp, providerLimitCache, getCliAvailability: () => cliAvailabilitySummary(), codexModelsRuntime: codexCatalog,
   broadcast: broadcastTo,
-  // Aux health is fleet-wide: one transition changes the meaning of EVERY
-  // session's judgement at once, and an already-open page has no other way to
-  // hear it. The fan-out rule lives with the fact (aux-verdict-health.js).
+  // Refresh displayed verdicts immediately, even when no new task_state arrives.
   onHealthChange: () => fanOutAuxVerdictStaleness({
     sessions: persistedSessions, getTaskState, chatBroadcast, workspaceBroadcast,
   }),

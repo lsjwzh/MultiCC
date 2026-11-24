@@ -10,6 +10,14 @@ let cliRegistryOwner = null;
 let cliRegistryAddon = null;
 let sessionDeliveryAddon = null;
 let sessionDeliveryApi = null;
+// The bootstrap owns this per-host callback; Rust reads it at each projection.
+let auxHealthProvider = null;
+function installAuxHealthProvider(fn) { auxHealthProvider = typeof fn === 'function' ? fn : null; }
+function auxVerdictStaleness() { return getNative().auxVerdictStaleness(auxHealthProvider); }
+function fanOutAuxVerdictStaleness({ sessions, getTaskState, chatBroadcast, workspaceBroadcast }) {
+  return getNative().fanOutAuxVerdictStaleness(auxHealthProvider, sessions, getTaskState, chatBroadcast, workspaceBroadcast);
+}
+
 const counts = { search: 0, usage: 0 };
 // Compatibility value for Node modules that must load before the addon; the
 // native delivery API is the policy owner and preflight verifies this marker.
@@ -380,6 +388,7 @@ function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
 module.exports = { getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+  installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness,
   decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
