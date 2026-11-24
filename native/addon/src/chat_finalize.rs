@@ -11,6 +11,7 @@
 //!
 //! The host clock is a JavaScript callback so it is only sampled when a retry
 //! is actually scheduled, matching the former `deps.retry.now()` call site.
+use crate::js_live::LiveValue;
 use multicc_core::js::JsValue;
 use napi::bindgen_prelude::{JsValue as _, Unknown};
 use napi::{sys, Env, Result};
@@ -159,6 +160,46 @@ pub fn chat_resolve_turn_finalization(
         }
     }
     Ok(written)
+}
+
+// The host previously selected the clock before handing the inputs to the
+// planner. Preserve getter order; the planner calls it only for a retry.
+fn retry_clock(deps: LiveValue<'_>) -> Result<LiveValue<'_>> {
+    let retry = if deps.truthy()? {
+        deps.get(c"retry")?
+    } else {
+        deps
+    };
+    if retry.truthy()? && retry.get(c"now")?.kind()? == sys::ValueType::napi_function {
+        return retry.get(c"now");
+    }
+    deps.global()?.get(c"Date")?.get(c"now")
+}
+
+#[napi]
+pub fn chat_frozen_finalization(
+    env: Env,
+    operation: String,
+    first: Unknown<'_>,
+    second: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let raw = env.raw();
+    let written = match operation.as_str() {
+        "handoff" => {
+            let handoff = chat_normalize_handoff(env, first)?;
+            return Ok(LiveValue::from_raw(raw, handoff).freeze()?.raw());
+        }
+        "plan" => {
+            let clock = retry_clock(LiveValue::from_raw(raw, second.raw()))?;
+            // The selected function belongs to this very callback's N-API scope.
+            let clock = unsafe { Unknown::from_raw_unchecked(raw, clock.raw()) };
+            chat_plan_turn_finalization(env, first, second, clock)?
+        }
+        "retryBlocked" => chat_plan_retry_blocked_finalization(env, first, second)?,
+        "resolve" => chat_resolve_turn_finalization(env, first, second)?,
+        _ => return Err(napi::Error::from_reason("unknown finalization operation")),
+    };
+    Ok(crate::chat_finalize_execution::freeze_plan(LiveValue::from_raw(raw, written))?.raw())
 }
 
 #[napi]

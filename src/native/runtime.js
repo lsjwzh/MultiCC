@@ -377,6 +377,15 @@ function getContextSelection() {
   };
   return selectionApi;
 }
+const finalizationPlan = {
+  classifyProcessExit: (input = {}) => getNative().chatClassifyProcessExit(input),
+  normalizeHandoff: (input = {}) => getNative().chatFrozenFinalization('handoff', input),
+  isGuardedHandoffFailure: (facts, handoff) => getNative().chatIsGuardedHandoffFailure(facts, handoff),
+  replaySafeHandoffProviderError: input => getNative().chatReplaySafeHandoffProviderError(input),
+  planTurnFinalization: (input = {}, deps = {}) => getNative().chatFrozenFinalization('plan', input, deps),
+  planRetryBlockedFinalization: (plan, overrides = {}) => getNative().chatFrozenFinalization('retryBlocked', plan, overrides),
+  resolveTurnFinalization: (plan, outcome = {}) => getNative().chatFrozenFinalization('resolve', plan, outcome),
+};
 const taskShellContext = {
   hash: value => reference('hash', value),
   estimateTokens: value => reference('estimate', String(value ?? '')),
@@ -523,7 +532,7 @@ function createSessionPersistence() {
 }
 module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
-  getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  finalizationPlan, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
   pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };

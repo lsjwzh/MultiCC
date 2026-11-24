@@ -1,5 +1,11 @@
 # 剩余 Node 后端清单
 
+## 聊天回合收尾计划与宿主端口（2026-11-25）
+
+生产计划门面与执行宿主的旧 Git blob 分别为 `610b4936428b1b9c3ac8f354ae93bce2b85475b6` 和 `10d9a99c20dbbb2144ae1a71293a2456c121c3a4`。Rust 选择重试时钟、冻结计划及其成员，并校验 13 个执行端口的名称、类型和读取顺序。已有调用方可以继续通过聊天模块取得同一个计划函数。Node 宿主仍等待实际写入的 Promise，将写入结果和原始错误交回 Rust，并在需要时等待问题状态同步；因此 `finalize-host.js` 仍列入宿主编排，待异步持久化和问题状态所有者迁出后再移除。[计划入口](../../native/addon/src/chat_finalize.rs) · [执行端口](../../native/addon/src/chat_finalize_execution.rs)
+
+同一组迁前与迁后十套定向测试各通过 314/314，含隔离网关测试。固定输入核对冻结计划、宿主对象身份、端口异常、时钟及副作用顺序。另验证早期交付的计划中，原始类型的 facts 和 append 字段可原样返回。以紧前的上下文选择批次为基准，src 从 508 降至 507 个文件（502 JS、2 CJS、3 MJS），业务或宿主编排从 318 降至 317。server.js 加 src 从 127,668 降至 127,594 行，本批净减 74 行。[差分回归](../../tests/test-chat-finalize-differential.js) · [逐文件清单](node-module-dependencies.md)
+
 ## 上下文候选选择（2026-11-25）
 
 冻结的生产门面 Git blob 为 `8263ade757ddc0a01d3cc9fe75e4e92cc8496c68`。任务上下文计划、快照和关联任务复用同一 Rust 接口。Rust 处理分词、相关度阈值、裁剪、预算默认值、非有限数和未定义值，并恢复返回结果的预算上限。兼容宿主保留 V8 的可迭代对象展开、带 getter 的排序比较、ICU 的 `localeCompare` 顺序，以及 JavaScript 异常类型映射。调用方移出 V8 后可移除这段接线。[原生接口](../../native/addon/src/selection.rs)

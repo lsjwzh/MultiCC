@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const legacy = require('./helpers/legacy-chat-finalize-plan');
-const native = require('../src/chat/finalize-plan');
+const native = require('../src/native/runtime').finalizationPlan;
 
 const NOW = 1234;
 
@@ -266,6 +266,14 @@ test('classification, handoff normalization and guard stay byte-identical', () =
 });
 
 test('plans, effects and results stay frozen and preserve host identities', () => {
+  for (const field of ['facts', 'append']) {
+    for (const value of [1, 'legacy', false, null]) {
+      const plan = { action: 'finalize', facts: {}, append: {}, effects: [], [field]: value };
+      const result = native.resolveTurnFinalization(plan, {});
+      assert.equal(result[field], value);
+      assert.equal(Object.isFrozen(result), true);
+    }
+  }
   const decision = { action: 'retry', attempt: 1, delayMs: 0, retryAt: 1, error: { category: 'unknown', maxAttempts: 1 } };
   const input = {
     current: true, runnerKind: 'stream', cli: 'claude', code: 0, signal: null,
@@ -320,7 +328,20 @@ test('the host clock is sampled only when a retry is scheduled and its errors su
 
 
 // 执行器以迁移前冻结的宿主实现为对照，比较完整端口轨迹和可见状态。
-const legacyExecutor = require('./helpers/legacy-chat-finalize-host');
+// Frozen CommonJS fixtures resolve their dependencies from their original
+// locations. Keep the retired executor wired to its original planner.
+function loadFixture(file, filename, overrides = {}) {
+  const { createRequire } = require('node:module'), { compileFunction } = require('node:vm');
+  const source = require('node:fs').readFileSync(file, 'utf8');
+  const local = createRequire(filename), mod = { exports: {} };
+  const load = id => Object.hasOwn(overrides, id) ? overrides[id] : local(id);
+  compileFunction(source, ['module', 'require'], { filename })(mod, load);
+  return mod.exports;
+}
+const frozenPlanner = loadFixture(require.resolve('./helpers/frozen-finalize-plan'),
+  require('node:path').resolve(__dirname, '../src/chat/finalize-plan.js'));
+const executorFile = require.resolve('./helpers/legacy-chat-finalize-host');
+const legacyExecutor = loadFixture(executorFile, executorFile, { '../../src/chat/finalize-plan': frozenPlanner });
 const nativeExecutor = require('../src/chat/finalize-host');
 
 async function executionHarness(owner, input, options = {}) {
@@ -493,4 +514,47 @@ test('收尾执行：错误正文保留 UTF-16 代码单元及显式字符串转
     await compareExecution(emptyRetry, { stderrTail }, 'stderr coercion');
   }
   await compareExecution(emptyRetry, { transport: '\udc00 transport' }, 'transport UTF-16');
+});
+
+test('收尾门面与冻结实现保持相同计划、端口访问顺序和执行轨迹', async () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const { createHash } = require('node:crypto');
+  const { compileFunction } = require('node:vm'), { createRequire } = require('node:module');
+  function frozen(name, blob) {
+    const body = fs.readFileSync(path.join(__dirname, 'helpers', 'frozen-' + name + '.js'));
+    const file = path.resolve(__dirname, '../src/chat', name + '.js');
+    assert.equal(createHash('sha1').update('blob ' + body.length + '\0').update(body).digest('hex'), blob);
+    const mod = { exports: {} };
+    compileFunction(body.toString(), ['module', 'require'], { filename: file })(mod, createRequire(file));
+    return mod.exports;
+  }
+  const priorPlan = frozen('finalize-plan', '610b4936428b1b9c3ac8f354ae93bce2b85475b6');
+  const priorHost = frozen('finalize-host', '10d9a99c20dbbb2144ae1a71293a2456c121c3a4');
+  const random = mulberry32(0xe22f), cases = Array.from({ length: 96 }, () => randomInput(random));
+  function plans(owner) {
+    return cases.map(item => {
+      const input = clone(item), deps = stableDeps();
+      const plan = owner.planTurnFinalization(input, deps);
+      const resolved = owner.resolveTurnFinalization(plan, { appendPersisted: true });
+      return [view(plan), view(resolved), Object.isFrozen(plan), Object.isFrozen(plan.effects),
+        Object.isFrozen(resolved), resolved.facts === plan.facts, resolved.append === plan.append];
+    });
+  }
+  assert.deepEqual(plans(native), plans(priorPlan));
+  function portTrace(owner, missing) {
+    const keys = [];
+    const ports = new Proxy({}, {get(_, k) { keys.push(k); return k === missing ? null : () => {}; }});
+    try { assert.equal(owner.assertFinalizeHostPorts(ports), ports); }
+    catch(error) { keys.push(error.constructor.name, error.message); }
+    return keys;
+  }
+  const required = portTrace(priorHost, null);
+  assert.equal(required.length, 13);
+  for (const key of [null, ...required]) assert.deepEqual(portTrace(nativeExecutor, key), portTrace(priorHost, key));
+  for (const options of [{}, { persisted: 'true' }, { fail: 'persist' }, { rejectComplete: true }, { fail: 'usage', thrown: false }]) {
+    const prior = await executionHarness(priorHost, EXECUTION_BASE, options);
+    const next = await executionHarness(nativeExecutor, EXECUTION_BASE, options);
+    await new Promise(resolve => setImmediate(resolve));
+    for (const k of ['calls', 'turn', 'state', 'result']) assert.deepEqual(view(next[k]), view(prior[k]));
+  }
 });

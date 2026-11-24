@@ -3,28 +3,8 @@
 const { getNative } = require('../native/runtime');
 const turnProgress = require('./turn-progress');
 
-const REQUIRED_PORTS = Object.freeze([
-  'persistAssistant',
-  'commitUsage',
-  'broadcast',
-  'cancelClassify',
-  'clearReplay',
-  'clearIncrementalSave',
-  'setStatus',
-  'completeSessionTurn',
-  'classifyTurnEnd',
-  'resetInterrupted',
-  'resumeInterrupted',
-  'emitTurnOutcome',
-  'runPostTurn',
-]);
-
 function assertFinalizeHostPorts(ports) {
-  if (!ports || typeof ports !== 'object') throw new TypeError('finalize host ports are required');
-  for (const name of REQUIRED_PORTS) {
-    if (typeof ports[name] !== 'function') throw new TypeError(`finalize host port missing: ${name}`);
-  }
-  return ports;
+  return getNative().chatValidateFinalizationPorts(ports);
 }
 
 function createTurnFinalizationExecutor(rawPorts) {
