@@ -13,6 +13,20 @@ pub fn cli_supports_effort(cli: String, model: String, level: String) -> bool {
 }
 
 #[napi]
+pub fn cli_legacy_claude_effort(model: Option<String>) -> Option<String> {
+    multicc_core::cli_capability::legacy_claude_effort(model.as_deref().unwrap_or(""))
+        .map(str::to_owned)
+}
+
+pub(crate) fn legacy_effort_value(
+    model: crate::js_live::LiveValue<'_>,
+) -> napi::Result<crate::js_live::LiveValue<'_>> {
+    use multicc_core::js::JsValue;
+    let level = cli_legacy_claude_effort(model.string()?.map(|s| s.to_string_lossy()));
+    model.from_value(&level.map(JsValue::from).unwrap_or(JsValue::Null))
+}
+
+#[napi]
 pub fn cli_effort_catalog() -> napi::Result<String> {
     serde_json::to_string(&multicc_core::effort_catalog::snapshot().efforts)
         .map_err(|e| napi::Error::from_reason(e.to_string()))

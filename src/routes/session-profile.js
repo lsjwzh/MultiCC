@@ -1,5 +1,7 @@
 'use strict';
 
+const { nameOf } = require('../cli/cli-capability');
+
 const crypto = require('crypto');
 const { getNative, assignHostProperty } = require('../native/runtime');
 const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
@@ -162,7 +164,10 @@ function createSessionProfileRoutes(rawDeps) {
           error: 'cli cannot be changed with PATCH; use POST /api/sessions/:id/switch-cli',
         });
       }
-      const routeMutation = ['model', 'effort', 'agent', 'rolePrompt', 'provider', 'providerSelection', 'subagent']
+      for (const key of ['claudeWorkflow', 'preferSubtasks']) {
+        if (req.body[key] !== undefined && typeof req.body[key] !== 'boolean') return res.status(400).json({ error: 'invalid ' + key });
+      }
+      const routeMutation = ['model', 'effort', 'claudeWorkflow', 'preferSubtasks', 'agent', 'rolePrompt', 'provider', 'providerSelection', 'subagent']
         .some(key => Object.prototype.hasOwnProperty.call(req.body || {}, key));
       if (!preview && routeMutation && (s.pendingConfiguration || busy(s.id))) {
         // Run the exact same validation on a detached desired-state draft. No
@@ -251,8 +256,15 @@ function createSessionProfileRoutes(rawDeps) {
         if ((s.cli || 'claude') === 'claude' && s.kind === 'chat') closeStream();
         appendEvent(s.dirId, 'session_model_changed', `${s.label || s.id} → ${s.model || '默认'}`, s.id);
       }
+      for (const key of ['claudeWorkflow', 'preferSubtasks']) {
+        if (req.body[key] === undefined) continue;
+        if (key === 'claudeWorkflow' && s[key] !== req.body[key] && (s.cli || 'claude') === 'claude') closeStream();
+        s[key] = req.body[key];
+      }
       if (req.body.effort !== undefined) {
-        const effort = normalizeEffort(req.body.effort);
+        const legacy = req.body.effort === 'ultracode' && nameOf(s.cli || 'claude') === 'claude';
+        if (legacy && req.body.claudeWorkflow === undefined) s.claudeWorkflow = true;
+        const effort = normalizeEffort(legacy ? getNative().cliLegacyClaudeEffort(s.model) : req.body.effort);
         if (effort === undefined) return rejectMutation(400, { error: 'invalid effort' });
         if (!validEffortForCli(s.cli || 'claude', effort)) return rejectMutation(400, { error: 'invalid reasoning level' });
         s.effort = effort || null;

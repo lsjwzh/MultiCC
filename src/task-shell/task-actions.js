@@ -162,7 +162,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
         task = { id: taskId, dirId: owner.dirId, sessionId, ownerShellId: shellId, taskFirst: true,
           title: source.title || id, forkedFromTaskId: id, parentTaskId: id,
           ready: false, createdAt: Date.now(), snapshotIds: [snapshot.hash], forkBaseline: baseline,
-          runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent'].filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) };
+          runtime: Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'claudeWorkflow', 'preferSubtasks', 'agent'].filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) };
         store.transaction(() => {
           // A different create can fill the final slot during baseline capture.
           if (directoryAtCapacity(store, owner.dirId)) throw fail('task_shell_task_limit');
@@ -200,7 +200,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     if (typeof input.clientMsgId !== 'string' || !/^[\w.:-]{1,160}$/.test(input.clientMsgId)
         || typeof input.dirId !== 'string' || !ports.getDirectory?.(input.dirId)
         || typeof input.title !== 'string' || !input.title.trim() || input.title.length > 120) throw fail('invalid_input', 'Directory, title and clientMsgId required', 400);
-    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent', 'rolePrompt', 'rolePresetId']
+    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'claudeWorkflow', 'preferSubtasks', 'agent', 'subagent', 'rolePrompt', 'rolePresetId']
       .filter(k => input[k] !== undefined).map(k => [k, input[k]]));
     if (!runtime.cli) runtime.cli = 'claude';
     const checked = await ports.validateTaskRuntime?.(input.dirId, runtime);

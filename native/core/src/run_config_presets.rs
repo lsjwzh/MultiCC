@@ -90,6 +90,7 @@ struct Candidate {
     cli: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    claude_workflow: Option<bool>,
     priority: i64,
     tier: Option<String>,
     auto_model: bool,
@@ -127,7 +128,23 @@ impl Candidate {
             .unwrap_or(index as i64 + 1);
         let tier = trimmed(object.get("tier")).filter(|text| TIERS.contains(&text.as_str()));
         let auto_model = object.get("autoModel").and_then(Value::as_bool) == Some(true);
-        let effort = trimmed(object.get("effort")).filter(|level| match cli.as_deref() {
+        let claude = matches!(cli.as_deref(), None | Some("claude" | "claude-exp"));
+        let legacy = claude && value["effort"] == "ultracode";
+        let claude_workflow = if claude {
+            object
+                .get("claudeWorkflow")
+                .and_then(Value::as_bool)
+                .or(legacy.then_some(true))
+        } else {
+            None
+        };
+        let effort = (if legacy {
+            crate::cli_capability::legacy_claude_effort(model.as_deref().unwrap_or(""))
+                .map(str::to_owned)
+        } else {
+            trimmed(object.get("effort"))
+        })
+        .filter(|level| match cli.as_deref() {
             Some(lane) => {
                 crate::cli_capability::supports_effort(lane, model.as_deref().unwrap_or(""), level)
             }
@@ -138,6 +155,7 @@ impl Candidate {
         });
         Some(Candidate {
             effort,
+            claude_workflow,
             provider_id,
             cli,
             model,
@@ -163,6 +181,9 @@ impl Candidate {
         object.insert("priority".into(), json!(self.priority));
         if let Some(tier) = &self.tier {
             object.insert("tier".into(), Value::String(tier.clone()));
+        }
+        if let Some(flag) = self.claude_workflow {
+            object.insert("claudeWorkflow".into(), json!(flag));
         }
         if let Some(effort) = &self.effort {
             object.insert("effort".into(), json!(effort));
@@ -555,7 +576,8 @@ mod tests {
             ],
         }]}));
         let list = out["presets"][0]["candidates"].as_array().unwrap();
-        assert_eq!(list[0]["effort"], "ultracode");
+        assert_eq!(list[0]["effort"], "xhigh");
+        assert_eq!(list[0]["claudeWorkflow"], true);
         assert_eq!(list[2]["effort"], "ultra");
         assert_eq!(list[0]["cli"], "claude");
         // Lane ids are case-sensitive everywhere else; only the exact retired id folds.

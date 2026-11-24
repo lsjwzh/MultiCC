@@ -1,7 +1,7 @@
 //! Shared policy for a session's staged configuration.
 
 /// Reuse the same field order as session-fork configuration.
-pub const CONFIG_FIELDS: [&str; 7] = crate::session_subagent::CONFIG_FIELDS;
+pub const CONFIG_FIELDS: [&str; 9] = crate::session_subagent::CONFIG_FIELDS;
 
 /// Only these two preparation phases block configuration changes.
 pub fn preparation_busy(phase: Option<&str>) -> bool {
@@ -38,7 +38,9 @@ mod tests {
                 "effort",
                 "agent",
                 "subagent",
-                "rolePrompt"
+                "rolePrompt",
+                "claudeWorkflow",
+                "preferSubtasks"
             ]
         );
     }

@@ -77,7 +77,9 @@ test('线路强度按 CLI 和模型校验，保存后可重新读取', () => {
   const opts = { cli: 'claude', providers: catalog() };
   const saved = validateProviderSelection(pool, opts);
   assert.equal(saved.ok, true);
-  assert.equal(providerSelectionDto(saved.value).candidates[0].effort, 'ultracode');
+  const [legacy] = providerSelectionDto(saved.value).candidates;
+  assert.equal(legacy.effort, 'xhigh');
+  assert.equal(legacy.claudeWorkflow, true);
   assert.equal('effort' in saved.value.candidates[1], false);
   pool.candidates[0].effort = 'ultra';
   assert.equal(validateProviderSelection(pool, opts).code, 'invalid_provider_candidate');

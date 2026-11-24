@@ -157,6 +157,18 @@ fn call_propagating<'a>(callback: L<'a>, arguments: &[L<'a>]) -> Result<L<'a>> {
     }
 }
 
+fn migrate_legacy_workflow(profile: L<'_>) -> Result<bool> {
+    if !profile.optional(c"effort")?.is_string("ultracode")? {
+        return Ok(false);
+    }
+    profile.set(
+        c"effort",
+        crate::cli_capability::legacy_effort_value(profile.get(c"model")?)?,
+    )?;
+    profile.set(c"claudeWorkflow", profile.from_value(&V::Bool(true))?)?;
+    Ok(true)
+}
+
 /// Load-time identity normalisation for the retired `claude -p` chat lane. That
 /// lane wrote the live transcript id to `_streamSessionId` (and to
 /// `cliStates.claude.streamSessionId` when switched away) while leaving a
@@ -164,8 +176,20 @@ fn call_propagating<'a>(callback: L<'a>, arguments: &[L<'a>]) -> Result<L<'a>> {
 /// and both name the same `~/.claude/projects/<cwd>/<id>.jsonl`, so the
 /// streamed id wins whenever it is present. Non-Claude lanes are left
 /// untouched.
-fn normalize_claude_native_id(record: L<'_>) -> Result<bool> {
+fn migrate_claude_record(record: L<'_>) -> Result<bool> {
     let mut changed = false;
+    let cli = record.get(c"cli")?;
+    if cli.nullish()? || cli.is_string("claude")? || cli.is_string("claude-exp")? {
+        changed |= migrate_legacy_workflow(record)?;
+    }
+    let pending = record.get(c"pendingConfiguration")?;
+    let pending_cli = pending.optional(c"cli")?;
+    if pending_cli.nullish()?
+        || pending_cli.is_string("claude")?
+        || pending_cli.is_string("claude-exp")?
+    {
+        changed |= migrate_legacy_workflow(pending.optional(c"profile")?)?;
+    }
     let streamed = record.get(c"_streamSessionId")?;
     if streamed.truthy()? {
         let cli = record.get(c"cli")?.string()?;
@@ -191,6 +215,7 @@ fn normalize_claude_native_id(record: L<'_>) -> Result<bool> {
             {
                 continue;
             }
+            changed |= migrate_legacy_workflow(state)?;
             let nested_stream = state.get(c"streamSessionId")?;
             if nested_stream.truthy()? {
                 state.set(c"cliSessionId", nested_stream)?;
@@ -1193,7 +1218,7 @@ impl RustSessionRecords {
         entries.for_each(|pair| {
             let key = self.key(pair.element(0)?)?;
             let record = pair.element(1)?;
-            normalized |= normalize_claude_native_id(record)?;
+            normalized |= migrate_claude_record(record)?;
             inserted.push((key, self.values.capture(&env, record)?));
             Ok(())
         })?;

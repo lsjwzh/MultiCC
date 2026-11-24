@@ -22,6 +22,8 @@ class AirTaskRuntime {
     this.providerName = '',
     this.model = '',
     this.effort = '',
+    this.claudeWorkflow = false,
+    this.preferSubtasks = false,
     this.providerSelection,
     this.subagent,
     this.syncSubagentDefaults = false,
@@ -35,6 +37,8 @@ class AirTaskRuntime {
   final String providerName;
   final String model;
   final String effort;
+  final bool claudeWorkflow;
+  final bool preferSubtasks;
 
   /// Auto 线路（同协议多个 Provider 按优先级轮换）。选了它就由它决定真正的
   /// provider 和 model，和 Web 一样。
@@ -69,7 +73,9 @@ class AirTaskRuntime {
       provider: s('provider'),
       providerName: s('providerName'),
       model: s('model'),
-      effort: s('effort'),
+      effort: s('effort') == 'ultracode' ? 'xhigh' : s('effort'),
+      claudeWorkflow: json['claudeWorkflow'] == true || s('effort') == 'ultracode',
+      preferSubtasks: json['preferSubtasks'] == true,
       providerSelection: parseProviderSelection(json['providerSelection']),
       subagent: (sub?.providerId ?? '').isEmpty ? null : sub,
     );
@@ -92,6 +98,8 @@ class AirTaskRuntime {
     providerName: providerName ?? this.providerName,
     model: model ?? this.model,
     effort: effort ?? this.effort,
+    claudeWorkflow: claudeWorkflow,
+    preferSubtasks: preferSubtasks,
     providerSelection: clearProviderSelection
         ? null
         : (providerSelection ?? this.providerSelection),
@@ -145,6 +153,8 @@ class AirTaskRuntime {
         'providerSelection': providerSelection!.toJson(),
       if (model.isNotEmpty) 'model': model,
       if (effort.isNotEmpty) 'effort': effort,
+      if (claudeWorkflow) 'claudeWorkflow': true,
+      if (preferSubtasks) 'preferSubtasks': true,
       // 子任务尾巴跟着主线路一起走：模型为空就是没设（只挑线路不挑模型 = 随主），
       // 不发 —— 半截配置服务端会当非法拒掉。
       // 未动过的家族默认（inherited）：整个不出现，由服务端按它**当时**的默认
@@ -194,6 +204,8 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
         provider: initial.provider,
         providerSelection: initial.providerSelection,
         model: initial.model,
+        claudeWorkflow: initial.claudeWorkflow,
+        preferSubtasks: initial.preferSubtasks,
         effort: initial.effort.isEmpty ? cli.defaultEffort : initial.effort,
         subProviderId: initial.subagent?.providerId,
         subModel: initial.subagent?.model,
@@ -237,6 +249,8 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
         : (_providerNameOf(providers, picked.provider) ?? picked.providerLabel),
     model: picked.model,
     effort: picked.effort,
+    claudeWorkflow: picked.claudeWorkflow == true,
+    preferSubtasks: picked.preferSubtasks == true,
     // 子任务尾巴和主线路一起交回来。面板已经在模型为空时折成 null（只挑线路
     // 不挑模型 = 没设），这里不再二次判断。
     subagent: picked.subagent,

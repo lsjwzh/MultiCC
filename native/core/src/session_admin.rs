@@ -526,6 +526,14 @@ pub fn unattended_dto(value: Option<&Value>) -> Value {
     Value::Object(out)
 }
 
+fn project_reasoning_preferences(out: &mut Map<String, Value>, record: &Value) {
+    for key in ["claudeWorkflow", "preferSubtasks"] {
+        if let Some(flag) = record.get(key).and_then(Value::as_bool) {
+            out.insert(key.into(), Value::Bool(flag));
+        }
+    }
+}
+
 /// `toSessionDto(source)` — the public session contract.
 ///
 /// `providerSelection` is always `null`: the query service's
@@ -573,6 +581,7 @@ pub fn to_session_dto(source: &Value) -> Value {
         nullable_string(source.get("effectiveModel"), 160),
     );
     out.insert("effort".into(), nullable_string(source.get("effort"), 80));
+    project_reasoning_preferences(&mut out, source);
     out.insert(
         "effectiveEffort".into(),
         nullable_string(source.get("effectiveEffort"), 80),
@@ -629,6 +638,7 @@ pub fn session_dto_source(record: &Value, runtime: &Value) -> Value {
         clone_field(runtime, "effectiveModel"),
     );
     out.insert("effort".into(), clone_field(record, "effort"));
+    project_reasoning_preferences(&mut out, record);
     out.insert(
         "effectiveEffort".into(),
         clone_field(runtime, "effectiveEffort"),
@@ -838,6 +848,7 @@ pub fn legacy_session_list(record: &Value, runtime: &Value, facts: &Value) -> Va
         clone_field(runtime, "effectiveModel"),
     );
     out.insert("effort".into(), or_null(record.get("effort")));
+    project_reasoning_preferences(&mut out, record);
     out.insert(
         "effectiveEffort".into(),
         clone_field(runtime, "effectiveEffort"),
@@ -916,6 +927,7 @@ pub fn legacy_directory_session(record: &Value, runtime: &Value, facts: &Value) 
     out.insert("label".into(), or_null(record.get("label")));
     out.insert("model".into(), or_null(record.get("model")));
     out.insert("effort".into(), or_null(record.get("effort")));
+    project_reasoning_preferences(&mut out, record);
     out.insert(
         "effectiveEffort".into(),
         clone_field(runtime, "effectiveEffort"),
@@ -1068,6 +1080,7 @@ pub fn legacy_session_detail(record: &Value, runtime: &Value, facts: &Value) -> 
         clone_field(runtime, "effectiveModel"),
     );
     out.insert("effort".into(), or_null(record.get("effort")));
+    project_reasoning_preferences(&mut out, record);
     out.insert(
         "effectiveEffort".into(),
         clone_field(runtime, "effectiveEffort"),

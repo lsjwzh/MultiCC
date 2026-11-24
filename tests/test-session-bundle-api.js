@@ -166,6 +166,10 @@ async function stopServer() {
   // builds its worktree and adopts it into a board task.
   const sourceId = 'bundle-source';
   await createLegacySession({ dataDir: dataRoot, dirId, id: sourceId, cli: 'claude', stop: stopServer, start: startServer });
+  response = await api('PATCH', `/api/sessions/${sourceId}`, {
+    effort: 'medium', claudeWorkflow: true, preferSubtasks: true,
+  });
+  assert.equal(response.status, 200, JSON.stringify(response.data));
   const sourceWorktree = path.join(project, '.multicc-worktrees', sourceId);
   // Shared-scope memory + project instructions ride along in bundle v2: the
   // memory waterfall scope map and the context dependency manifest.
@@ -236,6 +240,8 @@ async function stopServer() {
   assert.equal(response.status, 200, JSON.stringify(response.data));
   assert.equal(response.data.restored.gitRestored, true, JSON.stringify(response.data.restored));
   const importedId = response.data.sessionId;
+  const imported = (await api('GET', `/api/sessions/${importedId}`)).data;
+  assert.deepEqual([imported.effort, imported.claudeWorkflow, imported.preferSubtasks], ['medium', true, true]);
   const importedWorktree = path.join(project, '.multicc-worktrees', importedId);
   assert.equal(await fs.promises.readFile(path.join(importedWorktree, 'session-feature.txt'), 'utf8'), 'session feature\n');
   assert.equal(await fs.promises.readFile(path.join(importedWorktree, 'new-main.txt'), 'utf8'), 'new main\n');

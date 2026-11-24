@@ -28,7 +28,19 @@ pub struct Stored {
 
 pub fn records(root: &Path) -> Result<Vec<V>, String> {
     match durable_state::load_or_recover(&root.join("sessions.json"))? {
-        Some(V::Array(records)) => Ok(records),
+        Some(V::Array(mut records)) => {
+            for record in &mut records {
+                if matches!(text(record, "cli").as_str(), "" | "claude" | "claude-exp")
+                    && text(record, "effort") == "ultracode"
+                {
+                    let effort =
+                        multicc_core::cli_capability::legacy_claude_effort(&text(record, "model"));
+                    quota_guard::set(record, "effort", effort.map(V::from).unwrap_or(V::Null));
+                    quota_guard::set(record, "claudeWorkflow", V::Bool(true));
+                }
+            }
+            Ok(records)
+        }
         None => Ok(Vec::new()),
         _ => Err("sessions.json payload is not an array".into()),
     }

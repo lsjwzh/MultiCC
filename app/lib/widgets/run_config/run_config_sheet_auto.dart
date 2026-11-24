@@ -34,6 +34,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       ..._autoRows(),
       _autoAddLine(),
       _autoMoreToggle(),
+      _subtaskPreference(),
       if (_autoMore) ..._autoMoreSection(),
       // 子 agent：和固定一条同一项设置、同一份 state，只是主线路换成池子第一
       // 条。那条车道的 CLI 不支持子 agent（和固定一条同一张表）就整块不画。
@@ -340,6 +341,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
               providerId: row.providerId,
               model: row.model,
               effort: row.effort,
+              claudeWorkflow: row.claudeWorkflow,
               autoModel: row.autoModel,
               markedTier: row.markedTier,
             ),
@@ -808,6 +810,9 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
                 ],
                 onChanged: (value) => setState(() => row.effort = value ?? ''),
               ),
+            if (_supportsWorkflow(tryParseCli(row.lane), row.providerId, row.model))
+              SwitchListTile(title: const Text('Claude 动态工作流'), value: row.claudeWorkflow,
+                onChanged: (value) => setState(() => row.claudeWorkflow = value)),
             // 「我自己标」才有一行 简单/中等/复杂；「交给 Jev」的档位由价格表算，
             // 面板上不标（标了也会被服务端当成两者同时存在拒掉）。
             if (_tiering == RunTiering.manual) ...[

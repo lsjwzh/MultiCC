@@ -159,6 +159,8 @@ class _RunChipState extends State<RunChip> {
         model: p.model,
         effectiveModel: p.model,
         effort: p.effort,
+        claudeWorkflow: p.claudeWorkflow,
+        preferSubtasks: p.preferSubtasks,
         effectiveEffort: p.effort,
         agent: p.agent,
         subagent: p.subagent,
@@ -229,6 +231,8 @@ class _RunChipState extends State<RunChip> {
                       model: session.model,
                       effectiveModel: session.effectiveModel,
                       effort: session.effort,
+                      claudeWorkflow: session.claudeWorkflow,
+                      preferSubtasks: session.preferSubtasks,
                       effectiveEffort: session.effectiveEffort,
                     )));
     final pending = staged != null;
@@ -272,6 +276,8 @@ class _RunChipState extends State<RunChip> {
           ? runtime.effectiveModel
           : model,
       effort: runtime.effort,
+      claudeWorkflow: runtime.claudeWorkflow,
+      preferSubtasks: runtime.preferSubtasks,
       effectiveEffort: runtime.effectiveEffort,
       agent: runtime.agent,
       subagent: runtime.subagent,

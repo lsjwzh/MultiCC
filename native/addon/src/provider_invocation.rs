@@ -113,6 +113,9 @@ pub fn provider_retry_route_options(env: Env, attempt: Unknown<'_>) -> Result<sy
         route.get(c"model")?
     };
     let options = object(route, &[(c"providerId", provider), (c"model", model)])?;
+    if !route.get(c"claudeWorkflow")?.undefined()? {
+        options.set(c"claudeWorkflow", route.get(c"claudeWorkflow")?)?;
+    }
     if !route.get(c"effort")?.undefined()? {
         options.set(c"effort", route.get(c"effort")?)?;
     }
@@ -232,27 +235,16 @@ pub fn provider_invocation_prepare(
     let effort = input.get(c"effort")?;
     if !effort.undefined()? {
         spawn.set(c"rawEffort", effort)?;
-        let was_ultra = spawn.get(c"ultracode")?.is_true()?;
-        let ultra = effort.is_string("ultracode")? && !session.get(c"type")?.is_string("aux")?;
-        if was_ultra != ultra {
-            use multicc_core::message_composer::ULTRACODE_SUFFIX;
-            let suffix = base.get(c"suffix")?.string()?.unwrap_or_default();
-            let prefix = multicc_core::js::JsString::from_rust_str(ULTRACODE_SUFFIX);
-            let mut updated = if ultra {
-                prefix.clone()
-            } else {
-                Default::default()
-            };
-            updated.push(
-                &if was_ultra && suffix.as_units().starts_with(prefix.as_units()) {
-                    suffix.slice_units(prefix.len(), suffix.len())
-                } else {
-                    suffix
-                },
-            );
-            base.set(c"suffix", input.from_value(&V::String(updated))?)?;
-            spawn.set(c"ultracode", if ultra { yes } else { no })?;
+        if effort.is_string("ultracode")? {
+            spawn.set(
+                c"rawEffort",
+                crate::cli_capability::legacy_effort_value(spawn.get(c"rawModel")?)?,
+            )?;
+            spawn.set(c"ultracode", yes)?;
         }
+    }
+    if !input.get(c"claudeWorkflow")?.undefined()? {
+        spawn.set(c"ultracode", input.get(c"claudeWorkflow")?)?;
     }
     base.set(c"spawnOpts", spawn)?;
     let invocation_envelope = if input.get(c"bareText")?.undefined()? {
@@ -280,7 +272,9 @@ pub fn provider_invocation_prepare(
         history.set(c"cliSessionId", session.get(c"cliSessionId")?)?;
         value.set(c"historyHandle", history)?;
         let spawn = copy(base.get(c"spawnOpts")?)?;
-        spawn.set(c"ultracode", no)?;
+        if spawn.get(c"ultracode")?.undefined()? {
+            spawn.set(c"ultracode", no)?;
+        }
         value.set(c"spawnOpts", spawn)?;
         value
     };
@@ -384,8 +378,11 @@ pub fn provider_invocation_prepare(
             ),
         ],
     )?;
-    if !effort.undefined()? {
-        attempt_input.set(c"effort", effort)?;
+    for key in [c"effort", c"claudeWorkflow"] {
+        let value = input.get(key)?;
+        if !value.undefined()? {
+            attempt_input.set(key, value)?;
+        }
     }
     attempt_input.spread_from(
         ports

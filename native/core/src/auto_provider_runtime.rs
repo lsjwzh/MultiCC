@@ -1579,6 +1579,9 @@ impl Runtime {
             ("model", or_null(field(Some(&picked), "model"))),
             ("reasonCode", Value::String(reason_code.to_string())),
         ]);
+        if let Some(flag) = picked.get("claudeWorkflow") {
+            options["claudeWorkflow"] = flag.clone();
+        }
         if let Some(level) = picked.get("effort") {
             options["effort"] = level.clone();
         }
@@ -2488,7 +2491,8 @@ mod tests {
     fn begin_turn_selects_fails_over_and_records_success() {
         let mut candidates = json!([line("a", "claude", 1, "ok"), line("b", "claude", 2, "ok"),]);
         candidates[0]["effort"] = json!("low");
-        candidates[1]["effort"] = json!("ultracode");
+        candidates[1]["effort"] = json!("medium");
+        candidates[1]["claudeWorkflow"] = json!(true);
         let selection = selection(candidates.clone(), true, None);
         let mut runtime = Runtime::default();
         let begun = runtime.begin_turn(&json!({
@@ -2514,7 +2518,8 @@ mod tests {
             failed["value"]["invocationOptions"]["providerId"],
             json!("b")
         );
-        assert_eq!(failed["value"]["invocationOptions"]["effort"], "ultracode");
+        assert_eq!(failed["value"]["invocationOptions"]["effort"], "medium");
+        assert_eq!(failed["value"]["invocationOptions"]["claudeWorkflow"], true);
         assert_eq!(failed["value"]["decision"]["action"], json!("retry"));
         assert_eq!(
             failed["value"]["decision"]["providerFailover"]["fromProviderId"],

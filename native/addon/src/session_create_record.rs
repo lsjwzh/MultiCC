@@ -202,6 +202,8 @@ const INPUTS: &[(&str, Option<&str>)] = &[
     ("provider", None),
     ("providerSelection", Some("null")),
     ("effort", Some("null")),
+    ("claudeWorkflow", None),
+    ("preferSubtasks", None),
     ("agent", Some("null")),
     ("subagent", None),
     ("cliAccounts", Some("null")),
@@ -317,7 +319,24 @@ fn prepare<'a>(env: &'a Env, deps: L<'a>, input: L<'a>, path: L<'a>) -> Result<L
     if model.truthy()? && !core::valid_model(&model.coerce_string()?.to_string_lossy()) {
         early!(failure(input, "invalid model"));
     }
-    let effort = port(deps, "normalizeEffort", &[i.get(c"effort")?])?;
+    for key in [c"claudeWorkflow", c"preferSubtasks"] {
+        let flag = i.get(key)?;
+        if !flag.undefined()? && !flag.is_true()? && !flag.is_false()? {
+            early!(failure(input, "invalid workflow or subtask preference"));
+        }
+    }
+    let raw = i.get(c"effort")?;
+    let legacy =
+        raw.is_string("ultracode")? && (cli.is_string("claude")? || cli.is_string("claude-exp")?);
+    let effort = port(
+        deps,
+        "normalizeEffort",
+        &[if legacy {
+            crate::cli_capability::legacy_effort_value(model)?
+        } else {
+            raw
+        }],
+    )?;
     if effort.undefined()? {
         early!(failure(input, "invalid effort"));
     }
@@ -836,6 +855,15 @@ fn finish<'a>(env: &'a Env, state_ref: &Rc<Anchor>, state: L<'a>) -> Result<L<'a
         ),
     ] {
         set(session, key, value)?;
+    }
+    for key in [c"claudeWorkflow", c"preferSubtasks"] {
+        let flag = i.get(key)?;
+        if !flag.undefined()? {
+            session.set(key, flag)?;
+        }
+    }
+    if i.get(c"effort")?.is_string("ultracode")? && i.get(c"claudeWorkflow")?.undefined()? {
+        session.set(c"claudeWorkflow", boolean(state, true)?)?;
     }
     let resident_options = obj(state)?;
     resident_options.set(c"provider", state.get(c"providerId")?)?;

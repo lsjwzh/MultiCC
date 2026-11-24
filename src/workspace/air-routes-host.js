@@ -397,6 +397,8 @@ function createAirRuntime(rawDeps) {
       providerName: deps.providerName?.(lastUsed.record) || lastUsed.record.provider || null,
       providerSelection: lastUsed.record.providerSelection || null,
       model: lastUsed.record.model || null,
+      claudeWorkflow: lastUsed.record.claudeWorkflow,
+      preferSubtasks: lastUsed.record.preferSubtasks,
       effort: lastUsed.record.effort || null,
       subagent: deps.serializeSubagent?.(lastUsed.record.subagent) || null,
     };
@@ -609,6 +611,8 @@ function createAirRuntime(rawDeps) {
       cli: record?.cli,
       model: record?.model,
       effectiveModel: autoLine(record)?.model || deps.effectiveModel?.(record) || record?.model || null,
+      claudeWorkflow: record?.claudeWorkflow,
+      preferSubtasks: record?.preferSubtasks,
       effort: record?.effort,
       effectiveEffort: deps.effectiveEffort?.(record) || record?.effort || null,
       provider: record?.provider || null,
@@ -644,6 +648,8 @@ function createAirRuntime(rawDeps) {
       sessionId: entry.sessionId, sourceSessionId: entry.sourceSessionId,
       configuration: allowed ? {
         cli: record.cli, model: record.model, effectiveModel: autoLine(record)?.model || deps.effectiveModel?.(record) || record.model || null,
+        claudeWorkflow: record.claudeWorkflow,
+        preferSubtasks: record.preferSubtasks,
         effort: record.effort, provider: record.provider || null,
         providerName: deps.providerName?.(record) || record.provider || null,
         providerSelection: record.providerSelection || null, subagent: deps.serializeSubagent?.(record.subagent) || null,

@@ -229,14 +229,6 @@ fn validate(envelope: L<'_>, environment: L<'_>, console: L<'_>) -> Result<()> {
                 Ok(())
             })?;
         }
-        if envelope.get(c"spawnOpts")?.truthy()?
-            && envelope.get(c"spawnOpts")?.get(c"ultracode")?.is_true()?
-            && (!string(envelope.get(c"suffix")?)? || !envelope.get(c"suffix")?.truthy()?)
-        {
-            violations.push(JsString::from_rust_str(
-                "ultracode===true requires a non-empty suffix",
-            ));
-        }
         let expected = join_system(
             envelope,
             &[
@@ -468,18 +460,19 @@ pub fn message_compose(
             layer(layers, "voice-input", 35.0, voice_prompt(voice, user_text)?)?;
         }
     }
-    // The leading negation makes this expression boolean even for opaque bare values.
-    let ultracode = !bare.truthy()?
-        && !persisted.get(c"type")?.is_string("aux")?
-        && deps
-            .get(c"normalizeEffort")?
-            .call(deps, &[persisted.get(c"effort")?])?
-            .is_string("ultracode")?;
-    let mut suffix = JsString::from_rust_str(if ultracode {
-        policy::ULTRACODE_SUFFIX
-    } else {
-        ""
-    });
+    let normal_turn = !bare.truthy()? && !persisted.get(c"type")?.is_string("aux")?;
+    let cli = persisted.get(c"cli")?;
+    let workflow = (cli.nullish()? || cli.is_string("claude")? || cli.is_string("claude-exp")?)
+        && (persisted.get(c"claudeWorkflow")?.is_true()?
+            || persisted.get(c"effort")?.is_string("ultracode")?)
+        && !persisted.get(c"type")?.is_string("aux")?;
+    let mut suffix = JsString::from_rust_str(
+        if normal_turn && persisted.get(c"preferSubtasks")?.is_true()? {
+            policy::SUBTASK_HINT
+        } else {
+            ""
+        },
+    );
     if !bare.truthy()?
         && !persisted.get(c"type")?.is_string("aux")?
         && (lang.is_string("zh")? || lang.is_string("en")?)
@@ -526,7 +519,7 @@ pub fn message_compose(
             (c"rawEffort", raw_effort),
             (c"rawAgent", raw_agent),
             (c"maxTurns", input.from_value(&V::Number(0.0))?),
-            (c"ultracode", input.from_value(&V::Bool(ultracode))?),
+            (c"ultracode", input.from_value(&V::Bool(workflow))?),
             (c"disallowedTools", disallowed),
             (c"providerModel", provider_model),
             (c"providerModels", provider_models),

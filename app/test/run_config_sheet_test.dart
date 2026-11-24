@@ -210,17 +210,27 @@ void main() {
       'run-effort-high',
       'run-effort-xhigh',
       'run-effort-max',
-      'run-effort-ultracode',
     ]) {
       expect(find.byKey(Key(key)), findsOneWidget);
     }
-    await tester.tap(find.byKey(const Key('run-effort-xhigh')));
+    expect(find.byKey(const Key('run-effort-ultracode')), findsNothing);
+    final workflow = find.text('Claude 动态工作流');
+    final subtasks = find.text('多用子任务');
+    await tester.ensureVisible(workflow);
+    await tester.tap(workflow);
+    await tester.ensureVisible(subtasks);
+    await tester.tap(subtasks);
+    final medium = find.byKey(const Key('run-effort-medium'));
+    await tester.ensureVisible(medium);
+    await tester.tap(medium);
     await tester.pumpAndSettle();
 
     await _save(tester);
     expect(out.value?.provider, 'relay');
     expect(out.value?.model, 'glm-5.2');
-    expect(out.value?.effort, 'xhigh');
+    expect(out.value?.effort, 'medium');
+    expect(out.value?.claudeWorkflow, isTrue);
+    expect(out.value?.preferSubtasks, isTrue);
     expect(out.value?.providerSelection, isNull, reason: '固定一条就是手动档');
     expect(out.value?.switchToCli, isNull, reason: '车道没换');
   });
@@ -525,7 +535,11 @@ void main() {
     await tester.ensureVisible(effort);
     await tester.tap(effort);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('ultracode').last);
+    await tester.tap(find.text('超高').last);
+    await tester.pumpAndSettle();
+    final workflow = find.descendant(of: find.byKey(const Key('run-pool-row-claude:strong')), matching: find.text('Claude 动态工作流'));
+    await tester.ensureVisible(workflow);
+    await tester.tap(workflow);
     await tester.pumpAndSettle();
     // 按顺序没有档位可选（那是按难度才有的东西）。
     expect(find.byKey(const Key('run-pool-tier-claude:cheap-1')), findsNothing);
@@ -550,7 +564,9 @@ void main() {
     expect(saved?.candidates, hasLength(2));
     expect(saved?.candidates.map((c) => c.cli), ['claude', 'claude']);
     expect(saved?.candidates.first.model, 'glm-4.5-flash');
-    expect(saved?.candidates.last.toJson()['effort'], 'ultracode');
+    expect(saved?.candidates.last.effort, 'xhigh');
+    expect(saved?.candidates.last.claudeWorkflow, isTrue);
+    expect(saved?.candidates.first.claudeWorkflow, isFalse);
     // 面板交回的第一条就是这一轮真跑的那条。
     expect(out.value?.provider, 'cheap');
     expect(out.value?.model, 'glm-4.5-flash');
@@ -2925,6 +2941,8 @@ class _RecordingRunConfigManager extends SessionManager {
     required String provider,
     required String model,
     required String effort,
+    bool? claudeWorkflow,
+    bool? preferSubtasks,
     SessionProviderSelection? providerSelection,
     SessionSubagent? subagent,
     bool clearSubagent = false,

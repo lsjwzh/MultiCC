@@ -1,5 +1,7 @@
 'use strict';
 
+const { nameOf } = require('../cli/cli-capability');
+
 // Gateway/dispatch orchestration host: gateway prompts, canonical dispatch
 // admission, pending bookkeeping and result completion. Cross-session routing
 // is MCP-only; assistant text is never parsed as an executable instruction.
@@ -389,7 +391,7 @@ function createGatewayHost(rawDeps) {
       const m = targetId.match(/-ultra-(\d{2})$/);
       if (m && opts.replyTo) {
         const dispatcher = persistedSessions.get(opts.replyTo);
-        if (dispatcher && normalizeEffort(dispatcher?.effort) === 'ultracode') {
+        if (dispatcher && (nameOf(dispatcher?.cli || 'claude') === 'claude' && (dispatcher?.claudeWorkflow === true || dispatcher?.effort === 'ultracode'))) {
           const dir = directories.get(dispatcher.dirId);
           if (dir) {
             const created = await getCreateSessionRecord()({

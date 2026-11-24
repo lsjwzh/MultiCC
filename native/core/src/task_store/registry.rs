@@ -50,6 +50,8 @@ fn runtime(record: &Value) -> Value {
         "provider",
         "providerSelection",
         "effort",
+        "claudeWorkflow",
+        "preferSubtasks",
         "agent",
     ];
     Value::Object(

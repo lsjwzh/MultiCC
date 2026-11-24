@@ -41,7 +41,7 @@ const claudeProviders = [
   { id: 'p-claude-2', name: 'Claude B', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude', 'claude-exp'], model: 'claude-opus', modelOptions: ['claude-opus'] },
 ];
 
-function buildRoutes(efforts) {
+function buildRoutes(efforts, providers = claudeProviders) {
   const routes = {};
   for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
     routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
@@ -55,7 +55,7 @@ function buildRoutes(efforts) {
   };
   routes['/api/providers'] = ({ url }) => {
     const cli = url.searchParams.get('cli') || '';
-    if (cli === 'claude' || cli === 'claude-exp') return json({ available: true, providers: claudeProviders, defaults: {}, efforts });
+    if (cli === 'claude' || cli === 'claude-exp') return json({ available: true, providers, defaults: {}, efforts });
     return json({ available: true, providers: [], defaults: {}, efforts });
   };
   routes['/api/run-config/presets/merge'] = ({ body }) => json({ ok: true, presets: JSON.parse(body || '{}').presets || [] });
@@ -89,7 +89,7 @@ async function applyPreset(page, preset, opencodeModels) {
 
 test('退休别名 claude-exp 的预设，固定 tab 非 claude 也能套用', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
-  const routes = buildRoutes({ claude: { label: 'Effort', levels: ['medium', 'ultracode'], default: 'medium' } });
+  const routes = buildRoutes({ claude: { label: 'Effort', levels: ['medium', 'xhigh'], default: 'medium' } });
   await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/run-config-host.html');
@@ -99,14 +99,43 @@ test('退休别名 claude-exp 的预设，固定 tab 非 claude 也能套用', a
     const values = await page.evaluate(`(() => {
       const controls = [...document.querySelectorAll('dialog[open] .rc-row-effort')];
       const options = [...controls[0].options].map(option => option.value);
-      controls[0].value = 'ultracode';
+      controls[0].value = 'medium';
+      document.querySelector('dialog[open] .rc-row-workflow').click();
+      document.querySelector('dialog[open] .rc-prefer-subtasks').click();
       controls[0].dispatchEvent(new Event('change'));
       document.querySelector('dialog[open] form').requestSubmit();
       return { options, selected: controls.map(s => s.value) };
     })()`);
-    assert.deepEqual(values, { options: ['', 'medium', 'ultracode'], selected: ['ultracode', ''] });
+    assert.deepEqual(values, { options: ['', 'medium', 'xhigh'], selected: ['medium', ''] });
     await page.waitFor('window.__saved.length === 1');
-    assert.equal(await page.evaluate('window.__saved[0].providerSelection.candidates[0].effort'), 'ultracode');
+    const saved = await page.evaluate('window.__saved[0]');
+    assert.equal(saved.providerSelection.candidates[0].effort, 'medium');
+    assert.equal(saved.providerSelection.candidates[0].claudeWorkflow, true);
+    assert.equal(saved.providerSelection.candidates[1].claudeWorkflow, undefined);
+    assert.equal(saved.preferSubtasks, true);
+  });
+});
+
+test('固定 Claude 线路从普通 API 切换至 CLI 借道时只保留跨 CLI 子任务偏好', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = buildRoutes(undefined, [claudeProviders[0], { ...claudeProviders[1], cliRelay: true }]);
+  await withCdpHarness({ routes, locale: 'zh-CN' }, async page => {
+    await page.navigate('/run-config-host.html');
+    await page.waitFor('window.MultiCCRunConfig');
+    await page.evaluate(`window.MultiCCRunConfig.open({
+      configuration: { cli: 'claude', provider: 'p-claude-1', model: 'claude-opus', effort: 'ultracode' }
+    }, ['claude'], value => { window.__saved = value })`);
+    await page.waitFor("document.querySelector('.rc-line')?.value === 'p-claude-1'");
+    assert.equal(await page.evaluate("document.querySelector('.rc-workflow').checked"), true);
+    assert.equal(await page.evaluate("document.querySelector('.rc-effort-xhigh')?.getAttribute('aria-checked')"), 'true');
+    await page.evaluate(`const line = document.querySelector('.rc-line'); line.value = 'p-claude-2';
+      line.dispatchEvent(new Event('change')); document.querySelector('.rc-prefer-subtasks').click();`);
+    await page.waitFor("document.querySelector('.rc-workflow').closest('label').hidden");
+    await page.evaluate("document.querySelector('dialog[open] form').requestSubmit()");
+    await page.waitFor('window.__saved');
+    const saved = await page.evaluate('window.__saved');
+    assert.equal(saved.claudeWorkflow, false);
+    assert.equal(saved.preferSubtasks, true);
   });
 });
 

@@ -304,6 +304,7 @@ function createSessionBundleRoutes(rawDeps) {
       sessionMeta: {
         id: s.id, cli: s.cli, kind: s.kind, label: s.label,
         model: s.model, effort: s.effort, agent: s.agent || null, rolePrompt: s.rolePrompt || null,
+        claudeWorkflow: s.claudeWorkflow, preferSubtasks: s.preferSubtasks,
         branch: s.branch, worktreePath: s.worktreePath, dirId: s.dirId,
         // dirId/branch/worktreePath are hints; target rebuilds its own paths.
       },
@@ -400,6 +401,8 @@ function createSessionBundleRoutes(rawDeps) {
           label: labelOverride || (meta.label ? `${meta.label} · imported` : null),
           provider: targetProviderId === undefined ? undefined : (targetProviderId || ''),
           model: meta.model, effort: meta.effort, agent: meta.agent, rolePrompt: meta.rolePrompt,
+          ...(meta.claudeWorkflow !== undefined ? { claudeWorkflow: meta.claudeWorkflow } : {}),
+          ...(meta.preferSubtasks !== undefined ? { preferSubtasks: meta.preferSubtasks } : {}),
           persistence: 'required', persistenceSource: 'http.bundle-import-create',
         });
         if (!r.ok) return { status: 400, body: { error: r.error } };

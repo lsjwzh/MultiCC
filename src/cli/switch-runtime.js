@@ -22,6 +22,8 @@ function sessionFacts(session) {
   const { id, type, kind, cli, label, branch, provider, providerSelection, model, effort,
     agent, pendingConfiguration, cliSessionId, _streamSessionId, workspaceState, worktreePath } = session;
   return { id, type, kind, cli, label, branch, provider, providerSelection, model, effort,
+    ...(session.claudeWorkflow !== undefined ? { claudeWorkflow: session.claudeWorkflow } : {}),
+    ...(session.preferSubtasks !== undefined ? { preferSubtasks: session.preferSubtasks } : {}),
     agent, pendingConfiguration, cliSessionId, streamSessionId: _streamSessionId, workspaceState, worktreePath };
 }
 function requireFunction(options, name) {

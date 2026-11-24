@@ -44,6 +44,19 @@ function normalize(value) {
   return JSON.parse(JSON.stringify(value, (key, v) => key === 'createdAt' || key === 'lastWorkAt' ? '<time>' : v));
 }
 const dir = { id: 'd1', path: '/repo', baseBranch: 'main' };
+test('创建会话支持强度和两个独立布尔开关', async () => {
+  for (const [input, expected] of [
+    [{ effort: 'medium', claudeWorkflow: true, preferSubtasks: false }, ['medium', true, false]],
+    [{ effort: 'ultracode' }, ['xhigh', true, undefined]],
+    [{ model: 'claude-sonnet-4-6', effort: 'ultracode' }, ['high', true, undefined]],
+    [{ cli: 'codex', effort: 'high', preferSubtasks: true }, ['high', undefined, true]],
+  ]) {
+    const result = await world(candidate, {}).run({ dir, kind: 'chat', cli: 'claude', ...input });
+    assert.equal(result.ok, true);
+    const { effort, claudeWorkflow, preferSubtasks } = result.session;
+    assert.deepEqual([effort, claudeWorkflow, preferSubtasks], expected);
+  }
+});
 const cases = [
   ['missing argument', undefined, {}],
   ['null argument', null, {}],

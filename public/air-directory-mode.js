@@ -366,6 +366,8 @@
         ...(runtime.providerSelection ? { providerSelection: runtime.providerSelection } : {}),
         ...(runtime.model ? { model: runtime.model } : {}),
         ...(runtime.effort ? { effort: runtime.effort } : {}),
+        ...(runtime.claudeWorkflow ? { claudeWorkflow: true } : {}),
+        ...(runtime.preferSubtasks ? { preferSubtasks: true } : {}),
         ...(runtime.cliAccounts ? { cliAccounts: runtime.cliAccounts } : {}),
       });
       const url = `/?id=${encodeURIComponent(session.id)}`;

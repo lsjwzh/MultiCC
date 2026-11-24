@@ -43,6 +43,9 @@ fn read<'a>(session: L<'a>) -> Result<L<'a>> {
     for field in core::CONFIG_FIELDS {
         let key = CString::new(field).expect("static field");
         let value = prop(session, &key)?;
+        if matches!(field, "claudeWorkflow" | "preferSubtasks") && value.nullish()? {
+            continue;
+        }
         let value = if value.nullish()? {
             null(session)?
         } else {

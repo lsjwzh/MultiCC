@@ -87,6 +87,72 @@
     return Object.hasOwn(effortLabels, choice.value) ? effortLabels[choice.value] : choice.label;
   }
 
+  function toggle(doc, className, title, checked) {
+    const label = doc.createElement('label');
+    label.className = 'rc-check';
+    const input = doc.createElement('input');
+    input.type = 'checkbox';
+    input.className = className;
+    input.checked = checked;
+    label.append(input, doc.createTextNode(title));
+    return { label, input };
+  }
+
+  // 会话里存的是线路池本身；胶囊上的预设名靠两件事找回：保存时记下的
+  // presetId，和给老数据兜底的池子指纹。指纹只比真正决定路由的三件事 ——
+  // 线路、模型、是否自动挑模型 —— 加上优先级顺序；cli 只在两边都写了时才比：
+  // 老版 Auto Provider 编辑器存预设时会把 cli 丢掉（rememberPreset 只留
+  // providerId/model/priority），拿空串和真实车道全等会让旧预设永远匹配不上。
+  function poolRows(list, clean) {
+    return (Array.isArray(list) ? list : [])
+      .filter(item => item && item.enabled !== false)
+      .slice()
+      .sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0))
+      .map(item => ({
+        providerId: clean(item.providerId), model: clean(item.model), ...reasoningValues(item),
+        autoModel: item.autoModel === true, cli: clean(item.cli),
+      }));
+  }
+
+  function reasoningValues(record) {
+    const legacy = record.effort === 'ultracode';
+    return { effort: legacy ? 'xhigh' : String(record.effort || '').trim(), claudeWorkflow: record.claudeWorkflow === true || legacy };
+  }
+
+  function sameRow(row, other) {
+    return !!row && !!other && row.providerId === other.providerId && row.model === other.model
+      && row.effort === other.effort && row.claudeWorkflow === other.claudeWorkflow && row.autoModel === other.autoModel && (!row.cli || !other.cli || row.cli === other.cli);
+  }
+
+  function samePool(left, right) {
+    return left.length === right.length && left.every((row, index) => sameRow(row, right[index]));
+  }
+
+  // 池子是预设的子集：从预设里删掉一条（或那条当时跑不了）之后，剩下的线路
+  // 仍按原优先级顺序出现在预设里。
+  function poolIsSubset(pool, preset) {
+    let index = 0;
+    for (const row of pool) {
+      while (index < preset.length && !sameRow(row, preset[index])) index += 1;
+      if (index >= preset.length) return false;
+      index += 1;
+    }
+    return pool.length > 0;
+  }
+
+  function reasoningPreferences(doc, config, tt) {
+    const legacy = config.effort === 'ultracode';
+    const workflow = toggle(doc, 'rc-workflow', tt('claudeDynamicWorkflow', 'Claude 动态工作流'), config.claudeWorkflow === true || legacy);
+    const subtasks = toggle(doc, 'rc-prefer-subtasks', tt('preferSubtasks', '多用子任务'), config.preferSubtasks === true);
+    return { workflow, subtasks, fields(allowWorkflow) {
+      const enabled = allowWorkflow && workflow.input.checked;
+      return {
+        ...(enabled || config.claudeWorkflow || legacy ? { claudeWorkflow: enabled } : {}),
+        ...(subtasks.input.checked || config.preferSubtasks ? { preferSubtasks: subtasks.input.checked } : {}),
+      };
+    } };
+  }
+
   function renderEffortPicker(host, segButton, options, selected, fallback, onSelect) {
     host.replaceChildren();
     if (!options.length) return null;
@@ -143,7 +209,7 @@
 
   // A row's draft object is its identity, so duplicate providers and reordering
   // stay distinct. Event handlers read the latest projection, never an old index.
-  function createPoolList({ host, el, mark, tt, onCli, onModel, onCustom, onEffort, onTier, onRemove, onMove }) {
+  function createPoolList({ host, el, mark, tt, onCli, onModel, onCustom, onEffort, onWorkflow, onTier, onRemove, onMove }) {
     const doc = host.ownerDocument, views = new Map();
     let dragged = null;
     function create() {
@@ -161,6 +227,7 @@
       custom.maxLength = 100;
       const effort = el(doc, 'select', 'rc-select rc-row-effort');
       effort.setAttribute('aria-label', tt('runConfigEffortLabel', '推理强度'));
+      const workflow = toggle(doc, 'rc-row-workflow', tt('claudeDynamicWorkflow', 'Claude 动态工作流'), false);
       const tier = el(doc, 'select', 'rc-select rc-row-tier');
       tier.setAttribute('aria-label', tt('runConfigRowTier', '档位'));
       const ops = el(doc, 'span', 'rc-ops'), handle = el(doc, 'button', 'rc-handle', '⠿');
@@ -168,10 +235,11 @@
       const remove = el(doc, 'button', 'rc-remove', '✕');
       remove.type = 'button'; remove.title = tt('runConfigRowRemove', '移除这条线路');
       ops.append(handle, remove); main.append(first, second); node.append(rank, main, ops);
-      const view = { node, rank, chip, cli, name, first, second, issue, model, custom, effort, tier, item: null, badge: null, icon: null };
+      const view = { node, rank, chip, cli, name, first, second, issue, model, custom, effort, workflow, tier, item: null, badge: null, icon: null };
       cli.onchange = () => onCli(view.item.key, cli.value);
       model.onchange = () => { view.customEdited = model.value === '__custom__'; if (view.customEdited) custom.value = ''; custom.hidden = !view.customEdited; onModel(view.item.key, model.value); };
       custom.oninput = () => { view.customEdited = true; onCustom(view.item.key, custom.value); };
+      workflow.input.onchange = () => onWorkflow(view.item.key, workflow.input.checked);
       effort.onchange = () => onEffort(view.item.key, effort.value);
       tier.onchange = () => onTier(view.item.key, tier.value);
       remove.onclick = () => onRemove(view.item.key);
@@ -217,9 +285,10 @@
             setValue(view.model, chosen);
             if (!editing) setValue(view.custom, known ? '' : item.wanted);
             view.custom.hidden = chosen !== '__custom__';
+            view.workflow.input.checked = item.workflowEnabled;
             syncOptions(view.effort, item.efforts); setValue(view.effort, item.effort);
             syncOptions(view.tier, item.tiers); setValue(view.tier, item.tier);
-            syncChildren(view.second, [view.model, view.custom, ...(item.efforts.length ? [view.effort] : []), ...(item.tiers.length ? [view.tier] : [])]);
+            syncChildren(view.second, [view.model, view.custom, ...(item.efforts.length ? [view.effort] : []), ...(item.showWorkflow ? [view.workflow.label] : []), ...(item.tiers.length ? [view.tier] : [])]);
           }
           return view.node;
         });
@@ -716,5 +785,5 @@
     };
   }
 
-  return Object.freeze({ createAccountSection, createCatalogLoader, createModelPicker, createPoolList, createSubagentSummaries, effortChoiceLabel, renderEffortPicker, syncOptions });
+  return Object.freeze({ createAccountSection, createCatalogLoader, createModelPicker, createPoolList, createSubagentSummaries, effortChoiceLabel, poolRows, reasoningValues, samePool, poolIsSubset, reasoningPreferences, renderEffortPicker, syncOptions });
 });

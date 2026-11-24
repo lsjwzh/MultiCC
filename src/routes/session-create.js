@@ -67,6 +67,10 @@ function mountSessionCreateRoutes(app, rawDeps) {
     const kind = (req.body.kind || '').trim();
     const label = (req.body.label || '').trim() || null;
     const model = (req.body.model || '').trim() || null;
+    const preferences = {
+      ...(req.body.claudeWorkflow !== undefined ? { claudeWorkflow: req.body.claudeWorkflow } : {}),
+      ...(req.body.preferSubtasks !== undefined ? { preferSubtasks: req.body.preferSubtasks } : {}),
+    };
     const effort = req.body.effort === undefined ? null : req.body.effort;
     const agent = req.body.agent === undefined ? null : req.body.agent;
     const provider = req.body.provider === undefined ? undefined : ((req.body.provider || '').trim() || '');
@@ -90,7 +94,7 @@ function mountSessionCreateRoutes(app, rawDeps) {
       const result = await deps.createTask({ dirId: dir.id, title: label || '新任务', cli: cli || 'claude',
         ...(model ? { model } : {}), ...(provider === undefined ? {} : { provider }),
         ...(providerSelection === undefined ? {} : { providerSelection }),
-        effort, agent, ...(rolePrompt ? { rolePrompt } : {}),
+        ...preferences, effort, agent, ...(rolePrompt ? { rolePrompt } : {}),
         ...(subagent === undefined ? {} : { subagent }),
         ...(cliAccounts ? { cliAccounts } : {}),
         clientMsgId: req.body.clientMsgId || require('node:crypto').randomUUID() });
@@ -99,7 +103,7 @@ function mountSessionCreateRoutes(app, rawDeps) {
     const result = await deps.createSessionRecord({
       dir, cli, kind, label, model, provider,
       ...(providerSelection === undefined ? {} : { providerSelection }),
-      effort, agent, rolePrompt, experimentalMode,
+      ...preferences, effort, agent, rolePrompt, experimentalMode,
       // 省略键 = 未指定（吃家族默认）；显式 null 必须作为 null 传下去。
       ...(subagent === undefined ? {} : { subagent }),
       ...(cliAccounts ? { cliAccounts } : {}),

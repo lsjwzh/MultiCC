@@ -674,7 +674,7 @@ extension SessionCliX on SessionCli {
     final suffixes = spec['tierSuffixes'] as List?;
     if (suffixes != null && suffixes.whereType<String>().any(id.endsWith)) return const [];
     final levels = (spec['modelLevels'] as Map?)?[id] ?? spec['levels'];
-    return (levels as List).whereType<String>().toList();
+    return (levels as List).whereType<String>().where((v) => v != 'ultracode' || !isClaudeFamily).toList();
   }
 }
 
@@ -688,7 +688,17 @@ void readCliEfforts(Object? value) {
 }
 
 const _offlineEfforts = <String, Map>{
-  'claude': {"label": "Effort", "levels": ["low", "medium", "high", "xhigh", "max", "ultracode"], "default": "medium"},
+  'claude': {
+    "label": "Effort",
+    "levels": ["low", "medium", "high", "xhigh", "max"],
+    "default": "medium",
+    "modelLevels": {
+      "claude-opus-4-6": ["low", "medium", "high", "max"],
+      "claude-sonnet-4-6": ["low", "medium", "high", "max"],
+      "claude-haiku-4-5": [],
+      "claude-haiku-4-5-20251001": []
+    }
+  },
   'codex': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
   'codex-exp': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
   'opencode': {"label": "Variant", "levels": ["", "minimal", "low", "medium", "high", "max"], "default": ""},
@@ -967,6 +977,7 @@ class SessionSubagent {
 /// One concrete route in an Auto Provider pool. The virtual Auto selection is
 /// never used as a provider id; each turn resolves to one of these routes.
 class SessionProviderCandidate {
+  final bool claudeWorkflow;
   final String? effort;
   final String providerId;
   final String? model;
@@ -995,6 +1006,7 @@ class SessionProviderCandidate {
   final bool autoModel;
 
   const SessionProviderCandidate({
+    this.claudeWorkflow = false,
     this.effort,
     required this.providerId,
     this.model,
@@ -1007,7 +1019,8 @@ class SessionProviderCandidate {
 
   factory SessionProviderCandidate.fromJson(Map<dynamic, dynamic> json) =>
       SessionProviderCandidate(
-        effort: json['effort'] as String?,
+        effort: json['effort'] == 'ultracode' ? 'xhigh' : json['effort'] as String?,
+        claudeWorkflow: json['claudeWorkflow'] == true || json['effort'] == 'ultracode',
         providerId: json['providerId']?.toString() ?? '',
         model: json['model']?.toString(),
         priority: (json['priority'] as num?)?.toInt() ?? 1,
@@ -1025,6 +1038,7 @@ class SessionProviderCandidate {
     'providerId': providerId,
     'model': model == null || model!.isEmpty ? null : model,
     if (effort != null && effort!.isNotEmpty) 'effort': effort,
+    if (claudeWorkflow) 'claudeWorkflow': true,
     'priority': priority,
     'enabled': enabled,
     // Absent on an unrouted pool: the server DTO is a wire contract and an
@@ -1356,6 +1370,8 @@ class SessionPendingConfiguration {
   final String? providerName;
   final SessionProviderSelection? providerSelection;
   final String? model;
+  final bool claudeWorkflow;
+  final bool preferSubtasks;
   final String? effort;
   final String? agent;
   final SessionSubagent? subagent;
@@ -1367,6 +1383,8 @@ class SessionPendingConfiguration {
     this.providerName,
     this.providerSelection,
     this.model,
+    this.claudeWorkflow = false,
+    this.preferSubtasks = false,
     this.effort,
     this.agent,
     this.subagent,
@@ -1385,7 +1403,9 @@ class SessionPendingConfiguration {
       providerName: json['providerName']?.toString(),
       providerSelection: parseProviderSelection(profile['providerSelection']),
       model: profile['model']?.toString(),
-      effort: profile['effort']?.toString(),
+      effort: profile['effort'] == 'ultracode' ? 'xhigh' : profile['effort']?.toString(),
+      claudeWorkflow: profile['claudeWorkflow'] == true || profile['effort'] == 'ultracode',
+      preferSubtasks: profile['preferSubtasks'] == true,
       agent: profile['agent']?.toString(),
       subagent: profile['subagent'] is Map
           ? SessionSubagent.fromJson(
@@ -1408,6 +1428,8 @@ class SessionCliConfig {
   final String? providerBaseUrl;
   final String? model;
   final String? effectiveModel;
+  final bool claudeWorkflow;
+  final bool preferSubtasks;
   final String? effort;
   final String? effectiveEffort;
   final String? agent;
@@ -1429,6 +1451,8 @@ class SessionCliConfig {
     this.providerBaseUrl,
     this.model,
     this.effectiveModel,
+    this.claudeWorkflow = false,
+    this.preferSubtasks = false,
     this.effort,
     this.effectiveEffort,
     this.agent,
@@ -1455,7 +1479,9 @@ class SessionCliConfig {
       providerBaseUrl: json['providerBaseUrl']?.toString(),
       model: json['model']?.toString(),
       effectiveModel: json['effectiveModel']?.toString(),
-      effort: json['effort']?.toString(),
+      effort: json['effort'] == 'ultracode' ? 'xhigh' : json['effort']?.toString(),
+      claudeWorkflow: json['claudeWorkflow'] == true || json['effort'] == 'ultracode',
+      preferSubtasks: json['preferSubtasks'] == true,
       effectiveEffort: json['effectiveEffort']?.toString(),
       agent: json['agent']?.toString(),
       subagent: json['subagent'] == null
@@ -1483,6 +1509,8 @@ class Session {
   final String? model;
   final String?
   effectiveModel; // model actually used at spawn time (override > provider > /model default)
+  final bool claudeWorkflow;
+  final bool preferSubtasks;
   final String? effort; // Claude effort / Codex reasoning level override
   final String?
   effectiveEffort; // concrete effort / reasoning level used for display
@@ -1525,6 +1553,8 @@ class Session {
     this.label,
     this.model,
     this.effectiveModel,
+    this.claudeWorkflow = false,
+    this.preferSubtasks = false,
     this.effort,
     this.effectiveEffort,
     this.rolePrompt,
@@ -1557,7 +1587,9 @@ class Session {
       label: json['label']?.toString(),
       model: json['model']?.toString(),
       effectiveModel: json['effectiveModel']?.toString(),
-      effort: json['effort']?.toString(),
+      effort: json['effort'] == 'ultracode' ? 'xhigh' : json['effort']?.toString(),
+      claudeWorkflow: json['claudeWorkflow'] == true || json['effort'] == 'ultracode',
+      preferSubtasks: json['preferSubtasks'] == true,
       effectiveEffort: json['effectiveEffort']?.toString(),
       rolePrompt: json['rolePrompt']?.toString(),
       provider: json['provider']?.toString(),
@@ -1617,6 +1649,8 @@ class Session {
       model: model ?? this.model,
       effectiveModel: effectiveModel,
       effort: effort ?? this.effort,
+      preferSubtasks: preferSubtasks,
+      claudeWorkflow: claudeWorkflow,
       effectiveEffort: effectiveEffort,
       rolePrompt: rolePrompt,
       provider: provider ?? this.provider,
