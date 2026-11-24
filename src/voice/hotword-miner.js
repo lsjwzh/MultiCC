@@ -18,13 +18,11 @@
 //
 // Pure: no fs, no timers. hotword-learner.js owns persistence and scheduling.
 
+const { getNative } = require('../native/runtime');
 const { nearSyllable, toSyllables } = require('./hotword-corrector');
 
 const ACTIVATE_AT = 2;
 const MAX_DIFF_CHARS = 600;
-const MAX_SIDE = 16;
-const MIN_SIMILARITY = 0.6;
-const CJK = /[一-鿿]/;
 const ASCII_WORD = /[A-Za-z0-9][A-Za-z0-9_.+-]*/y;
 
 // ── Tokens ──
@@ -48,97 +46,19 @@ function tokenize(text) {
   return tokens;
 }
 
-// Classic LCS table on tokens; inputs are capped so this stays small.
-function lcsOps(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i].value === b[j].value ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
-  }
-  const ops = [];
-  let i = 0;
-  let j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && a[i].value === b[j].value) { ops.push(['=', i++, j++]); continue; }
-    if (j < m && (i >= n || dp[i][j + 1] >= dp[i + 1][j])) ops.push(['+', -1, j++]);
-    else ops.push(['-', i++, -1]);
-  }
-  return { ops, common: dp[0][0] };
-}
-
-const isPunct = t => !CJK.test(t.value) && !/[A-Za-z0-9]/.test(t.value);
-const spanText = (text, tokens) => (tokens.length ? text.slice(tokens[0].start, tokens[tokens.length - 1].end).trim() : '');
 const squash = s => s.replace(/\s+/g, '').toLowerCase();
+const sameSpelling = (alias, term) => squash(alias) === squash(term);
 
-// A lone CJK character carries no meaning on its own ("热水" → "热词" diffs as
-// 水 → 词): borrow the unchanged neighbours until the term reads as a word.
-function widen(hunk, rawTok, finTok) {
-  let { r0, r1, f0, f1 } = hunk;
-  const cjkLen = () => finTok.slice(f0, f1).filter(t => CJK.test(t.value)).length;
-  for (let step = 0; step < 2 && f1 - f0 > 0 && cjkLen() > 0 && cjkLen() < 2; step++) {
-    if (r0 > 0 && f0 > 0 && CJK.test(rawTok[r0 - 1].value) && rawTok[r0 - 1].value === finTok[f0 - 1].value) { r0--; f0--; continue; }
-    if (r1 < rawTok.length && f1 < finTok.length && CJK.test(rawTok[r1].value) && rawTok[r1].value === finTok[f1].value) { r1++; f1++; continue; }
-    break;
-  }
-  return { r0, r1, f0, f1 };
-}
-
-// What a single correction teaches: [{ term, alias? }]. `alias` is absent for
-// a case/spacing-only fix.
 function minePairs(raw, final) {
   raw = typeof raw === 'string' ? raw.trim() : '';
   final = typeof final === 'string' ? final.trim() : '';
   if (!raw || !final || raw === final || raw.length > MAX_DIFF_CHARS || final.length > MAX_DIFF_CHARS) return [];
-  const rawTok = tokenize(raw);
-  const finTok = tokenize(final);
-  const { ops, common } = lcsOps(rawTok, finTok);
-  // In a heavy rewrite (an AI cleanup pass, or the user restating the request)
-  // most changed spans are content, not mishearing; only a fix that lands on an
-  // ASCII term is still trusted there ("…类似OpenCloud的…" → "…OpenClaw…").
-  const rewrite = common / Math.max(rawTok.length, finTok.length) < MIN_SIMILARITY;
-
-  // Runs of non-equal ops between two equal ones; r/f = next raw/final index.
-  const hunks = [];
-  let cur = null;
-  let r = 0;
-  let f = 0;
-  for (const [op] of ops) {
-    if (op === '=') { if (cur) hunks.push(cur); cur = null; r++; f++; continue; }
-    if (!cur) cur = { r0: r, r1: r, f0: f, f1: f };
-    if (op === '-') cur.r1 = ++r;
-    else cur.f1 = ++f;
-  }
-  if (cur) hunks.push(cur);
-
-  const out = [];
-  for (const h0 of hunks) {
-    // Edits that only touch punctuation are not about words.
-    const rCore = rawTok.slice(h0.r0, h0.r1).filter(t => !isPunct(t));
-    const fCore = finTok.slice(h0.f0, h0.f1).filter(t => !isPunct(t));
-    if (!rCore.length || !fCore.length) continue;
-    const h = widen(h0, rawTok, finTok);
-    const alias = spanText(raw, rawTok.slice(h.r0, h.r1).filter(t => !isPunct(t)));
-    const term = spanText(final, finTok.slice(h.f0, h.f1).filter(t => !isPunct(t)));
-    if (!termLike(term) || !alias || alias.length > MAX_SIDE) continue;
-    if (rewrite && !/[A-Za-z]/.test(term)) continue;
-    if (squash(alias) === squash(term)) {
-      if (/[A-Za-z]/.test(term)) out.push({ term });
-      continue;
-    }
-    if (alias.length > term.length * 3 + 4) continue;
-    if (CJK_ONLY.test(term) && CJK_ONLY.test(alias) && !soundAlike(term, alias)) continue;
-    out.push({ term, alias });
-  }
-  return out;
+  return getNative().voiceMineHotwordPairs(raw, final, sameSpelling, soundAlike);
 }
 
 // A recogniser swaps a word for one that sounds like it, same length: "热水"
 // for "热词" (re shui / re ci) qualifies, "是相关的事例" for "类似项目" is an
 // edit of the content. Half the syllables must match or be near.
-const CJK_ONLY = /^[一-鿿]+$/;
 function soundAlike(a, b) {
   if (a.length !== b.length) return false;
   const sa = toSyllables(a);
@@ -146,12 +66,6 @@ function soundAlike(a, b) {
   if (!sa || !sb) return true; // no pinyin dictionary: the count gate still applies
   const close = sa.filter((s, i) => s === sb[i] || nearSyllable(s, sb[i])).length;
   return close * 2 >= a.length;
-}
-
-function termLike(term) {
-  if (!term || term.length > MAX_SIDE || /[\n\r,，;；、=/|]/.test(term)) return false;
-  if (/^[一-鿿]+$/.test(term)) return term.length >= 2 && term.length <= 8;
-  return /[A-Za-z]/.test(term) && term.replace(/[^A-Za-z0-9]/g, '').length >= 3 && !/[一-鿿]/.test(term);
 }
 
 // ── Typed vocabulary ──

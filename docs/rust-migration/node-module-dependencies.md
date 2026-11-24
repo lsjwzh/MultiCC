@@ -497,7 +497,7 @@
 | `src/voice/host.js` | server.js | `src/routes/voice-gateway-host.js`, `src/routes/voice-gateway-proxy.js`, `src/routes/voice-runtime-host.js`, `src/routes/voice.js`, `src/task-board/core.js`, `src/voice/asr-local.js`, `src/voice/asr-model-installer.js`, `src/voice/config.js`, `src/voice/gateway.js`, `src/voice/launch.js`, `src/voice/qwen-audio-installer.js`, `src/voice/qwen-audio-supervisor.js`, `src/voice/router.js` | `src/voice/multicc-acp-agent.mjs` | `path` | — | — |
 | `src/voice/hotword-corrector.js` | server.js | — | — | — | `pinyin-pro` | — |
 | `src/voice/hotword-learner.js` | server.js | `src/runtime-security.js`, `src/voice/hotword-miner.js` | — | `crypto`, `fs`, `path` | — | — |
-| `src/voice/hotword-miner.js` | server.js | `src/voice/hotword-corrector.js` | — | — | — | — |
+| `src/voice/hotword-miner.js` | server.js | `src/native/runtime.js`, `src/voice/hotword-corrector.js` | — | — | — | — |
 | `src/voice/launch.js` | server.js | `src/voice/router.js` | — | `crypto` | — | — |
 | `src/voice/multicc-acp-agent.mjs` | 宿主脚本路径 | `src/voice/acp-bridge.js` | — | `stream` | `@agentclientprotocol/sdk` | — |
 | `src/voice/qwen-audio-installer.js` | server.js | `src/network/outbound.js`, `src/runtime-security.js` | — | `child_process`, `crypto`, `fs`, `path` | — | — |
