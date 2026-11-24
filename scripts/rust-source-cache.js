@@ -339,11 +339,15 @@ function probeAddon(file, node = process.execPath) {
     if(a.sessionRuntimeIsChatStateBusy({isStreaming:true})!==true || a.sessionRuntimeIsChatStateBusy()!==false
       || a.sessionRuntimeProcessAlive({exitCode:0})!==false || a.sessionRuntimeProcessAlive()!==false) process.exit(1);
     const pendingFields=a.sessionPendingConfigurationFields();
+    const expectedPendingFields=['provider','providerSelection','model','effort','agent','subagent','rolePrompt','claudeWorkflow','preferSubtasks'];
+    if(!Object.isFrozen(pendingFields) || pendingFields.join(',')!==expectedPendingFields.join(',')) {
+      console.error('sessionPendingConfigurationFields mismatch:', pendingFields);
+      process.exit(1);
+    }
     const strictSet=(o,k,v)=>{o[k]=v;};
     const stagedTarget={};
     const staged=a.sessionPendingStageConfiguration(stagedTarget,{cli:'codex'},undefined,strictSet);
-    if(!Object.isFrozen(pendingFields) || pendingFields.join(',')!=='provider,providerSelection,model,effort,agent,subagent,rolePrompt'
-      || stagedTarget.pendingConfiguration!==staged || staged.cli!=='codex' || staged.profile.model!==null
+    if(stagedTarget.pendingConfiguration!==staged || staged.cli!=='codex' || staged.profile.model!==null
       || a.sessionPendingDesiredSession(stagedTarget,strictSet).cli!=='codex') process.exit(1);
     const deliveryApi=a.sessionDeliveryApi();
     if(deliveryApi.SYSTEM_PREFIX!=='🔇' || !(deliveryApi.DELIVERY_KINDS instanceof Set)
