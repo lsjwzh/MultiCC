@@ -268,7 +268,7 @@ test('an incomplete sync stream returns an explicit dispatch_status recovery con
 });
 
 test('host prompt prefers scoped durable wait tools and keeps raw polling privileged', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-prompts.js'), 'utf8');
+  const source = require('../src/chat/host-prompts').createHostPrompts({}).multiccImgHint;
   assert.match(source, /it registers a durable wait/);
   assert.match(source, /wait_for_external_result/);
   assert.match(source, /get_external_wait/);
