@@ -17,9 +17,9 @@
 // from that owner's core rule as well.
 //
 // The wire payload is shared with the connect seed — see
-// src/chat/task-state-payload.js; the two producers must never drift (a
+// multicc_core::chat_task_state_frame; the two producers must never drift (a
 // reopened page once lost the last API error to that drift).
-const { taskStatePayload } = require('../chat/task-state-payload');
+const { taskStatePayload } = require('../native/runtime');
 const { sessionRecordDefaults, sessionRecordsOwner } = require('../session/records');
 
 const TASK_STATE_DEFAULTS = Object.freeze(sessionRecordDefaults());

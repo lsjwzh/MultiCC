@@ -415,20 +415,18 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // Every task_state producer must carry the outward short code. The connect-time
   // seed in turn-engine once omitted it, so a freshly opened chat showed the bare
   // goal until the next classify event — pin the field on the wire. The payload
-  // now lives in one shared builder, src/chat/task-state-payload.js: the seed and
+  // now lives in one shared native builder: the seed and
   // the task-state store's live broadcast must send the SAME frame,
   // because they once drifted and a reopened page lost the last API error (the
   // seed omitted apiError, and api_error_policy events are never replayed).
   // The builder moved to multicc_core::chat_task_state_frame, so the fields are
   // pinned there now — on the kernel and on the frozen corpus rather than on a
   // JavaScript source line, which is what keeps the two producers honest.
-  const payload = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-payload.js'), 'utf8');
-  assert.ok(payload.includes('chatTaskStatePayload'),
-    'the payload must come from the one native builder');
-  assert.ok(payload.includes('taskShortCode((task || {}).taskId)'),
-    'the persisted short code is resolved here and passed in as a fact');
-  assert.ok(payload.includes('auxVerdictStaleness()'),
-    'the live Aux health reading is resolved here and passed in as a fact');
+  const frameHost = fs.readFileSync(path.join(ROOT, 'native/addon/src/chat_connect_frames.rs'), 'utf8');
+  const runtime = fs.readFileSync(path.join(ROOT, 'src/native/runtime.js'), 'utf8');
+  assert.ok(runtime.includes("require('../classify/task-short-code').taskShortCode, auxVerdictStaleness"));
+  assert.ok(runtime.includes('getNative().chatTaskStateFrame(task, seedOnly'));
+  assert.ok(frameHost.includes('chat_task_state_payload(encode(envelope)?)'));
   const kernel = fs.readFileSync(
     path.join(ROOT, 'native', 'core', 'src', 'chat_task_state_frame.rs'), 'utf8');
   for (const field of ['taskShortCode', 'apiError', 'cancelledAt', 'cancelReason',
@@ -450,11 +448,11 @@ test('server composition uses canonical adapters and retires legacy dispatch end
     && entry.name === 'cancelledAt=absent cancelReason=string');
   assert.equal(reasonWithoutStamp.expected.payload.cancelReason, null,
     'a cancel reason with no timestamp must be dropped');
-  const seed = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'task-state-seed.js'), 'utf8');
-  assert.ok(seed.includes("require('./task-state-payload')"),
-    'the seed and the live broadcast must resolve the same facts');
-  assert.ok(seed.includes('chatTaskStateShouldSeed'), 'the seed gate must come from the kernel');
+  assert.ok(runtime.includes('taskStateSeed = task => taskStateFrame(task, true)'));
+  assert.ok(runtime.includes('taskStatePayload = task => taskStateFrame(task, false)'));
+  assert.ok(frameHost.includes('seed_only && !chat_task_state_should_seed'));
   const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
+  assert.ok(turnEngine.includes("taskStateSeed } = require('../native/runtime')"));
   // The connect sequence is the kernel's plan now, so the step is what gets
   // pinned, not an inline `if`.
   assert.ok(turnEngine.includes("step.op === 'taskStateSeed'"),

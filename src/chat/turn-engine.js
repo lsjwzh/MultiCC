@@ -51,7 +51,7 @@ const { admissionRootCause, deliverAfterPendingMemory, createQueuedTurnPreparati
 const { createAutoProviderHandoff } = require('../native/runtime');
 const { redactProviderRouteCapability } = require('../observability');
 const { taskIdForShortCode } = require('../classify/task-short-code');
-const { taskStateSeed } = require('./task-state-seed');
+const { taskStateSeed } = require('../native/runtime');
 const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../native/runtime').messageComposer;
 const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
 const { buildSubagentProviderHint } = require('./host-prompts');

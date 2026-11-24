@@ -775,7 +775,7 @@
             cancelledAt: message.cancelledAt || null,
           });
           // The frame carries the persisted upstream-error envelope on the same
-          // contract as api_error_policy (src/chat/task-state-payload.js). That
+          // contract as api_error_policy (multicc_core::chat_task_state_frame). That
           // live event is never replayed, so this field is the only way a
           // reopened page can re-render the bar. A user-stopped turn
           // (cancelledAt) is not an upstream failure — the badge says 已取消

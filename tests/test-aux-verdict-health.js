@@ -15,8 +15,8 @@ const {
   installAuxHealthProvider,
   auxVerdictStaleness,
   fanOutAuxVerdictStaleness,
+  taskStateSeed,
 } = require('../src/native/runtime');
-const { taskStateSeed } = require('../src/chat/task-state-seed');
 const { workspaceEntry } = require('../src/session/workspace-service');
 const { createWorkspaceRuntime } = require('../src/workspace/runtime');
 

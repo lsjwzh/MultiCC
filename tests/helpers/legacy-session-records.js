@@ -5,7 +5,7 @@
 // (src/session/persistence.js and src/routes/task-state-store.js at the parent
 // commit). Do not edit to match new behaviour — the differential test exists to
 // prove the native owner reproduces this exactly.
-const { taskStatePayload: realTaskStatePayload } = require('../../src/chat/task-state-payload');
+const { taskStatePayload: realTaskStatePayload } = require('../../src/native/runtime');
 
 class LegacyPersistenceError extends Error {
   constructor(message, { source = 'unknown', cause } = {}) {

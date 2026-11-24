@@ -24,7 +24,7 @@ const frozenTaskState = require('./helpers/legacy-chat-task-state-frame');
 const historyCorpus = require('../docs/rust-migration/differential/chat-history-frame-corpus.json');
 const taskStateCorpus = require('../docs/rust-migration/differential/chat-task-state-frame-corpus.json');
 const connectCorpus = require('../docs/rust-migration/differential/chat-connect-replay-golden.json');
-const { getNative, installAuxHealthProvider, auxVerdictStaleness } = require('../src/native/runtime');
+const { getNative, installAuxHealthProvider, auxVerdictStaleness, taskStateSeed, taskStatePayload } = require('../src/native/runtime');
 
 // The task-short-code registry mints into a persisted file on first use, which
 // is exactly the side effect the connect path must not trigger needlessly, so
@@ -38,8 +38,6 @@ require.cache[SHORT_CODE_MODULE] = {
   exports: { taskShortCode: taskId => { shortCodeCalls.push(taskId); return shortCode; } },
 };
 const { fitHistoryFrame, DEFAULT_MAX_BYTES, messageBytes } = require('../src/chat/history-frame-budget');
-const { taskStateSeed } = require('../src/chat/task-state-seed');
-const { taskStatePayload } = require('../src/chat/task-state-payload');
 
 // JSON cannot carry `undefined`, so the corpus marks those slots and both
 // sides rehydrate them (see chat-history-frame-oracle.js).
@@ -173,6 +171,36 @@ test('the seed resolves the short code from the task id and from nothing else', 
     assert.equal(taskStateSeed({ goal: 'g' }).taskShortCode, 'AB12');
   });
   assert.deepEqual(shortCodeCalls, ['task-123', undefined]);
+});
+
+// The legacy connect gate serializes before reading either live fact. Both
+// producers return the original error envelope even when toJSON changes it.
+test('task state keeps the order of live reads, the error identity and serialization failures', () => {
+  for (const build of [taskStateSeed, taskStatePayload]) {
+    const events = [];
+    shortCodeCalls.length = 0;
+    const error = { code: 'persisted' };
+    const task = {
+      get taskId() { events.push('id'); return 't'; },
+      get apiError() { events.push('error'); return error; },
+      toJSON() { events.push('json'); return { apiError: { code: 'serialized' } }; },
+    };
+    installAuxHealthProvider(() => { events.push('health'); return null; });
+    try {
+      assert.equal(build(task).apiError, error);
+      const gate = build === taskStateSeed ? ['json'] : [];
+      assert.deepEqual(events, [...gate, 'id', 'health', 'json', 'error']);
+      assert.deepEqual(shortCodeCalls, ['t']);
+      events.length = shortCodeCalls.length = 0;
+      const cyclic = {};
+      cyclic.self = cyclic;
+      assert.throws(() => build(cyclic), TypeError);
+      assert.deepEqual(events, build === taskStateSeed ? [] : ['health']);
+      assert.deepEqual(shortCodeCalls, build === taskStateSeed ? [] : [undefined]);
+    } finally {
+      installAuxHealthProvider(null);
+    }
+  }
 });
 
 // ── the connect plan ────────────────────────────────────────────────────────

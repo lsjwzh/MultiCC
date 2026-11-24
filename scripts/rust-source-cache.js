@@ -113,7 +113,7 @@ function probeAddon(file, node = process.execPath) {
       'orchestrationCanonicalize'].some(key=>typeof a[key]!=='function')
     || ['unattendedTag','unattendedNormalizeConfig','unattendedVerdictPrompt','unattendedParseVerdict','unattendedDecide','unattendedDecideFault','unattendedDecideClear','unattendedDeliveryRetryDecision','unattendedDecideTurnEnd','unattendedSelectQueued','unattendedDeferEvaluation','unattendedFaultInstruction'].some(key=>typeof a[key]!=='function')
     || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(['auxVerdictStaleness','fanOutAuxVerdictStaleness','providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
+    if(['chatTaskStateFrame','auxVerdictStaleness','fanOutAuxVerdictStaleness','providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
