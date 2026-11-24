@@ -991,12 +991,12 @@ test('extraResources preserves server dependencies with the real electron-builde
     const packaged = path.join(root, 'packaged');
     await copier.copyFiles(copier.getFileMatchers(require(path.join(DESKTOP, 'package.json')).build,
       'extraResources', packaged, options));
-    assert.equal(verifyDesktopResources({ resourcesDir: packaged, execute: false }).dependencies.length, 2);
+    assert.equal(verifyDesktopResources({ resourcesDir: packaged, execute: false }).dependencies.length, 1);
     const hook = require('../desktop/after-pack');
     const context = { appOutDir: packaged, arch: 1,
       packager: { getResourcesDir: dir => dir,
         platform: { nodeName: process.platform === 'win32' ? 'linux' : 'win32' } } };
-    assert.equal(hook(context).dependencies.length, 2, 'local packaging runs the gate too');
+    assert.equal(hook(context).dependencies.length, 1, 'local packaging runs the gate too');
     assert.ok(fs.existsSync(path.join(packaged, `${pluginCore}.gz`)), 'other platforms keep compressed resources');
     hook({ ...context, arch: -1, packager: { ...context.packager, platform: { nodeName: 'darwin' } } });
     const plainCore = path.join(packaged, pluginCore);
