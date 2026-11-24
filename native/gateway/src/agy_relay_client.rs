@@ -12,25 +12,16 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{
-    tungstenite::{
-        client::IntoClientRequest,
-        http::header::{HeaderValue, AUTHORIZATION},
-        protocol::WebSocketConfig,
-        Error as WsError, Message,
-    },
-    WebSocketStream,
-};
+use tokio_tungstenite::tungstenite::Message;
 
 use multicc_core::agy_remote::{RemoteAgyTarget, FILE_MODE_REMOTE_MCP};
 
+use crate::cli_relay_client::{
+    build_ws_relay_url, dial_relay_ws, is_auth_rejected_http, ClientRpcDispatcher,
+    LocalRouterConfig,
+};
 use crate::host_exec::{generate_token, start_host_exec_server, HostExecServerConfig};
-use crate::ws_machines::Io;
-
-const MAX_WS_PAYLOAD: usize = 32 * 1024 * 1024;
-const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn emit_relay_error(message: &str) {
     let evt = json!({
@@ -43,96 +34,6 @@ fn emit_relay_error(message: &str) {
         }
     });
     println!("{evt}");
-}
-
-fn is_auth_rejected_http(status: u16, location: Option<&str>) -> bool {
-    if status == 401 || status == 403 {
-        return true;
-    }
-    matches!(status, 301 | 302 | 303 | 307 | 308)
-        && location.is_some_and(|loc| loc.starts_with("/login") || loc.contains("/login?"))
-}
-
-fn build_ws_turn_url(relay_base_url: &str) -> Result<url::Url, String> {
-    let mut parsed = url::Url::parse(relay_base_url).map_err(|_| "借道地址格式无效".to_string())?;
-    let ws_scheme = match parsed.scheme() {
-        "https" => "wss",
-        "http" => "ws",
-        other => return Err(format!("不支持的借道协议: {other}")),
-    };
-    parsed
-        .set_scheme(ws_scheme)
-        .map_err(|_| "无法转换为 WebSocket 协议".to_string())?;
-    let base_path = parsed.path().trim_end_matches('/').to_string();
-    parsed.set_path(&format!("{base_path}/turn"));
-    Ok(parsed)
-}
-
-async fn dial_relay_ws(
-    url: &url::Url,
-    token: &str,
-) -> Result<WebSocketStream<Box<dyn Io>>, String> {
-    let tls = url.scheme() == "wss";
-    let host = url
-        .host_str()
-        .ok_or_else(|| "借道地址缺少主机名".to_string())?
-        .to_string();
-    let port = url
-        .port_or_known_default()
-        .unwrap_or(if tls { 443 } else { 80 });
-
-    let tcp = tokio::time::timeout(DIAL_TIMEOUT, TcpStream::connect((host.as_str(), port)))
-        .await
-        .map_err(|_| format!("连接远端借道服务超时（{host}:{port}）"))?
-        .map_err(|err| format!("无法连接到远端借道服务（{host}:{port}）: {err}"))?;
-    let _ = tcp.set_nodelay(true);
-
-    let io: Box<dyn Io> = if tls {
-        let tls_stream = tokio::time::timeout(DIAL_TIMEOUT, crate::ws_tls::connect(tcp, &host))
-            .await
-            .map_err(|_| format!("TLS 握手超时（{host}）"))?
-            .map_err(|reason| format!("TLS 握手失败（{host}）: {reason}"))?;
-        Box::new(tls_stream)
-    } else {
-        Box::new(tcp)
-    };
-
-    let mut req = url
-        .as_str()
-        .into_client_request()
-        .map_err(|err| format!("构造 WebSocket 握手请求失败: {err}"))?;
-    let auth_val = HeaderValue::from_str(&format!("Bearer {token}"))
-        .map_err(|_| "借道凭据包含非法字符".to_string())?;
-    req.headers_mut().insert(AUTHORIZATION, auth_val);
-
-    let cfg = WebSocketConfig::default()
-        .max_frame_size(Some(MAX_WS_PAYLOAD))
-        .max_message_size(Some(MAX_WS_PAYLOAD));
-
-    match tokio::time::timeout(
-        DIAL_TIMEOUT,
-        tokio_tungstenite::client_async_with_config(req, io, Some(cfg)),
-    )
-    .await
-    {
-        Ok(Ok((ws, _resp))) => Ok(ws),
-        Ok(Err(WsError::Http(resp))) => {
-            let code = resp.status().as_u16();
-            let loc = resp.headers().get("location").and_then(|v| v.to_str().ok());
-            if is_auth_rejected_http(code, loc) {
-                Err("反重力借道分享码已被撤销或无效，请向出借方重新获取".to_string())
-            } else if code == 404 {
-                Err(
-                    "远端 Host 上对应的反重力账号已不存在，或 Host 尚未升级支持反重力借道"
-                        .to_string(),
-                )
-            } else {
-                Err(format!("远端借道服务拒绝握手（HTTP {code}）"))
-            }
-        }
-        Ok(Err(err)) => Err(format!("WebSocket 握手失败: {err}")),
-        Err(_) => Err("WebSocket 握手超时".to_string()),
-    }
 }
 
 /// 在 Client 侧通过 WebSocket 借道执行一次完整 `agy` 回合。
@@ -150,7 +51,7 @@ pub async fn serve_relay_turn(
         emit_relay_error("反重力借道账号缺少安全凭据");
         return 1;
     };
-    let ws_url = match build_ws_turn_url(base_url) {
+    let ws_url = match build_ws_relay_url(base_url, "turn") {
         Ok(u) => u,
         Err(err) => {
             emit_relay_error(&err);
@@ -183,7 +84,7 @@ pub async fn serve_relay_turn(
         }
     };
 
-    let ws = match dial_relay_ws(&ws_url, token).await {
+    let ws = match dial_relay_ws(&ws_url, token, "反重力").await {
         Ok(s) => s,
         Err(err) => {
             server_handle.abort();
@@ -204,26 +105,26 @@ pub async fn serve_relay_turn(
         let _ = ws_sink.send(Message::Close(None)).await;
     });
 
-    let start_frame = json!({
+    let router_cfg = LocalRouterConfig::from_env();
+    let mut start_obj = json!({
         "type": "start",
         "agyArgs": agy_args,
         "prompt": prompt,
         "localRoot": local_root_str,
         "localOs": std::env::consts::OS,
-    })
-    .to_string();
-    if tx.send(start_frame).is_err() {
+    });
+    if let Some(rc) = router_cfg.as_ref() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("routerContext".to_string(), rc.to_start_frame_json());
+        }
+    }
+    if tx.send(start_obj.to_string()).is_err() {
         server_handle.abort();
         emit_relay_error("发送借道启动帧失败");
         return 1;
     }
 
-    let http = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(10 * 60))
-        .build()
-        .expect("reqwest loopback client");
-
+    let dispatcher = ClientRpcDispatcher::new(local_addr.port(), local_token, router_cfg);
     let mut exit_code: Option<i32> = None;
     let mut saw_result = false;
 
@@ -234,6 +135,9 @@ pub async fn serve_relay_turn(
                 let Ok(val) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
+                if dispatcher.handle_frame(&val, &tx).await {
+                    continue;
+                }
                 match val.get("type").and_then(Value::as_str) {
                     Some("agy_event") => {
                         if let Some(line) = val.get("line").and_then(Value::as_str) {
@@ -244,72 +148,6 @@ pub async fn serve_relay_turn(
                             }
                             println!("{line}");
                         }
-                    }
-                    Some("host_exec_req") => {
-                        let req_id = val
-                            .get("reqId")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        let path = val
-                            .get("path")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        let body = val.get("body").cloned().unwrap_or_else(|| json!({}));
-                        let tx_reply = tx.clone();
-                        let http_c = http.clone();
-                        let tok = local_token.clone();
-                        let port = local_addr.port();
-                        tokio::spawn(async move {
-                            let allowed = matches!(
-                                path.as_str(),
-                                "/exec" | "/fs/read" | "/fs/write" | "/fs/list"
-                            );
-                            if !allowed {
-                                let _ = tx_reply.send(
-                                    json!({
-                                        "type": "host_exec_res",
-                                        "reqId": req_id,
-                                        "status": 403,
-                                        "body": { "ok": false, "error": "不允许的远程执行动作" }
-                                    })
-                                    .to_string(),
-                                );
-                                return;
-                            }
-                            let url = format!("http://127.0.0.1:{port}{path}");
-                            let payload_bytes = serde_json::to_vec(&body).unwrap_or_default();
-                            let resp = http_c
-                                .post(&url)
-                                .header("Authorization", format!("Bearer {tok}"))
-                                .header("Content-Type", "application/json")
-                                .body(payload_bytes)
-                                .send()
-                                .await;
-                            let (status, res_body) = match resp {
-                                Ok(r) => {
-                                    let code = r.status().as_u16();
-                                    let bytes = r.bytes().await.unwrap_or_default();
-                                    let parsed = serde_json::from_slice::<Value>(&bytes)
-                                        .unwrap_or_else(|_| json!({ "ok": false, "error": "invalid local host_exec json" }));
-                                    (code, parsed)
-                                }
-                                Err(err) => (
-                                    500,
-                                    json!({ "ok": false, "error": format!("本机执行桥调用失败: {err}") }),
-                                ),
-                            };
-                            let _ = tx_reply.send(
-                                json!({
-                                    "type": "host_exec_res",
-                                    "reqId": req_id,
-                                    "status": status,
-                                    "body": res_body,
-                                })
-                                .to_string(),
-                            );
-                        });
                     }
                     Some("exit") => {
                         exit_code = Some(
@@ -328,6 +166,7 @@ pub async fn serve_relay_turn(
         }
     }
 
+    dispatcher.abort_all().await;
     drop(tx);
     let _ = writer_task.await;
     server_handle.abort();
@@ -904,5 +743,216 @@ exit 0
             Err(RelayCatalogError::NotFound)
         );
         let _ = srv3.await;
+    }
+
+    #[tokio::test]
+    async fn agy_relay_bridges_multicc_router_json_and_ndjson_without_leaking_client_capability() {
+        use axum::extract::Path as AxumPath;
+        use axum::http::{HeaderMap, HeaderValue, StatusCode};
+        use axum::response::IntoResponse;
+        use axum::routing::post;
+        use axum::{Json, Router};
+
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!(
+            "multicc-agy-router-bridge-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let host_home = root.join("host-home");
+        let client_ws = root.join("client-ws");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&host_home).unwrap();
+        std::fs::create_dir_all(&client_ws).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let fake_router_script = bin_dir.join("multicc-router-mcp.js");
+        std::fs::write(&fake_router_script, "// mock router mcp\n").unwrap();
+
+        let created = multicc_core::agy_accounts::create_account_with_egress(
+            &host_home,
+            "HostRouter测试",
+            "created",
+            None,
+        )
+        .unwrap();
+        let account_id = created["id"].as_str().unwrap().to_string();
+
+        // Mock Client local MultiCC `/api/internal/router-tools/:tool` server
+        let client_secret_cap = "client_real_secret_cap_9876543210";
+        let expected_cap = client_secret_cap.to_string();
+        let mock_router_app = Router::new().route(
+            "/api/internal/router-tools/{tool}",
+            post(
+                move |AxumPath(tool): AxumPath<String>,
+                      headers: HeaderMap,
+                      Json(body): Json<Value>| {
+                    let expected = expected_cap.clone();
+                    async move {
+                        let actual = headers
+                            .get("x-multicc-router-capability")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        if actual != expected {
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(json!({ "ok": false, "code": "bad_cap" })),
+                            )
+                                .into_response();
+                        }
+                        if tool == "dispatch_master" {
+                            let ndjson = concat!(
+                                "{\"type\":\"progress\",\"progress\":{\"kind\":\"running\",\"message\":\"step 1\"}}\n",
+                                "{\"type\":\"result\",\"result\":{\"ok\":true,\"operationId\":\"op_stream_1\"}}\n"
+                            );
+                            let mut resp = axum::http::Response::builder()
+                                .status(StatusCode::OK)
+                                .body(axum::body::Body::from(ndjson))
+                                .unwrap();
+                            resp.headers_mut().insert(
+                                "content-type",
+                                HeaderValue::from_static("application/x-ndjson; charset=utf-8"),
+                            );
+                            return resp;
+                        }
+                        (
+                            StatusCode::OK,
+                            Json(json!({
+                                "ok": true,
+                                "result": { "tool": tool, "echo": body["arguments"] }
+                            })),
+                        )
+                            .into_response()
+                    }
+                },
+            ),
+        );
+        let client_router_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_router_port = client_router_listener.local_addr().unwrap().port();
+        let client_router_srv = tokio::spawn(async move {
+            let _ = axum::serve(client_router_listener, mock_router_app).await;
+        });
+
+        // Fake Host agy binary:
+        // 1) Verifies Host child NEVER sees Client's real capability token!
+        // 2) Verifies forged capability header on Host loopback returns 401!
+        // 3) Calls normal JSON router tool (`list_secrets`) over Host loopback -> WSS -> Client!
+        // 4) Calls streaming NDJSON router tool (`dispatch_master`) over Host loopback -> WSS -> Client!
+        let fake_agy = bin_dir.join("fake-agy-router");
+        std::fs::write(
+            &fake_agy,
+            format!(
+                r#"#!/bin/sh
+set -e
+if [ "$MULTICC_ROUTER_CAPABILITY" = "{client_secret_cap}" ]; then
+  echo "LEAKED client capability onto Host!" >&2
+  exit 41
+fi
+if [ "$MULTICC_SESSION_ID" != "sess-router-42" ]; then
+  echo "missing session id: $MULTICC_SESSION_ID" >&2
+  exit 42
+fi
+BAD_CODE="$(curl -sS -o /dev/null -w '%{{http_code}}' -X POST -H 'content-type: application/json' -H 'x-multicc-router-capability: forged' -d '{{"arguments":{{}}}}' "$MULTICC_BASE_URL/api/internal/router-tools/list_secrets")"
+if [ "$BAD_CODE" != "401" ]; then
+  echo "expected 401 for forged cap, got $BAD_CODE" >&2
+  exit 43
+fi
+JSON_RES="$(curl -sS -X POST -H 'content-type: application/json' -H "x-multicc-router-capability: $MULTICC_ROUTER_CAPABILITY" -d '{{"arguments":{{"hello":"world"}}}}' "$MULTICC_BASE_URL/api/internal/router-tools/list_secrets")"
+case "$JSON_RES" in
+  *list_secrets*world*) ;;
+  *) echo "unexpected json router response: $JSON_RES" >&2; exit 44 ;;
+esac
+NDJSON_RES="$(curl -sS -X POST -H 'content-type: application/json' -H "x-multicc-router-capability: $MULTICC_ROUTER_CAPABILITY" -d '{{"arguments":{{"mode":"sync"}}}}' "$MULTICC_BASE_URL/api/internal/router-tools/dispatch_master")"
+case "$NDJSON_RES" in
+  *step\ 1*op_stream_1*) ;;
+  *) echo "unexpected ndjson router response: $NDJSON_RES" >&2; exit 45 ;;
+esac
+echo '{{"event":"result","result":{{"conversation_id":"conv-rt","status":"SUCCESS","content":"ok"}}}}'
+exit 0
+"#
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::env::set_var("MULTICC_AGY_BIN", &fake_agy);
+        std::env::set_var(
+            "MULTICC_BASE_URL",
+            format!("http://127.0.0.1:{client_router_port}"),
+        );
+        std::env::set_var("MULTICC_ROUTER_CAPABILITY", client_secret_cap);
+        std::env::set_var("MULTICC_SESSION_ID", "sess-router-42");
+        std::env::set_var("MULTICC_TURN_ID", "turn-99");
+
+        let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_port = ws_listener.local_addr().unwrap().port();
+        let host_home_srv = host_home.clone();
+        let acct_srv = account_id.clone();
+        let router_spec = crate::cli_relay_bridge::RouterMcpSpec {
+            node_bin: "/usr/bin/node".to_string(),
+            script_path: fake_router_script.clone(),
+        };
+        let server_task = tokio::spawn(async move {
+            let (tcp, _) = ws_listener.accept().await.unwrap();
+            let ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            crate::ws_agy_relay::serve_relay_session_with_router(
+                ws,
+                host_home_srv,
+                acct_srv,
+                Some(router_spec),
+            )
+            .await;
+        });
+
+        let target = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{ws_port}/agy-proxy/{account_id}"),
+            "relayAuthToken": "mcr1.0123456789abcdef.testsecret123456",
+        }))
+        .unwrap();
+
+        let code = serve_relay_turn(
+            &target,
+            &client_ws,
+            &["--output-format".into(), "stream-json".into(), "-p".into()],
+            "test router bridge",
+        )
+        .await;
+        let _ = server_task.await;
+        client_router_srv.abort();
+        assert_eq!(code, 0);
+
+        // Verify Host mcp_config.json has both multicc_host_exec and multicc_router registered.
+        let resolved_home =
+            match multicc_core::agy_accounts::resolve_account(&host_home, Some(&account_id))
+                .unwrap()
+                .unwrap()
+            {
+                multicc_core::agy_accounts::ResolvedAgyAccount::Local { home, .. } => home,
+                _ => panic!("expected local agy account"),
+            };
+        let mcp_cfg_path = resolved_home
+            .join(".gemini")
+            .join("config")
+            .join("mcp_config.json");
+        let mcp_cfg: Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_cfg_path).unwrap()).unwrap();
+        assert!(mcp_cfg["mcpServers"]["multicc_host_exec"].is_object());
+        assert_eq!(
+            mcp_cfg["mcpServers"]["multicc_router"]["command"],
+            "/usr/bin/node"
+        );
+        assert_eq!(
+            mcp_cfg["mcpServers"]["multicc_router"]["args"][0],
+            fake_router_script.to_string_lossy().as_ref()
+        );
+
+        std::env::remove_var("MULTICC_AGY_BIN");
+        std::env::remove_var("MULTICC_BASE_URL");
+        std::env::remove_var("MULTICC_ROUTER_CAPABILITY");
+        std::env::remove_var("MULTICC_SESSION_ID");
+        std::env::remove_var("MULTICC_TURN_ID");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -425,6 +425,7 @@ Built-in local command and file tools (`run_command`, `read_file`, `write_file`,
 Invoke `call_mcp_tool` directly with `ServerName: \"multicc_host_exec\"` (or the `mcp_multicc_host_exec_*` alias if exposed) using these exact tool names and `Arguments`:\n\
 - `host_run_command`: {{\"command\": \"<shell command>\", \"cwd\": \"<optional relative or workspace path>\", \"timeoutMs\": 120000}}\n\
 - `host_read_file`: {{\"path\": \"<relative or workspace path>\"}}\n\
+- `host_edit_file`: {{\"path\": \"<relative or workspace path>\", \"old_text\": \"<exact match>\", \"new_text\": \"<replacement>\", \"replace_all\": false}}\n\
 - `host_write_file`: {{\"path\": \"<relative or workspace path>\", \"content\": \"<utf-8 text>\"}}\n\
 - `host_list_dir`: {{\"path\": \"<optional relative or workspace path>\"}}\n\
 [End of remote execution environment]\n\n"

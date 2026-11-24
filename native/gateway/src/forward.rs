@@ -313,7 +313,65 @@ async fn dispatch(
         if host_port == 0 {
             return forward(upstream, request, None).await;
         }
-        return crate::ws_agy_relay::handle_ws(peer, host_port, request).await;
+        let router_mcp = crate::cli_relay_bridge::RouterMcpSpec::resolve(
+            &app.package_root,
+            app.node_bin.as_deref(),
+        );
+        return crate::ws_agy_relay::handle_ws(peer, host_port, router_mcp, request).await;
+    }
+    // Claude Code CLI 级借道 WebSocket 入口：`/claude-proxy/<providerId>/remote/cli-turn`。
+    if crate::ws_claude_relay::claims_ws(request.uri().path())
+        && is_websocket_upgrade(request.headers())
+    {
+        if upstream.node_absent() {
+            return forward(upstream, request, None).await;
+        }
+        let (peer, local) = upstream.addresses();
+        let host_port = upstream.state.port.load(Ordering::SeqCst);
+        if host_port == 0 {
+            return forward(upstream, request, None).await;
+        }
+        let public_port = if local.port() != 0 {
+            local.port()
+        } else {
+            app.public_port()
+        };
+        let router_mcp = crate::cli_relay_bridge::RouterMcpSpec::resolve(
+            &app.package_root,
+            app.node_bin.as_deref(),
+        );
+        return crate::ws_claude_relay::handle_ws(
+            peer,
+            host_port,
+            public_port,
+            router_mcp,
+            request,
+        )
+        .await;
+    }
+    // Codex CLI 级借道 WebSocket 入口：`/codex-proxy/<providerId>/cli-turn`。
+    if crate::ws_codex_relay::claims_ws(request.uri().path())
+        && is_websocket_upgrade(request.headers())
+    {
+        if upstream.node_absent() {
+            return forward(upstream, request, None).await;
+        }
+        let (peer, local) = upstream.addresses();
+        let host_port = upstream.state.port.load(Ordering::SeqCst);
+        if host_port == 0 {
+            return forward(upstream, request, None).await;
+        }
+        let public_port = if local.port() != 0 {
+            local.port()
+        } else {
+            app.public_port()
+        };
+        let router_mcp = crate::cli_relay_bridge::RouterMcpSpec::resolve(
+            &app.package_root,
+            app.node_bin.as_deref(),
+        );
+        return crate::ws_codex_relay::handle_ws(peer, host_port, public_port, router_mcp, request)
+            .await;
     }
     // `/ws/remote-screen`: the exact path the retired `remote-screen-rust.js`
     // attached to. Like the machines bridge, only a real upgrade is claimed; a

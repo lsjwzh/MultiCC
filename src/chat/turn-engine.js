@@ -66,6 +66,7 @@ const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
 const { fitHistoryFrame } = require('./history-frame-budget');
 const chatStream = require('./chat-stream');
+const { resolveCliRelayTarget, applyCliRelaySpawn } = require('./cli-relay-spawn');
 const { spawnContractOf } = require('./held-turn-injection');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
@@ -1419,8 +1420,9 @@ function createChatTurnEngine(deps) {
       throw new Error(`turn runtime start rejected: ${preparationFailure}`);
     }
 
+    const initialCliRelay = resolveCliRelayTarget(providers, cs.cli, initialInvocation.binding?.providerId);
     // Streaming and process runners both require the minted workspace permit.
-    if (isResidentSession(cs.cli, persisted)) {
+    if (isResidentSession(cs.cli, persisted) && !initialCliRelay) {
       const accepted = runChatTurnStreaming(
         sessionName, cs, persisted, initialInvocation, provider, turn, prepareInvocation, autoTurn, 0, opts,
       );
@@ -1442,14 +1444,15 @@ function createChatTurnEngine(deps) {
       return true;
     }
 
-    const args = [...invocation.args, invocation.payload];
-    console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}): ${invocation.cmd} ${args.join(' ').slice(0, 200)}...`);
+    const args = [...(Array.isArray(invocation.args) ? invocation.args : []), invocation.payload];
+    console.log(`[multicc/chat] Spawning ${cs.cli} (turn ${cs.chatTurnCount}, first=${isFirstTurn}${provEnv.providerName ? `, provider=${provEnv.providerName}` : ''}${initialCliRelay ? ', mode=cli-relay' : ''}): ${invocation.cmd} ${args.join(' ').slice(0, 200)}...`);
 
     // Every physical retry resolves a fresh immutable invocation attempt without
     // replaying composeMessage's note-delivery side effects.
     const spawnChat = (prepared, isRetry, apiRetryAttempt = 0) => {
       const { invocation: physicalInvocation, attempt, routeOverrides, binding, proxySessionId } = prepared;
-      const spawnArgs = processSpawnArgs(physicalInvocation);
+      const activeCliRelay = resolveCliRelayTarget(providers, persisted.cli, binding?.providerId);
+      const spawnArgs = activeCliRelay ? [] : processSpawnArgs(physicalInvocation);
       let childEnv;
       try {
         ({ env: childEnv } = providerRouterRuntime.buildChildEnv(process.env, persisted, {
@@ -1466,7 +1469,7 @@ function createChatTurnEngine(deps) {
         });
         throw error;
       }
-      try {
+      if (!activeCliRelay) try {
         if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') providers.applyClaudeProxyEnv(childEnv, {
           providerId: binding.providerId, sessionId: proxySessionId,
           subagent: persisted.subagent, port: getPort(),
@@ -1492,23 +1495,21 @@ function createChatTurnEngine(deps) {
         });
         throw error;
       }
-      // Claude Code ≥2.1 lets the env block of ~/.claude/settings.json override
-      // the spawned process env, which silently hijacks per-session provider
-      // routing. Mirror the final routing env into a per-session --settings
-      // file (higher precedence) so the session provider stays authoritative
-      // (see native/addon/src/claude_settings_override.rs).
       let finalSpawnArgs = spawnArgs;
-      if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') {
+      if (!activeCliRelay && (persisted.cli === 'claude' || persisted.cli === 'claude-exp')) {
         const settingsFile = providers.settingsOverrideFor(
           sessionName, childEnv,
           claudeSettingsExtra(physicalInvocation, prepared.invocationEnvelope && prepared.invocationEnvelope.spawnOpts, binding, persisted.cli),
         );
-        if (settingsFile) {
-          finalSpawnArgs = processSpawnArgs(physicalInvocation, settingsFile);
-        }
+        if (settingsFile) finalSpawnArgs = processSpawnArgs(physicalInvocation, settingsFile);
       }
       let spawnCmd = physicalInvocation.cmd;
-      if (persisted.cli === 'agy' && childEnv.MULTICC_AGY_REMOTE_ACCOUNT_JSON) {
+      if (activeCliRelay) {
+        ({ spawnCmd, finalSpawnArgs } = applyCliRelaySpawn({
+          target: activeCliRelay, childEnv, cwd: cs.cwd, persisted, prepared,
+          gatewayBin: gatewayPath(), rememberActiveCliState, savePersistedSessionsBestEffort,
+        }));
+      } else if (persisted.cli === 'agy' && childEnv.MULTICC_AGY_REMOTE_ACCOUNT_JSON) {
         spawnCmd = gatewayPath();
         finalSpawnArgs = ['agy-remote-bridge', '--local-cwd', cs.cwd, '--', ...finalSpawnArgs];
       } else if (persisted.cli === 'agy' && childEnv.MULTICC_AGY_EGRESS_JSON) {

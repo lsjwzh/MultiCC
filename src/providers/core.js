@@ -545,6 +545,8 @@ function summarize(p, opts = {}) {
     // official-accounts store this provider borrows, if any.
     officialAccountId: (cfg.officialAccount && typeof cfg.officialAccount.id === 'string')
       ? cfg.officialAccount.id : null,
+    // CLI 级借道开关：true 时通过单条 WSS 在 Host 运行真实 CLI（本地执行工具回连真机）。
+    cliRelay: cfg.cliRelay === true || cfg.relayMode === 'cli',
     ...(p.virtual ? { isOfficial: false, hasToken: false, tokenMask: '', baseUrl: '',
       compatibleClis: [p.appType, `${p.appType}-exp`] } : {}),
   };
@@ -646,6 +648,33 @@ function getRelayImportToken(appType, id) {
     ? (cfg.auth && cfg.auth.OPENAI_API_KEY)
     : ((cfg.env || {}).ANTHROPIC_AUTH_TOKEN || (cfg.env || {}).ANTHROPIC_API_KEY);
   return typeof token === 'string' ? token.trim() : '';
+}
+
+// 解析启用 CLI 级借道（远端大脑 + 本地手脚）的 Claude / Codex 分享线路目标。
+// 仅当线路为合法 MultiCC 借道分享（mcr1. 凭据 + /claude-proxy/<id>/remote 或 /codex-proxy/<id>）
+// 且显式开启 `settingsConfig.cliRelay === true` / `relayMode === 'cli'`（或环境变量强制）时激活；
+// 普通 HTTP 借道线路返回 null，行为完全不变。
+function resolveCliRelayTarget(appType, id) {
+  if ((appType !== 'claude' && appType !== 'codex') || !id) return null;
+  const p = getProvider(appType, id);
+  if (!p || p.virtual) return null;
+  const cfg = appType === 'codex' ? effectiveCodexSettings(p) : parseConfig(p.settingsConfig);
+  const enabled = cfg.cliRelay === true
+    || cfg.relayMode === 'cli'
+    || process.env.MULTICC_CLI_RELAY_FORCE === '1';
+  if (!enabled) return null;
+  const baseUrl = appType === 'codex'
+    ? ((cfg.proxyTarget && cfg.proxyTarget.originalBaseUrl) || tomlValue(cfg.config, 'base_url') || '')
+    : ((cfg.env && cfg.env.ANTHROPIC_BASE_URL) || '');
+  const token = getRelayImportToken(appType, id);
+  if (!baseUrl || !token || !token.startsWith('mcr1.')) return null;
+  const route = relayRouteFromBaseUrl(baseUrl);
+  if (!route || route.appType !== appType) return null;
+  return {
+    appType,
+    relayBaseUrl: route.url,
+    relayAuthToken: token,
+  };
 }
 
 function getProviderSummary(appType, id) {
@@ -2357,6 +2386,7 @@ module.exports = {
   CODEX_OFFICIAL_MODELS_FALLBACK,
   summarize,
   getRelayImportToken,
+  resolveCliRelayTarget,
   getProviderUsageStats,
   readDailyWindows,
   CLAUDE_ROUTING_KEYS,

@@ -108,7 +108,7 @@ pub fn resolve(cwd: &str, path: &str) -> String {
 }
 
 /// `decodeURIComponent(text)`, or `None` where it throws.
-pub(super) fn decode_uri_component(text: &str) -> Option<String> {
+pub(crate) fn decode_uri_component(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let nibble = |byte: u8| (byte as char).to_digit(16).map(|digit| digit as u8);
     let mut out = Vec::with_capacity(bytes.len());

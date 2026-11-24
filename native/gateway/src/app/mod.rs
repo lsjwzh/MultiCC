@@ -255,6 +255,8 @@ pub enum Route {
     AgyRelayPing,
     AgyRelayQuota,
     AgyRelayModels,
+    ClaudeCliRelayPing,
+    CodexCliRelayPing,
     AutoProviderRouting(auto_provider_routing::Route),
     VoiceGateway(voice_gateway::Route),
     Voice(voice_routes::Route),
@@ -455,6 +457,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if matches!(*method, Method::GET | Method::HEAD) && crate::ws_agy_relay::claims_models(path) {
         return Some(Route::AgyRelayModels);
+    }
+    if matches!(*method, Method::GET | Method::HEAD) && crate::ws_claude_relay::claims_ping(path) {
+        return Some(Route::ClaudeCliRelayPing);
+    }
+    if matches!(*method, Method::GET | Method::HEAD) && crate::ws_codex_relay::claims_ping(path) {
+        return Some(Route::CodexCliRelayPing);
     }
     if let Some(route) = session_git::claim(method, path) {
         return Some(Route::SessionGit(route));
@@ -807,6 +815,9 @@ pub struct App {
     /// The Node package root (the directory of the script we run): the
     /// version-check route reads package.json and .multicc_channel from it.
     pub package_root: PathBuf,
+    /// `--node <executable>` passed to `multicc-gateway serve` (used by Host
+    /// CLI relays to spawn `scripts/multicc-router-mcp.js` cleanly).
+    pub node_bin: Option<String>,
     /// `os.homedir()`: the official-account store lives under it.
     pub home_dir: PathBuf,
     /// The Node child's `process.cwd()` (physical path): what `path.resolve`
@@ -832,6 +843,10 @@ fn env_text(name: &str) -> String {
 impl App {
     /// The Node package root is the directory of the script we run (Node's
     /// `__dirname` resolves symlinks, so canonicalize like it does).
+    pub fn public_port(&self) -> u16 {
+        self.public_port
+    }
+
     pub fn package_root(options: &ServeOptions) -> PathBuf {
         if !options.node_enabled() {
             return options.cwd.clone();
@@ -913,6 +928,7 @@ impl App {
             account_subscription: subscriptions,
             outbound: crate::outbound::Outbound::from_process(),
             package_root,
+            node_bin: options.node.clone(),
             home_dir: user_home(),
             node_cwd: physical_dir(&options.cwd),
         }
@@ -1084,6 +1100,14 @@ pub async fn handle(
     if matches!(route, Route::AgyRelayModels) {
         drop(body);
         return crate::ws_agy_relay::handle_models(&ctx, &peer, host).await;
+    }
+    if matches!(route, Route::ClaudeCliRelayPing) {
+        drop(body);
+        return crate::ws_claude_relay::handle_ping(&ctx, &peer, host).await;
+    }
+    if matches!(route, Route::CodexCliRelayPing) {
+        drop(body);
+        return crate::ws_codex_relay::handle_ping(&ctx, &peer, host).await;
     }
     if matches!(route, Route::ProviderRelay(_))
         || matches!(route, Route::ProviderBalance(route) if provider_balance::is_relay(route))
