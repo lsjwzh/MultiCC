@@ -119,6 +119,8 @@ function snapshot(record) {
     stallTimeoutMs: record.stallTimeoutMs,
     requestTimeoutMs: record.requestTimeoutMs,
     connectTimeoutMs: record.connectTimeoutMs,
+    ...(record.effort !== undefined ? { effort: record.effort } : {}),
+    ...(record.claudeWorkflow !== undefined ? { claudeWorkflow: record.claudeWorkflow } : {}),
     requestDeadlineAt: budget.requestDeadlineAt ?? null,
     requestFailures: budget.requestFailures,
     stalled: budget.stalled,
@@ -398,6 +400,8 @@ function createProviderAttemptRuntime(options = {}) {
     const decisionId = previous && previous.turnId === turnId
       ? previous.decisionId : required(nextId('route-decision'), 'decisionId');
     const routeAttemptId = required(nextId('route-attempt'), 'routeAttemptId');
+    const effort = input.effort;
+    const claudeWorkflow = input.claudeWorkflow;
     const record = {
       runtimeEpoch,
       decisionId,
@@ -410,6 +414,8 @@ function createProviderAttemptRuntime(options = {}) {
       protocol,
       model,
       providerRevision,
+      ...(effort !== undefined ? { effort } : {}),
+      ...(claudeWorkflow !== undefined ? { claudeWorkflow } : {}),
       allowedSubProviderIds: Object.freeze([...new Set(
         [providerId, subagentProviderId].filter(Boolean),
       )]),
