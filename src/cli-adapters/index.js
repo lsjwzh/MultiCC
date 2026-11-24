@@ -61,9 +61,13 @@ function createCliAdapters(deps) {
     }),
     createCodexExpAdapter({
       codexCmd: commands['codex-exp'],
-      codexReasoningConfigArg: session => deps.codexReasoningConfigArg({ ...session, cli: 'codex-exp' }),
+      codexReasoningConfigArg: typeof deps.codexReasoningConfigArg === 'function'
+        ? session => deps.codexReasoningConfigArg({ ...session, cli: 'codex-exp' })
+        : undefined,
       codexModelConfigArg: deps.codexModelConfigArg,
-      codexReasoningLevel: session => deps.codexReasoningLevel({ ...session, cli: 'codex-exp' }),
+      codexReasoningLevel: typeof deps.codexReasoningLevel === 'function'
+        ? session => deps.codexReasoningLevel({ ...session, cli: 'codex-exp' })
+        : undefined,
       envConstraint: deps.codexEnvConstraint,
       multiccImgHint: deps.multiccImgHint,
       routerMcpNode,

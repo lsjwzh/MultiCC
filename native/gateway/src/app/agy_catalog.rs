@@ -113,7 +113,12 @@ fn model_options(session: &Value) -> AgyCatalog {
                 .find(|item| item["id"] == "model" || item["category"] == "model")
         })
     {
-        for item in model.get("options").and_then(Value::as_array).into_iter().flatten() {
+        for item in model
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let Some(id) = clean_id(item.get("value")) else {
                 continue;
             };
@@ -418,7 +423,10 @@ mod tests {
         let catalog = model_options(&session);
         // 可选项仍是族名；真正在跑的档位只出现在 current 里。
         assert_eq!(catalog.models.len(), 2);
-        assert_eq!(catalog.current.unwrap(), json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"}));
+        assert_eq!(
+            catalog.current.unwrap(),
+            json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"})
+        );
     }
 
     #[test]
@@ -430,12 +438,17 @@ mod tests {
             ]}]
         });
         let catalog = model_options(&session);
-        assert_eq!(catalog.current.unwrap(), json!({"model":"claude-sonnet-5-5","label":"Claude Sonnet 5.5"}));
+        assert_eq!(
+            catalog.current.unwrap(),
+            json!({"model":"claude-sonnet-5-5","label":"Claude Sonnet 5.5"})
+        );
     }
 
     #[test]
     fn no_model_option_is_an_empty_catalog() {
-        assert!(model_options(&json!({"configOptions":[]})).models.is_empty());
+        assert!(model_options(&json!({"configOptions":[]}))
+            .models
+            .is_empty());
         assert!(model_options(&json!({})).models.is_empty());
     }
 

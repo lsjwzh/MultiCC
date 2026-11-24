@@ -690,6 +690,19 @@
       ],
       "rationale": "The existing task board JSON, recovery sidecar, non-overwriting legacy backup and private advisory lock form one Rust-owned data-root namespace.",
       "migrationStrategy": "Keep existing file names and JSON schema. Write recovery before primary under an exclusive lock, roll back reported failures, and select the higher durable revision after a crash. Move all sidecars together if the data root is relocated."
+    },
+    {
+      "id": "cli-effort-catalog-cache",
+      "classification": "ephemeral",
+      "owner": "CLI effort catalog (native/core/src/effort_catalog.rs, native/gateway/src/effort_catalog_update.rs)",
+      "rationale": "Cached copy of the remote CLI effort catalog (catalogs/cli-efforts.json) refreshed in the background by the Rust gateway; falls back to the compiled-in catalog when absent or invalid. Installs without MULTICC_DATA_DIR store it under ~/.multicc/catalogs while isolated installs keep it under their data root.",
+      "migrationStrategy": "Disposable cache: deleting it only falls back to the bundled cli_efforts.json until the next background refresh; never migrate its contents.",
+      "sources": [
+        {
+          "file": "src/paths.js",
+          "anchor": "cliEffortCatalogFile: path.join(root === PKG_ROOT ? path.join(os.homedir(), '.multicc') : root, 'catalogs', 'cli-efforts.json'),"
+        }
+      ]
     }
   ]
 }
