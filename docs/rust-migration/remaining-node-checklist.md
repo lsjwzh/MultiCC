@@ -1,5 +1,15 @@
 # 剩余 Node 后端清单
 
+## Aux 判定时效与会话广播（2026-11-25）
+
+语音就绪提交 `fcd74d42` 经 MultiCC 操作 `merge-back_mwv252x5_e648c3a739c1` 合入本地 main。合并提交 `23d90b47` 的第二父提交为该批次，合入后任务工作区干净，分支差距为 0/0。以下统计以此提交为基线。
+
+服务在 Aux 队列健康状态变化时广播判定是否过期，聊天连接帧、会话档案和管理接口也读取这两个字段。宿主保存进程内队列回调，Rust 从回调取数、投影 `auxUnhealthy` 和 `auxUnhealthySince`，并为已有判定的会话选择聊天与工作区接收方。队列的诊断详情留在宿主。迁移前冻结了 81 行旧实现，Git blob 为 `2d74d48d827acd14a302338f8cb596b2b7cdb92c`，SHA-256 为 `df7ff6861160f62d513dd3d7a3aa34704af53c1b909d0987a66a7cab341b353e`。[Rust 实现](../../native/addon/src/aux_verdict_health.rs) · [冻结的旧实现](../../tests/helpers/legacy-aux-verdict-health.js) · [同输入差分](../../tests/test-aux-verdict-health.js)
+
+迁移前用旧生产入口运行固定用例；迁移后使用新编译并通过预检的 release 原生模块（源码指纹 `d9101d314ff19631ee462fea`）。56 组状态和时间值、6 组缺失或异常来源、8 组广播和读取故障，共 70 组输入与旧实现结果一致。对照包括字段与读取顺序、消息对象共享与复制、广播计数和迭代器关闭。Aux、聊天连接帧、会话管理、API 契约和工作区定向测试 82/82 通过，Rust 聊天状态帧测试 6/6 通过。
+
+src 的 JS/CJS/MJS 文件从 528 降至 527，现有 522 JS、2 CJS、3 MJS。515 个可从 server.js 的模块依赖到达，9 个经宿主脚本路径到达，2 个用于离线工具，1 个仅发现测试调用。按 server.js 加 src 下 JS/CJS/MJS 的物理行（含注释和空行），128,818 降至 128,743，净减 75 行。[工作树逐文件清单](node-module-dependencies.md)
+
 ## 语音输入就绪判断（2026-11-25）
 
 本地 main 的 `eeff0a8c` 已包含 Codex 终端查找器提交 `2a5f837c`。MultiCC 合并回执为 `merge-back_mwv1p0fs_f27d81feb034`，任务工作区在合并完成时干净，与主线差距为 0/0。

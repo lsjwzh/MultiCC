@@ -15,7 +15,7 @@ const path = require('path');
 
 const { normalizeManualMemory } = require('../../../src/memory/runtime');
 const { taskShortCode } = require('../../../src/classify/task-short-code');
-const { auxVerdictStaleness } = require('../../../src/classify/aux-verdict-health');
+const { auxVerdictStaleness } = require('../legacy-aux-verdict-health');
 const { isGoalState } = require('../../../src/classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../../../src/providers/auto-provider-config');
 const { mergeCliAccountsPatch, retainExistingCliAccounts, sharedCliKeyAccountStore } = require('../../../src/cli-key-accounts');

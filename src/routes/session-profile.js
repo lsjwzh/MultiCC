@@ -3,7 +3,7 @@
 const { nameOf } = require('../cli/cli-capability');
 
 const crypto = require('crypto');
-const { getNative, assignHostProperty } = require('../native/runtime');
+const { getNative, assignHostProperty, auxVerdictStaleness } = require('../native/runtime');
 const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
 const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
 const forkConfiguration = (record, deps) => getNative().sessionForkConfiguration(record, deps);
@@ -13,7 +13,6 @@ const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
 const { taskShortCode } = require('../classify/task-short-code');
-const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
 const { isGoalState } = require('../classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
 const {

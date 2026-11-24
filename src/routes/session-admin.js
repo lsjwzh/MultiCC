@@ -4,7 +4,7 @@ const { createSessionQueryService } = require('../session/query-service');
 const { createWorkspaceService } = require('../session/workspace-service');
 const { classifyDisplay } = require('../classify/vocab');
 const { taskShortCode } = require('../classify/task-short-code');
-const { auxVerdictStaleness } = require('../classify/aux-verdict-health');
+const { auxVerdictStaleness } = require('../native/runtime');
 const { markTaskAchievedFacts, markTaskAchievedWrite } = require('./task-goal');
 const { mountUnattendedRoutes } = require('../unattended/routes');
 const {
@@ -55,7 +55,7 @@ function createSessionAdminRuntime(rawDeps) {
   const deps = assertDependencies(rawDeps);
   // A judgement Aux has stopped revising is still the best description there
   // is, but it must not be presented as current (see
-  // src/classify/aux-verdict-health.js). Every presenter below whitelists its
+  // native/addon/src/aux_verdict_health.rs). Every presenter below whitelists its
   // fields, so each one has to pass the pair through explicitly.
   function verdictFreshness(view) {
     return {
@@ -82,7 +82,7 @@ function createSessionAdminRuntime(rawDeps) {
       classifyState: task.classifyState || null, goal: task.goal || '',
       taskShortCode: taskShortCode(task.taskId), phase: task.phase || 'idle',
       // Whether this judgement is still being revised. See
-      // src/classify/aux-verdict-health.js — a frozen verdict is still the best
+      // native/addon/src/aux_verdict_health.rs — a frozen verdict is still the best
       // description available, it just stops claiming to be current.
       ...auxVerdictStaleness() };
   }

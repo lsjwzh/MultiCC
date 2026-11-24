@@ -24,7 +24,7 @@ const frozenTaskState = require('./helpers/legacy-chat-task-state-frame');
 const historyCorpus = require('../docs/rust-migration/differential/chat-history-frame-corpus.json');
 const taskStateCorpus = require('../docs/rust-migration/differential/chat-task-state-frame-corpus.json');
 const connectCorpus = require('../docs/rust-migration/differential/chat-connect-replay-golden.json');
-const { getNative } = require('../src/native/runtime');
+const { getNative, installAuxHealthProvider, auxVerdictStaleness } = require('../src/native/runtime');
 
 // The task-short-code registry mints into a persisted file on first use, which
 // is exactly the side effect the connect path must not trigger needlessly, so
@@ -37,7 +37,6 @@ require.cache[SHORT_CODE_MODULE] = {
   id: SHORT_CODE_MODULE, filename: SHORT_CODE_MODULE, loaded: true, children: [], paths: [],
   exports: { taskShortCode: taskId => { shortCodeCalls.push(taskId); return shortCode; } },
 };
-const { installAuxHealthProvider, auxVerdictStaleness } = require('../src/classify/aux-verdict-health');
 const { fitHistoryFrame, DEFAULT_MAX_BYTES, messageBytes } = require('../src/chat/history-frame-budget');
 const { taskStateSeed } = require('../src/chat/task-state-seed');
 const { taskStatePayload } = require('../src/chat/task-state-payload');

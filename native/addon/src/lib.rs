@@ -15,6 +15,7 @@ pub mod auto_provider_policy;
 pub mod auto_provider_pricing;
 pub mod auto_provider_routing;
 pub mod auto_provider_runtime;
+pub mod aux_verdict_health;
 pub mod background_hold;
 pub mod code_revision;
 pub mod delivery_class;
