@@ -4,6 +4,18 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
+## v2.23.0 - Relay share modes, unified CLI effort catalog, and Rust large-context retrieval (2026-11-25)
+
+- Embed the relay share mode directly inside `mcrelay1.` share codes (`v:3`). Sharers now choose between `proxy` (reverse-proxy API relay) and `cli` (remote CLI execution with local tool/file operations; `agy` shares are always `cli`), so importers receive the relay base URL, provider-scoped credential, share mode, and live model catalog automatically while remaining backwards-compatible with `v:1`/`v:2` codes. Official account and provider relay management in Rust (`provider_registry.rs`, `relay_shares.rs`, `agy_catalog.rs`), Web, and Flutter (`agy_models_service.dart`, `live_model_catalog.dart`) also refresh and surface live model catalogs consistently.
+
+- Introduce a unified per-CLI and per-model reasoning effort catalog (`cli_efforts.json` schema v2, `effort_catalog.rs`, `effort_catalog_update.rs`) with background catalog refresh across Claude, Codex / `codex-exp`, OpenCode, Pi, `agy`, Qoder, and CodeBuddy, plus session-level `claudeWorkflow` (Claude dynamic workflows) and `preferSubtasks` controls across Rust (`session_records`, `session_pending_configuration`, `message_composer`, `ws_chat_native`, `ws_claude_relay`), Web (`run-config-controls.js`, Air), and Flutter (`run_config_sheet.dart`, `create_session_dialog.dart`, `air_task_config.dart`, `run_chip.dart`). Source-mode native addon verification (`scripts/rust-source-cache.js`) now validates the expanded pending configuration field set.
+
+- Move host prompt assembly and large-context memory retrieval into Rust (`native/core/src/host_prompts.rs`, `native/core/src/memory_retrieval.rs`). Cold-start managed context on large memory stores now avoids mid-body rule false-positive pins and `_auto.md` preference floods, preserves genuine project rules and current-task memory within a tighter token budget, recalls omitted facts and 1-hop wikilink neighbors on demand, and keeps history snapshots and CLI-switch handoffs bounded and verifiable. A hermetic, sanitized large-context regression suite (`tests/test-large-context-prefix.js`) joins the deterministic core release tier.
+
+- Update the Flutter mobile app to **2.46.0 (build 199)** with live model catalog queries, unified reasoning effort selection, Claude dynamic workflow and prefer-subtasks toggles, and updated i18n copy so Android APK upgrades cleanly replace `2.45.0+198`.
+
+- Keep release and governance gates green: guard optional `codexReasoningConfigArg` / `codexReasoningLevel` callbacks in `src/cli-adapters/index.js` (fixing `tests/test-windows-env.js` on Node 22/24), register the disposable `cliEffortCatalogFile` cache path in `governance/runtime-write-inventory.json`, record `tests/test-large-context-prefix.js` in the reviewed core manifest audit (`489` core entries), and format all native Rust crates.
+
 ## v2.22.3 - Standalone Rust production gateway, unified WSS CLI relay, and hardened source upgrades (2026-11-24)
 
 - Ship a standalone Rust production gateway and node-free runtime. `multicc-gateway serve` now owns the production entry point (including `--no-node` mode and a node-free container image), moving cron scheduling, script and fan-out execution, the task calendar and run history, Aux job execution and goal/transport routes, notification preferences, provider catalog snapshots and statistics, secrets vault metadata, standalone update status, and voice runtime routes into Rust, verified against clean-install and real package layouts.
