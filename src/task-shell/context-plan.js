@@ -1,6 +1,6 @@
 'use strict';
 const { hash, snapshotHistory, verifySnapshot, renderLazyContextPrompt } = require('../native/runtime').taskShellContext;
-const { selectContext } = require('../context/selection');
+const { selectContext } = require('../native/runtime').getContextSelection();
 const { boundedSnapshot, boundedHandoff } = require('./context-snapshot');
 
 function createContextPlanner({ store, getRecord, getHistory, getTask, graphContextOf }) {

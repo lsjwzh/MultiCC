@@ -1,6 +1,6 @@
 'use strict';
 const { hash, estimateTokens, renderSnapshots } = require('../native/runtime').taskShellContext;
-const { clipTokens } = require('../context/selection');
+const { clipTokens } = require('../native/runtime').getContextSelection();
 
 // Preserve parseable provenance and explicit truncation when an imported turn
 // is larger than the automatic budget. Full history remains available by cursor.

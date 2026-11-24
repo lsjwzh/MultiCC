@@ -6,7 +6,8 @@ const { fixture } = require('./helpers/task-shell');
 const { createFolderMemoryService } = require('../src/memory/folder-service');
 const { readMemoryFolder } = require('../src/memory-store');
 const { estimateTokens } = require('../src/native/runtime').taskShellContext;
-const { selectContext } = require('../src/context/selection');
+const selectionApi = require('../src/native/runtime').getContextSelection();
+const { selectContext } = selectionApi;
 const { prepareManagedContext, contextSent, contextCompleted } = require('../src/chat/managed-context');
 
 function memoryFor(f) {
@@ -321,7 +322,7 @@ test('duplicate facts in two memory scopes are not reintroduced on a later turn'
 });
 
 test('ascii terms match whole words and long queries need proportional overlap', () => {
-  const { relevance, minRelevance } = require('../src/context/selection');
+  const { relevance, minRelevance } = require('../src/native/runtime').getContextSelection();
   assert.equal(relevance('ok', 'token hook'), 0);
   assert.equal(relevance('ok', 'it is ok now'), 1);
   assert.equal(relevance('db-tune', 'run db-tune.'), 1);
@@ -427,4 +428,50 @@ test('cold start keeps genuine header rules, skips unrelated _shared/MEMORY.md d
   const plan = prepare(f, first, memory, { isFirstTurn: true });
   assert.equal(plan.budget.limit, 4800);
   assert.ok(plan.budget.used <= 4800);
+});
+
+test('上下文选择用同一组冻结输入核对五个生产入口', () => {
+  const { compileFunction } = require('node:vm'), { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const file = path.resolve(__dirname, '../src/context/selection.js');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-context-selection.js'));
+  assert.equal(createHash('sha1').update('blob ' + source.length + '\0').update(source).digest('hex'),
+    '8263ade757ddc0a01d3cc9fe75e4e92cc8496c68');
+  const mod = { exports: {} };
+  compileFunction(source.toString(), ['module','require'], { filename: file })(mod, createRequire(file));
+  function result(fn) {
+    try { return { value: fn() }; } catch (e) { return { error: e.constructor.name, message: e.message }; }
+  }
+  function trace(api) {
+    const rows = [], values = [null, undefined, NaN, Infinity, -Infinity, -0, 3, {}, [], true, 1n, Symbol('s'), '缓存🚢\ud800cache'];
+    for (const value of values) {
+      rows.push(result(() => api.terms(value)), result(() => api.minRelevance(value)));
+      for (const q of values) {
+        rows.push(result(() => api.relevance(q, value)), result(() => api.clipTokens(value, q)));
+      }
+    }
+    for (const budget of values) {
+      const ids = ['中', 'A', 'á', 'a', 'e\u0301', 'é'];
+      const records = Object.freeze(ids.map((id, i) => Object.freeze({
+        get id() { rows.push('id' + i); return id; },
+        get priority() { rows.push('priority' + i); return i % 2; },
+        excerpt: id + ' 缓存', mode: 'graph',
+      })));
+      const options = {
+        get budget() { rows.push('budget'); return budget; },
+        get header() { rows.push('header'); return Infinity; },
+        get footer() { rows.push('footer'); return '完'; },
+      };
+      rows.push(result(() => api.selectContext(new Set(records), options)));
+      assert.deepEqual(records.map(x => x.id), ids);
+    }
+    const ex = Error('getter');
+    assert.throws(() => api.selectContext([], { get budget() { throw ex; } }), e => e === ex);
+    for (const error of [new Error('other'), new Error('context_selection_type_error: projected')]) {
+      const v = { toJSON() { throw error; } };
+      rows.push(result(() => api.terms(v)));
+    }
+    return rows;
+  }
+  assert.deepEqual(trace(selectionApi), trace(mod.exports));
 });
