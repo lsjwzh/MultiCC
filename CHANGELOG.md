@@ -4,7 +4,11 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
-## v2.22.0 - Remote anti-gravity accounts and more of the runtime in Rust (2026-11-23)
+## v2.22.0 - Standalone Rust production gateway, remote anti-gravity relay, and task-board migration (2026-11-24)
+
+- Ship a standalone Rust production gateway and node-free runtime. `multicc-gateway serve` now owns the production entry point (including `--no-node` mode and a node-free container image), moving cron scheduling, script and fan-out execution, the task calendar and run history, Aux job execution and goal/transport routes, notification preferences, provider catalog snapshots and statistics, secrets vault metadata, standalone update status, and voice runtime routes into Rust, verified against clean-install and real package layouts.
+
+- Share anti-gravity (agy) accounts over `mcr1.` relay share codes without SSH or local CLI installation. Alongside remote VPS host-exec and browser OAuth multi-account login, a host can now share a local agy account (with its bound `chrome-proxy-launcher` egress) through `/agy-proxy/<accountId>/{ping,turn,quota,models}`: the borrower runs commands and file operations locally over the reverse host-exec WebSocket bridge and queries live quota and model catalogs transparently without receiving host credentials.
 
 - Run anti-gravity (agy) accounts on a remote VPS. An account can now live on another machine: the gateway keeps a host-exec bridge to it, installs and manages Mutagen on the machine for file sync, and starts the agy CLI there while the chat, tools and files stay on this host. Accounts can also be added with a browser OAuth login, so several Google identities can sit side by side. The account list in Air and the control center shows where each account runs and lets you add, log in and pin one.
 
@@ -14,9 +18,11 @@ All notable changes to MultiCC are documented in this file.
 
 - Fold live transcript events in the app. Streamed transcript updates are now merged into one folded view with a unit test, and agy usage is shown with the other CLI families. The app version moves to 2.45.0 (build 198) so it can replace the previous stable build.
 
-- Move more of the task board to Rust. The queue event decision chain (run-state mapping, freeze and reconcile branches, completed-turn projection), the transcript projections (stable task id, canonical messages and body) and the legacy import projections now live in the native core behind adapters. Task dispatch, search tokenization and the terminal turn contracts moved too, and the turn-ledger modules they replaced were deleted. Every move keeps a frozen copy of the old behaviour and a differential check against it, so the results stay identical.
+- Move more of the task board to Rust. Task dependency checks, related-task grouping, display attribution for board responses and shell details, the queue event decision chain (run-state mapping, freeze and reconcile branches, completed-turn projection), the transcript projections (stable task id, canonical messages and body), and the legacy import projections now live in the native core behind differential checks against the frozen JavaScript implementations. Task dispatch, search tokenization and the terminal turn contracts moved too, and the turn-ledger modules they replaced were deleted.
 
-- Keep the release gates honest. The source line budget ratchet was re-recorded for the new modules, the agy adapter and remote bridge suites were classified in the test tiers, and the task-board auto suite now counts as core so it runs in the exact core manifest.
+- Clear stale Codex native session IDs when switching providers after rollout cleanup. Changing a Codex session's provider after its native rollout file was swept now drops the stale `cliSessionId` inside the session patch transaction instead of failing with `500 internal_error`, while surfacing genuine multi-rollout conflicts as `409`. Tail-append chat history writes also preserve concurrent appends cleanly.
+
+- Keep the release gates honest. Build the workspace Node compatibility addon explicitly in the clean-install container image, read and write `durable_state` session envelopes in the gateway WebSocket tests, gate Unix-only test locks cleanly on Windows, update the agy isolation test to `stream-json`, re-record the source line budget ratchet, and include the task-board auto suite in the exact core manifest.
 
 ## v2.21.3 - Native session runtime and multi-account routing (2026-11-23)
 

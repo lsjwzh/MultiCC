@@ -943,12 +943,20 @@ fn shell_fixture_row(gateway: &Gateway, kind: &str, id: &str, row: Value) {
 }
 
 #[cfg(unix)]
-fn add_native_record(gateway: &Gateway, record: Value) {
+fn mutate_native_records(gateway: &Gateway, apply: impl FnOnce(&mut Vec<Value>)) {
+    use multicc_core::{durable_state, js};
     let file = gateway.state.join("sessions.json");
-    let mut records: Vec<Value> =
-        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
-    records.push(record);
-    fs::write(file, serde_json::to_string(&records).unwrap()).unwrap();
+    let mut data = durable_state::load_or_recover(&file)
+        .unwrap()
+        .map(|v| js::to_serde(&v))
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    apply(data.as_array_mut().expect("sessions.json array"));
+    durable_state::save(&file, "sessions", &js::from_serde(&data)).unwrap();
+}
+
+#[cfg(unix)]
+fn add_native_record(gateway: &Gateway, record: Value) {
+    mutate_native_records(gateway, |records| records.push(record));
 }
 
 #[cfg(unix)]
@@ -2417,16 +2425,13 @@ async fn native_task_shell_routes_configured_provider_without_child_credentials(
     let endpoint = listener.local_addr().unwrap();
     let upstream = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let gateway = Gateway::start_native();
-    let sessions_path = gateway.state.join("sessions.json");
-    let mut sessions: Value = serde_json::from_slice(&fs::read(&sessions_path).unwrap()).unwrap();
-    let bound = sessions
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|row| row["id"] == "bound")
-        .unwrap();
-    bound["provider"] = Value::from("provider-fixture");
-    fs::write(sessions_path, sessions.to_string()).unwrap();
+    mutate_native_records(&gateway, |sessions| {
+        let bound = sessions
+            .iter_mut()
+            .find(|row| row["id"] == "bound")
+            .unwrap();
+        bound["provider"] = Value::from("provider-fixture");
+    });
     fs::write(
         gateway.state.join("providers.json"),
         serde_json::json!([{
@@ -2546,20 +2551,17 @@ async fn native_planned_task_materializes_before_using_the_selected_provider() {
         .run(r#"{"op":"remove","kind":"workspace:record","id":"ws_bound"}"#)
         .unwrap();
     drop(tasks);
-    let sessions_path = gateway.state.join("sessions.json");
-    let mut sessions: Value = serde_json::from_slice(&fs::read(&sessions_path).unwrap()).unwrap();
-    let bound = sessions
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|row| row["id"] == "bound")
-        .unwrap();
-    bound["workspaceState"] = Value::from("planned");
-    bound["worktreePath"] = serde_json::json!(worktree);
-    bound["provider"] = Value::from("unselected");
-    bound["providerSelection"] = serde_json::json!({"version":1,"mode":"auto","protocol":"anthropic",
-        "sticky":true,"candidates":[{"providerId":"unselected","priority":20},{"providerId":"selected","priority":10}]});
-    fs::write(&sessions_path, sessions.to_string()).unwrap();
+    mutate_native_records(&gateway, |sessions| {
+        let bound = sessions
+            .iter_mut()
+            .find(|row| row["id"] == "bound")
+            .unwrap();
+        bound["workspaceState"] = Value::from("planned");
+        bound["worktreePath"] = serde_json::json!(worktree);
+        bound["provider"] = Value::from("unselected");
+        bound["providerSelection"] = serde_json::json!({"version":1,"mode":"auto","protocol":"anthropic",
+            "sticky":true,"candidates":[{"providerId":"unselected","priority":20},{"providerId":"selected","priority":10}]});
+    });
     fs::write(
         gateway.state.join("directories.json"),
         serde_json::json!([

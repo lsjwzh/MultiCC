@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY .cargo ./.cargo
 COPY native ./native
-RUN cargo build --locked --release --manifest-path native/Cargo.toml
+RUN cargo build --locked --release --workspace --manifest-path native/Cargo.toml
 
 # Node-free runtime: only the two Rust executables and the system CA store (rustls
 # reads it for outbound TLS). Nothing in this image provides Node, and the front
