@@ -99,7 +99,7 @@ const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
 const { deriveOpenTasks } = require('./turn-event-replay');
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);
-const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context-guard');
+const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context');
 const { opencodeProcessError, processSpawnArgs } = require('../native/runtime');
 const isInternalExecutionSlot = record => getNative().sessionIsInternalExecutionSlot(record);
 const { providerSelectionDto } = require('../providers/auto-provider-config');
@@ -495,7 +495,7 @@ function createChatTurnEngine(deps) {
     kimiSessionHomeFor: id => providers.kimiSessionHome({ id }) });
   // Turn-admission water-level guard for OpenCode native sessions. Decision
   // only; rotation itself happens in runChatTurn via the shared
-  // pendingCliHandoff machinery. See ./opencode-context-guard.js.
+  // pendingCliHandoff machinery. See ./opencode-context.js.
   const opencodeContextGuard = deps.opencodeContextGuard || createOpencodeContextGuard({ logger });
   // One boot-time sweep so expired archives get pruned even if no turn ever
   // archives again; delayed so it never touches startup critical path.

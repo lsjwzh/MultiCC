@@ -3,6 +3,7 @@
 // 迁移桥接：Rust 负责只读数据库查询、用量归一化和模型窗口解析。
 // 数据库与目录 I/O 在原生工作线程执行；宿主迁入 Rust 后可移除本桥接。
 const path = require('node:path');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const { getNative } = require('../native/runtime');
 
@@ -39,4 +40,51 @@ function createOpencodeContextReader(deps = {}) {
   });
 }
 
-module.exports = { DEFAULT_THRESHOLD, clampThreshold, resolveThreshold, createOpencodeContextReader };
+function createOpencodeContextGuard(deps = {}) {
+  const reader = deps.contextReader || createOpencodeContextReader(deps);
+  const nativeModule = deps.getNative || (() => getNative());
+  async function enforce(record = {}) {
+    try {
+      const native = nativeModule();
+      const nativeId = record._streamSessionId || record.cliSessionId || null;
+      const usage = nativeId ? await reader.read(nativeId, record.model || null) : null;
+      return Object.freeze(JSON.parse(native.planOpencodeContext(JSON.stringify({
+        record: { kind: record.kind, cliSessionId: record.cliSessionId, _streamSessionId: record._streamSessionId }, usage,
+      }))));
+    } catch (error) {
+      deps.logger?.warn?.('opencode_context_guard_failed', { reason: error?.code || 'error' });
+      return Object.freeze({ action: 'skipped', reason: 'error' });
+    }
+  }
+  return Object.freeze({ enforce });
+}
+
+async function enforceOpencodeContextForTurn({ guard, persisted, sessionName, history,
+  rememberActiveCliState, savePersistedSessionsBestEffort, logger, appendEvent, chatBroadcast, assertCurrent }) {
+  const nativeId = persisted._streamSessionId || persisted.cliSessionId;
+  const model = persisted.model;
+  const verdict = await guard.enforce(persisted);
+  assertCurrent?.();
+  if (nativeId !== (persisted._streamSessionId || persisted.cliSessionId) || model !== persisted.model) {
+    return { action: 'skipped', reason: 'native_changed' };
+  }
+  if (verdict.action !== 'rotate') return verdict;
+  const { buildHandoffCheckpoint, clearAllNativeCliStates } = require('../cli-switch');
+  persisted.pendingCliHandoff = getNative().prepareOpencodeRotationHandoff(persisted,
+    () => buildHandoffCheckpoint({ session: persisted, fromCli: 'opencode', toCli: 'opencode', history: history() }),
+    () => `checkpoint_${crypto.randomBytes(8).toString('hex')}`);
+  const clearedNativeSessions = clearAllNativeCliStates(persisted);
+  rememberActiveCliState(persisted);
+  savePersistedSessionsBestEffort('runtime.opencode-context-rotate');
+  logger.warn('opencode_context_rotated', { sessionId: sessionName,
+    rotatedCliSessionId: verdict.cliSessionId, reason: verdict.reason, tokensTotal: verdict.tokensTotal,
+    contextLimit: verdict.contextLimit, ratio: verdict.ratio, threshold: verdict.threshold, clearedNativeSessions });
+  appendEvent(persisted.dirId, 'opencode_context_rotated', verdict.message, sessionName);
+  chatBroadcast(sessionName, { type: 'system', subtype: 'native_context_rotated', auto: true, message: verdict.message });
+  return verdict;
+}
+
+module.exports = {
+  DEFAULT_THRESHOLD, clampThreshold, resolveThreshold, createOpencodeContextReader,
+  createOpencodeContextGuard, enforceOpencodeContextForTurn,
+};
