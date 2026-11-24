@@ -1,5 +1,13 @@
 # 剩余 Node 后端清单
 
+## 推送通知文案（2026-11-25）
+
+上一批状态帧提交 `a17d2b67` 通过 MultiCC 合入 `16ba5fb7`，任务分支同步后干净、差距 0/0。本批沿兼容宿主的 `notify()` 入口迁移通知类型归一化、语言选择和目标子状态标题。Rust 从既有分类词表读取中文，区分等待用户和后台等待，并兼容存量 C 状态。Node 仅缓存每个进程内使用的原生词表并传入调用参数。浏览器和 App 继续沿用各自的渲染入口。[Rust 实现](../../native/addon/src/push_notification_copy.rs)
+
+旧实现 Git blob 为 `17f994ffc4c1fd9b12ca9367ecf3bf5eb66b9eec`，SHA-256 为 `e3540df5b2aa7520c2ec6a8663bfe064be16f501f943aac50cf678787d3469cd`。在迁移前固定同一组输入，分别比较 30 个键和值、4 种语言输入、8 种目标子状态，共 30 次取键和 960 次通知结果或异常比较。测试覆盖旧状态、UTF-16 长度、继承属性名和转换异常。生产文件已经删除。[冻结源码](../../tests/helpers/legacy-push-notification-copy.js) · [差分与多端词表测试](../../tests/test-notification-copy.js)
+
+release 原生模块指纹 `432efdfb7e34ca5e6ae2f94b` 通过接口预检。五份 JS 定向套件 65/65，Rust 分类词表测试 13/13，格式、源码行数及差异检查通过。src 的 JS/CJS/MJS 文件 525 → 524（519 JS、2 CJS、3 MJS），其中后端业务或其宿主编排 335 → 334。server.js 加 src 的物理行数 128,677 → 128,600，净减 77 行。[逐文件清单](node-module-dependencies.md)
+
 ## 聊天连接与实时广播的任务状态帧（2026-11-25）
 
 上一批 Aux 提交 `559fdc9a` 经 MultiCC 合入 `2274441e`，第二父提交、工作区干净和任务分支与 main 差距 0/0 均已核验。本批以该合并提交为基线。

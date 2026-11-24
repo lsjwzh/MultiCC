@@ -9,7 +9,7 @@
 // 没人读。
 //
 // 现在每侧只有一个入口：
-//   · 服务端 src/push/notification-copy.js（push/runtime.js 用它，state-machine
+//   · 服务端 native/addon/src/push_notification_copy.rs（push/runtime.js 用它，state-machine
 //     那侧只需把 classifyState 一起传进来）
 //   · Web    public/shared/notification-copy.js（client / pwa / chat-live-ui /
 //     chat-event-controller / chat-notifications / s2s-session）
@@ -30,7 +30,7 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
-const SERVER = require('../src/push/notification-copy.js');
+const SERVER = require('../src/native/runtime').getPushNotificationCopy();
 const WEB = require('../public/shared/notification-copy.js');
 const { CLASSIFY_DISPLAY } = require('../src/classify/vocab.js');
 const ZH = require('../app/assets/i18n/zh.json');
@@ -384,7 +384,7 @@ test('web 的各通知面都走同一张表', () => {
 
 test('服务端推送的词只在一处；拿到字母时 B 才说自己的话，只剩 type 时退回 W', () => {
   const runtime = read('src/push/runtime.js');
-  assert.ok(runtime.includes("require('./notification-copy')"), 'push/runtime.js 没接上文案表');
+  assert.ok(runtime.includes("require('../native/runtime').getPushNotificationCopy()"), 'push/runtime.js 没接上文案表');
   assert.ok(
     !/'(执行成功|等待操作|出现异常)'/.test(runtime),
     'push/runtime.js 又自己写了一份通知词',
@@ -482,6 +482,36 @@ test('i18n 词典与生成物：新增的 B 标题在，被替换掉的同义 ke
     for (const locale of LOCALES) {
       assert.ok(!(key in catalog[locale]), `i18n-catalog.js (${locale}) 还留着孤儿 key ${key}`);
       assert.ok(!(key in DICT[locale]), `i18n/${locale}.json 还留着孤儿 key ${key}`);
+    }
+  }
+});
+
+test('推送文案沿用旧入口的词表、UTF-16 长度、取值顺序和抛错行为', () => {
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const filename = path.resolve(ROOT, 'src/push/notification-copy.js');
+  const legacy = { exports: {} };
+  compileFunction(read('tests/helpers/legacy-push-notification-copy.js'), ['require', 'module'], { filename })(
+    createRequire(filename), legacy);
+  const fault = new Error('token cannot be converted');
+  const broken = { toString() { throw fault; } };
+  const specs = [undefined, null, '', '  ', ' D ', 'c', 'W', 'b', 'E', 'p', 'succeeded',
+    'WAITING_BACKGROUND', 'completed', 'processing', 'running', 'info', 'X', 'Ａ', '🚀', '\uD800',
+    '\uFEFFw\u00a0', 'constructor', '__proto__', 0, true, 3n, [], ['b'], Symbol('D'), broken];
+  const locales = [undefined, 'en', 'EN', new String('en')];
+  const goals = [undefined, null, 'Achieved', 'interact', ' interact ', '__proto__', Symbol('goal'), broken];
+  function capture(run) {
+    try { return { value: run() }; } catch (error) {
+      return { name: error.name, message: error.message, original: error === fault };
+    }
+  }
+  for (const spec of specs) {
+    assert.deepEqual(capture(() => SERVER.copyKeyFor(spec)), capture(() => legacy.exports.copyKeyFor(spec)));
+    for (const locale of locales) {
+      for (const goal of goals) {
+        assert.deepEqual(capture(() => SERVER.notificationCopy(spec, locale, goal)),
+          capture(() => legacy.exports.notificationCopy(spec, locale, goal)));
+      }
     }
   }
 });

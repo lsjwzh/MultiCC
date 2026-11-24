@@ -266,6 +266,7 @@ pub mod operation_admit_live;
 pub mod outbox_claim_live;
 pub mod provider_balance_target;
 pub mod provider_limit_store;
+pub mod push_notification_copy;
 pub mod quota_bar_view;
 pub mod request_locality;
 pub mod schedule_claim_live;
