@@ -522,17 +522,47 @@ function createSessionProfileRoutes(rawDeps) {
       const prepare = () => {
         if (!canApply()) return conflict();
         const synchronize = deps.synchronizeCodexProfileRoute || providers.synchronizeCodexSessionRoute;
-        const prepared = synchronize(route);
-        const apply = () => {
+        const apply = outcome => {
           if (!canApply()) return conflict();
           const verified = planRoutePatch(req, session);
           if (verified.result.status !== 200) return res.status(verified.result.status).json(verified.result.body);
           if (JSON.stringify(verified.route) !== expected) return conflict();
           return patchSession(req, res, null, actual => {
             if (JSON.stringify(actual) !== expected) throw new Error('Codex route changed before persistence');
+            if (outcome && outcome.nativeSessionExists === false) {
+              session.cliSessionId = null;
+              delete session._streamSessionId;
+            }
           });
         };
-        return prepared && typeof prepared.then === 'function' ? prepared.then(apply) : apply();
+        const failPreparation = error => {
+          if (error && (error.code === 'CODEX_SESSION_ROLLOUT_NOT_FOUND'
+              || error.code === 'CODEX_SESSION_ROUTE_SOURCE_NOT_FOUND')) {
+            return apply({ nativeSessionExists: false, synchronized: false });
+          }
+          const status = Number.isInteger(error?.status) && error.status >= 400 && error.status < 500
+            ? error.status
+            : (typeof error?.code === 'string' && error.code.startsWith('CODEX_SESSION_') ? 409 : null);
+          if (status) {
+            const message = error.safe && typeof error.message === 'string'
+              ? error.message
+              : 'Codex 会话历史校验失败，无法切换线路。';
+            return res.status(status).json({
+              error: message,
+              ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+            });
+          }
+          throw error;
+        };
+        let prepared;
+        try {
+          prepared = synchronize(route);
+        } catch (error) {
+          return failPreparation(error);
+        }
+        return prepared && typeof prepared.then === 'function'
+          ? prepared.then(apply, failPreparation)
+          : apply(prepared);
       };
       if (deps.withConfigurationPreparation) {
         return deps.withConfigurationPreparation(session.id, prepare) || conflict();

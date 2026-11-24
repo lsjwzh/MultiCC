@@ -367,6 +367,68 @@ test('Codex refuses a stale rollout preparation before opening persistence', asy
   assert.deepEqual(effects, []);
 });
 
+test('Codex route change drops stale cliSessionId when native rollout was swept', async () => {
+  const session = {
+    id: 's1', dirId: 'd1', cli: 'codex-exp', kind: 'chat',
+    provider: 'codex-official', model: 'gpt-6.1-sol',
+    cliSessionId: 'swept-native', _streamSessionId: 'swept-stream',
+  };
+  let rememberedSessionId = 'untouched';
+  const { handler, applySessionPatch, effects } = fixture(session, {
+    synchronizeCodexSessionRoute: () => Promise.resolve({
+      probeHandled: true, nativeSessionExists: false, synchronized: false,
+    }),
+  });
+  // Verify HTTP PATCH clears the stale native session id and updates the provider.
+  const res = await invoke(handler, { params: { id: 's1' }, body: { provider: 'managed-b' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(session.provider, 'managed-b');
+  assert.equal(session.cliSessionId, null);
+  assert.equal(session._streamSessionId, undefined);
+  assert.deepEqual(effects, ['persistence-begin']);
+
+  // Also verify fallback recovery when a legacy synchronizer throws NOT_FOUND.
+  session.cliSessionId = 'swept-native-2';
+  const fallback = fixture(session, {
+    synchronizeCodexSessionRoute: () => {
+      const err = new Error('missing rollout');
+      err.code = 'CODEX_SESSION_ROLLOUT_NOT_FOUND';
+      throw err;
+    },
+  });
+  rememberedSessionId = session.cliSessionId;
+  assert.equal(rememberedSessionId, 'swept-native-2');
+  const inProcess = await fallback.applySessionPatch('s1', { provider: 'managed-c' });
+  assert.equal(inProcess.status, 200);
+  assert.equal(session.provider, 'managed-c');
+  assert.equal(session.cliSessionId, null);
+});
+
+test('Codex route change returns 409 instead of 500 internal_error when rollout is ambiguous', async () => {
+  const session = {
+    id: 's1', dirId: 'd1', cli: 'codex-exp', kind: 'chat',
+    provider: 'codex-official', cliSessionId: 'ambig-native',
+  };
+  const { handler, applySessionPatch, effects } = fixture(session, {
+    synchronizeCodexSessionRoute: () => Promise.reject(Object.assign(
+      new Error('Codex 原生会话历史存在多份副本，无法安全切换线路；请先清理重复的 rollout 文件。'),
+      { code: 'CODEX_SESSION_ROLLOUT_AMBIGUOUS', status: 409, safe: true },
+    )),
+  });
+  const httpRes = await invoke(handler, { params: { id: 's1' }, body: { provider: 'managed-b' } });
+  assert.equal(httpRes.statusCode, 409);
+  assert.equal(httpRes.body.code, 'CODEX_SESSION_ROLLOUT_AMBIGUOUS');
+  assert.match(httpRes.body.error, /多份副本/);
+  assert.equal(session.provider, 'codex-official');
+  assert.equal(session.cliSessionId, 'ambig-native');
+  assert.deepEqual(effects, []);
+
+  const inProcess = await applySessionPatch('s1', { provider: 'managed-b' });
+  assert.equal(inProcess.status, 409);
+  assert.equal(inProcess.body.code, 'CODEX_SESSION_ROLLOUT_AMBIGUOUS');
+  assert.deepEqual(effects, []);
+});
+
 test('server composition gives profile routes the live chat-state reader', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const start = source.indexOf('createSessionProfileRoutes({');
