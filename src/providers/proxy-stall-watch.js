@@ -290,7 +290,27 @@ function createProxyStallWatch(options = {}) {
   });
 }
 
+// Keep V8's strict assignments and Node child/timer handles on the host.
+function markTimeout(runner, failure) {
+  runner.modelTimeoutStopping = true;
+  runner.sawApiError = true;
+  runner.apiErrorRaw = failure;
+}
+
+function recoverModelTimeout({ event, outcome, chatSessions, chatStream, setTimeout: schedule = setTimeout }) {
+  return getNative().recoverModelTimeout(event, outcome, chatSessions, chatStream, isProxyStallCode,
+    markTimeout, (proc, graceMs) => {
+      try { proc.kill('SIGTERM'); } catch (_) {}
+      const timer = schedule(() => {
+        if (proc.exitCode == null && proc.signalCode == null) { try { proc.kill('SIGKILL'); } catch (_) {} }
+      }, graceMs);
+      timer?.unref?.();
+      proc.once?.('exit', () => clearTimeout(timer));
+    });
+}
+
 module.exports = {
+  recoverModelTimeout,
   MODEL_REQUEST_DEADLINE,
   MODEL_CONNECT_TIMEOUT,
   PROXY_STALL_CODES,
