@@ -6,6 +6,7 @@ use std::{sync::Arc, time::Instant};
 pub mod agy_accounts;
 pub mod agy_stream;
 pub mod air_task_list;
+pub mod air_storage_notice;
 pub mod air_todo_ignore;
 pub mod api_error_policy;
 pub mod api_error_text;

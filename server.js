@@ -363,8 +363,8 @@ logger.info('provider_router_runtime', {
 });
 installConsoleRedaction(console);
 secureRuntimeData(MULTICC_PATHS);
-const airStorageNotice = require('./src/workspace/air-storage-notice');
-airStorageNotice.installStateStoreReporter(stateStore, { metrics, logger });
+const { airNotices } = require('./src/workspace/air-index-port');
+airNotices.installStateStoreReporter(stateStore, { metrics, logger });
 const networkPolicy = resolveNetworkPolicy(process.env);
 const app = express();
 app.locals.observability = observability;
@@ -711,7 +711,7 @@ const sessionPersistence = createSessionPersistence({
   root: MULTICC_PATHS.root,
   retryDelayMs: Math.max(50, Number(process.env.MULTICC_SESSION_PERSISTENCE_RETRY_MS) || 500),
   maxRetries: 3,
-  onFailure: airStorageNotice.sessionPersistenceOnFailure({ metrics, logger }),
+  onFailure: airNotices.sessionPersistenceOnFailure({ metrics, logger }),
   onState: ({ dirty, retryAttempt, retryScheduled }) => {
     metrics.set('multicc_session_persistence_dirty', dirty ? 1 : 0);
     metrics.set('multicc_session_persistence_retry_attempt', retryAttempt);
@@ -2539,7 +2539,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
 });
 
 const airSync = require('./src/workspace/air-routes').mountAirRoutes(app, {
-  storageNotice: airStorageNotice.storageNotice,
+  storageNotice: airNotices.storageNotice,
   admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
   logger, send: sendWs, subscribe: workspaceRuntime.subscribe, registerSync: workspaceRuntime.setAirSync,
   records: persistedSessions, pendingUserInput,
@@ -2555,7 +2555,7 @@ const airSync = require('./src/workspace/air-routes').mountAirRoutes(app, {
   effectiveEffort: effectiveSessionEffort, mergeStateCached,
   serializeSubagent, getSessionRunState: id => sessionWorkHost?.getRunState(id) || 'idle', cronSessionIds: () => cronTasks.sessionIds(),
 });
-airStorageNotice.bindPublisher(() => airSync.publishStatus());
+airNotices.bindPublisher(() => airSync.publishStatus());
 
 const tuiChatMirrorRuntime = createTuiChatMirrorRuntime({ enabled: tuiChatMirrorEnabled(), records: persistedSessions, cwdForSession, providerFor, send: sendWs, setSessionStatus, saveBestEffort: source => savePersistedSessionsBestEffort(source), logger });
 

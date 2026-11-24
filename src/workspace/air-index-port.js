@@ -41,4 +41,57 @@ function createRustAirReadIndex({ model, historyLimit, maxDeltaBytes } = {}) {
 function createAirIndex(options = {}) {
   return createRustAirReadIndex(options);
 }
-module.exports = { createAirIndex, createRustAirReadIndex };
+
+// Evaluate JS accessors and String conversions in their original order. Slice
+// in V8 so a huge private message never crosses the native boundary.
+function issueFields(cause) {
+  return [String(cause.code || ''), String(cause.message || '').slice(0, 1024)];
+}
+function describeAirIssue(error) {
+  try { return nativeRuntime.getNative().airDescribeIssue(error, issueFields); }
+  catch { return { code: 'rust_backend_unavailable', message: '无法加载当前版本的 Rust 诊断接口，请检查模块版本并重启 MultiCC。' }; }
+}
+
+function storageNoticeWithPublisher(publish) {
+  let recent = null, lifetime;
+  function remember(notice, ttl) { recent = notice; lifetime = ttl; }
+  return {
+    record(error) {
+      let addon;
+      try { addon = nativeRuntime.getNative(); } catch { return false; }
+      if (!addon.airRecordStorageNotice) return false;
+      return addon.airRecordStorageNotice(error, issueFields, remember, publish);
+    },
+    // Callers retain and can mutate the actual DTO, including its timestamp.
+    current() { return recent && Date.now() - recent.at < lifetime ? recent : null; },
+  };
+}
+function createAirStorageNotice() { return storageNoticeWithPublisher(); }
+
+let publishStatus;
+const notice = storageNoticeWithPublisher(() => publishStatus?.());
+const airNotices = {
+  report(error) { notice.record(error); },
+  storageNotice: notice.current,
+  bindPublisher(publish) { publishStatus = publish; },
+  // stateStore 的失败挂钩：上报告警 + 计数 + 日志，一次装好。
+  installStateStoreReporter(stateStore, { metrics, logger }) {
+    stateStore.setFailureReporter((error, meta) => {
+      notice.record(error);
+      metrics.inc('multicc_persistence_failures_total');
+      logger.error('persistence_failure', { ...meta, error: error && error.message });
+    });
+  },
+  // sessionPersistence 的 onFailure 同款形状。
+  sessionPersistenceOnFailure({ metrics, logger }) {
+    return ({ error, mode, source, attempt, dirty }) => {
+      notice.record(error);
+      metrics.inc('multicc_session_persistence_failures_total');
+      logger.error('session_persistence_failure', {
+        mode, source, attempt, dirty, error: error && error.message,
+      });
+    };
+  },
+};
+
+module.exports = { createAirIndex, createRustAirReadIndex, describeAirIssue, createAirStorageNotice, airNotices };
