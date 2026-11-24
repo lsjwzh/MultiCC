@@ -1574,11 +1574,15 @@ impl Runtime {
             "selected"
         };
         self.publish(turn, effects, phase, Some(&picked), &details);
-        Some(record(vec![
+        let mut options = record(vec![
             ("providerId", provider_id_of(&picked)),
             ("model", or_null(field(Some(&picked), "model"))),
             ("reasonCode", Value::String(reason_code.to_string())),
-        ]))
+        ]);
+        if let Some(level) = picked.get("effort") {
+            options["effort"] = level.clone();
+        }
+        Some(options)
     }
 
     /// `terminalFailure(...)`.
@@ -2482,7 +2486,9 @@ mod tests {
 
     #[test]
     fn begin_turn_selects_fails_over_and_records_success() {
-        let candidates = json!([line("a", "claude", 1, "ok"), line("b", "claude", 2, "ok"),]);
+        let mut candidates = json!([line("a", "claude", 1, "ok"), line("b", "claude", 2, "ok"),]);
+        candidates[0]["effort"] = json!("low");
+        candidates[1]["effort"] = json!("ultracode");
         let selection = selection(candidates.clone(), true, None);
         let mut runtime = Runtime::default();
         let begun = runtime.begin_turn(&json!({
@@ -2493,6 +2499,7 @@ mod tests {
         let handle = begun["value"]["handle"].as_u64().expect("handle");
 
         let initial = runtime.turn_initial(handle);
+        assert_eq!(initial["value"]["effort"], "low");
         assert_eq!(initial["value"]["providerId"], json!("a"));
         assert_eq!(
             initial["effects"][0]["event"]["routePhase"],
@@ -2507,6 +2514,7 @@ mod tests {
             failed["value"]["invocationOptions"]["providerId"],
             json!("b")
         );
+        assert_eq!(failed["value"]["invocationOptions"]["effort"], "ultracode");
         assert_eq!(failed["value"]["decision"]["action"], json!("retry"));
         assert_eq!(
             failed["value"]["decision"]["providerFailover"]["fromProviderId"],

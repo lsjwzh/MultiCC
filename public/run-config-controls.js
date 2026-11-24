@@ -119,7 +119,7 @@
 
   // A row's draft object is its identity, so duplicate providers and reordering
   // stay distinct. Event handlers read the latest projection, never an old index.
-  function createPoolList({ host, el, mark, tt, onCli, onModel, onCustom, onTier, onRemove, onMove }) {
+  function createPoolList({ host, el, mark, tt, onCli, onModel, onCustom, onEffort, onTier, onRemove, onMove }) {
     const doc = host.ownerDocument, views = new Map();
     let dragged = null;
     function create() {
@@ -135,6 +135,8 @@
       const model = el(doc, 'select', 'rc-select rc-row-model'), custom = el(doc, 'input', 'rc-row-model-custom');
       model.setAttribute('aria-label', tt('runConfigRowModel', '模型'));
       custom.maxLength = 100;
+      const effort = el(doc, 'select', 'rc-select rc-row-effort');
+      effort.setAttribute('aria-label', tt('runConfigEffortLabel', '推理强度'));
       const tier = el(doc, 'select', 'rc-select rc-row-tier');
       tier.setAttribute('aria-label', tt('runConfigRowTier', '档位'));
       const ops = el(doc, 'span', 'rc-ops'), handle = el(doc, 'button', 'rc-handle', '⠿');
@@ -142,10 +144,11 @@
       const remove = el(doc, 'button', 'rc-remove', '✕');
       remove.type = 'button'; remove.title = tt('runConfigRowRemove', '移除这条线路');
       ops.append(handle, remove); main.append(first, second); node.append(rank, main, ops);
-      const view = { node, rank, chip, cli, name, first, second, issue, model, custom, tier, item: null, badge: null, icon: null };
+      const view = { node, rank, chip, cli, name, first, second, issue, model, custom, effort, tier, item: null, badge: null, icon: null };
       cli.onchange = () => onCli(view.item.key, cli.value);
-      model.onchange = () => { view.customEdited = model.value === '__custom__'; custom.hidden = !view.customEdited; onModel(view.item.key, model.value); };
+      model.onchange = () => { view.customEdited = model.value === '__custom__'; if (view.customEdited) custom.value = ''; custom.hidden = !view.customEdited; onModel(view.item.key, model.value); };
       custom.oninput = () => { view.customEdited = true; onCustom(view.item.key, custom.value); };
+      effort.onchange = () => onEffort(view.item.key, effort.value);
       tier.onchange = () => onTier(view.item.key, tier.value);
       remove.onclick = () => onRemove(view.item.key);
       node.ondragstart = event => { dragged = view.item.key; if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; };
@@ -190,8 +193,9 @@
             setValue(view.model, chosen);
             if (!editing) setValue(view.custom, known ? '' : item.wanted);
             view.custom.hidden = chosen !== '__custom__';
+            syncOptions(view.effort, item.efforts); setValue(view.effort, item.effort);
             syncOptions(view.tier, item.tiers); setValue(view.tier, item.tier);
-            syncChildren(view.second, [view.model, view.custom, ...(item.tiers.length ? [view.tier] : [])]);
+            syncChildren(view.second, [view.model, view.custom, ...(item.efforts.length ? [view.effort] : []), ...(item.tiers.length ? [view.tier] : [])]);
           }
           return view.node;
         });

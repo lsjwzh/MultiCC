@@ -308,6 +308,39 @@
   const CLI_DISPLAY = _cliViews.display;
   const CLI_LANE_FAMILY = _cliViews.laneFamily;
 
+  // 旧服务仍可使用随客户端发布的档位。成功读取新服务目录后，以该目录为准。
+  const offlineEfforts = {
+    'claude': {"label": "Effort", "levels": ["low", "medium", "high", "xhigh", "max", "ultracode"], "default": "medium"},
+    'codex': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
+    'codex-exp': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
+    'opencode': {"label": "Variant", "levels": ["", "minimal", "low", "medium", "high", "max"], "default": ""},
+    'pi': {"label": "Thinking Level", "levels": ["", "off", "minimal", "low", "medium", "high", "xhigh"], "default": ""},
+    'agy': {
+      "label": "Thinking Level",
+      "levels": ["", "low", "medium", "high", "xhigh", "max"],
+      "default": "",
+      "disabledModelFamily": "gemini-pro-orchestrator",
+      "tierSuffixes": ["-low", "-medium", "-high", "-xhigh", "-max"],
+      "modelLevels": {
+        "gemini-4-neon": ["", "low", "medium", "high", "xhigh"],
+        "gemini-4-hydrogen": ["", "low", "medium", "high", "xhigh"],
+        "gemini-4-carbon": ["", "low", "medium", "high"],
+        "gemini-4-argon": ["", "low", "medium", "high"],
+        "gemini-3.8-flash": ["", "low", "medium", "high"],
+        "claude-opus-5-5": ["", "low", "medium", "high"],
+        "claude-sonnet-5-5": ["", "low", "medium", "high"],
+        "gpt-oss-120b": ["", "medium"]
+      }
+    },
+    'qoder': {"label": "Reasoning Effort", "levels": ["", "low", "medium", "high", "xhigh", "max"], "default": ""},
+    'codebuddy': {"label": "Reasoning Effort", "levels": ["", "minimal", "low", "medium", "high", "xhigh", "max"], "default": ""},
+  };
+  let efforts = offlineEfforts;
+  function cliEffort(cli) {
+    const key = cliKey(cli);
+    return Object.hasOwn(efforts, key) ? efforts[key] : null;
+  }
+
   // 家族 → 家族 id（车道 id 或家族 id 都认）；没听说过答 null。
   function cliFamilyOf(cli) {
     const key = cliKey(cli);
@@ -860,6 +893,7 @@
     const stats = (Array.isArray(source.stats) ? source.stats : [])
       .map(normalizeStat)
       .filter(Boolean);
+    if (source.efforts && typeof source.efforts === 'object') efforts = source.efforts;
     const ccSwitchAvailable = source.ccSwitchAvailable === true;
     return Object.freeze({
       available: source.available === true,
@@ -1372,6 +1406,7 @@
     cliFamilyName,
     cliLanesOf,
     cliFamiliesFor,
+    cliEffort,
     cliUpdateOf,
     cliUpdateSpecs,
     cliIsBundled,

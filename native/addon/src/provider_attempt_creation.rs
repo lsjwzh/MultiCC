@@ -188,6 +188,9 @@ pub fn provider_begin_attempt(
     ] {
         record.set(k, v)?;
     }
+    if !input.get(c"effort")?.undefined()? {
+        record.set(c"effort", input.get(c"effort")?)?;
+    }
     let allowed = port.from_value(&JsValue::Array(vec![]))?;
     allowed.set_element(0, provider)?;
     if sub.truthy()? && !sub.equals(provider)? {

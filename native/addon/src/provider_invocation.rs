@@ -112,7 +112,11 @@ pub fn provider_retry_route_options(env: Env, attempt: Unknown<'_>) -> Result<sy
     } else {
         route.get(c"model")?
     };
-    Ok(object(route, &[(c"providerId", provider), (c"model", model)])?.raw())
+    let options = object(route, &[(c"providerId", provider), (c"model", model)])?;
+    if !route.get(c"effort")?.undefined()? {
+        options.set(c"effort", route.get(c"effort")?)?;
+    }
+    Ok(options.raw())
 }
 
 #[napi]
@@ -225,6 +229,31 @@ pub fn provider_invocation_prepare(
     }
     spawn.set(c"effectiveModel", effective)?;
     spawn.set(c"rawModel", raw_model)?;
+    let effort = input.get(c"effort")?;
+    if !effort.undefined()? {
+        spawn.set(c"rawEffort", effort)?;
+        let was_ultra = spawn.get(c"ultracode")?.is_true()?;
+        let ultra = effort.is_string("ultracode")? && !session.get(c"type")?.is_string("aux")?;
+        if was_ultra != ultra {
+            use multicc_core::message_composer::ULTRACODE_SUFFIX;
+            let suffix = base.get(c"suffix")?.string()?.unwrap_or_default();
+            let prefix = multicc_core::js::JsString::from_rust_str(ULTRACODE_SUFFIX);
+            let mut updated = if ultra {
+                prefix.clone()
+            } else {
+                Default::default()
+            };
+            updated.push(
+                &if was_ultra && suffix.as_units().starts_with(prefix.as_units()) {
+                    suffix.slice_units(prefix.len(), suffix.len())
+                } else {
+                    suffix
+                },
+            );
+            base.set(c"suffix", input.from_value(&V::String(updated))?)?;
+            spawn.set(c"ultracode", if ultra { yes } else { no })?;
+        }
+    }
     base.set(c"spawnOpts", spawn)?;
     let invocation_envelope = if input.get(c"bareText")?.undefined()? {
         base
@@ -355,6 +384,9 @@ pub fn provider_invocation_prepare(
             ),
         ],
     )?;
+    if !effort.undefined()? {
+        attempt_input.set(c"effort", effort)?;
+    }
     attempt_input.spread_from(
         ports
             .get(c"policy")?

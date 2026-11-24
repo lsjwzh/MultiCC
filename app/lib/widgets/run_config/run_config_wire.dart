@@ -32,6 +32,7 @@ class RunPoolRow {
     required this.lane,
     required this.providerId,
     this.model = '',
+    this.effort = '',
     this.autoModel = false,
     this.markedTier,
     this.problem,
@@ -42,6 +43,9 @@ class RunPoolRow {
   String lane;
   final String providerId;
   String model;
+  String effort;
+  String? get selectedEffort => effort.isNotEmpty &&
+      tryParseCli(lane)?.effortOptionsForModel(model).contains(effort) == true ? effort : null;
   bool autoModel;
 
   /// 「我自己标」下的档位：1 简单 / 2 中等 / 3 复杂；没点过是 null。
@@ -304,6 +308,7 @@ AutoWireResult buildAutoSelection(AutoWireInput input) {
           enabled: true,
           tier: result.candidates[index].tier,
           cli: order[index].lane,
+          effort: order[index].selectedEffort,
           autoModel: priceTiered && order[index].autoModel,
         ),
     ];
@@ -318,6 +323,7 @@ AutoWireResult buildAutoSelection(AutoWireInput input) {
           priority: index + 1,
           enabled: true,
           cli: usable[index].lane,
+          effort: usable[index].selectedEffort,
         ),
     ];
   }

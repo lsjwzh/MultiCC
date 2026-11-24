@@ -36,6 +36,7 @@ pub(super) struct Provider {
     pub id: String,
     pub name: String,
     pub model: Option<String>,
+    effort: Option<String>,
     pub revision: String,
     provider: Value,
     env: Value,
@@ -139,6 +140,7 @@ impl Provider {
             id,
             name,
             model,
+            effort: None,
             revision,
             provider,
             env,
@@ -230,6 +232,7 @@ impl Provider {
             id,
             name,
             model,
+            effort: None,
             revision,
             provider,
             env: Value::Null,
@@ -265,6 +268,9 @@ impl Provider {
                 .insert(key.into(), json!(format!("127.0.0.1,{previous}")));
         }
         launch.model = self.model.clone();
+        if let Some(level) = &self.effort {
+            launch.effort = Some(level.clone());
+        }
         let (proxy, endpoint, token) = self.start_proxy(session).await?;
         launch.env.insert(
             "ANTHROPIC_BASE_URL".into(),
@@ -387,7 +393,7 @@ pub(super) fn selection(record: &V) -> Result<Option<Value>, String> {
     }
     let candidates = list.iter().enumerate().map(|(index, row)| json!({
         "providerId":row["providerId"],"cli":"claude",
-        "model":row["model"].as_str(),"priority":row["priority"].as_f64().unwrap_or(index as f64),
+        "model":row["model"].as_str(),"effort":row["effort"].as_str(),"priority":row["priority"].as_f64().unwrap_or(index as f64),
         "enabled":row["enabled"] != false,
     })).collect::<Vec<_>>();
     Ok(Some(json!({
@@ -420,7 +426,7 @@ fn choose(root: &Path, record: &Value, selection: &Value) -> Result<Provider, St
             continue;
         }
         let id = row["providerId"].as_str().expect("normalized provider id");
-        let Ok(provider) = lookup(&list, id).and_then(|config| {
+        let Ok(mut provider) = lookup(&list, id).and_then(|config| {
             Provider::configured(
                 config.clone(),
                 id.to_owned(),
@@ -429,6 +435,16 @@ fn choose(root: &Path, record: &Value, selection: &Value) -> Result<Provider, St
         }) else {
             continue;
         };
+        provider.effort = row["effort"]
+            .as_str()
+            .filter(|level| {
+                multicc_core::cli_capability::supports_effort(
+                    "claude",
+                    provider.model.as_deref().unwrap_or(""),
+                    level,
+                )
+            })
+            .map(str::to_owned);
         let key = format!("claude:{id}");
         let entry = entries.get("entries").and_then(|entries| entries.get(&key));
         let facts = json!({"entry":entry.map(js::to_serde),"model":provider.model,"now":auth_runtime::now_ms()});

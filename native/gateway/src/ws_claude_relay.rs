@@ -452,7 +452,15 @@ pub async fn serve_claude_relay_session<S>(
     }
     if let Some(e) = effort.as_deref() {
         args.push("--effort".to_string());
-        args.push(e.to_string());
+        if e == "ultracode" {
+            args.extend([
+                "xhigh".into(),
+                "--settings".into(),
+                r#"{"ultracode":true}"#.into(),
+            ]);
+        } else {
+            args.push(e.to_string());
+        }
     }
     if let Some(sid) = session_id.as_deref() {
         if resume {

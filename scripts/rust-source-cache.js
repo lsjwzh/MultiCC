@@ -8,7 +8,7 @@ const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 // include_str! inputs are executable source dependencies, not test fixtures.
-const COMPILED_ASSETS = new Set(['native/core/src/quota_bar_view/messages.json']);
+const COMPILED_ASSETS = new Set(['native/core/src/quota_bar_view/messages.json', 'native/core/src/cli_efforts.json']);
 
 function cacheRoot(repoRoot) {
   const result = spawnSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain', '-z'],

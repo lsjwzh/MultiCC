@@ -407,6 +407,7 @@
       // 「自动（Jev 挑）」只在按难度下存在：按顺序没有 Jev，就只有具体模型。
       if (difficulty && row.autoModel === true) candidate.autoModel = true;
       else if (model) candidate.model = model;
+      if (clean(row.effort)) candidate.effort = clean(row.effort);
       if (manual) {
         const tier = TIERS.find(value => value === row.tier) || null;
         if (!tier) return fail('「我自己标」时，每行都要标一个档位。', 'provider_routing_requires_tiers');
@@ -543,14 +544,14 @@
       .slice()
       .sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0))
       .map(item => ({
-        providerId: clean(item.providerId), model: clean(item.model),
+        providerId: clean(item.providerId), model: clean(item.model), effort: clean(item.effort),
         autoModel: item.autoModel === true, cli: clean(item.cli),
       }));
   }
 
   function sameRow(row, other) {
     return !!row && !!other && row.providerId === other.providerId && row.model === other.model
-      && row.autoModel === other.autoModel && (!row.cli || !other.cli || row.cli === other.cli);
+      && row.effort === other.effort && row.autoModel === other.autoModel && (!row.cli || !other.cli || row.cli === other.cli);
   }
 
   function samePool(left, right) {
@@ -1194,7 +1195,7 @@
       return (selection.candidates || []).filter(Boolean).map(candidate => ({
         providerId: String(candidate.providerId || ''),
         cli: candidate.cli ? String(candidate.cli) : (nativeLineCli(candidate.providerId) || currentCli),
-        model: candidate.model ? String(candidate.model) : '',
+        model: candidate.model ? String(candidate.model) : '', effort: candidate.effort || '',
         customModel: '',
         autoModel: candidate.autoModel === true,
         tier: candidate.tier === 't1' ? 'simple' : candidate.tier === 't2' ? 'medium' : candidate.tier === 't3' ? 'complex' : 'medium',
@@ -1597,7 +1598,6 @@
       // 与 App 端 run_config_sheet 一致 —— 那边对自持车道也只藏线路、不藏模型。
       show(modelField, true);
       renderModel();
-      renderEffort();
       renderSub();
       renderAccount();
     }
@@ -1655,6 +1655,7 @@
     });
     function fillModel(value, cli, preferred) {
       modelControl.update(value, cli, preferred, modelState(cli));
+      renderEffort();
     }
 
     function renderModel() {
@@ -1766,11 +1767,13 @@
     // 所以保存出去的东西没变。表里没有的档位回落到模块给的英文名。
     const EFFORT_CN = Object.freeze({
       '': '默认', default: '默认', minimal: '最低', low: '低', medium: '中',
-      high: '高', xhigh: '超高', max: '最高', ultra: '超高',
+      high: '高', xhigh: '超高', max: '最高', ultra: 'Ultra', none: '无', off: '关闭',
     });
 
     function renderEffort() {
-      const options = aiApi.effortOptions(currentCli);
+      // Some lanes encode strength in the model id (Antigravity): the control
+      // exists only while the chosen model can actually take one.
+      const options = aiApi.effortOptions(currentCli, currentModelValue() || providerById(currentCli, providerValue)?.model);
       show(effortField, !!options.length);
       effortSeg.replaceChildren();
       for (const choice of options) {
@@ -2173,7 +2176,11 @@
       const tiers = pick === PICK_DIFFICULTY && tiering === DEFAULT_TIERING
         ? TIERS.map(value => ({ value, label: tierLabelOf(value) })) : [];
       if (tiers.length && !TIERS.includes(row.tier)) row.tier = 'medium';
-      return { key: row, id: row.providerId, cli: row.cli, cliTitle: cliChoiceLabel(row.cli), clis,
+      const efforts = aiApi.effortOptions(row.cli, row.model || providerById(row.cli, row.providerId)?.model)
+        .filter(choice => choice.value).map(choice => ({ value: choice.value, label: EFFORT_CN[choice.value] || choice.label }));
+      if (!efforts.some(choice => choice.value === row.effort)) row.effort = '';
+      if (efforts.length) efforts.unshift({ value: '', label: tt('runConfigRowEffortDefault', '推理强度（跟随会话）') });
+      return { key: row, id: row.providerId, cli: row.cli, cliTitle: cliChoiceLabel(row.cli), clis, efforts, effort: row.effort,
         name: lineName(row), badge: native ? null : limitBadge(providerById(row.cli, row.providerId)),
         issue: rowIssue(row, line, cliLabel)?.reason || '', models, tiers, tier: row.tier,
         wanted: row.autoModel ? AUTO_MODEL_VALUE : row.model || '',
@@ -2181,12 +2188,13 @@
     }
 
     const poolControl = controls.createPoolList({ host: poolList, el, mark, tt,
-      onCli(row, cli) { row.cli = cli; row.model = ''; row.autoModel = false; renderPool(); renderFooter(); },
+      onCli(row, cli) { row.cli = cli; row.effort = ''; row.model = ''; row.autoModel = false; renderPool(); renderFooter(); },
       onModel(row, value) {
         row.autoModel = value === AUTO_MODEL_VALUE;
-        row.model = row.autoModel || value === '__custom__' ? '' : value; renderFooter();
+        row.model = row.autoModel || value === '__custom__' ? '' : value; poolControl.update(rows.map(poolProjection)); renderFooter();
       },
-      onCustom(row, value) { row.model = value.trim(); renderFooter(); },
+      onCustom(row, value) { row.model = value.trim(); poolControl.update(rows.map(poolProjection)); renderFooter(); },
+      onEffort(row, value) { row.effort = value; renderFooter(); },
       onTier(row, value) { row.tier = value; renderFooter(); },
       onRemove(row) { rows = rows.filter(item => item !== row); renderPool(); renderPickerList(); renderFooter(); },
       onMove(from, to) { rows = reorder(rows, rows.indexOf(from), rows.indexOf(to)); renderPool(); renderFooter(); },
@@ -2394,6 +2402,7 @@
         sticky: sticky !== false, savedAt: Date.now(),
         candidates: built.value.candidates.map(candidate => ({
           providerId: candidate.providerId, cli: candidate.cli, model: candidate.model || null,
+          ...(candidate.effort ? { effort: candidate.effort } : {}),
           priority: candidate.priority, ...(candidate.tier ? { tier: candidate.tier } : {}),
           ...(candidate.autoModel ? { autoModel: true } : {}),
         })),
@@ -2568,7 +2577,7 @@
       const nextRows = (preset.candidates || []).map(candidate => ({
         providerId: String(candidate.providerId || ''),
         cli: candidate.cli || (nativeLineCli(candidate.providerId) || currentCli),
-        model: candidate.model || '', customModel: '', autoModel: candidate.autoModel === true,
+        model: candidate.model || '', effort: candidate.effort || '', customModel: '', autoModel: candidate.autoModel === true,
         tier: candidate.tier === 't2' ? 'medium' : candidate.tier === 't3' ? 'complex' : 'simple',
         name: '', enabled: true,
       }));
@@ -2869,9 +2878,10 @@
       modelValue = currentModelValue();
       show(modelCustom, modelSelect.value === '__custom__');
       if (modelSelect.value === '__custom__') modelCustom.focus();
+      renderEffort();
       renderFooter();
     };
-    modelCustom.oninput = () => { modelValue = currentModelValue(); renderFooter(); };
+    modelCustom.oninput = () => { modelValue = currentModelValue(); renderEffort(); renderFooter(); };
     // 手动刷新动态模型表：绕过两层缓存重新读本机 CLI。当前选中的模型原样
     // 保留 —— 即使它已经下架，换不换、换成哪个得由用户决定，这里只把真实列表摆出来。
     modelRefresh.onclick = async event => {

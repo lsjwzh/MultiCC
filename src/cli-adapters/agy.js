@@ -5,7 +5,7 @@
 // 负责；本文件仅对接现有 adapter 合约、宿主 prompt 渲染与交互终端命令。
 const { createProtocolCompletionTracker } = require('./completion');
 const { getNative, messageComposer } = require('../native/runtime');
-const { displayNameOf } = require('../cli/cli-capability');
+const { displayNameOf, supportsEffort } = require('../cli/cli-capability');
 
 const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 
@@ -32,6 +32,7 @@ function createAgyAdapter({ cmd }) {
     buildTerminalCmd(session = {}) {
       let command = quote(cmd);
       if (session.model) command += ` --model ${quote(session.model)}`;
+      if (session.effort && supportsEffort('agy', session.model, session.effort)) command += ` --effort ${quote(session.effort)}`;
       if (session.cliSessionId) command += ` --conversation ${quote(session.cliSessionId)}`;
       return command;
     },
@@ -41,6 +42,7 @@ function createAgyAdapter({ cmd }) {
       return getNative().agyBuildInvocation({
         cmd,
         model: so.rawModel ? String(so.rawModel) : undefined,
+        effectiveModel: so.effectiveModel || undefined,
         effort: so.rawEffort ? String(so.rawEffort) : undefined,
         conversationId: handle.cliSessionId ? String(handle.cliSessionId) : undefined,
         isFirstTurn: !!handle.isFirstTurn,

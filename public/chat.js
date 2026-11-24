@@ -1613,7 +1613,7 @@ function defaultEffortForCurrentCli() {
 }
 
 function effortOptionsForCurrentCli() {
-  return window.MultiCCChatAiConfig.effortOptions(_sessionCli);
+  return window.MultiCCChatAiConfig.effortOptions(_sessionCli, _sessionModel || _sessionEffectiveModel);
 }
 
 function effortLabelForCurrentCli() {
@@ -1621,7 +1621,9 @@ function effortLabelForCurrentCli() {
 }
 
 function effortShortName(effort) {
-  return window.MultiCCChatAiConfig.effortShortName(_sessionCli, effort);
+  const level = effort || defaultEffortForCurrentCli();
+  return effortOptionsForCurrentCli().some(option => option.value === level)
+    ? window.MultiCCChatAiConfig.effortShortName(_sessionCli, level) : '';
 }
 
 function providerModelOptions(providerId) {

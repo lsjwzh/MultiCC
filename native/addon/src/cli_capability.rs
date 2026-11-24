@@ -6,3 +6,8 @@ use napi_derive::napi;
 pub fn cli_catalog() -> napi::Result<String> {
     multicc_core::cli_capability::catalog().map_err(napi::Error::from_reason)
 }
+
+#[napi]
+pub fn cli_supports_effort(cli: String, model: String, level: String) -> bool {
+    multicc_core::cli_capability::supports_effort(&cli, &model, &level)
+}

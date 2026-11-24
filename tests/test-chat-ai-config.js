@@ -71,7 +71,7 @@ test('effort policy is deterministic for every supported CLI', () => {
   assert.equal(ai.effortLabel('codex'), 'Reasoning Level');
   assert.equal(ai.effortLabel('opencode'), 'Variant');
   assert.deepEqual(ai.effortOptions('codex').map(item => item.value),
-    ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
   assert.equal(ai.effortShortName('codex', 'xhigh'), 'Extra high');
   assert.equal(ai.effortShortName('opencode', 'high'), 'Variant high');
   assert.equal(ai.effortShortName('zcode', 'high'), '');
@@ -755,7 +755,25 @@ test('Antigravity exposes only its live ACP models and its own thinking levels',
   const localAi = require(modulePath);
   try {
     assert.deepEqual(localAi.buildModelChoices('relay', state({ cli: 'agy' })), ['', 'gemini-4-argon', '__custom__']);
-    assert.deepEqual(localAi.effortOptions('agy').map(item => item.value), ['', 'low', 'medium', 'high', 'xhigh']);
+    assert.deepEqual(localAi.effortOptions('agy').map(item => item.value), ['', 'low', 'medium', 'high', 'xhigh', 'max']);
+    // The tier is part of the model id: no second knob for a model that already
+    // names its rung, and none at all for the single-tier Orchestrator family.
+    for (const model of [
+      'gemini-pro-orchestrator', 'gemini-pro-orchestrator-neon', 'gemini-pro-orchestrator-argon',
+      'gemini-4-neon-high', 'gemini-4-neon-medium', 'claude-opus-5-5-low', 'gpt-oss-120b-medium',
+    ]) {
+      assert.deepEqual(localAi.effortOptions('agy', model), [], model);
+    }
+    assert.deepEqual(localAi.effortOptions('agy', 'gemini-4-argon').map(item => item.value),
+      ['', 'low', 'medium', 'high']);
+    assert.deepEqual(localAi.effortOptions('agy', 'gemini-4-neon').map(item => item.value),
+      ['', 'low', 'medium', 'high', 'xhigh']);
+    assert.deepEqual(localAi.effortOptions('agy', 'gpt-oss-120b').map(item => item.value), ['', 'medium']);
+    // A lane with no strength knob exposes no control, whatever the model.
+    for (const cli of ['zcode', 'kimi', 'dsh', 'gemini', 'grok', 'commandcode']) {
+      assert.deepEqual(localAi.effortOptions(cli), [], cli);
+      assert.equal(localAi.effortLabel(cli), 'Effort', cli);
+    }
     assert.deepEqual((await localAi.refreshModelsForCli('agy')).map(m => m.model), ['gemini-4-argon']);
     // 目录没回报当前档位时，「默认」行只说跟随配置。
     assert.equal(localAi.modelChoiceLabel('', '', state({ cli: 'agy' })), '默认（跟随 Antigravity 配置）');
