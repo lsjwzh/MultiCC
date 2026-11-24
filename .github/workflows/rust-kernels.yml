@@ -13,6 +13,7 @@ permissions:
   contents: read
 jobs:
   parity:
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -26,10 +27,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci --no-audit --no-fund
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          shared-key: rust-kernels-${{ runner.os }}
       - name: Test durable vault audit on every platform
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-core secret_audit::tests
       - name: 检查 Rust 源码
@@ -58,6 +64,7 @@ jobs:
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-cdpd
       # Rust 前门（native/gateway）：三个平台的启动入口都经它启动 node，集成测试全平台跑。
       - name: 测试 Rust 前门
+        timeout-minutes: 15
         shell: bash
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-gateway --no-fail-fast
       # `--no-node` 冒烟：前门在 PATH 里没有任何 node 的前提下启动，Rust 自有路由 200、
@@ -66,6 +73,7 @@ jobs:
       # 跳过它；前门的集成测试仍在上一步的三个平台上跑。
       - name: 冒烟 Rust 前门 --no-node
         if: runner.os != 'Windows'
+        timeout-minutes: 15
         shell: bash
         run: |
           set -euo pipefail
@@ -79,10 +87,11 @@ jobs:
         shell: bash
         run: cargo test --locked --manifest-path native/Cargo.toml -p multicc-desktop-agent
       - name: 构建并强制执行原生差分测试
+        timeout-minutes: 25
         shell: bash
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
-          CARGO_TARGET_DIR: ${{ runner.temp }}/multicc-rust-target
+          CARGO_TARGET_DIR: ${{ github.workspace }}/native/target
           MULTICC_REQUIRE_RUST_TESTS: '1'
           MULTICC_REQUIRE_RUST_BUNDLE: '1'
         run: |
@@ -193,6 +202,7 @@ jobs:
   # `node server.js` as its upstream (docs/backend-rust-exit-plan.md).
   node-free-runtime:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

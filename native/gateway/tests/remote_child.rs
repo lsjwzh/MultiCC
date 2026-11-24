@@ -457,19 +457,24 @@ async fn shutdown_waits_for_exit_cleanup_before_returning() {
     let mut exits = h.child.subscribe_exits();
     let child = Arc::clone(&h.child);
     let mut shutdown = Box::pin(async move { child.shutdown().await });
-    std::future::poll_fn(|cx| {
-        let wake = Waker::from(Arc::new(CleanupWake {
-            parent: cx.waker().clone(),
-            entered: Arc::clone(&entered),
-            early: Arc::clone(&early),
-        }));
-        let result = std::future::Future::poll(shutdown.as_mut(), &mut Context::from_waker(&wake));
-        if result.is_ready() && !entered.load(Ordering::SeqCst) {
-            early.store(true, Ordering::SeqCst);
-        }
-        result
-    })
-    .await;
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        std::future::poll_fn(|cx| {
+            let wake = Waker::from(Arc::new(CleanupWake {
+                parent: cx.waker().clone(),
+                entered: Arc::clone(&entered),
+                early: Arc::clone(&early),
+            }));
+            let result =
+                std::future::Future::poll(shutdown.as_mut(), &mut Context::from_waker(&wake));
+            if result.is_ready() && !entered.load(Ordering::SeqCst) {
+                early.store(true, Ordering::SeqCst);
+            }
+            result
+        }),
+    )
+    .await
+    .expect("shutdown_waits_for_exit_cleanup_before_returning timed out after 15s");
     let reached_cleanup = entered.load(Ordering::SeqCst);
     let returned_early = early.load(Ordering::SeqCst);
 

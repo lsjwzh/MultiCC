@@ -21,6 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          shared-key: ci-linux
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -30,6 +34,7 @@ jobs:
         run: node scripts/build-rust-kernels.js
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          CARGO_TARGET_DIR: ${{ github.workspace }}/native/target
           # 远控进程和模块一起编译：测试会从这棵树打包，缺件就该在这一步报出来。
           MULTICC_REQUIRE_RUST_BUNDLE: '1'
       - name: Configure Rust module
@@ -47,6 +52,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          shared-key: ci-linux
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
@@ -56,6 +65,7 @@ jobs:
         run: node scripts/build-rust-kernels.js
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          CARGO_TARGET_DIR: ${{ github.workspace }}/native/target
           # 远控进程和模块一起编译：测试会从这棵树打包，缺件就该在这一步报出来。
           MULTICC_REQUIRE_RUST_BUNDLE: '1'
       - name: Configure Rust module

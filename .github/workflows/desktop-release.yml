@@ -43,8 +43,9 @@ jobs:
 
   # 门禁失败只阻断发布，保留并行构建；定位后再决定是否取消。
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.artifact_id }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     env:
       MULTICC_REQUIRE_RUST_BUNDLE: '1'
     strategy:
@@ -54,18 +55,26 @@ jobs:
           - os: macos-latest
             platform: macos
             native_platform: darwin
-            # One Electron config builds both dmgs, so the job has to stage,
-            # rebuild and package once per arch (see the loop below).
-            archs: "arm64 x64"
+            # Split arm64 and x64 across parallel macOS runners so desktop
+            # packaging does not run two full Rust+Electron builds serially.
+            archs: "arm64"
+            artifact_id: macos-arm64
+          - os: macos-latest
+            platform: macos
+            native_platform: darwin
+            archs: "x64"
+            artifact_id: macos-x64
           - os: windows-latest
             platform: windows
             native_platform: win32
             archs: "x64"
+            artifact_id: windows
           # Pin the Linux x64 build/runtime baseline; ubuntu-latest can require AVX2.
           - os: ubuntu-24.04
             platform: linux
             native_platform: linux
             archs: "x64"
+            artifact_id: linux
     steps:
       - uses: actions/checkout@v4
 
@@ -82,6 +91,10 @@ jobs:
           node-version: 22
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "native -> ${{ runner.temp }}/multicc-rust-target"
+          shared-key: desktop-build-${{ matrix.artifact_id }}
       - name: 准备 Rust 目标标准库
         shell: bash
         run: |
@@ -287,14 +300,14 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --version "$(node -p 'require("./package.json").version')" \
             --signing-status "$DESKTOP_SIGNING_STATUS"
-          # Per-OS suffixes so three artifacts can merge without clobbering.
-          mv dist/SHA256SUMS.txt "dist/SHA256SUMS-${{ matrix.platform }}.txt"
-          mv dist/SIGNING-STATUS.txt "dist/SIGNING-STATUS-${{ matrix.platform }}.txt"
+          # Per-job suffixes so parallel arch artifacts merge without clobbering.
+          mv dist/SHA256SUMS.txt "dist/SHA256SUMS-${{ matrix.artifact_id }}.txt"
+          mv dist/SIGNING-STATUS.txt "dist/SIGNING-STATUS-${{ matrix.artifact_id }}.txt"
 
       - name: Upload per-OS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.platform }}
+          name: desktop-${{ matrix.artifact_id }}
           path: |
             desktop/dist/*.dmg
             desktop/dist/*.exe
@@ -309,6 +322,7 @@ jobs:
   service:
     name: Rust production service (${{ matrix.platform }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -338,6 +352,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          shared-key: service-${{ matrix.platform }}-${{ matrix.arch }}
       - name: Assemble the Rust production service
         shell: bash
         env:
@@ -386,6 +404,7 @@ jobs:
   standalone:
     name: standalone package (${{ matrix.platform }}-${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     env:
       MULTICC_REQUIRE_RUST_BUNDLE: '1'
     strategy:
@@ -423,6 +442,10 @@ jobs:
           node-version: 22
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "native -> ${{ runner.temp }}/multicc-rust-target"
+          shared-key: standalone-${{ matrix.platform }}-${{ matrix.arch }}
       - name: 构建目标平台 Rust 模块
         shell: bash
         run: |
@@ -643,6 +666,7 @@ jobs:
     # Only real tag pushes publish; workflow_dispatch validates builds only.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -695,6 +719,14 @@ jobs:
           # One consolidated manifest covering every artifact.
           cat desktop-out/SHA256SUMS-*.txt | sort -u > desktop-out/SHA256SUMS.txt
           rm desktop-out/SHA256SUMS-*.txt
+          # Parallel macOS arch jobs emit identical SIGNING-STATUS-macos-<arch>.txt;
+          # verify consistency and publish the single canonical SIGNING-STATUS-macos.txt.
+          if [ -f desktop-out/SIGNING-STATUS-macos-arm64.txt ] && [ -f desktop-out/SIGNING-STATUS-macos-x64.txt ]; then
+            cmp -s desktop-out/SIGNING-STATUS-macos-arm64.txt desktop-out/SIGNING-STATUS-macos-x64.txt \
+              || { echo "::error::macOS arm64 and x64 signing status files differ"; exit 1; }
+            cp desktop-out/SIGNING-STATUS-macos-arm64.txt desktop-out/SIGNING-STATUS-macos.txt
+            rm -f desktop-out/SIGNING-STATUS-macos-arm64.txt desktop-out/SIGNING-STATUS-macos-x64.txt
+          fi
           # Standalone packages ship their own sidecar hashes; fold them in so
           # SHA256SUMS.txt covers them too.
           for sidecar in desktop-out/*.tar.gz.sha256 desktop-out/*.zip.sha256; do
