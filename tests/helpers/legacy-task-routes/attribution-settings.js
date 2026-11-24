@@ -3,7 +3,7 @@
 // migration commit). Only relative require paths were rewritten; the handler
 // logic is unchanged. Mounted by tests/helpers/legacy-task-routes.js.
 
-const { MODES, DEFAULT_MODE, normalizeAttributionMode } = require('../../../src/task-routing/attribution-mode');
+const { MODES, DEFAULT_MODE, normalizeAttributionMode } = require('../../../src/native/task-domain').getAttributionModePolicy();
 
 // The automatic-attribution ladder is a host policy switch, not a per-call
 // flag: one value decides what every conversation may do on its own. The value

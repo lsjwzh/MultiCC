@@ -1,6 +1,6 @@
 'use strict';
 
-const { MODES, DEFAULT_MODE, normalizeAttributionMode } = require('../task-routing/attribution-mode');
+const { MODES, DEFAULT_MODE, normalizeAttributionMode } = require('../native/task-domain').getAttributionModePolicy();
 
 // The automatic-attribution ladder is a host policy switch, not a per-call
 // flag: one value decides what every conversation may do on its own. The value
