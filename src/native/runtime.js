@@ -14,6 +14,22 @@ let sessionDeliveryApi = null;
 let auxHealthProvider = null;
 function installAuxHealthProvider(fn) { auxHealthProvider = typeof fn === 'function' ? fn : null; }
 function auxVerdictStaleness() { return getNative().auxVerdictStaleness(auxHealthProvider); }
+// Measure with V8: toJSON, property access and the live replay array belong
+// to this host. Only a page that Rust chooses to clip crosses as JSON.
+function messageBytes(message) {
+  try { return Buffer.byteLength(JSON.stringify(message)); } catch { return 0; }
+}
+function fitHistoryFrame(messages, hasMore, options = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const sizes = list.map(messageBytes);
+  const max = options && options.maxBytes !== undefined ? options.maxBytes : undefined;
+  return getNative().chatFitHistoryFrame(list, sizes, !!hasMore, max, options);
+}
+const historyFrame = {
+  get DEFAULT_MAX_BYTES() { return getNative().CHAT_HISTORY_MAX_BYTES; },
+  get DEFAULT_TOOL_STRING_CHARS() { return getNative().CHAT_HISTORY_TOOL_STRING_CHARS; },
+  messageBytes, fitHistoryFrame,
+};
 function taskStateFrame(task, seedOnly) {
   return getNative().chatTaskStateFrame(task, seedOnly, require('./task-domain').taskShortCode, auxVerdictStaleness);
 }
@@ -476,7 +492,7 @@ function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
 module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
-  installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
+  historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,

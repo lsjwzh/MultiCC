@@ -1,6 +1,9 @@
 use crate::js_live::LiveValue;
-use multicc_core::js::JsValue;
-use napi::{bindgen_prelude::Unknown, sys, Env, Result};
+use multicc_core::{chat_history_frame, js::JsValue};
+use napi::{
+    bindgen_prelude::{FromNapiValue, ToNapiValue, Unknown},
+    sys, Env, Result,
+};
 use napi_derive::napi;
 
 /// What the connect-time `chat_history` byte budget decides, from the
@@ -23,6 +26,79 @@ pub fn chat_history_frame_plan(input: String) -> Result<String> {
 #[napi]
 pub fn chat_history_frame_clip(input: String) -> Result<String> {
     multicc_core::chat_history_frame::clip_page_json(&input).map_err(napi::Error::from_reason)
+}
+
+#[napi]
+pub const CHAT_HISTORY_MAX_BYTES: u32 = chat_history_frame::DEFAULT_MAX_BYTES as u32;
+#[napi]
+pub const CHAT_HISTORY_TOOL_STRING_CHARS: u32 =
+    chat_history_frame::DEFAULT_TOOL_STRING_CHARS as u32;
+
+fn json_frame_request(request: LiveValue<'_>) -> Result<String> {
+    let json = request.global()?.get(c"JSON")?;
+    let encoded = json.get(c"stringify")?.call(json, &[request])?;
+    unsafe { String::from_napi_value(encoded.env(), encoded.raw()) }
+}
+
+// JSON would turn an unlimited budget into null, which the kernel reads as zero.
+fn frame_limit(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
+    if value.is_number(f64::INFINITY)? {
+        value.from_value(&JsValue::Number(9_007_199_254_740_991.0))
+    } else {
+        Ok(value)
+    }
+}
+
+#[napi]
+pub fn chat_fit_history_frame(
+    env: Env,
+    messages: Unknown<'_>,
+    sizes: Unknown<'_>,
+    has_more: bool,
+    max_bytes: Unknown<'_>,
+    options: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let list = LiveValue::new(&env, messages);
+    let request = list.from_value(&JsValue::Object(Vec::new()))?;
+    request.set(c"sizes", LiveValue::new(&env, sizes))?;
+    request.set(c"hasMore", list.from_value(&JsValue::Bool(has_more))?)?;
+    let max = LiveValue::new(&env, max_bytes);
+    if !max.undefined()? {
+        request.set(c"maxBytes", frame_limit(max)?)?;
+    }
+    let plan = chat_history_frame::plan_request(&json_frame_request(request)?)
+        .map_err(napi::Error::from_reason)?;
+    let dropped = list.from_value(&JsValue::Number(plan.dropped as f64))?;
+    let mut kept = list;
+    if plan.dropped > 0 {
+        kept = list.get(c"slice")?.call(list, &[dropped])?;
+    }
+    // Most reconnects do not clip. Do not serialize the retained page or
+    // touch its toolStringChars getter unless the size-only plan requests it.
+    if plan.clipped {
+        let clip = list.from_value(&JsValue::Object(Vec::new()))?;
+        clip.set(c"messages", kept)?;
+        let options = LiveValue::new(&env, options);
+        if options.truthy()? && !options.get(c"toolStringChars")?.undefined()? {
+            clip.set(
+                c"toolStringChars",
+                frame_limit(options.get(c"toolStringChars")?)?,
+            )?;
+        }
+        let clipped = chat_history_frame::clip_page_json(&json_frame_request(clip)?)
+            .map_err(napi::Error::from_reason)?;
+        let json = list.global()?.get(c"JSON")?;
+        let text = LiveValue::from_raw(list.env(), unsafe {
+            String::to_napi_value(list.env(), clipped)?
+        });
+        kept = json.get(c"parse")?.call(json, &[text])?;
+    }
+    let result = list.from_value(&JsValue::Object(Vec::new()))?;
+    result.set(c"messages", kept)?;
+    result.set(c"hasMore", list.from_value(&JsValue::Bool(plan.has_more))?)?;
+    result.set(c"dropped", dropped)?;
+    result.set(c"clipped", list.from_value(&JsValue::Bool(plan.clipped))?)?;
+    Ok(result.raw())
 }
 
 /// Whether to build a connect-time `task_state` seed.
