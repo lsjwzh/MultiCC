@@ -111,3 +111,31 @@ test('gitlink observations retain their exact hash ordering and reject HEAD chan
       })), /code_changed_during_observation/);
   }
 });
+
+test('stale REBASE_HEAD after rebase completion is allowed while active rebase-merge fails with code_git_operation', async t => {
+  const f = fixture(t);
+  f.git('checkout', '-b', 'feat');
+  fs.writeFileSync(path.join(f.root, 'base'), 'feat\n');
+  f.git('add', 'base'); f.git('commit', '-m', 'test(fixture): feat change');
+  f.git('checkout', 'main');
+  fs.writeFileSync(path.join(f.root, 'base'), 'main\n');
+  f.git('add', 'base'); f.git('commit', '-m', 'test(fixture): main change');
+  f.git('checkout', 'feat');
+  // Conflict pauses inside rebase-merge: must refuse with normalized code_git_operation.
+  assert.throws(() => f.git('rebase', 'main'));
+  await assert.rejects(current.captureCodeRevision(f.root), err => err.code === 'code_git_operation' && err.message === 'code_git_operation');
+  await assert.rejects(legacy.captureCodeRevision(f.root), /code_git_operation/);
+  // Resolve and continue: Apple Git leaves REBASE_HEAD behind after finish;
+  // also write REBASE_HEAD explicitly so the invariant holds on every Git build.
+  fs.writeFileSync(path.join(f.root, 'base'), 'resolved\n');
+  f.git('add', 'base');
+  execFileSync('git', ['rebase', '--continue'], {
+    cwd: f.root,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_EDITOR: 'true' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const head = f.git('rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(f.root, '.git/REBASE_HEAD'), `${head}\n`);
+  await compare(f.root);
+});

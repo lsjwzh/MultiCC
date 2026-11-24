@@ -7,6 +7,14 @@ const { defaultRepoActor } = require('../repo-actor');
 const { getNative, runNative } = require('../native/runtime');
 const digest = value => createHash('sha256').update(value).digest('hex');
 
+const normalizeNativeCodeError = error => {
+  if (error instanceof Error && (!error.code || error.code === 'GenericFailure')
+    && /^code_[a-z_]{1,60}$/.test(error.message)) {
+    error.code = error.message;
+  }
+  return error;
+};
+
 // Read actual tracked/untracked bytes without staging, committing, or following
 // symlinks. This is a version observation, NOT proof that writers have stopped.
 async function observeCodeRevision(cwd, execGit, { maxBytes = 256 * 1024 * 1024, maxFiles = 50000, depth = 0 } = {}) {
@@ -16,7 +24,9 @@ async function observeCodeRevision(cwd, execGit, { maxBytes = 256 * 1024 * 1024,
   const head = await git(['rev-parse', 'HEAD']);
   const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all']);
   const gitDir = path.resolve(cwd, await git(['rev-parse', '--git-dir']));
-  for (const marker of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer', 'index.lock']) {
+  // Active Git operations only; stale `REBASE_HEAD` left after a conflicted
+  // rebase finishes is not an in-progress operation (`rebase-merge`/`rebase-apply` are).
+  for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer', 'index.lock']) {
     if (await fs.lstat(path.join(gitDir, marker)).then(() => true, e => { if (e.code === 'ENOENT') return false; throw e; })) throw new Error('code_git_operation');
   }
   const entries = await git(['ls-files', '--stage', '-z']);
@@ -37,7 +47,8 @@ async function observeCodeRevision(cwd, execGit, { maxBytes = 256 * 1024 * 1024,
   // Git stays in its existing repo actor. Rust owns the fresh file observation
   // in one worker job; only path/mode descriptors cross the native boundary.
   const hash = await runNative(() => getNative().observeCodeFiles(
-    cwd, files, files.map(file => tracked.get(file) || ''), fileMode !== 'false', maxBytes));
+    cwd, files, files.map(file => tracked.get(file) || ''), fileMode !== 'false', maxBytes))
+    .catch(error => { throw normalizeNativeCodeError(error); });
   let gitlinkLines = '';
   // Appended after files so repositories without gitlinks keep their existing revisions.
   for (const [relative, oid] of [...gitlinks].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
@@ -74,7 +85,8 @@ async function observeGitlink(cwd, relative, execGit, options) {
 // injected execGit for merge hooks, where the repo actor must see every step.
 async function captureCodeRevision(cwd) {
   return defaultRepoActor.run(cwd, 'code-revision', async () => {
-    const observation = await runNative(() => getNative().observeCodeRevision(cwd));
+    const observation = await runNative(() => getNative().observeCodeRevision(cwd))
+      .catch(error => { throw normalizeNativeCodeError(error); });
     return { ...observation, observedAt: Date.now(), writersStopped: false };
   });
 }
