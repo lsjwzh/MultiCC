@@ -12,7 +12,7 @@
 //!   `JSON.stringify(e)`, `slice(0, 300)` on UTF-16 units);
 //! * the greedy `/\{[\s\S]*\}/` extraction and `{ ok:true, ...parsed, ms }`
 //!   spread, including the string/array spread edge cases;
-//! * `voiceReadiness` (src/voice/readiness.js) and the settings DTO assembly,
+//! * voice readiness for both STT and the front door, and the settings DTO assembly,
 //!   with masking, defaults and the `env.X || runtime.X || default` chain;
 //! * the settings-update builder: field order, the `****` echo guards, and the
 //!   whole Qwen Audio validation (`invalid <name>`, wss/loopback rules,
@@ -37,7 +37,7 @@ use crate::js::serde::{
 };
 use crate::js::string::{js_trim, utf16_len, utf16_prefix, utf16_suffix, JsString};
 
-/// `voiceReadiness()`'s "not ready" machine code (src/voice/readiness.js).
+/// Machine code for an unavailable recogniser.
 pub const NOT_READY: &str = "voice_not_ready";
 
 pub const REFINE_ALLOW: &str = "POST";
@@ -558,21 +558,20 @@ fn streaming_ready(streaming: Option<&Value>, provider: &str) -> bool {
             .is_some_and(truthy)
 }
 
-/// `voiceReadiness()` over the `readinessFacts` answer.
-///
-/// Key order is the JS object literal's: ready, engine, reason, cloudConfigured,
-/// download. `download` is omitted when the host did not carry it (JS
-/// `undefined`) and is `null` when the installer reported null.
-pub fn readiness_body(facts: &Value) -> Option<Value> {
-    let object = facts.as_object()?;
-    let local_ready = object.get("localAvailable")?.as_bool()?;
-    let cloud_keys = object.get("cloudKeys")?.as_object()?;
-    let streaming = object.get("streaming");
-    let cloud = truthy_opt(cloud_keys.get("whisper"))
-        || truthy_opt(cloud_keys.get("openrouter"))
-        || ["openai", "volcano", "funasr"]
-            .iter()
-            .any(|provider| streaming_ready(streaming, provider));
+/// Shared by the gateway's JSON facts and the in-process STT handler's live probes.
+pub fn readiness_summary<E>(
+    local_ready: bool,
+    has_cloud_key: bool,
+    mut provider_ready: impl FnMut(&str) -> Result<bool, E>,
+    installer_state: impl FnOnce() -> Result<Option<String>, E>,
+) -> Result<Value, E> {
+    let mut cloud = has_cloud_key;
+    for provider in ["openai", "volcano", "funasr"] {
+        if cloud {
+            break;
+        }
+        cloud = provider_ready(provider)?;
+    }
     let engine = if local_ready {
         Some("local")
     } else if cloud {
@@ -580,42 +579,48 @@ pub fn readiness_body(facts: &Value) -> Option<Value> {
     } else {
         None
     };
-    let download = object.get("download");
-    let reason = if engine.is_some() {
-        None
-    } else {
-        let state = download
-            .and_then(Value::as_object)
-            .and_then(|installer| installer.get("state"));
-        Some(match state {
-            Some(Value::String(text))
+    let reason = if engine.is_none() {
+        Some(match installer_state()? {
+            Some(state)
                 if matches!(
-                    text.as_str(),
+                    state.as_str(),
                     "downloading" | "failed" | "unsupported" | "disabled"
                 ) =>
             {
-                text.clone()
+                state
             }
-            _ => "missing".to_string(),
+            _ => "missing".to_owned(),
         })
+    } else {
+        None
     };
-    let mut body = Map::new();
-    body.insert("ready".to_string(), Value::Bool(engine.is_some()));
-    body.insert(
-        "engine".to_string(),
-        engine
-            .map(|engine| Value::String(engine.to_string()))
-            .unwrap_or(Value::Null),
-    );
-    body.insert(
-        "reason".to_string(),
-        reason.map(Value::String).unwrap_or(Value::Null),
-    );
-    body.insert("cloudConfigured".to_string(), Value::Bool(cloud));
+    Ok(
+        json!({ "ready": engine.is_some(), "engine": engine, "reason": reason, "cloudConfigured": cloud }),
+    )
+}
+
+/// An undefined download is absent on the JSON wire. An explicit null is retained.
+pub fn readiness_body(facts: &Value) -> Option<Value> {
+    let local_ready = facts.get("localAvailable")?.as_bool()?;
+    let keys = facts.get("cloudKeys")?.as_object()?;
+    let download = facts.get("download");
+    let mut body = readiness_summary(
+        local_ready,
+        truthy_opt(keys.get("whisper")) || truthy_opt(keys.get("openrouter")),
+        |provider| {
+            Ok::<_, std::convert::Infallible>(streaming_ready(facts.get("streaming"), provider))
+        },
+        || {
+            Ok(download
+                .and_then(|d| d.get("state")?.as_str())
+                .map(str::to_owned))
+        },
+    )
+    .ok()?;
     if let Some(download) = download {
-        body.insert("download".to_string(), download.clone());
+        body["download"] = download.clone();
     }
-    Some(Value::Object(body))
+    Some(body)
 }
 
 // ── hotwords ───────────────────────────────────────────────────────────────

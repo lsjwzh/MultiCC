@@ -97,7 +97,8 @@ function probeAddon(file, node = process.execPath) {
   // The path rides an env var: the script is written to a temp file (see below),
   // so argv[1] is the script itself, not the addon.
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
-    if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function' || typeof a.RustDatabase!=='function'
+    if(a.protocolVersion?.()!==1 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function'
+      || typeof a.voiceReadiness!=='function' || a.VOICE_NOT_READY!=='voice_not_ready' || typeof a.RustDatabase!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
       || typeof a.observeCodeFiles!=='function' || typeof a.RustWorkspaceRelease!=='function'
       || typeof a.windowsToolsDiscover!=='function' || typeof a.cliCatalog!=='function'

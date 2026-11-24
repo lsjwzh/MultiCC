@@ -5,7 +5,7 @@
 // differs from the original (it now lives under tests/helpers).
 'use strict';
 
-const { NOT_READY, voiceReadiness } = require('../../src/voice/readiness');
+const { NOT_READY, voiceReadiness } = require('./legacy-voice-readiness');
 
 const CONFIG_SNAPSHOT_UNAVAILABLE = Symbol('voice-config-snapshot-unavailable');
 
