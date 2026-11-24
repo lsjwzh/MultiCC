@@ -51,6 +51,50 @@ function connectProviderLimitSync({ cache, persistedSessions, providers, broadca
     elapsedTime, persistedSessions, providers, broadcast, native.providerLimitCandidateMatches));
 }
 
+let eventPolicy;
+function getEventPolicy() {
+  if (eventPolicy) return eventPolicy;
+  const native = getNative();
+  const tables = JSON.parse(native.eventsCatalog());
+  const os = require('node:os');
+  const call = (op, a, b, port) => native.eventHostRequest(op, a, b, port);
+  eventPolicy = {
+    catalog: {
+      TASK_EVENTS: Object.freeze(tables.taskEvents), TURN_EVENTS: Object.freeze(tables.turnEvents),
+      EVENT_TYPES: Object.freeze(tables.eventTypes), ALIASES: Object.freeze(tables.aliases),
+      isKnownPattern: pattern => call('isKnownPattern', pattern),
+      matchesPattern: (pattern, type) => call('matchesPattern', pattern, type),
+      matchesAny: (patterns, type) => call('matchesAny', patterns, type, native.eventPatternString),
+    },
+    rules: {
+      ACTION_KINDS: Object.freeze(tables.actionKinds), MIN_INJECT_COOLDOWN_MS: tables.minInjectCooldownMs,
+      MAX_CHAIN_STEPS: tables.maxChainSteps,
+      validateEventRule: (body = {}, { idFactory, nowIso, scope = 'global' } = {}) =>
+        call('validateEventRule', body, { idFactory, nowIso, scope }),
+      validateAction: raw => call('validateAction', raw),
+      validateWebhookUrl: raw => call('validateWebhookUrl', raw),
+      matchesFilter: (rule, event) => call('matchesFilter', rule, event),
+      channelActions: rule => call('channelActions', rule),
+      channelProblem: (rule, check) => call('channelProblem', rule, check),
+    },
+    envelope: {
+      CONCLUSION_MAX: tables.conclusionMax, SUMMARY_MAX: tables.summaryMax,
+      CONCLUSION_EVENTS: Object.freeze(new Set(tables.conclusionEvents)),
+      redactText: text => call('redactText', text, undefined, os),
+      clipText: (text, max) => call('clipText', text, max, os),
+      summaryOf: state => call('summaryOf', state, tables.summaryMax, os),
+      renderInjection: (event, instruction) => call('renderInjection', event, instruction),
+    },
+    transitions: {
+      LETTER_EVENT: Object.freeze(tables.letterEvent), GOAL_EVENT: Object.freeze(tables.goalEvent),
+      deriveTaskEvents: (prev, next) => call('deriveTaskEvents', prev, next),
+      segmentKey: state => call('segmentKey', state),
+      letterOf: state => call('letterOf', state), goalOf: state => call('goalOf', state),
+    },
+  };
+  return eventPolicy;
+}
+
 const counts = { search: 0, usage: 0 };
 // Compatibility value for Node modules that must load before the addon; the
 // native delivery API is the policy owner and preflight verifies this marker.
@@ -420,7 +464,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

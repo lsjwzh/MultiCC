@@ -112,7 +112,7 @@ function probeAddon(file, node = process.execPath) {
       'waitCancelLive','waitResolveLive','outboxClaimLive',
       'orchestrationCanonicalize'].some(key=>typeof a[key]!=='function')
     || ['unattendedTag','unattendedNormalizeConfig','unattendedVerdictPrompt','unattendedParseVerdict','unattendedDecide','unattendedDecideFault','unattendedDecideClear','unattendedDeliveryRetryDecision','unattendedDecideTurnEnd','unattendedSelectQueued','unattendedDeferEvaluation','unattendedFaultInstruction'].some(key=>typeof a[key]!=='function')
-    || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest','eventHostRequest','eventPatternString'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['pushNotificationTables','pushNotificationKey','pushNotificationCopy','chatTaskStateFrame','auxVerdictStaleness','fanOutAuxVerdictStaleness','providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);

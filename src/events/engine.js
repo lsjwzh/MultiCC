@@ -17,9 +17,9 @@
 //   task.finished instead of failing.
 // Parked chains are persisted next to the global rules so a restart resumes them.
 
-const { matchesAny } = require('./catalog');
+const { matchesAny } = require('../native/runtime').getEventPolicy().catalog;
 const { ACTIONS } = require('./actions');
-const { validateEventRule, matchesFilter, channelActions, channelProblem } = require('./rules');
+const { validateEventRule, matchesFilter, channelActions, channelProblem } = require('../native/runtime').getEventPolicy().rules;
 const channelRegistry = require('../plugins/channel-registry');
 
 const MAX_FANOUT = 20;

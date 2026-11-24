@@ -2,8 +2,7 @@ use napi::Result;
 use napi_derive::napi;
 
 /// Event catalog, rule-schema and envelope constants as one JSON document.
-/// `src/events/{catalog,rules,envelope,task-transitions}.js` read it once at
-/// load and freeze their snapshots.
+/// The compatibility event host reads it once and freezes its public tables.
 #[napi]
 pub fn events_catalog() -> Result<String> {
     multicc_core::events::catalog().map_err(napi::Error::from_reason)
