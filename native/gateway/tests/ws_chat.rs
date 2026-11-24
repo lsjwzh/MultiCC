@@ -857,6 +857,34 @@ impl Gateway {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+        // `listening on` is logged right after bind, before `--no-node` runs
+        // startup initializers (`ensure_aux`, `adopt_first_tasks`, queue
+        // recovery) that write `sessions.json`. Wait for `/readyz` so the
+        // accept loop is live and startup writes have settled before tests
+        // mutate `sessions.json`.
+        loop {
+            if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", gateway.port)) {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                if stream
+                    .write_all(
+                        b"GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                    )
+                    .is_ok()
+                {
+                    let mut reply = Vec::new();
+                    let _ = stream.read_to_end(&mut reply);
+                    if reply.starts_with(b"HTTP/1.1 200") {
+                        break;
+                    }
+                }
+            }
+            assert!(
+                gateway.child.try_wait().unwrap().is_none() && Instant::now() < deadline,
+                "{}",
+                gateway.log()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         gateway
     }
 

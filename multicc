@@ -36,7 +36,7 @@ is_checkout_gateway() {
 
 get_pids() {
   local pid
-  for pid in $(ps -axo pid=,comm= | awk '$NF ~ /(^|\/)multicc-gateway$/ {print $1}'); do
+  for pid in $(ps -ww -axo pid=,args= | awk '/(^|[\/[:space:]])multicc-gateway([[:space:]]|$)/ {print $1}'); do
     if is_checkout_gateway "$pid"; then echo "$pid"; fi
   done
 }

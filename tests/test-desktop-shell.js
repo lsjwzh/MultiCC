@@ -307,6 +307,10 @@ test('the front door is found where the native module is, and a missing one refu
   const launch = desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
     platform: 'darwin', arch: 'arm64', exists: () => true });
   assert.deepEqual(launch, { command: prebuilt,
+    args: ['serve', '--cwd', serverDir, '--stdin-lifeline', '--node', '/rt/node', entry] });
+  const noNodeLaunch = desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: { MULTICC_NO_NODE: '1' },
+    platform: 'darwin', arch: 'arm64', exists: () => true });
+  assert.deepEqual(noNodeLaunch, { command: prebuilt,
     args: ['serve', '--cwd', serverDir, '--stdin-lifeline', '--no-node'] });
   assert.throws(() => desktopEnv.gatewayLaunch({ serverEntry: entry, node: '/rt/node', env: {},
     platform: 'darwin', arch: 'arm64', exists: () => false }),

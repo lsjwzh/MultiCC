@@ -1,13 +1,14 @@
 'use strict';
 
-// Real gateway + real server + fake codex/opencode CLI binaries, isolated data
-// root. Proves the adapter-neutral event reducer runs end-to-end through the
-// same ports as production: decodeEvent parses the CLI's JSONL, the native
+// Real gateway + real server + fake codex/opencode/agy CLI binaries, isolated
+// data root. Proves the adapter-neutral event reducer runs end-to-end through
+// the same ports as production: decodeEvent parses the CLI's JSONL, the native
 // reducer mutates the live session, and the WS room sees the claude-shaped
-// assistant/tool frames. Codex uses `codex exec --json`; the opencode lane uses
-// the legacy `run --format json` shape (MULTICC_OPENCODE_LEGACY_JSON=1), which
-// is the shared opencode-like decoder family. Never touches ~/.multicc, the main
-// checkout's data directory or the live service.
+// assistant/tool/thinking/usage frames. Codex uses `codex exec --json`; the
+// opencode lane uses the legacy `run --format json` shape
+// (MULTICC_OPENCODE_LEGACY_JSON=1); agy uses `--output-format stream-json
+// --dangerously-skip-permissions ... -p <prompt>` (`multicc_core::agy_stream`).
+// Never touches ~/.multicc, the main checkout's data directory or live service.
 const assert = require('node:assert/strict');
 const { spawn, execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
@@ -136,31 +137,75 @@ emit({ sessionID: 'ses-open-1', type: 'step_finish', part: { reason: 'stop', cos
 process.stdout.write('', () => process.exit(0));
 `, { mode: 0o755 });
 
+  const agyInvocationsFile = path.join(root, 'agy-invocations.jsonl');
   const fakeAgy = path.join(root, 'fake-agy.js');
   fs.writeFileSync(fakeAgy, `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
 const send = value => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
 const emit = value => process.stdout.write(JSON.stringify(value) + '\\n');
 const args = process.argv.slice(2);
 const formatIndex = args.indexOf('--output-format');
 const outputFormat = formatIndex >= 0 ? args[formatIndex + 1] : '';
 if (args.includes('--version')) { process.stdout.write('agy 1.5.14\\n'); process.exit(0); }
-// Chat turns: \`agy --output-format stream-json ... -p\` reads the prompt from
-// stdin and answers with NDJSON init / step_update / result events.
+// Chat turns: \`agy --output-format stream-json --dangerously-skip-permissions ... -p <prompt>\`
+// passes the prompt as the final argv token after \`-p\` (stdio[0] is 'ignore').
 if (outputFormat === 'stream-json') {
-  let prompt = '';
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', chunk => { prompt += chunk; });
-  process.stdin.on('end', () => {
-    const conversation = 'agy-s1';
-    emit({ event: 'init', conversation_id: conversation, init: { model: 'gemini-4-neon' } });
+  const printIndex = args.lastIndexOf('-p');
+  if (!args.includes('--dangerously-skip-permissions') || printIndex < 0 || printIndex !== args.length - 2) {
+    process.stderr.write('unexpected agy stream-json argv: ' + JSON.stringify(args) + '\\n');
+    process.exit(2);
+  }
+  const prompt = args[printIndex + 1];
+  const convIndex = args.indexOf('--conversation');
+  const resumedConv = convIndex >= 0 ? args[convIndex + 1] : null;
+  fs.appendFileSync(path.join(__dirname, 'agy-invocations.jsonl'),
+    JSON.stringify({ args, prompt, resumedConv }) + '\\n');
+  const conversation = resumedConv || 'agy-s1';
+  emit({ event: 'init', conversation_id: conversation, init: { model: 'gemini-4-neon' } });
+  if (!resumedConv) {
+    emit({ event: 'step_update', step_update: {
+      conversation_id: conversation, step_index: 1, state: 'ACTIVE', step_type: 'agent_response',
+      thought_delta: 'THINK_AGY',
+    } });
     emit({ event: 'step_update', step_update: {
       conversation_id: conversation, step_index: 1, state: 'DONE', step_type: 'agent_response',
-      text_delta: 'HELLO_FROM_AGY',
-      usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 0, total_tokens: 120 },
+      usage: { input_tokens: 80, output_tokens: 15, thinking_tokens: 12, cache_read_tokens: 0, total_tokens: 95 },
     } });
+    emit({ event: 'step_update', step_update: {
+      conversation_id: conversation, step_index: 2, state: 'ACTIVE', step_type: 'tool',
+      tool_name: 'read_file', tool_info: { name: 'read_file', parameters: { Path: '/tmp/agy-note.txt' } },
+    } });
+    emit({ event: 'step_update', step_update: {
+      conversation_id: conversation, step_index: 2, state: 'DONE', step_type: 'tool',
+      tool_name: 'read_file', tool_info: { name: 'read_file', parameters: { Path: '/tmp/agy-note.txt' }, output: 'AGY_TOOL_OK' },
+    } });
+    emit({ event: 'step_update', step_update: {
+      conversation_id: conversation, step_index: 3, state: 'ACTIVE', step_type: 'agent_response',
+      text_delta: 'HELLO_',
+    } });
+    const step3Done = {
+      conversation_id: conversation, step_index: 3, state: 'DONE', step_type: 'agent_response',
+      text_delta: 'FROM_AGY',
+      usage: { input_tokens: 20, output_tokens: 5, thinking_tokens: 8, cache_read_tokens: 60, total_tokens: 85 },
+    };
+    emit({ event: 'step_update', step_update: step3Done });
+    // Duplicate DONE for the same step_index must be deduplicated by TurnAccumulator.
+    emit({ event: 'step_update', step_update: { ...step3Done, text_delta: '' } });
     emit({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', num_turns: 1 } });
-    process.exit(0);
-  });
+  } else {
+    emit({ event: 'step_update', step_update: {
+      conversation_id: conversation, step_index: 1, state: 'DONE', step_type: 'agent_response',
+      text_delta: 'SECOND_FROM_AGY',
+      usage: { input_tokens: 30, output_tokens: 10, cache_read_tokens: 90, total_tokens: 130 },
+    } });
+    // Turn 2+ result.usage in agy is conversation-cumulative; decoder must ignore it.
+    emit({ event: 'result', result: {
+      conversation_id: conversation, status: 'SUCCESS', num_turns: 2,
+      usage: { input_tokens: 99999, output_tokens: 9999, cache_read_tokens: 88888 },
+    } });
+  }
+  process.stdout.write('', () => process.exit(0));
 } else if (args.includes('-p')) {
   // Quota probe: \`agy -p /usage --output-format json\`.
   process.stdout.write(JSON.stringify({command:{data:{groups:[]}}})); process.exit(0);
@@ -284,19 +329,60 @@ if (outputFormat === 'stream-json') {
     const socket = await connect(`ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(sessionId)}&token=${TOKEN}`);
     sockets.push(socket.ws);
     await socket.until(frames => frames.length > 0, 'agy initial frame');
-    socket.send({type:'user_message', text:'PING_AGY', taskShell:true, clientMsgId:randomUUID()});
-    await socket.until(frames => frames.some(frame => frame.type === 'result' && frame.usage), 'agy usage result');
-    const usage = socket.frames.find(frame => frame.type === 'result' && frame.usage).usage;
+    socket.send({ type: 'user_message', text: 'PING_AGY', taskShell: true, clientMsgId: randomUUID() });
+    await socket.until(frames => hasText(frames, 'HELLO_FROM_AGY'), 'agy assistant text');
+    await socket.until(frames => hasText(frames, 'AGY_TOOL_OK'), 'agy tool result');
+    await socket.until(frames => frames.some(frame =>
+      frame?.type === 'assistant' && JSON.stringify(frame).includes('tool_use')), 'agy tool card');
+    await socket.until(frames => frames.some(frame => JSON.stringify(frame).includes('THINK_AGY')), 'agy thinking snapshot');
+    await socket.until(frames => frames.some(frame => frame.type === 'result' && frame.usage), 'agy turn 1 usage result');
+    const agyResultsTurn1 = socket.frames.filter(frame => frame.type === 'result' && frame.usage);
+    const usage = agyResultsTurn1[agyResultsTurn1.length - 1].usage;
     assert.equal(usage.input_tokens, 100);
     assert.equal(usage.output_tokens, 20);
-    // stream-json reports no context window size (that was ACP's usage_update.size),
-    // so only the accumulated context token count is asserted.
-    assert.equal(usage.context_tokens, 100);
+    assert.equal(usage.cache_read_input_tokens, 60);
+    assert.equal(usage.reasoning_output_tokens, 20);
+    assert.equal(usage.total_tokens, 180);
+    assert.equal(usage.context_tokens, 80);
+    assert.equal(usage.usage_source, 'agy_stream');
     await waitIdle(sessionId);
+
+    const mcpConfigPath = path.join(home, '.gemini', 'config', 'mcp_config.json');
+    assert.ok(fs.existsSync(mcpConfigPath), 'agy router MCP config should be written to HOME/.gemini/config/mcp_config.json');
+    const mcpConfig = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8'));
+    assert.ok(mcpConfig?.mcpServers?.multicc_router?.command, `multicc_router MCP entry: ${JSON.stringify(mcpConfig)}`);
+
+    const resultCountBeforeTurn2 = socket.frames.filter(frame => frame.type === 'result' && frame.usage).length;
+    socket.send({ type: 'user_message', text: 'PING_AGY_TURN2', taskShell: true, clientMsgId: randomUUID() });
+    await socket.until(frames => hasText(frames, 'SECOND_FROM_AGY'), 'agy turn 2 assistant text');
+    await socket.until(frames =>
+      frames.filter(frame => frame.type === 'result' && frame.usage).length > resultCountBeforeTurn2,
+    'agy turn 2 usage result');
+    const agyResultsTurn2 = socket.frames.filter(frame => frame.type === 'result' && frame.usage);
+    const turn2Usage = agyResultsTurn2[agyResultsTurn2.length - 1].usage;
+    assert.equal(turn2Usage.input_tokens, 30);
+    assert.equal(turn2Usage.output_tokens, 10);
+    assert.equal(turn2Usage.cache_read_input_tokens, 90);
+    assert.equal(turn2Usage.total_tokens, 130);
+    assert.equal(turn2Usage.context_tokens, 120);
+    assert.equal(turn2Usage.usage_source, 'agy_stream');
+    await waitIdle(sessionId);
+
+    const invocations = fs.readFileSync(agyInvocationsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(invocations.length, 2, `expected 2 agy chat invocations, got ${invocations.length}`);
+    assert.equal(invocations[0].resumedConv, null);
+    assert.match(invocations[0].prompt, /PING_AGY/);
+    assert.equal(invocations[1].resumedConv, 'agy-s1');
+    assert.match(invocations[1].prompt, /PING_AGY_TURN2/);
+
     const history = await apiOk('GET', `/api/sessions/${sessionId}/history?limit=100`);
-    const historicalUsage = history.messages.find(message => message.usage?.context_tokens === 100)?.usage;
-    assert.ok(historicalUsage, `agy history usage: ${JSON.stringify(history)}`);
-    assert.equal(historicalUsage.input_tokens, 100);
+    const turn1HistoryUsage = history.messages.find(message => message.usage?.context_tokens === 80)?.usage;
+    const turn2HistoryUsage = history.messages.find(message => message.usage?.context_tokens === 120)?.usage;
+    assert.ok(turn1HistoryUsage, `agy turn 1 history usage: ${JSON.stringify(history)}`);
+    assert.equal(turn1HistoryUsage.input_tokens, 100);
+    assert.equal(turn1HistoryUsage.usage_source, 'agy_stream');
+    assert.ok(turn2HistoryUsage, `agy turn 2 history usage: ${JSON.stringify(history)}`);
+    assert.equal(turn2HistoryUsage.input_tokens, 30);
     socket.ws.close();
     console.log('test-chat-adapter-events-isolated ok');
   } finally {

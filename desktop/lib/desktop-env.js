@@ -98,7 +98,10 @@ function gatewayBinary({ serverDir, env = process.env, platform = process.platfo
   return path.join(dir, name);
 }
 
-// Packaged services start Rust directly. An explicit compatibility host is available for legacy installations.
+// Packaged desktop and standalone bundles start the bundled compatibility Node
+// host behind the Rust front door until directory/session write routes migrate
+// to Rust; set MULTICC_NO_NODE=1 to opt into the Rust-only front door. Pure
+// Rust deployments ship as multicc-service-* and the root Docker image.
 // `--stdin-lifeline`: the supervisor holds the front door's stdin, so whatever
 // way the supervisor goes away, the front door and then Node shut down too.
 function gatewayLaunch({ serverEntry, node, packaged = false, env = process.env, platform, arch, exists = fs.existsSync }) {
@@ -110,8 +113,8 @@ function gatewayLaunch({ serverEntry, node, packaged = false, env = process.env,
     throw error;
   }
   const args = ['serve', '--cwd', serverDir, '--stdin-lifeline'];
-  if (env.MULTICC_COMPAT_HOST === '1') args.push('--node', node, serverEntry);
-  else args.push('--no-node');
+  if (env.MULTICC_NO_NODE === '1' && env.MULTICC_COMPAT_HOST !== '1') args.push('--no-node');
+  else args.push('--node', node, serverEntry);
   return { command, args };
 }
 
