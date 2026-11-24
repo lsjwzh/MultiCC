@@ -1,5 +1,7 @@
 'use strict';
 
+const { nameOf } = require('../cli/cli-capability');
+
 const { getNative } = require('../native/runtime');
 const { sanitizePublicText } = require('../session-dto');
 const { labelWithCode } = require('../classify/task-short-code');
@@ -180,7 +182,7 @@ function buildDispatchContextPrompt(sessionId) {
   // Only the commander gets the dispatch context prompt (target list + routing
   // instructions). Ordinary sessions dispatch via MCP router tools directly.
   if (!isCommander) return '';
-  const ultra = normalizeEffort(current?.effort) === 'ultracode';
+  const ultra = (nameOf(current?.cli || 'claude') === 'claude' && (current?.claudeWorkflow === true || current?.effort === 'ultracode'));
   const intro = [
     '[MultiCC Commander routing]',
     'You are the Commander of this workspace. By default, first decide whether a self-contained task should be dispatched one-way with route_task to one of the same-workspace Workers listed below.',

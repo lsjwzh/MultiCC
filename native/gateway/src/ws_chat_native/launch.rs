@@ -43,6 +43,8 @@ pub(super) fn launch_options(state: &Session) -> StartInput {
             resume: state.native_started,
             model: optional_text(record, "model"),
             effort: optional_text(record, "effort"),
+            claude_workflow: record.get("claudeWorkflow")
+                == Some(&multicc_core::js::JsValue::Bool(true)),
             agent: optional_text(record, "agent"),
             system_prompt_append: optional_text(record, "rolePrompt"),
             env,

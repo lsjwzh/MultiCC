@@ -37,6 +37,7 @@ pub(super) struct Provider {
     pub name: String,
     pub model: Option<String>,
     effort: Option<String>,
+    claude_workflow: Option<bool>,
     pub revision: String,
     provider: Value,
     env: Value,
@@ -141,6 +142,7 @@ impl Provider {
             name,
             model,
             effort: None,
+            claude_workflow: None,
             revision,
             provider,
             env,
@@ -233,6 +235,7 @@ impl Provider {
             name,
             model,
             effort: None,
+            claude_workflow: None,
             revision,
             provider,
             env: Value::Null,
@@ -268,6 +271,9 @@ impl Provider {
                 .insert(key.into(), json!(format!("127.0.0.1,{previous}")));
         }
         launch.model = self.model.clone();
+        if let Some(flag) = self.claude_workflow {
+            launch.claude_workflow = flag;
+        }
         if let Some(level) = &self.effort {
             launch.effort = Some(level.clone());
         }
@@ -391,11 +397,22 @@ pub(super) fn selection(record: &V) -> Result<Option<Value>, String> {
     {
         return Err("unsupported_auto_provider_selection".into());
     }
-    let candidates = list.iter().enumerate().map(|(index, row)| json!({
-        "providerId":row["providerId"],"cli":"claude",
-        "model":row["model"].as_str(),"effort":row["effort"].as_str(),"priority":row["priority"].as_f64().unwrap_or(index as f64),
-        "enabled":row["enabled"] != false,
-    })).collect::<Vec<_>>();
+    let candidates: Vec<_> = list
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let mut candidate = json!({
+                "providerId": row["providerId"], "cli": "claude",
+                "model": row["model"].as_str(), "effort": row["effort"].as_str(),
+                "priority": row["priority"].as_f64().unwrap_or(index as f64),
+                "enabled": row["enabled"] != false,
+            });
+            if let Some(flag) = row["claudeWorkflow"].as_bool() {
+                candidate["claudeWorkflow"] = json!(flag);
+            }
+            candidate
+        })
+        .collect();
     Ok(Some(json!({
         "version":1,"mode":"auto","protocol":"anthropic",
         "maxAttempts":raw["maxAttempts"],"sticky":raw["sticky"] != false,
@@ -435,16 +452,24 @@ fn choose(root: &Path, record: &Value, selection: &Value) -> Result<Provider, St
         }) else {
             continue;
         };
-        provider.effort = row["effort"]
-            .as_str()
-            .filter(|level| {
-                multicc_core::cli_capability::supports_effort(
-                    "claude",
-                    provider.model.as_deref().unwrap_or(""),
-                    level,
-                )
-            })
-            .map(str::to_owned);
+        provider.claude_workflow = row["claudeWorkflow"]
+            .as_bool()
+            .or((row["effort"] == "ultracode").then_some(true));
+        provider.effort = (if row["effort"] == "ultracode" {
+            multicc_core::cli_capability::legacy_claude_effort(
+                provider.model.as_deref().unwrap_or(""),
+            )
+        } else {
+            row["effort"].as_str()
+        })
+        .filter(|level| {
+            multicc_core::cli_capability::supports_effort(
+                "claude",
+                provider.model.as_deref().unwrap_or(""),
+                level,
+            )
+        })
+        .map(str::to_owned);
         let key = format!("claude:{id}");
         let entry = entries.get("entries").and_then(|entries| entries.get(&key));
         let facts = json!({"entry":entry.map(js::to_serde),"model":provider.model,"now":auth_runtime::now_ms()});

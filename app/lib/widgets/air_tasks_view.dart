@@ -2199,6 +2199,8 @@ class _AirTasksViewState extends State<AirTasksView>
         model: result.model,
         provider: result.provider,
         effort: result.effort,
+        claudeWorkflow: result.claudeWorkflow,
+        preferSubtasks: result.preferSubtasks,
         agent: result.agent,
         rolePrompt: result.rolePrompt,
       );

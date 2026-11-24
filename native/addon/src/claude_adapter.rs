@@ -49,9 +49,7 @@ fn supports_ultracode(model: L<'_>) -> Result<bool> {
         .map(|s| s.to_string_lossy())
         .unwrap_or_default();
     Ok(multicc_core::cli_capability::supports_effort(
-        "claude",
-        &model,
-        "ultracode",
+        "claude", &model, "xhigh",
     ))
 }
 
@@ -129,8 +127,8 @@ pub fn claude_adapter_terminal(
                 session.get(c"turnHookSettingsArg")?,
             ],
         )?;
-    } else if port(ports, c"normalizeEffort", &[session.optional(c"effort")?])?
-        .is_string("ultracode")?
+    } else if (session.get(c"claudeWorkflow")?.is_true()?
+        || session.optional(c"effort")?.is_string("ultracode")?)
         && supports_ultracode(session.optional(c"model")?)?
     {
         command = concat(
@@ -248,8 +246,8 @@ pub fn claude_adapter_invocation(
         )?;
     }
     push(args, &[text(input, "--")?])?;
-    let ultracode = port(ports, c"normalizeEffort", &[so.get(c"rawEffort")?])?
-        .is_string("ultracode")?
+    let ultracode = (so.get(c"ultracode")?.is_true()?
+        || so.get(c"rawEffort")?.is_string("ultracode")?)
         && supports_ultracode(model)?;
     let debug = ports.get(c"debugLogClaudeInvoke")?;
     if !debug.nullish()? {

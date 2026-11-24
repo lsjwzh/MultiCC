@@ -278,6 +278,21 @@ test('GC: a deleted record is not retained by the owner', async () => {
   assert.equal(ref.deref(), undefined, 'no strong reference survives delete()');
 });
 
+test('旧 Claude 强度迁移活动会话、待生效配置与历史车道，重新加载保持幂等', () => {
+  const record = { id: 'legacy', cli: 'claude', effort: 'ultracode',
+    pendingConfiguration: { cli: 'claude', profile: { effort: 'ultracode' } },
+    cliStates: { claude: { effort: 'ultracode' }, codex: { effort: 'low' } } };
+  const loaded = recordsOf([[record.id, record]]);
+  assert.equal(loaded.loadMigrated, true);
+  for (const profile of [record, record.pendingConfiguration.profile, record.cliStates.claude]) {
+    assert.equal(profile.effort, 'xhigh');
+    assert.equal(profile.claudeWorkflow, true);
+    assert.equal(profile.preferSubtasks, undefined);
+  }
+  assert.deepEqual(record.cliStates.codex, { effort: 'low' });
+  assert.equal(recordsOf([[record.id, record]]).loadMigrated, false);
+});
+
 test('load-time normalisation migrates the retired claude -p identity once (M4)', t => {
   // The deleted `claude -p` lane stored the live transcript id in
   // `_streamSessionId` and left a placeholder in `cliSessionId`; the Agent SDK

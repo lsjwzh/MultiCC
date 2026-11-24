@@ -28,8 +28,8 @@ const VOICE_EDITED_SUFFIX: &str = r###"
 [End of voice input note]
 
 "###;
-pub const ULTRACODE_SUFFIX: &str =
-    "\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]";
+pub const SUBTASK_HINT: &str =
+    "\n\n任务包含可独立完成的部分时，优先使用可用的子任务工具并行处理，由主会话核对并汇总结果。简单任务直接完成。";
 pub const ENGLISH_SUFFIX: &str = "\n\nAll output must be in English.";
 pub const CHINESE_SUFFIX: &str = "\n\n所有输出都用中文输出。";
 pub const NOTES_PREFIX: &str =

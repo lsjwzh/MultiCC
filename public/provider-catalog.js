@@ -310,7 +310,17 @@
 
   // 旧服务仍可使用随客户端发布的档位。成功读取新服务目录后，以该目录为准。
   const offlineEfforts = {
-    'claude': {"label": "Effort", "levels": ["low", "medium", "high", "xhigh", "max", "ultracode"], "default": "medium"},
+    'claude': {
+      "label": "Effort",
+      "levels": ["low", "medium", "high", "xhigh", "max"],
+      "default": "medium",
+      "modelLevels": {
+        "claude-opus-4-6": ["low", "medium", "high", "max"],
+        "claude-sonnet-4-6": ["low", "medium", "high", "max"],
+        "claude-haiku-4-5": [],
+        "claude-haiku-4-5-20251001": []
+      }
+    },
     'codex': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
     'codex-exp': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
     'opencode': {"label": "Variant", "levels": ["", "minimal", "low", "medium", "high", "max"], "default": ""},

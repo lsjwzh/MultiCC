@@ -23,15 +23,24 @@ function compare(build, method) {
       assert.equal(answer.value, args[0].pendingConfiguration);
       answer.value = { ...answer.value, updatedAt: '<time>' };
     }
-    result.push({ answer, trace });
+    result.push({ answer, trace: trace.filter(k => !/(?:^|:)(?:claudeWorkflow|preferSubtasks)$/.test(k)) });
   }
   assert.deepEqual(result[1], result[0]);
 }
 
 test('field order and frozen exported field list', () => {
   const actual = getNative().sessionPendingConfigurationFields();
-  assert.deepEqual(actual, legacy.CONFIG_FIELDS);
+  assert.deepEqual(actual, [...legacy.CONFIG_FIELDS, 'claudeWorkflow', 'preferSubtasks']);
   assert.equal(Object.isFrozen(actual), true);
+});
+
+test('独立开关排队到下一轮并保留显式关闭', () => {
+  const session = {};
+  native.stageConfiguration(session, { cli: 'claude', effort: 'medium', claudeWorkflow: true, preferSubtasks: false }, {});
+  const desired = native.desiredSession(session);
+  assert.equal(desired.effort, 'medium');
+  assert.equal(desired.claudeWorkflow, true);
+  assert.equal(desired.preferSubtasks, false);
 });
 
 test('readConfiguration preserves cloning, defaults, errors and access order', () => {

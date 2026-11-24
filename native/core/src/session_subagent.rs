@@ -1,7 +1,7 @@
 //! Pure rules for per-session subagent routing (`src/session/subagent.js`)
 //! and fork configuration projection (`src/session/fork-configuration.js`).
 
-pub const CONFIG_FIELDS: [&str; 7] = [
+pub const CONFIG_FIELDS: [&str; 9] = [
     "provider",
     "providerSelection",
     "model",
@@ -9,6 +9,8 @@ pub const CONFIG_FIELDS: [&str; 7] = [
     "agent",
     "subagent",
     "rolePrompt",
+    "claudeWorkflow",
+    "preferSubtasks",
 ];
 
 pub const ERR_UNSUPPORTED_CLI: &str = "subagent routing is only supported by Claude and Codex";
@@ -91,6 +93,8 @@ mod tests {
                 "agent",
                 "subagent",
                 "rolePrompt",
+                "claudeWorkflow",
+                "preferSubtasks",
             ]
         );
     }

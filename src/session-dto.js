@@ -138,6 +138,8 @@ function toSessionDto(source = {}) {
     model: nullableString(source.model, 160),
     effectiveModel: nullableString(source.effectiveModel, 160),
     effort: nullableString(source.effort, 80),
+    ...(typeof source.claudeWorkflow === 'boolean' ? { claudeWorkflow: source.claudeWorkflow } : {}),
+    ...(typeof source.preferSubtasks === 'boolean' ? { preferSubtasks: source.preferSubtasks } : {}),
     effectiveEffort: nullableString(source.effectiveEffort, 80),
     agent: nullableString(source.agent, 160),
     provider: nullableString(source.provider, 160),

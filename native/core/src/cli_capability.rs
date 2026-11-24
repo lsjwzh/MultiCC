@@ -162,6 +162,16 @@ pub fn supports_effort(cli: &str, model: &str, level: &str) -> bool {
         .is_some_and(|spec| spec.levels_for_model(model).iter().any(|v| v == level))
 }
 
+/// The legacy Claude shortcut requested xhigh. Clamp it to the nearest level
+/// at or below xhigh so an old preset can still use a 4.6 route.
+pub fn legacy_claude_effort(model: &str) -> Option<&'static str> {
+    let spec = effort_of("claude")?;
+    let levels = spec.levels_for_model(model);
+    ["xhigh", "high", "medium", "low"]
+        .into_iter()
+        .find(|level| levels.iter().any(|v| v == level))
+}
+
 /// Which upstream API dialect a CLI's protocol talks. Deliberately not the
 /// transport name: an ACP agent holds its own credential and dialect, so it
 /// answers no family rather than a guess.
@@ -1105,7 +1115,7 @@ mod tests {
         let value = snapshot();
         assert_eq!(
             value["efforts"]["claude"]["levels"],
-            json!(["low", "medium", "high", "xhigh", "max", "ultracode"])
+            json!(["low", "medium", "high", "xhigh", "max"])
         );
         assert_eq!(value["efforts"]["claude"]["default"], "medium");
         assert_eq!(value["efforts"]["codex-exp"]["default"], "xhigh");

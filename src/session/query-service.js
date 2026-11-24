@@ -21,6 +21,8 @@ function sessionDtoPresenter({ record, runtime }) {
     label: record.label,
     model: record.model,
     effectiveModel: runtime.effectiveModel,
+    claudeWorkflow: record.claudeWorkflow,
+    preferSubtasks: record.preferSubtasks,
     effort: record.effort,
     effectiveEffort: runtime.effectiveEffort,
     agent: record.agent,

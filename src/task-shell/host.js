@@ -283,7 +283,7 @@ function createTaskShellHost(deps) {
     const record = deps.records.get(task.sessionId);
     const access = rt.taskAccess(task);
     const source = { ...(task.runtime || {}), ...(record || {}) };
-    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent']
+    const runtime = Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'claudeWorkflow', 'preferSubtasks', 'agent']
       .filter(key => source[key] !== undefined)
       .map(key => [key, source[key]]));
     return { id, dirId: task.dirId, title: lifecycle.title || task.title, status: lifecycle.status || access.status,

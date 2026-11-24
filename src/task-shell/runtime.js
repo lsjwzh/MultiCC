@@ -180,7 +180,7 @@ function createTaskShellRuntime(ports) {
     return estimateTokens(renderSnapshots(contextSnapshots(s, taskId)));
   }
   function runtimeFrom(record) {
-    return Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent']
+    return Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'claudeWorkflow', 'preferSubtasks', 'agent']
       .filter(key => record?.[key] !== undefined).map(key => [key, record[key]]));
   }
   function indexedTask(taskId) {

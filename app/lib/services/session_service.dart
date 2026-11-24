@@ -10,6 +10,8 @@ Map<String, dynamic> sessionAIConfigPatchBody({
   required String provider,
   required String model,
   required String effort,
+  bool? claudeWorkflow,
+  bool? preferSubtasks,
   SessionProviderSelection? providerSelection,
   SessionSubagent? subagent,
   bool clearSubagent = false,
@@ -22,6 +24,8 @@ Map<String, dynamic> sessionAIConfigPatchBody({
     'providerSelection': providerSelection?.toJson(),
     'model': model,
     'effort': effort,
+    if (claudeWorkflow != null) 'claudeWorkflow': claudeWorkflow,
+    if (preferSubtasks != null) 'preferSubtasks': preferSubtasks,
   };
   if (agent != null) body['agent'] = agent;
   if (clearSubagent) {
@@ -566,7 +570,7 @@ class SessionService {
   }
 
   /// Switch Claude Code effort for a session. Empty string = follow default.
-  /// Supported values: low, medium, high, xhigh, max, ultracode.
+  /// Supported values: low, medium, high, xhigh, max.
   Future<void> updateSessionEffort(String id, String effort) async {
     final res = await http
         .patch(
@@ -590,6 +594,8 @@ class SessionService {
     required String provider,
     required String model,
     required String effort,
+    bool? claudeWorkflow,
+    bool? preferSubtasks,
     SessionProviderSelection? providerSelection,
     SessionSubagent? subagent,
     bool clearSubagent = false,
@@ -600,6 +606,8 @@ class SessionService {
       providerSelection: providerSelection,
       model: model,
       effort: effort,
+      claudeWorkflow: claudeWorkflow,
+      preferSubtasks: preferSubtasks,
       subagent: subagent,
       clearSubagent: clearSubagent,
       agent: agent,
@@ -1301,6 +1309,8 @@ class SessionService {
     String? model,
     String? provider,
     String? effort,
+    bool claudeWorkflow = false,
+    bool preferSubtasks = false,
     String? agent,
     String? rolePrompt,
   }) async {
@@ -1308,6 +1318,8 @@ class SessionService {
     if (label != null && label.isNotEmpty) body['label'] = label;
     if (model != null && model.isNotEmpty) body['model'] = model;
     if (provider != null) body['provider'] = provider;
+    if (claudeWorkflow) body['claudeWorkflow'] = true;
+    if (preferSubtasks) body['preferSubtasks'] = true;
     if (effort != null && effort.isNotEmpty) body['effort'] = effort;
     if (agent != null && agent.isNotEmpty) body['agent'] = agent;
     if (rolePrompt != null && rolePrompt.isNotEmpty) {

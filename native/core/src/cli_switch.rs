@@ -352,6 +352,9 @@ pub fn active_state(
     );
     out.insert("model".to_string(), fallback_field(session, "model"));
     out.insert("effort".to_string(), fallback_field(session, "effort"));
+    if let Some(flag) = session.get("claudeWorkflow") {
+        out.insert("claudeWorkflow".into(), flag.clone());
+    }
     out.insert(
         "provider".to_string(),
         if providerless {
@@ -492,6 +495,9 @@ pub fn activate(input: &Value) -> Result<Value, String> {
     );
     fields.insert("model".to_string(), fallback_field(&state, "model"));
     fields.insert("effort".to_string(), fallback_field(&state, "effort"));
+    if let Some(flag) = state.get("claudeWorkflow") {
+        fields.insert("claudeWorkflow".into(), flag.clone());
+    }
     fields.insert("provider".to_string(), session_provider.clone());
     fields.insert(
         "providerSelection".to_string(),
@@ -587,6 +593,9 @@ pub fn state_summary(input: &Value) -> Result<Value, String> {
             },
         );
         summary.insert("effort".to_string(), fallback_field(state, "effort"));
+        if let Some(flag) = state.get("claudeWorkflow") {
+            summary.insert("claudeWorkflow".into(), flag.clone());
+        }
         summary.insert("agent".to_string(), fallback_field(state, "agent"));
         out.insert(cli.to_string(), Value::Object(summary));
     }

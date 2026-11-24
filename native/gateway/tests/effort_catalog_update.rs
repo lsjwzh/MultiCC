@@ -56,7 +56,7 @@ async fn downloads_newer_rules_keeps_last_good_on_failure_and_recovers_offline()
     invalid["revision"] = json!(revision + 2);
     invalid["efforts"]["agy"]["modelLevels"][model] = json!(["missing"]);
     let mut future = data.clone();
-    future["schemaVersion"] = json!(2);
+    future["schemaVersion"] = json!(bundled.schema_version + 1);
     for bad in [
         invalid.to_string(),
         future.to_string(),

@@ -97,18 +97,20 @@ test('each physical invocation resolves and proves one immutable concrete provid
   assert.equal(session.provider, 'provider-a', 'route resolution never mutates the preferred session provider');
 });
 
-test('候选线路的 ultracode 进入本次启动，原线路重试保留，换线路后回到会话设置', () => {
+test('候选线路的 工作流与强度独立进入本次启动，原线路重试保留，换线路后回到会话设置', () => {
   const { attempts, factory } = makeHarness();
   const session = { id: 'session-1', cli: 'claude', provider: 'provider-a', effort: 'low' };
   const envelope = { userText: 'hello', suffix: '中文', historyHandle: {}, spawnOpts: { rawEffort: 'low' } };
-  const input = { ...turnInput(), session, envelope, provider: { buildInvocation: e => ({ args: [e.spawnOpts.rawEffort], payload: e.suffix }) } };
-  const first = factory.prepare({ ...input, attemptNo: 1, effort: 'ultracode' });
-  assert.deepEqual(first.invocation.args, ['ultracode']);
-  assert.match(first.invocation.payload, /ultracode.*中文/s);
-  assert.equal(providerRetryRouteOptions(first.attempt).effort, 'ultracode');
+  const input = { ...turnInput(), session, envelope, provider: { buildInvocation: e => ({ args: [e.spawnOpts.rawEffort, e.spawnOpts.ultracode === true], payload: e.suffix }) } };
+  const first = factory.prepare({ ...input, attemptNo: 1, effort: 'medium', claudeWorkflow: true });
+  assert.deepEqual(first.invocation.args, ['medium', true]);
+  assert.equal(first.invocation.payload, '中文');
+  const retry = providerRetryRouteOptions(first.attempt);
+  assert.equal(retry.effort, 'medium');
+  assert.equal(retry.claudeWorkflow, true);
   attempts.finishAttempt(first.attempt, { outcome: 'failed' });
   const next = factory.prepare({ ...input, attemptNo: 2, providerId: 'provider-b' });
-  assert.deepEqual(next.invocation.args, ['low']);
+  assert.deepEqual(next.invocation.args, ['low', false]);
   assert.equal(next.invocation.payload, '中文');
   assert.equal(session.effort, 'low');
 });
@@ -477,8 +479,10 @@ test('bare retries rebuild invocation text without replaying composition layers'
   factory.prepare({
     request, turn, session, provider,
     envelope: { userText: 'original', contextLayers: ['delivered-note'], suffix: 'suffix', spawnOpts: {}, historyHandle: {} },
-    bareText: 'continue only', firstTurn: false, attemptNo: 1,
+    bareText: 'continue only', firstTurn: false, attemptNo: 1, effort: 'medium', claudeWorkflow: true,
   });
+  assert.equal(captured.spawnOpts.rawEffort, 'medium');
+  assert.equal(captured.spawnOpts.ultracode, true);
   assert.equal(captured.userText, 'continue only');
   assert.deepEqual(captured.contextLayers, []);
   assert.equal(captured.suffix, '');

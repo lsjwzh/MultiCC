@@ -111,7 +111,7 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
         store.set('task', taskId, { id: taskId, dirId: source.dirId, sessionId: `task-${taskId.slice(4)}`,
           ownerShellId: shell?.id || null, title, taskFirst: true, separatedFromTaskId: source.id,
           embedded: true, ready: false, snapshotIds: [], createdAt: Date.now(),
-          runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent']
+          runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'claudeWorkflow', 'preferSubtasks', 'agent', 'subagent']
             .filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) } });
       }
       if (shell) store.set('link', `${shell.id}:${taskId}`, { shellId: shell.id, taskId });
@@ -321,7 +321,7 @@ function createTaskSeparation({ store, getRecord, getHistory, getExecution, crea
               forkBaseline: { commit: code.head, branch: record?.branch || null,
                 sourceSessionId: sessionId, sourceWorkspace: record?.worktreePath || null },
               createdAt: Date.now(),
-              runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'agent', 'subagent']
+              runtime: { ...source.runtime, ...Object.fromEntries(['cli', 'model', 'provider', 'providerSelection', 'effort', 'claudeWorkflow', 'preferSubtasks', 'agent', 'subagent']
                 .filter(k => record?.[k] !== undefined).map(k => [k, record[k]])) } };
             store.set('task', task.id, task);
             roles?.inherit(source.id, task.id);

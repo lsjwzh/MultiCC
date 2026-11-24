@@ -94,8 +94,11 @@ pub(crate) fn attempt_snapshot<'a>(record: LiveValue<'a>) -> Result<LiveValue<'a
     ] {
         snapshot.set(key, record.get(key)?)?;
     }
-    if !record.get(c"effort")?.undefined()? {
-        snapshot.set(c"effort", record.get(c"effort")?)?;
+    for key in [c"effort", c"claudeWorkflow"] {
+        let value = record.get(key)?;
+        if !value.undefined()? {
+            snapshot.set(key, value)?;
+        }
     }
     let deadline = budget.get(c"requestDeadlineAt")?;
     snapshot.set(

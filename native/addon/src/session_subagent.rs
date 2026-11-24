@@ -244,6 +244,9 @@ fn read_configuration_live<'a>(session: L<'a>) -> Result<L<'a>> {
     for field in core::CONFIG_FIELDS {
         let c_name = CString::new(field).expect("static config field");
         let raw = session.get(&c_name)?;
+        if matches!(field, "claudeWorkflow" | "preferSubtasks") && raw.nullish()? {
+            continue;
+        }
         let value = if raw.nullish()? {
             session.from_value(&V::Null)?
         } else {

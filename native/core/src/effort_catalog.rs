@@ -36,7 +36,7 @@ fn parse(bytes: &[u8]) -> Result<Catalog, &'static str> {
         return Err("强度目录过大");
     }
     let catalog: Catalog = serde_json::from_slice(bytes).map_err(|_| "强度目录格式无效")?;
-    if catalog.schema_version != 1 || catalog.revision == 0 || catalog.efforts.is_empty() {
+    if catalog.schema_version != 2 || catalog.revision == 0 || catalog.efforts.is_empty() {
         return Err("不支持的强度目录版本或空目录");
     }
     for (cli, spec) in &catalog.efforts {

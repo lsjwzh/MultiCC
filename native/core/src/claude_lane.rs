@@ -27,6 +27,7 @@ pub struct LaunchInput {
     pub resume: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub claude_workflow: bool,
     pub agent: Option<String>,
     pub max_turns: Option<i64>,
     pub disallowed_tools: Vec<String>,
@@ -154,7 +155,13 @@ pub fn launch(input: &LaunchInput) -> Launch {
         Value::Object(map) => map.clone(),
         _ => Map::new(),
     };
-    let effort = input.effort.as_deref().filter(|level| {
+    let legacy = input.effort.as_deref() == Some("ultracode");
+    let level = if legacy {
+        crate::cli_capability::legacy_claude_effort(input.model.as_deref().unwrap_or(""))
+    } else {
+        input.effort.as_deref()
+    };
+    let effort = level.filter(|level| {
         !level.is_empty()
             && crate::cli_capability::supports_effort(
                 "claude",
@@ -162,7 +169,13 @@ pub fn launch(input: &LaunchInput) -> Launch {
                 level,
             )
     });
-    if effort == Some("ultracode") {
+    if (input.claude_workflow || legacy)
+        && crate::cli_capability::supports_effort(
+            "claude",
+            input.model.as_deref().unwrap_or(""),
+            "xhigh",
+        )
+    {
         settings.insert("ultracode".into(), Value::Bool(true));
     }
     let mut settings_env = match settings.get("env") {
@@ -207,15 +220,7 @@ pub fn launch(input: &LaunchInput) -> Launch {
         "stream-json".into(),
     ];
     if let Some(effort) = effort {
-        push_eq(
-            &mut argv,
-            "--effort",
-            if effort == "ultracode" {
-                "xhigh"
-            } else {
-                effort
-            },
-        );
+        push_eq(&mut argv, "--effort", effort);
     }
     if let Some(turns) = input.max_turns.filter(|turns| *turns > 0) {
         push_eq(&mut argv, "--max-turns", &turns.to_string());
@@ -681,6 +686,7 @@ mod tests {
             resume: false,
             model: Some("claude-sonnet-4-6".into()),
             effort: Some("high".into()),
+            claude_workflow: false,
             agent: Some("general-purpose".into()),
             max_turns: Some(4),
             disallowed_tools: vec!["WebSearch".into(), "WebFetch".into()],
@@ -722,6 +728,7 @@ mod tests {
     #[test]
     fn ultracode_launch_sets_the_cli_flag_and_settings_together() {
         let mut input = launch_input();
+        input.model = Some("claude-opus-4-8".into());
         input.effort = Some("ultracode".into());
         let launched = launch(&input);
         assert!(launched.argv.iter().any(|arg| arg == "--effort=xhigh"));
@@ -729,6 +736,37 @@ mod tests {
             serde_json::from_str::<Value>(&launched.settings).unwrap()["ultracode"],
             true
         );
+    }
+
+    #[test]
+    fn workflow_is_independent_of_the_selected_effort() {
+        let mut input = launch_input();
+        input.model = Some("claude-opus-4-8".into());
+        input.effort = Some("medium".into());
+        for enabled in [false, true] {
+            input.claude_workflow = enabled;
+            let launched = launch(&input);
+            assert!(launched.argv.iter().any(|arg| arg == "--effort=medium"));
+            let settings: Value = serde_json::from_str(&launched.settings).unwrap();
+            assert_eq!(
+                settings.get("ultracode").and_then(Value::as_bool),
+                enabled.then_some(true)
+            );
+        }
+    }
+
+    #[test]
+    fn older_models_keep_their_supported_effort_without_native_workflows() {
+        let mut input = launch_input();
+        input.model = Some("claude-sonnet-4-6".into());
+        input.claude_workflow = true;
+        input.effort = Some("ultracode".into());
+        let launched = launch(&input);
+        assert!(launched.argv.iter().any(|arg| arg == "--effort=high"));
+        assert!(serde_json::from_str::<Value>(&launched.settings)
+            .unwrap()
+            .get("ultracode")
+            .is_none());
     }
 
     #[test]
