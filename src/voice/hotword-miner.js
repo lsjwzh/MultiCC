@@ -99,32 +99,18 @@ function proseOf(text) {
 // term is then their usual spelling, so a habitual "multicc" stays lower-case
 // even though "MultiCC" is what proved it a name.
 function mineTypedTerms(messages) {
-  const words = new Map();
+  const tally = new (getNative().VoiceTypedVocabulary)();
+  const sessionIds = new Map();
   for (const { session, text } of messages) {
-    const seen = new Set();
-    for (const word of proseOf(text).match(/[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*/g) || []) {
-      const key = word.toLowerCase();
-      const e = words.get(key) || { term: word, count: 0, sessions: new Set(), forms: new Map() };
-      e.forms.set(word, (e.forms.get(word) || 0) + 1);
-      if (!seen.has(key)) { seen.add(key); e.count++; e.sessions.add(session); }
-      words.set(key, e);
-    }
+    const prose = proseOf(text);
+    if (!sessionIds.has(session)) sessionIds.set(session, sessionIds.size);
+    tally.observe(sessionIds.get(session), prose);
   }
+  const sessions = [...sessionIds.keys()];
   const terms = new Map();
-  for (const [key, e] of words) {
-    let evidence = 0;
-    let shapes = 0;
-    for (const [form, n] of e.forms) {
-      if (!distinctive(form)) continue;
-      evidence += n;
-      if (!/^[A-Z0-9]+$/.test(form)) shapes += n;
-    }
-    if (evidence < 2) continue;
-    e.term = [...e.forms].sort((a, b) => b[1] - a[1])[0][0];
-    // Caps alone ("TASK", "CLI") prove an acronym only when the user usually
-    // writes it that way; otherwise it is an ordinary word typed loudly.
-    if (!shapes && !distinctive(e.term)) continue;
-    terms.set(key, e);
+  for (const row of tally.terms(tally.spellings().map(distinctive))) {
+    terms.set(row.key, { term: row.term, count: row.count,
+      sessions: new Set(row.sessionIds.map(id => sessions[id])), forms: new Map(row.forms) });
   }
   return terms;
 }
