@@ -356,12 +356,36 @@ mod tests {
 
     #[test]
     fn pinned_rule_matches_header_tags_only_and_ignores_mid_body_emphasis() {
-        assert!(is_pinned_rule("shared", "MEMORY.md", "[规则][后端语言] 默认必须使用 Rust"));
-        assert!(is_pinned_rule("shared", "MEMORY.md", "[feedback][gotcha][最重要] 服务重启只能手动触发"));
-        assert!(is_pinned_rule("shared", "MEMORY.md", "- [preference] concise output"));
-        assert!(is_pinned_rule("shared", "MEMORY.md", "【强制规则】禁止直接推送"));
-        assert!(!is_pinned_rule("skill", "MEMORY.md", "[规则] 技能内规则不自动钉选"));
-        assert!(!is_pinned_rule("own", "_auto.md", "- [preference] 自动提炼历史不应占满 priority 900 预算"));
+        assert!(is_pinned_rule(
+            "shared",
+            "MEMORY.md",
+            "[规则][后端语言] 默认必须使用 Rust"
+        ));
+        assert!(is_pinned_rule(
+            "shared",
+            "MEMORY.md",
+            "[feedback][gotcha][最重要] 服务重启只能手动触发"
+        ));
+        assert!(is_pinned_rule(
+            "shared",
+            "MEMORY.md",
+            "- [preference] concise output"
+        ));
+        assert!(is_pinned_rule(
+            "shared",
+            "MEMORY.md",
+            "【强制规则】禁止直接推送"
+        ));
+        assert!(!is_pinned_rule(
+            "skill",
+            "MEMORY.md",
+            "[规则] 技能内规则不自动钉选"
+        ));
+        assert!(!is_pinned_rule(
+            "own",
+            "_auto.md",
+            "- [preference] 自动提炼历史不应占满 priority 900 预算"
+        ));
         // Mid-paragraph 【必须】 inside a [gotcha] or [verified] entry must NOT pin it.
         assert!(!is_pinned_rule(
             "shared",
@@ -421,7 +445,9 @@ mod tests {
                 "excerpt": format!("数据库 第 {i} 条")
             }));
         }
-        let out = select_entries(&from_serde(&json!({ "query": "数据库", "entries": entries })));
+        let out = select_entries(&from_serde(
+            &json!({ "query": "数据库", "entries": entries }),
+        ));
         let Some(V::Array(candidates)) = out.get("candidates") else {
             panic!("candidates");
         };

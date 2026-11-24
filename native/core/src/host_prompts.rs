@@ -191,13 +191,21 @@ mod tests {
 
     #[test]
     fn host_hint_carries_efficiency_steering_and_stays_compact() {
-        let hint = host_system_hint("/data/assist/", "3000", &["[Waiting for a user answer]".into()]);
+        let hint = host_system_hint(
+            "/data/assist/",
+            "3000",
+            &["[Waiting for a user answer]".into()],
+        );
         assert!(hint.contains("[Execution efficiency - batch calls & scope reads]"));
         assert!(hint.contains("Parallelize independent reads and searches"));
         assert!(hint.contains("Scope reads before opening files"));
         assert!(hint.contains("Merge edits per file"));
         assert!(!hint.contains("Sub-agent provider configured"));
-        assert!(hint.len() < 7600, "expected slimmed host hint, got {} chars", hint.len());
+        assert!(
+            hint.len() < 7600,
+            "expected slimmed host hint, got {} chars",
+            hint.len()
+        );
     }
 
     #[test]
