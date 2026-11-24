@@ -1404,3 +1404,42 @@ test('the board runtime exposes the task worktree service only when git deps are
   assert.equal(typeof service.mergeTask, 'function');
   assert.deepEqual(added, [], 'constructing the service touches no git state');
 });
+
+test('看板视图与冻结实现逐项核对 DTO、会话采集顺序与失败回退', () => {
+  const { createRequire } = require('node:module');
+  const { compileFunction } = require('node:vm');
+  const { createHash } = require('node:crypto');
+  const file = path.resolve(__dirname, '../src/task-board/view.js');
+  const bytes = fs.readFileSync(path.join(__dirname, 'helpers/frozen-task-board-view.js'));
+  assert.equal(createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex'),
+    '002c4a04b0d1c8aad249fdb7a17aaccdbbbf1db4');
+  const original = { exports: {} };
+  compileFunction(bytes.toString(), ['module', 'require'], { filename: file })(original, createRequire(file));
+  const run = (api, mode) => {
+    const calls = [];
+    const board = { modules: {}, tasks: {}, taskGroups: {} };
+    for (let index = 0; index < 4; index++) {
+      const id = 'task-' + index;
+      const refs = [null, 'id-' + index, 'shared', 'shared', '0', 'toString', '__proto__', ''];
+      board.tasks[id] = { id, title: id, refs: refs.map(sessionId => ({ sessionId })),
+        routing: { workerSessionId: index === 2 ? 'active' : 'shared' }, chatSessionId: 'chat',
+        dueAt: [null, '2026-01-02T03:04:05Z', 123, 'unparseable'][index] };
+    }
+    for (const id of ['é','a','Ä']) board.taskGroups[id] = { id, taskIds: ['task-2','task-1'] };
+    const opts = { now: 1000 };
+    if (mode !== 'missing') opts.sessionHasTurn = function (id) {
+      assert.equal(this, opts);
+      calls.push(['turn', id]);
+      if (mode === 'throw' && id === 'shared') throw Error('turn');
+      return id === 'chat' ? 1 : id === 'shared';
+    };
+    const runState = mode === 'missing' ? undefined : id => {
+      calls.push(['run', id]);
+      if (mode === 'throw' && id === 'shared') throw Error('run');
+      return id === 'chat' ? 'running' : undefined;
+    };
+    const dto = api.buildBoardDto(board, runState, opts);
+    return { calls, dto };
+  };
+  for (const mode of ['read','missing','throw']) assert.deepEqual(run(core, mode), run(original.exports, mode));
+});

@@ -122,6 +122,7 @@ pub mod task_board_queue;
 mod task_board_seed;
 pub mod task_board_start;
 pub mod task_board_transcript;
+pub mod task_board_view;
 pub mod task_context;
 pub mod task_display_attribution;
 pub mod task_domain;
