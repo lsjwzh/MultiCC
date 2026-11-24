@@ -220,7 +220,7 @@ pub fn assemble_create_record(
     // The id is generated first so the settings builder can embed it in the
     // Codex proxy base url.
     let id = facts.new_id.clone();
-    let config = match field(input, "settingsConfig") {
+    let mut config = match field(input, "settingsConfig") {
         Some(value @ Value::Object(_)) => value.clone(),
         _ => build_settings_config(
             Some(&app_type),
@@ -235,6 +235,7 @@ pub fn assemble_create_record(
             },
         ),
     };
+    apply_cli_relay_flag(&mut config, input);
     let format = normalize_api_format(api_format, Some(&app_type));
 
     let mut record = Map::new();
@@ -452,6 +453,7 @@ pub fn update_provider(
     } else {
         rebuild_codex_config(&mut config, input, id, facts);
     }
+    apply_cli_relay_flag(&mut config, input);
 
     let mut record = stored.as_object().cloned().unwrap_or_default();
     // `if (name)`: an empty or absent name keeps the stored one.
@@ -820,6 +822,31 @@ fn rebuild_codex_config(
         merged.shift_remove("proxyTarget");
     }
     *config = Value::Object(merged);
+}
+
+/// Apply the optional top-level `cliRelay` toggle onto `settingsConfig`:
+/// `true` persists `cliRelay: true`, `false` / `null` clears both `cliRelay`
+/// and the legacy `relayMode`, and omission leaves any stored setting intact.
+fn apply_cli_relay_flag(config: &mut Value, input: &Map<String, Value>) {
+    let Some(flag) = present(input, "cliRelay") else {
+        return;
+    };
+    if !config.is_object() {
+        *config = Value::Object(Map::new());
+    }
+    let Some(object) = config.as_object_mut() else {
+        return;
+    };
+    match flag {
+        Value::Bool(true) => {
+            object.insert("cliRelay".to_string(), Value::Bool(true));
+        }
+        Value::Bool(false) | Value::Null => {
+            object.shift_remove("cliRelay");
+            object.shift_remove("relayMode");
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1217,5 +1244,58 @@ mod tests {
         // `([^"]+)` needs at least one character.
         let empty = Value::String("model = \"\"\n".to_string());
         assert_eq!(toml_value(Some(&empty), "model"), "");
+    }
+
+    #[test]
+    fn cli_relay_flag_persists_toggles_and_preserves_on_omission() {
+        let f = facts();
+        let created = create_provider(
+            &json!([]),
+            &obj(json!({
+                "appType": "claude",
+                "name": "Relay",
+                "baseUrl": "https://host.example/claude-proxy/abc/remote",
+                "authToken": "mcr1.secret",
+                "cliRelay": true
+            })),
+            &f,
+        )
+        .unwrap();
+        let Commit::Save { records, .. } = created else {
+            panic!("expected Save");
+        };
+        assert_eq!(records[0]["settingsConfig"]["cliRelay"], json!(true));
+
+        // Omitting cliRelay on unrelated edit keeps the stored toggle.
+        let kept = update_provider(
+            &records,
+            "claude",
+            "fixed-id",
+            &obj(json!({ "name": "Relay Renamed" })),
+            None,
+            &f,
+        )
+        .unwrap();
+        let Commit::Save { records, .. } = kept else {
+            panic!("expected Save");
+        };
+        assert_eq!(records[0]["name"], json!("Relay Renamed"));
+        assert_eq!(records[0]["settingsConfig"]["cliRelay"], json!(true));
+
+        // Explicitly setting cliRelay: false clears both cliRelay and legacy relayMode.
+        let cleared = update_provider(
+            &records,
+            "claude",
+            "fixed-id",
+            &obj(json!({ "cliRelay": false })),
+            None,
+            &f,
+        )
+        .unwrap();
+        let Commit::Save { records, .. } = cleared else {
+            panic!("expected Save");
+        };
+        assert!(records[0]["settingsConfig"].get("cliRelay").is_none());
+        assert!(records[0]["settingsConfig"].get("relayMode").is_none());
     }
 }

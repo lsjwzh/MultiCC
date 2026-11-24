@@ -544,13 +544,8 @@ function cliCommandAvailable(command) {
 const commandsForAvailability = require('./src/cli-adapters/commands').createCommandResolver({ isWindows, seed: cliCommands });
 const { bundledClaudeCodeBinary } = require('./src/cli/claude-bundled-binary');
 
-// The `claude` chat lane runs the BUNDLED engine binary (the Agent SDK's
-// per-platform package), not whatever `claude` on PATH resolves to. Reporting
-// PATH here was wrong in both directions (M1): "missing" for an install that
-// runs fine, "available" for one that would spawn a different engine.
-function claudeLaneAvailable() {
-  try { return bundledClaudeCodeBinary() != null; } catch (_) { return false; }
-}
+// `claude` chat runs the bundled Agent SDK binary (or a Remote CLI relay), not PATH `claude`.
+function claudeLaneAvailable() { try { return bundledClaudeCodeBinary() != null || providers.hasCliRelayProvider('claude'); } catch (_) { return false; } }
 
 function cliAvailabilitySummary() {
   const commands = commandsForAvailability();

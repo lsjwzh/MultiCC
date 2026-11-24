@@ -1369,6 +1369,52 @@ async fn speedtest(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if let Some(cli_relay) = answer.get("cliRelay").and_then(Value::as_object) {
+        let relay_base_url = cli_relay
+            .get("relayBaseUrl")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let relay_auth_token = cli_relay
+            .get("relayAuthToken")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if relay_base_url.is_empty() || relay_auth_token.is_empty() {
+            return express::json(
+                ctx,
+                200,
+                &json!({
+                    "ok": false,
+                    "ms": ms(),
+                    "cliRelay": true,
+                    "error": "远程 CLI 线路缺少借道地址或凭据",
+                }),
+                &[],
+            );
+        }
+        let probe = if kind == "codex" {
+            crate::codex_relay_client::probe_codex_cli_relay(
+                &crate::codex_relay_client::CodexCliRelayTarget {
+                    relay_base_url,
+                    relay_auth_token,
+                },
+            )
+            .await
+        } else {
+            crate::claude_relay_client::probe_claude_cli_relay(
+                &crate::claude_relay_client::ClaudeCliRelayTarget {
+                    relay_base_url,
+                    relay_auth_token,
+                },
+            )
+            .await
+        };
+        let payload = cli_relay_speedtest_result(&probe, ms(), kind);
+        return express::json(ctx, 200, &payload, &[]);
+    }
     let model: Value;
     let (path, headers, body): (String, Vec<(String, String)>, Value) = if kind == "codex" {
         if answer.get("official") == Some(&Value::Bool(true)) {
@@ -1490,6 +1536,44 @@ async fn speedtest(ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
         }
     };
     express::json(ctx, 200, &payload, &[])
+}
+
+fn cli_relay_speedtest_result(probe: &Value, ms: i64, kind: &str) -> Value {
+    let ok = probe.get("ok") == Some(&Value::Bool(true));
+    let cli_available = probe.get("cliAvailable") != Some(&Value::Bool(false));
+    if ok && cli_available {
+        return json!({
+            "ok": true,
+            "ms": ms,
+            "status": 200,
+            "model": "remote-cli",
+            "cliRelay": true,
+            "cliAvailable": true,
+        });
+    }
+    let cli_name = if kind == "codex" { "Codex" } else { "Claude" };
+    let error = if ok && !cli_available {
+        format!("远端 Host 连通，但未检测到可用的 {cli_name} CLI")
+    } else {
+        probe
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or("远程 CLI 探测失败")
+            .to_string()
+    };
+    let mut out = json!({
+        "ok": false,
+        "ms": ms,
+        "model": "remote-cli",
+        "cliRelay": true,
+        "cliAvailable": ok && cli_available,
+        "error": error,
+    });
+    if let Some(status) = probe.get("status").and_then(Value::as_u64) {
+        out["status"] = json!(status);
+    }
+    out
 }
 
 /// `GET|HEAD /api/v1/providers`: Node's `listProviders` filter through one host
@@ -1863,5 +1947,29 @@ mod tests {
         );
         assert_eq!(query_json(&value), Some(json!(["claude", "codex"])));
         assert_eq!(query_json(&query_value("/x", "appType")), None);
+    }
+
+    #[test]
+    fn cli_relay_speedtest_maps_ok_missing_cli_and_auth_errors() {
+        let ok =
+            cli_relay_speedtest_result(&json!({ "ok": true, "cliAvailable": true }), 42, "claude");
+        assert_eq!(ok["ok"], json!(true));
+        assert_eq!(ok["ms"], json!(42));
+        assert_eq!(ok["status"], json!(200));
+        assert_eq!(ok["cliRelay"], json!(true));
+
+        let missing =
+            cli_relay_speedtest_result(&json!({ "ok": true, "cliAvailable": false }), 55, "codex");
+        assert_eq!(missing["ok"], json!(false));
+        assert!(missing["error"].as_str().unwrap().contains("Codex"));
+
+        let rejected = cli_relay_speedtest_result(
+            &json!({ "ok": false, "status": 401, "error": "分享码已被撤销或无效，请向出借方重新获取" }),
+            18,
+            "claude",
+        );
+        assert_eq!(rejected["ok"], json!(false));
+        assert_eq!(rejected["status"], json!(401));
+        assert!(rejected["error"].as_str().unwrap().contains("撤销"));
     }
 }

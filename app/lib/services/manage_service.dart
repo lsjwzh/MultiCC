@@ -302,6 +302,7 @@ class ManageService {
     String model = '',
     List<String> models = const [],
     Map<String, dynamic>? aliasMap,
+    bool? cliRelay,
   }) async {
     final res = await http
         .post(
@@ -315,6 +316,7 @@ class ManageService {
             'model': model,
             'models': models,
             if (aliasMap != null) 'aliasMap': aliasMap,
+            if (cliRelay != null) 'cliRelay': cliRelay,
           }),
         )
         .timeout(const Duration(seconds: 15));
@@ -383,6 +385,7 @@ class ManageService {
     String? model,
     List<String>? models,
     Map<String, dynamic>? aliasMap,
+    bool? cliRelay,
   }) async {
     final body = <String, dynamic>{};
     if (name != null) body['name'] = name;
@@ -393,6 +396,7 @@ class ManageService {
     if (model != null) body['model'] = model;
     if (models != null) body['models'] = models;
     if (aliasMap != null) body['aliasMap'] = aliasMap;
+    if (cliRelay != null) body['cliRelay'] = cliRelay;
     final res = await http
         .patch(
           Uri.parse(_url('/api/providers/$appType/$id')),

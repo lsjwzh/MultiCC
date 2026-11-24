@@ -22,11 +22,17 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use multicc_core::host_exec::{
     apply_fs_edit, clamp_timeout_ms, map_remote_to_local_cwd, map_remote_to_local_path,
     truncate_utf8_bytes, verify_bearer_token, HostExecRequest, HostExecResponse, HostFsEditRequest,
-    HostFsListRequest, HostFsReadRequest, HostFsWriteRequest, MAX_OUTPUT_BYTES,
+    HostFsListRequest, HostFsReadRequest, HostFsWriteRequest, HostViewImageRequest,
+    MAX_OUTPUT_BYTES,
 };
+
+use crate::cli_relay_attachments::{image_media_type_for_path, MAX_RELAY_IMAGE_BYTES};
+use crate::cli_relay_skills::{client_home_dir, default_readonly_skill_roots};
 
 pub type AsyncHook =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
@@ -43,6 +49,8 @@ pub struct HostExecServerConfig {
 struct ServerState {
     local_root: PathBuf,
     canonical_root: Option<PathBuf>,
+    readonly_roots: Vec<PathBuf>,
+    canonical_temp_dir: Option<PathBuf>,
     remote_root: String,
     file_mode: String,
     token: String,
@@ -95,6 +103,68 @@ fn verify_no_symlink_escape(target: &Path, canonical_root: Option<&Path>) -> Res
             return Ok(());
         }
     }
+}
+
+fn expand_tilde_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
+        if let Some(home) = client_home_dir() {
+            return home.join(rest).to_string_lossy().into_owned();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// 解析严格只读访问路径（供 `host_read_file`、`host_list_dir`、`host_view_image` 共用）：
+/// 1. 工作区 `local_root` 内的常规路径；
+/// 2. 只读白名单根目录（如 `~/.agents/skills`、`~/.claude/skills` 等）内的已存在路径；
+/// 3. （仅 `allow_multicc_temp=true` 时）OS 临时目录中以 `multicc_` 开头的截图/上传图片。
+/// 写操作（`host_write_file`/`host_edit_file`）绝不调用此函数，保持 100% 锁定在 `local_root` 内。
+fn resolve_readonly_path(
+    requested: Option<&str>,
+    state: &ServerState,
+    allow_multicc_temp: bool,
+) -> Result<PathBuf, String> {
+    let expanded = requested.map(expand_tilde_path);
+    let raw_opt = expanded.as_deref();
+    if let Ok(ws_path) = map_remote_to_local_path(raw_opt, &state.remote_root, &state.local_root) {
+        verify_no_symlink_escape(&ws_path, state.canonical_root.as_deref())?;
+        return Ok(ws_path);
+    }
+    let Some(raw) = raw_opt.filter(|s| !s.is_empty()) else {
+        return Err("路径不能为空".to_string());
+    };
+    let candidate = Path::new(raw);
+    if !candidate.is_absolute() {
+        return Err(format!("路径越界：不允许访问工作区之外的路径 ({raw})"));
+    }
+    let canonical =
+        std::fs::canonicalize(candidate).map_err(|_| format!("路径越界或文件不存在 ({raw})"))?;
+    if state
+        .readonly_roots
+        .iter()
+        .any(|allowed_root| canonical.starts_with(allowed_root))
+    {
+        return Ok(canonical);
+    }
+    if allow_multicc_temp {
+        if let Some(tmp_root) = state.canonical_temp_dir.as_deref() {
+            if canonical.starts_with(tmp_root)
+                && canonical
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|n| n.starts_with("multicc_"))
+            {
+                return Ok(canonical);
+            }
+        }
+    }
+    Err(format!(
+        "路径越界：不允许访问工作区或只读技能目录之外的路径 ({raw})"
+    ))
 }
 
 async fn handle_health(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
@@ -293,11 +363,7 @@ async fn handle_fs_read(
     if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
-    let path = match map_remote_to_local_path(
-        Some(req.path.as_str()),
-        &state.remote_root,
-        &state.local_root,
-    ) {
+    let path = match resolve_readonly_path(Some(req.path.as_str()), &state, false) {
         Ok(path) => path,
         Err(err) => {
             return (
@@ -307,13 +373,6 @@ async fn handle_fs_read(
                 .into_response();
         }
     };
-    if let Err(err) = verify_no_symlink_escape(&path, state.canonical_root.as_deref()) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "ok": false, "error": err })),
-        )
-            .into_response();
-    }
     let max_bytes = req
         .max_bytes
         .unwrap_or(MAX_OUTPUT_BYTES)
@@ -466,11 +525,7 @@ async fn handle_fs_list(
     if let Some(resp) = unauthorized_response(&headers, &state.token) {
         return resp;
     }
-    let path = match map_remote_to_local_path(
-        req.path.as_deref(),
-        &state.remote_root,
-        &state.local_root,
-    ) {
+    let path = match resolve_readonly_path(req.path.as_deref(), &state, false) {
         Ok(path) => path,
         Err(err) => {
             return (
@@ -480,13 +535,6 @@ async fn handle_fs_list(
                 .into_response();
         }
     };
-    if let Err(err) = verify_no_symlink_escape(&path, state.canonical_root.as_deref()) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "ok": false, "error": err })),
-        )
-            .into_response();
-    }
     let mut rd = match tokio::fs::read_dir(&path).await {
         Ok(rd) => rd,
         Err(err) => {
@@ -528,14 +576,93 @@ async fn handle_fs_list(
         .into_response()
 }
 
+async fn handle_fs_view_image(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    Json(req): Json<HostViewImageRequest>,
+) -> Response {
+    if let Some(resp) = unauthorized_response(&headers, &state.token) {
+        return resp;
+    }
+    let path = match resolve_readonly_path(Some(req.path.as_str()), &state, true) {
+        Ok(path) => path,
+        Err(err) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "ok": false, "error": err })),
+            )
+                .into_response();
+        }
+    };
+    let Some(media_type) = image_media_type_for_path(&path) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": "仅支持查看 png/jpg/jpeg/gif/webp 格式图片"
+            })),
+        )
+            .into_response();
+    };
+    let meta = match tokio::fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(err) => {
+            return (
+                StatusCode::OK,
+                Json(json!({ "ok": false, "error": format!("读取图片元数据失败: {err}") })),
+            )
+                .into_response();
+        }
+    };
+    if !meta.is_file() || meta.len() == 0 {
+        return (
+            StatusCode::OK,
+            Json(json!({ "ok": false, "error": "目标不是有效的非空图片文件" })),
+        )
+            .into_response();
+    }
+    if meta.len() as usize > MAX_RELAY_IMAGE_BYTES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "ok": false,
+                "error": format!("图片体积超过 {} MiB 限制", MAX_RELAY_IMAGE_BYTES / (1024 * 1024))
+            })),
+        )
+            .into_response();
+    }
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "path": path.to_string_lossy(),
+                "mediaType": media_type,
+                "bytes": bytes.len(),
+                "dataBase64": BASE64.encode(&bytes),
+            })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::OK,
+            Json(json!({ "ok": false, "error": err.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 /// 在 `127.0.0.1:0` 启动一次性真机执行 HTTP 服务。
 pub async fn start_host_exec_server(
     config: HostExecServerConfig,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>), String> {
     let canonical_root = std::fs::canonicalize(&config.local_root).ok();
+    let readonly_roots = default_readonly_skill_roots();
+    let canonical_temp_dir = std::fs::canonicalize(std::env::temp_dir()).ok();
     let state = Arc::new(ServerState {
         local_root: config.local_root,
         canonical_root,
+        readonly_roots,
+        canonical_temp_dir,
         remote_root: config.remote_root,
         file_mode: config.file_mode,
         token: config.token,
@@ -552,6 +679,7 @@ pub async fn start_host_exec_server(
         .route("/fs/write", post(handle_fs_write))
         .route("/fs/edit", post(handle_fs_edit))
         .route("/fs/list", post(handle_fs_list))
+        .route("/fs/view_image", post(handle_fs_view_image))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -604,6 +732,17 @@ pub async fn serve_mcp_stdio() -> i32 {
             "name": "host_info",
             "description": "Return real host machine OS, workspace root mapping, and file sync mode.",
             "inputSchema": { "type": "object", "properties": {} }
+        }),
+        json!({
+            "name": "host_view_image",
+            "description": "Inspect an image file (png/jpeg/gif/webp) from the user's real local machine and return it as a native multimodal image block.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": { "type": "string" }
+                }
+            }
         }),
     ];
     if file_mode == "remote_mcp" {
@@ -929,6 +1068,41 @@ async fn call_mcp_tool(
                 }),
             }
         }
+        "host_view_image" => {
+            let body = json!({ "path": args.get("path").and_then(Value::as_str).unwrap_or("") });
+            match post_json("/fs/view_image", body).await {
+                Ok(res) if res.get("ok").and_then(Value::as_bool) == Some(true) => {
+                    let resolved = res.get("path").and_then(Value::as_str).unwrap_or("");
+                    let media_type = res
+                        .get("mediaType")
+                        .and_then(Value::as_str)
+                        .unwrap_or("image/png");
+                    let bytes = res.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+                    let data = res.get("dataBase64").and_then(Value::as_str).unwrap_or("");
+                    json!({
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": format!("Viewed image {resolved} ({media_type}, {bytes} bytes)")
+                            },
+                            {
+                                "type": "image",
+                                "data": data,
+                                "mimeType": media_type
+                            }
+                        ]
+                    })
+                }
+                Ok(res) => json!({
+                    "isError": true,
+                    "content": [{ "type": "text", "text": format!("Error: {}", res.get("error").and_then(Value::as_str).unwrap_or("view_image failed")) }]
+                }),
+                Err(err) => json!({
+                    "isError": true,
+                    "content": [{ "type": "text", "text": format!("Error: {err}") }]
+                }),
+            }
+        }
         other => json!({
             "isError": true,
             "content": [{ "type": "text", "text": format!("Unknown tool: {other}") }]
@@ -1109,5 +1283,104 @@ mod tests {
 
         handle.abort();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn host_exec_allows_readonly_skill_dirs_and_view_image_while_blocking_writes() {
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
+        let base_dir = std::env::temp_dir().join(format!(
+            "multicc-host-exec-ro-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ws = base_dir.join("ws");
+        let ro_skills = base_dir.join("skills-ro");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(ro_skills.join("my-skill")).unwrap();
+        std::fs::write(
+            ro_skills.join("my-skill").join("SKILL.md"),
+            "---\nname: my-skill\n---\n# Hello Skill\n",
+        )
+        .unwrap();
+        let img_bytes: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(ws.join("screen.png"), img_bytes).unwrap();
+
+        std::env::set_var("MULTICC_HOST_EXEC_READONLY_DIRS", &ro_skills);
+        let token = generate_token().unwrap();
+        let (addr, handle) = start_host_exec_server(HostExecServerConfig {
+            local_root: ws.clone(),
+            remote_root: ws.to_string_lossy().into_owned(),
+            file_mode: "remote_mcp".to_string(),
+            token: token.clone(),
+            before_exec: None,
+            after_exec: None,
+        })
+        .await
+        .unwrap();
+        std::env::remove_var("MULTICC_HOST_EXEC_READONLY_DIRS");
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+        let auth = format!("Bearer {token}");
+        let skill_md = ro_skills.join("my-skill").join("SKILL.md");
+        let post_val = |url: String, body: Value| {
+            let c = client.clone();
+            let a = auth.clone();
+            async move {
+                c.post(url)
+                    .header("Authorization", a)
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::to_vec(&body).unwrap())
+                    .send()
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // 1. Reading SKILL.md inside readonly skill root succeeds
+        let read_resp = post_val(
+            format!("{base}/fs/read"),
+            json!({ "path": skill_md.to_string_lossy() }),
+        )
+        .await;
+        assert_eq!(read_resp.status(), StatusCode::OK);
+        let read_json: Value = serde_json::from_slice(&read_resp.bytes().await.unwrap()).unwrap();
+        assert_eq!(read_json["ok"], true);
+        assert!(read_json["content"]
+            .as_str()
+            .unwrap()
+            .contains("Hello Skill"));
+
+        // 2. Writing into readonly skill root MUST be forbidden (403)!
+        let write_resp = post_val(
+            format!("{base}/fs/write"),
+            json!({ "path": skill_md.to_string_lossy(), "content": "hacked" }),
+        )
+        .await;
+        assert_eq!(write_resp.status(), StatusCode::FORBIDDEN);
+
+        // 3. /fs/view_image returns base64 + mediaType
+        let img_resp = post_val(
+            format!("{base}/fs/view_image"),
+            json!({ "path": "screen.png" }),
+        )
+        .await;
+        assert_eq!(img_resp.status(), StatusCode::OK);
+        let img_json: Value = serde_json::from_slice(&img_resp.bytes().await.unwrap()).unwrap();
+        assert_eq!(img_json["ok"], true);
+        assert_eq!(img_json["mediaType"], "image/png");
+        assert_eq!(img_json["bytes"], img_bytes.len() as u64);
+        assert!(!img_json["dataBase64"].as_str().unwrap().is_empty());
+
+        handle.abort();
+        let _ = std::fs::remove_dir_all(&base_dir);
     }
 }

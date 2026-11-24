@@ -139,7 +139,8 @@ fn project(p: &Value, home: &Path) -> Result<(Value, Option<Value>), &'static st
         "egressBinding":binding["pluginId"].as_str().zip(binding["profileId"].as_str()).map(|(plugin,profile)|json!({"pluginId":plugin,"profileId":profile})),
         "source":p["source"].as_str().filter(|s|!s.is_empty()).unwrap_or("local"),"baseUrl":base,"model":model,
         "modelOptions":options,"aliasOnly":claude && !base.is_empty() && model.is_empty(),"aliasMap":aliases,
-        "tokenMask":masked(token),"hasToken":!token.is_empty(),"isOfficial":official,"officialAccountId":account
+        "tokenMask":masked(token),"hasToken":!token.is_empty(),"isOfficial":official,"officialAccountId":account,
+        "cliRelay":cfg["cliRelay"]==true || cfg["relayMode"]=="cli"
     });
     if truthy(&p["virtual"]) {
         public["virtual"] = p["virtual"].clone();

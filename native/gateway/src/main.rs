@@ -101,6 +101,16 @@ fn main() {
             .expect("tokio runtime");
         std::process::exit(runtime.block_on(multicc_gateway::host_exec::serve_mcp_stdio()));
     }
+    if args.first().map(String::as_str) == Some("mcp-relay-proxy") {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        std::process::exit(
+            runtime
+                .block_on(multicc_gateway::cli_relay_mcp_tunnel::serve_mcp_relay_proxy(&args[1..])),
+        );
+    }
     if args.iter().any(|arg| arg == "--version") {
         println!("{}", multicc_gateway::version_line());
         return;

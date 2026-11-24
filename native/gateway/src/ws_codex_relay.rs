@@ -143,7 +143,11 @@ env_key = \"MULTICC_CODEX_RELAY_KEY\"\n"
     Ok(())
 }
 
-fn build_codex_mcp_config_args(exec_bin: &str, router_mcp: Option<&RouterMcpSpec>) -> Vec<String> {
+fn build_codex_mcp_config_args(
+    exec_bin: &str,
+    router_mcp: Option<&RouterMcpSpec>,
+    bridged_mcp_servers: &[String],
+) -> Vec<String> {
     let mut cfg = vec![
         format!("mcp_servers.multicc_host_exec.command={}", json!(exec_bin)),
         format!(
@@ -180,6 +184,25 @@ fn build_codex_mcp_config_args(exec_bin: &str, router_mcp: Option<&RouterMcpSpec
             "mcp_servers.multicc_router.tool_timeout_sec=21630".to_string(),
             "mcp_servers.multicc_router.default_tools_approval_mode=\"approve\"".to_string(),
         ]);
+    }
+    for name in bridged_mcp_servers {
+        if crate::cli_relay_mcp_tunnel::is_valid_external_mcp_name(name) {
+            cfg.extend([
+                format!("mcp_servers.{name}.command={}", json!(exec_bin)),
+                format!(
+                    "mcp_servers.{name}.args={}",
+                    json!(["mcp-relay-proxy", "--server", name])
+                ),
+                format!(
+                    "mcp_servers.{name}.env_vars={}",
+                    json!(["MULTICC_HOST_EXEC_URL", "MULTICC_HOST_EXEC_TOKEN"])
+                ),
+                format!("mcp_servers.{name}.enabled=true"),
+                format!("mcp_servers.{name}.startup_timeout_sec=60"),
+                format!("mcp_servers.{name}.tool_timeout_sec=310"),
+                format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\""),
+            ]);
+        }
     }
     cfg
 }
@@ -430,6 +453,9 @@ pub async fn serve_codex_relay_session<S>(
         .unwrap_or("unknown")
         .to_string();
     let router_ctx = RouterContext::from_start_frame(&start_val);
+    let attachments = crate::cli_relay_attachments::parse_start_attachments(&start_val);
+    let skills = crate::cli_relay_skills::parse_start_skills(&start_val);
+    let bridged_mcp_servers = crate::cli_relay_mcp_tunnel::parse_start_mcp_servers(&start_val);
 
     let bridge = match HostRelayBridge::start(ws_tx.clone()).await {
         Ok(b) => b,
@@ -471,7 +497,8 @@ pub async fn serve_codex_relay_session<S>(
     let _ = std::fs::create_dir_all(&scratch_dir);
 
     let active_router_mcp = router_ctx.as_ref().and_then(|_| router_mcp.as_ref());
-    let mcp_cfg_args = build_codex_mcp_config_args(&exec_bin, active_router_mcp);
+    let mcp_cfg_args =
+        build_codex_mcp_config_args(&exec_bin, active_router_mcp, &bridged_mcp_servers);
 
     let codex_bin = host_codex_bin();
     let mut cmd = Command::new(&codex_bin);
@@ -556,14 +583,44 @@ pub async fn serve_codex_relay_session<S>(
         collected
     });
 
-    let guidance = build_cli_remote_guidance(
+    let staged_attachments = if attachments.is_empty() {
+        None
+    } else {
+        match crate::cli_relay_attachments::stage_attachments_to_dir(
+            &scratch_dir,
+            bridge.token(),
+            &attachments,
+        ) {
+            Ok(staged) => Some(staged),
+            Err(err) => {
+                bridge.shutdown().await;
+                send_codex_error_and_exit(&ws_tx, &err);
+                drop(ws_tx);
+                let _ = writer_task.await;
+                return;
+            }
+        }
+    };
+    let effective_prompt = match staged_attachments.as_ref() {
+        Some(staged) => {
+            crate::cli_relay_attachments::rewrite_prompt_with_staged_paths(&prompt, staged)
+        }
+        None => prompt,
+    };
+
+    let mut guidance = build_cli_remote_guidance(
         "Codex",
         &local_root,
         &scratch_dir.to_string_lossy(),
         &local_os,
         active_router_mcp.is_some(),
     );
-    let wrapped_prompt = format!("{guidance}\n\n{prompt}");
+    let skills_block = crate::cli_relay_skills::format_skills_guidance(&skills);
+    if !skills_block.is_empty() {
+        guidance.push_str("\n\n");
+        guidance.push_str(&skills_block);
+    }
+    let wrapped_prompt = format!("{guidance}\n\n{effective_prompt}");
     let scratch_str = scratch_dir.to_string_lossy().into_owned();
 
     // 驱动 codex app-server 单回合协议：
@@ -787,9 +844,19 @@ pub async fn serve_codex_relay_session<S>(
                         );
                         let turn_req_id = next_rpc_id;
                         next_rpc_id += 1;
+                        let mut turn_input =
+                            vec![json!({ "type": "text", "text": wrapped_prompt })];
+                        if let Some(staged) = staged_attachments.as_ref() {
+                            for (_, host_path) in staged.entries() {
+                                turn_input.push(json!({
+                                    "type": "localImage",
+                                    "path": host_path.to_string_lossy(),
+                                }));
+                            }
+                        }
                         let mut turn_params = json!({
                             "threadId": tid,
-                            "input": [{ "type": "text", "text": wrapped_prompt }],
+                            "input": turn_input,
                         });
                         if let Some(e) = &effort {
                             if let Some(map) = turn_params.as_object_mut() {
@@ -902,9 +969,16 @@ mod tests {
 
     #[test]
     fn codex_mcp_config_uses_env_vars_and_never_embeds_secrets() {
-        let args = build_codex_mcp_config_args("/usr/local/bin/multicc-gateway", None);
+        let args = build_codex_mcp_config_args(
+            "/usr/local/bin/multicc-gateway",
+            None,
+            &["playwright".to_string()],
+        );
         let joined = args.join("\n");
         assert!(joined.contains("mcp_servers.multicc_host_exec.env_vars="));
+        assert!(joined.contains(
+            "mcp_servers.playwright.args=[\"mcp-relay-proxy\",\"--server\",\"playwright\"]"
+        ));
         assert!(joined.contains("default_tools_approval_mode=\"approve\""));
         assert!(!joined.contains("Bearer "));
     }

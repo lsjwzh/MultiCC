@@ -222,6 +222,16 @@ pub async fn serve_claude_relay_turn(
     });
 
     let router_cfg = LocalRouterConfig::from_env();
+    let attachments =
+        crate::cli_relay_attachments::collect_prompt_image_attachments(&opts.prompt, local_root);
+    let skills = crate::cli_relay_skills::collect_client_skills(local_root);
+    let mcp_specs = crate::cli_relay_mcp_tunnel::discover_client_mcp_servers(local_root);
+    let mcp_manager = (!mcp_specs.is_empty()).then(|| {
+        std::sync::Arc::new(crate::cli_relay_mcp_tunnel::ClientMcpManager::new(
+            mcp_specs,
+            local_root.to_path_buf(),
+        ))
+    });
     let mut start_obj = json!({
         "type": "start",
         "model": opts.model,
@@ -233,6 +243,21 @@ pub async fn serve_claude_relay_turn(
         "localRoot": local_root_str,
         "localOs": std::env::consts::OS,
     });
+    if !attachments.is_empty() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("attachments".to_string(), json!(attachments));
+        }
+    }
+    if !skills.is_empty() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("skills".to_string(), json!(skills));
+        }
+    }
+    if let Some(mgr) = mcp_manager.as_ref() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("mcpServers".to_string(), json!(mgr.server_names()));
+        }
+    }
     if let Some(rc) = router_cfg.as_ref() {
         if let Some(map) = start_obj.as_object_mut() {
             map.insert("routerContext".to_string(), rc.to_start_frame_json());
@@ -244,7 +269,8 @@ pub async fn serve_claude_relay_turn(
         return 1;
     }
 
-    let dispatcher = ClientRpcDispatcher::new(local_addr.port(), local_token, router_cfg);
+    let dispatcher =
+        ClientRpcDispatcher::with_mcp(local_addr.port(), local_token, router_cfg, mcp_manager);
     let mut exit_code: Option<i32> = None;
     let mut saw_result = false;
 
@@ -334,13 +360,17 @@ pub async fn probe_claude_cli_relay(target: &ClaudeCliRelayTarget) -> Value {
             if status == 200 && body.get("ok") == Some(&Value::Bool(true)) {
                 body
             } else if is_auth_rejected_http(status, loc.as_deref()) {
-                json!({ "ok": false, "error": "分享码已被撤销或无效，请向出借方重新获取" })
+                json!({
+                    "ok": false,
+                    "status": status,
+                    "error": "分享码已被撤销或无效，请向出借方重新获取"
+                })
             } else {
                 let err = body
                     .get("error")
                     .and_then(Value::as_str)
-                    .unwrap_or("远端 Host 暂不支持 Claude CLI 借道");
-                json!({ "ok": false, "error": err })
+                    .unwrap_or("远端 Host 暂不支持远程 CLI 模式");
+                json!({ "ok": false, "status": status, "error": err })
             }
         }
         Err(err) => json!({ "ok": false, "error": format!("无法连接远端借道服务: {err}") }),
@@ -426,24 +456,56 @@ if [ "$MULTICC_ROUTER_CAPABILITY" = "{client_secret_cap}" ]; then
   echo "LEAKED client capability!" >&2
   exit 52
 fi
-SAW_TOOLS_EMPTY=0
+SAW_TOOLS_WEB=0
 SAW_STRICT_MCP=0
 SAW_SETTING_EMPTY=0
+SAW_STREAM_INPUT=0
+SAW_SKILL_GUIDE=0
+SAW_MCP_DEMO=0
 PREV=""
 for arg in "$@"; do
-  if [ "$PREV" = "--tools" ] && [ -z "$arg" ]; then SAW_TOOLS_EMPTY=1; fi
+  if [ "$PREV" = "--tools" ] && [ "$arg" = "WebSearch,WebFetch,Agent,TodoWrite" ]; then SAW_TOOLS_WEB=1; fi
   if [ "$PREV" = "--setting-sources" ] && [ -z "$arg" ]; then SAW_SETTING_EMPTY=1; fi
+  if [ "$PREV" = "--input-format" ] && [ "$arg" = "stream-json" ]; then SAW_STREAM_INPUT=1; fi
+  if [ "$PREV" = "--append-system-prompt" ]; then
+    case "$arg" in *demo-local-skill*) SAW_SKILL_GUIDE=1 ;; esac
+  fi
+  if [ "$PREV" = "--mcp-config" ]; then
+    case "$arg" in
+      *demo_browser*mcp-relay-proxy*) SAW_MCP_DEMO=1 ;;
+    esac
+    case "$arg" in
+      *CLIENT_BROWSER_SECRET_999*) echo "LEAKED client MCP secret to Host!" >&2; exit 57 ;;
+    esac
+  fi
   if [ "$arg" = "--strict-mcp-config" ]; then SAW_STRICT_MCP=1; fi
   PREV="$arg"
 done
-if [ "$SAW_TOOLS_EMPTY" != "1" ] || [ "$SAW_STRICT_MCP" != "1" ] || [ "$SAW_SETTING_EMPTY" != "1" ]; then
-  echo "missing safety flags: tools=$SAW_TOOLS_EMPTY strict=$SAW_STRICT_MCP settings=$SAW_SETTING_EMPTY" >&2
+if [ "$SAW_TOOLS_WEB" != "1" ] || [ "$SAW_STRICT_MCP" != "1" ] || [ "$SAW_SETTING_EMPTY" != "1" ] || [ "$SAW_SKILL_GUIDE" != "1" ] || [ "$SAW_MCP_DEMO" != "1" ]; then
+  echo "missing safety/tunnel flags: tools=$SAW_TOOLS_WEB strict=$SAW_STRICT_MCP settings=$SAW_SETTING_EMPTY skill=$SAW_SKILL_GUIDE mcp=$SAW_MCP_DEMO" >&2
   exit 53
+fi
+if [ "$SAW_STREAM_INPUT" = "1" ]; then
+  STDIN_LINE="$(cat)"
+  case "$STDIN_LINE" in
+    *'"type":"image"'*'"media_type":"image/png"'*) ;;
+    *) echo "missing multimodal image block in stream-json stdin: $STDIN_LINE" >&2; exit 56 ;;
+  esac
 fi
 RES="$(curl -sS -X POST -H "Authorization: Bearer $MULTICC_HOST_EXEC_TOKEN" -H "Content-Type: application/json" -d '{{"path":"note.txt"}}' "$MULTICC_HOST_EXEC_URL/fs/read")"
 case "$RES" in
   *claude-from-client-disk*) ;;
   *) echo "unexpected fs/read: $RES" >&2; exit 54 ;;
+esac
+VIMG="$(curl -sS -X POST -H "Authorization: Bearer $MULTICC_HOST_EXEC_TOKEN" -H "Content-Type: application/json" -d '{{"path":"sample.png"}}' "$MULTICC_HOST_EXEC_URL/fs/view_image")"
+case "$VIMG" in
+  *'"mediaType":"image/png"'*'"dataBase64":"'*) ;;
+  *) echo "unexpected fs/view_image: $VIMG" >&2; exit 58 ;;
+esac
+MCP_CALL="$(curl -sS -X POST -H "Authorization: Bearer $MULTICC_HOST_EXEC_TOKEN" -H "Content-Type: application/json" -d '{{"jsonrpc":"2.0","id":"call-77","method":"tools/call","params":{{"name":"snap"}}}}' "$MULTICC_HOST_EXEC_URL/mcp/demo_browser")"
+case "$MCP_CALL" in
+  *'"id":"call-77"'*'browser-ran-on-client:CLIENT_BROWSER_SECRET_999'*) ;;
+  *) echo "unexpected MCP tunnel reply: $MCP_CALL" >&2; exit 59 ;;
 esac
 RT="$(curl -sS -X POST -H "x-multicc-router-capability: $MULTICC_ROUTER_CAPABILITY" -H "Content-Type: application/json" -d '{{"arguments":{{"k":"v"}}}}' "$MULTICC_BASE_URL/api/internal/router-tools/wait_for_user_answer")"
 case "$RT" in
@@ -467,7 +529,63 @@ exit 0
         std::env::set_var("MULTICC_ROUTER_CAPABILITY", client_secret_cap);
         std::env::set_var("MULTICC_SESSION_ID", "s-claude-1");
 
-        // Run 2 turns (turn 1: --session-id, turn 2: --resume) and verify IDENTICAL stable scratch cwd!
+        let sample_png = client_ws.join("sample.png");
+        std::fs::write(
+            &sample_png,
+            [
+                0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
+                0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00,
+                0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54,
+                0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4,
+                0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+            ],
+        )
+        .unwrap();
+
+        // Client-local project skill + Client-local stdio MCP server (with secret env kept on Client!)
+        let proj_skill_dir = client_ws
+            .join(".claude")
+            .join("skills")
+            .join("demo-local-skill");
+        std::fs::create_dir_all(&proj_skill_dir).unwrap();
+        std::fs::write(
+            proj_skill_dir.join("SKILL.md"),
+            "---\nname: demo-local-skill\ndescription: Local helper skill\n---\n# Instructions\n",
+        )
+        .unwrap();
+
+        let fake_client_mcp = root.join("fake-client-mcp.sh");
+        std::fs::write(
+            &fake_client_mcp,
+            r#"#!/bin/sh
+while IFS= read -r LINE; do
+  ID=$(printf '%s' "$LINE" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  if [ -n "$ID" ]; then
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"browser-ran-on-client:%s"}]}}\n' "$ID" "$BROWSER_API_KEY"
+  fi
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_client_mcp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            client_ws.join(".mcp.json"),
+            json!({
+                "mcpServers": {
+                    "demo_browser": {
+                        "command": fake_client_mcp,
+                        "args": [],
+                        "env": { "BROWSER_API_KEY": "CLIENT_BROWSER_SECRET_999" }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::env::set_var("MULTICC_RELAY_MCP_ALLOWLIST", "demo_browser");
+
+        // Run 2 turns (turn 1: text-only --session-id, turn 2: --resume + PNG multimodal stream-json)
+        // and verify IDENTICAL stable scratch cwd!
         for resume in [false, true] {
             let ws_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let ws_port = ws_listener.local_addr().unwrap().port();
@@ -502,7 +620,11 @@ exit 0
                     session_id: Some("sess-uuid-1".into()),
                     resume,
                     system_prompt_append: None,
-                    prompt: "check note.txt".into(),
+                    prompt: if resume {
+                        format!("inspect image {}", sample_png.display())
+                    } else {
+                        "check note.txt".into()
+                    },
                 },
             )
             .await;
@@ -526,6 +648,7 @@ exit 0
         std::env::remove_var("MULTICC_BASE_URL");
         std::env::remove_var("MULTICC_ROUTER_CAPABILITY");
         std::env::remove_var("MULTICC_SESSION_ID");
+        std::env::remove_var("MULTICC_RELAY_MCP_ALLOWLIST");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

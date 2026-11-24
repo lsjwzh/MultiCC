@@ -26,6 +26,7 @@ test('provider summaries are whitelisted and credential material is discarded', 
     },
     tokenMask: 'raw-token-must-drop',
     hasToken: true,
+    cliRelay: true,
     authToken: 'raw-token',
     apiKey: 'raw-api-key',
     settingsConfig: { env: { ANTHROPIC_AUTH_TOKEN: 'nested-secret' } },
@@ -37,6 +38,7 @@ test('provider summaries are whitelisted and credential material is discarded', 
   assert.equal(provider.baseUrl, 'https://relay.test/anthropic');
   assert.equal(provider.tokenMask, '');
   assert.equal(provider.hasToken, true);
+  assert.equal(provider.cliRelay, true);
   assert.equal(provider.authToken, undefined);
   assert.equal(provider.apiKey, undefined);
   assert.equal(provider.protocol, 'anthropic');

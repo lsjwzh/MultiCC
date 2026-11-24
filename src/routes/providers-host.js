@@ -478,6 +478,17 @@ function mountProvidersHostRoute(app, options = {}) {
       try {
         const provider = deps.providers.getProvider(appType, id);
         if (!provider) return { ok: true, found: false };
+        const cliRelay = typeof deps.providers.resolveCliRelayTarget === 'function'
+          ? deps.providers.resolveCliRelayTarget(appType, id)
+          : null;
+        if (cliRelay) {
+          return {
+            ok: true,
+            found: true,
+            kind: appType,
+            cliRelay,
+          };
+        }
         const config = typeof provider.settingsConfig === 'string'
           ? JSON.parse(provider.settingsConfig)
           : (provider.settingsConfig || {});

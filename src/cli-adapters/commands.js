@@ -75,6 +75,18 @@ function firstRunnable(paths, context) {
   return paths.find(candidate => isRunnableFile(candidate, context)) || null;
 }
 
+function remoteCliAvailable(candidate, options = {}) {
+  if (options.env || options.fsImpl) return false;
+  const stem = path.basename(String(candidate || '').trim()).replace(/\.[^.\\/]+$/, '').toLowerCase();
+  try {
+    if (stem === 'agy') return !!require('../agy-accounts').hasRemoteAccount();
+    if (stem === 'claude' || stem === 'codex') {
+      return !!require('../providers/core').hasCliRelayProvider(stem);
+    }
+  } catch (_) {}
+  return false;
+}
+
 // Availability must use the same Windows extension rules as command resolution:
 // an already resolved codex.exe must never be probed as codex.exe.EXE.
 function isCommandAvailable(command, options = {}) {
@@ -85,8 +97,9 @@ function isCommandAvailable(command, options = {}) {
   const explicitPath = pathApi.isAbsolute(candidate) || candidate.includes('/')
     || (isWindows && candidate.includes('\\'));
   if (explicitPath) {
-    return executableNames(candidate, { isWindows, env })
-      .some(file => isRunnableFile(file, { isWindows, fsImpl }));
+    if (executableNames(candidate, { isWindows, env })
+      .some(file => isRunnableFile(file, { isWindows, fsImpl }))) return true;
+    return remoteCliAvailable(candidate, options);
   }
   if (findExecutableOnPath(candidate, { isWindows, env, fsImpl })) return true;
   // A boot-time fallback names the extension that was expected then
@@ -94,17 +107,11 @@ function isCommandAvailable(command, options = {}) {
   // (`claude.cmd`). The stem goes back through PATHEXT instead of pinning the
   // extension — this is what lets a CLI installed after startup be detected.
   if (!isWindows) {
-    if (!options.env && !options.fsImpl && candidate === 'agy' && require('../agy-accounts').hasRemoteAccount()) {
-      return true;
-    }
-    return false;
+    return remoteCliAvailable(candidate, options);
   }
   const stem = candidate.replace(/\.[^.\\/]+$/, '');
   if (stem !== candidate && !!findExecutableOnPath(stem, { isWindows, env, fsImpl })) return true;
-  if (!options.env && !options.fsImpl && (candidate.toLowerCase() === 'agy' || candidate.toLowerCase() === 'agy.exe')) {
-    return require('../agy-accounts').hasRemoteAccount();
-  }
-  return false;
+  return remoteCliAvailable(candidate, options);
 }
 
 function createContext(options) {

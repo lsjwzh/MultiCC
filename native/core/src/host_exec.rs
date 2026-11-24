@@ -100,6 +100,12 @@ pub struct HostFsListRequest {
     pub path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostViewImageRequest {
+    pub path: String,
+}
+
 /// 恒定时间校验原始密钥头（如 `x-multicc-router-capability`）。
 pub fn verify_raw_token(actual: Option<&str>, expected: &str) -> bool {
     if expected.is_empty() {
@@ -272,6 +278,17 @@ const TOOLS = [
     description: 'Return real host machine OS, workspace root mapping, and file sync mode.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'host_view_image',
+    description: 'Inspect an image file (png/jpeg/gif/webp) from the user\'s real local machine and return it as a native multimodal image block.',
+    inputSchema: {
+      type: 'object',
+      required: ['path'],
+      properties: {
+        path: { type: 'string', description: 'Image path relative to workspace root, absolute workspace path, or $TMPDIR/multicc_* screenshot.' },
+      },
+    },
+  },
 ];
 
 if (FILE_MODE === 'remote_mcp') {
@@ -399,6 +416,20 @@ async function handleToolCall(name, args) {
     return {
       isError: !res.ok,
       content: [{ type: 'text', text: res.ok ? JSON.stringify(res.entries || [], null, 2) : ('Error: ' + (res.error || 'list failed')) }],
+    };
+  }
+  if (name === 'host_view_image') {
+    const res = await postHost('/fs/view_image', {
+      path: String(input.path || ''),
+    });
+    if (!res.ok) {
+      return { isError: true, content: [{ type: 'text', text: 'Error: ' + (res.error || 'view_image failed') }] };
+    }
+    return {
+      content: [
+        { type: 'text', text: 'Viewed image ' + (res.path || '') + ' (' + res.mediaType + ', ' + (res.bytes || 0) + ' bytes)' },
+        { type: 'image', data: String(res.dataBase64 || ''), mimeType: String(res.mediaType || 'image/png') },
+      ],
     };
   }
   return { isError: true, content: [{ type: 'text', text: 'Unknown tool: ' + name }] };

@@ -511,6 +511,7 @@ pub fn create_payload(input: Option<&Map<String, Value>>) -> Result<Map<String, 
         "settingsConfig",
         "virtual",
         "aliasMap",
+        "cliRelay",
     ] {
         if let Some(value) = input.get(key) {
             out.insert(key.into(), value.clone());
@@ -541,7 +542,13 @@ pub fn update_payload(input: Option<&Map<String, Value>>) -> Result<Map<String, 
             out.insert(key.into(), value.clone());
         }
     }
-    for key in ["apiFormat", "settingsConfig", "virtual", "aliasMap"] {
+    for key in [
+        "apiFormat",
+        "settingsConfig",
+        "virtual",
+        "aliasMap",
+        "cliRelay",
+    ] {
         if let Some(value) = input.get(key) {
             out.insert(key.into(), value.clone());
         }
@@ -2237,5 +2244,22 @@ mod tests {
                 id: "p1".into()
             }
         );
+    }
+
+    #[test]
+    fn create_and_update_payload_forward_cli_relay_toggle() {
+        let create_in = serde_json::json!({
+            "appType": "codex",
+            "name": "Relay",
+            "baseUrl": "https://host.example/codex-proxy/abc",
+            "authToken": "mcr1.tok",
+            "cliRelay": true
+        });
+        let created = create_payload(create_in.as_object()).unwrap();
+        assert_eq!(created.get("cliRelay"), Some(&serde_json::json!(true)));
+
+        let patch_in = serde_json::json!({ "cliRelay": false });
+        let patched = update_payload(patch_in.as_object()).unwrap();
+        assert_eq!(patched.get("cliRelay"), Some(&serde_json::json!(false)));
     }
 }

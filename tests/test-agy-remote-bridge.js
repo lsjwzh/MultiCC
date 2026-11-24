@@ -726,3 +726,58 @@ test('cli-relay-spawn builds claude-remote-bridge and codex-remote-bridge invoca
   assert.ok(codexTurn.finalSpawnArgs.includes('thr_abc'));
   assert.equal(JSON.parse(env3.MULTICC_CODEX_CLI_RELAY_JSON).appType, 'codex');
 });
+
+test('isCommandAvailable treats claude/codex as available when a Remote CLI relay provider is enabled', () => {
+  const work = mkTempDir('cli-relay-avail');
+  const prevDataDir = process.env.MULTICC_DATA_DIR;
+  const prevPath = process.env.PATH;
+  const providersPath = require.resolve('../src/providers/core');
+  const commandsPath = require.resolve('../src/cli-adapters/commands');
+  try {
+    process.env.MULTICC_DATA_DIR = work;
+    process.env.PATH = path.join(work, 'empty-bin');
+    fs.mkdirSync(process.env.PATH, { recursive: true });
+    delete require.cache[providersPath];
+    delete require.cache[commandsPath];
+
+    writeJson(path.join(work, 'providers.json'), {
+      providers: [
+        {
+          id: 'relay-codex-1',
+          appType: 'codex',
+          name: 'Codex Remote CLI',
+          settingsConfig: {
+            cliRelay: true,
+            config: 'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://host.example/codex-proxy/abc"\n',
+            auth: { OPENAI_API_KEY: 'mcr1.share.secret' },
+          },
+        },
+        {
+          id: 'relay-claude-off',
+          appType: 'claude',
+          name: 'Claude HTTP Only',
+          settingsConfig: {
+            env: {
+              ANTHROPIC_BASE_URL: 'https://host.example/claude-proxy/abc/remote',
+              ANTHROPIC_AUTH_TOKEN: 'mcr1.share.secret',
+            },
+          },
+        },
+      ],
+    });
+
+    const { isCommandAvailable } = require('../src/cli-adapters/commands');
+    assert.equal(isCommandAvailable('codex', { isWindows: false }), true);
+    assert.equal(isCommandAvailable('/nonexistent/bin/codex', { isWindows: false }), true);
+    assert.equal(isCommandAvailable('claude', { isWindows: false }), false);
+    // Explicit env/fsImpl keeps unit-test isolation without reading host provider store.
+    assert.equal(isCommandAvailable('codex', { isWindows: false, env: { PATH: process.env.PATH } }), false);
+  } finally {
+    delete require.cache[providersPath];
+    delete require.cache[commandsPath];
+    if (prevDataDir === undefined) delete process.env.MULTICC_DATA_DIR;
+    else process.env.MULTICC_DATA_DIR = prevDataDir;
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+  }
+});

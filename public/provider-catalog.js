@@ -632,6 +632,7 @@
       egressIpAllowlist: Object.freeze((Array.isArray(value.egressIpAllowlist) ? value.egressIpAllowlist : [])
         .map(item => text(item, 64)).filter(Boolean)),
       hasToken: value.hasToken === true,
+      cliRelay: value.cliRelay === true,
       isOfficial: value.isOfficial === true,
       // 内置官方线路（每个已登录账号一条，或一个都没登录时的「选此登录」占位）。
       builtinOfficial: value.builtinOfficial === true,

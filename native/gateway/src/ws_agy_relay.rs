@@ -381,6 +381,7 @@ pub async fn handle_ws(
 fn ensure_host_relay_mcp_config(
     account_home: &Path,
     router_mcp: Option<&RouterMcpSpec>,
+    bridged_mcp_servers: &[String],
 ) -> Result<(), String> {
     let mcp_bin = resolve_host_exec_mcp_bin()?;
     let cfg_path = account_home
@@ -415,22 +416,37 @@ fn ensure_host_relay_mcp_config(
         *servers = json!({});
     }
     let map = servers.as_object_mut().expect("mcpServers");
-    let mut changed = false;
-    if map.get("multicc_host_exec") != Some(&desired_exec) {
-        map.insert("multicc_host_exec".to_string(), desired_exec);
-        changed = true;
-    }
+    let before = serde_json::to_string(map).unwrap_or_default();
+    // 清理上一次回合遗留的 mcp-relay-proxy 条目，再写入本回合需要的外部 MCP
+    map.retain(|_, val| {
+        val.get("args")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(Value::as_str)
+            != Some("mcp-relay-proxy")
+    });
+    map.insert("multicc_host_exec".to_string(), desired_exec);
     if let Some(spec) = router_mcp {
         let desired_router = json!({
             "command": spec.node_bin,
             "args": [spec.script_path.to_string_lossy().into_owned()],
         });
-        if map.get("multicc_router") != Some(&desired_router) {
-            map.insert("multicc_router".to_string(), desired_router);
-            changed = true;
+        map.insert("multicc_router".to_string(), desired_router);
+    }
+    for name in bridged_mcp_servers {
+        if crate::cli_relay_mcp_tunnel::is_valid_external_mcp_name(name) && !map.contains_key(name)
+        {
+            map.insert(
+                name.clone(),
+                json!({
+                    "command": mcp_bin,
+                    "args": ["mcp-relay-proxy", "--server", name],
+                }),
+            );
         }
     }
-    if changed {
+    let after = serde_json::to_string(map).unwrap_or_default();
+    if before != after {
         state_file::write_json_atomic(&cfg_path, &root)
             .map_err(|err| format!("写入 Host mcp_config.json 失败: {err}"))?;
     }
@@ -539,6 +555,9 @@ pub async fn serve_relay_session_with_router<S>(
         .unwrap_or("unknown")
         .to_string();
     let router_ctx = RouterContext::from_start_frame(&start_val);
+    let attachments = crate::cli_relay_attachments::parse_start_attachments(&start_val);
+    let skills = crate::cli_relay_skills::parse_start_skills(&start_val);
+    let bridged_mcp_servers = crate::cli_relay_mcp_tunnel::parse_start_mcp_servers(&start_val);
 
     // 校验 Host 本地账号存在 + 实时解析 Host 绑定的出口代理（fail-closed）。
     let (account_home, egress_binding) =
@@ -573,7 +592,9 @@ pub async fn serve_relay_session_with_router<S>(
     };
 
     let active_router_mcp = router_ctx.as_ref().and_then(|_| router_mcp.as_ref());
-    if let Err(err) = ensure_host_relay_mcp_config(&account_home, active_router_mcp) {
+    if let Err(err) =
+        ensure_host_relay_mcp_config(&account_home, active_router_mcp, &bridged_mcp_servers)
+    {
         send_agy_error_and_exit(&ws_tx, &err);
         drop(ws_tx);
         let _ = writer_task.await;
@@ -593,10 +614,32 @@ pub async fn serve_relay_session_with_router<S>(
     // 为本轮对话创建空隔离目录，禁止 agy 触碰 Host 的任何业务文件。
     let (scratch_dir, _) = stable_session_scratch_dir("agy", &account_id, None, bridge.token());
     let _ = std::fs::create_dir_all(&scratch_dir);
+    let _staged_attachments = if attachments.is_empty() {
+        None
+    } else {
+        crate::cli_relay_attachments::stage_attachments_to_dir(
+            &scratch_dir,
+            bridge.token(),
+            &attachments,
+        )
+        .ok()
+    };
+    let effective_prompt = match _staged_attachments.as_ref() {
+        Some(staged) => {
+            crate::cli_relay_attachments::rewrite_prompt_with_staged_paths(&prompt, staged)
+        }
+        None => prompt,
+    };
 
     let settings_json = build_remote_permissions_settings(FILE_MODE_REMOTE_MCP);
+    let skills_block = crate::cli_relay_skills::format_skills_guidance(&skills);
+    let prompt_with_skills = if skills_block.is_empty() {
+        effective_prompt
+    } else {
+        format!("{skills_block}\n\n{effective_prompt}")
+    };
     let wrapped_prompt = wrap_remote_prompt(
-        &prompt,
+        &prompt_with_skills,
         &local_root,
         &scratch_dir.to_string_lossy(),
         &local_os,

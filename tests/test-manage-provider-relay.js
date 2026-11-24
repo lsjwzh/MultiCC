@@ -70,6 +70,14 @@ test('relayProviderInput carries the shared model catalog into provider creation
     model: 'gpt-5.6-sol',
     models: ['gpt-5.6-sol', 'gpt-5.6-terra'],
   });
+
+  const withCliRelay = ctx.relayProviderInput({
+    appType: 'claude',
+    name: 'Claude · 借道',
+    baseUrl: 'https://relay.example/claude-proxy/abc/remote',
+    authToken: 'mcr1.tok',
+  }, { cliRelay: true });
+  assert.equal(withCliRelay.cliRelay, true);
 });
 
 test('v2 share codes preserve the independently-scoped relay credential', () => {

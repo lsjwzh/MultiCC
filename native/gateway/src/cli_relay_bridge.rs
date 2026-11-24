@@ -78,19 +78,29 @@ pub fn build_cli_remote_guidance(
         "[MultiCC Remote CLI Relay Execution Environment]\n\
 - This {cli_name} brain runs on a remote relay Host inside an empty isolated scratch directory (`{remote_root}`).\n\
 - ALL built-in local shell, file read/write, and patch tools are DISABLED on this Host — do NOT attempt to use them.\n\
-- To inspect files, edit files, or run commands on the user's REAL local development machine (`{local_os}`, workspace `{local_root}`), ALWAYS use the `multicc_host_exec` MCP tools:\n\
+- To inspect files, edit files, view images, or run commands on the user's REAL local development machine (`{local_os}`, workspace `{local_root}`), ALWAYS use the `multicc_host_exec` MCP tools:\n\
   * `host_list_dir` — list directory entries (pass `path` relative to workspace root, e.g. \".\" or \"src\")\n\
   * `host_read_file` — read a file directly from the real machine (pass `path`, optional `max_bytes`)\n\
   * `host_edit_file` — exact search-and-replace edit on a file in the real machine (pass `path`, `old_text`, `new_text`, optional `replace_all`)\n\
   * `host_write_file` — write a file directly on the real machine (pass `path`, `content`)\n\
+  * `host_view_image` — view an image file (png/jpeg/gif/webp) on the real machine as a native multimodal image\n\
   * `host_run_command` — run shell commands (git, build, tests, grep, etc.) on the real machine (pass `command`, optional `cwd`, optional `timeout_seconds`)\n\
   * `host_info` — inspect real machine OS and workspace root mapping{router_note}\n\
+- If you spawn subagents, explicitly instruct them to use `multicc_host_exec` tools as well.\n\
 - Always pass relative paths (e.g. `src/main.rs`) or paths under `{local_root}`."
     )
 }
 
 /// 生成供 Claude / Codex 使用的 `multicc_host_exec` (+ 可选 `multicc_router`) 内联 MCP JSON 对象。
 pub fn build_inline_mcp_servers_json(router_mcp: Option<&RouterMcpSpec>) -> Result<Value, String> {
+    build_inline_mcp_servers_json_with_external(router_mcp, &[])
+}
+
+/// 生成供 Claude 使用的内联 MCP JSON，包含 `multicc_host_exec`、可选 `multicc_router` 以及透传的第三方 MCP。
+pub fn build_inline_mcp_servers_json_with_external(
+    router_mcp: Option<&RouterMcpSpec>,
+    bridged_mcp_servers: &[String],
+) -> Result<Value, String> {
     let exec_bin = resolve_host_exec_mcp_bin()?;
     let mut servers = serde_json::Map::new();
     servers.insert(
@@ -108,6 +118,19 @@ pub fn build_inline_mcp_servers_json(router_mcp: Option<&RouterMcpSpec>) -> Resu
                 "args": [spec.script_path.to_string_lossy().into_owned()],
             }),
         );
+    }
+    for name in bridged_mcp_servers {
+        if crate::cli_relay_mcp_tunnel::is_valid_external_mcp_name(name)
+            && !servers.contains_key(name)
+        {
+            servers.insert(
+                name.clone(),
+                json!({
+                    "command": exec_bin,
+                    "args": ["mcp-relay-proxy", "--server", name],
+                }),
+            );
+        }
     }
     Ok(json!({ "mcpServers": Value::Object(servers) }))
 }
@@ -306,6 +329,7 @@ struct BridgeState {
     ws_tx: mpsc::UnboundedSender<String>,
     pending_exec: Mutex<HashMap<String, oneshot::Sender<(u16, Value)>>>,
     pending_router: Mutex<HashMap<String, PendingRouterEntry>>,
+    pending_mcp: Mutex<HashMap<String, oneshot::Sender<Value>>>,
     next_id: AtomicU64,
 }
 
@@ -362,6 +386,7 @@ impl HostRelayBridge {
             ws_tx,
             pending_exec: Mutex::new(HashMap::new()),
             pending_router: Mutex::new(HashMap::new()),
+            pending_mcp: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
         });
 
@@ -379,6 +404,8 @@ impl HostRelayBridge {
             .route("/fs/write", post(rpc_write_file))
             .route("/fs/edit", post(rpc_edit_file))
             .route("/fs/list", post(rpc_list_dir))
+            .route("/fs/view_image", post(rpc_view_image))
+            .route("/mcp/{server}", post(rpc_mcp_tunnel))
             .route("/api/internal/router-tools/{tool}", post(rpc_router_tool))
             .with_state(state.clone());
 
@@ -539,6 +566,13 @@ impl HostRelayBridgeHandle {
                 }
                 true
             }
+            "mcp_rpc_res" => {
+                let resp = val.get("response").cloned().unwrap_or_else(|| json!({}));
+                if let Some(tx) = self.state.pending_mcp.lock().await.remove(req_id) {
+                    let _ = tx.send(resp);
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -546,6 +580,7 @@ impl HostRelayBridgeHandle {
     /// 连接断开时立即唤醒所有挂起中的 RPC，避免子进程死等超时。
     pub async fn fail_all_pending(&self) {
         self.state.pending_exec.lock().await.clear();
+        self.state.pending_mcp.lock().await.clear();
         let entries: Vec<_> = self
             .state
             .pending_router
@@ -651,6 +686,100 @@ async fn rpc_list_dir(
     Json(body): Json<Value>,
 ) -> axum::response::Response {
     forward_host_exec(state, headers, "/fs/list", body).await
+}
+async fn rpc_view_image(
+    State(state): State<Arc<BridgeState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> axum::response::Response {
+    forward_host_exec(state, headers, "/fs/view_image", body).await
+}
+
+async fn rpc_mcp_tunnel(
+    State(state): State<Arc<BridgeState>>,
+    AxumPath(server): AxumPath<String>,
+    headers: HeaderMap,
+    Json(message): Json<Value>,
+) -> axum::response::Response {
+    let auth = headers.get("authorization").and_then(|v| v.to_str().ok());
+    if !verify_bearer_token(auth, &state.token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    }
+    if !crate::cli_relay_mcp_tunnel::is_valid_external_mcp_name(&server) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid mcp server name" })),
+        )
+            .into_response();
+    }
+    let expect_reply = message.get("id").is_some_and(|v| !v.is_null());
+    let orig_id = message.get("id").cloned().unwrap_or(Value::Null);
+    let req_id = format!("m{}", state.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+
+    if !expect_reply {
+        let frame = json!({
+            "type": "mcp_rpc_req",
+            "reqId": req_id,
+            "server": server,
+            "message": message,
+            "expectReply": false,
+        })
+        .to_string();
+        let _ = state.ws_tx.send(frame);
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
+    let (tx, rx) = oneshot::channel::<Value>();
+    state.pending_mcp.lock().await.insert(req_id.clone(), tx);
+    let frame = json!({
+        "type": "mcp_rpc_req",
+        "reqId": req_id,
+        "server": server,
+        "message": message,
+        "expectReply": true,
+    })
+    .to_string();
+    if state.ws_tx.send(frame).is_err() {
+        state.pending_mcp.lock().await.remove(&req_id);
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": orig_id,
+                "error": { "code": -32000, "message": "Client WebSocket disconnected" }
+            })),
+        )
+            .into_response();
+    }
+
+    match tokio::time::timeout(HOST_EXEC_RPC_TIMEOUT, rx).await {
+        Ok(Ok(resp)) => (StatusCode::OK, Json(resp)).into_response(),
+        Ok(Err(_)) => (
+            StatusCode::OK,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": orig_id,
+                "error": { "code": -32000, "message": "Client MCP channel closed" }
+            })),
+        )
+            .into_response(),
+        Err(_) => {
+            state.pending_mcp.lock().await.remove(&req_id);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": orig_id,
+                    "error": { "code": -32000, "message": "Client MCP call timed out" }
+                })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn rpc_router_tool(

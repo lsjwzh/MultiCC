@@ -677,6 +677,18 @@ function resolveCliRelayTarget(appType, id) {
   };
 }
 
+// 是否至少存在一条开启了「远程 CLI（cliRelay）」模式的有效借道线路。
+// 供 CLI 可用性探测放行：本机未安装 claude / codex 二进制时也能正常使用远程 CLI。
+function hasCliRelayProvider(appType) {
+  if (appType !== 'claude' && appType !== 'codex') return false;
+  try {
+    const records = loadStore();
+    return records.some(p => p && p.appType === appType && !p.virtual && !!resolveCliRelayTarget(appType, p.id));
+  } catch (_) {
+    return false;
+  }
+}
+
 function getProviderSummary(appType, id) {
   const p = getProvider(appType, id);
   return p ? summarize(p) : null;
@@ -2387,6 +2399,7 @@ module.exports = {
   summarize,
   getRelayImportToken,
   resolveCliRelayTarget,
+  hasCliRelayProvider,
   getProviderUsageStats,
   readDailyWindows,
   CLAUDE_ROUTING_KEYS,

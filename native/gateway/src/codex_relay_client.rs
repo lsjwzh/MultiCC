@@ -213,6 +213,16 @@ pub async fn serve_codex_relay_turn(
     });
 
     let router_cfg = LocalRouterConfig::from_env();
+    let attachments =
+        crate::cli_relay_attachments::collect_prompt_image_attachments(&opts.prompt, local_root);
+    let skills = crate::cli_relay_skills::collect_client_skills(local_root);
+    let mcp_specs = crate::cli_relay_mcp_tunnel::discover_client_mcp_servers(local_root);
+    let mcp_manager = (!mcp_specs.is_empty()).then(|| {
+        std::sync::Arc::new(crate::cli_relay_mcp_tunnel::ClientMcpManager::new(
+            mcp_specs,
+            local_root.to_path_buf(),
+        ))
+    });
     let mut start_obj = json!({
         "type": "start",
         "model": opts.model,
@@ -222,6 +232,21 @@ pub async fn serve_codex_relay_turn(
         "localRoot": local_root_str,
         "localOs": std::env::consts::OS,
     });
+    if !attachments.is_empty() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("attachments".to_string(), json!(attachments));
+        }
+    }
+    if !skills.is_empty() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("skills".to_string(), json!(skills));
+        }
+    }
+    if let Some(mgr) = mcp_manager.as_ref() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("mcpServers".to_string(), json!(mgr.server_names()));
+        }
+    }
     if let Some(rc) = router_cfg.as_ref() {
         if let Some(map) = start_obj.as_object_mut() {
             map.insert("routerContext".to_string(), rc.to_start_frame_json());
@@ -233,7 +258,8 @@ pub async fn serve_codex_relay_turn(
         return 1;
     }
 
-    let dispatcher = ClientRpcDispatcher::new(local_addr.port(), local_token, router_cfg);
+    let dispatcher =
+        ClientRpcDispatcher::with_mcp(local_addr.port(), local_token, router_cfg, mcp_manager);
     let mut exit_code: Option<i32> = None;
     let mut saw_completed = false;
 
@@ -321,13 +347,17 @@ pub async fn probe_codex_cli_relay(target: &CodexCliRelayTarget) -> Value {
             if status == 200 && body.get("ok") == Some(&Value::Bool(true)) {
                 body
             } else if is_auth_rejected_http(status, loc.as_deref()) {
-                json!({ "ok": false, "error": "分享码已被撤销或无效，请向出借方重新获取" })
+                json!({
+                    "ok": false,
+                    "status": status,
+                    "error": "分享码已被撤销或无效，请向出借方重新获取"
+                })
             } else {
                 let err = body
                     .get("error")
                     .and_then(Value::as_str)
-                    .unwrap_or("远端 Host 暂不支持 Codex CLI 借道");
-                json!({ "ok": false, "error": err })
+                    .unwrap_or("远端 Host 暂不支持远程 CLI 模式");
+                json!({ "ok": false, "status": status, "error": err })
             }
         }
         Err(err) => json!({ "ok": false, "error": format!("无法连接远端借道服务: {err}") }),
@@ -427,8 +457,12 @@ case "$LINE_THREAD" in
   *) echo "missing untrusted/read-only in thread/start: $LINE_THREAD" >&2; exit 62 ;;
 esac
 printf '{{"jsonrpc":"2.0","id":2,"result":{{"thread":{{"id":"thr_relay_1"}}}}}}\n'
-# 4. read turn/start
+# 4. read turn/start and verify localImage attachment was forwarded
 IFS= read -r LINE_TURN
+case "$LINE_TURN" in
+  *'"type":"localImage"'*'.png"'*) ;;
+  *) echo "missing localImage attachment in turn/start: $LINE_TURN" >&2; exit 67 ;;
+esac
 printf '{{"jsonrpc":"2.0","id":3,"result":{{}}}}\n'
 # 5. send commandExecution approval request -> MUST be declined!
 printf '{{"jsonrpc":"2.0","id":901,"method":"item/commandExecution/requestApproval","params":{{"command":"rm -rf /"}}}}\n'
@@ -489,6 +523,19 @@ exit 0
             .await;
         });
 
+        let sample_png = client_ws.join("ui.png");
+        std::fs::write(
+            &sample_png,
+            [
+                0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49,
+                0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00,
+                0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54,
+                0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4,
+                0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+            ],
+        )
+        .unwrap();
+
         let target = CodexCliRelayTarget {
             relay_base_url: format!("http://127.0.0.1:{ws_port}/codex-proxy/codex-official"),
             relay_auth_token: "mcr1.0123456789abcdef.codexsecret".to_string(),
@@ -500,7 +547,7 @@ exit 0
                 model: Some("gpt-5.4".into()),
                 effort: Some("high".into()),
                 thread_id: None,
-                prompt: "read codex.txt".into(),
+                prompt: format!("read codex.txt and {}", sample_png.display()),
             },
         )
         .await;
