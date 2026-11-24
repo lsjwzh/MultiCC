@@ -288,20 +288,40 @@ test('load-time normalisation migrates the retired claude -p identity once (M4)'
   const onlyStream = { id: 'only-stream', cli: 'claude', cliSessionId: null, _streamSessionId: 'transcript-b' };
   const onlyCli = { id: 'only-cli', cli: 'claude', cliSessionId: 'native-c' };
   const otherCli = { id: 'codex', cli: 'codex', cliSessionId: 'thread-d', _streamSessionId: 'stream-d' };
-  const records = recordsOf([both, onlyStream, onlyCli, otherCli].map(record => [record.id, record]));
+  const codexWithClaudeState = {
+    id: 'codex-with-claude',
+    cli: 'codex-exp',
+    cliSessionId: '01a1f1c1',
+    cliStates: {
+      'codex-exp': { cliSessionId: '01a1f1c1', streamSessionId: null },
+      claude: { cliSessionId: '76804f46', streamSessionId: 'aeab47dc' },
+      'claude-exp': { cliSessionId: 'placeholder-exp', streamSessionId: 'exp-transcript' },
+    },
+  };
+  const records = recordsOf([both, onlyStream, onlyCli, otherCli, codexWithClaudeState].map(record => [record.id, record]));
   assert.equal(records.loadMigrated, true);
   // The live objects are mutated in place: the transcript id wins.
   assert.equal(records.get('both').cliSessionId, 'transcript');
   assert.equal('_streamSessionId' in records.get('both'), false);
   assert.equal(records.get('only-stream').cliSessionId, 'transcript-b');
   assert.equal('_streamSessionId' in records.get('only-stream'), false);
+  // Nested cliStates.claude / cliStates['claude-exp'] on non-Claude sessions
+  // are normalised at boot too, so switching back to Claude never resurrects a
+  // stale placeholder alongside a competing streamSessionId.
+  const migratedNested = records.get('codex-with-claude');
+  assert.equal(migratedNested.cliSessionId, '01a1f1c1');
+  assert.equal(migratedNested.cliStates.claude.cliSessionId, 'aeab47dc');
+  assert.equal(migratedNested.cliStates.claude.streamSessionId, null);
+  assert.equal(migratedNested.cliStates['claude-exp'].cliSessionId, 'exp-transcript');
+  assert.equal(migratedNested.cliStates['claude-exp'].streamSessionId, null);
   // Nothing to migrate: an established native id, and another CLI's state.
   assert.equal(records.get('only-cli').cliSessionId, 'native-c');
   assert.equal(records.get('codex').cliSessionId, 'thread-d');
   assert.equal(records.get('codex')._streamSessionId, 'stream-d');
   // Loading the already-normalised table owes no save.
   const again = recordsOf([records.get('both'), records.get('only-stream'), records.get('only-cli'),
-    records.get('codex')].map(record => [record.id, record]));
+    records.get('codex'), records.get('codex-with-claude')].map(record => [record.id, record]));
   assert.equal(again.loadMigrated, false);
   assert.equal(again.get('both').cliSessionId, 'transcript');
+  assert.equal(again.get('codex-with-claude').cliStates.claude.cliSessionId, 'aeab47dc');
 });

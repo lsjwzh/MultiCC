@@ -4,14 +4,61 @@
 //! or throws. The JavaScript facade in `src/chat/transcript-prune.js` only
 //! forwards the arguments and injects `os.homedir()`; all decision-making and
 //! file IO live in `multicc_core::transcript_prune`.
+use crate::js_live::LiveValue as L;
 use multicc_core::js::JsValue;
 use multicc_core::transcript_prune as core;
 use napi::bindgen_prelude::{JsValue as _, Unknown};
 use napi::{sys, Env, Result};
 use napi_derive::napi;
+use std::ffi::CStr;
 
 fn read(env: Env, value: Unknown<'_>) -> Result<JsValue> {
     unsafe { crate::js_bridge::read_value(env.raw(), value.raw(), 0, &mut Vec::new()) }
+}
+
+fn live_string(obj: L<'_>, key: &CStr) -> Result<Option<String>> {
+    let value = obj.get(key)?;
+    if !value.truthy()? {
+        return Ok(None);
+    }
+    Ok(value
+        .string()?
+        .map(|text| text.to_string_lossy())
+        .filter(|text| !text.is_empty()))
+}
+
+fn live_object<'a>(obj: L<'a>, key: &CStr) -> Result<Option<L<'a>>> {
+    let value = obj.get(key)?;
+    if value.nullish()? || value.kind()? != sys::ValueType::napi_object || value.is_array()? {
+        return Ok(None);
+    }
+    Ok(Some(value))
+}
+
+/// Extract only the Claude-relevant identity fields lazily via `LiveValue` so
+/// large persisted session records are never cloned across the napi boundary.
+fn read_claude_session_ref(env: &Env, record: Unknown<'_>) -> Result<core::ClaudeSessionRef> {
+    let live = L::new(env, record);
+    if live.nullish()? || live.kind()? != sys::ValueType::napi_object || live.is_array()? {
+        return Ok(core::ClaudeSessionRef::default());
+    }
+    let mut out = core::ClaudeSessionRef {
+        cli: live_string(live, c"cli")?,
+        cli_session_id: live_string(live, c"cliSessionId")?,
+        stream_session_id: live_string(live, c"_streamSessionId")?,
+        ..core::ClaudeSessionRef::default()
+    };
+    if let Some(states) = live_object(live, c"cliStates")? {
+        if let Some(claude) = live_object(states, c"claude")? {
+            out.claude_cli_session_id = live_string(claude, c"cliSessionId")?;
+            out.claude_stream_session_id = live_string(claude, c"streamSessionId")?;
+        }
+        if let Some(claude_exp) = live_object(states, c"claude-exp")? {
+            out.claude_exp_cli_session_id = live_string(claude_exp, c"cliSessionId")?;
+            out.claude_exp_stream_session_id = live_string(claude_exp, c"streamSessionId")?;
+        }
+    }
+    Ok(out)
 }
 
 fn write(env: Env, value: &JsValue) -> Result<sys::napi_value> {
@@ -71,6 +118,41 @@ pub fn transcript_prune_maybe(
         env,
         core::prune_maybe(&cwd, session.as_deref(), &home, &options),
     )
+}
+
+#[napi]
+pub fn transcript_claude_targets(env: Env, record: Unknown<'_>) -> Result<sys::napi_value> {
+    let session = read_claude_session_ref(&env, record)?;
+    let targets = core::claude_transcript_targets(&session);
+    write(
+        env,
+        &JsValue::Array(targets.iter().map(|id| JsValue::string(id)).collect()),
+    )
+}
+
+#[napi]
+pub fn transcript_find_session_claude(
+    env: Env,
+    cwd: String,
+    record: Unknown<'_>,
+    home: String,
+) -> Result<Option<String>> {
+    let session = read_claude_session_ref(&env, record)?;
+    Ok(core::find_session_claude_file(&cwd, &session, &home))
+}
+
+#[napi]
+pub fn transcript_prune_session_claude(
+    env: Env,
+    cwd: String,
+    record: Unknown<'_>,
+    home: String,
+    options: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let session = read_claude_session_ref(&env, record)?;
+    let options = core::Options::from_js(Some(&read(env, options)?)).map_err(reason)?;
+    let outcome = core::prune_session_claude(&cwd, &session, &home, &options);
+    write(env, &core::session_prune_outcome_value(&outcome))
 }
 
 #[napi]

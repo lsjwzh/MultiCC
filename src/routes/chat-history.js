@@ -817,16 +817,14 @@ function createChatHistoryRuntime(rawDeps) {
           const usage = await opencodeContextReader.read(cliSessionId, persisted.model || null);
           return res.json({ ok: true, supported: true, cli: 'opencode', native: usage });
         }
-        if (persisted.cli !== 'claude') {
+        if (persisted.cli !== 'claude' && persisted.cli !== 'claude-exp') {
           return res.json({ ok: true, supported: false, reason: 'cli-not-claude', cli: persisted.cli || null });
         }
-        const { measure, maybePrune } = require('../chat/transcript-prune');
+        const { findSessionClaudeFile, measureFile, pruneFile } = require('../chat/transcript-prune');
         const cwd = deps.cwdForSession(persisted);
-        // The streaming path is where a chat session's context actually lives; the
-        // per-turn id is the fallback for sessions that never streamed.
-        const cliSessionId = persisted._streamSessionId || persisted.cliSessionId || null;
-        const transcript = measure(cwd, cliSessionId);
-        const body = { ok: true, supported: true, cli: 'claude', transcript };
+        const file = findSessionClaudeFile(cwd, persisted);
+        const transcript = measureFile(file);
+        const body = { ok: true, supported: true, cli: persisted.cli, transcript };
         const status = typeof deps.chatStream.status === 'function'
           ? deps.chatStream.status(sessionId)
           : null;
@@ -840,7 +838,7 @@ function createChatHistoryRuntime(rawDeps) {
           };
         }
         if (transcript.found && (req.query.plan === '1' || req.query.plan === 'true')) {
-          const report = maybePrune(cwd, cliSessionId, { dryRun: true, force: true }) || null;
+          const report = pruneFile(file, { dryRun: true, force: true }) || null;
           if (report) {
             const { file: _omitted, ...plan } = report;
             body.plan = plan;

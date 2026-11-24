@@ -1674,6 +1674,218 @@ pub fn find_transcript_file(cwd: &str, session: Option<&str>, home: &str) -> Opt
     best.map(|(path, _)| path)
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ClaudeSessionRef {
+    pub cli: Option<String>,
+    pub cli_session_id: Option<String>,
+    pub stream_session_id: Option<String>,
+    pub claude_cli_session_id: Option<String>,
+    pub claude_stream_session_id: Option<String>,
+    pub claude_exp_cli_session_id: Option<String>,
+    pub claude_exp_stream_session_id: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionPruneItem {
+    pub cli_session_id: Option<String>,
+    pub report: Report,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionPruneError {
+    pub cli_session_id: Option<String>,
+    pub error: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionPruneOutcome {
+    pub active_claude: bool,
+    pub any_context_affected: bool,
+    pub pruned: Vec<SessionPruneItem>,
+    pub errors: Vec<SessionPruneError>,
+}
+
+pub fn is_claude_cli(cli: Option<&str>) -> bool {
+    matches!(cli, Some("claude" | "claude-exp"))
+}
+
+fn push_unique_id(ids: &mut Vec<String>, candidate: Option<&str>) {
+    let Some(id) = candidate.filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if !ids.iter().any(|existing| existing == id) {
+        ids.push(id.to_string());
+    }
+}
+
+/// Collect every Claude transcript id owned by this session: top-level ids only
+/// when the active CLI is Claude, plus remembered `cliStates.claude` /
+/// `cliStates['claude-exp']` ids so dormant Claude transcripts on Codex/other
+/// sessions are still governed without ever pulling in a non-Claude id.
+pub fn claude_transcript_targets(session: &ClaudeSessionRef) -> Vec<String> {
+    let mut ids = Vec::new();
+    if is_claude_cli(session.cli.as_deref()) {
+        push_unique_id(&mut ids, session.stream_session_id.as_deref());
+        push_unique_id(&mut ids, session.cli_session_id.as_deref());
+    }
+    push_unique_id(&mut ids, session.claude_stream_session_id.as_deref());
+    push_unique_id(&mut ids, session.claude_cli_session_id.as_deref());
+    push_unique_id(&mut ids, session.claude_exp_stream_session_id.as_deref());
+    push_unique_id(&mut ids, session.claude_exp_cli_session_id.as_deref());
+    ids
+}
+
+pub fn find_exact_transcript_file(cwd: &str, session: &str, home: &str) -> Option<String> {
+    if session.is_empty() {
+        return None;
+    }
+    let dir = claude_project_dir(cwd, home);
+    let exact = Path::new(&dir).join(format!("{session}.jsonl"));
+    fs::metadata(&exact)
+        .ok()
+        .map(|_| exact.to_string_lossy().into_owned())
+}
+
+pub fn find_session_claude_file(
+    cwd: &str,
+    session: &ClaudeSessionRef,
+    home: &str,
+) -> Option<String> {
+    for id in claude_transcript_targets(session) {
+        if let Some(file) = find_exact_transcript_file(cwd, &id, home) {
+            return Some(file);
+        }
+    }
+    if is_claude_cli(session.cli.as_deref()) {
+        return find_transcript_file(cwd, None, home);
+    }
+    None
+}
+
+pub fn prune_session_claude(
+    cwd: &str,
+    session: &ClaudeSessionRef,
+    home: &str,
+    options: &Options,
+) -> SessionPruneOutcome {
+    let active_claude = is_claude_cli(session.cli.as_deref());
+    let targets = claude_transcript_targets(session);
+    let mut seen_files = HashSet::new();
+    let mut any_exact_found = false;
+    let mut any_context_affected = false;
+    let mut pruned = Vec::new();
+    let mut errors = Vec::new();
+
+    for id in targets {
+        let Some(file) = find_exact_transcript_file(cwd, &id, home) else {
+            continue;
+        };
+        any_exact_found = true;
+        if !seen_files.insert(file.clone()) {
+            continue;
+        }
+        match prune_file(Some(&file), options) {
+            Ok(Some(report)) => {
+                if report.context_affected {
+                    any_context_affected = true;
+                }
+                pruned.push(SessionPruneItem {
+                    cli_session_id: Some(id),
+                    report,
+                });
+            }
+            Ok(None) => {}
+            Err(error) => errors.push(SessionPruneError {
+                cli_session_id: Some(id),
+                error,
+            }),
+        }
+    }
+
+    // Preserve legacy directory-scan fallback strictly for active Claude
+    // sessions that have no exact transcript file on disk yet; non-Claude
+    // sessions must never fall back and touch a sibling session's file.
+    if active_claude && !any_exact_found {
+        if let Some(file) = find_transcript_file(cwd, None, home) {
+            match prune_file(Some(&file), options) {
+                Ok(Some(report)) => {
+                    if report.context_affected {
+                        any_context_affected = true;
+                    }
+                    pruned.push(SessionPruneItem {
+                        cli_session_id: None,
+                        report,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => errors.push(SessionPruneError {
+                    cli_session_id: None,
+                    error,
+                }),
+            }
+        }
+    }
+
+    SessionPruneOutcome {
+        active_claude,
+        any_context_affected,
+        pruned,
+        errors,
+    }
+}
+
+pub fn session_prune_outcome_value(outcome: &SessionPruneOutcome) -> JsValue {
+    JsValue::object(vec![
+        ("activeClaude", bool_value(outcome.active_claude)),
+        (
+            "anyContextAffected",
+            bool_value(outcome.any_context_affected),
+        ),
+        (
+            "pruned",
+            JsValue::Array(
+                outcome
+                    .pruned
+                    .iter()
+                    .map(|item| {
+                        JsValue::object(vec![
+                            (
+                                "cliSessionId",
+                                item.cli_session_id
+                                    .as_deref()
+                                    .map(JsValue::string)
+                                    .unwrap_or(JsValue::Null),
+                            ),
+                            ("report", report_value(&item.report)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "errors",
+            JsValue::Array(
+                outcome
+                    .errors
+                    .iter()
+                    .map(|item| {
+                        JsValue::object(vec![
+                            (
+                                "cliSessionId",
+                                item.cli_session_id
+                                    .as_deref()
+                                    .map(JsValue::string)
+                                    .unwrap_or(JsValue::Null),
+                            ),
+                            ("error", JsValue::string(&item.error)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
 pub fn prune_maybe(
     cwd: &str,
     session: Option<&str>,

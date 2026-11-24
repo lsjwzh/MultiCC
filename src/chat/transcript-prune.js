@@ -33,6 +33,18 @@ function maybePrune(cwd, sessionId, opts = {}) {
   return pruneFile(findTranscriptFile(cwd, sessionId), opts);
 }
 
+function claudeTranscriptTargets(record) {
+  return getNative().transcriptClaudeTargets(record);
+}
+
+function findSessionClaudeFile(cwd, record) {
+  return getNative().transcriptFindSessionClaude(cwdArg(cwd), record, os.homedir());
+}
+
+function pruneSessionClaude(cwd, record, opts = {}) {
+  return getNative().transcriptPruneSessionClaude(cwdArg(cwd), record, os.homedir(), opts);
+}
+
 function measureFile(file, options = {}) {
   return getNative().transcriptMeasureFile(file ? String(file) : null, options);
 }
@@ -44,6 +56,9 @@ function measure(cwd, sessionId, opts = {}) {
 module.exports = {
   maybePrune,
   pruneFile,
+  claudeTranscriptTargets,
+  findSessionClaudeFile,
+  pruneSessionClaude,
   measure,
   measureFile,
   findTranscriptFile,

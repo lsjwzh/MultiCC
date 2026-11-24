@@ -1039,6 +1039,26 @@ test('context level reports the transcript water level read-only and without lea
     assert.equal(otherRes.body.supported, false);
     assert.equal(otherRes.body.reason, 'cli-not-claude');
 
+    // A claude-exp session with its transcript remembered under cliStates is
+    // resolved by the same Rust target selector as the prune gate.
+    const expFx = fixture({
+      persistedSessions: new Map([['s-exp', {
+        id: 's-exp', kind: 'chat', cli: 'claude-exp', cliSessionId: 'placeholder-exp',
+        cliStates: { claude: { cliSessionId: 'stream-sid', streamSessionId: null } },
+      }]]),
+      deps: { cwdForSession: () => cwd },
+    });
+    const expApp = createFakeApp();
+    expFx.runtime.mountRoutes(expApp);
+    const expRes = createResponse();
+    expApp.routes.get('GET /api/sessions/:id/context-level')(
+      { params: { id: 's-exp' }, query: {} }, expRes, () => {},
+    );
+    assert.equal(expRes.statusCode, 200);
+    assert.equal(expRes.body.supported, true);
+    assert.equal(expRes.body.transcript.found, true);
+    assert.equal(expRes.body.transcript.lines, 6);
+
     // OpenCode: supported=true with the water level of the EXACT native session
     // the logical session captured — a sibling session sharing the cwd is never
     // consulted. No filesystem path may reach the client here either.

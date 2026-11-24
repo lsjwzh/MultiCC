@@ -557,6 +557,54 @@ test('every require of the prune module in src/ resolves', () => {
   assert.ok(found > 0, 'expected at least one call site to guard');
 });
 
+// ── 15. session-level Claude pruning covers dormant cliStates without cross-session fallback ──
+test('pruneSessionClaude prunes dormant Claude transcripts on Codex sessions and isolates pure Codex sessions', () => {
+  const cwd = '/tmp/proj-dormant-claude';
+  const sibling = makeTranscript(cwd, 'sibling-claude');
+  for (let i = 0; i < 6; i++) {
+    sibling.userTurn(`sibling turn ${i} with context`);
+    sibling.assistantText('S'.repeat(500 * 1024));
+  }
+  const siblingFile = sibling.write();
+  const siblingBefore = fs.readFileSync(siblingFile, 'utf8');
+
+  // Pure Codex session sharing the same cwd must never fall back to sibling-claude.jsonl.
+  const pureCodex = { cli: 'codex-exp', cliSessionId: 'codex-thread-only' };
+  assert.deepStrictEqual(prune.claudeTranscriptTargets(pureCodex), []);
+  assert.strictEqual(prune.findSessionClaudeFile(cwd, pureCodex), null);
+  const pureOut = prune.pruneSessionClaude(cwd, pureCodex);
+  assert.strictEqual(pureOut.activeClaude, false);
+  assert.strictEqual(pureOut.anyContextAffected, false);
+  assert.deepStrictEqual(pureOut.pruned, []);
+  assert.strictEqual(fs.readFileSync(siblingFile, 'utf8'), siblingBefore);
+
+  // Mixed Codex session with dormant oversized Claude transcript in cliStates.claude.
+  const dormant = makeTranscript(cwd, 'aeab47dc');
+  for (let i = 0; i < 6; i++) {
+    dormant.userTurn(`dormant turn ${i} with real work`);
+    dormant.assistantText('D'.repeat(500 * 1024));
+  }
+  const dormantFile = dormant.write();
+  const dormantBefore = fs.statSync(dormantFile).size;
+  const mixed = {
+    cli: 'codex-exp',
+    cliSessionId: '01a1f1c1',
+    cliStates: {
+      'codex-exp': { cliSessionId: '01a1f1c1', streamSessionId: null },
+      claude: { cliSessionId: '76804f46', streamSessionId: 'aeab47dc' },
+    },
+  };
+  assert.deepStrictEqual(prune.claudeTranscriptTargets(mixed), ['aeab47dc', '76804f46']);
+  assert.strictEqual(prune.findSessionClaudeFile(cwd, mixed), dormantFile);
+  const mixedOut = prune.pruneSessionClaude(cwd, mixed);
+  assert.strictEqual(mixedOut.activeClaude, false);
+  assert.strictEqual(mixedOut.anyContextAffected, true);
+  assert.strictEqual(mixedOut.pruned.length, 1);
+  assert.strictEqual(mixedOut.pruned[0].cliSessionId, 'aeab47dc');
+  assert.ok(fs.statSync(dormantFile).size < dormantBefore, 'dormant Claude transcript should be pruned');
+  assert.strictEqual(fs.readFileSync(siblingFile, 'utf8'), siblingBefore, 'sibling transcript must stay untouched');
+});
+
 process.env.HOME = realHome;
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`transcript-prune tests passed (${results.length})`);

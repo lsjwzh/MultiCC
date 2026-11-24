@@ -286,3 +286,178 @@ fn report_and_level_encodings_keep_every_field() {
         r#"{"found":false}"#
     );
 }
+
+#[test]
+fn claude_targets_exclude_non_claude_top_level_and_keep_both_claude_ids() {
+    let pure_codex = ClaudeSessionRef {
+        cli: Some("codex-exp".into()),
+        cli_session_id: Some("codex-thread".into()),
+        stream_session_id: Some("codex-stream".into()),
+        ..ClaudeSessionRef::default()
+    };
+    assert!(claude_transcript_targets(&pure_codex).is_empty());
+
+    let mixed = ClaudeSessionRef {
+        cli: Some("codex-exp".into()),
+        cli_session_id: Some("01a1f1c1".into()),
+        claude_cli_session_id: Some("76804f46".into()),
+        claude_stream_session_id: Some("aeab47dc".into()),
+        claude_exp_cli_session_id: Some("8f008a3e".into()),
+        ..ClaudeSessionRef::default()
+    };
+    assert_eq!(
+        claude_transcript_targets(&mixed),
+        vec!["aeab47dc", "76804f46", "8f008a3e"]
+    );
+
+    let active_claude = ClaudeSessionRef {
+        cli: Some("claude".into()),
+        cli_session_id: Some("sdk-id".into()),
+        stream_session_id: Some("legacy-id".into()),
+        claude_cli_session_id: Some("sdk-id".into()),
+        ..ClaudeSessionRef::default()
+    };
+    assert_eq!(
+        claude_transcript_targets(&active_claude),
+        vec!["legacy-id", "sdk-id"]
+    );
+}
+
+#[test]
+fn prune_session_claude_governs_dormant_claude_without_cross_session_fallback() {
+    let unique = format!(
+        "multicc-prune-session-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let home = std::env::temp_dir().join(unique);
+    let cwd = "/tmp/shared-workspace";
+    let dir = PathBuf::from(claude_project_dir(cwd, &home.to_string_lossy()));
+    fs::create_dir_all(&dir).unwrap();
+
+    // Build an oversized transcript (> 2MB) for a sibling Claude session.
+    let big_blob = "x".repeat(500 * 1024);
+    let mut big_lines = Vec::new();
+    for i in 0..6 {
+        big_lines.push(format!(
+            r#"{{"uuid":"u{i}","type":"user","message":{{"role":"user","content":"question {i} with detail"}}}}"#
+        ));
+        big_lines.push(format!(
+            r#"{{"uuid":"a{i}","parentUuid":"u{i}","type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{big_blob}"}}]}}}}"#
+        ));
+    }
+    let big_payload = big_lines.join("\n") + "\n";
+
+    let sibling_file = dir.join("sibling-claude.jsonl");
+    fs::write(&sibling_file, &big_payload).unwrap();
+
+    // 1) Pure Codex session sharing cwd must NEVER touch sibling-claude.jsonl.
+    let pure_codex = ClaudeSessionRef {
+        cli: Some("codex-exp".into()),
+        cli_session_id: Some("codex-only-id".into()),
+        ..ClaudeSessionRef::default()
+    };
+    let pure_outcome = prune_session_claude(
+        cwd,
+        &pure_codex,
+        &home.to_string_lossy(),
+        &Options::default(),
+    );
+    assert!(!pure_outcome.active_claude);
+    assert!(pure_outcome.pruned.is_empty());
+    assert_eq!(fs::read_to_string(&sibling_file).unwrap(), big_payload);
+
+    // 2) Codex session with a missing Claude id in cliStates also must NOT
+    //    fall back to scanning the directory and pruning sibling-claude.jsonl.
+    let missing_claude = ClaudeSessionRef {
+        cli: Some("codex-exp".into()),
+        cli_session_id: Some("codex-only-id".into()),
+        claude_cli_session_id: Some("nonexistent-claude-id".into()),
+        ..ClaudeSessionRef::default()
+    };
+    let missing_outcome = prune_session_claude(
+        cwd,
+        &missing_claude,
+        &home.to_string_lossy(),
+        &Options::default(),
+    );
+    assert!(!missing_outcome.active_claude);
+    assert!(missing_outcome.pruned.is_empty());
+    assert_eq!(fs::read_to_string(&sibling_file).unwrap(), big_payload);
+
+    // 3) Codex session whose cliStates.claude owns an oversized transcript DOES
+    //    prune that exact file, sets any_context_affected=true, active_claude=false,
+    //    and leaves sibling-claude.jsonl untouched.
+    let dormant_file = dir.join("aeab47dc.jsonl");
+    fs::write(&dormant_file, &big_payload).unwrap();
+    let mixed = ClaudeSessionRef {
+        cli: Some("codex-exp".into()),
+        cli_session_id: Some("01a1f1c1".into()),
+        claude_cli_session_id: Some("76804f46".into()),
+        claude_stream_session_id: Some("aeab47dc".into()),
+        ..ClaudeSessionRef::default()
+    };
+    let mixed_outcome = prune_session_claude(
+        cwd,
+        &mixed,
+        &home.to_string_lossy(),
+        &Options::default(),
+    );
+    assert!(!mixed_outcome.active_claude);
+    assert!(mixed_outcome.any_context_affected);
+    assert_eq!(mixed_outcome.pruned.len(), 1);
+    assert_eq!(
+        mixed_outcome.pruned[0].cli_session_id.as_deref(),
+        Some("aeab47dc")
+    );
+    assert!(fs::metadata(&dormant_file).unwrap().len() < big_payload.len() as u64);
+    assert_eq!(fs::read_to_string(&sibling_file).unwrap(), big_payload);
+
+    // 4) Multi-transcript session where the first transcript has
+    //    context_affected=true and the second only drops pre-compaction weight
+    //    (context_affected=false): any_context_affected must stay true!
+    let affected_file = dir.join("primary-affected.jsonl");
+    fs::write(&affected_file, &big_payload).unwrap();
+    let compact_only_file = dir.join("secondary-compact.jsonl");
+    let mut compact_lines = Vec::new();
+    for i in 0..5 {
+        compact_lines.push(format!(
+            r#"{{"uuid":"old{i}","type":"user","message":{{"role":"user","content":"{big_blob}"}}}}"#
+        ));
+    }
+    compact_lines.push(r#"{"uuid":"cb","type":"system","subtype":"compact_boundary"}"#.into());
+    compact_lines.push(
+        r#"{"uuid":"sum","parentUuid":"cb","type":"user","isCompactSummary":true,"message":{"role":"user","content":"summary"}}"#
+            .into(),
+    );
+    compact_lines.push(
+        r#"{"uuid":"live","parentUuid":"sum","type":"user","message":{"role":"user","content":"next step"}}"#
+            .into(),
+    );
+    fs::write(&compact_only_file, compact_lines.join("\n") + "\n").unwrap();
+
+    let multi = ClaudeSessionRef {
+        cli: Some("claude".into()),
+        cli_session_id: Some("primary-affected".into()),
+        claude_exp_cli_session_id: Some("secondary-compact".into()),
+        ..ClaudeSessionRef::default()
+    };
+    let multi_outcome = prune_session_claude(
+        cwd,
+        &multi,
+        &home.to_string_lossy(),
+        &Options::default(),
+    );
+    assert!(multi_outcome.active_claude);
+    assert_eq!(multi_outcome.pruned.len(), 2);
+    assert!(multi_outcome.pruned[0].report.context_affected);
+    assert!(!multi_outcome.pruned[1].report.context_affected);
+    assert!(
+        multi_outcome.any_context_affected,
+        "a later context_affected=false report must not clear any_context_affected"
+    );
+
+    let _ = fs::remove_dir_all(&home);
+}

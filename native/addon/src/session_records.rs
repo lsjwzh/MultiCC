@@ -158,23 +158,48 @@ fn call_propagating<'a>(callback: L<'a>, arguments: &[L<'a>]) -> Result<L<'a>> {
 }
 
 /// Load-time identity normalisation for the retired `claude -p` chat lane. That
-/// lane wrote the live transcript id to `_streamSessionId` and left a
+/// lane wrote the live transcript id to `_streamSessionId` (and to
+/// `cliStates.claude.streamSessionId` when switched away) while leaving a
 /// placeholder in `cliSessionId`; the Agent SDK lane resumes by `cliSessionId`,
 /// and both name the same `~/.claude/projects/<cwd>/<id>.jsonl`, so the
-/// streamed id wins whenever it is present. Records of other CLIs are left
+/// streamed id wins whenever it is present. Non-Claude lanes are left
 /// untouched.
 fn normalize_claude_native_id(record: L<'_>) -> Result<bool> {
+    let mut changed = false;
     let streamed = record.get(c"_streamSessionId")?;
-    if !streamed.truthy()? {
-        return Ok(false);
+    if streamed.truthy()? {
+        let cli = record.get(c"cli")?.string()?;
+        if matches!(
+            cli.as_ref().map(|value| value.to_string_lossy()).as_deref(),
+            Some("claude" | "claude-exp")
+        ) {
+            record.set(c"cliSessionId", streamed)?;
+            record.delete(c"_streamSessionId")?;
+            changed = true;
+        }
     }
-    let cli = record.get(c"cli")?.string()?;
-    if cli.as_ref().map(|value| value.to_string_lossy()).as_deref() != Some("claude") {
-        return Ok(false);
+    let cli_states = record.get(c"cliStates")?;
+    if !cli_states.nullish()?
+        && cli_states.kind()? == sys::ValueType::napi_object
+        && !cli_states.is_array()?
+    {
+        for key in [c"claude", c"claude-exp"] {
+            let state = cli_states.get(key)?;
+            if state.nullish()?
+                || state.kind()? != sys::ValueType::napi_object
+                || state.is_array()?
+            {
+                continue;
+            }
+            let nested_stream = state.get(c"streamSessionId")?;
+            if nested_stream.truthy()? {
+                state.set(c"cliSessionId", nested_stream)?;
+                state.set(c"streamSessionId", state.from_value(&V::Null)?)?;
+                changed = true;
+            }
+        }
     }
-    record.set(c"cliSessionId", streamed)?;
-    record.delete(c"_streamSessionId")?;
-    Ok(true)
+    Ok(changed)
 }
 
 #[derive(Clone)]

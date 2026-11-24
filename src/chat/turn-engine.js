@@ -525,58 +525,45 @@ function createChatTurnEngine(deps) {
     }
   }
 
-  // Prune oversized native context before resume. Persistent Claude uses
-  // _streamSessionId; cliSessionId may point to a different transcript.
+  // Prune oversized Claude transcripts (primary or remembered in cliStates)
+  // before resume; Rust owns target selection, exact lookup and trimming.
   function pruneTranscript(sessionName, persisted) {
-    let report = null;
+    let outcome;
     try {
-      const { maybePrune } = require('./transcript-prune');
-      report = maybePrune(
-        cwdForSession(persisted),
-        persisted._streamSessionId || persisted.cliSessionId,
-      );
+      outcome = require('./transcript-prune').pruneSessionClaude(cwdForSession(persisted), persisted);
     } catch (error) {
-      // Best-effort: a prune failure must never break the turn. But it must be
-      // visible — an empty catch here is what hid the broken require for months.
-      logger.warn('transcript_prune_failed', {
-        sessionId: sessionName,
-        error: error && error.message ? error.message : String(error),
-      });
+      logger.warn('transcript_prune_failed', { sessionId: sessionName, error: error && error.message ? error.message : String(error) });
       return null;
     }
-    if (!report) return null;
+    for (const item of outcome.errors || []) {
+      logger.warn('transcript_prune_failed', { sessionId: sessionName, cliSessionId: item.cliSessionId, error: item.error });
+    }
     const mb = (n) => `${(n / (1024 * 1024)).toFixed(2)}MB`;
-    logger.info('transcript_pruned', {
-      sessionId: sessionName,
-      strategy: report.strategy,
-      beforeBytes: report.beforeBytes,
-      afterBytes: report.afterBytes,
-      droppedLines: report.droppedLines,
-      elidedEntries: report.elidedEntries,
-      lostTurns: report.lostTurns,
-      keptSummary: report.keptSummary,
-      contextAffected: report.contextAffected,
-    });
-    try {
-      appendEvent(persisted.dirId, 'context_pruned',
-        `上下文整理 ${mb(report.beforeBytes)} → ${mb(report.afterBytes)}（${report.strategy}）`,
-        sessionName);
-    } catch (_) {}
-    // Only surface a notice when the model's own view changed. A pure
-    // pre-compaction cut is invisible to it and would just be noise.
-    if (report.contextAffected) {
-      const detail = report.lostTurns > 0 ? `已丢弃 ${report.lostTurns} 轮最早的对话` : `已压缩 ${report.elidedEntries} 条过大的工具输出`;
-      chatBroadcast(sessionName, {
-        type: 'system',
-        subtype: 'context_pruned',
-        message: `上下文已自动整理：${mb(report.beforeBytes)} → ${mb(report.afterBytes)}，${detail}。`,
+    let lastReport = null;
+    for (const { cliSessionId, report } of outcome.pruned || []) {
+      logger.info('transcript_pruned', {
+        sessionId: sessionName, cliSessionId, strategy: report.strategy, beforeBytes: report.beforeBytes, afterBytes: report.afterBytes,
+        droppedLines: report.droppedLines, elidedEntries: report.elidedEntries, lostTurns: report.lostTurns, keptSummary: report.keptSummary,
+        contextAffected: report.contextAffected,
       });
-      // The live process still holds the untrimmed context in memory; only a restart picks the trimmed file up.
+      try {
+        appendEvent(persisted.dirId, 'context_pruned', `上下文整理 ${mb(report.beforeBytes)} → ${mb(report.afterBytes)}（${report.strategy}）`, sessionName);
+      } catch (_) {}
+      // Only surface a notice when the model's own view changed. A pure pre-compaction cut is invisible to it and would just be noise.
+      if (report.contextAffected) {
+        const detail = report.lostTurns > 0 ? `已丢弃 ${report.lostTurns} 轮最早的对话` : `已压缩 ${report.elidedEntries} 条过大的工具输出`;
+        const prefix = outcome.activeClaude ? '上下文已自动整理' : 'Claude 历史上下文已自动整理';
+        chatBroadcast(sessionName, { type: 'system', subtype: 'context_pruned', message: `${prefix}：${mb(report.beforeBytes)} → ${mb(report.afterBytes)}，${detail}。` });
+      }
+      lastReport = report;
+    }
+    // Only recycle the live stream when this session is currently on Claude; trimming a dormant Claude transcript during a Codex turn must not kill Codex.
+    if (outcome.activeClaude && outcome.anyContextAffected) {
       try { chatStream.recycle(sessionName, 'transcript-pruned'); } catch (_) {}
       // The pruned turns may have dropped the full [Plan the work] block; the turn that resumes the trimmed file re-arms it.
       markPlanContextReset?.(sessionName);
     }
-    return report;
+    return lastReport;
   }
 
   // A final answer's history write is a durable fsync, not a synchronous
@@ -1305,7 +1292,7 @@ function createChatTurnEngine(deps) {
     // Deliberately NOT routed through forward()/streamReplay — reconnecting
     // clients learn streaming state from the init is_streaming flag instead.
     chatBroadcast(sessionName, { type: 'stream_start', turnId });
-    if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') pruneTranscript(sessionName, persisted);
+    pruneTranscript(sessionName, persisted);
     cs._adapterError = null;
     cs._sawApiError = false;
     cs._activeTurn = turn;
