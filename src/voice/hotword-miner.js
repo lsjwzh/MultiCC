@@ -124,43 +124,35 @@ function vetoedBy(alias, keptTexts) {
   const ascii = /^[\x20-\x7e]+$/.test(alias);
   for (const t of keptTexts) {
     const s = String(t || '').toLowerCase();
-    let at = s.indexOf(a);
-    while (at >= 0) {
-      const before = s[at - 1] || ' ';
-      const after = s[at + a.length] || ' ';
-      if (!ascii || (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after))) return true;
-      at = s.indexOf(a, at + 1);
-    }
+    const at = s.indexOf(a);
+    if (at >= 0 && getNative().voiceHotwordMatch(at, ascii,
+      i => [s[i - 1] || ' ', s[i + a.length] || ' '],
+      next => s.indexOf(a, next))) return true;
   }
   return false;
 }
 
-// state: { pairs: {key: {term, alias?, count}}, typed: [{term, count, sessions}],
-//          rejected: [key] }, keptTexts: user-authored text to veto against.
+// These operations use V8's case folding, coercion and live iterables.
+function* typedHotwords(state) {
+  for (const term of state.typed || []) yield term;
+}
+
+const listPorts = {
+  alias: pair => pair.alias,
+  term: entry => entry.term,
+  lower: term => term.toLowerCase(),
+  typedKey: term => pairKey(term, ''),
+  activates: count => count >= ACTIVATE_AT,
+  vetoedBy,
+};
+
 function buildHotwords(state, keptTexts = []) {
   const rejected = new Set(state.rejected || []);
-  const active = new Map();
-  const pending = [];
-  const vetoed = [];
-  const add = (term, alias) => {
-    const k = term.toLowerCase();
-    const e = active.get(k) || { term, aliases: [] };
-    if (alias && !e.aliases.includes(alias)) e.aliases.push(alias);
-    active.set(k, e);
-  };
-  for (const [key, p] of Object.entries(state.pairs || {})) {
-    if (rejected.has(key)) continue;
-    if (!p.alias) { add(p.term); continue; }
-    if (vetoedBy(p.alias, keptTexts)) { vetoed.push(p); continue; }
-    if (p.count >= ACTIVATE_AT) add(p.term, p.alias);
-    else pending.push(p);
-  }
-  for (const t of state.typed || []) {
-    if (!rejected.has(pairKey(t.term, ''))) add(t.term);
-  }
-  const entries = [...active.values()];
-  const list = entries.map(e => (e.aliases.length ? `${e.term}=${e.aliases.join('/')}` : e.term)).join(', ');
-  return { list, active: entries, pending, vetoed };
+  const pairs = Object.entries(state.pairs || {});
+  const { active, pending, vetoed } = getNative().voiceHotwordList(
+    pairs, () => typedHotwords(state), rejected, keptTexts, listPorts);
+  const list = active.map(e => (e.aliases.length ? `${e.term}=${e.aliases.join('/')}` : e.term)).join(', ');
+  return { list, active, pending, vetoed };
 }
 
 module.exports = {

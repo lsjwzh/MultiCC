@@ -278,3 +278,34 @@ test('输入词汇统计与冻结版本保持出现次数、拼写顺序及会�
   }
   assert.deepEqual(run(miner),run(original.exports));
 });
+
+test('热词清单与冻结实现逐项核对激活、否决、顺序与返回的原条目', () => {
+  const { compileFunction } = require('node:vm'), { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const filename = path.resolve(__dirname,'../src/voice/hotword-miner.js');
+  const bytes=fs.readFileSync(path.join(__dirname,'helpers/frozen-hotword-list.js'));
+  assert.equal(createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex'),'9af5875d169cb5cd8f45afdf2ad0ce3b673858a4');
+  const old={exports:{}};
+  compileFunction(bytes.toString(),['module','require'],{filename})(old,createRequire(filename));
+  for(const alias of ['','cli','é','热水','S T T','Äxx','Multi CC','\ud800X']) {
+    const kept=['CLI','cli-foo','client','字热水词','é','x Multi cc x','\ud800X'];
+    if(alias) for(const row of kept) assert.equal(miner.vetoedBy(alias,[row]),old.exports.vetoedBy(alias,[row]));
+    for(const count of [0,1,2,9,'2',NaN]) {
+      const p={term:'CLI',alias,count}, q={term:'Cll',alias:'rare',count:0};
+      const input={pairs:{k:p,other:q,duplicate:{term:'cli',alias,count}},typed:[{term:'STT'},{term:'stt'}],rejected:[]};
+      for(const texts of [[],kept]) {
+        const x=miner.buildHotwords(input,texts), y=old.exports.buildHotwords(input,texts);
+        assert.deepEqual(x,y);
+        for (const group of ['vetoed','pending']) x[group].forEach((item,n)=>assert.equal(item,y[group][n]));
+      }
+    }
+  }
+  const trace=api=>{
+    const ops=[], stop=Error('source');
+    const source={ *[Symbol.iterator](){ try {ops.push('begin');yield {toString(){ops.push('text');return 'x';}};throw stop;}finally{ops.push('close');} }};
+    const state={pairs:{k:{term:'FooBar',alias:'missing',count:5}}};
+    assert.throws(()=>api.buildHotwords(state,source),e=>e===stop);
+    return ops;
+  };
+  assert.deepEqual(trace(miner),trace(old.exports));
+});

@@ -286,6 +286,7 @@ mod session_records;
 mod session_state;
 mod session_state_service;
 pub mod usage_limit_poll;
+pub mod voice_hotword_list;
 pub mod voice_hotword_pairs;
 pub mod voice_typed_terms;
 pub mod wait_cancel_live;
