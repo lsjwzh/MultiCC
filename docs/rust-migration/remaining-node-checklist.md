@@ -1,5 +1,15 @@
 # 剩余 Node 后端清单
 
+## 语音输入就绪判断（2026-11-25）
+
+本地 main 的 `eeff0a8c` 已包含 Codex 终端查找器提交 `2a5f837c`。MultiCC 合并回执为 `merge-back_mwv1p0fs_f27d81feb034`，任务工作区在合并完成时干净，与主线差距为 0/0。
+
+兼容宿主的 `POST /api/voice/stt` 在语音不可用时返回 503、`voice_not_ready` 和就绪详情。原先此处使用 `src/voice/readiness.js`，而 `GET /api/voice/readiness` 在 Rust 网关里另外计算。两个入口现共用 Rust 的引擎选择、流式提供方判定和安装状态映射。Node 仍负责调用进程内 ASR、安装器与流式服务，读取云端凭据是否存在并保留原始下载进度对象。旧文件已移出生产目录。[Rust 规则](../../native/core/src/voice_routes.rs) · [STT 接线](../../src/routes/voice.js)
+
+相对 `eeff0a8c` 重新扫描，src 从 529 个文件降至 528 个（523 JS、2 CJS、3 MJS）。其中 516 个沿 server.js 模块导入可达、9 个经宿主脚本路径可达、2 个供离线工具使用、1 个仅见测试引用。按 server.js 加 src 下 JS/CJS/MJS 的物理行（含注释和空行），128,854 降至 128,818，净减 36 行。旧文件删除 45 行，现有路由净增 9 行。测试副本单独存放。[实时依赖清单](node-module-dependencies.md) · [差分测试](../../tests/test-voice-readiness.js)
+
+原生模块源码指纹为 `81a1c763f12774edb1bf5699`，release 构建通过接口预检。旧实现的 Git blob 为 `586ddd3484b4139e3186d13156af1940a58f4cfe`。180 组固定输入的返回值、字段顺序、下载对象引用和探针调用顺序均与旧实现一致，另有按需读取和异常传递检查。语音宿主与 STT 路由测试 31/31 通过，Rust 语音内核 19/19 通过，真实 Rust 网关的就绪路由集成测试 1/1 通过。
+
 ## Codex 终端会话 ID 查找（2026-11-25）
 
 在合入版本 `a94bf826`，src 内 530 个 JS/CJS/MJS 文件中有 527 个可从兼容宿主到达，2 个供离线工具使用，1 个仅见测试引用。逐文件职责和直接调用方已固定在[530 项基线清单](src-classification-2026-11-25.md)。本批删除 Codex rollout 查找器后，工作树 src 内为 529 个文件（524 JS、2 CJS、3 MJS），其中 517 个沿模块导入可达，9 个沿宿主脚本路径可达。终端创建和保存仍经兼容宿主，rollout 读取、筛选和 ID 匹配已交给 Rust 工作线程。[工作树实时依赖](node-module-dependencies.md)

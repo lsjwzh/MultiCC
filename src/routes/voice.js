@@ -10,12 +10,22 @@
 // The full pre-migration implementation is frozen in
 // tests/helpers/legacy-voice-routes.js as the differential oracle.
 
-const { NOT_READY, voiceReadiness } = require('../voice/readiness');
+const { getNative } = require('../native/runtime');
 const { mountVoiceHostRoute } = require('./voice-host');
 
 function requireFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`voice routes require ${name}`);
   return value;
+}
+
+// The host owns these synchronous probes and the live installer status object.
+function voiceReadiness({ asrLocal, installer, voiceCfg = {}, streamingStatus } = {}) {
+  const download = installer && typeof installer.status === 'function' ? installer.status() : null;
+  const local = !!(asrLocal && typeof asrLocal.isAvailable === 'function' && asrLocal.isAvailable());
+  let streaming = {};
+  try { streaming = (typeof streamingStatus === 'function' ? streamingStatus() : streamingStatus) || {}; } catch (_) {}
+  const hasCloudKey = !!(voiceCfg.WHISPER_API_KEY || voiceCfg.OPENROUTER_API_KEY);
+  return getNative().voiceReadiness(local, hasCloudKey, streaming, download);
 }
 
 function mountVoiceRoutes(app, deps = {}) {
@@ -46,7 +56,6 @@ function mountVoiceRoutes(app, deps = {}) {
 
   const { buildWhisperPrompt } = voice;
 
-  // Asked by every mic button before it records (see src/voice/readiness.js).
   function readiness() {
     return voiceReadiness({
       asrLocal,
@@ -78,7 +87,7 @@ function mountVoiceRoutes(app, deps = {}) {
       // local model / enter a cloud key" instead of showing this text.
       return res.status(503).json({
         error: '本地 ASR 未就绪，且 WHISPER_API_KEY 或 OPENROUTER_API_KEY 未设置',
-        code: NOT_READY,
+        code: getNative().VOICE_NOT_READY,
         readiness: readiness(),
       });
     }
@@ -130,4 +139,4 @@ function mountVoiceRoutes(app, deps = {}) {
   return { getConsistency() { return host.getConsistency(); } };
 }
 
-module.exports = { mountVoiceRoutes };
+module.exports = { mountVoiceRoutes, voiceReadiness };

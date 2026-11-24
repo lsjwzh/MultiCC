@@ -136,6 +136,7 @@ pub mod turn_request;
 pub mod turn_state;
 pub mod unattended;
 pub mod virtual_provider;
+pub mod voice_readiness;
 pub mod windows_tools;
 pub mod worktree_sync;
 
