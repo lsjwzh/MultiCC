@@ -237,6 +237,7 @@ jobs:
     timeout-minutes: 65
     permissions:
       contents: write
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -252,8 +253,24 @@ jobs:
         run: |
           set -euo pipefail
           for i in $(seq 1 115); do
-            if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -qx 'SHA256SUMS.txt'; then
+            if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx 'SHA256SUMS.txt'; then
               exit 0
+            fi
+            # Fail fast when companion desktop-release has already ended without succeeding
+            # (avoid burning 58 minutes polling a tag whose desktop build already failed).
+            if runs_json="$(gh run list --workflow desktop-release.yml --branch "$GITHUB_REF_NAME" --limit 5 --json status,conclusion,headSha 2>/dev/null)"; then
+              state="$(printf '%s' "$runs_json" | node -e '
+                const runs = JSON.parse(require("node:fs").readFileSync(0, "utf8"))
+                  .filter(r => r.headSha === process.env.GITHUB_SHA);
+                if (!runs.length) { console.log("pending"); process.exit(0); }
+                const active = runs.some(r => r.status !== "completed");
+                const ok = runs.some(r => r.conclusion === "success");
+                console.log((!active && !ok) ? "failed" : "pending");
+              ')"
+              if [ "$state" = "failed" ]; then
+                echo "::error::desktop-release 已结束且未成功，提前中止等待并保留 APK 构建结果"
+                exit 1
+              fi
             fi
             sleep 30
           done

@@ -836,3 +836,35 @@ test('release publishing extracts notes from the tagged changelog without a lang
   assert.match(read('.github/workflows/core-tests.yml'), /--bin release-notes --/);
   assert.doesNotMatch(read('.github/workflows/ci.yml'), /publication-policy|ci-commits/);
 });
+
+test('CI and release workflows guard against runaway hangs and duplicate Cargo rebuilds', () => {
+  const rustKernels = read('.github/workflows/rust-kernels.yml');
+  assert.match(rustKernels, /parity:\s+timeout-minutes:\s+\d+/);
+  assert.match(rustKernels, /node-free-runtime:\s+runs-on:\s+ubuntu-latest\s+timeout-minutes:\s+\d+/);
+  assert.match(rustKernels, /测试 Rust 前门\s+timeout-minutes:\s+\d+/);
+  assert.match(rustKernels, /构建并强制执行原生差分测试\s+timeout-minutes:\s+\d+/);
+  assert.match(rustKernels, /Swatinem\/rust-cache@v2/);
+  assert.match(rustKernels, /CARGO_TARGET_DIR:\s+\$\{\{\s*github\.workspace\s*\}\}\/native\/target/);
+  assert.doesNotMatch(rustKernels, /CARGO_TARGET_DIR:\s+\$\{\{\s*runner\.temp\s*\}\}\/multicc-rust-target/,
+    'rust-kernels parity must share native/target instead of compiling twice in runner.temp');
+
+  const coreTests = read('.github/workflows/core-tests.yml');
+  assert.match(coreTests, /Swatinem\/rust-cache@v2/);
+  assert.match(coreTests, /CARGO_TARGET_DIR:\s+\$\{\{\s*github\.workspace\s*\}\}\/native\/target/);
+
+  const ci = read('.github/workflows/ci.yml');
+  assert.match(ci, /Swatinem\/rust-cache@v2/);
+
+  const desktop = read('.github/workflows/desktop-release.yml');
+  assert.match(desktop, /artifact_id:\s+macos-arm64/);
+  assert.match(desktop, /artifact_id:\s+macos-x64/);
+  assert.match(desktop, /Swatinem\/rust-cache@v2/);
+  assert.match(desktop, /build:[\s\S]*?timeout-minutes:\s+\d+/);
+  assert.match(desktop, /service:[\s\S]*?timeout-minutes:\s+\d+/);
+  assert.match(desktop, /standalone:[\s\S]*?timeout-minutes:\s+\d+/);
+  assert.match(desktop, /release:[\s\S]*?timeout-minutes:\s+\d+/);
+
+  const release = read('.github/workflows/release.yml');
+  assert.match(release, /publish-apk:[\s\S]*?actions:\s+read/);
+  assert.match(release, /gh run list --workflow desktop-release\.yml/);
+});

@@ -16,10 +16,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
+          shared-key: core-tests-linux
       - name: Extract tagged release notes
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/release-notes-target
+          CARGO_TARGET_DIR: ${{ github.workspace }}/native/target
         run: cargo run --locked --quiet --manifest-path native/Cargo.toml -p multicc-core --bin release-notes -- "$GITHUB_REF_NAME" CHANGELOG.md "$RUNNER_TEMP/release-notes.md"
       - uses: actions/setup-node@v4
         with:
@@ -44,6 +48,7 @@ jobs:
         run: node scripts/build-rust-kernels.js
         env:
           MULTICC_RUST_PREBUILT_DIR: ${{ runner.temp }}/multicc-rust-prebuilt
+          CARGO_TARGET_DIR: ${{ github.workspace }}/native/target
           # 发布门禁：远控二进制缺了就是缺件，不许静默只打警告。
           MULTICC_REQUIRE_RUST_BUNDLE: '1'
       - name: Build restart test executables
