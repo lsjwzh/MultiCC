@@ -343,6 +343,199 @@ pub async fn serve_relay_turn(
     }
 }
 
+/// 借道用量查询（`GET <relayBaseUrl>/quota`）的分类错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayQuotaError {
+    Revoked,
+    NotFound,
+    Unavailable(String),
+}
+
+/// 通过借道分享码向 Host 透传查询反重力账号额度（`GET <relayBaseUrl>/quota[?force=1]`）。
+///
+/// 禁用 HTTP 重定向跟随（防 `Authorization` 外泄），并把 `401/403` 与跳向 `/login`
+/// 的 `3xx` 统一判定为分享码已撤销或无效。
+pub async fn fetch_relay_quota(
+    target: &RemoteAgyTarget,
+    force: bool,
+) -> Result<Value, RelayQuotaError> {
+    let base_url = target
+        .relay_base_url
+        .as_deref()
+        .ok_or_else(|| RelayQuotaError::Unavailable("缺少借道地址 relayBaseUrl".to_string()))?;
+    let token = target
+        .relay_auth_token
+        .as_deref()
+        .ok_or_else(|| RelayQuotaError::Unavailable("缺少借道安全凭据".to_string()))?;
+    let mut quota_url = format!("{}/quota", base_url.trim_end_matches('/'));
+    if force {
+        quota_url.push_str("?force=1");
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(35))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| RelayQuotaError::Unavailable(format!("创建 HTTP 客户端失败: {err}")))?;
+
+    let resp = client
+        .get(&quota_url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|err| RelayQuotaError::Unavailable(format!("无法连接远端借道服务: {err}")))?;
+
+    let status = resp.status().as_u16();
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = resp.bytes().await.unwrap_or_default();
+    let mut body = serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| json!({}));
+
+    if is_auth_rejected_http(status, location.as_deref()) {
+        return Err(RelayQuotaError::Revoked);
+    }
+    if status == 404 {
+        return Err(RelayQuotaError::NotFound);
+    }
+    if status != 200 {
+        let err_msg = body
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("远端借道服务返回 HTTP {status}"));
+        return Err(RelayQuotaError::Unavailable(err_msg));
+    }
+
+    if body.get("status").and_then(Value::as_str) == Some("ok")
+        && body.get("bar").is_some_and(Value::is_object)
+    {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("transport".to_string(), json!("relay"));
+        }
+        return Ok(body);
+    }
+
+    let detail = body
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| body.pointer("/bar/title").and_then(Value::as_str))
+        .unwrap_or("远端 Host 暂无法读取反重力账号额度")
+        .to_string();
+    Err(RelayQuotaError::Unavailable(detail))
+}
+
+/// 借道模型目录查询（`GET <relayBaseUrl>/models`）的分类错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayCatalogError {
+    Revoked,
+    NotFound,
+    Unavailable(String),
+}
+
+fn sanitize_relay_models(raw: Option<&Value>) -> Vec<Value> {
+    let Some(items) = raw.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(id) = item
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && s.len() <= 100 && !s.chars().any(char::is_control))
+        else {
+            continue;
+        };
+        let label = item
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && s.len() <= 160 && !s.chars().any(char::is_control))
+            .unwrap_or(id);
+        if !out
+            .iter()
+            .any(|existing: &Value| existing.get("model").and_then(Value::as_str) == Some(id))
+        {
+            out.push(json!({ "model": id, "label": label }));
+            if out.len() >= 100 {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// 通过借道分享码向 Host 透传查询反重力模型目录（`GET <relayBaseUrl>/models[?refresh=1]`）。
+///
+/// 禁用 HTTP 重定向跟随（防 `Authorization` 外泄），把 `401/403` 与跳向 `/login`
+/// 的 `3xx` 统一判定为分享码已撤销或无效，并对模型项做白名单清洗。
+pub async fn fetch_relay_models(
+    target: &RemoteAgyTarget,
+    refresh: bool,
+) -> Result<Vec<Value>, RelayCatalogError> {
+    let base_url = target
+        .relay_base_url
+        .as_deref()
+        .ok_or_else(|| RelayCatalogError::Unavailable("缺少借道地址 relayBaseUrl".to_string()))?;
+    let token = target
+        .relay_auth_token
+        .as_deref()
+        .ok_or_else(|| RelayCatalogError::Unavailable("缺少借道安全凭据".to_string()))?;
+    let mut models_url = format!("{}/models", base_url.trim_end_matches('/'));
+    if refresh {
+        models_url.push_str("?refresh=1");
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| RelayCatalogError::Unavailable(format!("创建 HTTP 客户端失败: {err}")))?;
+
+    let resp = client
+        .get(&models_url)
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|err| RelayCatalogError::Unavailable(format!("无法连接远端借道服务: {err}")))?;
+
+    let status = resp.status().as_u16();
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = resp.bytes().await.unwrap_or_default();
+    let body = serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| json!({}));
+
+    if is_auth_rejected_http(status, location.as_deref()) {
+        return Err(RelayCatalogError::Revoked);
+    }
+    if status == 404 {
+        return Err(RelayCatalogError::NotFound);
+    }
+    if status != 200 {
+        let err_msg = body
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("远端借道服务返回 HTTP {status}"));
+        return Err(RelayCatalogError::Unavailable(err_msg));
+    }
+
+    let models = sanitize_relay_models(body.get("models"));
+    if models.is_empty() {
+        let detail = body
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("远端 Host 未返回可用的反重力模型列表")
+            .to_string();
+        return Err(RelayCatalogError::Unavailable(detail));
+    }
+    Ok(models)
+}
+
 /// 探测借道分享码连通性（`GET <relayBaseUrl>/ping`）。
 pub async fn probe_relay_target(target: &RemoteAgyTarget) -> Value {
     let Some(base_url) = target.relay_base_url.as_deref() else {
@@ -526,5 +719,190 @@ exit 0
             .as_str()
             .unwrap()
             .contains("分享码已被撤销或无效"));
+    }
+
+    #[tokio::test]
+    async fn fetch_relay_quota_forwards_force_and_maps_revoked_and_not_found() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // 1) 200 OK with force=1 passthrough & Authorization header check
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let srv = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let n = sock.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            assert!(req.starts_with("GET /agy-proxy/0123456789abcdef/quota?force=1 "));
+            assert!(
+                req.contains("authorization: Bearer mcr1.0123456789abcdef.secret9999")
+                    || req.contains("Authorization: Bearer mcr1.0123456789abcdef.secret9999")
+            );
+            let body = json!({
+                "status": "ok",
+                "fetchedAt": 1_795_425_813_000u64,
+                "bar": {
+                    "text": "反重力 · Gemini: 5h 94% ⟳",
+                    "title": "反重力账号额度（agy /usage）",
+                    "color": "#58a6ff",
+                }
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let target = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{port}/agy-proxy/0123456789abcdef"),
+            "relayAuthToken": "mcr1.0123456789abcdef.secret9999",
+        }))
+        .unwrap();
+        let ok = fetch_relay_quota(&target, true).await.unwrap();
+        let _ = srv.await;
+        assert_eq!(ok["status"], "ok");
+        assert_eq!(ok["transport"], "relay");
+        assert_eq!(ok["bar"]["text"], "反重力 · Gemini: 5h 94% ⟳");
+
+        // 2) 302 /login -> Revoked without following redirect
+        let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port2 = listener2.local_addr().unwrap().port();
+        let srv2 = tokio::spawn(async move {
+            let (mut sock, _) = listener2.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let resp = "HTTP/1.1 302 Found\r\nLocation: /login?redirect=%2Fagy-proxy%2F0123456789abcdef%2Fquota\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        let target2 = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{port2}/agy-proxy/0123456789abcdef"),
+            "relayAuthToken": "mcr1.0123456789abcdef.revokedsecret",
+        }))
+        .unwrap();
+        assert_eq!(
+            fetch_relay_quota(&target2, false).await,
+            Err(RelayQuotaError::Revoked)
+        );
+        let _ = srv2.await;
+
+        // 3) 404 -> NotFound
+        let listener3 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port3 = listener3.local_addr().unwrap().port();
+        let srv3 = tokio::spawn(async move {
+            let (mut sock, _) = listener3.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        let target3 = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{port3}/agy-proxy/0123456789abcdef"),
+            "relayAuthToken": "mcr1.0123456789abcdef.validtoken99",
+        }))
+        .unwrap();
+        assert_eq!(
+            fetch_relay_quota(&target3, false).await,
+            Err(RelayQuotaError::NotFound)
+        );
+        let _ = srv3.await;
+    }
+
+    #[tokio::test]
+    async fn fetch_relay_models_forwards_refresh_sanitizes_and_maps_errors() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let srv = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let n = sock.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            assert!(req.starts_with("GET /agy-proxy/0123456789abcdef/models?refresh=1 "));
+            assert!(
+                req.contains("authorization: Bearer mcr1.0123456789abcdef.secret9999")
+                    || req.contains("Authorization: Bearer mcr1.0123456789abcdef.secret9999")
+            );
+            let body = json!({
+                "models": [
+                    { "model": "gemini-4-neon", "label": "Gemini 4 Neon" },
+                    { "model": "gemini-4-neon", "label": "Duplicate" },
+                    { "model": "bad\nmodel", "label": "Control" },
+                    { "model": "  ", "label": "Blank" },
+                    { "model": "claude-sonnet-5-5" }
+                ],
+                "source": "cli",
+                "cached": false
+            })
+            .to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+        });
+        let target = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{port}/agy-proxy/0123456789abcdef"),
+            "relayAuthToken": "mcr1.0123456789abcdef.secret9999",
+        }))
+        .unwrap();
+        let models = fetch_relay_models(&target, true).await.unwrap();
+        let _ = srv.await;
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["model"], "gemini-4-neon");
+        assert_eq!(models[0]["label"], "Gemini 4 Neon");
+        assert_eq!(models[1]["model"], "claude-sonnet-5-5");
+        assert_eq!(models[1]["label"], "claude-sonnet-5-5");
+
+        // 302 /login -> Revoked
+        let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port2 = listener2.local_addr().unwrap().port();
+        let srv2 = tokio::spawn(async move {
+            let (mut sock, _) = listener2.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let resp = "HTTP/1.1 302 Found\r\nLocation: /login?redirect=%2Fagy-proxy%2F0123456789abcdef%2Fmodels\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        let target2 = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{port2}/agy-proxy/0123456789abcdef"),
+            "relayAuthToken": "mcr1.0123456789abcdef.revokedsecret",
+        }))
+        .unwrap();
+        assert_eq!(
+            fetch_relay_models(&target2, false).await,
+            Err(RelayCatalogError::Revoked)
+        );
+        let _ = srv2.await;
+
+        // 404 -> NotFound
+        let listener3 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port3 = listener3.local_addr().unwrap().port();
+        let srv3 = tokio::spawn(async move {
+            let (mut sock, _) = listener3.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+            let _ = sock.write_all(resp.as_bytes()).await;
+        });
+        let target3 = multicc_core::agy_remote::parse_remote_target(&json!({
+            "transport": "relay",
+            "relayBaseUrl": format!("http://127.0.0.1:{port3}/agy-proxy/0123456789abcdef"),
+            "relayAuthToken": "mcr1.0123456789abcdef.validtoken99",
+        }))
+        .unwrap();
+        assert_eq!(
+            fetch_relay_models(&target3, false).await,
+            Err(RelayCatalogError::NotFound)
+        );
+        let _ = srv3.await;
     }
 }

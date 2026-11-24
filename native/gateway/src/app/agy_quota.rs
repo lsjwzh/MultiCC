@@ -1,14 +1,21 @@
-//! Antigravity account quota from the official agy CLI. The subprocess is
-//! asynchronous, bounded, single-flight and never exposes its raw output.
+//! Antigravity account quota from the official agy CLI, plus transparent
+//! pass-through to the lending Host for relay-shared accounts. Subprocesses are
+//! asynchronous, bounded, per-account single-flight and never expose raw output.
 use super::{
     agy_catalog::executable,
     express::{self, RequestCtx},
 };
+use crate::agy_relay_client::{fetch_relay_quota, RelayQuotaError};
 use axum::{body::Body, http::Response};
+use multicc_core::agy_accounts::{self as agy_store, ResolvedAgyAccount};
+use multicc_core::egress_plugin::{EgressBinding, LOOPBACK_NO_PROXY};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
+    ffi::OsString,
+    path::{Path, PathBuf},
     process::Stdio,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{io::AsyncReadExt, process::Command, sync::Mutex};
@@ -16,10 +23,11 @@ use tokio::{io::AsyncReadExt, process::Command, sync::Mutex};
 const TTL: Duration = Duration::from_secs(60);
 const FAIL_TTL: Duration = Duration::from_secs(30);
 const MAX_OUTPUT: u64 = 1024 * 1024;
-/// `None` records a failed probe, so a signed-out or offline CLI is not spawned
-/// on every page load.
-type CacheEntry = Option<(Instant, Option<Value>)>;
-static CACHE: OnceLock<Mutex<CacheEntry>> = OnceLock::new();
+/// `(when, payload, ok)` — failures are cached for `FAIL_TTL` so a signed-out,
+/// offline or revoked account is not probed on every page load.
+type CacheSlot = Option<(Instant, Value, bool)>;
+type CacheMap = HashMap<String, Arc<Mutex<CacheSlot>>>;
+static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
 
 const GRAY: &str = "#8b949e";
 const RED: &str = "#f85149";
@@ -271,8 +279,25 @@ fn render(data: &Value, now_ms: u64) -> Option<Value> {
     }))
 }
 
-async fn fetch() -> Option<Value> {
-    let mut command = Command::new(executable());
+fn accounts_home_dir() -> Option<PathBuf> {
+    std::env::var_os("MULTICC_AGY_ACCOUNTS_HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()))
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+}
+
+fn agy_executable() -> OsString {
+    std::env::var_os("MULTICC_AGY_BIN")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(executable)
+}
+
+async fn fetch_local_with_env(
+    home_override: Option<&Path>,
+    proxy_url: Option<&str>,
+) -> Option<Value> {
+    let mut command = Command::new(agy_executable());
     command
         .args([
             "-p",
@@ -285,12 +310,25 @@ async fn fetch() -> Option<Value> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .env_remove("MULTICC_AGY_REMOTE_ACCOUNT_JSON")
+        .env_remove("MULTICC_AGY_EGRESS_JSON");
     // The quota belongs to the signed-in account, and agy reads its login from
     // `$HOME/.gemini`, so a pinned account is served by pointing HOME at its
     // mini-home. No pin leaves the real home untouched.
-    if let Some(home) = super::agy_accounts::home_override() {
+    if let Some(home) = home_override {
         command.env("HOME", home);
+    }
+    if let Some(url) = proxy_url {
+        command
+            .env("HTTP_PROXY", url)
+            .env("HTTPS_PROXY", url)
+            .env("ALL_PROXY", url)
+            .env("http_proxy", url)
+            .env("https_proxy", url)
+            .env("all_proxy", url)
+            .env("NO_PROXY", LOOPBACK_NO_PROXY)
+            .env("no_proxy", LOOPBACK_NO_PROXY);
     }
     let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?.take(MAX_OUTPUT + 1);
@@ -322,39 +360,198 @@ fn unavailable_bar() -> Value {
     })
 }
 
+fn unavailable_bar_with(text: &str, title: &str, error: Option<&str>) -> Value {
+    let mut out = json!({
+        "status": "unavailable",
+        "bar": {
+            "text": text,
+            "title": title,
+            "color": YELLOW,
+            "action": Value::Null,
+            "textParts": [{"s": text}],
+            "titleParts": [{"s": title}],
+            "states": agy_states(),
+        }
+    });
+    if let Some(err) = error {
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("error".to_string(), json!(err));
+        }
+    }
+    out
+}
+
+async fn slot_for(cache_key: &str) -> Arc<Mutex<CacheSlot>> {
+    let mut map = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .await;
+    map.entry(cache_key.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(None)))
+        .clone()
+}
+
+async fn cached_query<F, Fut>(cache_key: &str, force: bool, producer: F) -> Value
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = (Value, bool)>,
+{
+    let slot = slot_for(cache_key).await;
+    let mut guard = slot.lock().await;
+    if !force {
+        if let Some((when, value, ok)) = guard.as_ref() {
+            let ttl = if *ok { TTL } else { FAIL_TTL };
+            if when.elapsed() < ttl {
+                return value.clone();
+            }
+        }
+    }
+    let (value, ok) = producer().await;
+    *guard = Some((Instant::now(), value.clone(), ok));
+    value
+}
+
+/// 查询 Host 本机某个隔离反重力账号的额度（供本机 `/api/agy/quota` 与借道 Host `/agy-proxy/<id>/quota` 复用）。
+///
+/// 绑定了 `chrome-proxy-launcher` 专用出口时采用 fail-closed：实时解析出口并注入代理环境，
+/// 出口不可用时直接返回不可用提示，绝不静默走 Host 默认出口 IP。
+pub(crate) async fn query_local_account(
+    account_id: &str,
+    account_home: &Path,
+    egress_binding: Option<&EgressBinding>,
+    force: bool,
+) -> Value {
+    let cache_key = format!("local:{account_id}");
+    cached_query(&cache_key, force, || async {
+        let proxy_url = if let Some(binding) = egress_binding {
+            match crate::egress_runtime::resolve_egress_proxy_url(binding).await {
+                Ok(url) => Some(url),
+                Err(err) => {
+                    let msg = format!("Host 账号专用出口不可用：{err}");
+                    return (
+                        unavailable_bar_with("反重力：专用出口不可用 · ⟳ 重试", &msg, Some(&msg)),
+                        false,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(35),
+            fetch_local_with_env(Some(account_home), proxy_url.as_deref()),
+        )
+        .await
+        .ok()
+        .flatten();
+        match result {
+            Some(v) => (v, true),
+            None => (unavailable_bar(), false),
+        }
+    })
+    .await
+}
+
+fn parse_query_flag<'a>(original_url: &'a str, name: &str) -> Option<&'a str> {
+    let qs = original_url.split('?').nth(1)?;
+    for part in qs.split('&') {
+        if let Some((k, v)) = part.split_once('=') {
+            if k == name {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 /// The cached bar is the previous account's quota, so an account switch must
 /// drop it instead of waiting out the TTL.
 pub(super) async fn invalidate() {
     if let Some(cache) = CACHE.get() {
-        *cache.lock().await = None;
+        cache.lock().await.clear();
     }
 }
 
 pub async fn handle(ctx: &RequestCtx) -> Response<Body> {
-    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().await;
-    let force = ctx
-        .original_url
-        .split('?')
-        .nth(1)
-        .unwrap_or("")
-        .split('&')
-        .any(|part| part == "force=1");
-    if !force {
-        if let Some((when, value)) = cache.as_ref() {
-            let ttl = if value.is_some() { TTL } else { FAIL_TTL };
-            if when.elapsed() < ttl {
-                let body = value.clone().unwrap_or_else(unavailable_bar);
-                return express::json(ctx, 200, &body, &[("Cache-Control", "no-store")]);
-            }
+    let force = parse_query_flag(&ctx.original_url, "force") == Some("1");
+    let explicit_id = parse_query_flag(&ctx.original_url, "accountId")
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let Some(home) = accounts_home_dir() else {
+        let body = unavailable_bar_with(
+            "反重力：用量暂不可用 · ⟳ 重试",
+            "无法定位 HOME 目录，未能读取反重力账号额度。",
+            Some("无法定位 HOME 目录"),
+        );
+        return express::json(ctx, 200, &body, &[("Cache-Control", "no-store")]);
+    };
+
+    let body = match agy_store::resolve_account(&home, explicit_id) {
+        Ok(None) => {
+            cached_query("__default__", force, || async {
+                let result =
+                    tokio::time::timeout(Duration::from_secs(35), fetch_local_with_env(None, None))
+                        .await
+                        .ok()
+                        .flatten();
+                match result {
+                    Some(v) => (v, true),
+                    None => (unavailable_bar(), false),
+                }
+            })
+            .await
         }
-    }
-    let result = tokio::time::timeout(Duration::from_secs(35), fetch())
-        .await
-        .ok()
-        .flatten();
-    *cache = Some((Instant::now(), result.clone()));
-    let value = result.unwrap_or_else(unavailable_bar);
-    express::json(ctx, 200, &value, &[("Cache-Control", "no-store")])
+        Ok(Some(ResolvedAgyAccount::Local {
+            home: account_home,
+            egress_binding,
+        })) => {
+            let acct_id = explicit_id
+                .map(str::to_owned)
+                .or_else(|| agy_store::active_id(&home))
+                .unwrap_or_else(|| "local".to_string());
+            query_local_account(&acct_id, &account_home, egress_binding.as_ref(), force).await
+        }
+        Ok(Some(ResolvedAgyAccount::Remote { id, remote, .. })) if remote.is_relay() => {
+            let cache_key = format!("relay:{id}");
+            cached_query(&cache_key, force, || async {
+                match fetch_relay_quota(&remote, force).await {
+                    Ok(v) => (v, true),
+                    Err(RelayQuotaError::Revoked) => {
+                        let msg = "反重力借道分享码已被撤销或无效，请向出借方重新获取";
+                        (
+                            unavailable_bar_with("反重力：分享码已失效 · ⟳ 重试", msg, Some(msg)),
+                            false,
+                        )
+                    }
+                    Err(RelayQuotaError::NotFound) => {
+                        let msg =
+                            "远端 Host 上对应的反重力账号已不存在，或 Host 尚未升级支持反重力借道用量查询";
+                        (
+                            unavailable_bar_with("反重力：借道用量不可用 · ⟳ 重试", msg, Some(msg)),
+                            false,
+                        )
+                    }
+                    Err(RelayQuotaError::Unavailable(detail)) => (
+                        unavailable_bar_with(
+                            "反重力：借道用量暂不可用 · ⟳ 重试",
+                            &detail,
+                            Some(&detail),
+                        ),
+                        false,
+                    ),
+                }
+            })
+            .await
+        }
+        Ok(Some(ResolvedAgyAccount::Remote { .. })) => {
+            let msg = "当前为 SSH 远端反重力账号，暂不支持直接透传用量；请改用借道分享码或到远端 Host 查看。";
+            unavailable_bar_with("反重力：远端用量请走借道 · ⟳", msg, Some(msg))
+        }
+        Err(err) => unavailable_bar_with("反重力：账号不可用 · ⟳ 重试", &err, Some(&err)),
+    };
+
+    express::json(ctx, 200, &body, &[("Cache-Control", "no-store")])
 }
 
 #[cfg(test)]
@@ -442,5 +639,152 @@ mod tests {
             unavail["bar"]["states"]["loading"]["text"],
             "反重力：加载中…"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn query_local_account_injects_egress_proxy_and_client_relays_quota() {
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
+        invalidate().await;
+
+        let root = std::env::temp_dir().join(format!(
+            "multicc-agy-quota-relay-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let host_home = root.join("host-home");
+        let client_home = root.join("client-home");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&host_home).unwrap();
+        std::fs::create_dir_all(&client_home).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_agy = bin_dir.join("agy");
+        std::fs::write(
+            &fake_agy,
+            r#"#!/bin/sh
+if [ "$HTTPS_PROXY" != "http://127.0.0.1:49999" ]; then
+  echo "missing proxy: $HTTPS_PROXY" >&2
+  exit 2
+fi
+printf '{"command":{"data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"5h","remaining_fraction":0.88}]}]}}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::env::set_var("MULTICC_AGY_BIN", &fake_agy);
+        std::env::set_var("MULTICC_EGRESS_PROXY_OVERRIDE", "http://127.0.0.1:49999");
+
+        // 1) Host local account with bound egress injects HTTPS_PROXY and renders quota.
+        let created = agy_store::create_account_with_egress(
+            &host_home,
+            "Host 代理账号",
+            "created",
+            Some(&json!({ "pluginId": "chrome-proxy-launcher", "profileId": "us-1" })),
+        )
+        .unwrap();
+        let host_id = created["id"].as_str().unwrap().to_string();
+        let acct_home = agy_store::account_home(&host_home, &host_id).unwrap();
+        let egress = agy_store::get_account_egress(&host_home, &host_id);
+        let host_quota = query_local_account(&host_id, &acct_home, egress.as_ref(), true).await;
+        assert_eq!(host_quota["status"], "ok");
+        assert!(host_quota["bar"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Gemini: 5h 88%"));
+
+        // 2) Client active relay account transparently forwards /api/agy/quota to Host /agy-proxy/<id>/quota
+        //    with caching and ?force=1 passthrough.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_srv = hits.clone();
+        let quota_payload = host_quota.to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let srv = tokio::spawn(async move {
+            for expected_force in [false, true] {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                if expected_force {
+                    assert!(req.contains("/quota?force=1 "));
+                } else {
+                    assert!(req.contains("/quota "));
+                }
+                hits_srv.fetch_add(1, Ordering::SeqCst);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    quota_payload.len(),
+                    quota_payload
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+            }
+        });
+
+        let relay_acct = agy_store::create_remote_account(
+            &client_home,
+            "借道反重力",
+            &json!({
+                "transport": "relay",
+                "relayBaseUrl": format!("http://127.0.0.1:{port}/agy-proxy/{host_id}"),
+                "relayAuthToken": "mcr1.0123456789abcdef.secret8888",
+            }),
+        )
+        .unwrap();
+        let client_acct_id = relay_acct["id"].as_str().unwrap();
+        agy_store::set_active(&client_home, Some(client_acct_id)).unwrap();
+        std::env::set_var("MULTICC_AGY_ACCOUNTS_HOME", &client_home);
+        invalidate().await;
+
+        async fn call_handle(uri: &str) -> Value {
+            let (parts, _) = Request::builder().uri(uri).body(()).unwrap().into_parts();
+            let ctx = RequestCtx::new(&parts);
+            let resp = handle(&ctx).await;
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+
+        let r1 = call_handle("/api/agy/quota").await;
+        assert_eq!(r1["status"], "ok");
+        assert_eq!(r1["transport"], "relay");
+        assert!(r1["bar"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Gemini: 5h 88%"));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // Second non-forced call hits cache.
+        let r2 = call_handle("/api/agy/quota").await;
+        assert_eq!(r2["status"], "ok");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // Forced call bypasses cache and forwards ?force=1 to Host.
+        let r3 = call_handle("/api/agy/quota?force=1").await;
+        assert_eq!(r3["status"], "ok");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        let _ = srv.await;
+
+        assert!(crate::ws_agy_relay::claims_quota(&format!(
+            "/agy-proxy/{host_id}/quota"
+        )));
+        assert!(!crate::ws_agy_relay::claims_quota(
+            "/agy-proxy/bad-id/quota"
+        ));
+
+        std::env::remove_var("MULTICC_AGY_ACCOUNTS_HOME");
+        std::env::remove_var("MULTICC_AGY_BIN");
+        std::env::remove_var("MULTICC_EGRESS_PROXY_OVERRIDE");
+        invalidate().await;
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
