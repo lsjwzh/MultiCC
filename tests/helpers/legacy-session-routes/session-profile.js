@@ -14,7 +14,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { normalizeManualMemory } = require('../../../src/memory/runtime');
-const { taskShortCode } = require('../../../src/classify/task-short-code');
+const { taskShortCode } = require('../../../src/native/task-domain');
 const { auxVerdictStaleness } = require('../legacy-aux-verdict-health');
 const { isGoalState } = require('../../../src/classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../../../src/providers/auto-provider-config');

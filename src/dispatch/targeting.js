@@ -4,7 +4,7 @@ const { nameOf } = require('../cli/cli-capability');
 
 const { getNative } = require('../native/runtime');
 const { sanitizePublicText } = require('../session-dto');
-const { labelWithCode } = require('../classify/task-short-code');
+const { labelWithCode } = require('../native/task-domain');
 
 const MAX_ROLE_SUMMARY_CHARS = 320;
 const MAX_RECENT_TASKS = 4;

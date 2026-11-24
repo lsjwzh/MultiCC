@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
-const { taskShortCode } = require('../classify/task-short-code');
+const { taskShortCode } = require('../native/task-domain');
 const { isGoalState } = require('../classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
 const {

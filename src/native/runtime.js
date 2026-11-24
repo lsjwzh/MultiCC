@@ -15,7 +15,7 @@ let auxHealthProvider = null;
 function installAuxHealthProvider(fn) { auxHealthProvider = typeof fn === 'function' ? fn : null; }
 function auxVerdictStaleness() { return getNative().auxVerdictStaleness(auxHealthProvider); }
 function taskStateFrame(task, seedOnly) {
-  return getNative().chatTaskStateFrame(task, seedOnly, require('../classify/task-short-code').taskShortCode, auxVerdictStaleness);
+  return getNative().chatTaskStateFrame(task, seedOnly, require('./task-domain').taskShortCode, auxVerdictStaleness);
 }
 const taskStateSeed = task => taskStateFrame(task, true);
 const taskStatePayload = task => taskStateFrame(task, false);

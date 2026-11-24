@@ -188,7 +188,7 @@ function createPaths({ dataDir } = {}) {
     // deleting it only costs the next rebuild.
     searchIndexDbFile: path.join(root, 'search-index.sqlite'),
     // Outward task short-code registry (taskId→#CODE), guaranteeing the 4-char
-    // display handle is unique fleet-wide. See src/classify/task-short-code.js.
+    // display handle is unique fleet-wide. See native/core/src/task_short_code.rs.
     taskShortCodesFile: path.join(root, 'task-short-codes.json'),
     // The user's drag-and-drop arrangement of the dir grid and of each fleet's
     // session list. Was per-device (localStorage / SharedPreferences) until it
