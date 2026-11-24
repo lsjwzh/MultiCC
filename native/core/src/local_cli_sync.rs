@@ -51,6 +51,8 @@ const STATE_FILE: &str = "local-cli-sync-state.json";
 const BACKUP_KEEP: usize = 20;
 
 const OAUTH_MESSAGE: &str = "账号类线路的 OAuth 凭据不能复制到终端（刷新令牌会互相作废）";
+const CLI_RELAY_MESSAGE: &str =
+    "远程 CLI 模式由远端运行 CLI，不支持同步到本地终端配置（关闭远程 CLI 后可同步 HTTP 中转配置）";
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
@@ -76,6 +78,10 @@ impl SyncError {
 
     fn oauth() -> Self {
         Self::new(422, "PROVIDER_UNSUPPORTED", OAUTH_MESSAGE)
+    }
+
+    fn cli_relay() -> Self {
+        Self::new(422, "PROVIDER_UNSUPPORTED", CLI_RELAY_MESSAGE)
     }
 
     fn io(what: &str, _error: &std::io::Error) -> Self {
@@ -178,6 +184,11 @@ fn string_env(map: &Map<String, Value>) -> Map<String, Value> {
     out
 }
 
+fn is_cli_relay(config: &Map<String, Value>) -> bool {
+    config.get("cliRelay") == Some(&Value::Bool(true))
+        || config.get("relayMode").and_then(Value::as_str) == Some("cli")
+}
+
 fn claude_env(record: &Value) -> Map<String, Value> {
     let config = settings_config(record);
     string_env(&object_of(config.get("env")))
@@ -229,7 +240,11 @@ fn claude_target(records: &[Value], provider_id: &str) -> Result<ClaudeTarget, S
         .iter()
         .find(|record| record_id(record) == provider_id && record_app_type(record) == "claude")
         .ok_or_else(SyncError::not_found)?;
-    let env = claude_env(record);
+    let config = settings_config(record);
+    if is_cli_relay(&config) {
+        return Err(SyncError::cli_relay());
+    }
+    let env = string_env(&object_of(config.get("env")));
     let (base, token) = claude_credentials(&env);
     if base.is_empty() && token.is_empty() {
         return Err(SyncError::oauth());
@@ -302,6 +317,9 @@ fn codex_target(records: &[Value], provider_id: &str) -> Result<CodexTarget, Syn
         .find(|record| record_id(record) == provider_id && record_app_type(record) == "codex")
         .ok_or_else(SyncError::not_found)?;
     let config = settings_config(record);
+    if is_cli_relay(&config) {
+        return Err(SyncError::cli_relay());
+    }
     let toml = config
         .get("config")
         .filter(|value| value.is_string())
@@ -601,6 +619,9 @@ fn claude_status(path: &Path, records: &[Value]) -> Value {
     let local = (base.as_str(), token.as_str());
     let matched = records.iter().find_map(|record| {
         if record_app_type(record) != "claude" {
+            return None;
+        }
+        if is_cli_relay(&settings_config(record)) {
             return None;
         }
         let provider_env = claude_env(record);
@@ -1271,5 +1292,66 @@ mod tests {
             PathBuf::from("/home/u/.claude/settings.json")
         );
         assert_eq!(defaults.codex, PathBuf::from("/home/u/.codex/config.toml"));
+    }
+
+    #[test]
+    fn cli_relay_providers_cannot_sync_to_terminal_and_do_not_match_local_state() {
+        let dir = temp("cli-relay");
+        let data = dir.join("data");
+        let home = dir.join("home");
+        fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let mut claude = claude_record(
+            "c-relay",
+            "https://host.example/claude-proxy/x/remote",
+            "mcr1.tok",
+        );
+        claude["settingsConfig"]["cliRelay"] = json!(true);
+        let codex = json!({
+            "id": "x-relay",
+            "appType": "codex",
+            "settingsConfig": {
+                "cliRelay": true,
+                "config": "model_provider = \"custom\"\n[model_providers.custom]\nbase_url = \"https://host.example/codex-proxy/x\"\n",
+                "auth": { "OPENAI_API_KEY": "mcr1.tok" }
+            }
+        });
+        let records = vec![claude, codex];
+        let paths = Paths {
+            claude: home.join("settings.json"),
+            codex: home.join("config.toml"),
+            codex_home: home.to_path_buf(),
+        };
+        let claude_err = sync_at(&SyncRequest {
+            data_root: &data,
+            paths: &paths,
+            records: &records,
+            app_type: "claude",
+            provider_id: "c-relay",
+        })
+        .unwrap_err();
+        assert_eq!(claude_err.status, 422);
+        assert_eq!(claude_err.code, "PROVIDER_UNSUPPORTED");
+
+        let codex_err = sync_at(&SyncRequest {
+            data_root: &data,
+            paths: &paths,
+            records: &records,
+            app_type: "codex",
+            provider_id: "x-relay",
+        })
+        .unwrap_err();
+        assert_eq!(codex_err.status, 422);
+        assert_eq!(codex_err.code, "PROVIDER_UNSUPPORTED");
+
+        fs::write(
+            &paths.claude,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://host.example/claude-proxy/x/remote","ANTHROPIC_AUTH_TOKEN":"mcr1.tok"}}"#,
+        )
+        .unwrap();
+        let state = local_state(&paths, &records);
+        assert_eq!(state["claude"]["state"], "unknown");
+        assert!(state["claude"]["providerId"].is_null());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

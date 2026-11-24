@@ -3,11 +3,12 @@
 //! - `GET /claude-proxy/<providerId>/remote/cli-ping`：探测分享码有效性、Host provider 存在性与 `claude` CLI 可用性；
 //! - `WS  /claude-proxy/<providerId>/remote/cli-turn`：单条双向 WebSocket 承载一次受控 `claude -p` 回合：
 //!   1. 升级前强制经 `provider_relay::admission` 校验 `mcr1.` 凭据、撤销状态与单 provider 作用域；
-//!   2. `--tools ""` 彻底禁用 Claude 全部内置本地工具（Bash/Read/Edit/Write/Glob/Grep 等）；
+//!   2. `--tools "WebSearch,WebFetch"` 仅放行联网搜索/抓页，彻底禁用 Claude 全部内置本地工具（Bash/Read/Edit/Write/Glob/Grep 等）；
 //!   3. `--strict-mcp-config --mcp-config <inline-json>` 零落盘注入 `multicc_host_exec`（+ 可选 `multicc_router`），
 //!      禁止加载 Host 上任何其他 MCP；`--setting-sources ""` 跳过 Host 的 `CLAUDE.md` / hooks / plugins；
 //!   4. 按 `(providerId, sessionId)` 使用确定性稳定空目录作为 `cwd`，使 `--resume <sessionId>` 跨轮正常恢复；
-//!   5. `ANTHROPIC_BASE_URL` 指向 Host 本机 `/claude-proxy/<providerId>/cli-relay`，透明复用 Host 的
+//!   5. 携带图片附件时经 `--input-format stream-json` 零落盘传入多模态 `image` base64 块；
+//!   6. `ANTHROPIC_BASE_URL` 指向 Host 本机 `/claude-proxy/<providerId>/cli-relay`，透明复用 Host 的
 //!      官方 OAuth 账号、自动刷新、专用 `egressBinding` 出口（fail-closed）与用量统计，子进程绝不接触真实凭据。
 
 use std::net::SocketAddr;
@@ -20,7 +21,7 @@ use futures_util::{SinkExt, StreamExt};
 use hyper_util::rt::TokioIo;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{
@@ -33,12 +34,19 @@ use multicc_core::egress_plugin::LOOPBACK_NO_PROXY;
 use multicc_core::http_gate::encode_uri_component;
 
 use crate::app::download::decode_uri_component;
+use crate::cli_relay_attachments::{build_claude_stream_json_user_line, parse_start_attachments};
+use crate::cli_relay_bridge::{
+    build_cli_remote_guidance, build_inline_mcp_servers_json_with_external,
+    stable_session_scratch_dir, upgrade_ws, ws_config, HostRelayBridge, RouterContext,
+    RouterMcpSpec, START_FRAME_TIMEOUT,
+};
+use crate::cli_relay_mcp_tunnel::parse_start_mcp_servers;
+use crate::cli_relay_skills::{format_skills_guidance, parse_start_skills};
+
+/// 远程 CLI 模式下允许的 Claude 内置工具（联网检索 + 进程内子代理/任务跟踪，绝不触碰 Host 磁盘或 Shell）。
+pub const CLAUDE_RELAY_BUILTIN_TOOLS: &str = "WebSearch,WebFetch,Agent,TodoWrite";
 use crate::app::express::{self, RequestCtx};
 use crate::app::provider_relay;
-use crate::cli_relay_bridge::{
-    build_cli_remote_guidance, build_inline_mcp_servers_json, stable_session_scratch_dir,
-    upgrade_ws, ws_config, HostRelayBridge, RouterContext, RouterMcpSpec, START_FRAME_TIMEOUT,
-};
 use crate::host_port;
 
 const CLAUDE_ALT_TRANSPORT_KEYS: &[&str] = &[
@@ -355,6 +363,10 @@ pub async fn serve_claude_relay_session<S>(
         .unwrap_or("unknown")
         .to_string();
     let router_ctx = RouterContext::from_start_frame(&start_val);
+    let attachments = parse_start_attachments(&start_val);
+    let has_attachments = !attachments.is_empty();
+    let skills = parse_start_skills(&start_val);
+    let bridged_mcp_servers = parse_start_mcp_servers(&start_val);
 
     let bridge = match HostRelayBridge::start(ws_tx.clone()).await {
         Ok(b) => b,
@@ -367,7 +379,10 @@ pub async fn serve_claude_relay_session<S>(
     };
 
     let active_router_mcp = router_ctx.as_ref().and_then(|_| router_mcp.as_ref());
-    let mcp_config_json = match build_inline_mcp_servers_json(active_router_mcp) {
+    let mcp_config_json = match build_inline_mcp_servers_json_with_external(
+        active_router_mcp,
+        &bridged_mcp_servers,
+    ) {
         Ok(v) => v.to_string(),
         Err(err) => {
             bridge.shutdown().await;
@@ -389,13 +404,21 @@ pub async fn serve_claude_relay_session<S>(
     let claude_config_dir = isolated_claude_config_dir(&provider_id);
     let _ = std::fs::create_dir_all(&claude_config_dir);
 
-    let guidance = build_cli_remote_guidance(
-        "Claude Code",
-        &local_root,
-        &scratch_dir.to_string_lossy(),
-        &local_os,
-        active_router_mcp.is_some(),
+    let mut guidance = format!(
+        "{}\n- Built-in `WebSearch`, `WebFetch`, `Agent` (subagents), and `TodoWrite` remain enabled; subagents inherit `multicc_host_exec`.",
+        build_cli_remote_guidance(
+            "Claude Code",
+            &local_root,
+            &scratch_dir.to_string_lossy(),
+            &local_os,
+            active_router_mcp.is_some(),
+        )
     );
+    let skills_block = format_skills_guidance(&skills);
+    if !skills_block.is_empty() {
+        guidance.push_str("\n\n");
+        guidance.push_str(&skills_block);
+    }
     let full_append = if system_prompt_append.trim().is_empty() {
         guidance
     } else {
@@ -409,7 +432,7 @@ pub async fn serve_claude_relay_session<S>(
         "--verbose".to_string(),
         "--include-partial-messages".to_string(),
         "--tools".to_string(),
-        String::new(),
+        CLAUDE_RELAY_BUILTIN_TOOLS.to_string(),
         "--strict-mcp-config".to_string(),
         "--mcp-config".to_string(),
         mcp_config_json,
@@ -419,6 +442,10 @@ pub async fn serve_claude_relay_session<S>(
         "--append-system-prompt".to_string(),
         full_append,
     ];
+    if has_attachments {
+        args.push("--input-format".to_string());
+        args.push("stream-json".to_string());
+    }
     if let Some(m) = model.as_deref() {
         args.push("--model".to_string());
         args.push(m.to_string());
@@ -435,7 +462,12 @@ pub async fn serve_claude_relay_session<S>(
         }
         args.push(sid.to_string());
     }
-    args.push(prompt);
+    let stream_json_input = if has_attachments {
+        Some(build_claude_stream_json_user_line(&prompt, &attachments))
+    } else {
+        args.push(prompt);
+        None
+    };
 
     let encoded_provider = encode_uri_component(&provider_id);
     let proxy_base_url =
@@ -445,7 +477,11 @@ pub async fn serve_claude_relay_session<S>(
     let mut cmd = Command::new(&claude_bin);
     cmd.args(&args)
         .current_dir(&scratch_dir)
-        .stdin(Stdio::null())
+        .stdin(if stream_json_input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -485,6 +521,17 @@ pub async fn serve_claude_relay_session<S>(
             return;
         }
     };
+
+    if let Some(input_line) = stream_json_input {
+        if let Some(mut stdin) = child.stdin.take() {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(input_line.as_bytes()).await;
+                let _ = stdin.write_all(b"\n").await;
+                let _ = stdin.flush().await;
+                let _ = stdin.shutdown().await;
+            });
+        }
+    }
 
     let child_stdout = child.stdout.take();
     let child_stderr = child.stderr.take();

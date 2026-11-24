@@ -26,6 +26,7 @@ use tokio_tungstenite::{
 };
 
 use crate::cli_relay_bridge::{is_valid_router_tool_name, MAX_WS_PAYLOAD};
+use crate::cli_relay_mcp_tunnel::ClientMcpManager;
 use crate::ws_machines::Io;
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -181,11 +182,12 @@ pub async fn dial_relay_ws(
     }
 }
 
-/// Client 侧 RPC 分发器：处理来自 Host 的 `host_exec_req`、`router_tool_req` 与 `router_tool_abort`。
+/// Client 侧 RPC 分发器：处理来自 Host 的 `host_exec_req`、`router_tool_req`、`router_tool_abort` 与 `mcp_rpc_req`。
 pub struct ClientRpcDispatcher {
     local_exec_port: u16,
     local_exec_token: String,
     router_cfg: Option<LocalRouterConfig>,
+    mcp_manager: Option<Arc<ClientMcpManager>>,
     http_exec: reqwest::Client,
     http_router: reqwest::Client,
     inflight_router: Arc<Mutex<HashMap<String, AbortHandle>>>,
@@ -196,6 +198,15 @@ impl ClientRpcDispatcher {
         local_exec_port: u16,
         local_exec_token: String,
         router_cfg: Option<LocalRouterConfig>,
+    ) -> Self {
+        Self::with_mcp(local_exec_port, local_exec_token, router_cfg, None)
+    }
+
+    pub fn with_mcp(
+        local_exec_port: u16,
+        local_exec_token: String,
+        router_cfg: Option<LocalRouterConfig>,
+        mcp_manager: Option<Arc<ClientMcpManager>>,
     ) -> Self {
         let http_exec = reqwest::Client::builder()
             .no_proxy()
@@ -214,6 +225,7 @@ impl ClientRpcDispatcher {
             local_exec_port,
             local_exec_token,
             router_cfg,
+            mcp_manager,
             http_exec,
             http_router,
             inflight_router: Arc::new(Mutex::new(HashMap::new())),
@@ -239,6 +251,10 @@ impl ClientRpcDispatcher {
                 }
                 true
             }
+            Some("mcp_rpc_req") => {
+                self.spawn_mcp_rpc(val, ws_tx.clone());
+                true
+            }
             _ => false,
         }
     }
@@ -254,6 +270,59 @@ impl ClientRpcDispatcher {
         for h in handles {
             h.abort();
         }
+        if let Some(mcp) = self.mcp_manager.as_ref() {
+            mcp.shutdown_all().await;
+        }
+    }
+
+    fn spawn_mcp_rpc(&self, val: &Value, tx_reply: mpsc::UnboundedSender<String>) {
+        let req_id = val
+            .get("reqId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let server = val
+            .get("server")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let message = val.get("message").cloned().unwrap_or_else(|| json!({}));
+        let expect_reply = val
+            .get("expectReply")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(|| message.get("id").is_some_and(|v| !v.is_null()));
+        let orig_id = message.get("id").cloned().unwrap_or(Value::Null);
+        let mgr = self.mcp_manager.clone();
+
+        tokio::spawn(async move {
+            let Some(mgr) = mgr else {
+                if expect_reply {
+                    let _ = tx_reply.send(
+                        json!({
+                            "type": "mcp_rpc_res",
+                            "reqId": req_id,
+                            "response": {
+                                "jsonrpc": "2.0",
+                                "id": orig_id,
+                                "error": { "code": -32601, "message": "Client MCP tunnel not configured" }
+                            }
+                        })
+                        .to_string(),
+                    );
+                }
+                return;
+            };
+            if let Some(resp) = mgr.handle_rpc(&server, &message, expect_reply).await {
+                let _ = tx_reply.send(
+                    json!({
+                        "type": "mcp_rpc_res",
+                        "reqId": req_id,
+                        "response": resp,
+                    })
+                    .to_string(),
+                );
+            }
+        });
     }
 
     fn spawn_host_exec(&self, val: &Value, tx_reply: mpsc::UnboundedSender<String>) {
@@ -275,7 +344,7 @@ impl ClientRpcDispatcher {
         tokio::spawn(async move {
             let allowed = matches!(
                 path.as_str(),
-                "/exec" | "/fs/read" | "/fs/write" | "/fs/edit" | "/fs/list"
+                "/exec" | "/fs/read" | "/fs/write" | "/fs/edit" | "/fs/list" | "/fs/view_image"
             );
             if !allowed {
                 let _ = tx_reply.send(

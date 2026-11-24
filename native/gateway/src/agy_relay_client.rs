@@ -106,6 +106,16 @@ pub async fn serve_relay_turn(
     });
 
     let router_cfg = LocalRouterConfig::from_env();
+    let attachments =
+        crate::cli_relay_attachments::collect_prompt_image_attachments(prompt, local_root);
+    let skills = crate::cli_relay_skills::collect_client_skills(local_root);
+    let mcp_specs = crate::cli_relay_mcp_tunnel::discover_client_mcp_servers(local_root);
+    let mcp_manager = (!mcp_specs.is_empty()).then(|| {
+        std::sync::Arc::new(crate::cli_relay_mcp_tunnel::ClientMcpManager::new(
+            mcp_specs,
+            local_root.to_path_buf(),
+        ))
+    });
     let mut start_obj = json!({
         "type": "start",
         "agyArgs": agy_args,
@@ -113,6 +123,21 @@ pub async fn serve_relay_turn(
         "localRoot": local_root_str,
         "localOs": std::env::consts::OS,
     });
+    if !attachments.is_empty() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("attachments".to_string(), json!(attachments));
+        }
+    }
+    if !skills.is_empty() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("skills".to_string(), json!(skills));
+        }
+    }
+    if let Some(mgr) = mcp_manager.as_ref() {
+        if let Some(map) = start_obj.as_object_mut() {
+            map.insert("mcpServers".to_string(), json!(mgr.server_names()));
+        }
+    }
     if let Some(rc) = router_cfg.as_ref() {
         if let Some(map) = start_obj.as_object_mut() {
             map.insert("routerContext".to_string(), rc.to_start_frame_json());
@@ -124,7 +149,8 @@ pub async fn serve_relay_turn(
         return 1;
     }
 
-    let dispatcher = ClientRpcDispatcher::new(local_addr.port(), local_token, router_cfg);
+    let dispatcher =
+        ClientRpcDispatcher::with_mcp(local_addr.port(), local_token, router_cfg, mcp_manager);
     let mut exit_code: Option<i32> = None;
     let mut saw_result = false;
 

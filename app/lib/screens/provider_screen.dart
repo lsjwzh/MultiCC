@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
 import '../models/provider_limit_label.dart';
+import '../models/vendor_quota.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -510,6 +511,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
                 onEdit: () => _openEditor(provider: p),
                 onDelete: () => _delete(p),
                 onReassign: () => _openReassign(p),
+                onRefresh: _refresh,
               ),
             )),
       ],
@@ -764,6 +766,11 @@ String _providerLabel(Map<String, dynamic> p) {
 bool _isTerminalProvider(Map<String, dynamic> p) =>
     p['id'] == '${p['appType']}-official' && p['officialAccountId'] == null;
 
+bool _isRelayImportProvider(Map<String, dynamic> p) =>
+    p['isOfficial'] != true &&
+    p['hasToken'] == true &&
+    isRelayBaseUrl(p['baseUrl'] as String?);
+
 // ── Provider card ────────────────────────────────────────────────────────────
 
 class _ProviderCard extends StatefulWidget {
@@ -771,12 +778,14 @@ class _ProviderCard extends StatefulWidget {
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onReassign;
+  final VoidCallback onRefresh;
   final ManageService manage;
   const _ProviderCard({
     required this.p,
     required this.onEdit,
     required this.onDelete,
     required this.onReassign,
+    required this.onRefresh,
     required this.manage,
   });
 
@@ -788,6 +797,37 @@ class _ProviderCardState extends State<_ProviderCard> {
   // Speed-test result. null = not tested; {ok, ms, status?, error?} otherwise.
   Map<String, dynamic>? _latency;
   bool _testing = false;
+  bool _togglingCliRelay = false;
+
+  Future<void> _toggleCliRelay(bool next) async {
+    if (_togglingCliRelay) return;
+    setState(() => _togglingCliRelay = true);
+    try {
+      await widget.manage.updateProvider(
+        widget.p['appType'] as String,
+        widget.p['id'] as String,
+        cliRelay: next,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            next
+                ? t('airProviderCliRelayEnabled')
+                : t('airProviderCliRelayDisabled'),
+          ),
+        ),
+      );
+      widget.onRefresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$e')),
+      );
+    } finally {
+      if (mounted) setState(() => _togglingCliRelay = false);
+    }
+  }
 
   Future<void> _speedTest() async {
     setState(() => _testing = true);
@@ -856,6 +896,8 @@ class _ProviderCardState extends State<_ProviderCard> {
         .toList();
     final tokenMask = p['tokenMask'] as String? ?? '';
     final source = p['source'] as String? ?? 'local';
+    final relayImport = _isRelayImportProvider(p);
+    final cliRelay = p['cliRelay'] == true;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -873,6 +915,24 @@ class _ProviderCardState extends State<_ProviderCard> {
                     style: const TextStyle(color: AppColors.textBright, fontWeight: FontWeight.w700, fontSize: 15),
                     overflow: TextOverflow.ellipsis),
               ),
+              if (cliRelay)
+                Container(
+                  margin: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.accent.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: AppColors.accent.withValues(alpha: 0.45)),
+                  ),
+                  child: Text(
+                    t('airProviderCliRelayTag'),
+                    style: const TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
               if (_latencyBadge != null) _latencyBadge!,
               Text(source == 'ccswitch' ? '来自 cc-switch' : '本地',
                   style: const TextStyle(color: AppColors.faint, fontSize: 11)),
@@ -905,6 +965,51 @@ class _ProviderCardState extends State<_ProviderCard> {
           ],
           if (account || terminal) ProviderSubscription(
             key: ValueKey('subscription-${p['appType']}-${p['id']}'), provider: p, manage: widget.manage),
+          if (relayImport) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.panel2,
+                border: Border.all(color: AppColors.line),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          t('airProviderCliRelayTitle'),
+                          style: const TextStyle(
+                            color: AppColors.textBright,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          t('airProviderCliRelayHint'),
+                          style: const TextStyle(
+                            color: AppColors.faint,
+                            fontSize: 11,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Switch.adaptive(
+                    key: ValueKey('provider-cli-relay-${p['id']}'),
+                    value: cliRelay,
+                    onChanged: _togglingCliRelay ? null : _toggleCliRelay,
+                  ),
+                ],
+              ),
+            ),
+          ],
           const Divider(height: 18, color: AppColors.line),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
@@ -973,6 +1078,8 @@ class _ProviderEditorState extends State<_ProviderEditor> {
   late final Map<String, TextEditingController> _aliasName;
   bool _obscureKey = true;
   bool _saving = false;
+  bool _cliRelay = false;
+  bool _isRelayImport = false;
   String? _err;
 
   bool get _isEdit => widget.provider != null;
@@ -982,6 +1089,8 @@ class _ProviderEditorState extends State<_ProviderEditor> {
     super.initState();
     final p = widget.provider;
     _appType = (p?['appType'] as String?) ?? widget.initialAppType ?? 'claude';
+    _isRelayImport = p != null && _isRelayImportProvider(p);
+    _cliRelay = _isRelayImport && p?['cliRelay'] == true;
     _name = TextEditingController(text: p?['name'] as String? ?? '');
     _baseUrl = TextEditingController(text: p?['baseUrl'] as String? ?? '');
     _token = TextEditingController();
@@ -1055,6 +1164,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           model: _model.text.trim(),
           models: _modelList(),
           aliasMap: _appType == 'claude' ? _aliasMapPayload() : null,
+          cliRelay: _isRelayImport ? _cliRelay : null,
         );
       } else {
         await widget.manage.createProvider(
@@ -1065,6 +1175,7 @@ class _ProviderEditorState extends State<_ProviderEditor> {
           model: _model.text.trim(),
           models: _modelList(),
           aliasMap: _appType == 'claude' ? _aliasMapPayload() : null,
+          cliRelay: _isRelayImport ? _cliRelay : null,
         );
       }
       if (mounted) Navigator.pop(context, true);
@@ -1142,6 +1253,29 @@ class _ProviderEditorState extends State<_ProviderEditor> {
             const SizedBox(height: 14),
             const _FieldLabel('可用模型列表（每行一个，可选）'),
             _input(_models, hint: 'deepseek-v4-pro\ndeepseek-flash', mono: true, maxLines: 3),
+            if (_isRelayImport) ...[
+              const SizedBox(height: 14),
+              Container(
+                decoration: BoxDecoration(
+                  color: AppColors.panel2,
+                  border: Border.all(color: AppColors.line),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: SwitchListTile.adaptive(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  title: Text(
+                    t('airProviderCliRelayTitle'),
+                    style: const TextStyle(color: AppColors.textBright, fontSize: 13.5, fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Text(
+                    t('airProviderCliRelayHint'),
+                    style: const TextStyle(color: AppColors.faint, fontSize: 11.5, height: 1.35),
+                  ),
+                  value: _cliRelay,
+                  onChanged: (v) => setState(() => _cliRelay = v),
+                ),
+              ),
+            ],
             if (_appType == 'claude') ...[
               const SizedBox(height: 14),
               const _FieldLabel('模型映射（分级覆盖，可选）'),

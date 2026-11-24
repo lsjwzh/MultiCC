@@ -26,7 +26,7 @@ function parseRelayShareCode(raw) {
   return { payload };
 }
 
-function relayProviderInput(payload) {
+function relayProviderInput(payload, opts = {}) {
   const source = payload && typeof payload === 'object' ? payload : {};
   const models = (Array.isArray(source.models) ? source.models : [])
     .map(value => String(value || '').trim())
@@ -41,6 +41,7 @@ function relayProviderInput(payload) {
     baseUrl: source.baseUrl,
     authToken: source.authToken,
     ...(model ? { model, models: models.slice(0, 100) } : {}),
+    ...(opts && opts.cliRelay === true ? { cliRelay: true } : {}),
   };
 }
 
@@ -363,6 +364,10 @@ function importRelayProvider() {
       <div style="font-size:12px;color:var(--faint);margin-bottom:10px">粘贴另一台 MultiCC 生成的分享码（支持 Claude / Codex / 反重力 agy）。连接后可像本机账号一样直接使用。</div>
       <textarea data-k="code" rows="5" placeholder="mcrelay1.…"
         style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
+      <label data-k="cli-relay-wrap" style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;padding:8px 10px;border:1px solid #30363d;border-radius:6px;font-size:12px;color:#c9d1d9;cursor:pointer">
+        <input type="checkbox" data-k="cli-relay" style="margin-top:2px">
+        <span><strong>启用远程 CLI 模式（Remote CLI）</strong><br><span data-k="cli-relay-desc" style="color:var(--faint)">远端运行原装 Claude / Codex CLI，文件读写与命令回调到本机执行（可随时在卡片上开关）。</span></span>
+      </label>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
         <button class="btn" data-act="close" style="font-size:13px">取消</button>
         <button class="btn btn-green" data-act="import" style="font-size:13px">导入</button>
@@ -370,9 +375,24 @@ function importRelayProvider() {
       <div data-k="status" class="status-text" style="margin-top:8px"></div>
     </div>`);
   const st = overlay.querySelector('[data-k="status"]');
+  const codeEl = overlay.querySelector('[data-k="code"]');
+  const cliRelayEl = overlay.querySelector('[data-k="cli-relay"]');
+  const cliRelayDesc = overlay.querySelector('[data-k="cli-relay-desc"]');
+  const syncRelayHint = () => {
+    const parsed = parseRelayShareCode(codeEl.value);
+    const isAgy = parsed.payload && parsed.payload.appType === 'agy';
+    cliRelayEl.disabled = !!isAgy;
+    if (isAgy) {
+      cliRelayEl.checked = true;
+      cliRelayDesc.textContent = '反重力（agy）共享账号默认即使用远程 CLI 模式。';
+    } else {
+      cliRelayDesc.textContent = '远端运行原装 Claude / Codex CLI，文件读写与命令回调到本机执行（可随时在卡片上开关）。';
+    }
+  };
+  codeEl.oninput = syncRelayHint;
   overlay.querySelector('[data-act="import"]').onclick = async () => {
     st.textContent = ''; st.className = 'status-text';
-    const { payload, error } = parseRelayShareCode(overlay.querySelector('[data-k="code"]').value);
+    const { payload, error } = parseRelayShareCode(codeEl.value);
     if (error) { st.textContent = error; st.className = 'status-text err'; return; }
     try {
       if (payload.appType === 'agy') {
@@ -401,7 +421,7 @@ function importRelayProvider() {
       }
       await providerApi.json('/api/providers', {
         method: 'POST',
-        json: relayProviderInput(payload),
+        json: relayProviderInput(payload, { cliRelay: !!cliRelayEl.checked }),
       });
       showToast('已连接其他设备的线路：' + (payload.name || payload.baseUrl));
       close();

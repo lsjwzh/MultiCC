@@ -274,6 +274,7 @@
         <label>API Key<input name="authToken" type="password" maxlength="4096" autocomplete="off" placeholder="${t('airProviderTokenPlaceholder')}"></label>
         <label>${t('airProviderDefaultModel')}<input name="model" maxlength="240" placeholder="${t('airProviderModelPlaceholder')}"></label>
         <label>${t('airProviderOptionalModels')}<textarea name="models" rows="3" placeholder="${t('airProviderModelsPlaceholder')}"></textarea></label>
+        <label id="air-provider-cli-relay" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--line,rgba(148,163,184,.24));border-radius:10px;cursor:pointer" hidden><input type="checkbox" name="cliRelay" style="width:auto;margin-top:3px"><span><strong style="display:block">${t('airProviderCliRelayTitle')}</strong><small style="display:block;opacity:.78;line-height:1.45">${t('airProviderCliRelayHint')}</small></span></label>
         <details id="air-provider-aliases"><summary>${t('airProviderAliasSummary')}</summary><div class="provider-alias-grid"><span>${t('airProviderTierColumn')}</span><span>${t('airProviderDisplayNameColumn')}</span><span>${t('airProviderRealModelColumn')}</span></div></details>
         <details id="air-provider-egress-ip"><summary>${t('airProviderEgressIpSummary')}</summary><p>${t('airProviderEgressIpBody')}</p><textarea name="egressIpAllowlist" rows="3" placeholder="${t('airProviderEgressIpPlaceholder')}"></textarea></details>
         <details id="air-provider-egress-binding"><summary>${t('airProviderEgressBindingSummary')}</summary><p>${t('airProviderEgressBindingBody')}</p><p id="air-provider-egress-binding-hint" class="air-migration-note" hidden></p><label>${t('airProviderEgressBindingLabel')}<select name="egressBinding"><option value="">${t('airProviderEgressBindingOff')}</option></select></label></details>
@@ -495,6 +496,9 @@
     const egressIpAllowlist = provider?.egressIpAllowlist || [];
     form.elements.egressIpAllowlist.value = egressIpAllowlist.join('\n');
     el('air-provider-egress-ip').open = egressIpAllowlist.length > 0;
+    const isRelayImport = !!provider && !!root.isRelayImportProvider?.(provider);
+    el('air-provider-cli-relay').hidden = !isRelayImport;
+    form.elements.cliRelay.checked = !!(isRelayImport && provider.cliRelay);
     // 专用出口只对官方账号线路开放（别的线路自己就指明了上游）。
     const binding = locked && provider?.egressBinding ? provider.egressBinding : null;
     el('air-provider-egress-binding').hidden = !locked;
@@ -557,6 +561,7 @@
       const token = form.elements.authToken.value.trim();
       if (!providerId || token) body.authToken = token;
       if (appType === 'claude') body.aliasMap = aliasMapFrom(form);
+      if (!el('air-provider-cli-relay').hidden) body.cliRelay = !!form.elements.cliRelay.checked;
       if (!providerId) body.appType = appType;
     }
     save.disabled = true; error.textContent = '';
@@ -597,11 +602,16 @@
     if (provider.hasToken) tags.append(make('span', t('airProviderKeyConfigured')));
     // 终端在用：本地 ~/.claude/settings.json / ~/.codex/config.toml 指向这条线路。
     const terminalInUse = localCli && localCli[provider.appType];
-    const inUse = terminalInUse && (
+    const inUse = !provider.cliRelay && terminalInUse && (
       (terminalInUse.state === 'official' && terminal)
       || (terminalInUse.state === 'provider' && terminalInUse.providerId === provider.id));
     if (inUse) tags.append(make('span', t('airProviderLocalCliActive'), 'local-cli'));
     if (provider.virtual) tags.append(make('span', '虚拟组合'));
+    if (provider.cliRelay) {
+      const tag = make('span', t('airProviderCliRelayTag'), 'local-cli');
+      tag.title = t('airProviderCliRelayHint');
+      tags.append(tag);
+    }
     // 专用出口：卡片上标出来，免得要逐个点开编辑框才知道这个账号从哪个 IP 出去。
     if (provider.egressBinding && provider.egressBinding.profileId) {
       const tag = make('span', t('airProviderEgressBindingTag'));
@@ -665,6 +675,9 @@
       if (accountLine) {
         sync.disabled = true;
         sync.title = t('airProviderSyncToTerminalAccountHint');
+      } else if (provider.cliRelay) {
+        sync.disabled = true;
+        sync.title = t('airProviderSyncToTerminalCliRelayHint');
       }
       actions.append(sync);
     }
@@ -688,8 +701,16 @@
       root.MultiCCAirProviderAdvanced?.prepare(context);
       root.shareRelayProvider?.(provider.appType, provider.id);
     }));
-    // 通过分享码导入的线路：把原始导入信息再复制出来，转给别人时不必回到出借方重新生成。
+    // 通过分享码导入的线路：支持一键切换「本地命令回调模式」（CLI 级借道），
+    // 以及把原始导入信息再复制出来，转给别人时不必回到出借方重新生成。
     if (root.isRelayImportProvider?.(provider)) {
+      const cliRelayBtn = button(
+        provider.cliRelay ? t('airProviderCliRelayDisable') : t('airProviderCliRelayEnable'),
+        () => toggleCliRelay(provider, cliRelayBtn),
+      );
+      cliRelayBtn.dataset.cliRelayToggle = provider.id;
+      cliRelayBtn.title = t('airProviderCliRelayHint');
+      actions.append(cliRelayBtn);
       // 与「共享到其他设备」同一前置：Air 不加载 manage.js，弹层要的 providerApi / showToast
       // 等裸全局靠 prepare 补。漏掉它，点下去就是静默的 ReferenceError（无弹层、无剪贴板）。
       actions.append(button(t('airProviderRelayCopyImport'), () => {
@@ -713,6 +734,23 @@
       };
     }
     return card;
+  }
+
+  async function toggleCliRelay(provider, btn) {
+    const next = !provider.cliRelay;
+    btn.disabled = true;
+    try {
+      await context.api(
+        `/api/providers/${encodeURIComponent(provider.appType)}/${encodeURIComponent(provider.id)}`,
+        { cliRelay: next },
+        'PATCH',
+      );
+      context.notice(next ? t('airProviderCliRelayEnabled') : t('airProviderCliRelayDisabled'));
+      await load();
+    } catch (reason) {
+      context.notice(reason.message || t('airProviderFailed'), true);
+      btn.disabled = false;
+    }
   }
 
   function openTrend(provider, entry) {
