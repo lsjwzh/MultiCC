@@ -194,3 +194,49 @@ test('the voice host only starts learning when the real server opts in', () => {
   const config = fs.readFileSync(path.join(__dirname, '../src/voice/config.js'), 'utf8');
   assert.doesNotMatch(config, /autoHotwords\.start\(\)/, 'requiring the config module must not start a scan');
 });
+
+test('语音纠错按冻结输入对拍 UTF-16 边界、重复片段和拼音回退', () => {
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const { createHash } = require('node:crypto');
+  const filename = path.resolve(__dirname, '../src/voice/hotword-miner.js');
+  const frozen = fs.readFileSync(path.join(__dirname,'helpers/frozen-hotword-miner.js'));
+  assert.equal(createHash('sha1').update('blob '+frozen.length+'\0').update(frozen).digest('hex'),
+    '27b3aba981a091dd88fc4a91c499878ef1a2f78e');
+  const resolve = createRequire(filename);
+  const samples = [
+    [null,{}], ['',''], [new String('abc'),'ABC'], ['热水','热词'], ['开始热水了','开始热词了'],
+    ['甲乙甲乙甲乙','乙甲乙甲乙甲'], ['x A x B x','x B x A x'], ['STT.','stt'],
+    ['\ud800A🙂er\udc00','\ud800A🙂ER\udc00'], ['A ß S','A SS S'],['x a\u00a0b c y','x ABC y'],
+    ['字'.repeat(597)+'a b','字'.repeat(597)+'AB'], ['字'.repeat(598)+'a b','字'.repeat(598)+'AB'],
+    [' 跑 '.repeat(250),' 跑 '.repeat(250)+'a'], [' \ufeff ST T ',' StT \n'],
+    ['现在录音用OpenCloud。','现在录音用OpenClaw。'], ['前一段hot\u2028word','前一段HotWord'],
+    ['先输入abcabc末','先输入ABCABC末'], ['尾末热水—热水','尾末热词—热词'],
+  ];
+  const words = ['回','词','水','甲','Alpha','STT','S','t','PM2','CC-Switch','_', '.', '/', ';','，','🙂','\ud800','\ufeff','\t',' ','+'];
+  let seed=37;
+  const pick = n => { seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%n; };
+  for(let i=0;i<320;i++) {
+    const a=Array.from({length:4+pick(28)},()=>words[pick(words.length)]), b=a.slice();
+    b.splice(pick(b.length),1+pick(3),words[pick(words.length)],words[pick(words.length)]);
+    samples.push([a.join(''),b.join('')]);
+  }
+  function exercise(body, mode) {
+    const events=[], unsupported=Error('dictionary'), box={exports:{}};
+    const corrector = {
+      toSyllables(s) {
+        events.push(s);
+        if (mode==='throw') throw unsupported;
+        return mode==='absent' ? null : [...s].map(c=>c==='水'?'x':c==='词'?'y':c);
+      },
+      nearSyllable(a,b){ events.push([a,b]); return a===b; },
+    };
+    compileFunction(body.toString(),['module','require'],{filename})(box,id=>id==='./hotword-corrector'?corrector:resolve(id));
+    return { results:samples.map(([a,b])=>{
+      try { return box.exports.minePairs(a,b); }
+      catch(e){ assert.equal(e,unsupported);return 'dictionary failed'; }
+    }),events };
+  }
+  const current=fs.readFileSync(filename);
+  for(const mode of ['absent','present','throw']) assert.deepEqual(exercise(current,mode),exercise(frozen,mode),mode);
+});
