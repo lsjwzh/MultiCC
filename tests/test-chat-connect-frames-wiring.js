@@ -17,7 +17,6 @@
 //   frozen Node oracle  ==(this file)==  the JS face + the real addon
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const path = require('node:path');
 
 const frozenHistory = require('./helpers/legacy-chat-history-frame');
 const frozenTaskState = require('./helpers/legacy-chat-task-state-frame');
@@ -30,13 +29,12 @@ const { getNative, installAuxHealthProvider, auxVerdictStaleness, taskStateSeed,
 // is exactly the side effect the connect path must not trigger needlessly, so
 // the faces are loaded against a stub whose answer the test controls. Only the
 // registry is stubbed; the Aux health reading stays the real module.
-const SHORT_CODE_MODULE = path.join(__dirname, '..', 'src', 'classify', 'task-short-code.js');
 let shortCode = '';
 const shortCodeCalls = [];
-require.cache[SHORT_CODE_MODULE] = {
-  id: SHORT_CODE_MODULE, filename: SHORT_CODE_MODULE, loaded: true, children: [], paths: [],
-  exports: { taskShortCode: taskId => { shortCodeCalls.push(taskId); return shortCode; } },
-};
+test.mock.method(require('../src/native/task-domain'), 'taskShortCode', taskId => {
+  shortCodeCalls.push(taskId);
+  return shortCode;
+});
 const { fitHistoryFrame, DEFAULT_MAX_BYTES, messageBytes } = require('../src/chat/history-frame-budget');
 
 // JSON cannot carry `undefined`, so the corpus marks those slots and both

@@ -1,7 +1,7 @@
 'use strict';
 
 // Unit tests for the outward task short-code registry
-// (src/classify/task-short-code.js). The registry persists taskId→code so the
+// (src/native/task-domain.js). The registry persists taskId→code so the
 // 4-char display handle is unique fleet-wide; mint candidates are sha256-based
 // with salt-0 reproducing the pre-registry deterministic code.
 
@@ -19,7 +19,7 @@ const {
   createTaskShortCodeRegistry,
   initTaskShortCodeRegistry,
   CODE_LEN,
-} = require('../src/classify/task-short-code');
+} = require('../src/native/task-domain');
 
 // The pre-registry deterministic derivation, reproduced here so the upgrade
 // continuity test pins salt-0 to the exact codes users already saw.
@@ -202,4 +202,94 @@ test('malformed registry rows are skipped on load', () => {
   assert.equal(reg.has('tsk_bad'), false);
   assert.equal(reg.has('tsk_dup'), false); // lost the dup race → remints fresh
   assert.notEqual(reg.codeFor('tsk_dup'), 'GOOD');
+});
+
+test('production registry matches frozen mint, reverse lookup and recovery behavior', () => {
+  const { compileFunction } = require('node:vm');
+  const { createRequire } = require('node:module');
+  const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-task-short-code.js'));
+  assert.equal(crypto.createHash('sha256').update(source).digest('hex'),
+    '7402ec3dafeed61b25d2ea4893d3853fd58013655a4d13ffc0969f5ce38f1fb9');
+  const filename = path.resolve(__dirname, '../src/classify/task-short-code.js');
+  const frozen = { exports: {} };
+  compileFunction(source.toString(), ['require', 'module'], { filename })(createRequire(filename), frozen);
+  const live = { taskShortCode, taskIdForShortCode, labelWithCode, createTaskShortCodeRegistry, initTaskShortCodeRegistry };
+
+  function trace(api) {
+    const out = [];
+    const observe = fn => {
+      try { out.push({ value: fn() }); }
+      catch (e) { out.push({ name: e.name, code: e.code, message: e.message }); }
+    };
+    const ids = [null, undefined, true, 12n, Symbol('id'), [], ['x'], {}, '', '\ufeff a  ',
+      '__proto__', 'constructor', '\ud800', '\udfff', '�', '任务✨', ...Array.from({ length: 2048 }, (_, i) => 'id' + i)];
+    const reg = api.initTaskShortCodeRegistry();
+    for (const id of ids) {
+      const owned = reg.has(id);
+      const code = api.taskShortCode(id);
+      out.push([owned, code, reg.codeFor(id), api.taskIdForShortCode(' ' + code.toLowerCase() + ' '), reg.size()]);
+    }
+    for (const arg of [null, undefined, 'ß00', '\ufeffnope', { toString: () => ' ABCD' }]) {
+      observe(() => api.taskIdForShortCode(arg));
+    }
+    const calls = [];
+    const hooked = name => ({ toString() { calls.push(name); return '\ud800' + name; } });
+    observe(() => api.labelWithCode(hooked('id'), hooked('body')));
+    out.push(calls);
+    const objectCode = { toString: () => 'CODE' };
+    const sentinel = new Error('fixture');
+    const collisions = api.initTaskShortCodeRegistry({ candidate(id, salt) {
+      if (id === 'throw') throw sentinel;
+      if (id === 'invalid') return 'bad';
+      if (id === 'obj') return objectCode;
+      if (id === 'number') return 1234;
+      if (salt > 0 && id !== 'exhaust') return 'FREE';
+      return 'FULL';
+    } });
+    for (const id of ['first', 'second', 'obj', 'number', 'invalid', 'exhaust']) {
+      if (id === 'obj') {
+        const minted = collisions.codeFor(id);
+        assert.strictEqual(minted, objectCode);
+        assert.strictEqual(collisions.codeFor(id), objectCode);
+        assert.equal(collisions.ownerOf(minted), id);
+        assert.equal(collisions.ownerOf('CODE'), null);
+      } else {
+        observe(() => collisions.codeFor(id));
+      }
+    }
+    try { collisions.codeFor('throw'); } catch (e) { out.push(e === sentinel); }
+    out.push(collisions.codeFor('obj') === objectCode, collisions.ownerOf(objectCode),
+      collisions.ownerOf('CODE'), collisions.ownerOf('1234'), collisions.ownerOf(1234), collisions.size());
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'task-code-diff-'));
+    const file = path.join(dir, 'task-short-codes.json');
+    const envelope = byTaskId => ({ __multiccSchema: { kind: 'task-short-codes', version: 1 }, data: { byTaskId } });
+    try {
+      fs.writeFileSync(file, JSON.stringify(envelope({ 3: 'RACE', 1: 'RACE', n: 1234,
+        s: '1234', a: ['ARR1'], bad: {}, empty: '', ABC: 'ABCD' })));
+      const open = () => api.createTaskShortCodeRegistry({ file });
+      const saved = open();
+      out.push([saved.size(), saved.ownerOf('RACE'), saved.ownerOf(1234), saved.ownerOf('1234'),
+        saved.codeFor('a'), saved.codeFor('3'), saved.codeFor('__proto__')]);
+      fs.writeFileSync(file, '{bad');
+      const restored = open();
+      out.push([restored.size(), restored.has('__proto__'), restored.codeFor('recovered')]);
+      for (const suffix of ['', '.bak1', '.bak2', '.bak3']) {
+        const bytes = fs.readFileSync(file + suffix, 'utf8');
+        try { out.push(JSON.parse(bytes).data); } catch { out.push(bytes); }
+      }
+      fs.rmSync(file);
+      fs.mkdirSync(file);
+      // Read-only registry queries and failed saves leave observable in-memory state.
+      const brokenFile = path.join(file, 'child');
+      const broken = api.createTaskShortCodeRegistry({ file: brokenFile });
+      fs.rmSync(file, { recursive: true });
+      fs.writeFileSync(file, 'not a directory');
+      let failed = false;
+      try { broken.codeFor('failed'); } catch { failed = true; }
+      out.push(failed, broken.has('failed'), broken.codeFor('failed'), broken.size());
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    return out;
+  }
+  const expected = trace(frozen.exports);
+  assert.deepEqual(trace(live), expected);
 });

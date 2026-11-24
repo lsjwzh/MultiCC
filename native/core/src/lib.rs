@@ -135,6 +135,7 @@ pub mod task_routes;
 pub mod task_routing;
 pub mod task_run_context;
 pub mod task_shell;
+pub mod task_short_code;
 pub mod task_store;
 pub mod terminal_target;
 pub mod transcript_prune;

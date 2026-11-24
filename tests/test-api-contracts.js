@@ -424,7 +424,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // JavaScript source line, which is what keeps the two producers honest.
   const frameHost = fs.readFileSync(path.join(ROOT, 'native/addon/src/chat_connect_frames.rs'), 'utf8');
   const runtime = fs.readFileSync(path.join(ROOT, 'src/native/runtime.js'), 'utf8');
-  assert.ok(runtime.includes("require('../classify/task-short-code').taskShortCode, auxVerdictStaleness"));
+  assert.ok(runtime.includes("require('./task-domain').taskShortCode, auxVerdictStaleness"));
   assert.ok(runtime.includes('getNative().chatTaskStateFrame(task, seedOnly'));
   assert.ok(frameHost.includes('chat_task_state_payload(encode(envelope)?)'));
   const kernel = fs.readFileSync(

@@ -15,7 +15,7 @@
 const { createSessionQueryService } = require('../../src/session/query-service');
 const { createWorkspaceService } = require('../../src/session/workspace-service');
 const { isTerminalLetter, isSettledLetter, classifyDisplay, GOAL_STATES } = require('../../src/classify/vocab');
-const { taskShortCode } = require('../../src/classify/task-short-code');
+const { taskShortCode } = require('../../src/native/task-domain');
 const { auxVerdictStaleness } = require('./legacy-aux-verdict-health');
 const { providerSelectionDto } = require('../../src/providers/auto-provider-config');
 // HEAD's task-goal module, frozen next to this oracle (the live one no longer mounts).

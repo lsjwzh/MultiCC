@@ -189,7 +189,7 @@ const {
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex/oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
-const { taskShortCode, initTaskShortCodeRegistry } = require('./src/classify/task-short-code');
+const { taskShortCode, initTaskShortCodeRegistry } = require('./src/native/task-domain');
 const { createTaskStateStore } = require('./src/routes/task-state-store');
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/host');

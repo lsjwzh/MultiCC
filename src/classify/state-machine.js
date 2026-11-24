@@ -27,7 +27,7 @@ const {
   isTerminalLetter,
   isAbnormalLetter,
 } = require('./vocab');
-const { taskShortCode } = require('./task-short-code');
+const { taskShortCode } = require('../native/task-domain');
 const { deriveTaskTitle, PENDING_TASK_TITLE } = require('../task-board/core');
 const {
   attributionQueryText,

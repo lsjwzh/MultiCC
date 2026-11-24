@@ -1,5 +1,6 @@
 'use strict';
 const { getNative, runNative, nativeCode } = require('./runtime');
+const { createStore } = require('../state/store');
 
 // 生产任务板由 board-store.js 常驻在 Rust：命令里的 board 是它的镜像时只上送
 // 变更、走常驻句柄；其余（测试与临时拼出的小板）仍整板序列化走无状态入口。
@@ -67,4 +68,36 @@ const taskAttention = {
   pendingAttention: task => call('pending', { task }),
   normalizeAttention: (source, task) => { mutate('normalize', task, { source }); },
 };
-module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention };
+// Rust owns validation, minting, recovery-row selection and display labels.
+// V8 Maps retain opaque candidate keys, and StateStore owns the on-disk envelope.
+function createTaskShortCodeRegistry({ file = null, candidate } = {}) {
+  const native = getNative();
+  const ids = new Map();
+  const owners = new Map();
+  const store = file && createStore({ file, kind: 'task-short-codes', schemaVersion: 1, legacyIsArray: false });
+  if (store) {
+    let loaded;
+    try { loaded = store.loadOrRecover(); }
+    catch (e) { throw new Error(`[task-short-code] registry state unusable at ${file}: ${e.message}`); }
+    if (loaded.present) native.taskCodeRestore(ids, owners, loaded.data && loaded.data.byTaskId, file);
+  }
+  const save = store ? () => store.save({ byTaskId: Object.fromEntries(ids) }) : undefined;
+  return {
+    codeFor: id => native.taskCodeMint(ids, owners, candidate, save, id),
+    has: id => ids.has(String(id ?? '').trim()),
+    ownerOf: code => owners.get(code) || null,
+    size: () => ids.size,
+  };
+}
+
+let activeRegistry;
+function initTaskShortCodeRegistry(opts) { return activeRegistry = createTaskShortCodeRegistry(opts); }
+function registry() { return activeRegistry ||= createTaskShortCodeRegistry(); }
+function taskShortCode(id) { return registry().codeFor(id); }
+const taskShortCodes = {
+  taskShortCode, createTaskShortCodeRegistry, initTaskShortCodeRegistry,
+  taskIdForShortCode: code => getNative().taskCodeLookup(code, registry),
+  labelWithCode: (id, text) => getNative().taskCodeLabel(id, text, taskShortCode),
+  CODE_LEN: 4, CODE_ALPHABET: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+};
+module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, ...taskShortCodes };

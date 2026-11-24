@@ -1,5 +1,13 @@
 # 剩余 Node 后端清单
 
+## 任务短码注册表（2026-11-25）
+
+旧实现的 Git blob 为 `45827ebc511cbdc40ac8fa5505a3d7bc3369ac2c`。迁前与迁后使用同一组输入和断言，六个定向套件各通过 116/116。对象候选的首次返回、再次读取、按原对象和按字符串反查，都在每次运行内核验。覆盖 4096 次碰撞上限、状态恢复和保存失败后的可见性。另有 24 个异常和重入场景与冻结实现一致，Rust 短码单测 1/1 通过。[冻结实现](../../tests/helpers/legacy-task-short-code.js) · [差分用例](../../tests/test-task-short-code.js)
+
+默认短码的 SHA-256、四位编码、有效性检查在 Rust 核心中。兼容宿主通过原生模块执行注册、反查和标签格式化。宿主保留原有 StateStore 的备份与恢复接口、进程内注册表引用和 V8 Map，以维持注入对象作为键的语义。StateStore 迁移后可替换文件读写端口。[短码核心](../../native/core/src/task_short_code.rs) · [原生模块](../../native/addon/src/task_short_code.rs)
+
+相对 `0e710ba0`，src 的 JS/CJS/MJS 文件由 518 降至 517（512 JS、2 CJS、3 MJS），业务或宿主编排文件由 328 降至 327。server.js 加 src 的物理行数由 128,353 降至 128,219，净减 134 行。[实时盘点](node-module-dependencies.md)
+
 ## 事件引擎的目录、规则、通知与状态转换（2026-11-25）
 
 额度批次 `21105b9b` 经 MultiCC 合入 `e4ebc062`，任务分支同步后工作区干净、差距 0/0。事件引擎、触发器和通知接线现在共用 Rust 对事件输入的处理，包括惰性读取任务状态、限制对外字段、规则校验后才分配 ID 和时间、按顺序检查渠道并返回第一个问题。宿主提供时钟和 ID 工厂、渠道验证回调及系统家目录。四个旧业务文件已从 src 删除。[Rust 实现](../../native/addon/src/event_host.rs) · [冻结实现同输入差分](../../tests/test-event-system.js)
