@@ -392,6 +392,7 @@ function mountProvidersHostRoute(app, options = {}) {
           providerName: body.providerName,
           publicBaseUrl: text(body.publicBaseUrl),
           relayBaseUrl: text(body.relayBaseUrl),
+          mode: text(body.mode),
           token: body.token,
           label: body.label,
         });

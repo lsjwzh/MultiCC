@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import '../../models/message.dart';
+import '../../services/agy_models_service.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../ai_config_sheet.dart' show prepareAIConfigInputs;
@@ -114,7 +115,13 @@ class AirTaskRuntime {
         : (provider.isNotEmpty ? provider : '默认线路');
   }
 
-  String get modelLabel => model.isEmpty ? '默认模型' : model;
+  /// 没选模型时 agy 由它自己决定（账号里当前那一档），目录回报了就直接写出来，
+  /// 不然「默认模型」四个字什么也没说。
+  String get modelLabel {
+    if (model.isNotEmpty) return model;
+    final now = cli == 'agy' ? AgyModelsService.current : null;
+    return now == null ? '默认模型' : '默认模型 · ${now.label}';
+  }
 
   /// 「CLI · 线路 · 模型」那一行 —— 和 Web 的 AI 药丸同一句话，同一个顺序。
   String get summary =>

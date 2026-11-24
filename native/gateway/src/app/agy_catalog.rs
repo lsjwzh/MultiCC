@@ -31,13 +31,23 @@ const TTL: Duration = Duration::from_secs(600);
 const FAIL_TTL: Duration = Duration::from_secs(30);
 const MAX_LINE: usize = 4_000_000;
 
-/// `(when, Result<models, error>)` — failures back off for `FAIL_TTL`.
-type CacheSlot = Option<(Instant, Result<Vec<Value>, String>)>;
+/// `(when, Result<catalog, error>)` — failures back off for `FAIL_TTL`.
+type CacheSlot = Option<(Instant, Result<AgyCatalog, String>)>;
 type CacheMap = HashMap<String, Arc<Mutex<CacheSlot>>>;
 static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
 
+/// The ACP catalog: the family ids the picker may store, plus the model the
+/// CLI would run right now when nothing is pinned. `current` is display-only —
+/// sending it back as a model id is not the contract (it carries a tier suffix).
+#[derive(Clone)]
+pub(crate) struct AgyCatalog {
+    pub models: Vec<Value>,
+    pub current: Option<Value>,
+}
+
 pub(super) struct AgyCatalogResult {
     pub models: Vec<Value>,
+    pub current: Option<Value>,
     pub source: &'static str,
     pub cached: bool,
 }
@@ -79,36 +89,70 @@ pub(super) fn executable() -> OsString {
         .unwrap_or_else(|| binary.into())
 }
 
-fn model_options(session: &Value) -> Vec<Value> {
-    let Some(options) = session.get("configOptions").and_then(Value::as_array) else {
-        return vec![];
-    };
-    let Some(model) = options
-        .iter()
-        .find(|item| item["id"] == "model" || item["category"] == "model")
-    else {
-        return vec![];
-    };
-    model
-        .get("options")
+fn clean_id(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && text.len() <= 100)
+}
+
+/// ACP session → `(pickable family ids, the model actually in effect)`.
+///
+/// `configOptions[model].options` are the ids the picker stores; the tiered id
+/// agy would run (`models.currentModelId`, e.g. `gemini-4-neon-high`) never
+/// appears there, so it is only reported as `current` for display.
+fn model_options(session: &Value) -> AgyCatalog {
+    let mut models = Vec::new();
+    let mut family_current = None;
+    if let Some(model) = session
+        .get("configOptions")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|item| {
-            let id = item.get("value")?.as_str()?.trim();
-            if id.is_empty() || id.len() > 100 {
-                return None;
-            }
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|item| item["id"] == "model" || item["category"] == "model")
+        })
+    {
+        for item in model.get("options").and_then(Value::as_array).into_iter().flatten() {
+            let Some(id) = clean_id(item.get("value")) else {
+                continue;
+            };
             let label = item.get("name").and_then(Value::as_str).unwrap_or(id);
+            models.push(json!({"model": id, "label": label}));
+        }
+        if let Some(id) = clean_id(model.get("currentValue")) {
+            let label = models
+                .iter()
+                .find(|item| item["model"] == id)
+                .and_then(|item| item["label"].as_str())
+                .unwrap_or(id);
+            family_current = Some(json!({"model": id, "label": label}));
+        }
+    }
+    let current = session
+        .get("models")
+        .and_then(|models| {
+            let id = clean_id(models.get("currentModelId"))?;
+            let label = models
+                .get("availableModels")
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .find(|item| item.get("modelId").and_then(Value::as_str) == Some(id))
+                })
+                .and_then(|item| item.get("name").and_then(Value::as_str))
+                .unwrap_or(id);
             Some(json!({"model": id, "label": label}))
         })
-        .collect()
+        .or(family_current);
+    AgyCatalog { models, current }
 }
 
 async fn fetch_local_with_env(
     home_override: Option<&Path>,
     proxy_url: Option<&str>,
-) -> Result<Vec<Value>, String> {
+) -> Result<AgyCatalog, String> {
     let mut command = Command::new(executable());
     command
         .arg("acp")
@@ -181,11 +225,11 @@ async fn fetch_local_with_env(
                 .get("result")
                 .ok_or_else(|| "未读到反重力模型，请确认已登录 agy 并检查网络".to_string())?;
             if id == 2 {
-                let models = model_options(result);
-                return if models.is_empty() {
+                let catalog = model_options(result);
+                return if catalog.models.is_empty() {
                     Err("未读到反重力模型，请确认已登录 agy 并检查网络".to_string())
                 } else {
-                    Ok(models)
+                    Ok(catalog)
                 };
             }
             break;
@@ -208,10 +252,10 @@ async fn cached_models<F, Fut>(
     cache_key: &str,
     refresh: bool,
     producer: F,
-) -> Result<(Vec<Value>, bool), String>
+) -> Result<(AgyCatalog, bool), String>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<Vec<Value>, String>>,
+    Fut: std::future::Future<Output = Result<AgyCatalog, String>>,
 {
     let slot = slot_for(cache_key).await;
     let mut guard = slot.lock().await;
@@ -237,7 +281,7 @@ pub(crate) async fn query_local_account(
     account_home: &Path,
     egress_binding: Option<&EgressBinding>,
     refresh: bool,
-) -> Result<(Vec<Value>, bool), String> {
+) -> Result<(AgyCatalog, bool), String> {
     let cache_key = format!("local:{account_id}");
     cached_models(&cache_key, refresh, || async {
         let proxy_url = if let Some(binding) = egress_binding {
@@ -271,12 +315,13 @@ pub(super) async fn resolve_models(
     };
     match agy_store::resolve_account(&home, explicit_account_id) {
         Ok(None) => {
-            let (models, cached) = cached_models("__default__", refresh, || async {
+            let (catalog, cached) = cached_models("__default__", refresh, || async {
                 fetch_local_with_env(None, None).await
             })
             .await?;
             Ok(AgyCatalogResult {
-                models,
+                models: catalog.models,
+                current: catalog.current,
                 source: "cli",
                 cached,
             })
@@ -289,20 +334,22 @@ pub(super) async fn resolve_models(
                 .map(str::to_owned)
                 .or_else(|| agy_store::active_id(&home))
                 .unwrap_or_else(|| "local".to_string());
-            let (models, cached) =
+            let (catalog, cached) =
                 query_local_account(&acct_id, &account_home, egress_binding.as_ref(), refresh)
                     .await?;
             Ok(AgyCatalogResult {
-                models,
+                models: catalog.models,
+                current: catalog.current,
                 source: "cli",
                 cached,
             })
         }
         Ok(Some(ResolvedAgyAccount::Remote { id, remote, .. })) if remote.is_relay() => {
             let cache_key = format!("relay:{id}");
-            let (models, cached) = cached_models(&cache_key, refresh, || async {
+            let (catalog, cached) = cached_models(&cache_key, refresh, || async {
                 fetch_relay_models(&remote, refresh)
                     .await
+                    .map(|(models, current)| AgyCatalog { models, current })
                     .map_err(|err| match err {
                         RelayCatalogError::Revoked => {
                             "反重力借道分享码已被撤销或无效，请向出借方重新获取".to_string()
@@ -316,7 +363,8 @@ pub(super) async fn resolve_models(
             })
             .await?;
             Ok(AgyCatalogResult {
-                models,
+                models: catalog.models,
+                current: catalog.current,
                 source: "relay",
                 cached,
             })
@@ -343,17 +391,52 @@ mod tests {
                 {"value":"claude-sonnet-5-5"}
             ]}
         ]});
-        let models = model_options(&session);
-        assert_eq!(models.len(), 2);
-        assert_eq!(models[0]["model"], "gemini-4-neon");
-        assert_eq!(models[0]["label"], "Gemini 4 Neon");
-        assert_eq!(models[1]["label"], "claude-sonnet-5-5");
+        let catalog = model_options(&session);
+        assert_eq!(catalog.models.len(), 2);
+        assert_eq!(catalog.models[0]["model"], "gemini-4-neon");
+        assert_eq!(catalog.models[0]["label"], "Gemini 4 Neon");
+        assert_eq!(catalog.models[1]["label"], "claude-sonnet-5-5");
+        // 没有 currentValue / currentModelId 时不臆造默认值。
+        assert!(catalog.current.is_none());
+    }
+
+    #[test]
+    fn current_model_reports_the_tiered_id_in_effect() {
+        let session = json!({
+            "configOptions":[{"id":"model","category":"model","currentValue":"gemini-4-neon","options":[
+                {"value":"gemini-4-neon","name":"Gemini 4 Neon"},
+                {"value":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"}
+            ]}],
+            "models":{
+                "currentModelId":"gemini-4-neon-high",
+                "availableModels":[
+                    {"modelId":"gemini-4-neon-high","name":"Gemini 4 Neon (High)"},
+                    {"modelId":"gemini-4-neon-medium","name":"Gemini 4 Neon (Medium)"}
+                ]
+            }
+        });
+        let catalog = model_options(&session);
+        // 可选项仍是族名；真正在跑的档位只出现在 current 里。
+        assert_eq!(catalog.models.len(), 2);
+        assert_eq!(catalog.current.unwrap(), json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"}));
+    }
+
+    #[test]
+    fn current_model_falls_back_to_the_option_value() {
+        let session = json!({
+            "configOptions":[{"id":"model","category":"model","currentValue":"claude-sonnet-5-5","options":[
+                {"value":"gemini-4-neon","name":"Gemini 4 Neon"},
+                {"value":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"}
+            ]}]
+        });
+        let catalog = model_options(&session);
+        assert_eq!(catalog.current.unwrap(), json!({"model":"claude-sonnet-5-5","label":"Claude Sonnet 5.5"}));
     }
 
     #[test]
     fn no_model_option_is_an_empty_catalog() {
-        assert!(model_options(&json!({"configOptions":[]})).is_empty());
-        assert!(model_options(&json!({})).is_empty());
+        assert!(model_options(&json!({"configOptions":[]})).models.is_empty());
+        assert!(model_options(&json!({})).models.is_empty());
     }
 
     #[cfg(unix)]
@@ -392,7 +475,7 @@ fi
 read _line1
 printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}\n'
 read _line2
-printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","category":"model","options":[{"value":"gemini-4-neon","name":"Gemini 4 Neon"},{"value":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"}]}]}}\n'
+printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","category":"model","currentValue":"gemini-4-neon","options":[{"value":"gemini-4-neon","name":"Gemini 4 Neon"},{"value":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"}]}],"models":{"currentModelId":"gemini-4-neon-high","availableModels":[{"modelId":"gemini-4-neon-high","name":"Gemini 4 Neon (High)"}]}}}\n'
 "#,
         )
         .unwrap();
@@ -412,20 +495,25 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","catego
         let host_id = created["id"].as_str().unwrap().to_string();
         let acct_home = agy_store::account_home(&host_home, &host_id).unwrap();
         let egress = agy_store::get_account_egress(&host_home, &host_id);
-        let (host_models, cached) =
+        let (host_catalog, cached) =
             query_local_account(&host_id, &acct_home, egress.as_ref(), true)
                 .await
                 .unwrap();
         assert!(!cached);
-        assert_eq!(host_models.len(), 2);
-        assert_eq!(host_models[0]["model"], "gemini-4-neon");
+        assert_eq!(host_catalog.models.len(), 2);
+        assert_eq!(host_catalog.models[0]["model"], "gemini-4-neon");
+        assert_eq!(
+            host_catalog.current.as_ref(),
+            Some(&json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"}))
+        );
 
         // 2) Client active relay account transparently forwards /api/agy/models to Host
         //    with caching and ?refresh=1 passthrough.
         let hits = Arc::new(AtomicUsize::new(0));
         let hits_srv = hits.clone();
         let catalog_payload = json!({
-            "models": host_models,
+            "models": host_catalog.models,
+            "current": host_catalog.current,
             "source": "cli",
             "cached": false,
         })
@@ -472,6 +560,11 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","catego
         assert_eq!(r1.source, "relay");
         assert!(!r1.cached);
         assert_eq!(r1.models.len(), 2);
+        // 出借方的“当前模型”随目录一起透传，借用方不必再猜。
+        assert_eq!(
+            r1.current,
+            Some(json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"}))
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
         // Second non-refresh call hits cache.

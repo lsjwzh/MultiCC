@@ -105,10 +105,24 @@ On this host:
 
 Pick the address the remote multicc can reach from the dropdown (current page
 address, LAN address, and any configured/verified tunnel addresses; a custom
-URL works too), then copy the `mcrelay1.…` share code. On the remote multicc,
-open `/manage` → 导入借道 Provider, paste the code, and the provider is created
-with the relay baseUrl and provider-scoped credential already filled in. The
-code never contains upstream API keys or OAuth credentials. It also carries
+URL works too), choose the share mode, then copy the `mcrelay1.…` share code.
+On the remote multicc, open `/manage` → 导入借道 Provider, paste the code, and
+the provider is created with the relay baseUrl, provider-scoped credential and
+share mode already filled in.
+
+The share mode is decided by the sharer and carried inside the code (payload
+`v:3`, field `mode`), so the importer never chooses it:
+
+- `proxy` (反代分享): the receiver installs the CLI locally and only its API
+  requests travel through the host.
+- `cli` (远程 CLI 分享): the host runs the original CLI; the receiver installs
+  nothing and tool calls / file access are executed on the receiver's machine.
+- `agy` shares have no HTTP relay and are always `cli`.
+
+Codes without `mode` (payload `v:1`/`v:2`) are imported as `proxy`; the provider
+card's 远程 CLI toggle stays available if the receiver needs to switch.
+
+The code never contains upstream API keys or OAuth credentials. It also carries
 the provider's public model catalog so the imported relay starts with a model
 the source serves. The plaintext link credential is returned only in that
 share code; the source stores a salted hash, access count, last-use time and

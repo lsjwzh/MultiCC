@@ -196,10 +196,15 @@ pub async fn handle_models(ctx: &RequestCtx, peer: &str, host_port: u16) -> Resp
     )
     .await;
     let mut resp = match result {
-        Ok(Ok((models, cached))) => express::json(
+        Ok(Ok((catalog, cached))) => express::json(
             ctx,
             200,
-            &json!({ "models": models, "source": "cli", "cached": cached }),
+            &json!({
+                "models": catalog.models,
+                "current": catalog.current,
+                "source": "cli",
+                "cached": cached,
+            }),
             &[("Cache-Control", "no-store")],
         ),
         Ok(Err(err)) => express::json(
