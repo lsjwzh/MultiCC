@@ -14,9 +14,58 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { getNative } = require('../src/native/runtime');
-const { applyClaudeChatEventLegacy } = require('./helpers/legacy-claude-chat-event');
+const { applyClaudeChatEventLegacy, boundaryEnvelope: legacyBoundary } = require('./helpers/legacy-claude-chat-event');
 
 const native = getNative();
+
+test('Claude close boundary matches the legacy envelope, body write and runner state', () => {
+  const partial = { toString: () => 'partial answer' };
+  for (const [pending, current, provider] of [
+    [null, 'answer', 'claude'],
+    [{ text: 'API Error: 429 busy', appended: true, bodyBefore: '' }, 'API Error: 429 busy', 'claude'],
+    [{ text: 'unrecognized', httpStatus: 503, cliError: 'overloaded', appended: false }, partial, 'CLAUDE'],
+    [{ text: 'API Error: 403 denied', appended: true, bodyBefore: partial }, 'later text', 'codex'],
+    [{ text: 'unrecognized', appended: false }, '  \n ', undefined],
+    [{ text: '\ud800', httpStatus: 0, appended: false }, '\udfff', null],
+  ]) {
+    function run(boundary) {
+      const runner = pending ? { claudeApiError: { seen: new Set(), pending } } : {};
+      const writes = [];
+      const session = {
+        get currentAssistantText() { return current; },
+        set currentAssistantText(value) { writes.push(value); },
+      };
+      const envelope = boundary(runner, provider, session);
+      return { envelope, frozen: Object.isFrozen(envelope), writes, runner };
+    }
+    const actual = run(native.chatClaudeBoundaryEnvelope);
+    const expected = run(legacyBoundary);
+    assert.deepEqual(actual, expected);
+    if (expected.envelope) assert.equal(actual.envelope.body, expected.envelope.body);
+  }
+});
+
+test('close boundary reads live state in order and propagates a failed body write', () => {
+  const failure = new Error('session closed');
+  function observed(boundary) {
+    const trace = [];
+    const pending = {
+      get text() { trace.push('text'); return 'API Error: 429 busy'; },
+      get appended() { trace.push('appended'); return true; },
+      get bodyBefore() { trace.push('bodyBefore'); return 'prior answer'; },
+      get httpStatus() { trace.push('httpStatus'); return 503; },
+      get cliError() { trace.push('cliError'); return null; },
+    };
+    const runner = { get claudeApiError() { trace.push('state'); return { pending }; } };
+    const session = {
+      get currentAssistantText() { trace.push('current'); return 'current answer'; },
+      set currentAssistantText(value) { trace.push(value); throw failure; },
+    };
+    assert.throws(() => boundary(runner, 'claude', session), error => error === failure);
+    return trace;
+  }
+  assert.deepEqual(observed(native.chatClaudeBoundaryEnvelope), observed(legacyBoundary));
+});
 
 // ── deterministic cloning / serialization ───────────────────────────────────
 function clone(value) {

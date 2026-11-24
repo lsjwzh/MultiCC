@@ -32,7 +32,7 @@ function qoderEffortLevel(session) {
 // (`api_error_status` on the assistant frame, `error.http_status` on the
 // result frame). Provider string codes are deliberately NOT mapped onto
 // `code`: an explicit rate-limit code would override quota-wall wording in
-// api-error-policy (the same reason claude-api-error-message.js passes only
+// api-error-policy (the same reason the Claude chat reducer passes only
 // the status). No state is kept between events — one adapter instance serves
 // every session and these frames carry no session id to correlate them.
 function httpStatusOf(value) {
