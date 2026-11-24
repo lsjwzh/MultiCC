@@ -11,8 +11,8 @@ pub mod account_routes;
 pub mod account_subscription;
 pub mod agent_resources;
 mod agy_accounts;
-mod agy_catalog;
-mod agy_quota;
+pub(crate) mod agy_catalog;
+pub(crate) mod agy_quota;
 pub mod air_routes;
 pub mod artifacts;
 pub mod auth;
@@ -253,6 +253,8 @@ pub enum Route {
     ProviderBalance(provider_balance::Route),
     ProviderRelay(provider_relay::Route),
     AgyRelayPing,
+    AgyRelayQuota,
+    AgyRelayModels,
     AutoProviderRouting(auto_provider_routing::Route),
     VoiceGateway(voice_gateway::Route),
     Voice(voice_routes::Route),
@@ -447,6 +449,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     }
     if matches!(*method, Method::GET | Method::HEAD) && crate::ws_agy_relay::claims_ping(path) {
         return Some(Route::AgyRelayPing);
+    }
+    if matches!(*method, Method::GET | Method::HEAD) && crate::ws_agy_relay::claims_quota(path) {
+        return Some(Route::AgyRelayQuota);
+    }
+    if matches!(*method, Method::GET | Method::HEAD) && crate::ws_agy_relay::claims_models(path) {
+        return Some(Route::AgyRelayModels);
     }
     if let Some(route) = session_git::claim(method, path) {
         return Some(Route::SessionGit(route));
@@ -1068,6 +1076,14 @@ pub async fn handle(
     if matches!(route, Route::AgyRelayPing) {
         drop(body);
         return crate::ws_agy_relay::handle_ping(&ctx, &peer, host).await;
+    }
+    if matches!(route, Route::AgyRelayQuota) {
+        drop(body);
+        return crate::ws_agy_relay::handle_quota(&ctx, &peer, host).await;
+    }
+    if matches!(route, Route::AgyRelayModels) {
+        drop(body);
+        return crate::ws_agy_relay::handle_models(&ctx, &peer, host).await;
     }
     if matches!(route, Route::ProviderRelay(_))
         || matches!(route, Route::ProviderBalance(route) if provider_balance::is_relay(route))

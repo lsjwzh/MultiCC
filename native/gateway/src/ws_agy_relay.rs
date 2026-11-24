@@ -111,12 +111,190 @@ pub fn parse_ping_account_id(path: &str) -> Option<String> {
     }
 }
 
+/// 解析 `/agy-proxy/<16hex>/quota` 中的 `account_id`。
+pub fn parse_quota_account_id(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() == 3
+        && parts[0].eq_ignore_ascii_case("agy-proxy")
+        && parts[2].eq_ignore_ascii_case("quota")
+        && valid_account(parts[1])
+    {
+        Some(parts[1].to_string())
+    } else {
+        None
+    }
+}
+
+/// 解析 `/agy-proxy/<16hex>/models` 中的 `account_id`。
+pub fn parse_models_account_id(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() == 3
+        && parts[0].eq_ignore_ascii_case("agy-proxy")
+        && parts[2].eq_ignore_ascii_case("models")
+        && valid_account(parts[1])
+    {
+        Some(parts[1].to_string())
+    } else {
+        None
+    }
+}
+
 pub fn claims_ws(path: &str) -> bool {
     parse_turn_account_id(path).is_some()
 }
 
 pub fn claims_ping(path: &str) -> bool {
     parse_ping_account_id(path).is_some()
+}
+
+pub fn claims_quota(path: &str) -> bool {
+    parse_quota_account_id(path).is_some()
+}
+
+pub fn claims_models(path: &str) -> bool {
+    parse_models_account_id(path).is_some()
+}
+
+/// `GET /agy-proxy/<16hex>/models[?refresh=1|true]`：供借用方透明拉取出借方对应反重力账号的实时模型目录。
+///
+/// 强制通过 `provider_relay::admission` 校验 `mcr1.` 凭据、撤销状态与单账号作用域；
+/// 仅在 Host 本地按账号独立缓存并注入账号绑定的专用出口（fail-closed），绝不泄露凭据或原始会话信息。
+pub async fn handle_models(ctx: &RequestCtx, peer: &str, host_port: u16) -> Response<Body> {
+    let Some(account_id) = parse_models_account_id(&ctx.path) else {
+        return express::error(ctx, 404, "not found");
+    };
+    let headers = match provider_relay::admission(ctx, peer, host_port).await {
+        Ok(h) => h,
+        Err(refusal) => return *refusal,
+    };
+    let Some(home) = home_dir() else {
+        let mut resp = express::json(
+            ctx,
+            500,
+            &json!({ "error": "Host 无法定位 HOME 目录", "models": [] }),
+            &[("Cache-Control", "no-store")],
+        );
+        provider_relay::append_headers(&mut resp, &headers);
+        return resp;
+    };
+    let (account_home, egress_binding) = match agy_store::resolve_account(&home, Some(&account_id))
+    {
+        Ok(Some(ResolvedAgyAccount::Local {
+            home,
+            egress_binding,
+        })) => (home, egress_binding),
+        _ => {
+            let mut resp = express::json(
+                ctx,
+                404,
+                &json!({ "error": "Host 上对应的反重力账号已不存在", "models": [] }),
+                &[("Cache-Control", "no-store")],
+            );
+            provider_relay::append_headers(&mut resp, &headers);
+            return resp;
+        }
+    };
+    let refresh = ctx
+        .original_url
+        .split('?')
+        .nth(1)
+        .unwrap_or("")
+        .split('&')
+        .any(|part| {
+            part.eq_ignore_ascii_case("refresh=1") || part.eq_ignore_ascii_case("refresh=true")
+        });
+    let result = tokio::time::timeout(
+        Duration::from_secs(25),
+        crate::app::agy_catalog::query_local_account(
+            &account_id,
+            &account_home,
+            egress_binding.as_ref(),
+            refresh,
+        ),
+    )
+    .await;
+    let mut resp = match result {
+        Ok(Ok((models, cached))) => express::json(
+            ctx,
+            200,
+            &json!({ "models": models, "source": "cli", "cached": cached }),
+            &[("Cache-Control", "no-store")],
+        ),
+        Ok(Err(err)) => express::json(
+            ctx,
+            503,
+            &json!({ "error": err, "models": [] }),
+            &[("Cache-Control", "no-store")],
+        ),
+        Err(_) => express::json(
+            ctx,
+            503,
+            &json!({ "error": "Host 查询反重力模型目录超时", "models": [] }),
+            &[("Cache-Control", "no-store")],
+        ),
+    };
+    provider_relay::append_headers(&mut resp, &headers);
+    resp
+}
+
+/// `GET /agy-proxy/<16hex>/quota[?force=1]`：供借用方透明查询出借方对应反重力账号的实时额度。
+///
+/// 强制通过 `provider_relay::admission` 校验 `mcr1.` 凭据、撤销状态与单账号作用域；
+/// 仅在 Host 本地按账号独立缓存并注入账号绑定的专用出口（fail-closed），绝不泄露凭据或原始 CLI 输出。
+pub async fn handle_quota(ctx: &RequestCtx, peer: &str, host_port: u16) -> Response<Body> {
+    let Some(account_id) = parse_quota_account_id(&ctx.path) else {
+        return express::error(ctx, 404, "not found");
+    };
+    let headers = match provider_relay::admission(ctx, peer, host_port).await {
+        Ok(h) => h,
+        Err(refusal) => return *refusal,
+    };
+    let Some(home) = home_dir() else {
+        let mut resp = express::json(
+            ctx,
+            500,
+            &json!({ "status": "unavailable", "error": "Host 无法定位 HOME 目录" }),
+            &[("Cache-Control", "no-store")],
+        );
+        provider_relay::append_headers(&mut resp, &headers);
+        return resp;
+    };
+    let (account_home, egress_binding) = match agy_store::resolve_account(&home, Some(&account_id))
+    {
+        Ok(Some(ResolvedAgyAccount::Local {
+            home,
+            egress_binding,
+        })) => (home, egress_binding),
+        _ => {
+            let mut resp = express::json(
+                ctx,
+                404,
+                &json!({ "status": "unavailable", "error": "Host 上对应的反重力账号已不存在" }),
+                &[("Cache-Control", "no-store")],
+            );
+            provider_relay::append_headers(&mut resp, &headers);
+            return resp;
+        }
+    };
+    let force = ctx
+        .original_url
+        .split('?')
+        .nth(1)
+        .unwrap_or("")
+        .split('&')
+        .any(|part| part == "force=1");
+    let body = crate::app::agy_quota::query_local_account(
+        &account_id,
+        &account_home,
+        egress_binding.as_ref(),
+        force,
+    )
+    .await;
+    let mut resp = express::json(ctx, 200, &body, &[("Cache-Control", "no-store")]);
+    provider_relay::append_headers(&mut resp, &headers);
+    resp
 }
 
 /// `GET /agy-proxy/<16hex>/ping`：供借用方点击「测试连通」时探测分享码有效性与 Host 账号状态。

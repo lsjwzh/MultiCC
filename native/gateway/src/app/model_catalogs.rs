@@ -220,20 +220,29 @@ fn js_length_nonzero(value: Option<&Value>) -> bool {
 pub async fn catalog(catalog: Catalog, ctx: &RequestCtx, host_port_num: u16) -> Response<Body> {
     if catalog == Catalog::Agy {
         let refresh = flag(&query_text(ctx, "refresh"));
-        let result =
-            tokio::time::timeout(Duration::from_secs(25), super::agy_catalog::models(refresh))
-                .await;
+        let raw_account = query_text(ctx, "accountId");
+        let explicit_id = (!raw_account.trim().is_empty()).then_some(raw_account.trim());
+        let result = tokio::time::timeout(
+            Duration::from_secs(25),
+            super::agy_catalog::resolve_models(explicit_id, refresh),
+        )
+        .await;
         return match result {
-            Ok(Some((models, cached))) => express::json(
+            Ok(Ok(found)) => express::json(
                 ctx,
                 200,
-                &json!({"models": models, "source": "cli", "cached": cached}),
+                &json!({
+                    "models": found.models,
+                    "source": found.source,
+                    "cached": found.cached,
+                }),
                 &[],
             ),
-            _ => express::json(
+            Ok(Err(err)) => express::json(ctx, 503, &json!({ "error": err, "models": [] }), &[]),
+            Err(_) => express::json(
                 ctx,
                 503,
-                &json!({"error": catalog.unavailable(), "models": []}),
+                &json!({ "error": catalog.unavailable(), "models": [] }),
                 &[],
             ),
         };

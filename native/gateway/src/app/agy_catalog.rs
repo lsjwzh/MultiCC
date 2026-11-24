@@ -1,16 +1,22 @@
-//! Antigravity (`agy`) model catalog. The logical models come from a real ACP
+//! Antigravity (`agy`) model catalog, plus transparent pass-through to the
+//! lending Host for relay-shared accounts. Logical models come from a real ACP
 //! `session/new` on the signed-in account, so they follow whatever tier the
 //! user has instead of a hard-coded table.
 //!
 //! Kept apart from the generic `model_catalogs` cluster because agy is the one
 //! catalog the front door spawns itself — it needs the account session, not a
-//! Node host op. The process cache and the single-flight lock live here; the
+//! Node host op. The per-account cache and single-flight locks live here; the
 //! route shape stays in `model_catalogs`.
+use crate::agy_relay_client::{fetch_relay_models, RelayCatalogError};
+use multicc_core::agy_accounts::{self as agy_store, ResolvedAgyAccount};
+use multicc_core::egress_plugin::{EgressBinding, LOOPBACK_NO_PROXY};
 use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     ffi::OsString,
+    path::{Path, PathBuf},
     process::Stdio,
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -25,11 +31,29 @@ const TTL: Duration = Duration::from_secs(600);
 const FAIL_TTL: Duration = Duration::from_secs(30);
 const MAX_LINE: usize = 4_000_000;
 
-/// `(when, models)` — `None` records a failed probe inside the same window.
-type CacheEntry = Option<(Instant, Option<Vec<Value>>)>;
-static CACHE: OnceLock<Mutex<CacheEntry>> = OnceLock::new();
+/// `(when, Result<models, error>)` — failures back off for `FAIL_TTL`.
+type CacheSlot = Option<(Instant, Result<Vec<Value>, String>)>;
+type CacheMap = HashMap<String, Arc<Mutex<CacheSlot>>>;
+static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
+
+pub(super) struct AgyCatalogResult {
+    pub models: Vec<Value>,
+    pub source: &'static str,
+    pub cached: bool,
+}
+
+fn accounts_home_dir() -> Option<PathBuf> {
+    std::env::var_os("MULTICC_AGY_ACCOUNTS_HOME")
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()))
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
+}
 
 pub(super) fn executable() -> OsString {
+    if let Some(cmd) = std::env::var_os("MULTICC_AGY_BIN").filter(|v| !v.is_empty()) {
+        return cmd;
+    }
     if let Some(cmd) = std::env::var_os("AGY_CMD").filter(|v| !v.is_empty()) {
         return cmd;
     }
@@ -81,54 +105,85 @@ fn model_options(session: &Value) -> Vec<Value> {
         .collect()
 }
 
-async fn fetch() -> Result<Vec<Value>, ()> {
+async fn fetch_local_with_env(
+    home_override: Option<&Path>,
+    proxy_url: Option<&str>,
+) -> Result<Vec<Value>, String> {
     let mut command = Command::new(executable());
     command
         .arg("acp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .env_remove("MULTICC_AGY_REMOTE_ACCOUNT_JSON")
+        .env_remove("MULTICC_AGY_EGRESS_JSON");
     // The model list follows the signed-in account; agy reads its login from
     // `$HOME/.gemini`, so a pinned account is served by pointing HOME at its
     // mini-home. No pin leaves the real home untouched.
-    if let Some(home) = super::agy_accounts::home_override() {
+    if let Some(home) = home_override {
         command.env("HOME", home);
     }
-    let mut child = command.spawn().map_err(|_| ())?;
-    let mut stdin = child.stdin.take().ok_or(())?;
-    let mut stdout = BufReader::new(child.stdout.take().ok_or(())?).lines();
+    if let Some(url) = proxy_url {
+        command
+            .env("HTTP_PROXY", url)
+            .env("HTTPS_PROXY", url)
+            .env("ALL_PROXY", url)
+            .env("http_proxy", url)
+            .env("https_proxy", url)
+            .env("all_proxy", url)
+            .env("NO_PROXY", LOOPBACK_NO_PROXY)
+            .env("no_proxy", LOOPBACK_NO_PROXY);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|_| "未读到反重力模型，请确认本机已安装并登录 agy".to_string())?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法与 agy ACP 通信".to_string())?;
+    let mut stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| "无法读取 agy ACP 输出".to_string())?,
+    )
+    .lines();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
     for (id, method, params) in [
         (
             1,
             "initialize",
             json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"multicc-models","version":"1.0.0"}}),
         ),
-        (
-            2,
-            "session/new",
-            json!({"cwd":std::env::current_dir().map_err(|_| ())?,"mcpServers":[]}),
-        ),
+        (2, "session/new", json!({"cwd":cwd,"mcpServers":[]})),
     ] {
         let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
         stdin
             .write_all(format!("{}\n", request).as_bytes())
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| "发送 agy ACP 请求失败".to_string())?;
         loop {
-            let line = stdout.next_line().await.map_err(|_| ())?.ok_or(())?;
+            let line = stdout
+                .next_line()
+                .await
+                .map_err(|_| "读取 agy ACP 响应失败".to_string())?
+                .ok_or_else(|| "未读到反重力模型，请确认已登录 agy 并检查网络".to_string())?;
             if line.len() > MAX_LINE {
-                return Err(());
+                return Err("agy ACP 响应超出长度限制".to_string());
             }
-            let message: Value = serde_json::from_str(&line).map_err(|_| ())?;
+            let message: Value = serde_json::from_str(&line)
+                .map_err(|_| "解析 agy ACP 响应 JSON 失败".to_string())?;
             if message.get("id").and_then(Value::as_i64) != Some(id) {
                 continue;
             }
-            let result = message.get("result").ok_or(())?;
+            let result = message
+                .get("result")
+                .ok_or_else(|| "未读到反重力模型，请确认已登录 agy 并检查网络".to_string())?;
             if id == 2 {
                 let models = model_options(result);
                 return if models.is_empty() {
-                    Err(())
+                    Err("未读到反重力模型，请确认已登录 agy 并检查网络".to_string())
                 } else {
                     Ok(models)
                 };
@@ -136,39 +191,141 @@ async fn fetch() -> Result<Vec<Value>, ()> {
             break;
         }
     }
-    Err(())
+    Err("未读到反重力模型，请确认已登录 agy 并检查网络".to_string())
+}
+
+async fn slot_for(cache_key: &str) -> Arc<Mutex<CacheSlot>> {
+    let mut map = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .await;
+    map.entry(cache_key.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(None)))
+        .clone()
+}
+
+async fn cached_models<F, Fut>(
+    cache_key: &str,
+    refresh: bool,
+    producer: F,
+) -> Result<(Vec<Value>, bool), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<Value>, String>>,
+{
+    let slot = slot_for(cache_key).await;
+    let mut guard = slot.lock().await;
+    if !refresh {
+        if let Some((when, entry)) = guard.as_ref() {
+            let ttl = if entry.is_ok() { TTL } else { FAIL_TTL };
+            if when.elapsed() < ttl {
+                return entry.clone().map(|models| (models, true));
+            }
+        }
+    }
+    let fresh = producer().await;
+    *guard = Some((Instant::now(), fresh.clone()));
+    fresh.map(|models| (models, false))
+}
+
+/// 查询 Host 本机某个隔离反重力账号的模型目录（供本机 `/api/agy/models` 与借道 Host `/agy-proxy/<id>/models` 复用）。
+///
+/// 绑定了 `chrome-proxy-launcher` 专用出口时采用 fail-closed：实时解析出口并注入代理环境，
+/// 出口不可用时直接报错，绝不静默走 Host 默认出口 IP。
+pub(crate) async fn query_local_account(
+    account_id: &str,
+    account_home: &Path,
+    egress_binding: Option<&EgressBinding>,
+    refresh: bool,
+) -> Result<(Vec<Value>, bool), String> {
+    let cache_key = format!("local:{account_id}");
+    cached_models(&cache_key, refresh, || async {
+        let proxy_url = if let Some(binding) = egress_binding {
+            match crate::egress_runtime::resolve_egress_proxy_url(binding).await {
+                Ok(url) => Some(url),
+                Err(err) => return Err(format!("Host 账号专用出口不可用：{err}")),
+            }
+        } else {
+            None
+        };
+        fetch_local_with_env(Some(account_home), proxy_url.as_deref()).await
+    })
+    .await
 }
 
 /// The cached catalog describes the previous account, so an account switch
 /// must drop it instead of waiting out the ten-minute TTL.
 pub(super) async fn invalidate() {
     if let Some(cache) = CACHE.get() {
-        *cache.lock().await = None;
+        cache.lock().await.clear();
     }
 }
 
-/// The catalog plus whether it came from the process cache. The caller owns the
-/// request timeout; a failed probe yields `None` and is remembered for
-/// [`FAIL_TTL`] unless `refresh` is set.
-pub(super) async fn models(refresh: bool) -> Option<(Vec<Value>, bool)> {
-    let mut cache = CACHE.get_or_init(|| Mutex::new(None)).lock().await;
-    if !refresh {
-        if let Some((when, entry)) = cache.as_ref() {
-            let ttl = if entry.is_some() { TTL } else { FAIL_TTL };
-            if when.elapsed() < ttl {
-                return entry.clone().map(|models| (models, true));
-            }
+/// 解析目标反重力账号的模型目录（本机隔离账号、本机默认 `$HOME` 或借道透传至出借方 Host）。
+pub(super) async fn resolve_models(
+    explicit_account_id: Option<&str>,
+    refresh: bool,
+) -> Result<AgyCatalogResult, String> {
+    let Some(home) = accounts_home_dir() else {
+        return Err("无法定位 HOME 目录，未能读取反重力模型目录".to_string());
+    };
+    match agy_store::resolve_account(&home, explicit_account_id) {
+        Ok(None) => {
+            let (models, cached) = cached_models("__default__", refresh, || async {
+                fetch_local_with_env(None, None).await
+            })
+            .await?;
+            Ok(AgyCatalogResult {
+                models,
+                source: "cli",
+                cached,
+            })
         }
-    }
-    match fetch().await {
-        Ok(models) => {
-            *cache = Some((Instant::now(), Some(models.clone())));
-            Some((models, false))
+        Ok(Some(ResolvedAgyAccount::Local {
+            home: account_home,
+            egress_binding,
+        })) => {
+            let acct_id = explicit_account_id
+                .map(str::to_owned)
+                .or_else(|| agy_store::active_id(&home))
+                .unwrap_or_else(|| "local".to_string());
+            let (models, cached) =
+                query_local_account(&acct_id, &account_home, egress_binding.as_ref(), refresh)
+                    .await?;
+            Ok(AgyCatalogResult {
+                models,
+                source: "cli",
+                cached,
+            })
         }
-        Err(()) => {
-            *cache = Some((Instant::now(), None));
-            None
+        Ok(Some(ResolvedAgyAccount::Remote { id, remote, .. })) if remote.is_relay() => {
+            let cache_key = format!("relay:{id}");
+            let (models, cached) = cached_models(&cache_key, refresh, || async {
+                fetch_relay_models(&remote, refresh)
+                    .await
+                    .map_err(|err| match err {
+                        RelayCatalogError::Revoked => {
+                            "反重力借道分享码已被撤销或无效，请向出借方重新获取".to_string()
+                        }
+                        RelayCatalogError::NotFound => {
+                            "远端 Host 上对应的反重力账号已不存在，或 Host 尚未升级支持反重力借道模型目录"
+                                .to_string()
+                        }
+                        RelayCatalogError::Unavailable(detail) => detail,
+                    })
+            })
+            .await?;
+            Ok(AgyCatalogResult {
+                models,
+                source: "relay",
+                cached,
+            })
         }
+        Ok(Some(ResolvedAgyAccount::Remote { .. })) => Err(
+            "当前为 SSH 远端反重力账号，暂不支持直接透传模型目录；请改用借道分享码或到远端 Host 查看"
+                .to_string(),
+        ),
+        Err(err) => Err(err),
     }
 }
 
@@ -197,5 +354,150 @@ mod tests {
     fn no_model_option_is_an_empty_catalog() {
         assert!(model_options(&json!({"configOptions":[]})).is_empty());
         assert!(model_options(&json!({})).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn query_local_account_injects_egress_and_client_relays_catalog() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
+        invalidate().await;
+
+        let root = std::env::temp_dir().join(format!(
+            "multicc-agy-catalog-relay-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let host_home = root.join("host-home");
+        let client_home = root.join("client-home");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&host_home).unwrap();
+        std::fs::create_dir_all(&client_home).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let fake_agy = bin_dir.join("agy");
+        std::fs::write(
+            &fake_agy,
+            r#"#!/bin/sh
+if [ "$HTTPS_PROXY" != "http://127.0.0.1:48888" ]; then
+  exit 2
+fi
+read _line1
+printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}\n'
+read _line2
+printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","category":"model","options":[{"value":"gemini-4-neon","name":"Gemini 4 Neon"},{"value":"claude-sonnet-5-5","name":"Claude Sonnet 5.5"}]}]}}\n'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        std::env::set_var("MULTICC_AGY_BIN", &fake_agy);
+        std::env::set_var("MULTICC_EGRESS_PROXY_OVERRIDE", "http://127.0.0.1:48888");
+
+        // 1) Host local account with bound egress injects HTTPS_PROXY and parses ACP models.
+        let created = agy_store::create_account_with_egress(
+            &host_home,
+            "Host 代理账号",
+            "created",
+            Some(&json!({ "pluginId": "chrome-proxy-launcher", "profileId": "us-1" })),
+        )
+        .unwrap();
+        let host_id = created["id"].as_str().unwrap().to_string();
+        let acct_home = agy_store::account_home(&host_home, &host_id).unwrap();
+        let egress = agy_store::get_account_egress(&host_home, &host_id);
+        let (host_models, cached) =
+            query_local_account(&host_id, &acct_home, egress.as_ref(), true)
+                .await
+                .unwrap();
+        assert!(!cached);
+        assert_eq!(host_models.len(), 2);
+        assert_eq!(host_models[0]["model"], "gemini-4-neon");
+
+        // 2) Client active relay account transparently forwards /api/agy/models to Host
+        //    with caching and ?refresh=1 passthrough.
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_srv = hits.clone();
+        let catalog_payload = json!({
+            "models": host_models,
+            "source": "cli",
+            "cached": false,
+        })
+        .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let srv = tokio::spawn(async move {
+            for expected_refresh in [false, true] {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 2048];
+                let n = sock.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+                if expected_refresh {
+                    assert!(req.contains("/models?refresh=1 "));
+                } else {
+                    assert!(req.contains("/models "));
+                }
+                hits_srv.fetch_add(1, Ordering::SeqCst);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    catalog_payload.len(),
+                    catalog_payload
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+            }
+        });
+
+        let relay_acct = agy_store::create_remote_account(
+            &client_home,
+            "借道反重力",
+            &json!({
+                "transport": "relay",
+                "relayBaseUrl": format!("http://127.0.0.1:{port}/agy-proxy/{host_id}"),
+                "relayAuthToken": "mcr1.0123456789abcdef.secret8888",
+            }),
+        )
+        .unwrap();
+        let client_acct_id = relay_acct["id"].as_str().unwrap();
+        agy_store::set_active(&client_home, Some(client_acct_id)).unwrap();
+        std::env::set_var("MULTICC_AGY_ACCOUNTS_HOME", &client_home);
+        invalidate().await;
+
+        let r1 = resolve_models(None, false).await.unwrap();
+        assert_eq!(r1.source, "relay");
+        assert!(!r1.cached);
+        assert_eq!(r1.models.len(), 2);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // Second non-refresh call hits cache.
+        let r2 = resolve_models(None, false).await.unwrap();
+        assert_eq!(r2.source, "relay");
+        assert!(r2.cached);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // Refresh bypasses cache and forwards ?refresh=1 to Host.
+        let r3 = resolve_models(None, true).await.unwrap();
+        assert_eq!(r3.source, "relay");
+        assert!(!r3.cached);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        let _ = srv.await;
+
+        assert!(crate::ws_agy_relay::claims_models(&format!(
+            "/agy-proxy/{host_id}/models"
+        )));
+        assert!(!crate::ws_agy_relay::claims_models(
+            "/agy-proxy/bad-id/models"
+        ));
+
+        std::env::remove_var("MULTICC_AGY_ACCOUNTS_HOME");
+        std::env::remove_var("MULTICC_AGY_BIN");
+        std::env::remove_var("MULTICC_EGRESS_PROXY_OVERRIDE");
+        invalidate().await;
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

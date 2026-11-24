@@ -2,15 +2,12 @@
 //!
 //! agy keeps its whole login in `$HOME/.gemini` and honours `HOME`, so an
 //! account is just another HOME directory. The storage rules live in
-//! [`multicc_core::agy_accounts`]; this cluster owns the routes, and the one
-//! helper the spawn sites share, [`home_override`], which `agy_catalog` and
-//! `agy_quota` apply to the `agy` child's environment.
+//! [`multicc_core::agy_accounts`]; this cluster owns the routes.
 //!
 //! Every mutation drops the catalog and quota caches: both are keyed on the
 //! signed-in account, and a stale 10-minute catalog would otherwise keep
 //! showing the previous account after a switch.
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use axum::body::Body;
@@ -207,12 +204,6 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-}
-
-/// The `HOME` a spawned `agy` should inherit: the active account's home, or
-/// `None` to leave the real home in place (the CLI's own login).
-pub(super) fn home_override() -> Option<OsString> {
-    store::active_home(&home_dir()?).map(PathBuf::into_os_string)
 }
 
 /// `/api/agy/accounts/:id` → `id`. Only called for the two routes whose shape
