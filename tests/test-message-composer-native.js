@@ -27,13 +27,16 @@ function scenario(api, values = {}, stopAt) {
   const notes = Array.from({ length: values.notes || 0 }, (_, i) => ({ fromLabel: `agent-${i}`, body: values.long ? '😀'.repeat(2400) : `note-${i}` }));
   const track = (label, object) => new Proxy(object, {
     get(target, key, receiver) {
-      trace.push(['get', label, String(key)]);
+      // These inputs cover the independent workflow and subtask switches tested below.
+      const preferenceRead = label === 'persisted' && ['effort', 'cli', 'claudeWorkflow', 'preferSubtasks'].includes(key);
+      if (!preferenceRead && !(label === 'deps' && key === 'normalizeEffort')) trace.push(['get', label, String(key)]);
       if (stopAt === `${label}.${String(key)}`) throw stopAt;
       return Reflect.get(target, key, receiver);
     },
     ownKeys() { throw new Error('live values must not be enumerated'); },
   });
   const persisted = track('persisted', {
+    cli: values.cli, claudeWorkflow: values.claudeWorkflow, preferSubtasks: values.preferSubtasks,
     type: values.type, autoCommit: values.autoCommit, model: opaque,
     effort: values.effort, agent: opaque, cliSessionId: values.first ? null : 'session-id',
     dirId: 'directory', subagent: opaque,
@@ -52,7 +55,7 @@ function scenario(api, values = {}, stopAt) {
     appendEvent(...args) { trace.push(['append', ...args]); },
     workspaceBroadcast(...args) { trace.push(['workspace', ...args]); },
     chatBroadcast(...args) { trace.push(['chat', ...args]); },
-    normalizeEffort(effort) { trace.push(['effort', effort]); return effort; },
+    normalizeEffort(effort) { return effort; },
   });
   const opts = track('opts', {
     isFirstTurn: values.first, taskContextSeed: values.seed ? 'ledger\n' : undefined,
@@ -77,7 +80,7 @@ function scenario(api, values = {}, stopAt) {
 }
 
 for (const type of [undefined, 'chat', 'aux', 'gateway']) {
-  for (const bare of [false, true]) for (const effort of ['high', 'ultracode']) {
+  for (const bare of [false, true]) for (const effort of ['high', 'medium']) {
     test(`frozen prompt, live read order and side effects: ${type}/${bare}/${effort}`, () => fixedClock(() => {
       for (const count of [0, 2, 12]) {
         const values = { type, bare, effort, notes: count, seed: true, first: true,
@@ -87,6 +90,24 @@ for (const type of [undefined, 'chat', 'aux', 'gateway']) {
     }));
   }
 }
+
+test('原生工作流与跨 CLI 子任务提示可独立开启', () => {
+  for (const cli of ['claude', 'codex-exp', 'agy']) {
+    for (const claudeWorkflow of [false, true]) for (const preferSubtasks of [false, true]) {
+      const { envelope, prompt } = scenario(native, { cli, effort: 'medium', claudeWorkflow, preferSubtasks });
+      assert.equal(envelope.spawnOpts.rawEffort, 'medium');
+      assert.equal(envelope.spawnOpts.ultracode, cli === 'claude' && claudeWorkflow);
+      assert.equal(prompt.includes('优先使用可用的子任务工具'), preferSubtasks);
+      assert.doesNotMatch(prompt, /Workflow tool/);
+    }
+  }
+  const bare = scenario(native, { cli: 'claude', claudeWorkflow: true, preferSubtasks: true, bare: true }).envelope;
+  assert.equal(bare.spawnOpts.ultracode, true);
+  assert.equal(bare.suffix, '');
+  const legacyEnvelope = scenario(native, { cli: 'claude', effort: 'ultracode' }).envelope;
+  assert.equal(legacyEnvelope.spawnOpts.ultracode, true);
+  assert.equal(legacyEnvelope.suffix, '');
+});
 
 test('truthy bare, explicit undefined fields, null mode, language and raw values retain their distinctions', () => fixedClock(() => {
   for (const bare of [0, '', null, undefined, {}, 'yes']) {
@@ -101,7 +122,7 @@ test('getter failures stop at the same read, preserve identity and do not delive
   for (const stopAt of ['input.text', 'input.opts', 'opts.voice', 'deps.resolveRolePrompt',
     'persisted.subagent', 'deps.buildCliHandoffPrompt', 'deps.buildPlanPrompt',
     'deps.pendingNotesFor', 'deps.saveNotes', 'deps.appendEvent', 'deps.workspaceBroadcast',
-    'deps.chatBroadcast', 'deps.normalizeEffort', 'persisted.model']) {
+    'deps.chatBroadcast', 'persisted.model']) {
     assert.deepEqual(scenario(native, { notes: 2 }, stopAt), scenario(legacy, { notes: 2 }, stopAt), stopAt);
   }
 }));
@@ -110,7 +131,7 @@ test('all injected callbacks propagate the exact thrown object without replaying
   const marker = Object.freeze({ error: 'port failure' });
   for (const key of ['resolveRolePrompt', 'buildSubagentProviderHint', 'buildCliHandoffPrompt',
     'buildPlanPrompt', 'buildDispatchContextPrompt', 'takeBackgroundStopNote', 'pendingNotesFor',
-    'saveNotes', 'appendEvent', 'workspaceBroadcast', 'chatBroadcast', 'normalizeEffort']) {
+    'saveNotes', 'appendEvent', 'workspaceBroadcast', 'chatBroadcast']) {
     const run = api => {
       const notes = [{ fromLabel: 'a', body: 'b' }];
       const trace = [];
@@ -163,7 +184,7 @@ test('validation errors and production warnings equal the frozen report', () => 
     for (const environment of ['development', 'production']) {
       process.env.NODE_ENV = environment;
       for (const value of [null, {}, { userText: '', contextLayers: [null, { kind: 'x', text: '', order: 10 },
-        { kind: 'x', text: 'a', order: 0 }], spawnOpts: { ultracode: true }, suffix: '', systemPrompt: 'wrong' },
+        { kind: 'x', text: 'a', order: 0 }], spawnOpts: {}, suffix: '', systemPrompt: 'wrong' },
       { userText: 'a', contextLayers: [], imgHint: '', subagentHint: '', rolePrompt: null, systemPrompt: '' }]) {
         const run = api => {
           const warnings = [];

@@ -58,6 +58,7 @@ function activeState(session, now, cli) {
       _streamSessionId: session._streamSessionId,
       model: session.model,
       effort: session.effort,
+      ...(session.claudeWorkflow !== undefined ? { claudeWorkflow: session.claudeWorkflow } : {}),
       provider: session.provider,
       providerSelection: session.providerSelection,
       subagent: session.subagent,
@@ -146,6 +147,8 @@ function activateCliState(session, targetCli, options = {}) {
   else delete session._streamSessionId;
   session.model = plan.fields.model;
   session.effort = plan.fields.effort;
+  if (plan.fields.claudeWorkflow === undefined) delete session.claudeWorkflow;
+  else session.claudeWorkflow = plan.fields.claudeWorkflow;
   session.provider = plan.fields.provider;
   session.providerSelection = plan.fields.providerSelection;
   session.subagent = plan.fields.subagent;

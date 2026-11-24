@@ -94,9 +94,9 @@ function createTurnLedgerRuntime(deps = {}) {
       if (session.cli === 'claude') {
         fs.mkdirSync(settingsDir, { recursive: true, mode: 0o700 });
         const file = path.join(settingsDir, `${sid}.json`);
-        const ultra = String(session.effort || '').trim().toLowerCase() === 'ultracode'
-          && supportsEffort('claude', session.model, 'ultracode');
-        const extra = ultra ? { ultracode: true } : {};
+        const workflow = (session.claudeWorkflow === true || String(session.effort || '').trim().toLowerCase() === 'ultracode')
+          && supportsEffort('claude', session.model, 'xhigh');
+        const extra = workflow ? { ultracode: true } : {};
         fs.writeFileSync(file, JSON.stringify(installer.claudeSettings(extra)), { mode: 0o600 });
         return { ...session, turnHookSettingsArg: shellQuote(file) };
       }

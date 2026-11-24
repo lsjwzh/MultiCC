@@ -1680,25 +1680,48 @@ fn run_selection(
         if !outcome.ok {
             return Ok(outcome.value);
         }
+        let lane = outcome.value["cli"].as_str().or(context.home_cli);
+        let claude = matches!(lane, None | Some("claude" | "claude-exp"));
+        let legacy = claude && raw["effort"] == "ultracode";
+        if let Some(flag) = raw.get("claudeWorkflow") {
+            if !flag.is_boolean() || !claude {
+                return Ok(fail_with_code(
+                    format!("candidate {display_index} has an invalid workflow"),
+                    "invalid_provider_candidate",
+                ));
+            }
+            outcome.value["claudeWorkflow"] = flag.clone();
+        } else if legacy {
+            outcome.value["claudeWorkflow"] = json!(true);
+        }
         if let Some(value) = raw.get("effort").filter(|v| !v.is_null() && *v != "") {
-            let level = value.as_str().unwrap_or("").trim();
             let model = outcome.value["model"].as_str().unwrap_or("");
-            let lane = outcome.value["cli"].as_str().or(context.home_cli);
-            let valid = match lane {
-                Some(cli) => crate::cli_capability::supports_effort(cli, model, level),
-                // 旧式单 CLI 池在无会话信息的存储读模型中没有车道。
-                None => crate::cli_capability::effort_catalog()
-                    .efforts
-                    .values()
-                    .any(|s| s.levels_for_model(model).iter().any(|v| v == level)),
+            let level = if legacy {
+                crate::cli_capability::legacy_claude_effort(model)
+            } else {
+                Some(value.as_str().unwrap_or("").trim())
             };
-            if level.is_empty() || !valid {
+            let lane = outcome.value["cli"].as_str().or(context.home_cli);
+            let valid = level.is_none_or(|level| {
+                !level.is_empty()
+                    && match lane {
+                        Some(cli) => crate::cli_capability::supports_effort(cli, model, level),
+                        // 旧式单 CLI 池在无会话信息的存储读模型中没有车道。
+                        None => crate::cli_capability::effort_catalog()
+                            .efforts
+                            .values()
+                            .any(|s| s.levels_for_model(model).iter().any(|v| v == level)),
+                    }
+            });
+            if !valid {
                 return Ok(fail_with_code(
                     format!("candidate {display_index} has an invalid effort"),
                     "invalid_provider_candidate",
                 ));
             }
-            outcome.value["effort"] = json!(level);
+            if let Some(level) = level {
+                outcome.value["effort"] = json!(level);
+            }
         }
         if declared_protocol.is_empty()
             && derived_protocol.is_none()

@@ -336,13 +336,24 @@ pub async fn serve_claude_relay_session<S>(
             .map(str::to_owned)
     };
     let model = clean_opt("model");
-    let effort = clean_opt("effort").filter(|level| {
-        multicc_core::cli_capability::supports_effort(
-            "claude",
-            model.as_deref().unwrap_or(""),
-            level,
-        )
-    });
+    // Older clients sent a combined workflow/strength choice. This relay exposes
+    // Agent but its tool allowlist does not expose Workflow.
+    let effort = clean_opt("effort")
+        .and_then(|s| {
+            if s == "ultracode" {
+                multicc_core::cli_capability::legacy_claude_effort(model.as_deref().unwrap_or(""))
+                    .map(str::to_owned)
+            } else {
+                Some(s)
+            }
+        })
+        .filter(|s| {
+            multicc_core::cli_capability::supports_effort(
+                "claude",
+                model.as_deref().unwrap_or(""),
+                s,
+            )
+        });
     let session_id = clean_opt("sessionId");
     let resume = start_val
         .get("resume")
@@ -458,15 +469,7 @@ pub async fn serve_claude_relay_session<S>(
     }
     if let Some(e) = effort.as_deref() {
         args.push("--effort".to_string());
-        if e == "ultracode" {
-            args.extend([
-                "xhigh".into(),
-                "--settings".into(),
-                r#"{"ultracode":true}"#.into(),
-            ]);
-        } else {
-            args.push(e.to_string());
-        }
+        args.push(e.to_string());
     }
     if let Some(sid) = session_id.as_deref() {
         if resume {

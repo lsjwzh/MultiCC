@@ -33,6 +33,7 @@ class RunPoolRow {
     required this.providerId,
     this.model = '',
     this.effort = '',
+    this.claudeWorkflow = false,
     this.autoModel = false,
     this.markedTier,
     this.problem,
@@ -44,6 +45,7 @@ class RunPoolRow {
   final String providerId;
   String model;
   String effort;
+  bool claudeWorkflow;
   String? get selectedEffort => effort.isNotEmpty &&
       tryParseCli(lane)?.effortOptionsForModel(model).contains(effort) == true ? effort : null;
   bool autoModel;
@@ -69,6 +71,8 @@ class RunConfigOutcome {
     required this.provider,
     required this.model,
     required this.effort,
+    this.claudeWorkflow,
+    this.preferSubtasks,
     required this.providerLabel,
     required this.modelLabel,
     required this.effortLabel,
@@ -84,6 +88,8 @@ class RunConfigOutcome {
   final String provider;
   final String model;
   final String effort;
+  final bool? claudeWorkflow;
+  final bool? preferSubtasks;
   final String providerLabel;
   final String modelLabel;
   final String effortLabel;
@@ -157,6 +163,8 @@ RunWireResult buildFixedOutcome({
   required String providerId,
   required String model,
   required String effort,
+  bool? claudeWorkflow,
+  bool? preferSubtasks,
   required String providerLabel,
   required String modelLabel,
   required String? subProviderId,
@@ -185,6 +193,8 @@ RunWireResult buildFixedOutcome({
       provider: provider,
       model: wireModel,
       effort: effort,
+      claudeWorkflow: claudeWorkflow,
+      preferSubtasks: preferSubtasks,
       providerLabel: providerLabel,
       modelLabel: modelLabel,
       effortLabel: effortShortNameForCli(cli, effort),
@@ -309,6 +319,7 @@ AutoWireResult buildAutoSelection(AutoWireInput input) {
           tier: result.candidates[index].tier,
           cli: order[index].lane,
           effort: order[index].selectedEffort,
+          claudeWorkflow: tryParseCli(order[index].lane)?.isClaudeFamily == true && order[index].claudeWorkflow,
           autoModel: priceTiered && order[index].autoModel,
         ),
     ];
@@ -324,6 +335,7 @@ AutoWireResult buildAutoSelection(AutoWireInput input) {
           enabled: true,
           cli: usable[index].lane,
           effort: usable[index].selectedEffort,
+          claudeWorkflow: tryParseCli(usable[index].lane)?.isClaudeFamily == true && usable[index].claudeWorkflow,
         ),
     ];
   }

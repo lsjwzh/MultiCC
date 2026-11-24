@@ -14,7 +14,6 @@
     Object.freeze({ value: 'high', label: 'high' }),
     Object.freeze({ value: 'xhigh', label: 'xhigh' }),
     Object.freeze({ value: 'max', label: 'max' }),
-    Object.freeze({ value: 'ultracode', label: 'ultracode' }),
   ]);
   const CODEX_REASONING_OPTIONS = Object.freeze([
     Object.freeze({ value: 'low', label: 'Low', desc: 'Fast responses with lighter reasoning' }),
@@ -162,7 +161,7 @@
     if (spec.disabledModelFamily && (id === spec.disabledModelFamily || id.startsWith(spec.disabledModelFamily + '-'))) return [];
     if (spec.tierSuffixes?.some(suffix => id.endsWith(suffix))) return [];
     const levels = Object.hasOwn(spec.modelLevels || {}, id) ? spec.modelLevels[id] : spec.levels;
-    return levels.map(value => descriptions[cli]?.find(item => item.value === value)
+    return levels.filter(value => value !== 'ultracode' || (cli !== 'claude' && cli !== 'claude-exp')).map(value => descriptions[cli]?.find(item => item.value === value)
       || { value, label: value || 'Default' });
   }
 

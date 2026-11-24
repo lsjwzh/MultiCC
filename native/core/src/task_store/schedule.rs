@@ -107,7 +107,14 @@ impl TaskStore {
         let record = records.iter().find(|r| r["id"].as_str() == session);
         let mut runtime = task["runtime"].as_object().cloned().unwrap_or_default();
         if let Some(r) = record {
-            for key in ["cli", "provider", "model", "effort"] {
+            for key in [
+                "cli",
+                "provider",
+                "model",
+                "effort",
+                "claudeWorkflow",
+                "preferSubtasks",
+            ] {
                 if let Some(v) = r.get(key) {
                     runtime.insert(key.into(), v.clone());
                 }

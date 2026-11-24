@@ -160,8 +160,8 @@ function todayPrompt({ text, persisted, sessionName, bare }, deps) {
   // the goal note.
   const plan = planLayerFor(persisted) ? deps.buildPlanPrompt(persisted, sessionName) : '';
   if (plan) promptText = plan + promptText;
-  if (persisted.type !== 'aux' && deps.normalizeEffort(persisted.effort) === 'ultracode') {
-    promptText = promptText + '\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]';
+  if (persisted.type !== 'aux' && persisted.preferSubtasks === true) {
+    promptText = promptText + '\n\n任务包含可独立完成的部分时，优先使用可用的子任务工具并行处理，由主会话核对并汇总结果。简单任务直接完成。';
   }
   return promptText;
 }
@@ -273,7 +273,7 @@ console.log('── Suite 2: envelope structure ──');
   assert(env.spawnOpts.rawEffort === 'ultracode', 'spawnOpts.rawEffort = persisted.effort (raw)');
   assert(env.spawnOpts.rawAgent === null, 'spawnOpts.rawAgent = persisted.agent (raw)');
   assert(env.spawnOpts.ultracode === true, 'ultracode flag derived');
-  assert(env.suffix !== '', 'ultracode => non-empty suffix');
+  assert(env.suffix === '', 'native workflows do not alter the user prompt');
   assert(env.historyHandle.isFirstTurn === true, 'historyHandle.isFirstTurn carried');
   assert(env.historyHandle.cliSessionId === 'ca88a4d8-1234-5678-9abc-def012345678', 'historyHandle.cliSessionId carried');
 })();
@@ -655,15 +655,15 @@ console.log('── Suite 8: opts.lang suffix ──');
   assert(invalid.suffix === '', '8d unrecognized lang value is ignored');
 
   // 8e: coexists with the ultracode suffix, ultracode first then language.
-  const both = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'ultracode' }), sessionName, opts: { isFirstTurn: true, lang: 'en' }, deps });
-  assert(both.suffix === '\n\n[Use ultracode mode: orchestrate this task with the Workflow tool.]\n\nAll output must be in English.',
-    '8e ultracode + lang suffixes concatenate in order');
+  const both = composeMessage({ text, persisted: basePersisted({ cli: 'codex-exp', effort: 'medium', preferSubtasks: true }), sessionName, opts: { isFirstTurn: true, lang: 'en' }, deps });
+  assert(both.suffix === '\n\n任务包含可独立完成的部分时，优先使用可用的子任务工具并行处理，由主会话核对并汇总结果。简单任务直接完成。\n\nAll output must be in English.',
+    '8e subtask preference + lang suffixes concatenate in order');
 
   // 8f: excluded for aux (internal parsed-output jobs) and bare (continue/retry),
   // matching the ultracode suffix's own gating.
-  const aux = composeMessage({ text, persisted: basePersisted({ type: 'aux', effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'en' }, deps });
+  const aux = composeMessage({ text, persisted: basePersisted({ type: 'aux', effort: 'high', preferSubtasks: true }), sessionName, opts: { isFirstTurn: true, lang: 'en' }, deps });
   assert(aux.suffix === '', '8f aux session ignores lang');
-  const bareLang = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high' }), sessionName, opts: { isFirstTurn: true, lang: 'en', bare: true }, deps });
+  const bareLang = composeMessage({ text, persisted: basePersisted({ type: null, effort: 'high', preferSubtasks: true }), sessionName, opts: { isFirstTurn: true, lang: 'en', bare: true }, deps });
   assert(bareLang.suffix === '', '8f bare turn ignores lang');
 })();
 

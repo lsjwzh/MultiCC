@@ -68,6 +68,8 @@ class RunConfigSheet extends StatefulWidget {
     required this.provider,
     required this.model,
     required this.effort,
+    this.claudeWorkflow = false,
+    this.preferSubtasks = false,
     this.defaultModel = '',
     this.providerSelection,
     this.subProviderId,
@@ -87,6 +89,8 @@ class RunConfigSheet extends StatefulWidget {
   final String provider;
   final String model;
   final String effort;
+  final bool claudeWorkflow;
+  final bool preferSubtasks;
 
   /// Server-computed default for the session's own lane (model-list frequency
   /// with the first entry as fallback). Never comes from terminal config. The
@@ -131,6 +135,22 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   late String _provider;
   late String _model;
   late String _effort;
+  late bool _workflow = widget.claudeWorkflow || widget.effort == 'ultracode';
+  late bool _preferSubtasks = widget.preferSubtasks;
+
+  bool _supportsWorkflow(SessionCli? cli, String provider, String model) {
+    if (cli == null || !cli.isClaudeFamily || !cli.effortOptionsForModel(model).contains('xhigh')) {
+      return false;
+    }
+    final providers = _pool.cached(cli.name) ?? _providers;
+    return !providers.any((p) => p['id'] == provider && p['cliRelay'] == true);
+  }
+
+  Widget _subtaskPreference() => SwitchListTile(
+    title: const Text('多用子任务'),
+    value: _preferSubtasks,
+    onChanged: (value) => setState(() => _preferSubtasks = value),
+  );
   bool _customModel = false;
   String _modelFilter = '';
   late final TextEditingController _customCtrl;
@@ -753,8 +773,9 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     if (_model.isEmpty) _model = _defaultModelFor(_provider);
     final rungs = effortRungsFor(widget.cli, _model);
     final values = rungs.map((rung) => rung.$1).toList();
-    _effort = values.contains(widget.effort) || widget.effort.isEmpty
-        ? widget.effort
+    final selected = widget.effort == 'ultracode' ? 'xhigh' : widget.effort;
+    _effort = values.contains(selected) || selected.isEmpty
+        ? selected
         : widget.cli.defaultEffort;
     _customModel =
         _model.isNotEmpty && !_choicesFor(_provider).contains(_model);
@@ -848,6 +869,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           providerId: candidate.providerId,
           model: candidate.model ?? '',
           effort: candidate.effort ?? '',
+          claudeWorkflow: candidate.claudeWorkflow,
           autoModel: candidate.autoModel,
           markedTier: rung > 0 ? rung : null,
           problem: wrongLane
@@ -1160,6 +1182,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       providerId: _provider,
       model: model,
       effort: _cli.effortOptionsForModel(model).contains(_effort) ? _effort : '',
+      claudeWorkflow: _workflow || widget.claudeWorkflow ? _workflow && _supportsWorkflow(_cli, _provider, model) : null,
+      preferSubtasks: _preferSubtasks || widget.preferSubtasks ? _preferSubtasks : null,
       providerLabel: providerLabel,
       modelLabel: model.isEmpty
           ? '默认'
@@ -1208,6 +1232,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         provider: provider,
         model: result.firstModel,
         effort: widget.effort,
+        claudeWorkflow: widget.claudeWorkflow ? false : null,
+        preferSubtasks: _preferSubtasks || widget.preferSubtasks ? _preferSubtasks : null,
         // 池子来自预设就说预设名（保存提示里同样能看出套的是哪一份）。
         providerLabel:
             'Auto · ${presetName ?? protocolLabelOf(result.protocol)} → $firstName',
@@ -1245,6 +1271,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       );
       for (var i = 0; i < _rows.length; i += 1) {
         _rows[i].markedTier ??= plan.rungs[i];
+      }
+    }
+    for (final row in _rows) {
+      if (!_supportsWorkflow(tryParseCli(row.lane), row.providerId, row.model)) {
+        row.claudeWorkflow = false;
       }
     }
     return buildAutoSelection(
@@ -1485,6 +1516,13 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
         const SizedBox(height: 12),
         _effortPicker(),
       ],
+      if (_supportsWorkflow(_cli, _provider, _customModel ? _customCtrl.text : _model))
+        SwitchListTile(
+          title: const Text('Claude 动态工作流'),
+          value: _workflow,
+          onChanged: (value) => setState(() => _workflow = value),
+        ),
+      _subtaskPreference(),
       // 子 agent 常驻（不再折在「高级」里）：这是一项会花/省额度的日常设置。
       if (_cli.supportsSubagent) ...[
         const SizedBox(height: 14),
@@ -2595,17 +2633,18 @@ Future<_RunConfigInputBundle> _loadRunConfigInputs(
       ? null
       : prepareAIConfigInputs(settings, cliHint, httpClient: httpClient);
   final runtime = await runtimeFuture;
-  final providers = hinted != null && cliHint == runtime.cli
+  final cli = runtime.pending?.cli ?? runtime.cli;
+  final providers = hinted != null && cliHint == cli
       ? await hinted
       : await prepareAIConfigInputs(
           settings,
-          runtime.cli,
+          cli,
           httpClient: httpClient,
         );
   return _RunConfigInputBundle(
     runtime,
     RunConfigInputs(
-      cli: runtime.cli,
+      cli: cli,
       providers: providers,
       cliAvailability: runtime.cliAvailability,
     ),
@@ -2667,22 +2706,24 @@ class _RunConfigSheetLoader extends StatelessWidget {
       final bundle = snapshot.data;
       if (bundle != null) {
         final runtime = bundle.runtime;
+        final pending = runtime.pending;
+        final cli = bundle.inputs.cli;
+        final subagent = pending == null ? runtime.subagent : pending.subagent;
         return RunConfigSheet(
-          cli: runtime.cli,
+          cli: cli,
           providers: bundle.inputs.providers,
           cliAvailability: bundle.inputs.cliAvailability,
-          provider: runtime.provider ?? '',
-          providerSelection: runtime.providerSelection,
-          model: runtime.model ?? '',
-          defaultModel: runtime.effectiveModel ?? '',
-          effort:
-              runtime.effectiveEffort ??
-              runtime.effort ??
-              runtime.cli.defaultEffort,
-          subProviderId: runtime.subagent?.providerId,
-          subModel: runtime.subagent?.model,
-          subInherited: runtime.subagent?.inherited ?? false,
-          agent: runtime.agent,
+          provider: (pending == null ? runtime.provider : pending.provider) ?? '',
+          providerSelection: (pending == null ? runtime.providerSelection : pending.providerSelection),
+          model: (pending == null ? runtime.model : pending.model) ?? '',
+          defaultModel: (pending == null ? runtime.effectiveModel : pending.model) ?? '',
+          claudeWorkflow: pending?.claudeWorkflow ?? runtime.claudeWorkflow,
+          preferSubtasks: pending?.preferSubtasks ?? runtime.preferSubtasks,
+          effort: (pending == null ? runtime.effectiveEffort ?? runtime.effort : pending.effort) ?? cli.defaultEffort,
+          subProviderId: subagent?.providerId,
+          subModel: subagent?.model,
+          subInherited: subagent?.inherited ?? false,
+          agent: (pending == null ? runtime.agent : pending.agent),
           settings: settings,
           httpClient: httpClient,
         );
@@ -2860,6 +2901,8 @@ Future<void> _applyRunConfig(
     providerSelection: picked.providerSelection,
     model: picked.model,
     effort: picked.effort,
+    claudeWorkflow: picked.claudeWorkflow,
+    preferSubtasks: picked.preferSubtasks,
     subagent: picked.subagent,
     agent: picked.agent,
     clearSubagent: picked.subagent == null,

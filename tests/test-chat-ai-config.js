@@ -80,8 +80,10 @@ test('effort policy is deterministic for every supported CLI', () => {
   assert.equal(ai.effortShortName('qoder', 'xhigh'), 'Extra high');
   assert.deepEqual(ai.effortOptions('qoder').map(item => item.value),
     ['', 'low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(ai.effortOptions('claude', 'claude-sonnet-4-6[1m]').map(item => item.value), ['low', 'medium', 'high', 'max']);
+  assert.deepEqual(ai.effortOptions('claude', 'claude-haiku-4-5'), []);
   assert.deepEqual(ai.effortOptions('claude').map(item => item.value),
-    ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode']);
+    ['low', 'medium', 'high', 'xhigh', 'max']);
 });
 
 test('provider defaults, alias tiers and concrete model choices keep old picker semantics', () => {

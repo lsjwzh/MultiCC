@@ -212,9 +212,10 @@
     return normalizeSubagentRoute(routes[family]);
   }
 
-  const { syncSummary, clearSummary } = (typeof module === 'object' && module.exports
-    ? require('./run-config-controls') : scope().MultiCCRunConfigControls)
-    .createSubagentSummaries({ tt, clean, subagentFamilyLabel });
+  const controlApi = (typeof module === 'object' && module.exports
+    ? require('./run-config-controls') : scope().MultiCCRunConfigControls);
+  const { samePool, poolIsSubset } = controlApi;
+  const { syncSummary, clearSummary } = controlApi.createSubagentSummaries({ tt, clean, subagentFamilyLabel });
 
   // 首次引导只记「看过了」这一个事实；存储被禁（Safari 私密窗口等）时读不到
   // 就当作没看过，写失败也不抛 —— 引导只是提示，不能拦住对话框。
@@ -408,6 +409,7 @@
       if (difficulty && row.autoModel === true) candidate.autoModel = true;
       else if (model) candidate.model = model;
       if (clean(row.effort)) candidate.effort = clean(row.effort);
+      if (row.claudeWorkflow && canonicalChoiceCli(cli) === 'claude') candidate.claudeWorkflow = true;
       if (manual) {
         const tier = TIERS.find(value => value === row.tier) || null;
         if (!tier) return fail('「我自己标」时，每行都要标一个档位。', 'provider_routing_requires_tiers');
@@ -533,42 +535,7 @@
     return `⚡ 自动 · ${presetName ? `${presetName} · ` : ''}${pickLabel} · ${count} 条`;
   }
 
-  // 会话里存的是线路池本身；胶囊上的预设名靠两件事找回：保存时记下的
-  // presetId，和给老数据兜底的池子指纹。指纹只比真正决定路由的三件事 ——
-  // 线路、模型、是否自动挑模型 —— 加上优先级顺序；cli 只在两边都写了时才比：
-  // 老版 Auto Provider 编辑器存预设时会把 cli 丢掉（rememberPreset 只留
-  // providerId/model/priority），拿空串和真实车道全等会让旧预设永远匹配不上。
-  function poolRows(list) {
-    return (Array.isArray(list) ? list : [])
-      .filter(item => item && item.enabled !== false)
-      .slice()
-      .sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0))
-      .map(item => ({
-        providerId: clean(item.providerId), model: clean(item.model), effort: clean(item.effort),
-        autoModel: item.autoModel === true, cli: clean(item.cli),
-      }));
-  }
-
-  function sameRow(row, other) {
-    return !!row && !!other && row.providerId === other.providerId && row.model === other.model
-      && row.effort === other.effort && row.autoModel === other.autoModel && (!row.cli || !other.cli || row.cli === other.cli);
-  }
-
-  function samePool(left, right) {
-    return left.length === right.length && left.every((row, index) => sameRow(row, right[index]));
-  }
-
-  // 池子是预设的子集：从预设里删掉一条（或那条当时跑不了）之后，剩下的线路
-  // 仍按原优先级顺序出现在预设里。
-  function poolIsSubset(pool, preset) {
-    let index = 0;
-    for (const row of pool) {
-      while (index < preset.length && !sameRow(row, preset[index])) index += 1;
-      if (index >= preset.length) return false;
-      index += 1;
-    }
-    return pool.length > 0;
-  }
+  const poolRows = list => controlApi.poolRows(list, clean);
 
   function readPresetStore() {
     try {
@@ -1005,6 +972,7 @@
     let providerValue = '';
     let modelValue = clean(config.model);
     let effortValue = null;
+    const preferences = controls.reasoningPreferences(doc, config, tt);
     let pick = PICK_ORDER;
     let tiering = DEFAULT_TIERING;
     let rows = [];
@@ -1195,7 +1163,7 @@
       return (selection.candidates || []).filter(Boolean).map(candidate => ({
         providerId: String(candidate.providerId || ''),
         cli: candidate.cli ? String(candidate.cli) : (nativeLineCli(candidate.providerId) || currentCli),
-        model: candidate.model ? String(candidate.model) : '', effort: candidate.effort || '',
+        model: candidate.model ? String(candidate.model) : '', ...controlApi.reasoningValues(candidate),
         customModel: '',
         autoModel: candidate.autoModel === true,
         tier: candidate.tier === 't1' ? 'simple' : candidate.tier === 't2' ? 'medium' : candidate.tier === 't3' ? 'complex' : 'medium',
@@ -1393,7 +1361,7 @@
       subGlobalRows[family] = { row, text, clear, confirm, cancel };
     }
     subSection.append(subHead, subWhy, subGuide, subRow, subHint, subSyncLabel, subSyncStatus, subGlobal);
-    fixedSection.append(fixedHead, cliGrid, lineRow, accountField, effortField, fixedStatus);
+    fixedSection.append(fixedHead, cliGrid, lineRow, accountField, effortField, preferences.workflow.label, fixedStatus);
     form.append(fixedSection);
 
     // 自动挑选
@@ -1469,6 +1437,7 @@
     // 子 agent 线路/模型是「固定一条」和「自动挑选」共用的一节 —— 两种模式下
     // 都只有这一处，摆在当前模式内容的下面（固定模式下 autoSection 是隐藏的，这
     // 块自然跟在固定段后面）。显示/隐藏由 renderSub 按主线路的 CLI 决定。
+    if (!terminalDraft) form.append(preferences.subtasks.label);
     form.append(subSection);
 
     const error = el(doc, 'p', 'air-config-error');
@@ -1767,6 +1736,7 @@
       const model = currentModelValue() || providerById(currentCli, providerValue)?.model;
       const options = aiApi.effortOptions(currentCli, model);
       show(effortField, !!options.length);
+      preferences.workflow.label.hidden = canonicalChoiceCli(currentCli) !== 'claude' || providerById(currentCli, providerValue)?.cliRelay === true || !options.some(c => c.value === 'xhigh');
       effortValue = controls.renderEffortPicker(effortSeg, segButton, options, effortValue, aiApi.defaultEffort(currentCli),
         value => { effortValue = value; renderEffort(); renderFooter(); });
     }
@@ -2159,7 +2129,10 @@
         .filter(choice => choice.value).map(choice => ({ value: choice.value, label: controls.effortChoiceLabel(choice) }));
       if (!efforts.some(choice => choice.value === row.effort)) row.effort = '';
       if (efforts.length) efforts.unshift({ value: '', label: tt('runConfigRowEffortDefault', '推理强度（跟随会话）') });
-      return { key: row, id: row.providerId, cli: row.cli, cliTitle: cliChoiceLabel(row.cli), clis, efforts, effort: row.effort,
+      const showWorkflow = canonicalChoiceCli(row.cli) === 'claude' && !providerById(row.cli, row.providerId)?.cliRelay && efforts.some(c => c.value === 'xhigh');
+      if (!showWorkflow) row.claudeWorkflow = false;
+      return { key: row, id: row.providerId, cli: row.cli, cliTitle: cliChoiceLabel(row.cli), clis, efforts, effort: row.effort, workflowEnabled: !!row.claudeWorkflow,
+        showWorkflow,
         name: lineName(row), badge: native ? null : limitBadge(providerById(row.cli, row.providerId)),
         issue: rowIssue(row, line, cliLabel)?.reason || '', models, tiers, tier: row.tier,
         wanted: row.autoModel ? AUTO_MODEL_VALUE : row.model || '',
@@ -2167,12 +2140,13 @@
     }
 
     const poolControl = controls.createPoolList({ host: poolList, el, mark, tt,
-      onCli(row, cli) { row.cli = cli; row.effort = ''; row.model = ''; row.autoModel = false; renderPool(); renderFooter(); },
+      onCli(row, cli) { row.cli = cli; row.claudeWorkflow = false; row.effort = ''; row.model = ''; row.autoModel = false; renderPool(); renderFooter(); },
       onModel(row, value) {
         row.autoModel = value === AUTO_MODEL_VALUE;
         row.model = row.autoModel || value === '__custom__' ? '' : value; poolControl.update(rows.map(poolProjection)); renderFooter();
       },
       onCustom(row, value) { row.model = value.trim(); poolControl.update(rows.map(poolProjection)); renderFooter(); },
+      onWorkflow(row, value) { row.claudeWorkflow = value; renderFooter(); },
       onEffort(row, value) { row.effort = value; renderFooter(); },
       onTier(row, value) { row.tier = value; renderFooter(); },
       onRemove(row) { rows = rows.filter(item => item !== row); renderPool(); renderPickerList(); renderFooter(); },
@@ -2381,7 +2355,7 @@
         sticky: sticky !== false, savedAt: Date.now(),
         candidates: built.value.candidates.map(candidate => ({
           providerId: candidate.providerId, cli: candidate.cli, model: candidate.model || null,
-          ...(candidate.effort ? { effort: candidate.effort } : {}),
+          ...(candidate.effort ? { effort: candidate.effort } : {}), ...(candidate.claudeWorkflow ? { claudeWorkflow: true } : {}),
           priority: candidate.priority, ...(candidate.tier ? { tier: candidate.tier } : {}),
           ...(candidate.autoModel ? { autoModel: true } : {}),
         })),
@@ -2556,7 +2530,7 @@
       const nextRows = (preset.candidates || []).map(candidate => ({
         providerId: String(candidate.providerId || ''),
         cli: candidate.cli || (nativeLineCli(candidate.providerId) || currentCli),
-        model: candidate.model || '', effort: candidate.effort || '', customModel: '', autoModel: candidate.autoModel === true,
+        model: candidate.model || '', ...controlApi.reasoningValues(candidate), customModel: '', autoModel: candidate.autoModel === true,
         tier: candidate.tier === 't2' ? 'medium' : candidate.tier === 't3' ? 'complex' : 'simple',
         name: '', enabled: true,
       }));
@@ -2688,7 +2662,7 @@
         const providerName = (providersOf(currentCli).find(item => String(item.id) === String(patch.value.provider)) || {}).name || null;
         if (draft) {
           await onSaved({ cli: currentCli, provider: patch.value.provider, providerSelection: null,
-            model: patch.value.model, effort: patch.value.effort, providerName, subagent,
+            model: patch.value.model, effort: patch.value.effort, ...preferences.fields(!preferences.workflow.label.hidden), providerName, subagent,
             ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}),
             cliAccounts: accounts.draftPicks() });
           await finishSubagentSync();
@@ -2700,7 +2674,7 @@
         // between saves, or lets an old model overwrite the new route's default.
         await request(base, {
           ...(!providerless(currentCli) ? { provider: patch.value.provider, providerSelection: null } : {}),
-          model: patch.value.model, effort: patch.value.effort, subagent,
+          model: patch.value.model, effort: patch.value.effort, ...preferences.fields(!preferences.workflow.label.hidden), subagent,
           // switch-cli 可能刚把目标家族的默认标成 inherited；这里跟同一份线路，
           // 明确带上标记，避免 PATCH 把它降成单独设置。
           ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}),
@@ -2724,7 +2698,7 @@
       const subagent = collectSubagent();
       if (draft) {
         await onSaved({ cli: primary.cli, provider: primary.providerId, providerSelection: selection,
-          model: primary.model || null, effort: null, subagent,
+          model: primary.model || null, effort: null, ...preferences.fields(false), subagent,
           ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}) });
         await finishSubagentSync();
         return;
@@ -2734,7 +2708,7 @@
       if (primary.cli !== config.cli) {
         await request(`${base}/switch-cli`, { cli: primary.cli });
       }
-      await request(base, { provider: primary.providerId, providerSelection: selection, model: primary.model || null, subagent,
+      await request(base, { provider: primary.providerId, providerSelection: selection, model: primary.model || null, ...preferences.fields(false), subagent,
         ...(subagentFollowsGlobal(subagent) ? { subagentInherited: true } : {}) }, 'PATCH');
       await onSaved();
       await finishSubagentSync();
@@ -2985,7 +2959,7 @@
         desired = official ? official.id : '';
       }
       providerValue = items.some(item => item.value === desired) ? desired : (items[0] ? items[0].value : '');
-      effortValue = config.effort || null;
+      effortValue = config.effort === 'ultracode' ? 'xhigh' : config.effort || null;
       setBusy(false);
       renderModes();
       renderFixed();

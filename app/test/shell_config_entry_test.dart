@@ -50,6 +50,8 @@ class FlakySaveManager extends SessionManager {
     required String provider,
     required String model,
     required String effort,
+    bool? claudeWorkflow,
+    bool? preferSubtasks,
     SessionProviderSelection? providerSelection,
     SessionSubagent? subagent,
     bool clearSubagent = false,

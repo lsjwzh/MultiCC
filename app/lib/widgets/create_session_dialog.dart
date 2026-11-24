@@ -39,6 +39,8 @@ class CreateSessionResult {
   final String? provider;
   final String? model;
   final String? effort;
+  final bool claudeWorkflow;
+  final bool preferSubtasks;
   final String? agent;
   CreateSessionResult({
     required this.cli,
@@ -47,6 +49,8 @@ class CreateSessionResult {
     this.provider,
     this.model,
     this.effort,
+    this.claudeWorkflow = false,
+    this.preferSubtasks = false,
     this.agent,
   });
 }
@@ -122,6 +126,10 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   String? _pickedModel;
   String _modelFilter = '';
   late String _pickedEffort;
+  bool _workflow = false;
+  bool _preferSubtasks = false;
+  bool get _supportsWorkflow => _isClaude && _modelEfforts.contains('xhigh') &&
+      !_providers.any((p) => p['id'] == _effectiveProviderId && p['cliRelay'] == true);
   bool _customModel = false;
   final _customModelCtrl = TextEditingController();
 
@@ -749,6 +757,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
           ? _pickedProvider
           : null,
       model: model,
+      claudeWorkflow: _supportsWorkflow && _workflow,
+      preferSubtasks: widget.kind == SessionKind.chat && _preferSubtasks,
       effort: _modelEfforts.contains(_pickedEffort) ? _pickedEffort : null,
       agent: _pickedCli.supportsAgent && _agentCtrl.text.trim().isNotEmpty
           ? _agentCtrl.text.trim()
@@ -1171,6 +1181,12 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       setState(() => _pickedEffort = v ?? _defaultEffort),
                 ),
               ],
+              if (_supportsWorkflow)
+                SwitchListTile(title: const Text('Claude 动态工作流'), value: _workflow,
+                  onChanged: (value) => setState(() => _workflow = value)),
+              if (widget.kind == SessionKind.chat)
+                SwitchListTile(title: const Text('多用子任务'), value: _preferSubtasks,
+                  onChanged: (value) => setState(() => _preferSubtasks = value)),
               if (_pickedCli.supportsAgent) ...[
                 const SizedBox(height: 12),
                 Text(

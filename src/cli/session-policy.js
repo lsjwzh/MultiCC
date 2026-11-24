@@ -213,9 +213,10 @@ function createSessionPolicy(options) {
   }
 
   function cliEffortLevel(session) {
-    const effort = normalizeEffort(session?.effort);
+    const effort = session?.effort === 'ultracode'
+      ? getNative().cliLegacyClaudeEffort(session.model) : normalizeEffort(session?.effort);
     if (!effort || !supportsEffort('claude', session?.model, effort)) return null;
-    return effort === 'ultracode' ? 'xhigh' : effort;
+    return effort;
   }
 
   function codexReasoningLevel(session) {

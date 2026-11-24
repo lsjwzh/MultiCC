@@ -861,6 +861,7 @@ async fn admit(
 struct RunningTurn {
     runner: TurnRunner,
     reference_seed: String,
+    prefer_subtasks: bool,
     turn_id: String,
     attempt_id: String,
     prompt_uuid: String,
@@ -1120,6 +1121,8 @@ async fn prepare_turn(
     Ok(RunningTurn {
         runner,
         reference_seed,
+        prefer_subtasks: state.stored.record.get("preferSubtasks") == Some(&V::Bool(true))
+            && store::text(&state.stored.record, "type") != "aux",
         turn_id,
         attempt_id,
         prompt_uuid,
@@ -1159,11 +1162,16 @@ async fn run_turn(
     let host = &app.native_chat;
     let turn_id = launched.turn_id.as_str();
     let attempt_id = launched.attempt_id.as_str();
-    let provider_prompt = if launched.reference_seed.is_empty() {
+    let mut provider_prompt = if launched.reference_seed.is_empty() {
         std::borrow::Cow::Borrowed(prompt)
     } else {
         std::borrow::Cow::Owned(format!("{}{prompt}", launched.reference_seed))
     };
+    if launched.prefer_subtasks {
+        provider_prompt
+            .to_mut()
+            .push_str(multicc_core::message_composer::SUBTASK_HINT);
+    }
     let result = match launched.runner {
         TurnRunner::Claude(mut options) => {
             launch::prepare_history(app, &options).await;

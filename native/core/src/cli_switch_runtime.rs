@@ -75,6 +75,7 @@ fn session_view(input: &Value, out: &mut Map<String, Value>) {
     for key in ["provider", "providerSelection", "model", "effort", "agent"] {
         out.insert(key.into(), fallback(session, key, Value::Null));
     }
+    copy(out, session, &["claudeWorkflow", "preferSubtasks"]);
     copy(
         out,
         input,
@@ -282,6 +283,11 @@ pub fn plan(op: &str, input: &Value) -> Result<Value, String> {
             ] {
                 profile.insert(key.into(), value(&input["draft"], key));
             }
+            copy(
+                &mut profile,
+                &input["draft"],
+                &["claudeWorkflow", "preferSubtasks"],
+            );
             json!({ "cli": cli(&input["draft"]), "fresh": yes(input, "fresh"), "profile": profile, "updatedAt": input["nowIso"] })
         }
         "currentAllowed" => json!(current_allowed(input)),

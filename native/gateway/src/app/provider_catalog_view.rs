@@ -117,7 +117,10 @@ mod tests {
             "nowMs":200
         });
         let catalog = project(&facts, "codex");
-        assert_eq!(catalog["efforts"]["claude"]["levels"][5], "ultracode");
+        assert_eq!(
+            catalog["efforts"]["claude"]["levels"],
+            serde_json::json!(["low", "medium", "high", "xhigh", "max"])
+        );
         assert_eq!(
             catalog["efforts"]["agy"]["disabledModelFamily"],
             "gemini-pro-orchestrator"
