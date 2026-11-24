@@ -347,6 +347,36 @@ function runNative(operation) {
 }
 function decodeRecoveryEvents(raw) { return getNative().decodeSchedulerRecoveryEvents(raw); }
 const reference = (op, value) => JSON.parse(getNative().taskShellReference(op, JSON.stringify(value)));
+// The task runtime uses its V8 locale and comparator for stable candidate
+// order. Pass the selected values to Rust with their JS exception identity.
+let selectionApi;
+function getContextSelection() {
+  if (selectionApi) return selectionApi;
+  const native = getNative();
+  const typePrefix = 'context_selection_type_error: ';
+  function invoke(op, ...args) {
+    try { return native.contextSelectionValue(op, ...args); }
+    catch (error) {
+      if (typeof error?.message === 'string' && error.message.startsWith(typePrefix)) {
+        throw new TypeError(error.message.slice(typePrefix.length));
+      }
+      throw error;
+    }
+  }
+  selectionApi = {
+    terms: value => invoke('terms', value),
+    relevance: (query, text) => invoke('relevance', query, text),
+    minRelevance: query => invoke('minRelevance', query),
+    clipTokens: (text, budget) => invoke('clipTokens', text, budget),
+    selectContext(candidates, options = {}) {
+      const { budget, header, footer } = options;
+      const ordered = [...candidates].sort((left, right) => (right.priority || 0) - (left.priority || 0)
+        || String(left.id).localeCompare(String(right.id)));
+      return invoke('selectContext', ordered, budget, header, footer);
+    },
+  };
+  return selectionApi;
+}
 const taskShellContext = {
   hash: value => reference('hash', value),
   estimateTokens: value => reference('estimate', String(value ?? '')),
@@ -493,7 +523,7 @@ function createSessionPersistence() {
 }
 module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
-  decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
   pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };

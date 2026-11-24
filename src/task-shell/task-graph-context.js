@@ -13,7 +13,7 @@
 // 落进 receipt 后由 contextTrace 呈现在「引用来源」面板。
 
 const { estimateTokens, hash } = require('../native/runtime').taskShellContext;
-const { relevance, selectContext } = require('../context/selection');
+const { relevance, selectContext } = require('../native/runtime').getContextSelection();
 const { getNative } = require('../native/runtime');
 
 const DEFAULT_TOKEN_BUDGET = 1200;

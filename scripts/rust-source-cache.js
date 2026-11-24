@@ -123,7 +123,7 @@ function probeAddon(file, node = process.execPath) {
       'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
       .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3
       || a.searchMatchExpression('缓存层')!=='("缓存" AND "存层")' || a.searchTokenize('缓存').get('缓')!==0.5) process.exit(1);
-    if(['contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
+    if(['contextSelectionValue','contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
       'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
       'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['apiErrorFacts','apiErrorSignaturesQuoted','apiErrorPrepare','apiErrorNormalize',
