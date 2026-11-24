@@ -41,7 +41,7 @@ const claudeProviders = [
   { id: 'p-claude-2', name: 'Claude B', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude', 'claude-exp'], model: 'claude-opus', modelOptions: ['claude-opus'] },
 ];
 
-function buildRoutes() {
+function buildRoutes(efforts) {
   const routes = {};
   for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
     routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html' } };
@@ -55,8 +55,8 @@ function buildRoutes() {
   };
   routes['/api/providers'] = ({ url }) => {
     const cli = url.searchParams.get('cli') || '';
-    if (cli === 'claude' || cli === 'claude-exp') return json({ available: true, providers: claudeProviders, defaults: {} });
-    return json({ available: true, providers: [], defaults: {} });
+    if (cli === 'claude' || cli === 'claude-exp') return json({ available: true, providers: claudeProviders, defaults: {}, efforts });
+    return json({ available: true, providers: [], defaults: {}, efforts });
   };
   routes['/api/run-config/presets/merge'] = ({ body }) => json({ ok: true, presets: JSON.parse(body || '{}').presets || [] });
   routes['/api/run-config/presets'] = () => json({ ok: true });
@@ -89,12 +89,24 @@ async function applyPreset(page, preset, opencodeModels) {
 
 test('退休别名 claude-exp 的预设，固定 tab 非 claude 也能套用', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
-  await withCdpHarness({ routes: buildRoutes(), screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
+  const routes = buildRoutes({ claude: { label: 'Effort', levels: ['medium', 'ultracode'], default: 'medium' } });
+  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-preset-apply-cdp'), locale: 'zh-CN' }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1180, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/run-config-host.html');
     await page.waitFor('window.MultiCCRunConfig && document.readyState==="complete"');
     const status = await applyPreset(page, CC_CLAUDES, null);
     assert.equal(status.includes('已不可用'), false, `CC-Claudes 应套用成功，实际：${JSON.stringify(status)}`);
+    const values = await page.evaluate(`(() => {
+      const controls = [...document.querySelectorAll('dialog[open] .rc-row-effort')];
+      const options = [...controls[0].options].map(option => option.value);
+      controls[0].value = 'ultracode';
+      controls[0].dispatchEvent(new Event('change'));
+      document.querySelector('dialog[open] form').requestSubmit();
+      return { options, selected: controls.map(s => s.value) };
+    })()`);
+    assert.deepEqual(values, { options: ['', 'medium', 'ultracode'], selected: ['ultracode', ''] });
+    await page.waitFor('window.__saved.length === 1');
+    assert.equal(await page.evaluate('window.__saved[0].providerSelection.candidates[0].effort'), 'ultracode');
   });
 });
 

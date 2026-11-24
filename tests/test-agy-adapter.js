@@ -56,6 +56,19 @@ test('Antigravity stream-json invocation preserves model, effort, conversation r
   );
 });
 
+test('Orchestrator 的新会话、续聊和终端都省略遗留强度', () => {
+  const adapter = createAgyAdapter({ cmd: 'agy' });
+  const model = 'gemini-pro-orchestrator-neon';
+  for (const first of [true, false]) {
+    const input = envelope({ first, sessionId: 'previous', model, effort: 'high' });
+    assert.ok(!adapter.buildInvocation(input).args.includes('--effort'));
+    input.spawnOpts.rawModel = null;
+    input.spawnOpts.effectiveModel = model;
+    assert.ok(!adapter.buildInvocation(input).args.includes('--effort'));
+  }
+  assert.ok(!adapter.buildTerminalCmd({ model, effort: 'high' }).includes('--effort'));
+});
+
 test('Antigravity stream-json accumulates per-step live usage and ignores turn-2 cumulative result usage', () => {
   const adapter = createAgyAdapter({ cmd: '/bin/agy' });
   const tracker = createAdapterCompletion(adapter);

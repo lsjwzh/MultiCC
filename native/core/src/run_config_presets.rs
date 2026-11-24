@@ -89,6 +89,7 @@ struct Candidate {
     provider_id: String,
     cli: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
     priority: i64,
     tier: Option<String>,
     auto_model: bool,
@@ -126,7 +127,16 @@ impl Candidate {
             .unwrap_or(index as i64 + 1);
         let tier = trimmed(object.get("tier")).filter(|text| TIERS.contains(&text.as_str()));
         let auto_model = object.get("autoModel").and_then(Value::as_bool) == Some(true);
+        let effort = trimmed(object.get("effort")).filter(|level| match cli.as_deref() {
+            Some(lane) => {
+                crate::cli_capability::supports_effort(lane, model.as_deref().unwrap_or(""), level)
+            }
+            None => crate::cli_capability::effort_catalog()
+                .values()
+                .any(|spec| spec.levels.contains(level)),
+        });
         Some(Candidate {
+            effort,
             provider_id,
             cli,
             model,
@@ -152,6 +162,9 @@ impl Candidate {
         object.insert("priority".into(), json!(self.priority));
         if let Some(tier) = &self.tier {
             object.insert("tier".into(), Value::String(tier.clone()));
+        }
+        if let Some(effort) = &self.effort {
+            object.insert("effort".into(), json!(effort));
         }
         if self.auto_model {
             object.insert("autoModel".into(), Value::Bool(true));
@@ -535,12 +548,14 @@ mod tests {
             "name": "cnmodel",
             "protocol": "anthropic",
             "candidates": [
-                { "providerId": "p-1", "cli": "claude-exp", "priority": 1 },
+                { "providerId": "p-1", "cli": "claude-exp", "priority": 1, "effort": "ultracode" },
                 { "providerId": "p-2", "cli": " CLAUDE-EXP ", "priority": 2 },
-                { "providerId": "p-3", "cli": "codex-exp", "priority": 3 },
+                { "providerId": "p-3", "cli": "codex-exp", "priority": 3, "effort": "ultra" },
             ],
         }]}));
         let list = out["presets"][0]["candidates"].as_array().unwrap();
+        assert_eq!(list[0]["effort"], "ultracode");
+        assert_eq!(list[2]["effort"], "ultra");
         assert_eq!(list[0]["cli"], "claude");
         // Lane ids are case-sensitive everywhere else; only the exact retired id folds.
         assert_eq!(list[1]["cli"], "CLAUDE-EXP");

@@ -1676,9 +1676,28 @@ fn run_selection(
             home_cli: home_cli.as_deref(),
             cross_cli,
         };
-        let outcome = validate_candidate(&mut run, &raw, index, &context)?;
+        let mut outcome = validate_candidate(&mut run, &raw, index, &context)?;
         if !outcome.ok {
             return Ok(outcome.value);
+        }
+        if let Some(value) = raw.get("effort").filter(|v| !v.is_null() && *v != "") {
+            let level = value.as_str().unwrap_or("").trim();
+            let model = outcome.value["model"].as_str().unwrap_or("");
+            let lane = outcome.value["cli"].as_str().or(context.home_cli);
+            let valid = match lane {
+                Some(cli) => crate::cli_capability::supports_effort(cli, model, level),
+                // 旧式单 CLI 池在无会话信息的存储读模型中没有车道。
+                None => crate::cli_capability::effort_catalog()
+                    .values()
+                    .any(|s| s.levels_for_model(model).iter().any(|v| v == level)),
+            };
+            if level.is_empty() || !valid {
+                return Ok(fail_with_code(
+                    format!("candidate {display_index} has an invalid effort"),
+                    "invalid_provider_candidate",
+                ));
+            }
+            outcome.value["effort"] = json!(level);
         }
         if declared_protocol.is_empty()
             && derived_protocol.is_none()

@@ -291,11 +291,11 @@ class _RunChipState extends State<RunChip> {
       );
     }
     parts.add(_modelLabel(cli, runtime));
-    if (cli.supportsEffort) {
-      final effort = effortChipLabel(
-        cli,
-        runtime?.effectiveEffort ?? runtime?.effort,
-      );
+    final level = runtime?.effectiveEffort ?? runtime?.effort ?? cli.defaultEffort;
+    final model = runtime?.model;
+    final choices = cli.effortOptionsForModel(model?.isNotEmpty == true ? model : runtime?.effectiveModel);
+    if (choices.contains(level.isEmpty ? cli.defaultEffort : level)) {
+      final effort = effortChipLabel(cli, level);
       if (effort.isNotEmpty) parts.add(effort);
     }
     return parts.join(' · ');

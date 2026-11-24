@@ -103,6 +103,9 @@ void main() {
     });
 
     test('matches server-side agent, subagent and effort support', () {
+      expect(SessionCli.agy.effortOptionsForModel('gemini-pro-orchestrator-neon'), isEmpty);
+      expect(SessionCli.agy.effortOptionsForModel('gemini-4-neon'), contains('xhigh'));
+      expect(SessionCli.agy.effortOptionsForModel('gemini-4-argon'), ['', 'low', 'medium', 'high']);
       expect(SessionCli.claude.supportsAgent, isTrue);
       expect(SessionCli.claude.supportsSubagent, isTrue);
       expect(SessionCli.claude.effortFieldLabel, 'Effort');
@@ -111,6 +114,8 @@ void main() {
       expect(SessionCli.codex.supportsSubagent, isTrue);
       expect(SessionCli.codex.effortFieldLabel, 'Reasoning Level');
       expect(SessionCli.codex.effortOptions, [
+        'none',
+        'minimal',
         'low',
         'medium',
         'high',

@@ -339,6 +339,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
               lane: row.lane,
               providerId: row.providerId,
               model: row.model,
+              effort: row.effort,
               autoModel: row.autoModel,
               markedTier: row.markedTier,
             ),
@@ -794,6 +795,19 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
             ),
             const SizedBox(height: 6),
             _rowModelPicker(index),
+            if ((tryParseCli(row.lane)?.effortOptionsForModel(row.model) ?? []).isNotEmpty)
+              DropdownButtonFormField<String>(
+                key: Key('run-pool-effort-${row.id}'),
+                value: row.selectedEffort ?? '',
+                decoration: runConfigInputDecoration(),
+                isExpanded: true,
+                items: [
+                  const DropdownMenuItem(value: '', child: Text('推理强度（跟随会话）')),
+                  for (final (value, label) in effortRungsFor(tryParseCli(row.lane)!, row.model))
+                    if (value.isNotEmpty) DropdownMenuItem(value: value, child: Text(label)),
+                ],
+                onChanged: (value) => setState(() => row.effort = value ?? ''),
+              ),
             // 「我自己标」才有一行 简单/中等/复杂；「交给 Jev」的档位由价格表算，
             // 面板上不标（标了也会被服务端当成两者同时存在拒掉）。
             if (_tiering == RunTiering.manual) ...[
@@ -875,6 +889,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       tooltip: '换车道',
       color: AppColors.panel,
       onSelected: (lane) => setState(() {
+        if (row.lane != lane) row.effort = '';
         row.lane = lane;
         _autoError = '';
       }),
@@ -1018,6 +1033,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         } else {
           row.model = v ?? '';
         }
+        row.effort = row.selectedEffort ?? '';
       }),
     );
   }

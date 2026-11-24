@@ -111,6 +111,60 @@ pub const CAPABILITIES: &[(&str, Capability)] = &[
     ("agy", cap("agy-stream-json", "per-turn", "process")),
 ];
 
+/// 可调档位和模型限制随 Provider 目录下发，启动参数也查同一份数据。
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffortSpec {
+    pub label: String,
+    pub levels: Vec<String>,
+    pub default: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_model_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tier_suffixes: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_levels: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl EffortSpec {
+    pub fn levels_for_model(&self, model: &str) -> &[String] {
+        let model = model
+            .split('[')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if self.disabled_model_family.as_ref().is_some_and(|family| {
+            model
+                .strip_prefix(family)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+        }) || self
+            .tier_suffixes
+            .iter()
+            .any(|suffix| model.ends_with(suffix))
+        {
+            return &[];
+        }
+        self.model_levels.get(&model).unwrap_or(&self.levels)
+    }
+}
+
+pub fn effort_catalog() -> &'static std::collections::BTreeMap<String, EffortSpec> {
+    static TABLE: std::sync::OnceLock<std::collections::BTreeMap<String, EffortSpec>> =
+        std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        serde_json::from_str(include_str!("cli_efforts.json")).expect("valid CLI effort catalogue")
+    })
+}
+
+pub fn effort_of(cli: &str) -> Option<&'static EffortSpec> {
+    effort_catalog().get(&name_of(cli))
+}
+
+pub fn supports_effort(cli: &str, model: &str, level: &str) -> bool {
+    effort_of(cli).is_some_and(|spec| spec.levels_for_model(model).iter().any(|v| v == level))
+}
+
 /// Which upstream API dialect a CLI's protocol talks. Deliberately not the
 /// transport name: an ACP agent holds its own credential and dialect, so it
 /// answers no family rather than a guess.
@@ -916,7 +970,6 @@ fn build(families: &[Family]) -> Result<Value, String> {
         .into_iter()
         .map(|(kind, ids)| (kind.to_string(), json!(ids)))
         .collect();
-
     Ok(json!({
         "kinds": KINDS,
         "defaultKinds": KINDS,
@@ -924,6 +977,7 @@ fn build(families: &[Family]) -> Result<Value, String> {
         "defaultCapability": capability_record(&DEFAULT_CAPABILITY),
         "capabilities": capabilities,
         "protocolFamilies": protocol_families,
+        "efforts": effort_catalog(),
         "aliases": Map::from_iter(ALIASES.iter().map(|(alias, canonical)| ((*alias).to_string(), json!(canonical)))),
         "clis": clis,
         "display": display,
@@ -1047,6 +1101,34 @@ mod tests {
         let keys: Vec<&String> = value["clis"].as_object().unwrap().keys().collect();
         assert_eq!(keys.first().map(|key| key.as_str()), Some("claude"));
         assert_eq!(keys.last().map(|key| key.as_str()), Some("grok"));
+    }
+
+    #[test]
+    fn the_effort_table_is_the_single_strength_answer() {
+        let value = snapshot();
+        assert_eq!(
+            value["efforts"]["claude"]["levels"],
+            json!(["low", "medium", "high", "xhigh", "max", "ultracode"])
+        );
+        assert_eq!(value["efforts"]["claude"]["default"], "medium");
+        assert_eq!(value["efforts"]["codex-exp"]["default"], "xhigh");
+        assert_eq!(
+            value["efforts"]["agy"]["levels"],
+            json!(["", "low", "medium", "high", "xhigh", "max"])
+        );
+        assert_eq!(
+            value["efforts"]["agy"]["disabledModelFamily"],
+            "gemini-pro-orchestrator"
+        );
+        // Lanes without a strength knob are absent, so a picker draws nothing
+        // instead of a ladder the CLI would reject.
+        for cli in ["zcode", "kimi", "dsh", "gemini", "grok", "commandcode"] {
+            assert!(value["efforts"].get(cli).is_none(), "{cli}");
+            assert!(effort_of(cli).is_none(), "{cli}");
+        }
+        assert!(effort_of(" ClAuDe-EXP ").is_some());
+        assert_eq!(effort_of("claude").unwrap().default, "medium");
+        assert_eq!(effort_of("agy").unwrap().label, "Thinking Level");
     }
 
     #[test]

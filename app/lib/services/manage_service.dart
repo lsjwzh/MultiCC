@@ -263,8 +263,9 @@ class ManageService {
                 : client.get(uri, headers: _headers))
             .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
+    final catalog = (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    readCliEfforts(catalog['efforts']);
+    return catalog;
   }
 
   /// Provider catalog filtered by the server's CLI compatibility matrix.
@@ -280,8 +281,9 @@ class ManageService {
                 : client.get(uri, headers: _headers))
             .timeout(const Duration(seconds: 15));
     if (res.statusCode >= 400) _throw(res);
-    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
-        .cast<String, dynamic>();
+    final catalog = (jsonDecode(utf8.decode(res.bodyBytes)) as Map).cast<String, dynamic>();
+    readCliEfforts(catalog['efforts']);
+    return catalog;
   }
 
   /// Import / sync from cc-switch. Returns `{ok, imported, updated, total}`.

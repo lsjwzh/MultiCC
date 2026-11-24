@@ -659,107 +659,61 @@ extension SessionCliX on SessionCli {
       this == SessionCli.qoder ||
       this == SessionCli.codebuddy;
   bool get supportsSubagent => isClaudeFamily || isCodexFamily;
-  bool get supportsEffort =>
-      this != SessionCli.zcode &&
-      this != SessionCli.dsh &&
-      this != SessionCli.gemini &&
-      this != SessionCli.grok &&
-      this != SessionCli.commandcode;
+  Map? get _effortSpec => (_serverEfforts ?? _offlineEfforts)[canonicalCliLane(name)];
+  bool get supportsEffort => effortOptions.isNotEmpty;
+  String get effortFieldLabel => _effortSpec?['label'] as String? ?? '';
+  String get defaultEffort => _effortSpec?['default'] as String? ?? '';
+  List<String> get effortOptions => effortOptionsForModel(null);
 
-  String get effortFieldLabel => switch (this) {
-    SessionCli.claude => 'Effort',
-    SessionCli.claudeExp => 'Effort',
-    SessionCli.codex => 'Reasoning Level',
-    SessionCli.codexExp => 'Reasoning Level',
-    SessionCli.opencode => 'Variant',
-    SessionCli.zcode => '',
-    SessionCli.qoder => 'Reasoning Effort',
-    SessionCli.codebuddy => 'Reasoning Effort',
-    SessionCli.dsh => '',
-    SessionCli.gemini => '',
-    SessionCli.grok => '',
-    SessionCli.agy => 'Thinking Level',
-    SessionCli.commandcode => '',
-    SessionCli.pi => 'Thinking Level',
-  };
-
-  String get defaultEffort => switch (this) {
-    SessionCli.claude => 'medium',
-    SessionCli.claudeExp => 'medium',
-    SessionCli.codex => 'xhigh',
-    SessionCli.codexExp => 'xhigh',
-    SessionCli.opencode => '',
-    SessionCli.zcode => '',
-    SessionCli.qoder => '',
-    SessionCli.codebuddy => '',
-    SessionCli.dsh => '',
-    SessionCli.gemini => '',
-    SessionCli.grok => '',
-    SessionCli.agy => '',
-    SessionCli.commandcode => '',
-    SessionCli.pi => '',
-  };
-
-  List<String> get effortOptions => switch (this) {
-    SessionCli.claude => const [
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'ultracode',
-    ],
-    SessionCli.claudeExp => const [
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'ultracode',
-    ],
-    SessionCli.codex => const [
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'ultra',
-    ],
-    SessionCli.codexExp => const [
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-      'ultra',
-    ],
-    SessionCli.opencode => const [
-      '',
-      'minimal',
-      'low',
-      'medium',
-      'high',
-      'max',
-    ],
-    SessionCli.zcode => const [],
-    SessionCli.qoder => const ['', 'low', 'medium', 'high', 'xhigh', 'max'],
-    SessionCli.codebuddy => const [
-      '',
-      'minimal',
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-    ],
-    SessionCli.dsh => const [],
-    SessionCli.gemini => const [],
-    SessionCli.grok => const [],
-    SessionCli.agy => const ['', 'low', 'medium', 'high', 'xhigh'],
-    SessionCli.commandcode => const [],
-    SessionCli.pi => const ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh'],
-  };
+  List<String> effortOptionsForModel(String? model) {
+    final spec = _effortSpec;
+    if (spec == null) return const [];
+    final id = (model ?? '').split('[').first.trim().toLowerCase();
+    final family = spec['disabledModelFamily'] as String?;
+    if (family != null && (id == family || id.startsWith('$family-'))) return const [];
+    final suffixes = spec['tierSuffixes'] as List?;
+    if (suffixes != null && suffixes.whereType<String>().any(id.endsWith)) return const [];
+    final levels = (spec['modelLevels'] as Map?)?[id] ?? spec['levels'];
+    return (levels as List).whereType<String>().toList();
+  }
 }
+
+// 未连接或旧版服务没有返回目录时，保留客户端的离线选择。
+Map<String, Map>? _serverEfforts;
+void readCliEfforts(Object? value) {
+  _serverEfforts = value is Map ? {
+    for (final entry in value.entries)
+      if (entry.value is Map && entry.value['levels'] is List) entry.key.toString(): entry.value as Map,
+  } : null;
+}
+
+const _offlineEfforts = <String, Map>{
+  'claude': {"label": "Effort", "levels": ["low", "medium", "high", "xhigh", "max", "ultracode"], "default": "medium"},
+  'codex': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
+  'codex-exp': {"label": "Reasoning Level", "levels": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "default": "xhigh"},
+  'opencode': {"label": "Variant", "levels": ["", "minimal", "low", "medium", "high", "max"], "default": ""},
+  'pi': {"label": "Thinking Level", "levels": ["", "off", "minimal", "low", "medium", "high", "xhigh"], "default": ""},
+  'agy': {
+    "label": "Thinking Level",
+    "levels": ["", "low", "medium", "high", "xhigh", "max"],
+    "default": "",
+    "disabledModelFamily": "gemini-pro-orchestrator",
+    "tierSuffixes": ["-low", "-medium", "-high", "-xhigh", "-max"],
+    "modelLevels": {
+      "gemini-4-neon": ["", "low", "medium", "high", "xhigh"],
+      "gemini-4-hydrogen": ["", "low", "medium", "high", "xhigh"],
+      "gemini-4-carbon": ["", "low", "medium", "high"],
+      "gemini-4-argon": ["", "low", "medium", "high"],
+      "gemini-3.8-flash": ["", "low", "medium", "high"],
+      "claude-opus-5-5": ["", "low", "medium", "high"],
+      "claude-sonnet-5-5": ["", "low", "medium", "high"],
+      "gpt-oss-120b": ["", "medium"]
+    }
+  },
+  'qoder': {"label": "Reasoning Effort", "levels": ["", "low", "medium", "high", "xhigh", "max"], "default": ""},
+  'codebuddy': {"label": "Reasoning Effort", "levels": ["", "minimal", "low", "medium", "high", "xhigh", "max"], "default": ""},
+};
+
 
 extension SessionKindX on SessionKind {
   String get name => this == SessionKind.chat ? 'chat' : 'terminal';
@@ -1013,6 +967,7 @@ class SessionSubagent {
 /// One concrete route in an Auto Provider pool. The virtual Auto selection is
 /// never used as a provider id; each turn resolves to one of these routes.
 class SessionProviderCandidate {
+  final String? effort;
   final String providerId;
   final String? model;
   final int priority;
@@ -1040,6 +995,7 @@ class SessionProviderCandidate {
   final bool autoModel;
 
   const SessionProviderCandidate({
+    this.effort,
     required this.providerId,
     this.model,
     required this.priority,
@@ -1051,6 +1007,7 @@ class SessionProviderCandidate {
 
   factory SessionProviderCandidate.fromJson(Map<dynamic, dynamic> json) =>
       SessionProviderCandidate(
+        effort: json['effort'] as String?,
         providerId: json['providerId']?.toString() ?? '',
         model: json['model']?.toString(),
         priority: (json['priority'] as num?)?.toInt() ?? 1,
@@ -1067,6 +1024,7 @@ class SessionProviderCandidate {
   Map<String, dynamic> toJson() => {
     'providerId': providerId,
     'model': model == null || model!.isEmpty ? null : model,
+    if (effort != null && effort!.isNotEmpty) 'effort': effort,
     'priority': priority,
     'enabled': enabled,
     // Absent on an unrouted pool: the server DTO is a wire contract and an

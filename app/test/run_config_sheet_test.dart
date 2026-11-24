@@ -209,6 +209,8 @@ void main() {
       'run-effort-medium',
       'run-effort-high',
       'run-effort-xhigh',
+      'run-effort-max',
+      'run-effort-ultracode',
     ]) {
       expect(find.byKey(Key(key)), findsOneWidget);
     }
@@ -519,6 +521,12 @@ void main() {
       find.byKey(const Key('run-pool-model-claude:strong')),
       findsOneWidget,
     );
+    final effort = find.byKey(const Key('run-pool-effort-claude:strong'));
+    await tester.ensureVisible(effort);
+    await tester.tap(effort);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ultracode').last);
+    await tester.pumpAndSettle();
     // 按顺序没有档位可选（那是按难度才有的东西）。
     expect(find.byKey(const Key('run-pool-tier-claude:cheap-1')), findsNothing);
 
@@ -542,6 +550,7 @@ void main() {
     expect(saved?.candidates, hasLength(2));
     expect(saved?.candidates.map((c) => c.cli), ['claude', 'claude']);
     expect(saved?.candidates.first.model, 'glm-4.5-flash');
+    expect(saved?.candidates.last.toJson()['effort'], 'ultracode');
     // 面板交回的第一条就是这一轮真跑的那条。
     expect(out.value?.provider, 'cheap');
     expect(out.value?.model, 'glm-4.5-flash');
@@ -2026,7 +2035,7 @@ void main() {
 
   test('chip 的强度写中文档名，不写 wire 值', () {
     expect(effortChipLabel(SessionCli.claude, 'medium'), '中');
-    expect(effortChipLabel(SessionCli.claude, 'xhigh'), '最高');
+    expect(effortChipLabel(SessionCli.claude, 'xhigh'), '超高');
     expect(
       effortChipLabel(SessionCli.claude, ''),
       '中',

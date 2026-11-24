@@ -97,6 +97,22 @@ test('each physical invocation resolves and proves one immutable concrete provid
   assert.equal(session.provider, 'provider-a', 'route resolution never mutates the preferred session provider');
 });
 
+test('候选线路的 ultracode 进入本次启动，原线路重试保留，换线路后回到会话设置', () => {
+  const { attempts, factory } = makeHarness();
+  const session = { id: 'session-1', cli: 'claude', provider: 'provider-a', effort: 'low' };
+  const envelope = { userText: 'hello', suffix: '中文', historyHandle: {}, spawnOpts: { rawEffort: 'low' } };
+  const input = { ...turnInput(), session, envelope, provider: { buildInvocation: e => ({ args: [e.spawnOpts.rawEffort], payload: e.suffix }) } };
+  const first = factory.prepare({ ...input, attemptNo: 1, effort: 'ultracode' });
+  assert.deepEqual(first.invocation.args, ['ultracode']);
+  assert.match(first.invocation.payload, /ultracode.*中文/s);
+  assert.equal(providerRetryRouteOptions(first.attempt).effort, 'ultracode');
+  attempts.finishAttempt(first.attempt, { outcome: 'failed' });
+  const next = factory.prepare({ ...input, attemptNo: 2, providerId: 'provider-b' });
+  assert.deepEqual(next.invocation.args, ['low']);
+  assert.equal(next.invocation.payload, '中文');
+  assert.equal(session.effort, 'low');
+});
+
 test('a resident lane keeps one route capability across turns and follows the spawn contract', () => {
   const { attempts, factory } = makeHarness();
   const session = { id: 'session-1', cli: 'claude', provider: 'provider-a', model: 'sonnet' };
