@@ -126,6 +126,11 @@ function probeAddon(file, node = process.execPath) {
     if(['contextSelectionValue','contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
       'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
       'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['artifactReferenceIsArtifactId','artifactReferenceNormalizeRelativePath','artifactReferenceExtract'].some(key=>typeof a[key]!=='function')
+      || a.artifactReferenceIsArtifactId('ab_CD-1')!==true || a.artifactReferenceIsArtifactId('a.b')!==false
+      || a.artifactReferenceNormalizeRelativePath('a//')!=='a' || a.artifactReferenceNormalizeRelativePath('/a')!==null) process.exit(1);
+    { const refs=a.artifactReferenceExtract(['/artifacts/ab_CD-1/a.png?x=1','https://h.test/artifacts/other']);
+      if(refs.length!==1 || refs[0].artifactId!=='ab_CD-1' || refs[0].relativePath!=='a.png') process.exit(1); }
     if(['apiErrorFacts','apiErrorSignaturesQuoted','apiErrorPrepare','apiErrorNormalize',
       'apiErrorDecide','apiErrorRetryNotice','apiErrorMetricToken','apiErrorIsErrorOnlyText',
       'apiErrorSplitTrailingEnvelope','apiErrorDetectEnvelope','apiErrorClaudeEnvelope',

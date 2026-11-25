@@ -8,6 +8,7 @@ pub mod agy_accounts;
 pub mod agy_remote;
 pub mod agy_stream;
 pub mod api_error_policy;
+pub mod artifact_reference;
 pub mod assist_snapshots;
 pub mod auto_provider_config;
 pub mod auto_provider_handoff;
