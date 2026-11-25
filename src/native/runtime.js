@@ -225,6 +225,57 @@ function getMonitorAdmission() {
   };
   return monitorAdmission;
 }
+const resolveOpenCodeModelLimit = (catalog, id) => getNative().openCodeModelLimit(catalog, id);
+const catalogJsonParse = JSON.parse;
+const catalogValues = Object.values;
+const catalogIterator = Array.prototype[Symbol.iterator];
+const catalogMin = Math.min;
+const jsonPrototypes = [Object.prototype, Array.prototype, String.prototype, Number.prototype, Boolean.prototype];
+// Private JSON has no accessors of its own. Inherited fields and customized
+// enumeration or arithmetic still need the live V8 path on every lookup.
+function plainCatalogFields(id) {
+  return Object.values === catalogValues && Array.prototype[Symbol.iterator] === catalogIterator &&
+    Math.min === catalogMin && !(id in Object.prototype) && !(id in Array.prototype) &&
+    jsonPrototypes.every(p => !('models' in p || 'limit' in p || 'context' in p || 'output' in p));
+}
+function createOpencodeModelLimitResolver(deps = {}) {
+  const fs = deps.fsImpl || require('node:fs');
+  const cachePath = deps.cachePath ? () => deps.cachePath :
+    () => path.join(process.env.HOME || require('node:os').homedir(), '.cache', 'opencode', 'models.json');
+  const state = { snapshot: undefined, mtime: -1 };
+  function read(file) {
+    try {
+      const parse = JSON.parse;
+      const catalog = parse.call(JSON, fs.readFileSync(file, 'utf8'));
+      return { catalog, memo: parse === catalogJsonParse ? new Map() : null };
+    } catch { return undefined; }
+  }
+  return Object.freeze({
+    resolve(id) {
+      const file = cachePath();
+      let stat;
+      try { stat = fs.statSync(file); } catch { return resolveOpenCodeModelLimit(null, id); }
+      return { ...getNative().openCodeCachedModelLimit(state, stat.mtimeMs, file, read, id, plainCatalogFields) };
+    },
+    resolveLimit(id) {
+      const { context, output } = this.resolve(id);
+      return Object.freeze({ context, output });
+    },
+    resetCache() { state.snapshot = undefined; state.mtime = -1; },
+  });
+}
+let fallbackModelLimit;
+const openCodeModelLimits = {
+  createOpencodeModelLimitResolver, resolveOpenCodeModelLimit,
+  get FALLBACK_LIMIT() {
+    if (!fallbackModelLimit) {
+      const { context, output } = resolveOpenCodeModelLimit(null, '');
+      fallbackModelLimit = Object.freeze({ context, output });
+    }
+    return fallbackModelLimit;
+  },
+};
+
 let nativeOpenCodeCatalog;
 function getNativeOpenCodeCatalog() {
   if (nativeOpenCodeCatalog) return nativeOpenCodeCatalog;
@@ -603,7 +654,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

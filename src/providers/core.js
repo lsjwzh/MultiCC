@@ -26,7 +26,7 @@ const { createSqliteRuntime } = require('../sqlite-runtime');
 const { createPaths } = require('../paths');
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('../runtime-security');
 const { settingsOverrideFor } = require('../native/runtime').claudeSettingsOverride;
-const { createOpencodeModelLimitResolver } = require('./opencode-model-limits');
+const { createOpencodeModelLimitResolver } = require('../native/runtime').openCodeModelLimits;
 const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
@@ -50,7 +50,7 @@ const claudeProxyEnvRequired = (...args) => getNative().claudeProxyEnvRequired(.
 const sqliteRuntime = createSqliteRuntime();
 
 // Model limits for generated OpenCode custom providers (models.dev cache).
-// Lazily resolved per model id; see ./providers/opencode-model-limits.
+// The synchronous spawn plan reads the catalog lazily per model.
 const opencodeModelLimits = createOpencodeModelLimitResolver();
 
 // cc-switch stores its data at ~/.cc-switch/ on all platforms (Rust dirs::home_dir).

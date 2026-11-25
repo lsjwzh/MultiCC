@@ -3,6 +3,15 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use std::{fs, time::Duration};
 
+pub const FALLBACK_CONTEXT: u64 = 128_000;
+pub const FALLBACK_OUTPUT: u64 = 8_192;
+
+/// Custom-provider configuration accepts any positive JS integer, including
+/// values above the safe-integer range. Rotation reads its own catalog policy.
+pub fn valid_config_limit(value: Option<f64>) -> bool {
+    value.is_some_and(|n| n > 0.0 && n.is_finite() && n.fract() == 0.0)
+}
+
 fn number(value: &Value) -> f64 {
     value
         .as_f64()
@@ -54,7 +63,7 @@ fn positive(value: &Value) -> Option<u64> {
 
 pub fn resolve_limit(catalog: &Value, model: &str) -> Value {
     let Some(providers) = catalog.as_object() else {
-        return json!({"context":128000,"output":8192,"source":"fallback"});
+        return json!({"context":FALLBACK_CONTEXT,"output":FALLBACK_OUTPUT,"source":"fallback"});
     };
     let mut ids = vec![model];
     if let Some((_, suffix)) = model.split_once('/') {
@@ -71,11 +80,11 @@ pub fn resolve_limit(catalog: &Value, model: &str) -> Value {
                 .iter()
                 .filter_map(|l| positive(&l["output"]))
                 .min()
-                .unwrap_or(8192);
+                .unwrap_or(FALLBACK_OUTPUT);
             return json!({"context":context,"output":output,"source":"models.dev"});
         }
     }
-    json!({"context":128000,"output":8192,"source":"fallback"})
+    json!({"context":FALLBACK_CONTEXT,"output":FALLBACK_OUTPUT,"source":"fallback"})
 }
 
 fn turn_usage(db: &Connection, sid: &str, args: &Value) -> Result<Value, String> {
@@ -269,4 +278,28 @@ pub fn plan(input: &str) -> Result<String, String> {
         "cliSessionId":sid,"tokensTotal":usage["tokens"]["total"],"contextLimit":usage["limit"]["context"],
         "limitSource":usage["limit"]["source"],"threshold":usage["threshold"],"ratio":usage["ratio"],
         "message":message}).to_string())
+}
+
+#[cfg(test)]
+mod config_limit_tests {
+    use super::*;
+
+    #[test]
+    fn validates_javascript_integer_limits_independently() {
+        for n in [1.0, 8_192.0, 1e21] {
+            assert!(valid_config_limit(Some(n)));
+        }
+        for n in [0.0, -1.0, 1.5, f64::INFINITY, f64::NAN] {
+            assert!(!valid_config_limit(Some(n)));
+        }
+        assert!(!valid_config_limit(None));
+    }
+
+    #[test]
+    fn rotation_still_checks_the_model_suffix_and_requires_context() {
+        let catalog =
+            json!({"v":{"models":{"m":{"limit":{"context":42}}, "n":{"limit":{"output":11}}}}});
+        assert_eq!(resolve_limit(&catalog, "provider/m")["context"], 42);
+        assert_eq!(resolve_limit(&catalog, "n")["source"], "fallback");
+    }
 }
