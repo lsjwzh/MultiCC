@@ -1,5 +1,34 @@
 # 剩余 Node 后端清单
 
+## 第九批按文件迁移（2026-11-25）
+
+任务分支将第八批提交 `6608ef94` 与本地 `main` 的 7 个新增提交（截至 `fe2d52fb`）合并，得到基线 `8810d587`。从该基线起，生产入口可达的 Node 文件由 **462 减至 454 个**，物理行数由 **125,543 减至 125,226 行**。本批整份退出 8 个文件、共 465 行，其余生产接线净增 148 行，生产 Node 净减 **317 行**。自 `dc0df5fe` 起累计退出 **41 个文件**、净减 **1,467 行**。统计覆盖根 `server.js` 及其直接、间接和通过宿主脚本可达的文件。[生产依赖清单](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 blob |
+|---|---|---:|---|
+| `src/routes/agent-resources-host.js` | `server.js` | 64 | `e5111d0f` |
+| `src/routes/token-usage-host.js` | `server.js` | 64 | `e7fc3a48` |
+| `src/routes/scan-history-host.js` | `server.js` | 52 | `338b30c5` |
+| `src/routes/turn-ledger-host.js` | `server.js` | 95 | `6eb3ad29` |
+| `src/routes/aux-runs.js` | `server.js` | 37 | `3e87aec7` |
+| `src/routes/skill-sync.js` | `src/routes/host-ops-host.js` | 49 | `cea48ed8` |
+| `src/routes/task-state-store.js` | `server.js` | 68 | `4dd9c866` |
+| `src/routes/provider-balance.js` | `server.js` | 36 | `17c0bb52` |
+
+Rust 接管资源、用量、扫描历史和回合账本的操作分派，辅助运行的索引选择与截取，技能同步响应与错误映射，任务状态写入者的装配，以及余额请求的端口验证与路径编码。Node 接线保留 Express 回环检查及响应发送、进程内服务和事件总线、Promise 与统一网络传输入口。宿主服务和监听器迁入原生运行时后可移除对应接线。[读取操作](../../native/addon/src/host_read_operations.rs) · [辅助运行](../../native/addon/src/aux_run_routes.rs) · [任务状态](../../native/addon/src/task_state_store.rs)
+
+| 验收范围 | 实测结果 |
+|---|---|
+| 合并基线全量 `npm test` | 退出 0。Node 测试运行器汇总 8,073 项通过、11 项跳过、1 项待实现 |
+| 冻结旧入口与定向回归 | 8 份冻结副本仅调整相对导入。迁前 15 个测试文件 171/171 通过，迁后加上 8 项冻结对照，179/179 通过 |
+| 跨批回归 | 67 个文件，1,192 项通过、0 项失败、1 项因缺少 Electron 打包工具链跳过 |
+| 迁后全量 `npm test` | 退出 0。Node 测试运行器汇总 8,081 项通过、11 项跳过、1 项待实现 |
+| 真实网关 HTTP 对照 | 系统与扫描 41/41 一致。回合账本 27/27 一致、另验证 5/5 项预期差异。编排 256/256 一致、另验证 2/2 项预期差异，296 次副作用调用一致 |
+
+迁后定向、跨批、全量和 HTTP 对照共用一次 macOS ARM64 发布构建，源码指纹 `a96194c38895329411450f73`。addon、网关、CDP、远控和重启监督程序的来源记录与 SHA-256 在测试前后均已核对。[冻结副本](../../tests/helpers/frozen-file-batch9/)
+
+独立在线分类测试 `test:classify-live` 首次访问本机服务取用例时收到 HTTP 503，未取得在线分类结果。首次调试回归缺少 addon 同目录的网关，补齐后 179/179 通过。编排 HTTP 夹具最初仅等待网关监听，旧版与新版均观察到请求早于宿主就绪的 503。改为等待宿主探针后，两版均完整通过上述 258 个场景。[编排对照夹具](differential/orchestration-routes.js)
+
 ## 第八批按文件迁移（2026-11-25）
 
 本批以本地合并提交 `e272a756` 为基线。根 `server.js` 及其生产调用链上的 Node 文件从 **470 个降至 462 个**，行数从 **125,736 降至 125,543**。退出的 8 份文件合计 355 行，其余生产接线净增 162 行，本批净减 **193 行**。从 `dc0df5fe` 的 495 个生产文件、126,693 行起，八批累计退出 **33 个文件**、净减 **1,150 行**。生产依赖清单包含通过宿主脚本启动的文件。[逐文件依赖](node-module-dependencies.md)

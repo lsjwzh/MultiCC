@@ -25,7 +25,7 @@ const { createOrchestrationHost, HOST_PATH, OPS } = require('../src/routes/orche
 const { createWorld, FROZEN_NOW } = require('./helpers/legacy-orchestration-routes/world');
 const { mountUnattendedRoutes } = require('../src/unattended/routes');
 const { mountAuxGoalRoutes } = require('../src/routes/aux-goal');
-const { createAuxRunRoutes } = require('../src/routes/aux-runs');
+const { createAuxRunRoutes } = require('../src/routes/orchestration-host');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 
 // 第二批搬进宿主端口的 wait 注入器 / detached 集。

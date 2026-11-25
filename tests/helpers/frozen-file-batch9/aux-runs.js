@@ -1,6 +1,6 @@
 'use strict';
 
-const { createAuxRunLog } = require('../classify/aux-run-log');
+const { createAuxRunLog } = require('../../../src/classify/aux-run-log');
 
 function createAuxRunRoutes({ records, getLog } = {}) {
   if (!records || typeof records.get !== 'function') throw new TypeError('aux run records map required');

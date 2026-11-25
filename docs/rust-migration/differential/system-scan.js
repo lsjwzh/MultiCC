@@ -41,7 +41,7 @@ require(path.join(repo, 'src/routes/system-host')).mountSystemHostRoute(app, {
  getPort: () => 45123, getBindHost: () => '0.0.0.0', authRequired: () => true,
  uptimeSeconds: () => 8100, now: () => ${NOW}, gitRun: async () => ${JSON.stringify(TAGS)},
 });
-require(path.join(repo, 'src/routes/scan-history-host')).mountScanHistoryHostRoute(app, {
+require(path.join(repo, 'src/routes/host-read-host')).mountScanHistoryHostRoute(app, {
  scanHistory: { seq: 7, passes: ${JSON.stringify(PASSES)} }, maxPasses: 5,
 });
 app.use((req, res) => res.status(599).send('forwarded:' + req.method + ' ' + req.url));

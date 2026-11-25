@@ -144,7 +144,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     // One host port per migrated route group: each internal listener accepts
     // loopback calls only, so a request forwarded from a real client is 404.
     'src/routes/account-routes-host.js',
-    'src/routes/agent-resources-host.js',
     'src/routes/auth.js',
     'src/routes/cli-switch-host.js',
     'src/routes/directory-host.js',
@@ -167,7 +166,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/push-host.js',
     'src/routes/quota-host.js',
     'src/routes/release-history-host.js',
-    'src/routes/scan-history-host.js',
     'src/routes/secrets-vault-host.js',
     'src/routes/server-core-host.js',
     'src/routes/session-admin-host.js',
@@ -179,8 +177,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/subagent-defaults-host.js',
     'src/routes/system-host.js',
     'src/routes/task-routes-host.js',
-    'src/routes/token-usage-host.js',
-    'src/routes/turn-ledger-host.js',
     'src/routes/voice-gateway-host.js',
     'src/routes/voice-host.js',
     'src/routes/voice-runtime-host.js',

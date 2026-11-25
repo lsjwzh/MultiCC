@@ -10,7 +10,7 @@
 // the purge loop, counts/totals and every status code are decided there.
 //
 // What remains here is Node-only state and side effects, served to the front door
-// through src/routes/agent-resources-host.js:
+// through src/routes/host-read-host.js:
 //   - the parsed public/agent-presets.json file (read once, cached for the process)
 //   - the Agent Commander override (COMMANDER_ROUTER_PROMPT) and the provider
 //     enrichment that resolves defaultProviderId/defaultProviderName from the

@@ -14,7 +14,7 @@
 // (tests/helpers/legacy-turn-ledger-routes.js) over a real TurnLedger and a
 // scripted launch table. The Rust front door asks its host port
 // (/api/__host/turn-ledger); the stub child answers with the real shim
-// (src/routes/turn-ledger-host.js) fed by a second, identically seeded
+// (src/routes/host-read-host.js) fed by a second, identically seeded
 // TurnLedger, so the only thing under comparison is the front door's own work:
 // path matching, the decoded `:id`, the 409, the snapshot DTO and the 502.
 //
@@ -111,7 +111,7 @@ const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
 const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
 const { createTurnLedger } = require(path.join(REPO, 'src/turn-ledger/ledger'));
 const { normalizeEnvelope } = require(path.join(REPO, 'src/native/runtime')).getTurnLedgerContract();
-const { createTurnLedgerHost } = require(path.join(REPO, 'src/routes/turn-ledger-host'));
+const { createTurnLedgerHost } = require(path.join(REPO, 'src/routes/host-read-host'));
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));

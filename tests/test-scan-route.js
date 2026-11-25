@@ -3,12 +3,12 @@
 // `/api/scan/history` 已经由 Rust 前门独占（native/gateway/src/app/scan.rs；
 // limit 的 parseInt 语义在 multicc_core::system_info，逐字节对比在
 // docs/rust-migration/differential/system-scan.js）。这里覆盖 Node 侧剩下的
-// 宿主端口（src/routes/scan-history-host.js）：回环闸门、`Math.min(limit,
+// 宿主端口（src/routes/host-read-host.js）：回环闸门、`Math.min(limit,
 // maxPasses)` 封顶与 `slice(0, limit)` 的负数语义。
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { mountScanHistoryHostRoute, HOST_PATH } = require('../src/routes/scan-history-host');
+const { mountScanHistoryHostRoute, SCAN_HISTORY_PATH: HOST_PATH } = require('../src/routes/host-read-host');
 
 function createApp() {
   const routes = new Map();
@@ -84,4 +84,17 @@ test('host mount validates its dependencies like the retired route did', () => {
     /maxPasses/,
   );
   assert.throws(() => mountScanHistoryHostRoute(null, { scanHistory: { seq: 0, passes: [] }, maxPasses: 1 }), /Express/);
+});
+
+test('与冻结扫描端口对照有限值、负值及限额 getter', () => {
+  const frozen = require('./helpers/frozen-file-batch9/scan-history-host');
+  function exercise(mountRoute) {
+    const app = createApp(), reads = [];
+    mountRoute(app, { scanHistory: { seq: 3, passes: [1, 2, 3, 4] }, maxPasses: 3, isLocal: () => true });
+    const handler = app.routes.get(`POST ${HOST_PATH}`);
+    const answers = [undefined, '2', NaN, Infinity, -Infinity, -2.5, -0, 1.5, 10].map(value =>
+      invoke(handler, { op: 'snapshot', get limit() { reads.push(value); return value; } }).body);
+    return { answers, reads };
+  }
+  assert.deepEqual(exercise(mountScanHistoryHostRoute), exercise(frozen.mountScanHistoryHostRoute));
 });

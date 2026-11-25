@@ -25,7 +25,7 @@
 // loopback PROXY line, and `isLocalRequest` refuses anything forwarded from a
 // real remote client (docs/gateway.md, internal port model).
 
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../../../src/request-locality');
 
 const HOST_PATH = '/api/__host/turn-ledger';
 

@@ -2,10 +2,9 @@
 //!
 //! The query rule — `parseInt(req.query.limit, 10) || 20` — is
 //! `multicc_core::system_info::scan_history_limit`. The ring itself is Node's
-//! in-memory classify state, so the host port applies the `maxPasses` cap and
-//! the `slice(0, limit)` (whose negative-argument semantics stay in JS
-//! verbatim) and answers `{ seq, kept, passes }`; this side reassembles and
-//! validates that DTO. See `src/routes/scan-history-host.js`.
+//! in-memory classify state, so the native host operation applies the `maxPasses` cap and
+//! calls the live array’s `slice(0, limit)` (including negative limits) and answers `{ seq, kept, passes }`; this side reassembles and
+//! validates that DTO. See `src/routes/host-read-host.js`.
 
 use axum::body::Body;
 use axum::http::Response;
@@ -16,7 +15,7 @@ use serde_json::{json, Value};
 use crate::app::express::{self, RequestCtx};
 use crate::host_port;
 
-/// The host port the Node child serves (`src/routes/scan-history-host.js`).
+/// The host port the Node child serves (`src/routes/host-read-host.js`).
 const HOST_PATH: &str = "/api/__host/scan-history";
 
 fn unavailable(ctx: &RequestCtx) -> Response<Body> {

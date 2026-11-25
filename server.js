@@ -102,7 +102,7 @@ const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlia
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
 const { createSessionPersistence } = require('./src/native/runtime');
-const { createSessionRecords } = require('./src/session/records');
+const { createSessionRecords, createTaskStateStore } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');
 const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');
 const { createDirectoryTable } = require('./src/directory/records');
@@ -116,33 +116,29 @@ const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
 const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
-const { mountScanHistoryHostRoute } = require('./src/routes/scan-history-host');
 const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
 const { mountSystemHostRoute } = require('./src/routes/system-host');
 const { createApkDistribution } = require('./src/apk-distribution');
-const { mountHostReadHostRoute } = require('./src/routes/host-read-host');
+const { mountHostReadHostRoute, mountScanHistoryHostRoute, mountTurnLedgerHostRoute, mountAgentResourcesHostRoute, mountTokenUsageHostRoute } = require('./src/routes/host-read-host');
 const { mountPushHostRoute } = require('./src/routes/push-host');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
 const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
-const { mountTurnLedgerHostRoute } = require('./src/routes/turn-ledger-host');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/providers/relay-share-store');
 const { mountModelCatalogsHostRoute } = require('./src/routes/model-catalogs-host');
 const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountQuotaHostRoute } = require('./src/routes/quota-host');
-const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance');
+const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance-host');
 const { createProviderRelayModelCatalogRuntime } = require('./src/providers/relay-model-catalog');
 const { createMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { createDocsMemoryHost } = require('./src/routes/docs-memory-host');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
-const { mountAgentResourcesHostRoute } = require('./src/routes/agent-resources-host');
 const { mountSecretsVaultHostRoute } = require('./src/routes/secrets-vault-host');
-const { mountTokenUsageHostRoute } = require('./src/routes/token-usage-host');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createSessionRoutesHost } = require('./src/routes/session-routes-host');
 const { createShareMachinesHost } = require('./src/routes/share-machines-host');
@@ -189,7 +185,6 @@ const {
 } = require('./src/codex/oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/task-domain');
-const { createTaskStateStore } = require('./src/routes/task-state-store');
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/host');
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/runtime').getHostPrompts();
@@ -197,7 +192,7 @@ const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
 const { createClassifyStateMachine } = require('./src/classify/state-machine');
-const { createAuxRunLog, createAuxRunRoutes } = require('./src/routes/aux-runs');
+const { createAuxRunLog } = require('./src/classify/aux-run-log');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
 const { createRolloutPathResolver } = require('./src/liveness/rollout-path');
@@ -1440,7 +1435,8 @@ const sessionAdmin = createSessionAdminRuntime({
 });
 // 编排与无人值守 23 条公开路由已由 Rust 前门独占（native/gateway/src/app/orchestration_routes.rs）；
 // 四个退休模块只挂在这个捕获应用上，宿主端口在 createOrchestrationRoutes 之后统一暴露。
-const orchestrationHost = require('./src/routes/orchestration-host').createOrchestrationHost({ express });
+const { createAuxRunRoutes, createOrchestrationHost } = require('./src/routes/orchestration-host');
+const orchestrationHost = createOrchestrationHost({ express });
 sessionAdmin.mountRoutes(app, { unattendedApp: orchestrationHost.app });
 const workspaceSnapshot = sessionAdmin.workspaceSnapshot;
 
@@ -2379,7 +2375,7 @@ const pushOnInput = pushRuntime.onInput;
 const triggerPush = pushRuntime.notify;
 const cleanupPushMonitor = pushRuntime.cleanup;
 
-// ── Task state persistence (step ①): src/routes/task-state-store.js ─────────
+// ── Task state persistence (step ①): src/session/records.js ─────────
 // Hoisted wrappers share the task-state store.
 const taskStates = createTaskStateStore({
   persistedSessions, chatBroadcast, workspaceBroadcast, bus,

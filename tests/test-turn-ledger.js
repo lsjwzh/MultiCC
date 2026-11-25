@@ -20,7 +20,7 @@ const { getNative } = require('../src/native/runtime');
 const confirmTurnEnd = input => getNative().confirmTurnEnd(input);
 const { createHookInstaller, WRAPPER_SOURCE } = require('../src/turn-ledger/hook-install');
 const { createTurnLedgerRuntime } = require('../src/turn-ledger/runtime');
-const { createTurnLedgerHost, mountTurnLedgerHostRoute, HOST_PATH } = require('../src/routes/turn-ledger-host');
+const { createTurnLedgerHost, mountTurnLedgerHostRoute, TURN_LEDGER_PATH: HOST_PATH } = require('../src/routes/host-read-host');
 const hookScript = require('../scripts/multicc-turn-hook');
 
 const HOOK_SCRIPT = path.join(__dirname, '..', 'scripts', 'multicc-turn-hook.js');
@@ -494,4 +494,26 @@ test('host port: route accepts loopback only', async () => {
   assert.equal(answer.code, 200);
   assert.deepEqual(answer.body, { ok: true, launch: { id: 's9' }, record: null });
   void seen;
+});
+
+test('账本宿主与冻结实现保留读取顺序和异步信任失败', async () => {
+  const frozen = require('./helpers/frozen-file-batch9/turn-ledger-host');
+  const sentinel = new Error('read');
+  async function exercise(create) {
+    const calls = [];
+    const handle = create({
+      launch(id) { calls.push(['launch', id]); if (id === 'throw') throw sentinel; return 0; },
+      record(id) { calls.push(['record', id]); return []; },
+      trust(input) { calls.push(['trust', input]); return input.write ? Promise.reject('failed') : Promise.resolve(input); },
+    });
+    const answers = [];
+    for (const op of ['ledger', 'launch', 'trust', 'unknown']) {
+      for (const flag of [true, 1]) {
+        answers.push(await handle({ get op() { calls.push('op'); return op; }, sessionId: flag, write: flag, cwd: 'dir' }));
+      }
+    }
+    await assert.rejects(handle({ op: 'ledger', sessionId: 'throw' }), error => error === sentinel);
+    return { calls, answers };
+  }
+  assert.deepEqual(await exercise(createTurnLedgerHost), await exercise(frozen.createTurnLedgerHost));
 });

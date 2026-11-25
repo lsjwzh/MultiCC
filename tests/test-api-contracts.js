@@ -344,7 +344,7 @@ test('orchestration and unattended routes: host port mounted once without public
   // Both waits listings are ours now, but they stay two routes with two DTOs.
   assert.ok(hostHalf.includes("app.get('/api/sessions/:id/waits'"));
   assert.ok(hostHalf.includes("app.get('/api/v1/sessions/:id/waits'"));
-  for (const file of ['src/routes/aux-goal.js', 'src/routes/aux-runs.js', 'src/unattended/routes.js']) {
+  for (const file of ['src/routes/aux-goal.js', 'src/routes/orchestration-host.js', 'src/unattended/routes.js']) {
     assert.equal(/\bapp\s*=\s*express\(\)/.test(fs.readFileSync(path.join(ROOT, file), 'utf8')), false);
   }
 });
@@ -461,15 +461,15 @@ test('server composition uses canonical adapters and retires legacy dispatch end
     'the connect plan must schedule seed resolution without eagerly building the frame');
   // The live broadcast is the task-state store's: server.js builds it and
   // keeps no inline copy, so the cancel-flow tests run the production code.
-  assert.ok(source.includes("require('./src/routes/task-state-store')"),
+  assert.ok(source.includes("require('./src/session/records')"),
     'server.js must build its task state from the one store');
   assert.ok(source.includes('createTaskStateStore({'));
   assert.doesNotMatch(source, /TASK_STATE_DEFAULTS|taskStatePayload\(/,
     'no second getTaskState/setTaskState may grow back inside server.js');
-  const taskStateStore = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'task-state-store.js'), 'utf8');
+  const taskStateStore = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'task_state_store.rs'), 'utf8');
   assert.ok(taskStateStore.includes('taskStatePayload'),
     'the store must share the payload contract');
-  assert.ok(taskStateStore.includes('sessionRecordsOwner'),
+  assert.ok(taskStateStore.includes('resolve_owner') && fs.readFileSync(path.join(ROOT, 'src', 'session', 'records.js'), 'utf8').includes('taskStateStore(deps, sessionRecordsOwner,'),
     'merge and write must stay in the one native record owner');
   assert.ok(taskStateStore.includes('busEmit'),
     'the event hub derives task.* events from every write');

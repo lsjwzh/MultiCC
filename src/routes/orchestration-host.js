@@ -157,4 +157,17 @@ function createOrchestrationHost(deps = {}) {
   return { app, handlers, mountRoute };
 }
 
-module.exports = { HOST_PATH, OPS, createOrchestrationHost };
+function createAuxRunRoutes({ records, getLog } = {}) {
+  if (!records || typeof records.get !== 'function') throw new TypeError('aux run records map required');
+  if (typeof getLog !== 'function') throw new TypeError('aux run log getter required');
+  const { getNative } = require('../native/runtime');
+  function mountRoutes(app) {
+    if (!app || typeof app.get !== 'function') throw new TypeError('Express app.get required');
+    const handle = detail => (req, res) => getNative().auxRunResponse(records, getLog, detail, req, res);
+    app.get('/api/sessions/:id/aux-runs', handle(false));
+    app.get('/api/sessions/:id/aux-runs/:runId', handle(true));
+  }
+  return Object.freeze({ mountRoutes });
+}
+
+module.exports = { HOST_PATH, OPS, createOrchestrationHost, createAuxRunRoutes };

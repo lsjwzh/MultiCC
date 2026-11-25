@@ -26,6 +26,13 @@ const { isLocalRequest } = require('../request-locality');
 const { readPowerSettings } = require('../host-power-services');
 const { createBatteryReader } = require('../host-battery');
 
+const { getNative } = require('../native/runtime');
+const AGENT_RESOURCES_PATH = '/api/__host/agent-resources';
+const SCAN_HISTORY_PATH = '/api/__host/scan-history';
+const TOKEN_USAGE_PATH = '/api/__host/token-usage';
+const TURN_LEDGER_PATH = '/api/__host/turn-ledger';
+const EMPTY_ROLE_SNAPSHOT = Object.freeze({ main: null, sub: null, subByProvider: Object.freeze([]) });
+
 const HOST_PATH = '/api/__host/host-read';
 
 function describeError(error) {
@@ -145,4 +152,89 @@ function mountHostReadHostRoute(app, options = {}) {
   });
 }
 
-module.exports = { mountHostReadHostRoute, createHostReadHost, HOST_PATH };
+function assertPost(app, name) {
+  if (!app || typeof app.post !== 'function') throw new TypeError(`[${name}-host] Express-compatible app is required`);
+}
+
+function postLocal(app, path, isLocal, respond) {
+  app.post(path, (req, res) => {
+    if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
+    return respond(req, res);
+  });
+}
+
+function objectBody(req) {
+  return req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+}
+
+function createAgentResourcesHost(runtime) {
+  if (!runtime || typeof runtime !== 'object') throw new TypeError('[agent-resources-host] runtime is required');
+  return body => getNative().agentResourceOperation(runtime, body);
+}
+
+function mountAgentResourcesHostRoute(app, options = {}) {
+  assertPost(app, 'agent-resources');
+  if (!options.runtime) throw new TypeError('[agent-resources-host] runtime is required');
+  const isLocal = options.isLocal || isLocalRequest;
+  const handle = createAgentResourcesHost(options.runtime);
+  postLocal(app, AGENT_RESOURCES_PATH, isLocal, (req, res) => {
+    const body = objectBody(req);
+    try { res.json(handle(body)); }
+    catch { res.status(500).json({ error: 'host operation failed' }); }
+  });
+}
+
+function createTokenUsageHost(options) {
+  if (!options || !options.tracker) throw new TypeError('[token-usage-host] tracker is required');
+  const tracker = options.tracker;
+  const log = typeof options.logFailure === 'function' ? options.logFailure : null;
+  return body => getNative().tokenUsageOperation(tracker, body, EMPTY_ROLE_SNAPSHOT, log);
+}
+
+function mountTokenUsageHostRoute(app, options = {}) {
+  assertPost(app, 'token-usage');
+  if (!options.tracker) throw new TypeError('[token-usage-host] tracker is required');
+  const isLocal = options.isLocal || isLocalRequest;
+  const handle = createTokenUsageHost(options);
+  postLocal(app, TOKEN_USAGE_PATH, isLocal, (req, res) => { res.json(handle(req.body)); });
+}
+
+function mountScanHistoryHostRoute(app, options = {}) {
+  assertPost(app, 'scan-history');
+  const history = options.scanHistory;
+  if (!history || !Array.isArray(history.passes)) throw new TypeError('[scan-history-host] scanHistory.passes is required');
+  const max = options.maxPasses;
+  if (!Number.isInteger(max) || max <= 0) throw new TypeError('[scan-history-host] maxPasses must be a positive integer');
+  postLocal(app, SCAN_HISTORY_PATH, options.isLocal || isLocalRequest,
+    (req, res) => getNative().scanHistoryResponse(history, max, objectBody(req), res));
+}
+
+function createTurnLedgerHost(deps) {
+  if (!deps || typeof deps !== 'object') throw new TypeError('[turn-ledger-host] dependencies are required');
+  for (const key of ['launch', 'record', 'trust']) {
+    if (typeof deps[key] !== 'function') throw new TypeError(`[turn-ledger-host] dependency missing: ${key}`);
+  }
+  const trust = async body => {
+    try { return { ok: true, value: await getNative().turnLedgerTrust(deps, body) }; }
+    catch (error) { return { ok: false, message: String((error && error.message) || error) }; }
+  };
+  return async body => getNative().turnLedgerOperation(deps, body, trust);
+}
+
+function mountTurnLedgerHostRoute(app, options = {}) {
+  assertPost(app, 'turn-ledger');
+  const isLocal = typeof options.isLocal === 'function' ? options.isLocal : isLocalRequest;
+  const handle = createTurnLedgerHost(options);
+  postLocal(app, TURN_LEDGER_PATH, isLocal, (req, res) => {
+    Promise.resolve(handle(req.body)).then(answer => res.json(answer),
+      error => res.status(500).json({ error: 'turn ledger failed', detail: String((error && error.message) || error) }));
+  });
+}
+
+module.exports = {
+  HOST_PATH, mountHostReadHostRoute, createHostReadHost,
+  AGENT_RESOURCES_PATH, mountAgentResourcesHostRoute, createAgentResourcesHost,
+  SCAN_HISTORY_PATH, mountScanHistoryHostRoute,
+  TOKEN_USAGE_PATH, EMPTY_ROLE_SNAPSHOT, mountTokenUsageHostRoute, createTokenUsageHost,
+  TURN_LEDGER_PATH, mountTurnLedgerHostRoute, createTurnLedgerHost,
+};

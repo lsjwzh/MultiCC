@@ -15,7 +15,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 
 const { createSessionPersistence } = require('../src/native/runtime');
-const { createTaskStateStore } = require('../src/routes/task-state-store');
+const { createTaskStateStore } = require('../src/session/records');
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 const {
   createLegacySessionPersistence,
@@ -333,4 +333,22 @@ test('differential harness actually exercises every mutation kind', () => {
   assert.equal(world.busLog.length, 1);
   assert.equal(world.chatLog.length, 1);
   assert.equal(world.workspaceLog.length, 1);
+});
+
+test('任务状态接口与冻结装配对照默认值、分离调用和广播顺序', () => {
+  const frozen = require('./helpers/frozen-file-batch9/task-state-store');
+  function exercise(create) {
+    const events = [], persistedSessions = recordsOf([['s', { id: 's' }]]);
+    const store = create({ persistedSessions, now: () => 72,
+      bus: { emit: (...args) => events.push(['bus', ...args]) },
+      chatBroadcast: (...args) => events.push(['chat', ...args]),
+      workspaceBroadcast: (...args) => events.push(['workspace', ...args]),
+    });
+    const { getTaskState, setTaskState, resetTaskState } = store;
+    const empty = getTaskState(null);
+    const written = setTaskState('s', { classifyState: 'P' }, { save: false });
+    const result = resetTaskState('absent');
+    return { empty, written, events, result, keys: Object.keys(store), defaults: store.TASK_STATE_DEFAULTS };
+  }
+  assert.deepEqual(exercise(createTaskStateStore), exercise(frozen.createTaskStateStore));
 });

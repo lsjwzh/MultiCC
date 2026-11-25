@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../../../src/http/public-safety');
 
 function assertRouteDependencies(app, runtime) {
   if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {

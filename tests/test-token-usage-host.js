@@ -12,8 +12,8 @@ const {
   createTokenUsageHost,
   mountTokenUsageHostRoute,
   EMPTY_ROLE_SNAPSHOT,
-  HOST_PATH,
-} = require('../src/routes/token-usage-host');
+  TOKEN_USAGE_PATH: HOST_PATH,
+} = require('../src/routes/host-read-host');
 
 function fakeTracker(overrides = {}) {
   const calls = [];
@@ -157,4 +157,20 @@ test('non-object bodies answer ok:false and never reach the tracker', () => {
     assert.deepEqual(handle(body), { ok: false }, `body: ${JSON.stringify(body)}`);
   }
   assert.deepEqual(calls, []);
+});
+
+test('用量宿主与冻结实现保留空快照复用及日志异常身份', () => {
+  const frozen = require('./helpers/frozen-file-batch9/token-usage-host');
+  const failure = Symbol('read'), marker = {};
+  function exercise(create) {
+    const log = [];
+    const tracker = { snapshot(id) { if (id === 1) return marker; if (id === 2) throw failure; }, readLedger() { return marker; } };
+    const handle = create({ tracker, logFailure: (...args) => log.push(args) });
+    const empty = handle({ op: 'snapshot' }).payload;
+    assert.equal(handle({ op: 'snapshot' }).payload, empty);
+    assert.equal(handle({ op: 'snapshot', session: 1 }).payload, marker);
+    assert.equal(handle({ op: 'ledger' }).payload, marker);
+    return [empty, handle({ op: 'snapshot', session: 2 }), log];
+  }
+  assert.deepEqual(exercise(createTokenUsageHost), exercise(frozen.createTokenUsageHost));
 });

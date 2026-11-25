@@ -98,7 +98,16 @@ function resetTaskState(records, id) {
   return owner.resetTaskState(id);
 }
 
+let taskStateDefaults;
+function createTaskStateStore(deps) {
+  const { taskStatePayload } = require('../native/runtime');
+  taskStateDefaults ||= Object.freeze(sessionRecordDefaults());
+  return getNative().taskStateStore(deps, sessionRecordsOwner, taskStateDefaults, taskStatePayload,
+    bus => (event, ...args) => bus.emit(event, ...args));
+}
+
 module.exports = {
+  createTaskStateStore,
   SessionRecordMap,
   createSessionRecords,
   sessionRecordsOwner,

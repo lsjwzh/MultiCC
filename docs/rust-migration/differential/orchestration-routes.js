@@ -36,7 +36,7 @@
 // a branch the migration depends on was never exercised.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-orch-1' };
 const J = { ...L, 'Content-Type': 'application/json' };
@@ -413,11 +413,10 @@ const work = process.env.ORCH_ROOT;
 const express = require(require.resolve('express', { paths: [REPO] }));
 const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/http-errors'));
 const { jsonCompression } = require(path.join(REPO, 'src/http/json-compression'));
-const { createPublicSessionAccessGuard } = require(path.join(REPO, 'src/session/public-session-access'));
-const { createOrchestrationHost } = require(path.join(REPO, 'src/routes/orchestration-host'));
+const { createPublicSessionAccessGuard } = require(path.join(REPO, 'src/native/runtime')).getNative().sessionPublicAccessApi();
+const { createAuxRunRoutes, createOrchestrationHost } = require(path.join(REPO, 'src/routes/orchestration-host'));
 const { mountUnattendedRoutes } = require(path.join(REPO, 'src/unattended/routes'));
 const { mountAuxGoalRoutes } = require(path.join(REPO, 'src/routes/aux-goal'));
-const { createAuxRunRoutes } = require(path.join(REPO, 'src/routes/aux-runs'));
 const { createOrchestrationRoutes } = require(path.join(REPO, 'src/routes/orchestration'));
 
 const world = createWorld({
@@ -457,6 +456,7 @@ createAuxRunRoutes({ records: world.records, getLog: () => world.auxRunLog }).mo
 const orchestration = createOrchestrationRoutes(world.orchestrationDeps);
 orchestration.mountHostRoutes(host.app);
 host.mountRoute(app);
+app.get('/__health', (_req, res) => res.type('text/plain').send('ok'));
 // Express answers OPTIONS itself once nothing else did: let it through.
 app.use((req, res, next) => (req.method === 'OPTIONS' ? next() : res.status(404).end('forwarded')));
 app.use(safeErrorHandler(quiet));
@@ -750,6 +750,7 @@ function finalize(views) {
 
 main({
   name: 'orchestration-routes',
+  ready: waitForFixture,
   mount: mountOracle,
   get upstream() { return upstreamText; },
   gatewayEnv: work => ({

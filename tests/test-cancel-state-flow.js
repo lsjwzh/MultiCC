@@ -26,7 +26,7 @@ const { EventEmitter } = require('node:events');
 
 const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
 const { createClassifyStateMachine } = require('../src/classify/state-machine');
-const { createTaskStateStore } = require('../src/routes/task-state-store');
+const { createTaskStateStore } = require('../src/session/records');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
 const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
