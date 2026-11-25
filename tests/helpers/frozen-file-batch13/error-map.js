@@ -4,7 +4,7 @@ const {
   DOMAIN_KINDS,
   isDomainError,
   isInfrastructureError,
-} = require('../../../src/http/domain-error');
+} = require('../frozen-file-batch14/domain-error');
 const { HttpError, isHttpError } = require('./http-error');
 const { safeCode, sanitizePublicText } = require('../../../src/http/public-safety');
 

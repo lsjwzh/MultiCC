@@ -483,6 +483,7 @@ function probeAddon(file, node = process.execPath) {
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',
       'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds',
+      'domainErrorKinds','domainErrorMessage','domainErrorInitialize','infrastructureErrorInitialize',
       'httpErrorTrustedStatus','httpErrorMessage','httpErrorInitialize','httpErrorDefinitions','httpErrorMap','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['createCookie','verifyCookie','verifyAccessToken','issueWsTicket','consumeWsTicket','pruneTickets','ticketCount','accessToken','setAccessToken','shuttingDown','setShuttingDown','connectGateway']
       .some(key=>typeof a.RustAuthSecurity.prototype[key]!=='function')) process.exit(1);

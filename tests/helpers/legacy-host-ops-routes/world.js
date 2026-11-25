@@ -10,7 +10,6 @@
 // the only filesystem work is inside the temporary `rootDir` the restart and
 // update preflights read (a fake ./multicc manager and .git dir).
 const path = require('node:path');
-const { DomainError } = require('../../../src/http/domain-error');
 
 // Both sides freeze the clock: the restart route counts streaming turns with
 // Date.now(), and the update route stamps `startedAt`.
@@ -32,7 +31,7 @@ function fakeChild(record) {
   return child;
 }
 
-function createWorld({ rootDir }) {
+function createWorld({ rootDir, DomainError }) {
   const state = {
     env: { BARK_URL: 'https://bark.example/key', WEBHOOK_URL: '' },
     accessToken: 'secret-token-1',
