@@ -27,7 +27,7 @@ function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
         if (vendor === 'codex') {
           const authFile = id ? deps.resolveAccountAuthFile?.(id) : path.join(os.homedir(), '.codex', 'auth.json');
           if (!authFile) return { status: 'no_auth' };
-          return require(path.join(ROOT, 'src/providers/native-subscription')).query({ vendor, authFile }, { fetch: deps.fetch });
+          return require(path.join(__dirname, 'frozen-file-batch8/native-subscription')).query({ vendor, authFile }, { fetch: deps.fetch });
         }
         let token;
         if (id) token = (await deps.credentials.peekAccountToken(id))?.token;
@@ -35,7 +35,7 @@ function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
           const read = await (deps.readCliCredentials || require(path.join(ROOT, 'src/quota/claude-cli-oauth')).readCliCredentials)();
           if (read?.ok && (read.expiresAt == null || read.expiresAt > Date.now())) token = read.accessToken;
         }
-        return require(path.join(ROOT, 'src/providers/native-subscription')).query({ vendor, token }, { fetch: deps.fetch });
+        return require(path.join(__dirname, 'frozen-file-batch8/native-subscription')).query({ vendor, token }, { fetch: deps.fetch });
       };
       pending.set(id, query().catch(error => ({ status: error?.status === 401 ? 'no_auth' : 'unavailable' }))
         .then(async result => { await cache.record(vendor, id, result, attemptAt).catch(() => {}); return result; })

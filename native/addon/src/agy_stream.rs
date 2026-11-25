@@ -75,3 +75,114 @@ impl RustAgyStreamDecoder {
         serde_json::to_string(&events).map_err(|err| napi::Error::from_reason(err.to_string()))
     }
 }
+
+/// Choose terminal flags against the live session; quoting uses the shell
+/// string port, which retains JS UTF-16 and explicit String conversion.
+#[napi]
+pub fn agy_terminal(
+    env: napi::Env,
+    cmd: napi::bindgen_prelude::Unknown<'_>,
+    session: napi::bindgen_prelude::Unknown<'_>,
+    support: napi::bindgen_prelude::Unknown<'_>,
+    quote: napi::bindgen_prelude::Unknown<'_>,
+) -> napi::Result<napi::sys::napi_value> {
+    use crate::{js_iteration::read, js_live::LiveValue as L};
+    let session = L::new(&env, session);
+    let quote = L::new(&env, quote);
+    let support = L::new(&env, support);
+    let mut command = quote.call_plain(&[L::new(&env, cmd)])?;
+    for (key, flag) in [
+        (c"model", " --model "),
+        (c"effort", " --effort "),
+        (c"cliSessionId", " --conversation "),
+    ] {
+        if !read(session, key)?.truthy()? {
+            continue;
+        }
+        if key == c"effort"
+            && !support
+                .call_plain(&[
+                    command.from_value(&"agy".into())?,
+                    read(session, c"model")?,
+                    read(session, key)?,
+                ])?
+                .truthy()?
+        {
+            continue;
+        }
+        let value = quote.call_plain(&[read(session, key)?])?;
+        command = crate::host_methods::call(
+            command,
+            c"concat",
+            &[command.from_value(&flag.into())?, value],
+        )?;
+    }
+    Ok(command.raw())
+}
+
+/// Read the live invocation envelope in host order. Prompt composition remains
+/// injected because it dispatches through the session's message composer.
+#[napi]
+pub fn agy_host_invocation(
+    env: napi::Env,
+    addon: napi::bindgen_prelude::Unknown<'_>,
+    cmd: napi::bindgen_prelude::Unknown<'_>,
+    envelope: napi::bindgen_prelude::Unknown<'_>,
+    composer: napi::bindgen_prelude::Unknown<'_>,
+) -> napi::Result<napi::sys::napi_value> {
+    use crate::{
+        host_methods::call,
+        js_iteration::read,
+        js_live::{fields, LiveValue as L},
+    };
+    use multicc_core::js::JsValue as V;
+    let envelope = L::new(&env, envelope);
+    let record = |k| {
+        let value = read(envelope, k)?;
+        if value.truthy()? {
+            Ok(value)
+        } else {
+            fields(envelope, &[])
+        }
+    };
+    let options = record(c"spawnOpts")?;
+    let handle = record(c"historyHandle")?;
+    fn string_option<'a>(v: L<'a>, key: &std::ffi::CStr) -> napi::Result<L<'a>> {
+        if read(v, key)?.truthy()? {
+            v.global()?.get(c"String")?.call_plain(&[read(v, key)?])
+        } else {
+            v.from_value(&V::Undefined)
+        }
+    }
+    let addon = L::new(&env, addon);
+    let build = read(addon, c"agyBuildInvocation")?;
+    let model = string_option(options, c"rawModel")?;
+    let effective = read(options, c"effectiveModel")?;
+    let input = fields(
+        envelope,
+        &[
+            ("cmd", L::new(&env, cmd)),
+            ("model", model),
+            (
+                "effectiveModel",
+                if effective.truthy()? {
+                    effective
+                } else {
+                    effective.from_value(&V::Undefined)?
+                },
+            ),
+            ("effort", string_option(options, c"rawEffort")?),
+            ("conversationId", string_option(handle, c"cliSessionId")?),
+            (
+                "isFirstTurn",
+                envelope.from_value(&V::Bool(read(handle, c"isFirstTurn")?.truthy()?))?,
+            ),
+            ("rolePrompt", string_option(envelope, c"rolePrompt")?),
+            (
+                "prompt",
+                call(L::new(&env, composer), c"renderPrompt", &[envelope])?,
+            ),
+        ],
+    )?;
+    Ok(build.call(addon, &[input])?.raw())
+}

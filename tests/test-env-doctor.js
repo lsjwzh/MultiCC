@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runToolLoop } = require('../src/doctor/llm-loop');
 const { createEnvironmentDoctor, checkArgv, inspectPath, normalizeReport, SYSTEM_PROMPT } = require('../src/doctor/environment');
-const { createDoctorHost } = require('../src/doctor/host');
+const { createDoctorHost } = require('../src/doctor/service');
 
 const PLAIN_ACCOUNT = { user: 'multicc', uid: 996, sudo: false };
 const ROOT_ACCOUNT = { user: 'root', uid: 0, sudo: false };
@@ -195,4 +195,24 @@ test('the composed gateway host exposes both doctor services and preserves Aux r
   assert.equal(refused.code, 'AUX_UNAVAILABLE');
   assert.equal(host.envDoctor.get('nope'), null);
   assert.equal(host.doctor.start({ sessionId: 'nope' }).status, 404);
+});
+
+test('医生模型选择保留配置、目标和候选列表的读取顺序', () => {
+  const previous = require('./helpers/frozen-file-batch8/host').createDoctorHost;
+  function probe(create, stop) {
+    const trace = [];
+    const read = name => {
+      trace.push(name);
+      if (name === stop) throw new Error(name);
+      return '';
+    };
+    const target = { get model() { return read('target'); }, get modelOptions() { read('options'); return { get 0() { return read('first'); } }; } };
+    const host = create({ auxQueue: { resolveHttpTarget() { read('queue'); return target; } },
+      getAuxConfig: () => ({ get model() { return read('config'); } }), rootDir: os.tmpdir(), dataDir: os.tmpdir() });
+    const response = host.envDoctor.start({ error: 'spawn failed' });
+    return { response, trace };
+  }
+  for (const stop of ['queue', 'config', 'target', 'options', 'first']) {
+    assert.deepEqual(probe(createDoctorHost, stop), probe(previous, stop));
+  }
 });

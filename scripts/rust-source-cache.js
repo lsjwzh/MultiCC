@@ -175,7 +175,9 @@ function probeAddon(file, node = process.execPath) {
     if(['pathSafetyRealPath','pathSafetyHomeOrAbove'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustModelDefaults!=='function') process.exit(1);
     if(new a.RustModelDefaults(0).resolve({appType:'claude',models:['probe']},()=>[],()=>0)!=='probe') process.exit(1);
-    if(['RustVendorModelCatalog','turnEventReplayApi','taskCandidatePropose','taskCandidateLatest',
+    if(['transcriptPruningApi', 'boundedContextExcerpt', 'agyTerminal', 'agyHostInvocation', 'homebrewResolveOwner',
+      'claudeRefreshDecision', 'orchestrationCommand', 'doctorHttpTarget', 'accountSubscriptionStart',
+      'RustVendorModelCatalog','turnEventReplayApi','taskCandidatePropose','taskCandidateLatest',
       'wakeSyncRequest','prepareHostSwitchRoute','codexProfileRouteFailure'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnRuntimeStore','resolveTurnStateValue','cliStepTracker','quickCommitMessageValue','directoryRepository',
       'taskBoardRepository','providerRepository','relatedTaskHistory'].some(key=>typeof a[key]!=='function')) process.exit(1);

@@ -3,7 +3,7 @@
 // Differential oracle for the transcript governor.
 //
 // The frozen Node implementation (`tests/helpers/legacy-transcript-prune.js`)
-// and the Rust kernel (through `src/chat/transcript-prune.js`) are run on
+// and the Rust kernel (through `getTranscriptPruning()`) are run on
 // byte-identical copies of generated transcripts in a private temp HOME. Every
 // observable — report fields, file bytes, sidecar bytes, file mode, mtime,
 // return of findTranscriptFile, and the pure predicates — must agree.
@@ -23,7 +23,7 @@ const previousHome = process.env.HOME;
 process.env.HOME = home;
 
 const legacy = require('./helpers/legacy-transcript-prune');
-const current = require('../src/chat/transcript-prune');
+const current = require('../src/native/runtime').getTranscriptPruning();
 
 test.after(() => {
   process.env.HOME = previousHome;
@@ -531,4 +531,17 @@ test('exported defaults match the legacy constants', () => {
     assert.equal(current[key], legacy[key], key);
   }
   assert.deepEqual(current.DEFAULT_KEEP_TURNS_LADDER, legacy.DEFAULT_KEEP_TURNS_LADDER);
+});
+
+test('转录接口保留旧导出顺序、参数个数、默认值和路径转换', () => {
+  const previous = require('./helpers/frozen-file-batch8/transcript-prune');
+  assert.deepEqual(Object.keys(current), Object.keys(previous));
+  for (const [key, original] of Object.entries(previous)) {
+    if (typeof original === 'function') assert.equal(current[key].length, original.length, key);
+    else assert.deepEqual(current[key], original, key);
+  }
+  for (const cwd of ['', 0, { toString: () => '多字节目录' }]) {
+    assert.equal(current.claudeProjectDir(cwd), previous.claudeProjectDir(cwd));
+    assert.deepEqual(current.measure(cwd, 'file8-absent-transcript'), previous.measure(cwd, 'file8-absent-transcript'));
+  }
 });

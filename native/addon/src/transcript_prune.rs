@@ -1,8 +1,7 @@
 //! napi surface for the Rust transcript governor.
 //!
 //! Every call either returns a real JavaScript value (via the lossless bridge)
-//! or throws. The JavaScript facade in `src/chat/transcript-prune.js` only
-//! forwards the arguments and injects `os.homedir()`; all decision-making and
+//! or throws. The host supplies its home directory; decision-making and
 //! file IO live in `multicc_core::transcript_prune`.
 use crate::js_live::LiveValue as L;
 use multicc_core::js::JsValue;
@@ -237,4 +236,116 @@ pub fn transcript_compact_cut_index(env: Env, value: Unknown<'_>) -> Result<sys:
         lines.push(text.to_string_lossy());
     }
     write(env, &core::cut_value(&core::compact_cut_index(&lines)))
+}
+
+fn opt_string(v: L<'_>, empty: JsValue) -> Result<L<'_>> {
+    if v.truthy()? {
+        v.global()?.get(c"String")?.call_plain(&[v])
+    } else {
+        v.from_value(&empty)
+    }
+}
+
+/// Assemble the public transcript API over the host's current home directory.
+/// Find the file before inspecting pruning options, as the standalone CLI does.
+#[napi]
+pub fn transcript_pruning_api(
+    env: Env,
+    addon: Unknown<'_>,
+    home: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    use crate::{
+        host_methods::{call, method},
+        js_live::fields,
+    };
+    let addon = L::new(&env, addon);
+    let owner = fields(addon, &[("addon", addon), ("home", L::new(&env, home))])?;
+    let api = fields(addon, &[])?;
+    for (name, capacity, length, target) in [
+        ("maybePrune", 3, 2, c"transcriptPruneFile"),
+        ("pruneFile", 2, 1, c"transcriptPruneFile"),
+        ("claudeTranscriptTargets", 1, 1, c"transcriptClaudeTargets"),
+        (
+            "findSessionClaudeFile",
+            2,
+            2,
+            c"transcriptFindSessionClaude",
+        ),
+        ("pruneSessionClaude", 3, 2, c"transcriptPruneSessionClaude"),
+        ("measure", 3, 2, c"transcriptMeasureFile"),
+        ("measureFile", 2, 1, c"transcriptMeasureFile"),
+        ("findTranscriptFile", 2, 2, c"transcriptFind"),
+        ("claudeProjectDir", 1, 1, c"transcriptProjectDir"),
+        ("isRealUserTurn", 1, 1, c"transcriptRealUserTurn"),
+        ("isSubstantiveTurn", 1, 1, c"transcriptSubstantiveTurn"),
+        ("userVisibleText", 1, 1, c"transcriptUserVisibleText"),
+        ("triggersFor", 2, 2, c"transcriptTriggersFor"),
+        ("compactCutIndex", 1, 1, c"transcriptCompactCutIndex"),
+    ] {
+        let f = method(&env, owner, name, length, capacity, move |owner, args| {
+            let addon = owner.get(c"addon")?;
+            if matches!(
+                name,
+                "claudeTranscriptTargets"
+                    | "isRealUserTurn"
+                    | "isSubstantiveTurn"
+                    | "userVisibleText"
+                    | "triggersFor"
+                    | "compactCutIndex"
+            ) {
+                return call(addon, target, args);
+            }
+            let home = || owner.get(c"home")?.call_plain(&[]);
+            let default_options = |i: usize| {
+                if args[i].undefined()? {
+                    fields(owner, &[])
+                } else {
+                    Ok(args[i])
+                }
+            };
+            if matches!(name, "measureFile" | "pruneFile") {
+                return call(
+                    addon,
+                    target,
+                    &[opt_string(args[0], JsValue::Null)?, default_options(1)?],
+                );
+            }
+            let cwd = opt_string(args[0], JsValue::from(""))?;
+            match name {
+                "claudeProjectDir" => call(addon, target, &[cwd, home()?]),
+                "findSessionClaudeFile" => call(addon, target, &[cwd, args[1], home()?]),
+                "pruneSessionClaude" => {
+                    call(addon, target, &[cwd, args[1], home()?, default_options(2)?])
+                }
+                _ => {
+                    let session = opt_string(args[1], JsValue::Null)?;
+                    let file = call(addon, c"transcriptFind", &[cwd, session, home()?])?;
+                    if name == "findTranscriptFile" {
+                        Ok(file)
+                    } else {
+                        call(
+                            addon,
+                            target,
+                            &[opt_string(file, JsValue::Null)?, default_options(2)?],
+                        )
+                    }
+                }
+            }
+        })?;
+        api.set_key(api.from_value(&name.into())?, f)?;
+    }
+    let defaults = call(addon, c"transcriptPruneDefaults", &[])?;
+    for (name, key) in [
+        ("DEFAULT_MAX_BYTES", c"maxBytes"),
+        ("DEFAULT_TARGET_TOKENS", c"targetTokens"),
+        ("DEFAULT_HARD_MAX_TOKENS", c"hardMaxTokens"),
+        ("DEFAULT_MAX_ENTRY_BYTES", c"maxEntryBytes"),
+        ("DEFAULT_HARD_ENTRY_BYTES", c"hardEntryBytes"),
+        ("DEFAULT_KEEP_TURNS_LADDER", c"keepTurnsLadder"),
+        ("DEFAULT_SCAN_MIN_BYTES", c"scanMinBytes"),
+        ("DEFAULT_TOKEN_WATERMARK", c"tokenWatermark"),
+    ] {
+        api.set_key(api.from_value(&name.into())?, defaults.get(key)?)?;
+    }
+    Ok(api.raw())
 }

@@ -1,5 +1,26 @@
 # 剩余 Node 后端清单
 
+## 第八批按文件迁移（2026-11-25）
+
+本批以本地合并提交 `e272a756` 为基线。根 `server.js` 及其生产调用链上的 Node 文件从 **470 个降至 462 个**，行数从 **125,736 降至 125,543**。退出的 8 份文件合计 355 行，其余生产接线净增 162 行，本批净减 **193 行**。从 `dc0df5fe` 的 495 个生产文件、126,693 行起，八批累计退出 **33 个文件**、净减 **1,150 行**。生产依赖清单包含通过宿主脚本启动的文件。[逐文件依赖](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 blob |
+|---|---|---:|---|
+| `src/chat/transcript-prune.js` | `src/chat/turn-engine.js`、`src/routes/chat-history.js` | 79 | `d845b239` |
+| `src/task-shell/context-snapshot.js` | `src/task-shell/context-plan.js` | 51 | `4ee1b0de` |
+| `src/cli/homebrew-takeover.js` | `src/cli/tools-host.js` | 42 | `5d8bf621` |
+| `src/claude-auth/expired-refresh-policy.js` | `src/claude-auth/accounts-refresh.js`、`src/claude-auth/oauth-refresh.js` | 31 | `7cd1c6d9` |
+| `src/cli-adapters/agy.js` | `src/cli-adapters/index.js` | 61 | `6b7488b1` |
+| `src/orchestration/native-command.js` | `src/orchestration/native-store-host.js`、`src/orchestration/store.js` | 36 | `c2169a04` |
+| `src/doctor/host.js` | `server.js` | 33 | `649b11fc` |
+| `src/providers/native-subscription.js` | `src/quota/account-subscription-reader.js` | 22 | `93e69877` |
+
+Rust 负责转录查找与修剪接口、快照与交接摘要的预算循环、Homebrew 程序查找顺序、过期令牌续期计划、Agy 启动参数、同步事务命令选择、医生服务的模型选择，以及订阅查询的网络分支。Node 目前仍提供涉及 V8 对象展开、原始异常、Promise 拒绝、平台路径、SDK 回调和注入式 fetch 的端口。相应调用方迁入原生运行时后即可移除这些接线。[上下文预算](../../native/addon/src/context_excerpt.rs) · [Agy 启动](../../native/addon/src/agy_stream.rs) · [事务命令](../../native/addon/src/orchestration_command.rs)
+
+原始基线的 `npm test` 首次因工作树向上加载了 Claude SDK 0.3.317 而提前退出。按锁文件安装 0.3.325 后，补跑了短路后的所有套件，修正了按旧生产目录解析的任务板冻结依赖、403 测试夹具和缺少任务规划资产的桌面打包夹具。凭据格式示例采用同期主线已审核的修法；macOS 安装脚本使用本机支持的 `C` 区域设置。修正后的基线完整执行 `npm test`，退出码 0。中间一次无人值守 FIFO 时序测试失败，完整复跑通过。
+
+8 份旧模块已逐一核对 Git blob，冻结副本仅调整了相对导入。迁前 14 个定向文件 **236/236** 通过。macOS ARM64 共用一次发布构建，五份产物的源码指纹 `67605658dd69348357ca3975` 和各自的 SHA-256 均已核对；同一组定向文件加入 8 项冻结对照后 **244/244** 通过。此前各批与本批共 53 个测试文件交叉回归，**1,037 项通过、0 项失败、1 项跳过**。跳过项需要独立的 Electron 打包工具链。同一份发布产物上的迁后全量 `npm test` 也以 0 退出。按 Node 测试运行器各段汇总，修正基线通过 8,066 项，迁后通过 8,073 项，迁后跳过 11 项、待实现 1 项；其余独立脚本以各自退出码验收。[冻结副本](../../tests/helpers/frozen-file-batch8/) · [预算对照](../../tests/test-large-context-prefix.js) · [转录对照](../../tests/test-transcript-prune-differential.js)
+
 ## 第七批按文件迁移（2026-11-25）
 
 上批提交 `5c7f6cfa` 时，生产入口可达的 Node 代码有 478 个文件、126,155 行。本批整份退出 **8 个生产文件**，删除 505 行，其余生产文件接线净增 86 行，**生产 Node 净减 419 行**。当前工作树剩余 **470 个生产文件、125,736 行**。从 `dc0df5fe` 的 495 个文件、126,693 行起，七批累计退出 **25 个文件、净减 957 行**。统计包含根 `server.js` 和从它或其宿主脚本可达的 `src/` 模块，排除测试、前端和离线工具。[生产依赖清单](node-module-dependencies.md)

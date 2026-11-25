@@ -67,3 +67,17 @@ test('fixed native command commits synchronously and never assimilates its resul
     await assert.rejects(store.runNativeCommandSync('arbitrary', () => {}), /unknown synchronous orchestration command/);
   }
 });
+
+test('同步命令的白名单和空原型信封与冻结接口一致', () => {
+  const previous = require('./helpers/frozen-file-batch8/native-command');
+  const current = require('../src/native/runtime');
+  const value = { get then() { throw new Error('信封不能读取 then'); } };
+  for (const api of [previous, current]) {
+    const envelope = api.commandEnvelope(value);
+    assert.equal(Object.getPrototypeOf(envelope), null);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(envelope, 'value'),
+      { value, writable: false, enumerable: true, configurable: false });
+    assert.throws(() => api.invokeNativeCommand('constructor', {}, []),
+      { name: 'TypeError', message: 'unknown synchronous orchestration command' });
+  }
+});

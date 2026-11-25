@@ -30,7 +30,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { buildChildEnv } = require('../providers/core');
-const { planClaudeExpiredRefresh } = require('./expired-refresh-policy');
+const { planClaudeExpiredRefresh } = require('../native/runtime');
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 // Start trying well before the token dies, because the CLI keeps its own idea

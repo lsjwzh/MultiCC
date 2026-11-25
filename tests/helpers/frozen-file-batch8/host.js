@@ -4,9 +4,9 @@
 // used by the Rust gateway through the host operations port.
 const os = require('os');
 const path = require('path');
-const { createDoctorService } = require('./service');
-const { createEnvironmentDoctor } = require('./environment');
-const { probeEnv, execShell } = require('../routes/ops-terminal');
+const { createDoctorService } = require('../../../src/doctor/service');
+const { createEnvironmentDoctor } = require('../../../src/doctor/environment');
+const { probeEnv, execShell } = require('../../../src/routes/ops-terminal');
 
 function createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir, dataDir }) {
   const resolveTarget = () => {

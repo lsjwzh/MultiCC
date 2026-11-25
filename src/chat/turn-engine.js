@@ -528,7 +528,7 @@ function createChatTurnEngine(deps) {
   function pruneTranscript(sessionName, persisted) {
     let outcome;
     try {
-      outcome = require('./transcript-prune').pruneSessionClaude(cwdForSession(persisted), persisted);
+      outcome = require('../native/runtime').getTranscriptPruning().pruneSessionClaude(cwdForSession(persisted), persisted);
     } catch (error) {
       logger.warn('transcript_prune_failed', { sessionId: sessionName, error: error && error.message ? error.message : String(error) });
       return null;

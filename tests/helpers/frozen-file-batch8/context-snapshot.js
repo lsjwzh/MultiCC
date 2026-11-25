@@ -1,6 +1,6 @@
 'use strict';
-const { hash, estimateTokens, renderSnapshots } = require('../native/runtime').taskShellContext;
-const { clipTokens } = require('../native/runtime').getContextSelection();
+const { hash, estimateTokens, renderSnapshots } = require('../../../src/native/runtime').taskShellContext;
+const { clipTokens } = require('../../../src/native/runtime').getContextSelection();
 
 // Preserve parseable provenance and explicit truncation when an imported turn
 // is larger than the automatic budget. Full history remains available by cursor.
@@ -31,7 +31,7 @@ function boundedSnapshot(snapshot, budget = 1600) {
 module.exports = { boundedSnapshot };
 
 function boundedHandoff(handoff, budget = 1500) {
-  const { renderHandoffPrompt } = require('../cli-switch');
+  const { renderHandoffPrompt } = require('../../../src/cli-switch');
   const original = renderHandoffPrompt(handoff);
   if (estimateTokens(original) <= budget) return { text: original, truncated: false };
   const cp = handoff.checkpoint, task = {};

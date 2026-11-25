@@ -3,7 +3,7 @@
 // Only fixed Rust commands may use the synchronous transaction boundary.
 // A null-prototype envelope prevents the queue Promise from assimilating a
 // command result (or an inherited/mutable `then`) before the caller unwraps it.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 const { types: { isPromise } } = require('node:util');
 const promiseThen = Promise.prototype.then;
 

@@ -16,7 +16,7 @@ const { createFolderMemoryService } = require('../src/memory/folder-service');
 const { readMemoryFolder } = require('../src/memory-store');
 const { estimateTokens, verifySnapshot } = require('../src/native/runtime').taskShellContext;
 const { historySnapshot } = require('../src/task-shell/history-context');
-const { boundedSnapshot, boundedHandoff } = require('../src/task-shell/context-snapshot');
+const { boundedSnapshot, boundedHandoff } = require('../src/task-shell/context-plan');
 const { prepareManagedContext } = require('../src/native/runtime').managedContext;
 const {
   createHostPrompts,
@@ -370,4 +370,20 @@ test('combined Turn-1 MultiCC-owned prefix (host prompts + subagent hint + plan 
     totalPrefixChars < 20_500,
     `combined Turn-1 prefix (${totalPrefixChars} chars) must stay far below 30,378-char pre-optimization baseline`,
   );
+});
+
+test('任务上下文的保留记录、截断标记及哈希与冻结实现一致', () => {
+  const previous = require('./helpers/frozen-file-batch8/context-snapshot');
+  for (const count of [0, 2, 9]) {
+    const messages = Array.from({ length: count }, (_, i) => ({
+      role: i === 0 ? 'user' : 'assistant', content: ('a中🙂' + i).repeat(180), tools: [],
+    }));
+    const snapshot = { taskId: 't', messages, omittedMessages: 2 };
+    const handoff = { id: 'h', checkpoint: { task: { title: '计划'.repeat(160) },
+      transcript: messages.map(m => ({ role: m.role, text: m.content })), git: { branch: 'b', commit: 'c' } } };
+    for (const budget of [0, 30, 300, 1200, 30000]) {
+      assert.deepEqual(boundedSnapshot(snapshot, budget), previous.boundedSnapshot(snapshot, budget));
+      assert.deepEqual(boundedHandoff(handoff, budget), previous.boundedHandoff(handoff, budget));
+    }
+  }
 });

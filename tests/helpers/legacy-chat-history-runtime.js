@@ -760,7 +760,7 @@ function createChatHistoryRuntime(rawDeps) {
         if (persisted.cli !== 'claude') {
           return res.json({ ok: true, supported: false, reason: 'cli-not-claude', cli: persisted.cli || null });
         }
-        const { measure, maybePrune } = require('../chat/transcript-prune');
+        const { measure, maybePrune } = require('./frozen-file-batch8/transcript-prune');
         const cwd = deps.cwdForSession(persisted);
         // The streaming path is where a chat session's context actually lives; the
         // per-turn id is the fallback for sessions that never streamed.

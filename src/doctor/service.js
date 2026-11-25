@@ -137,4 +137,27 @@ function scrub(text) {
   });
 }
 
-module.exports = { createDoctorService, SYSTEM_PROMPT };
+function createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir, dataDir }) {
+  const path = require('node:path');
+  const { probeEnv, execShell } = require('../routes/ops-terminal');
+  const { createEnvironmentDoctor } = require('./environment');
+  const native = require('../native/runtime').getNative();
+  const resolveTarget = () => native.doctorHttpTarget(auxQueue, getAuxConfig);
+  const envDoctor = createEnvironmentDoctor({
+    resolveTarget,
+    probe: () => probeEnv(execShell, process.platform),
+  });
+  const doctor = createDoctorService({
+    getSession: id => persistedSessions.get(id),
+    loadHistory: loadChatHistory,
+    cwdOf: cwdForSession,
+    resolveTarget,
+    repoRoot: rootDir,
+    dataDir,
+    logDirs: [path.join(rootDir, 'logs'), path.join(os.homedir(), '.pm2', 'logs')],
+    serverPid: process.pid,
+  });
+  return { doctor, envDoctor };
+}
+
+module.exports = { createDoctorHost, createDoctorService, SYSTEM_PROMPT };

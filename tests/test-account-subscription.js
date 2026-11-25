@@ -353,3 +353,22 @@ test('多写者、record 与 project 交错时所有写入最终都可见', asyn
   }
   assert.deepEqual(missing, [], 'every concurrent write must become visible within a finite number of project() calls');
 });
+
+test('订阅读取与冻结版使用相同的提前返回、请求和回退结果', async () => {
+  const previous = require('./helpers/frozen-file-batch8/native-subscription').query;
+  const current = require('../src/quota/account-subscription-reader').query;
+  async function sample(query, input, mode) {
+    const calls = [];
+    const result = await query(input, { fetch: async (url, options) => {
+      calls.push([url, options.method, options.headers, options.signal instanceof AbortSignal]);
+      if (mode === 'throw') throw new Error('fixture');
+      return json({ rate_limit_tier: 'test' }, mode);
+    } });
+    return { result, calls };
+  }
+  for (const input of [{ vendor: 'claude', token: '' }, { vendor: 'claude', token: 'test-token' }]) {
+    for (const mode of [200, 403, 'throw']) {
+      assert.deepEqual(await sample(current, input, mode), await sample(previous, input, mode));
+    }
+  }
+});

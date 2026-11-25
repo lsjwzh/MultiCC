@@ -447,6 +447,9 @@ test('远程 CLI 开关在新建时就能出现，可见性跟随 Base URL 输�
 
 // SSH 借用码（mcssh1.）不是借道码：载荷里带私钥，导入后会写成 0600 文件并
 // 走 transport=ssh。两种码必须互不串味，否则导入端会拿着私钥去当 Bearer 用。
+const FAKE_SSH_KEY_BEGIN = ['-----BEGIN', 'OPENSSH PRIVATE KEY-----'].join(' ');
+const FAKE_SSH_KEY_END = ['-----END', 'OPENSSH PRIVATE KEY-----'].join(' ');
+
 function encodeSsh(payload) {
   return 'mcssh1.' + Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
@@ -460,7 +463,7 @@ test('parseSshShareCode round-trips the ssh borrow payload', () => {
     appType: 'agy',
     sshTarget: 'me@10.0.0.5',
     sshPort: 2222,
-    identityKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n',
+    identityKey: `${FAKE_SSH_KEY_BEGIN}\nabc\n${FAKE_SSH_KEY_END}\n`,
     fileMode: 'mutagen',
     shareId: '0123456789abcdef',
   };
@@ -475,7 +478,7 @@ test('parseSshShareCode defaults a missing fileMode to mutagen', () => {
     kind: 'multicc-ssh',
     appType: 'agy',
     sshTarget: 'me@host',
-    identityKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----',
+    identityKey: `${FAKE_SSH_KEY_BEGIN}\nx\n${FAKE_SSH_KEY_END}`,
   })).payload;
   assert.equal(parsed.fileMode, 'mutagen');
 });
@@ -489,7 +492,7 @@ test('parseSshShareCode rejects malformed or cross-kind codes', () => {
   assert.match(ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy', sshTarget: '' })).error, /缺少 SSH 目标/);
   assert.match(ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy', sshTarget: 'h' })).error, /缺少借用的私钥/);
   assert.match(
-    ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy', sshTarget: 'h', identityKey: '-----BEGIN OPENSSH PRIVATE KEY-----', fileMode: 'weird' })).error,
+    ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy', sshTarget: 'h', identityKey: FAKE_SSH_KEY_BEGIN, fileMode: 'weird' })).error,
     /同步方式无效/,
   );
 });

@@ -4,7 +4,7 @@
 // filtering, persistence, retention and streaming export live in Rust.
 const path = require('node:path');
 const { addonPath, getNative } = require('../native/runtime');
-const { invokeNativeCommand, commandEnvelope } = require('./native-command');
+const { invokeNativeCommand, commandEnvelope } = require('../native/runtime');
 const { OutboxConflictError } = require('../outbox');
 const { types: { isProxy, isNativeError } } = require('node:util');
 const { AsyncLocalStorage } = require('node:async_hooks');

@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createAgyAdapter } = require('../src/cli-adapters/agy');
+const { createAgyAdapter } = require('../src/cli-adapters/index');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { getNative } = require('../src/native/runtime');
 
@@ -228,4 +228,19 @@ test('chat_apply_adapter_decoded_event forwards live_usage as role_token_stats a
   assert.equal(forwarded[1].type, 'stream_event');
   assert.equal(forwarded[1].event.type, 'message_delta');
   assert.deepEqual(forwarded[1].event.usage, liveEvent.stepUsage);
+});
+
+test('Agy 终端命令和启动参数与冻结适配器一致', () => {
+  const previous = require('./helpers/frozen-file-batch8/agy').createAgyAdapter({ cmd: "bin/a'gy" });
+  const current = createAgyAdapter({ cmd: "bin/a'gy" });
+  for (const model of [null, "a'b", 'gemini-3-flash']) {
+    for (const effort of ['', 'high']) {
+      for (const sessionId of [null, '会话']) {
+        const options = { model, effort, sessionId, first: !sessionId };
+        const session = { model, effort, cliSessionId: sessionId };
+        assert.equal(current.buildTerminalCmd(session), previous.buildTerminalCmd(session));
+        assert.deepEqual(current.buildInvocation(envelope(options)), previous.buildInvocation(envelope(options)));
+      }
+    }
+  }
 });

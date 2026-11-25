@@ -4,7 +4,7 @@
 // path resolution and the injectable realpath port used by install callers.
 const fs = require('node:fs');
 const path = require('node:path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 const request = (op, input) => getNative().homebrewTakeoverRequest(op, input);
 
 function resolveOnPath(cmd, envPath) {

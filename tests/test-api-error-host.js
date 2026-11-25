@@ -230,7 +230,7 @@ test('stream host rejects a reused Claude handoff failure before policy and Auto
   });
   attemptRuntime.observeEvent(providerAttempt, {
     type: 'stream_event', event: {
-      type: 'content_block_delta', delta: { type: 'text_delta', text: 'API Error: 403' },
+      type: 'content_block_delta', delta: { type: 'text_delta', text: 'Failed to authenticate. API Error: 403' },
     },
   });
   const errorTurn = { turnId: 'turn-handoff-403', resultDurable: false };

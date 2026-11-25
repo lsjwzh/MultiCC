@@ -388,3 +388,14 @@ for (const mode of ['revoked', 'rejected']) {
     assert.equal(h.readCredential().claudeAiOauth.expiresAt, expiresAt + 8 * HOUR);
   });
 }
+
+nativeTest('续期计划与冻结宿主在过期、停用和预算耗尽时一致', () => {
+  const previous = require('./helpers/frozen-file-batch8/expired-refresh-policy').planClaudeExpiredRefresh;
+  const current = require('../src/native/runtime').planClaudeExpiredRefresh;
+  for (const now of [0, 90, 100, 101]) for (const probes of [0, 2, 3]) {
+    for (const parked of [false, true]) for (const hasRefreshToken of [false, true]) {
+      const input = { now, expiresAt: 100, hasRefreshToken, parked, probes };
+      assert.deepEqual(current(input), previous(input));
+    }
+  }
+});

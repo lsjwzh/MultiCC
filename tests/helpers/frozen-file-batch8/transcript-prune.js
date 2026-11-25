@@ -8,7 +8,7 @@
 // parsing or policy logic may return here — Node is frozen.
 
 const os = require('os');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 const DEFAULTS = getNative().transcriptPruneDefaults();
 

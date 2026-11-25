@@ -258,7 +258,7 @@ test('separation injects only the imported exchange but explicit reads reach the
 
 test('oversized imported history remains parseable, verifiable and expandable with honest truncation', () => {
   const { historySnapshot } = require('../src/task-shell/history-context');
-  const { boundedSnapshot } = require('../src/task-shell/context-snapshot');
+  const { boundedSnapshot } = require('../src/task-shell/context-plan');
   const { verifySnapshot } = require('../src/native/runtime').taskShellContext;
   const original = historySnapshot('task', [
     { id: 'u', role: 'user', content: '需求'.repeat(9000), contextMessageId: 's:u' },

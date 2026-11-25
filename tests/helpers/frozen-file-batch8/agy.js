@@ -3,9 +3,9 @@
 // Antigravity (`agy`) `--output-format stream-json` 适配器的薄 Node 桥接层。
 // 命令构造、每步实时用量累加与每轮事件状态机均由 Rust (`multicc_core::agy_stream`)
 // 负责；本文件仅对接现有 adapter 合约、宿主 prompt 渲染与交互终端命令。
-const { createProtocolCompletionTracker } = require('./completion');
-const { getNative, messageComposer } = require('../native/runtime');
-const { displayNameOf, supportsEffort } = require('../cli/cli-capability');
+const { createProtocolCompletionTracker } = require('../../../src/cli-adapters/completion');
+const { getNative, messageComposer } = require('../../../src/native/runtime');
+const { displayNameOf, supportsEffort } = require('../../../src/cli/cli-capability');
 
 const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 

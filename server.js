@@ -2225,7 +2225,7 @@ chatHistoryRuntime = createChatHistoryRuntime({
 });
 chatHistoryService = chatHistoryRuntime.service;
 createReleaseHistoryHost({ chatHistory: chatHistoryRuntime, apkDistribution, iosOta }).mountRoute(app);
-createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(orchestrationHost.app); mountTurnLedgerHostRoute(app, { launch: id => turnLedgerRuntime.launch(id), record: id => turnLedgerRuntime.record(id), trust: input => turnLedgerRuntime.trust(input) }); const doctorHost = require('./src/doctor/host').createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir: __dirname, dataDir: MULTICC_PATHS.root });
+createAuxRunRoutes({ records: persistedSessions, getLog: () => auxRunLog }).mountRoutes(orchestrationHost.app); mountTurnLedgerHostRoute(app, { launch: id => turnLedgerRuntime.launch(id), record: id => turnLedgerRuntime.record(id), trust: input => turnLedgerRuntime.trust(input) }); const { doctor, envDoctor } = require('./src/doctor/service').createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, auxQueue, getAuxConfig, rootDir: __dirname, dataDir: MULTICC_PATHS.root });
 // 宿主与系统操作 40 条公开路由已由 Rust 前门独占（native/gateway/src/app/host_ops_routes.rs）；
 // 这里只把 Node 独有的进程/主机副作用暴露成回环宿主端口。
 require('./src/routes/host-ops-host').createHostOpsHost({
@@ -2234,8 +2234,8 @@ require('./src/routes/host-ops-host').createHostOpsHost({
   update: updateRoute,
   hostWrite: hostWriteDeps,
   skillSync: skillSyncRuntime,
-  envDoctor: doctorHost.envDoctor,
-  doctor: doctorHost.doctor,
+  envDoctor,
+  doctor,
 }).mountRoute(app);
 
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }

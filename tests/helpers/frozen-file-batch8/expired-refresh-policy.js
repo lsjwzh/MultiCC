@@ -2,7 +2,7 @@
 
 // Migration bridge only. Rust owns the expired-token retry and park decisions;
 // JavaScript retains the CLI/Keychain calls and durable-state adapter.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 let warned = false;
 

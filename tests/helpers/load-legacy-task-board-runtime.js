@@ -22,5 +22,6 @@ const runtime = snapshot('routes/task-board.js', 'legacy-task-board-runtime.js',
   '../task-display-attribution': require('./legacy-task-display-attribution'),
   '../task-board/runtime-helpers': require('./legacy-task-board-runtime-helpers'),
   '../task-board/turn-context': context, '../task-board/cold-start-seed': seed,
+  './frozen-host-ports/task-board-repository': require('./frozen-host-ports/task-board-repository'),
 });
 module.exports = { ...runtime, ...context, ...seed };
