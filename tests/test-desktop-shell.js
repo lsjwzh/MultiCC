@@ -759,6 +759,9 @@ function stubRepoRoot(dir) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '');
   }
+  const planningAsset = 'native/core/src/task_planning_status.json';
+  fs.mkdirSync(path.dirname(path.join(dir, planningAsset)), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, '..', planningAsset), path.join(dir, planningAsset));
   return dir;
 }
 

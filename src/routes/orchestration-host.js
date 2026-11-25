@@ -157,4 +157,35 @@ function createOrchestrationHost(deps = {}) {
   return { app, handlers, mountRoute };
 }
 
-module.exports = { HOST_PATH, OPS, createOrchestrationHost };
+function createAuxRunRoutes({ records, getLog } = {}) {
+  if (!records || typeof records.get !== 'function') throw new TypeError('aux run records map required');
+  if (typeof getLog !== 'function') throw new TypeError('aux run log getter required');
+  const { getNative } = require('../native/runtime');
+  function mountRoutes(app) {
+    if (!app || typeof app.get !== 'function') throw new TypeError('Express app.get required');
+    const handle = detail => (req, res) => getNative().auxRunResponse(records, getLog, detail, req, res);
+    app.get('/api/sessions/:id/aux-runs', handle(false));
+    app.get('/api/sessions/:id/aux-runs/:runId', handle(true));
+  }
+  return Object.freeze({ mountRoutes });
+}
+
+function mountUnattendedRoutes(app, deps = {}) {
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
+    throw new TypeError('[unattended-routes] Express app is required');
+  }
+  const records = deps.records;
+  if (!records || typeof records.get !== 'function') {
+    throw new TypeError('[unattended-routes] records map is required');
+  }
+  const { getNative } = require('../native/runtime');
+  const { LIMITS } = require('../unattended/kernel');
+  const settle = async (res, result) => getNative().unattendedRouteResult(res, await result, LIMITS);
+  const ports = { records, deps, limits: LIMITS, settle };
+  app.get('/api/sessions/:id/unattended', (req, res) =>
+    getNative().unattendedRouteRequest(ports, false, req, res));
+  app.post('/api/sessions/:id/unattended', async (req, res) =>
+    getNative().unattendedRouteRequest(ports, true, req, res));
+}
+
+module.exports = { HOST_PATH, OPS, mountUnattendedRoutes, createOrchestrationHost, createAuxRunRoutes };

@@ -2,7 +2,7 @@
 
 const { getUnlockPassword, getUnlockProbe, getPowerPreferences, readPowerSettings } = require('../host-power-services');
 const { MAX_PASSWORD_LENGTH } = require('../macos-unlock-password');
-const { mapError } = require('../http/error-map');
+const { mapError } = require('../http-errors');
 
 const passwordService = deps => deps.unlockPassword || getUnlockPassword();
 const preferencesService = deps => deps.powerPreferences || getPowerPreferences();

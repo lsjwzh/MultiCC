@@ -14,7 +14,7 @@ const { fetchKimiBalance } = require('../src/routes/kimi-quota');
 const { fetchWithCookies } = require('../src/routes/qoder-quota');
 const { fetchCliUsage } = require('../src/quota/claude-cli-oauth');
 const { fetchZenGoUsage } = require('../src/quota/opencode-zen');
-const { createProviderBalanceRuntime } = require('../src/routes/provider-balance');
+const { createProviderBalanceRuntime } = require('../src/routes/provider-balance-host');
 const { mountProviderBalanceHost } = require('../src/routes/provider-balance-host');
 const { createCliLoginDetector } = require('../src/official-accounts-cli-login');
 
@@ -178,7 +178,7 @@ test('Qoder 代理请求保留手动重定向和登录失效语义', async () =>
 test('余量和账户请求不能重新绕过统一网络入口', () => {
   const files = [
     'src/usage-limit-poller.js', 'src/routes/codex-quota.js', 'src/routes/claude-accounts.js',
-    'src/routes/claude-usage-quota.js', 'src/routes/provider-balance.js', 'src/routes/qoder-quota.js',
+    'src/routes/claude-usage-quota.js', 'src/routes/provider-balance-host.js', 'src/routes/qoder-quota.js',
     'src/routes/kimi-quota.js', 'src/quota/claude-cli-oauth.js', 'src/quota/opencode-zen.js',
     'src/official-accounts-cli-login.js', 'src/providers/jev-client.js',
   ];

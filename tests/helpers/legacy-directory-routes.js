@@ -9,7 +9,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const stateStore = require('../../src/state/store');
-const { ensureSampleWorkspace } = require('../../src/directory/sample-workspace');
+const { ensureSampleWorkspace } = require('./frozen-file-batch11/sample-workspace');
 const { quickCommitMessage } = require('./frozen-host-ports/git-default-commit-message');
 
 

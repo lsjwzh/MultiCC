@@ -12,7 +12,7 @@
 //! is exactly the state Rust cannot see: the installed-skill scan, the preset
 //! file (plus its provider enrichment) and the Claude history store on disk.
 //! Those are reached through one host port, [`crate::host_port`], served by
-//! `src/routes/agent-resources-host.js`.
+//! `src/routes/host-read-host.js`.
 //!
 //! Node answered each request to completion on the event loop; the purge loop
 //! called a synchronous remove per session, so two concurrent purges could not
@@ -27,7 +27,7 @@ use crate::app::express::{self, RequestCtx};
 use crate::app::Route;
 use crate::host_port;
 
-/// The host port the Node child serves (`src/routes/agent-resources-host.js`).
+/// The host port the Node child serves (`src/routes/host-read-host.js`).
 const HOST_PATH: &str = "/api/__host/agent-resources";
 
 /// `/api/agent-resources/skills`.

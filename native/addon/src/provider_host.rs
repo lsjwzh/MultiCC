@@ -166,3 +166,22 @@ pub fn provider_repository(
     })?;
     Ok(fields(file, &[("read", read), ("write", write)])?.raw())
 }
+
+/// Pick the completion, proxy, or injected fetch continuation after the
+/// credential read. Fetch options and timeout are the same for all vendors.
+#[napi]
+pub async fn account_subscription_start(input: String, injected_fetch: bool) -> Result<String> {
+    let v = multicc_core::json_lenient::from_str(&input)
+        .map_err(|_| napi::Error::from_reason("SUBSCRIPTION_INVALID_REQUEST"))?;
+    let plan = multicc_cpr::provider_host::subscription_plan(v)
+        .await
+        .map_err(napi::Error::from_reason)?;
+    let step = if plan.get("result").is_some_and(serde_json::Value::is_object) {
+        serde_json::json!({"mode":"done","result":plan["result"]})
+    } else if injected_fetch {
+        serde_json::json!({"mode":"fetch","request":{"method":"GET","headers":plan["headers"]},"timeout":10000,"plan":plan})
+    } else {
+        serde_json::json!({"mode":"proxy","plan":plan})
+    };
+    Ok(step.to_string())
+}

@@ -813,7 +813,41 @@ function getTurnState() {
   return turnState;
 }
 
-module.exports = { getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
+let transcriptPruning;
+function getTranscriptPruning() {
+  const native = getNative();
+  return transcriptPruning ||= native.transcriptPruningApi(native, () => require('node:os').homedir());
+}
+
+let warnedExpiredRefresh = false;
+function planClaudeExpiredRefresh(input, logger) {
+  try { return getNative().claudeRefreshDecision(JSON.stringify(input)); }
+  catch {
+    if (!warnedExpiredRefresh) {
+      warnedExpiredRefresh = true;
+      logger?.warn?.('claude_expired_refresh_policy_unavailable', {
+        action: 'build the current Rust addon; Claude CLI probes stay disabled until it is available',
+      });
+    }
+    return null;
+  }
+}
+
+const promiseThen = Promise.prototype.then;
+function invokeNativeCommand(name, draft, args, snapshot = draft) {
+  const native = module.exports.getNative();
+  const result = native.orchestrationCommand(native, name, draft, args, snapshot);
+  if (require('node:util').types.isPromise(result)) {
+    Reflect.apply(promiseThen, result, [undefined, () => {}]);
+    throw new TypeError('synchronous Rust orchestration command returned a promise');
+  }
+  return result;
+}
+function commandEnvelope(value) {
+  return Object.defineProperty(Object.create(null), 'value', { value, enumerable: true });
+}
+
+module.exports = { getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
   getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,

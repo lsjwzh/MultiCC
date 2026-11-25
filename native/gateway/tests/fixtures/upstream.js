@@ -577,7 +577,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   // Host port for the token-usage role snapshot and the persisted ledger
-  // (src/routes/token-usage-host.js). The script file carries the per-session
+  // (src/routes/host-read-host.js). The script file carries the per-session
   // snapshots and the ledger object; every call is appended so the tests can
   // assert the exact op and session the front door sent.
   if (route === '/api/__host/token-usage' && req.method === 'POST') {
@@ -669,7 +669,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   // Host port for the terminal turn-ledger diagnostics
-  // (src/routes/turn-ledger-host.js, native/gateway/src/app/turn_ledger.rs).
+  // (src/routes/host-read-host.js, native/gateway/src/app/turn_ledger.rs).
   // The script carries the launch table, the raw ledger records and the two
   // trust answers; every call is appended so the tests can assert the exact
   // op and session the front door sent, and that a refusal never reached the
@@ -710,7 +710,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   // Host port for the system routes retired from src/routes/system.js
-  // (src/routes/system-host.js, native/gateway/src/app/system.rs). The script
+  // (src/routes/host-read-host.js, native/gateway/src/app/system.rs). The script
   // carries the process facts under `system.serverInfo`, the ls-remote answer
   // under `system.lsRemote` and the raw trace ring (oldest first) under
   // `system.traceEntries`. The trace branch repeats the host route's own
@@ -750,7 +750,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   // Host port for the scan history route retired from src/routes/scan.js
-  // (src/routes/scan-history-host.js, native/gateway/src/app/scan.rs). The
+  // (src/routes/host-read-host.js, native/gateway/src/app/scan.rs). The
   // script carries `scan.seq`, `scan.passes` and `scan.maxPasses`; the
   // Math.min cap and the slice — including its negative-argument semantics —
   // stay in JS verbatim, exactly like the real host route.

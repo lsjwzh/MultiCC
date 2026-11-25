@@ -175,7 +175,9 @@ function probeAddon(file, node = process.execPath) {
     if(['pathSafetyRealPath','pathSafetyHomeOrAbove'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustModelDefaults!=='function') process.exit(1);
     if(new a.RustModelDefaults(0).resolve({appType:'claude',models:['probe']},()=>[],()=>0)!=='probe') process.exit(1);
-    if(['RustVendorModelCatalog','turnEventReplayApi','taskCandidatePropose','taskCandidateLatest',
+    if(['transcriptPruningApi', 'boundedContextExcerpt', 'agyTerminal', 'agyHostInvocation', 'homebrewResolveOwner',
+      'claudeRefreshDecision', 'orchestrationCommand', 'doctorHttpTarget', 'accountSubscriptionStart',
+      'RustVendorModelCatalog','turnEventReplayApi','taskCandidatePropose','taskCandidateLatest',
       'wakeSyncRequest','prepareHostSwitchRoute','codexProfileRouteFailure'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnRuntimeStore','resolveTurnStateValue','cliStepTracker','quickCommitMessageValue','directoryRepository',
       'taskBoardRepository','providerRepository','relatedTaskHistory'].some(key=>typeof a[key]!=='function')) process.exit(1);
@@ -480,7 +482,8 @@ function probeAddon(file, node = process.execPath) {
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',
-      'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds',
+      'httpErrorTrustedStatus','httpErrorMessage','httpErrorInitialize','httpErrorDefinitions','httpErrorMap','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['createCookie','verifyCookie','verifyAccessToken','issueWsTicket','consumeWsTicket','pruneTickets','ticketCount','accessToken','setAccessToken','shuttingDown','setShuttingDown','connectGateway']
       .some(key=>typeof a.RustAuthSecurity.prototype[key]!=='function')) process.exit(1);
     const authAnchor={};
@@ -545,7 +548,12 @@ function probeAddon(file, node = process.execPath) {
     if(JSON.parse(a.cliSwitchRuntimeRequest('currentAllowed',JSON.stringify({reservation:true})))!==false) process.exit(1);
     const cliTools=new a.RustCliToolsRuntime({specs:{},supported:[],catalog:[],npmPackages:{}});
     if(cliTools.request('force',{query:{refresh:'1'}})!==true) process.exit(1);
-    if(['homebrewTakeoverRequest','cliUpstreamVersionRequest','RustCliUpstreamFetch','cliUpstreamVersionFetch',
+    if(['memoFilePort','memoController','directoryModule','directoryLayoutStore','directoryEnsureSample',
+      'systemHostFacts','systemHostOperation','relayHostOperation','commandcodeLoginStatus','codexLoginStatus',
+      'loginTerminalDirectory','agyLoginEnvironment','loginTerminalRecord','loginTerminalResult','cliAccountResponse',
+      'unattendedRouteResult','unattendedRouteRequest','workspaceOverview','agentResourceOperation','tokenUsageOperation','scanHistoryResponse','turnLedgerOperation','turnLedgerTrust',
+      'auxRunResponse','skillSyncResponse','taskStateStore','providerBalancePath','providerBalanceUrl',
+      'homebrewTakeoverRequest','cliUpstreamVersionRequest','RustCliUpstreamFetch','cliUpstreamVersionFetch',
       'quotaBarViewRequest','quotaBarViewApi','providerLimitSnapshot','broadcastProviderLimit','providerLimitCandidateMatches','limitCacheRecorderRequestValue','providerBalanceStrategy'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(a.providerBalanceStrategy('https://relay.example.com/v1')!=='panel-auto') process.exit(1);
     if(a.homebrewTakeoverRequest('npmGlobal',{command:'npm install -g cli'})!==true) process.exit(1);

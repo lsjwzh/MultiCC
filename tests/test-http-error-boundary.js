@@ -4,10 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { DOMAIN_KINDS, DomainError, InfrastructureError } = require('../src/http/domain-error');
-const { HttpError } = require('../src/http/http-error');
-const { mapError } = require('../src/http/error-map');
 const { presentError } = require('../src/http/error-presenter');
-const { safeErrorHandler } = require('../src/http-errors');
+const { HttpError, mapError, safeErrorHandler } = require('../src/http-errors');
 
 const REQUEST_CONTEXT = Object.freeze({
   requestId: 'req_http_boundary_1',
@@ -85,7 +83,7 @@ test('presenter exposes only explicit compatibility fields', () => {
     compatibility: {
       blocked: true,
       reasons: ['active', 'leased', 'token=hidden'],
-      conflicts: ['src/http/error-map.js', '/Users/example/.env', '../escape'],
+      conflicts: ['src/http-errors.js', '/Users/example/.env', '../escape'],
       operationId: 'merge_17',
       field: 'worktree',
       currentStatus: 'active',
@@ -114,7 +112,7 @@ test('presenter exposes only explicit compatibility fields', () => {
     correlationId: REQUEST_CONTEXT.correlationId,
     blocked: true,
     reasons: ['active', 'leased'],
-    conflicts: ['src/http/error-map.js'],
+    conflicts: ['src/http-errors.js'],
     operationId: 'merge_17',
     field: 'worktree',
     currentStatus: 'active',
@@ -187,3 +185,72 @@ test('mapped errors remain compatible with the existing safeErrorHandler', () =>
   });
 });
 
+
+const frozen = {
+  ...require('./helpers/frozen-file-batch13/http-error'),
+  ...require('./helpers/frozen-file-batch13/error-map'),
+};
+const current = require('../src/http-errors');
+
+function describeError(error, api, cause) {
+  assert.ok(error instanceof api.HttpError && error instanceof Error);
+  assert.equal(api.isHttpError(error), true);
+  assert.equal(api.mapError(error), error);
+  assert.equal(Object.isFrozen(error), true);
+  const [brand] = Object.getOwnPropertySymbols(error);
+  return {
+    keys: Object.keys(error),
+    message: error.message,
+    fields: { ...error, cause: error.cause === cause },
+    compatibilityFrozen: Object.isFrozen(error.compatibility),
+    brand: [brand.description, Object.getOwnPropertyDescriptor(error, brand)],
+  };
+}
+
+test('HTTP status, public fields, private brand and cause match the frozen constructor', () => {
+  const cause = Symbol('cause');
+  const compatibility = { blocked: true, reasons: ['busy', 'busy', 'invalid reason'] };
+  for (const status of [undefined, null, 399, 400, 413, 499, 499.5, 500, 599, 600,
+    NaN, Infinity, '409', 400n, Symbol('status'), Object(400)]) {
+    assert.equal(current.trustedStatus(status), frozen.trustedStatus(status));
+    for (const message of ['  busy\n now ', 'token=private', '\ud800', '']) {
+      const options = { status, code: 'custom', message, compatibility, cause };
+      assert.deepEqual(describeError(new current.HttpError(options), current, cause),
+        describeError(new frozen.HttpError(options), frozen, cause));
+    }
+  }
+  assert.deepEqual(current.DOMAIN_ERROR_MAP, frozen.DOMAIN_ERROR_MAP);
+  assert.ok(Object.isFrozen(current.DOMAIN_ERROR_MAP));
+  assert.ok(Object.values(current.DOMAIN_ERROR_MAP).every(Object.isFrozen));
+});
+
+test('frozen mapper agrees on branding, getter order, identity and thrown values', () => {
+  const sentinel = new Error('getter failed');
+  for (const make of [
+    () => undefined, () => null, () => 0, () => Symbol('unknown'),
+    () => ({ get status() { throw sentinel; } }),
+    () => new InfrastructureError('private', { compatibility: { blocked: true } }),
+    ...[...Object.values(DOMAIN_KINDS), 'unknown', 'constructor', '__proto__']
+      .map(kind => () => new DomainError(kind, 'busy', { code: 'bad code' })),
+    () => Object.defineProperty(new DomainError('conflict', 'busy'), 'publicMessage', {
+      get() { throw sentinel; },
+    }),
+  ]) {
+    function run(api) {
+      const target = make();
+      const reads = [];
+      const error = target && typeof target === 'object' ? new Proxy(target, {
+        get(obj, key, receiver) {
+          reads.push(typeof key === 'symbol' ? key.description : key);
+          return Reflect.get(obj, key, receiver);
+        },
+      }) : target;
+      try { return { result: describeError(api.mapError(error), api, error), reads }; }
+      catch (err) {
+        assert.equal(err, sentinel);
+        return { threw: true, reads };
+      }
+    }
+    assert.deepEqual(run(current), run(frozen));
+  }
+});

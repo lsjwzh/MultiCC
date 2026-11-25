@@ -11,7 +11,7 @@
 //! cannot see: the in-process `launches` table, the TurnLedger's per-session
 //! record, and the `codex app-server` JSON-RPC calls behind the trust pair.
 //! They are reached through one host port, [`crate::host_port`], served by
-//! `src/routes/turn-ledger-host.js`.
+//! `src/routes/host-read-host.js`.
 //!
 //! The trust routes ask the host for the launch first, decide the 409 here, and
 //! then pass the validated `codexHome`/`cwd` back with the trust call, so the
@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use crate::app::express::{self, RequestCtx};
 use crate::host_port;
 
-/// The host port the Node child serves (`src/routes/turn-ledger-host.js`).
+/// The host port the Node child serves (`src/routes/host-read-host.js`).
 const HOST_PATH: &str = "/api/__host/turn-ledger";
 
 /// The retired `launchFor` 409 body.

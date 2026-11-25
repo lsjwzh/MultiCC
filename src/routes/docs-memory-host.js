@@ -22,7 +22,7 @@
 // 拒绝任何转发自真实远端客户端的请求。
 
 const { isLocalRequest } = require('../request-locality');
-const { mapError } = require('../http/error-map');
+const { mapError } = require('../http-errors');
 
 const HOST_PATH = '/api/__host/docs-memory';
 

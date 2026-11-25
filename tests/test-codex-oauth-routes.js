@@ -13,7 +13,7 @@ const {
   mountCodexOAuthRoutes,
   createLoginSessionOpener,
   CODEX_LOGIN_SESSION_ID,
-} = require('../src/routes/codex-oauth');
+} = require('../src/routes/account-routes-host');
 
 function fakeApp() {
   const routes = { get: [], post: [] };

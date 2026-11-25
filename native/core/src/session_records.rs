@@ -51,7 +51,7 @@ pub fn unavailable_workspace_stem(id: &crate::js::JsString) -> String {
         .collect()
 }
 
-/// `src/routes/task-state-store.js` `TASK_STATE_DEFAULTS`, in declaration order
+/// the task-state store’s `TASK_STATE_DEFAULTS`, in declaration order
 /// (`{ ...DEFAULTS, ...ts }` preserves this order for keys the record omits).
 pub fn task_state_defaults() -> JsValue {
     let null = JsValue::Null;

@@ -8,7 +8,7 @@ const {
   createProviderRelayModelCatalogRuntime,
   normalizeModels,
 } = require('../src/providers/relay-model-catalog');
-const { mountProviderRelayHostRoute, HOST_PATH } = require('../src/routes/provider-relay-host');
+const { mountProviderRelayHostRoute, PROVIDER_RELAY_PATH: HOST_PATH } = require('../src/routes/host-read-host');
 const { applyProviderRelayModelCatalog, summarize } = require('../src/providers/core');
 
 function response(body, status = 200) {

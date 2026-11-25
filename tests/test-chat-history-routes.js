@@ -953,7 +953,7 @@ test('context level reports the transcript water level read-only and without lea
   const prevHome = process.env.HOME;
   process.env.HOME = home;
   try {
-    const { claudeProjectDir } = require('../src/chat/transcript-prune');
+    const { claudeProjectDir } = require('../src/native/runtime').getTranscriptPruning();
     const dir = claudeProjectDir(cwd);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'stream-sid.jsonl');

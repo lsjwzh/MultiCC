@@ -27,6 +27,7 @@ function load(name) {
   const rewritten = source.replace(
     /require\((['"])(\.{1,2}\/[^'"]+)\1\)/g,
     (_, __, rel) => {
+      if (rel === '../http/error-map') return `require(${JSON.stringify(require.resolve('../frozen-file-batch13/error-map'))})`;
       if (rel === '../notify-settings') return `require(${JSON.stringify(path.join(FROZEN, '../legacy-host-read-routes.js'))})`;
       const frozen = path.resolve(FROZEN, rel);
       if (fs.existsSync(`${frozen}.js`)) {

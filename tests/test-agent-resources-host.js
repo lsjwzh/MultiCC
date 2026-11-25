@@ -13,8 +13,8 @@ const assert = require('node:assert/strict');
 const {
   createAgentResourcesHost,
   mountAgentResourcesHostRoute,
-  HOST_PATH,
-} = require('../src/routes/agent-resources-host');
+  AGENT_RESOURCES_PATH: HOST_PATH,
+} = require('../src/routes/host-read-host');
 
 function fakeRuntime(overrides = {}) {
   const calls = [];
@@ -137,4 +137,20 @@ test('the mounted route serializes the runtime answer through res.json', async (
   const response = await respond(mount({ runtime }), { op: 'claude-sessions' });
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.body, { ok: true, sessions: [{ id: 'a' }] });
+});
+
+test('资源宿主与冻结实现保留参数读取和调用顺序', () => {
+  const frozen = require('./helpers/frozen-file-batch9/agent-resources-host');
+  function exercise(create) {
+    const { runtime, calls } = fakeRuntime();
+    const handle = create(runtime);
+    const answers = ['skills', 'presets', 'preset', 'claude-sessions', 'claude-session-delete',
+      'constructor', '__proto__', null].map(op => handle({
+      get op() { calls.push('op'); return op; },
+      get id() { calls.push('id'); return '例'; },
+      get project() { calls.push('project'); return 42; },
+    }));
+    return { answers, calls };
+  }
+  assert.deepEqual(exercise(createAgentResourcesHost), exercise(frozen.createAgentResourcesHost));
 });

@@ -24,7 +24,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const prune = require('../src/chat/transcript-prune');
+const prune = require('../src/native/runtime').getTranscriptPruning();
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-prune-'));
 const realHome = process.env.HOME;
@@ -528,7 +528,7 @@ test('triggersFor is the single source of truth for both the gate and the readou
 });
 
 // ── 14. the call site actually resolves (this is how the gate died) ──────────
-test('every require of the prune module in src/ resolves', () => {
+test('聊天回合、历史路由和离线工具均可解析原生修剪入口', () => {
   const roots = [path.join(__dirname, '..', 'src'), path.join(__dirname, '..', 'scripts')];
   const files = [];
   const walk = (dir) => {
@@ -539,13 +539,14 @@ test('every require of the prune module in src/ resolves', () => {
     }
   };
   roots.forEach(walk);
-  let found = 0;
+  const found = new Set();
   for (const f of files) {
     const src = fs.readFileSync(f, 'utf8');
-    const re = /require\(\s*['"]([^'"]*transcript-prune[^'"]*)['"]\s*\)/g;
+    assert.doesNotMatch(src, /require\(\s*['"][^'"]*transcript-prune['"]\s*\)/, f);
+    const re = /require\(\s*['"]([^'"]+)['"]\s*\)\.getTranscriptPruning\(\)/g;
     let m;
     while ((m = re.exec(src))) {
-      found += 1;
+      found.add(path.relative(path.join(__dirname, '..'), f).split(path.sep).join('/'));
       const spec = m[1];
       assert.doesNotThrow(
         () => require.resolve(spec.startsWith('.') ? path.resolve(path.dirname(f), spec) : spec),
@@ -554,7 +555,7 @@ test('every require of the prune module in src/ resolves', () => {
       );
     }
   }
-  assert.ok(found > 0, 'expected at least one call site to guard');
+  for (const file of ['src/chat/turn-engine.js', 'src/routes/chat-history.js', 'scripts/compact-transcript.js']) assert.ok(found.has(file), file);
 });
 
 // ── 15. session-level Claude pruning covers dormant cliStates without cross-session fallback ──

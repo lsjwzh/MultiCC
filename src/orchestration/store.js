@@ -7,7 +7,7 @@
 
 const nodeFs = require('fs');
 const nodePath = require('path');
-const { invokeNativeCommand, commandEnvelope } = require('./native-command');
+const { invokeNativeCommand, commandEnvelope } = require('../native/runtime');
 
 const SCHEMA_VERSION = 3;
 let tempCounter = 0;

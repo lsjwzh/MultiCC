@@ -344,7 +344,7 @@ test('orchestration and unattended routes: host port mounted once without public
   // Both waits listings are ours now, but they stay two routes with two DTOs.
   assert.ok(hostHalf.includes("app.get('/api/sessions/:id/waits'"));
   assert.ok(hostHalf.includes("app.get('/api/v1/sessions/:id/waits'"));
-  for (const file of ['src/routes/aux-goal.js', 'src/routes/aux-runs.js', 'src/unattended/routes.js']) {
+  for (const file of ['src/routes/aux-goal.js', 'src/routes/orchestration-host.js', 'native/addon/src/unattended_routes.rs']) {
     assert.equal(/\bapp\s*=\s*express\(\)/.test(fs.readFileSync(path.join(ROOT, file), 'utf8')), false);
   }
 });
@@ -461,15 +461,15 @@ test('server composition uses canonical adapters and retires legacy dispatch end
     'the connect plan must schedule seed resolution without eagerly building the frame');
   // The live broadcast is the task-state store's: server.js builds it and
   // keeps no inline copy, so the cancel-flow tests run the production code.
-  assert.ok(source.includes("require('./src/routes/task-state-store')"),
+  assert.ok(source.includes("require('./src/session/records')"),
     'server.js must build its task state from the one store');
   assert.ok(source.includes('createTaskStateStore({'));
   assert.doesNotMatch(source, /TASK_STATE_DEFAULTS|taskStatePayload\(/,
     'no second getTaskState/setTaskState may grow back inside server.js');
-  const taskStateStore = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'task-state-store.js'), 'utf8');
+  const taskStateStore = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'task_state_store.rs'), 'utf8');
   assert.ok(taskStateStore.includes('taskStatePayload'),
     'the store must share the payload contract');
-  assert.ok(taskStateStore.includes('sessionRecordsOwner'),
+  assert.ok(taskStateStore.includes('resolve_owner') && fs.readFileSync(path.join(ROOT, 'src', 'session', 'records.js'), 'utf8').includes('taskStateStore(deps, sessionRecordsOwner,'),
     'merge and write must stay in the one native record owner');
   assert.ok(taskStateStore.includes('busEmit'),
     'the event hub derives task.* events from every write');
@@ -695,10 +695,8 @@ test('/api push subscribe, notify, channel, fcm and bark routes are owned by the
 
 test('/api directories, fs browse, onboarding and ui-layout routes are owned by the Rust front door', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  const index = fs.readFileSync(path.join(ROOT, 'src', 'directory', 'index.js'), 'utf8');
-  const layout = fs.readFileSync(path.join(ROOT, 'src', 'directory', 'ui-layout.js'), 'utf8');
   const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'directory-host.js'), 'utf8');
-  assert.ok(source.includes("require('./src/directory')"),
+  assert.ok(source.includes("require('./src/routes/directory-host')"),
     'server.js composes the directory module');
   assert.ok(source.includes('createDirectoryModule({'), 'and wires its runtime adapters once');
   assert.ok(source.includes('directoryModule.host.mount(app)'),
@@ -707,6 +705,9 @@ test('/api directories, fs browse, onboarding and ui-layout routes are owned by 
   // the retired Node handlers must not come back and the remaining files must
   // keep only their process-local runtime.
   for (const gone of [
+    ['src', 'directory', 'index.js'],
+    ['src', 'directory', 'ui-layout.js'],
+    ['src', 'directory', 'sample-workspace.js'],
     ['src', 'directory', 'controller.js'],
     ['src', 'directory', 'service.js'],
     ['src', 'directory', 'ports.js'],
@@ -715,13 +716,9 @@ test('/api directories, fs browse, onboarding and ui-layout routes are owned by 
     assert.equal(fs.existsSync(path.join(ROOT, ...gone)), false,
       `${gone.join('/')} must not come back`);
   }
-  for (const [file, text] of [
-    ['src/directory/index.js', index],
-    ['src/directory/ui-layout.js', layout],
-  ]) {
-    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false,
-      `${file} must not register routes`);
-  }
+  assert.ok(host.includes('getNative().directoryModule('), 'composition uses the native owner');
+  assert.ok(host.includes('getNative().directoryEnsureSample('), 'sample files use the native owner');
+  assert.doesNotMatch(host, /app\.(get|put|patch|delete)\(/, 'the directory host registers only its internal POST');
   assert.ok(host.includes('HOST_PATH'), 'the internal host port path lives in the runtime');
   assert.ok(host.includes("'/api/__host/directory'"), 'and it is not a public path');
   assert.ok(host.includes("case 'sample-ensure':"),
@@ -842,8 +839,8 @@ test('/api share, machine and workspace routes are owned by the Rust front door;
     'src/machines.js registers its ten JSON routes on the capture app');
   assert.ok(host.includes("require('./share').mountShareRoutes(app, share);"),
     'src/routes/share.js registers on the capture app');
-  assert.ok(host.includes("require('./workspaces').mountWorkspaceRoutes(app, workspaces);"),
-    'src/routes/workspaces.js registers on the capture app');
+  assert.ok(host.includes("mountWorkspaceRoutes(app, workspaces);"),
+    'src/routes/share-machines-host.js registers on the capture app');
   assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
   assert.ok(host.includes("'/api/__host/share-machines'"), 'and it is not a public path');
   assert.ok(host.includes('runHandler'), 'the host port returns {ok,value} envelopes');

@@ -283,7 +283,7 @@ function createHostOpsHost(deps = {}) {
   // 前门按真实客户端地址判定本机，并作为 `req.local` 事实传进来；宿主端口自己
   // 看到的是前门的内网回环连接，真实的 isLocalRequest 在这里永远误判。
   require('./host-write').mountHostWriteRoutes(app, { ...hostWrite, isLocalRequest: req => req.local === true });
-  require('./skill-sync').mountSkillSyncRoutes(app, skillSync);
+  mountSkillSyncRoutes(app, skillSync);
   const doctorOperations = new Map([
     ['env-doctor-start', input => envDoctor.start(input)],
     ['env-doctor-run', runId => envDoctor.get(runId)],
@@ -321,4 +321,18 @@ function createHostOpsHost(deps = {}) {
   return { app, handlers, mountRoute };
 }
 
-module.exports = { HOST_PATH, OPS, createHostOpsHost, createCaptureApp, runHandler, thrownEnvelope };
+function mountSkillSyncRoutes(app, runtime) {
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
+    throw new TypeError('skill sync routes require Express get/post');
+  }
+  for (const key of ['getStatus', 'runNow']) {
+    if (!runtime || typeof runtime[key] !== 'function') throw new TypeError(`skill sync runtime missing: ${key}`);
+  }
+  const { getNative } = require('../native/runtime');
+  const { sanitizePublicText } = require('../http/public-safety');
+  const handle = run => (_req, res) => getNative().skillSyncResponse(runtime, res, run, sanitizePublicText);
+  app.get('/api/skill-sync/status', handle(false));
+  app.post('/api/skill-sync/run', handle(true));
+}
+
+module.exports = { HOST_PATH, OPS, mountSkillSyncRoutes, createHostOpsHost, createCaptureApp, runHandler, thrownEnvelope };

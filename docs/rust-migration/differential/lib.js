@@ -299,7 +299,7 @@ async function run(spec, argv = process.argv.slice(2)) {
  * Loads a route module as it was at `rev` (the parent of the commit that
  * deleted it), with its relative requires pointed at the current tree.
  */
-function loadDeleted(repo, rev, file) {
+function loadDeleted(repo, rev, file, overrides = {}) {
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'deleted-route-'));
   const staged = new Map();
   function stage(name) {
@@ -310,6 +310,8 @@ function loadDeleted(repo, rev, file) {
     fs.mkdirSync(path.dirname(out), { recursive: true });
     const rewritten = source.replace(/require\((['"])(\.{1,2}\/[^'"]+)\1\)/g, (_, __, rel) => {
       const local = path.resolve(repo, path.dirname(name), rel);
+      const override = overrides[path.relative(repo, local).split(path.sep).join('/')];
+      if (override) return `require(${JSON.stringify(override)})`;
       let resolved;
       try { resolved = require.resolve(local); }
       catch (error) {

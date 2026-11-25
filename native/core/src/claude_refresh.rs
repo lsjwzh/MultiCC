@@ -26,11 +26,11 @@ fn default_max_probes() -> u32 {
 
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Plan {
-    recover_parked: bool,
-    allow_probe: bool,
-    reserve_post_expiry: bool,
-    budget_floor: u32,
+pub struct Plan {
+    pub recover_parked: bool,
+    pub allow_probe: bool,
+    pub reserve_post_expiry: bool,
+    pub budget_floor: u32,
 }
 
 fn is_terminal_failure(value: Option<&str>) -> bool {
@@ -73,10 +73,15 @@ fn decide(input: &Input) -> Plan {
 }
 
 /// 输入和输出均为固定字段的 JSON；不读写凭据，不执行网络或文件操作。
-pub fn plan(input_json: &str) -> Result<String, String> {
+pub fn decision(input_json: &str) -> Result<Plan, String> {
     let input: Input = crate::json_lenient::from_str(input_json)
         .map_err(|_| "Claude 续期决策参数无效".to_owned())?;
-    serde_json::to_string(&decide(&input)).map_err(|_| "Claude 续期决策序列化失败".to_owned())
+    Ok(decide(&input))
+}
+
+pub fn plan(input_json: &str) -> Result<String, String> {
+    serde_json::to_string(&decision(input_json)?)
+        .map_err(|_| "Claude 续期决策序列化失败".to_owned())
 }
 
 #[cfg(test)]

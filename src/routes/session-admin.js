@@ -6,7 +6,7 @@ const { classifyDisplay } = require('../classify/vocab');
 const { taskShortCode } = require('../native/task-domain');
 const { auxVerdictStaleness } = require('../native/runtime');
 const { markTaskAchievedFacts, markTaskAchievedWrite } = require('./task-goal');
-const { mountUnattendedRoutes } = require('../unattended/routes');
+const { mountUnattendedRoutes } = require('./orchestration-host');
 const {
   assistantText,
   latestAssistant,

@@ -2,7 +2,7 @@
 
 const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
 const { mergeCliAccountsPatch, sharedCliKeyAccountStore } = require('../cli-key-accounts');
-const { mountAgyAccountRoutes } = require('./agy-accounts');
+const { mountAgyAccountRoutes } = require('./account-routes-host');
 
 function assertDependencies(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('[session-create] dependencies are required');

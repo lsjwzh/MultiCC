@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 let fetchImpl = async () => { throw new Error('unexpected outbound'); };
 test.mock.method(require('../src/network/outbound'), 'outboundFetch', (...args) => fetchImpl(...args));
-const { createProviderBalanceRuntime, mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('../src/routes/provider-balance');
+const { createProviderBalanceRuntime, mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('../src/routes/provider-balance-host');
 const { HOST_PATH } = require('../src/routes/provider-balance-host');
 
 function hostHarness(extra = {}) {
@@ -91,4 +91,21 @@ test('反向刷新失败保留旧回调的 null 契约', async () => {
 test('缺少前门端口不回退到硬编码服务器', async () => {
   const runtime = createProviderBalanceRuntime();
   await assert.rejects(runtime.queryAll(), /gateway port unavailable/);
+});
+
+test('余额桥与冻结入口对照地址编码、非法端口和同步异常', async () => {
+  const frozen = require('./helpers/frozen-file-batch9/provider-balance');
+  async function exercise(create) {
+    const calls = [], answers = [];
+    fetchImpl = async (url, options) => { calls.push([url, options.signal instanceof AbortSignal]); return { json: () => url }; };
+    for (const port of [1, 65535, 65536, 0, 1.5, '3000', Infinity]) {
+      const runtime = create({ getPort: () => port });
+      assert.equal(runtime.queryOne, runtime.refreshOne);
+      answers.push(await runtime.refreshOne('编码', 'x/y !'));
+      try { answers.push(await runtime.readCached('a', 'b')); } catch (error) { answers.push(error.message); }
+      assert.throws(() => runtime.refreshOne('a', '\ud800'), URIError);
+    }
+    return { calls, answers };
+  }
+  assert.deepEqual(await exercise(createProviderBalanceRuntime), await exercise(frozen.createProviderBalanceRuntime));
 });

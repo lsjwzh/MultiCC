@@ -14,7 +14,9 @@ const { createCodebuddyAdapter } = require('./codebuddy');
 const { createDshAdapter } = require('./dsh');
 const { createGeminiAdapter, createGrokAdapter } = require('./acp');
 const { createCommandCodeAdapter } = require('./command-code');
-const { createAgyAdapter } = require('./agy');
+const { getNative, messageComposer } = require('../native/runtime');
+const { createProtocolCompletionTracker } = require('./completion');
+const { displayNameOf, supportsEffort } = require('../cli/cli-capability');
 const { createPiAdapter } = require('./pi');
 
 function createCliAdapters(deps) {
@@ -111,4 +113,41 @@ function createCliAdapters(deps) {
   return { commands, registry };
 }
 
-module.exports = { createCliAdapters };
+const quoteAgyArgument = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+
+function createAgyAdapter({ cmd }) {
+  let decoderAddon = null;
+  let decoder = null;
+  const nativeDecoder = () => {
+    const addon = getNative();
+    if (decoderAddon !== addon) {
+      decoder = new addon.RustAgyStreamDecoder();
+      decoderAddon = addon;
+    }
+    return decoder;
+  };
+
+  return {
+    name: 'agy',
+    label: displayNameOf('agy'),
+    cmd,
+    needsAsyncSessionIdCapture: false,
+    createCompletionTracker() {
+      return createProtocolCompletionTracker('agy');
+    },
+    buildTerminalCmd(session = {}) {
+      return getNative().agyTerminal(cmd, session, supportsEffort, quoteAgyArgument);
+    },
+    buildInvocation(env) {
+      const native = getNative();
+      return native.agyHostInvocation(native, cmd, env, messageComposer);
+    },
+    decodeEvent(event) {
+      if (!event || typeof event !== 'object') return [];
+      const raw = nativeDecoder().decode(JSON.stringify(event));
+      return raw ? JSON.parse(raw) : [];
+    },
+  };
+}
+
+module.exports = { createCliAdapters, createAgyAdapter };

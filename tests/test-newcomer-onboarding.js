@@ -32,17 +32,24 @@ test('a real first assistant result advances the final onboarding step', () => {
   assert.match(source, /show\(4\)/);
 });
 
-test('the opt-in sample workspace never writes into the running source tree', () => {
-  const sample = fs.readFileSync(path.join(root, 'src', 'directory', 'sample-workspace.js'), 'utf8');
-  // The public route is claimed by the Rust front door
-  // (native/gateway/src/app/directory_routes.rs); the Node host port it asks
-  // is the only place the sample files are written.
+test('the opt-in sample workspace never writes into the running source tree', async () => {
   const gatewayRoutes = fs.readFileSync(
     path.join(root, 'native', 'gateway', 'src', 'app', 'directory_routes.rs'), 'utf8');
   const host = fs.readFileSync(path.join(root, 'src', 'routes', 'directory-host.js'), 'utf8');
-  assert.match(sample, /sampleRoot\(\)/);
-  assert.doesNotMatch(sample, /PKG_ROOT|__dirname/);
-  assert.match(sample, /writeFileExclusive/);
+  const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  const { createDirectoryHost } = require('../src/routes/directory-host');
+  const sampleRoot = path.join(require('node:os').tmpdir(), 'test-onboarding-data', 'samples');
+  const workspace = path.join(sampleRoot, 'getting-started');
+  const created = [], directories = [];
+  const result = await createDirectoryHost({ fsPort: {
+    sampleRoot: () => sampleRoot,
+    mkdirp: dir => directories.push(dir),
+    writeFileExclusive: file => { created.push(file); return true; },
+  } }).invoke({ op: 'sample-ensure' });
+  assert.match(server, /sampleRoot: \(\) => MULTICC_PATHS\.sampleWorkspacesDir/);
+  assert.deepEqual(directories, [workspace]);
+  assert.equal(result.path, workspace);
+  assert.deepEqual(created, ['README.md', 'index.html', 'styles.css', 'TASKS.md'].map(file => path.join(workspace, file)));
   assert.match(gatewayRoutes, /Lit\("onboarding"\), Lit\("sample-workspace"\)/);
   assert.match(gatewayRoutes, /\/api\/onboarding\/sample-workspace/);
   assert.match(host, /case 'sample-ensure':/);

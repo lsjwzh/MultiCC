@@ -2003,6 +2003,15 @@
       ]
     },
     {
+      "path": "tests/test-captured-route-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:rust",
+      "entrypoints": [
+        "npm:test:rust"
+      ]
+    },
+    {
       "path": "tests/test-cdpd-gateway.js",
       "tier": "flow",
       "lane": "deterministic",

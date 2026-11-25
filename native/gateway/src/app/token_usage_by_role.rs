@@ -30,7 +30,7 @@ use crate::host_port;
 /// (`PUBLIC_USAGE_ERROR` in src/routes/token-usage.js).
 pub const PUBLIC_ERROR: &str = "Token usage is temporarily unavailable";
 
-/// The host port the Node child serves (`src/routes/token-usage-host.js`).
+/// The host port the Node child serves (`src/routes/host-read-host.js`).
 const HOST_PATH: &str = "/api/__host/token-usage";
 
 /// `EMPTY_ROLE_SNAPSHOT` in src/routes/token-usage.js, in `JSON.stringify`

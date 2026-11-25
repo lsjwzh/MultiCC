@@ -1,5 +1,153 @@
 # 剩余 Node 后端清单
 
+## 第十三批按文件迁移（2026-11-26）
+
+文档与备忘录宿主、主机电源路由共用的 HTTP 错误映射迁入 Rust。以任务分支 `959cb658` 为基线，按根 `server.js` 及其生产依赖和宿主脚本统计，入口可达 Node 从 **441 个文件、124,503 行** 降至 **439 个文件、124,444 行**。本批整份退出 **2 个文件**，删除 85 行，生产接线增加 26 行，净减 **59 行**。自 `dc0df5fe` 起累计退出 **56 个生产文件，净减 2,249 行**。[生产依赖清单](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前入口可达的直接调用方 | 旧行数 | 冻结 Git blob |
+|---|---|---:|---|
+| `src/http/http-error.js` | `src/http/error-map.js` | 37 | `43a083e1273761d1744a093833a6de4b40d310ca` |
+| `src/http/error-map.js` | `src/routes/docs-memory-host.js`、`src/routes/host-power.js` | 48 | `17e3b042c887f52d98ecaa44b7143c31e622cfd4` |
+
+Rust 负责可信状态码、六类领域错误映射、公开消息与错误码的选择，以及兼容字段和异常原因的赋值。Node 保留 V8 错误子类、调用栈、私有 Symbol 和现有共享清洗函数，以保留对象身份、属性读取顺序与异常传播。待领域错误与两个宿主入口由原生运行时持有后，可移除这层接线。[Rust 映射](../../native/addon/src/http_error_map.rs) · [V8 接线](../../src/http-errors.js)
+
+迁前全仓核对了导入、动态装载、测试样例、配置、脚本及分段拼接路径。三个现存调用方与边界测试已切换入口。两组真实网关对照的参考侧通过各自的装载器使用冻结映射。[冻结源码](../../tests/helpers/frozen-file-batch13/) · [错误边界测试](../../tests/test-http-error-boundary.js)
+
+| 验收范围 | 实测结果 |
+|---|---|
+| 定向测试 | 7 个文件，迁前 73/73、迁后 73/73。包含非法状态、UTF-16 文本、私有标记、冻结属性、异常身份及 getter 读取顺序 |
+| 跨批回归 | 88 个文件，1,358 项通过、0 项失败、1 项跳过 |
+| 全量 `npm test` | 退出 0，测试运行器汇总 8,093 项通过、0 项失败、11 项跳过、1 项待实现 |
+| 真实网关 HTTP | 迁前与迁后文档和备忘录均为 94/94，主机操作均为 98/98，含电源路由领域冲突返回 409、未知异常返回 500。迁后目录 91/91、系统 41/41、账号 114/114、编排 256/256、分享与工作区 66/66。七组共 760/760 一致，另验证主机操作和编排各 2 项预期差异 |
+
+首次全量在无人值守 FIFO 定时重试用例退出 1，取到的队列项缺少预期的恢复标记。在迁前提交及迁后候选上分别独立运行该用例 8 次，均通过。另行跟踪该用例实际加载的 32 个生产 JS 模块，迁前与迁后的路径和源码均一致。保留首次失败记录，上表全量数字来自相同源码与产物的完整复跑。
+
+迁后各组验收使用同一套 macOS ARM64 发布产物，源码指纹 `c5045ba7d8c9bab664790286`。验收前后五件产物的 SHA-256 与各自的来源记录均一致。[主机操作 HTTP 对照](differential/host-ops-routes.js) · [文档与备忘录 HTTP 对照](differential/docs-memory-routes.js)
+
+## 第十二批按文件迁移（2026-11-26）
+
+从任务分支 `079bc24e` 起，共用 `src/memo` 入口的备忘录控制器和文件端口迁入 Rust。两份生产 JS 共 189 行，其余生产接线净增 20 行。按根 `server.js` 及其直接、间接和宿主脚本可达文件统计，生产 Node 从 **443 个文件、124,672 行** 降至 **441 个文件、124,503 行**，本批净减 **169 行**。自 `dc0df5fe` 起累计退出 **54 个生产文件、净减 2,190 行**。[生产依赖清单](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 Git blob |
+|---|---|---:|---|
+| `src/memo/controller.js` | `src/memo/index.js`、`src/memo/migrate.js` | 150 | `ff127672` |
+| `src/memo/file-port.js` | `src/memo/index.js` | 39 | `c178d328` |
+
+Rust 负责备忘录目录与会话校验、UTF-8 字节上限、读写错误映射、投递结果和临时文件写入、改名与失败清理。Node 保留进程内会话与文件系统端口、现有错误类以及 `runTurn` 的 Promise 等待；当会话运行时和文件端口转入原生宿主后，可移除相应接线。旧项目备忘录的搬迁继续使用同一个文件端口。[控制器](../../native/addon/src/memo_controller.rs) · [文件端口](../../native/addon/src/memo_file_port.rs)
+
+删除前全仓检查了直接导入、配置、脚本与分段拼出的文件路径。原有挂载测试已改用稳定入口并核对写入目标；真实网关对照的参考侧固定使用旧控制器及文件端口。[冻结源码](../../tests/helpers/frozen-file-batch12/) · [定向测试](../../tests/test-memo-http-controller.js)
+
+| 验收范围 | 实测结果 |
+|---|---|
+| 定向测试 | 4 个文件，迁前 39/39、迁后 41/41。覆盖 UTF-8 上限、会话投递、异常原因、跨实例临时文件名及写入或改名失败后的清理 |
+| 跨批回归 | 85 个测试文件，1,326 项通过、0 项失败、1 项跳过 |
+| 全量 `npm test` | 退出 0，测试运行器汇总 8,091 项通过、0 项失败、11 项跳过、1 项待实现 |
+| 真实网关 HTTP | 文档、记忆与备忘录簇迁前与迁后均为 94/94，四处存储状态以及启动、停止和两次会话投递副作用一致。跨批目录 91/91、系统 41/41、账号 114/114、编排 256/256、分享与工作区 66/66，另验证编排 2/2 项预期差异 |
+
+迁后定向、跨批、全量和六组真实网关对照均使用同一套 macOS ARM64 发布构建，源码指纹 `f64c9bd174eaa2bb3b57b005`。验收前后核对了 addon、网关、CDP、远控和重启监督程序的 SHA-256 及来源记录。[网关对照](differential/docs-memory-routes.js)
+
+## 第十一批按文件迁移（2026-11-26）
+
+从第十批提交 `f2ce0071` 起，目录装配、UI 布局存储和入门示例创建迁入 Rust。本批整份移除 3 个生产 JS 文件，共 181 行，其余生产接线净增 7 行。按根 `server.js` 及其直接、间接和宿主脚本可达文件统计，生产 Node 从 **446 个文件、124,846 行** 降至 **443 个文件、124,672 行**，本批净减 **174 行**。自 `dc0df5fe` 起累计退出 **52 个生产文件、净减 2,021 行**。[生产依赖清单](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 blob |
+|---|---|---:|---|
+| `src/directory/index.js` | `server.js` | 33 | `028fd92d` |
+| `src/directory/ui-layout.js` | `src/directory/index.js` | 69 | `473d452f` |
+| `src/directory/sample-workspace.js` | `src/routes/directory-host.js` | 79 | `59f92428` |
+
+Rust 负责装配目录活表与布局存储，生成已知目录和会话 ID 快照，管理布局缓存、损坏恢复与保存失败后的内存读回，并按原顺序独占创建四个示例文件。Node 将现有进程内状态存储、文件系统和 Express 宿主传给原生入口。等共享持久化、文件端口和宿主监听器迁入原生运行时后，可以移除这些接线。[目录装配与示例](../../native/addon/src/directory_module.rs) · [布局存储](../../native/addon/src/directory_layout.rs)
+
+| 验收范围 | 实测结果 |
+|---|---|
+| 冻结与定向 | 3 份测试副本与 Git blob 对比，仅变动相对导入。6 个定向文件，迁前 56/56、迁后 59/59。新增对照覆盖布局路径与活表、损坏读回与保存失败、示例内容逐字节与部分写入重试 |
+| 入门引导补充定向 | 首轮全量测试发现旧用例直接读取已删除的示例 JS。修正后通过生产宿主入口核对目标目录及四个写入路径，入门引导 7/7 通过 |
+| 跨批回归 | 81 个测试文件，1,302 项通过、0 项失败、1 项跳过 |
+| Rust 检查 | 工作区格式检查与 addon 的默认 Clippy 检查退出 0。Clippy 报告 5 条来自既有 `turn_event_replay.rs` 的警告，本批新增的两个 Rust 文件均为 0 条 |
+| 全量 `npm test` | 退出 0，Node 测试运行器汇总 8,089 项通过、0 项失败、11 项跳过、1 项待实现 |
+| 真实网关 HTTP 对照 | 目录、浏览、入门与布局 91/91，192 条副作用顺序及三个持久化文件的归一化内容一致。跨批系统 41/41、账号 114/114、编排 256/256、分享与工作区 66/66 一致，另核实编排 2/2 项预期差异 |
+
+迁后各组验收共用一套 macOS ARM64 发布产物，源码指纹 `9f250d3d3e8e98ffd79c8cb6`。addon、网关、CDP、远控和重启监督程序的 SHA-256 与来源记录均在验收前后核对。[冻结源码](../../tests/helpers/frozen-file-batch11/) · [行为对照](../../tests/test-ui-layout-routes.js) · [网关对照](differential/directory-routes.js)
+
+## 第十批按文件迁移（2026-11-26）
+
+任务分支 `b707608d` 已包含本地 `main` 的最新提交 `fe2d52fb`，合入检查时分支领先 3 个提交、落后 0 个。以此干净工作树重新构建并完成全量基线。生产入口可达的 Node 文件由 **454 减至 446 个**，物理行数由 **125,226 减至 124,846 行**。本批整份退出 **8 个文件、584 行**，其余生产接线净增 204 行，生产 Node 净减 **380 行**。自 `dc0df5fe` 的 495 个文件、126,693 行起，十批累计退出 **49 个文件**、净减 **1,847 行**。[生产依赖清单](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 blob |
+|---|---|---:|---|
+| `src/routes/system-host.js` | `server.js` | 96 | `26b2256c` |
+| `src/routes/provider-relay-host.js` | `server.js` | 46 | `a3d2a193` |
+| `src/routes/commandcode-auth.js` | `server.js` | 49 | `39029c65` |
+| `src/routes/codex-oauth.js` | `server.js` | 83 | `0de8f149` |
+| `src/routes/cli-key-accounts.js` | `server.js` | 82 | `d0a95947` |
+| `src/routes/agy-accounts.js` | `src/routes/session-create.js` | 79 | `f6e5e156` |
+| `src/routes/workspaces.js` | `src/routes/share-machines-host.js` | 81 | `b56209e5` |
+| `src/unattended/routes.js` | `src/routes/session-admin.js` | 68 | `f84aab07` |
+
+Rust 接管系统事实与跟踪快照、供应商中继的请求构造与分派、三种 CLI 的登录状态或终端记录、CLI Key 账户增删改查、工作区概览和无人值守动作。Express 挂载、回环检查、查询解析器、仓库串行执行器、登录终端与存储事务回调、Promise 等待及 ICU 排序仍使用 Node 的进程内端口。相应的监听器和宿主运行时转为原生后可移除这些接线。[系统与中继](../../native/addon/src/host_system_relay.rs) · [登录终端](../../native/addon/src/account_login_routes.rs) · [账户事务](../../native/addon/src/cli_account_routes.rs)
+
+| 验收范围 | 实测结果 |
+|---|---|
+| 基线全量 `npm test` | 退出 0。Node 测试运行器汇总 8,081 项通过、11 项跳过、1 项待实现 |
+| 冻结和定向回归 | 8 份冻结副本仅调整相对导入。迁前 12 个文件 126/126 通过，迁后 13 个文件 134/134 通过 |
+| 跨批回归 | 77 个测试文件，1,281 项通过、0 项失败、1 项因缺少 Electron 打包工具链跳过 |
+| 迁后全量 `npm test` | 退出 0。Node 测试运行器汇总 8,089 项通过、11 项跳过、1 项待实现 |
+| 真实网关 HTTP 对照 | 账号 114/114、系统与扫描 41/41、分享与工作区 66/66、编排 256/256 一致。另验证编排 2/2 项预期差异。账号的 113 个副作用场景、编排的 296 次副作用调用及分享存储均一致 |
+
+正式定向、跨批、全量与四组 HTTP 对照使用同一套 macOS ARM64 发布产物，源码指纹 `58e87a6e916d4bb77f269580`。测试前后分别核对 addon、网关、CDP、远控和重启监督程序的来源记录及 SHA-256。[冻结副本](../../tests/helpers/frozen-file-batch10/) · [逐入口对照](../../tests/test-captured-route-differential.js)
+
+首次调试修正了机器服务夹具对原生工作区接口的覆盖，首轮跨批回归发现发布核心集的数量断言仍为 489；现已登记第 490 个用例文件并校验其测试类别。严格 Clippy 检查发现的本批参数数目告警已修正，最终仍以 101 退出，剩余 5 条诊断均位于与基线一致的 `turn_event_replay.rs`。独立在线分类测试取用例时本机服务返回 HTTP 503，按 `live` 类别单列。
+
+## 第九批按文件迁移（2026-11-25）
+
+任务分支将第八批提交 `6608ef94` 与本地 `main` 的 7 个新增提交（截至 `fe2d52fb`）合并，得到基线 `8810d587`。从该基线起，生产入口可达的 Node 文件由 **462 减至 454 个**，物理行数由 **125,543 减至 125,226 行**。本批整份退出 8 个文件、共 465 行，其余生产接线净增 148 行，生产 Node 净减 **317 行**。自 `dc0df5fe` 起累计退出 **41 个文件**、净减 **1,467 行**。统计覆盖根 `server.js` 及其直接、间接和通过宿主脚本可达的文件。[生产依赖清单](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 blob |
+|---|---|---:|---|
+| `src/routes/agent-resources-host.js` | `server.js` | 64 | `e5111d0f` |
+| `src/routes/token-usage-host.js` | `server.js` | 64 | `e7fc3a48` |
+| `src/routes/scan-history-host.js` | `server.js` | 52 | `338b30c5` |
+| `src/routes/turn-ledger-host.js` | `server.js` | 95 | `6eb3ad29` |
+| `src/routes/aux-runs.js` | `server.js` | 37 | `3e87aec7` |
+| `src/routes/skill-sync.js` | `src/routes/host-ops-host.js` | 49 | `cea48ed8` |
+| `src/routes/task-state-store.js` | `server.js` | 68 | `4dd9c866` |
+| `src/routes/provider-balance.js` | `server.js` | 36 | `17c0bb52` |
+
+Rust 接管资源、用量、扫描历史和回合账本的操作分派，辅助运行的索引选择与截取，技能同步响应与错误映射，任务状态写入者的装配，以及余额请求的端口验证与路径编码。Node 接线保留 Express 回环检查及响应发送、进程内服务和事件总线、Promise 与统一网络传输入口。宿主服务和监听器迁入原生运行时后可移除对应接线。[读取操作](../../native/addon/src/host_read_operations.rs) · [辅助运行](../../native/addon/src/aux_run_routes.rs) · [任务状态](../../native/addon/src/task_state_store.rs)
+
+| 验收范围 | 实测结果 |
+|---|---|
+| 合并基线全量 `npm test` | 退出 0。Node 测试运行器汇总 8,073 项通过、11 项跳过、1 项待实现 |
+| 冻结旧入口与定向回归 | 8 份冻结副本仅调整相对导入。迁前 15 个测试文件 171/171 通过，迁后加上 8 项冻结对照，179/179 通过 |
+| 跨批回归 | 67 个文件，1,192 项通过、0 项失败、1 项因缺少 Electron 打包工具链跳过 |
+| 迁后全量 `npm test` | 退出 0。Node 测试运行器汇总 8,081 项通过、11 项跳过、1 项待实现 |
+| 真实网关 HTTP 对照 | 系统与扫描 41/41 一致。回合账本 27/27 一致、另验证 5/5 项预期差异。编排 256/256 一致、另验证 2/2 项预期差异，296 次副作用调用一致 |
+
+迁后定向、跨批、全量和 HTTP 对照共用一次 macOS ARM64 发布构建，源码指纹 `a96194c38895329411450f73`。addon、网关、CDP、远控和重启监督程序的来源记录与 SHA-256 在测试前后均已核对。[冻结副本](../../tests/helpers/frozen-file-batch9/)
+
+独立在线分类测试 `test:classify-live` 首次访问本机服务取用例时收到 HTTP 503，未取得在线分类结果。首次调试回归缺少 addon 同目录的网关，补齐后 179/179 通过。编排 HTTP 夹具最初仅等待网关监听，旧版与新版均观察到请求早于宿主就绪的 503。改为等待宿主探针后，两版均完整通过上述 258 个场景。[编排对照夹具](differential/orchestration-routes.js)
+
+## 第八批按文件迁移（2026-11-25）
+
+本批以本地合并提交 `e272a756` 为基线。根 `server.js` 及其生产调用链上的 Node 文件从 **470 个降至 462 个**，行数从 **125,736 降至 125,543**。退出的 8 份文件合计 355 行，其余生产接线净增 162 行，本批净减 **193 行**。从 `dc0df5fe` 的 495 个生产文件、126,693 行起，八批累计退出 **33 个文件**、净减 **1,150 行**。生产依赖清单包含通过宿主脚本启动的文件。[逐文件依赖](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 blob |
+|---|---|---:|---|
+| `src/chat/transcript-prune.js` | `src/chat/turn-engine.js`、`src/routes/chat-history.js` | 79 | `d845b239` |
+| `src/task-shell/context-snapshot.js` | `src/task-shell/context-plan.js` | 51 | `4ee1b0de` |
+| `src/cli/homebrew-takeover.js` | `src/cli/tools-host.js` | 42 | `5d8bf621` |
+| `src/claude-auth/expired-refresh-policy.js` | `src/claude-auth/accounts-refresh.js`、`src/claude-auth/oauth-refresh.js` | 31 | `7cd1c6d9` |
+| `src/cli-adapters/agy.js` | `src/cli-adapters/index.js` | 61 | `6b7488b1` |
+| `src/orchestration/native-command.js` | `src/orchestration/native-store-host.js`、`src/orchestration/store.js` | 36 | `c2169a04` |
+| `src/doctor/host.js` | `server.js` | 33 | `649b11fc` |
+| `src/providers/native-subscription.js` | `src/quota/account-subscription-reader.js` | 22 | `93e69877` |
+
+Rust 负责转录查找与修剪接口、快照与交接摘要的预算循环、Homebrew 程序查找顺序、过期令牌续期计划、Agy 启动参数、同步事务命令选择、医生服务的模型选择，以及订阅查询的网络分支。Node 目前仍提供涉及 V8 对象展开、原始异常、Promise 拒绝、平台路径、SDK 回调和注入式 fetch 的端口。相应调用方迁入原生运行时后即可移除这些接线。[上下文预算](../../native/addon/src/context_excerpt.rs) · [Agy 启动](../../native/addon/src/agy_stream.rs) · [事务命令](../../native/addon/src/orchestration_command.rs)
+
+原始基线的 `npm test` 首次因工作树向上加载了 Claude SDK 0.3.317 而提前退出。按锁文件安装 0.3.325 后，补跑了短路后的所有套件，修正了按旧生产目录解析的任务板冻结依赖、403 测试夹具和缺少任务规划资产的桌面打包夹具。凭据格式示例采用同期主线已审核的修法；macOS 安装脚本使用本机支持的 `C` 区域设置。修正后的基线完整执行 `npm test`，退出码 0。中间一次无人值守 FIFO 时序测试失败，完整复跑通过。
+
+8 份旧模块已逐一核对 Git blob，冻结副本仅调整了相对导入。迁前 14 个定向文件 **236/236** 通过。macOS ARM64 共用一次发布构建，五份产物的源码指纹 `67605658dd69348357ca3975` 和各自的 SHA-256 均已核对；同一组定向文件加入 8 项冻结对照后 **244/244** 通过。此前各批与本批共 53 个测试文件交叉回归，**1,037 项通过、0 项失败、1 项跳过**。跳过项需要独立的 Electron 打包工具链。同一份发布产物上的迁后全量 `npm test` 也以 0 退出。按 Node 测试运行器各段汇总，修正基线通过 8,066 项，迁后通过 8,073 项，迁后跳过 11 项、待实现 1 项；其余独立脚本以各自退出码验收。[冻结副本](../../tests/helpers/frozen-file-batch8/) · [预算对照](../../tests/test-large-context-prefix.js) · [转录对照](../../tests/test-transcript-prune-differential.js)
+
 ## 第七批按文件迁移（2026-11-25）
 
 上批提交 `5c7f6cfa` 时，生产入口可达的 Node 代码有 478 个文件、126,155 行。本批整份退出 **8 个生产文件**，删除 505 行，其余生产文件接线净增 86 行，**生产 Node 净减 419 行**。当前工作树剩余 **470 个生产文件、125,736 行**。从 `dc0df5fe` 的 495 个文件、126,693 行起，七批累计退出 **25 个文件、净减 957 行**。统计包含根 `server.js` 和从它或其宿主脚本可达的 `src/` 模块，排除测试、前端和离线工具。[生产依赖清单](node-module-dependencies.md)

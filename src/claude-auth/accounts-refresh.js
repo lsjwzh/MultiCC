@@ -38,7 +38,7 @@ const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE, DEFAULT_MAX_PROBES_PER_WIN
 const { parseCredentials } = require('../quota/claude-cli-oauth');
 const { atomicWriteJson, ensurePrivateDir, secureFile } = require('../runtime-security');
 const { isCliCopy } = require('../official-accounts');
-const { planClaudeExpiredRefresh } = require('./expired-refresh-policy');
+const { planClaudeExpiredRefresh } = require('../native/runtime');
 
 // Narrower than the shared refresher's 15 min: each attempt seeds and clears a
 // credential slot, and the CLI declines anything outside its own ~5 min window.

@@ -820,7 +820,7 @@ function createChatHistoryRuntime(rawDeps) {
         if (persisted.cli !== 'claude' && persisted.cli !== 'claude-exp') {
           return res.json({ ok: true, supported: false, reason: 'cli-not-claude', cli: persisted.cli || null });
         }
-        const { findSessionClaudeFile, measureFile, pruneFile } = require('../chat/transcript-prune');
+        const { findSessionClaudeFile, measureFile, pruneFile } = require('../native/runtime').getTranscriptPruning();
         const cwd = deps.cwdForSession(persisted);
         const file = findSessionClaudeFile(cwd, persisted);
         const transcript = measureFile(file);

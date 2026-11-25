@@ -24,6 +24,30 @@
 const { getNative } = require('./native/runtime');
 const { API_VERSION, createErrorDto } = require('./api-contract');
 
+const { isDomainError, isInfrastructureError } = require('./http/domain-error');
+const { safeCode, sanitizeCompatibility, sanitizePublicText } = require('./http/public-safety');
+
+const HTTP_ERROR = Symbol('MultiCC.HttpError');
+function trustedStatus(value) { return getNative().httpErrorTrustedStatus(value); }
+function isHttpError(value) { return !!(value && value[HTTP_ERROR] === true); }
+
+// V8 owns the Error instance, its captured stack and its private brand.
+class HttpError extends Error {
+  constructor({ status, code, message, compatibility, cause } = {}) {
+    const native = getNative();
+    const normalized = native.httpErrorTrustedStatus(status);
+    super(native.httpErrorMessage(normalized, message, sanitizePublicText));
+    native.httpErrorInitialize(this, normalized, code, compatibility, cause, errorPorts);
+    Object.defineProperty(this, HTTP_ERROR, { value: true });
+    Object.freeze(this);
+  }
+}
+const errorPorts = { HttpError, isHttpError, isDomainError, isInfrastructureError,
+  safeCode, sanitizeCompatibility, sanitizePublicText };
+let definitions;
+function domainErrorMap() { return definitions ??= getNative().httpErrorDefinitions(errorPorts); }
+function mapError(error) { return getNative().httpErrorMap(error, errorPorts, domainErrorMap()); }
+
 // 8 hex chars is enough entropy for correlation over a single log tail (16
 // bits of collision resistance per pair-of-requests; noise-free at request
 // rates below a few hundred/second, which multicc is well below). Short enough
@@ -138,6 +162,8 @@ function safeError(status, message, code) {
 }
 
 module.exports = {
+  HttpError, isHttpError, trustedStatus, mapError,
+  get DOMAIN_ERROR_MAP() { return domainErrorMap(); },
   requestIdMiddleware,
   safeErrorHandler,
   asyncHandler,

@@ -60,19 +60,19 @@ function mountAccountRoutesLegacy(app, bag) {
  */
 function mountLiveComposition(expressApp, bag, options = {}) {
   const repo = path.resolve(__dirname, '..', '..');
-  const { createAccountRoutesHost } = require(path.join(repo, 'src/routes/account-routes-host'));
+  const accounts = require(path.join(repo, 'src/routes/account-routes-host'));
   const live = {
     claudeAccounts: require(path.join(repo, 'src/routes/claude-accounts')),
     codexAccounts: require(path.join(repo, 'src/routes/codex-accounts')),
     zcodeAuth: require(path.join(repo, 'src/routes/zcode-auth')),
-    cliKeyAccounts: require(path.join(repo, 'src/routes/cli-key-accounts')),
+    cliKeyAccounts: accounts,
     kimiAuth: require(path.join(repo, 'src/routes/kimi-auth')),
     claudeOAuth: require(path.join(repo, 'src/routes/claude-oauth')),
-    codexOAuth: require(path.join(repo, 'src/routes/codex-oauth')),
-    commandcodeAuth: require(path.join(repo, 'src/routes/commandcode-auth')),
+    codexOAuth: accounts,
+    commandcodeAuth: accounts,
   };
   const deps = bag.deps;
-  const host = createAccountRoutesHost();
+  const host = accounts.createAccountRoutesHost();
   live.cliKeyAccounts.mountCliKeyAccountRoutes(host.app, deps.cliKey);
   live.commandcodeAuth.mountCommandcodeAuthRoutes(host.app, deps.commandcode);
   live.codexOAuth.mountCodexOAuthRoutes(host.app, deps.codexOAuth);

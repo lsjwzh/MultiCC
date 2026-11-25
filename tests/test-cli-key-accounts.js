@@ -1,7 +1,7 @@
 'use strict';
 
 // Per-session API-key accounts for Command Code / OpenCode
-// (src/cli-key-accounts.js + src/routes/cli-key-accounts.js): the store never
+// (src/cli-key-accounts.js + src/routes/account-routes-host.js): the store never
 // hands a key back out, the spawn env carries exactly the picked account, a
 // vanished pick fails closed instead of falling back to the CLI's own login,
 // and session PATCH / fork / account delete keep the picks consistent.
@@ -27,8 +27,8 @@ const {
   retainExistingCliAccounts,
   releaseCliAccountReferences,
 } = require('../src/cli-key-accounts');
-const { mountCliKeyAccountRoutes } = require('../src/routes/cli-key-accounts');
-const { readCommandcodeLogin, mountCommandcodeAuthRoutes } = require('../src/routes/commandcode-auth');
+const { mountCliKeyAccountRoutes } = require('../src/routes/account-routes-host');
+const { readCommandcodeLogin, mountCommandcodeAuthRoutes } = require('../src/routes/account-routes-host');
 const { createProviderRouterRuntime } = require('../src/providers/router-runtime');
 const { REQUIRED_CAPABILITIES } = require('../src/providers/router-port');
 const providers = require('../src/providers/core.js');

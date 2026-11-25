@@ -162,7 +162,7 @@ function createTurnLedgerRuntime(deps = {}) {
     clearTimeout(debounce);
   }
 
-  // Raw material for the host port (src/routes/turn-ledger-host.js). The Rust
+  // Raw material for the host port (src/routes/host-read-host.js). The Rust
   // front door owns the diagnostics routes, including the `SID_RE` gate, the
   // 409 for a session that is not a launched Codex terminal and the snapshot
   // DTO; these three accessors are all it can ask Node for.

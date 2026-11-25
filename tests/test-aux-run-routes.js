@@ -2,15 +2,15 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createAuxRunRoutes } = require('../src/routes/aux-runs');
+const { createAuxRunRoutes } = require('../src/routes/orchestration-host');
 
-function fixture() {
+function fixture(create = createAuxRunRoutes) {
   const routes = new Map();
   const runs = [
     { runId: 'r1', anchorMessageId: 'm1', taskId: 't1' },
     { runId: 'r2', anchorMessageId: 'm2', taskId: 't1' },
   ];
-  createAuxRunRoutes({
+  create({
     records: new Map([['s1', { id: 's1' }]]),
     getLog: () => ({
       list: () => runs,
@@ -57,4 +57,23 @@ test('unknown sessions and runs return 404', () => {
     { params: { id: 's1', runId: 'missing' } }, missingRun,
   );
   assert.equal(missingRun.statusCode, 404);
+});
+
+test('辅助运行与冻结索引对照选择优先级、截取和缺失会话', () => {
+  const frozen = require('./helpers/frozen-file-batch9/aux-runs');
+  function exercise(create) {
+    const { routes, response } = fixture(create);
+    const list = routes.get('/api/sessions/:id/aux-runs'), answers = [];
+    for (const id of ['s1', 'missing']) {
+      for (const messageId of ['', 'm1']) {
+        for (const limit of [0, 1, -3, '02more', 999]) {
+          const res = response();
+          assert.equal(list({ params: { id }, query: { taskId: 't1', messageId, limit } }, res), res);
+          answers.push([res.statusCode, res.body]);
+        }
+      }
+    }
+    return answers;
+  }
+  assert.deepEqual(exercise(createAuxRunRoutes), exercise(frozen.createAuxRunRoutes));
 });

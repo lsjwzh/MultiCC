@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
-const { run } = require('./lib');
+const { run, waitForFixture } = require('./lib');
 const INTERFACES = {
   utun0: [{ family: 'IPv4', internal: false, address: '10.1.0.1' }],
   en0: [{ family: 'IPv4', internal: false, address: '192.168.1.9' }],
@@ -36,14 +36,15 @@ globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCE
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
 const app = express(); app.use(express.json());
-require(path.join(repo, 'src/routes/system-host')).mountSystemHostRoute(app, {
+require(path.join(repo, 'src/routes/host-read-host')).mountSystemHostRoute(app, {
  fs, path, rootDir: ${JSON.stringify(rootDir)}, networkInterfaces: () => (${JSON.stringify(INTERFACES)}),
  getPort: () => 45123, getBindHost: () => '0.0.0.0', authRequired: () => true,
  uptimeSeconds: () => 8100, now: () => ${NOW}, gitRun: async () => ${JSON.stringify(TAGS)},
 });
-require(path.join(repo, 'src/routes/scan-history-host')).mountScanHistoryHostRoute(app, {
+require(path.join(repo, 'src/routes/host-read-host')).mountScanHistoryHostRoute(app, {
  scanHistory: { seq: 7, passes: ${JSON.stringify(PASSES)} }, maxPasses: 5,
 });
+app.get('/__health', (_req, res) => res.type('text/plain').send('ok'));
 app.use((req, res) => res.status(599).send('forwarded:' + req.method + ' ' + req.url));
 const server = http.createServer(app);
 const listener = net.createServer({ pauseOnConnect: true }, socket => {
@@ -64,6 +65,7 @@ async function main() {
   await new Promise(resolve => releaseServer.listen(0, '127.0.0.1', resolve));
   try {
     const ok = await run({
+      ready: waitForFixture,
       name: 'system-scan',
       mount(app, { repo, work }) {
         const rootDir = path.join(work, 'gw');

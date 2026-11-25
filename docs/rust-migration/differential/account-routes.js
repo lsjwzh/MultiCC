@@ -67,7 +67,7 @@
 // running, as with the other addon-backed differentials.
 const fs = require('fs');
 const path = require('path');
-const { main, send } = require('./lib');
+const { main, send, waitForFixture } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-req-1' };
 const T0 = 1700000000000;
@@ -713,6 +713,7 @@ function compositionFor(key, bag) {
 }
 
 const app = express();
+app.get('/__health', (_req, res) => res.type('text/plain').send('ok'));
 app.use(express.json({ limit: '50mb' }));
 app.use((req, res, next) => {
   const scenario = readWorld();
@@ -819,6 +820,7 @@ main({
   get upstream() {
     return upstreamText;
   },
+  ready: waitForFixture,
   gatewayEnv: work => ({
     MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON,
     MULTICC_RUST_PREBUILT_DIR: process.env.MULTICC_RUST_PREBUILT_DIR,

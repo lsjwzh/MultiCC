@@ -1,7 +1,7 @@
 'use strict';
 
 // Air 原生「技能同步」面板 —— 共享技能往三端（Claude / Codex / Hermes）分发的状态与手动触发
-// （原生 DOM，不再嵌旧 manage 页）。后端契约见 src/routes/skill-sync.js：
+// （原生 DOM，不再嵌旧 manage 页）。后端契约见 src/routes/host-ops-host.js：
 //   GET  /api/skill-sync/status → 引擎上一次跑完留下的状态快照，本身就是状态对象
 //   POST /api/skill-sync/run    → { ok, result }，**result 才是新的状态对象**
 //

@@ -9,6 +9,7 @@ const { presentError } = require('../src/http/error-presenter');
 const {
   MEMO_MAX_BYTES,
   createMemoController,
+  createMemoFilePort,
   createGitTrackPort,
   migrateProjectMemos,
 } = require('../src/memo');
@@ -24,7 +25,7 @@ function enoent() {
   return Object.assign(new Error('missing'), { code: 'ENOENT' });
 }
 
-function fixture() {
+function fixture(createController = createMemoController) {
   const directories = new Map([
     ['dir-1', { id: 'dir-1', path: '/project/one' }],
     ['dir-2', { id: 'dir-2', path: '/project/two' }],
@@ -73,7 +74,7 @@ function fixture() {
       return id !== 'fail-1';
     },
   };
-  const controller = createMemoController({
+  const controller = createController({
     directories: { get: id => directories.get(id) },
     sessions: { get: id => sessions.get(id) },
     runtime,
@@ -286,7 +287,7 @@ test('send delegates only valid turns and fails closed when start fails', async 
 
 test('production server mounts only the injected memo module', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  const controllerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'memo', 'controller.js'), 'utf8');
+  const entry = fs.readFileSync(require.resolve('../src/memo'), 'utf8');
   assert.match(source, /const \{ createMemoModule \} = require\('\.\/src\/memo'\);/);
   assert.equal((source.match(/createMemoModule\(\{/g) || []).length, 1);
   assert.doesNotMatch(source, /app\.(?:get|put|post)\('\/api\/directories\/:id\/memo/);
@@ -294,7 +295,92 @@ test('production server mounts only the injected memo module', () => {
   assert.match(source, /runTurn: \(id, text, options\) => chatTurnEngine\.admitChatWork\(id, text, options\)/);
   assert.match(source, /memoRoot: MEMORY_STORE_ROOT/);
   assert.match(source, /memoModule\.migrateLegacy\(\)/);
-  assert.doesNotMatch(controllerSource, /require\(['"]express['"]\)|server\.js/);
-  // The project tree is no longer a memo destination anywhere in the module.
-  assert.doesNotMatch(controllerSource, /join\(\s*value\.path/);
+  assert.doesNotMatch(entry, /require\(['"]express['"]\)|server\.js/);
+  const f = fixture();
+  const saved = f.controller.write({ directoryId: 'dir-1', text: 'memo' });
+  assert.equal(saved.path, MEMO_1);
+  assert.deepEqual([...f.data.keys()], [MEMO_1]);
+  assert.deepEqual(f.ensured, [path.posix.join(MEMO_ROOT, 'dir-1')]);
+});
+
+test('备忘录控制器与冻结入口对照 UTF-8 限制、错误原因和会话投递', async () => {
+  const frozen = require('./helpers/frozen-file-batch12/controller');
+  async function run(factory) {
+    const f = fixture(factory), result = [];
+    function describe(e) {
+      return e && { name: e.name, kind: e.kind, code: e.code, message: e.message,
+        publicMessage: e.publicMessage, cause: describe(e.cause) };
+    }
+    async function capture(action) {
+      try { result.push(await action()); } catch (error) { result.push(describe(error)); }
+    }
+    // A lone UTF-16 surrogate occupies three bytes in Node's UTF-8 encoding.
+    const limit = 'x'.repeat(MEMO_MAX_BYTES - 3) + '\ud800';
+    assert.equal(Buffer.byteLength(limit), MEMO_MAX_BYTES);
+    await capture(() => f.controller.write({ directoryId: 'dir-1', text: limit }));
+    await capture(() => f.controller.write({ directoryId: 'dir-1', text: limit + 'a' }));
+    const original = Object.assign(new Error('injected failure'), { code: 'EIO' });
+    f.setReadFailure(original);
+    assert.throws(() => f.controller.read({ directoryId: 'dir-1' }), e => e.cause === original);
+    f.setWriteFailure(original);
+    assert.throws(() => f.controller.write({ directoryId: 'dir-1', text: '' }), e => e.cause === original);
+    for (const id of ['..', '.', 'x/y', '', '分组', 'valid._-0']) {
+      f.directories.set('key', { id, path: '/project/one' });
+      await capture(() => f.controller.read({ directoryId: 'key' }));
+    }
+    for (const sessionId of [' other-dir ', 'terminal-1', 'throw-1', 'fail-1', ' chat-1 ']) {
+      await capture(() => f.controller.send({ directoryId: 'dir-1', text: '\u00a0hello\u00a0', sessionId }));
+    }
+    assert.ok(Object.isFrozen(f.controller));
+    return { result, calls: f.calls };
+  }
+  assert.deepEqual(await run(createMemoController), await run(frozen.createMemoController));
+});
+
+test('文件端口对照独占的临时名、原子改名和清理错误时的原始异常', () => {
+  const frozen = require('./helpers/frozen-file-batch12/file-port');
+  function run(factory) {
+    const effects = [], temps = new Map(), sentinel = {};
+    let fail = '', first;
+    function temporary(file) {
+      if (temps.has(file)) return temps.get(file);
+      const prefix = 'memo.md.tmp.' + process.pid + '.';
+      assert.ok(file.startsWith(prefix));
+      const n = Number(file.slice(prefix.length));
+      if (first === undefined) first = n;
+      assert.ok(Number.isSafeInteger(n));
+      assert.equal(n, first + temps.size);
+      const key = 'temp-' + temps.size;
+      temps.set(file, key);
+      return key;
+    }
+    const fsImpl = {
+      readFileSync(...args) { effects.push(['read', ...args]); return sentinel; },
+      statSync(file) { effects.push(['stat', file]); return sentinel; },
+      existsSync(file) { effects.push(['exists', file]); return false; },
+      mkdirSync(...args) { effects.push(['mkdir', ...args]); return 'ignored'; },
+      rmSync(...args) { effects.push(['rm', ...args]); return 'ignored'; },
+      writeFileSync(file, ...args) {
+        assert.equal(this, fsImpl); effects.push(['write', temporary(file), ...args]);
+        if (fail === 'write') throw sentinel;
+      },
+      renameSync(file, dest) { effects.push(['rename', temporary(file), dest]); if (fail === 'rename') throw sentinel; },
+      unlinkSync(file) { effects.push(['unlink', temporary(file)]); throw new Error('cleanup failed'); },
+    };
+    const port = factory({ fsImpl });
+    assert.ok(Object.isFrozen(port));
+    assert.equal(port.readText('memo.md'), sentinel);
+    assert.equal(port.stat('memo.md'), sentinel);
+    assert.equal(port.exists('memo.md'), false);
+    assert.equal(port.ensureDir('root'), undefined);
+    assert.equal(port.remove('memo.md'), undefined);
+    for (const phase of ['', 'write', 'rename', '']) {
+      fail = phase;
+      const { writeAtomic } = factory({ fsImpl });
+      if (fail) assert.throws(() => writeAtomic('memo.md', 'body'), e => e === sentinel);
+      else assert.equal(writeAtomic('memo.md', 'body'), undefined);
+    }
+    return effects;
+  }
+  assert.deepEqual(run(createMemoFilePort), run(frozen.createMemoFilePort));
 });

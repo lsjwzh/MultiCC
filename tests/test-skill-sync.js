@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { NEVER_SYNCED_STATUS, RETIRED_BUNDLED_SKILLS, createSkillSyncRuntime } = require('../src/skill-sync');
-const { mountSkillSyncRoutes } = require('../src/routes/skill-sync');
+const { mountSkillSyncRoutes } = require('../src/routes/host-ops-host');
 
 function createApp() {
   const routes = new Map();
@@ -588,4 +588,20 @@ test('start makes sure the CDP gateway runs, and a failure there does not stop s
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['ensure']);
   await harness.runtime.stop();
+});
+
+test('技能同步与冻结处理器对照原始结果、并发冲突和公开错误', () => {
+  const frozen = require('./helpers/frozen-file-batch9/skill-sync');
+  function exercise(mount) {
+    const app = createApp(), answers = [];
+    let error;
+    mount(app, { getStatus() { return { running: false }; }, runNow() { if (error !== undefined) throw error; return null; } });
+    for (error of [undefined, null, 'offline', new Error('failure'), { code: 'SKILL_SYNC_RUNNING' }]) {
+      const res = invoke(app, 'POST', '/api/skill-sync/run');
+      answers.push([res.statusCode, res.body]);
+    }
+    answers.push(invoke(app, 'GET', '/api/skill-sync/status').body);
+    return answers;
+  }
+  assert.deepEqual(exercise(mountSkillSyncRoutes), exercise(frozen.mountSkillSyncRoutes));
 });

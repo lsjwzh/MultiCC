@@ -1,7 +1,7 @@
 'use strict';
 
 const { createErrorDto, safeId } = require('../api-contract');
-const { mapError } = require('./error-map');
+const { mapError } = require('../http-errors');
 
 function presentationContext(context = {}) {
   const requestId = safeId(context.requestId);

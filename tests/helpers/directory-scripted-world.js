@@ -291,9 +291,9 @@ function state(dataRoot) {
   return { dataRoot, effectsFile, readEffects: () => fs.readFileSync(effectsFile, 'utf8').split('\n').filter(Boolean), deps, repo, saveSessions, readSessions: () => sessions, touch(rel, text) { write(path.join(dataRoot, rel), text); } };
 }
 
-// The ui-layout store the current host composes (src/directory/ui-layout.js).
+// The live host uses the native layout store with the scripted directory/session tables.
 function layoutStore(raw) {
-  const { createUiLayoutStore } = require('../../src/directory/ui-layout');
+  const { createUiLayoutStore } = require('../../src/routes/directory-host');
   const dirIds = () => raw.repo.list().map(d => d.id);
   const sessionIds = dirId => raw.readSessions().filter(s => s.dirId === dirId).map(s => s.id);
   return createUiLayoutStore({

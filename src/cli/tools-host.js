@@ -9,7 +9,20 @@ const crypto = require('node:crypto');
 const { getNative } = require('../native/runtime');
 const capability = require('./cli-capability');
 const cliUpstream = require('./cli-upstream-version');
-const homebrewTakeover = require('./homebrew-takeover');
+function homebrewOwnerOf(cmd, { envPath = process.env.PATH, realpath = require('node:fs').realpathSync } = {}) {
+  const native = getNative();
+  return native.homebrewResolveOwner(cmd, envPath, realpath, require('node:path'), require('node:fs').existsSync, native);
+}
+function isNpmGlobalInstall(command) {
+  return getNative().homebrewTakeoverRequest('npmGlobal', { command: String(command || '') });
+}
+
+function takeoverCommand(owner, command) {
+  if (!owner || !isNpmGlobalInstall(command)) return command;
+  const result = getNative().homebrewTakeoverRequest('takeover', { owner: { kind: owner.kind, name: owner.name }, command: String(command) });
+  return result === null ? command : result;
+}
+const homebrewTakeover = { homebrewOwnerOf, takeoverCommand, isNpmGlobalInstall };
 const { bundledClaudeCodeBinary } = require('./claude-bundled-binary');
 const { getChildProxyEnv } = require('../network/outbound');
 const native = getNative();
@@ -217,4 +230,4 @@ function createCliToolsHost(options) {
   return Object.freeze({ mountRoutes, startUpdateWatch });
 }
 
-module.exports = { createCliToolsHost, OFFICIAL_INSTALL_SPECS };
+module.exports = { homebrewTakeover, createCliToolsHost, OFFICIAL_INSTALL_SPECS };

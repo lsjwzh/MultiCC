@@ -23,7 +23,24 @@
 const path = require('node:path');
 const os = require('node:os');
 const cache = require('../quota/account-subscription-cache');
-const { query } = require('../providers/native-subscription');
+const { getNative } = require('../native/runtime');
+const { policy } = require('../network/outbound');
+async function query(input, { fetch } = {}) {
+  const native = getNative();
+  const { mode, result, plan, request, timeout } = JSON.parse(await native.accountSubscriptionStart(JSON.stringify(input), !!fetch));
+  if (mode === 'done') return result;
+  if (mode === 'proxy') {
+    plan.proxyUrl = await policy.proxyForUrl(plan.url) || null;
+    return JSON.parse(await native.queryAccountSubscription(JSON.stringify(plan)));
+  }
+  let status = 0, body = null;
+  try {
+    const response = await fetch(plan.url, { ...request, signal: AbortSignal.timeout(timeout) });
+    status = response.status;
+    if (response.ok) body = await response.json();
+  } catch (_) { status = 0; }
+  return JSON.parse(native.accountSubscriptionResult(JSON.stringify({ plan, status, body, now: Date.now() })));
+}
 
 // Node had one Map per mount (one per vendor); moving the readers into one
 // module keeps that key space explicit instead of relying on closures.
@@ -61,4 +78,4 @@ function registerAccountSubscriptionReader(vendor, deps = {}) {
   return read;
 }
 
-module.exports = { registerAccountSubscriptionReader };
+module.exports = { query, registerAccountSubscriptionReader };

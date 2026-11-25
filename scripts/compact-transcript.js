@@ -5,7 +5,7 @@
  * `claude --resume` reloads ~/.claude/projects/<sanitised-cwd>/<sessionId>.jsonl,
  * so a transcript that outgrows the context window makes every resume fail with
  * "Prompt is too long". multicc trims transcripts automatically on the way into a
- * turn (src/chat/turn-engine.js → src/chat/transcript-prune.js); this script is the
+ * turn (src/chat/turn-engine.js → getTranscriptPruning()); this script is the
  * operator's door to the same logic — for looking at a session before touching it,
  * or for fixing one that is already wedged.
  *
@@ -24,7 +24,7 @@
  *   --keep-turns N    Override the lossy-tier ladder with a single rung.
  *   --max-bytes N     High-water mark in bytes (default 2MB, same as the live gate).
  *   --target-tokens N Token target the ladder stops on (default 120K). Bytes are the
- *                     gate; tokens are the wall — see transcript-prune.js.
+ *                     gate; tokens are the wall — see native/core/src/transcript_prune.rs.
  *
  * Removed entries are appended to <name>.pruned.jsonl so global token accounting
  * (the gateway's token_usage_global route walks **\/*.jsonl) still reads their usage.
@@ -33,7 +33,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const prune = require('../src/chat/transcript-prune');
+const prune = require('../src/native/runtime').getTranscriptPruning();
 
 function parseArgs(argv) {
   const args = {

@@ -1,7 +1,43 @@
 'use strict';
-const { hash, snapshotHistory, verifySnapshot, renderLazyContextPrompt } = require('../native/runtime').taskShellContext;
-const { selectContext } = require('../native/runtime').getContextSelection();
-const { boundedSnapshot, boundedHandoff } = require('./context-snapshot');
+const { hash, estimateTokens, renderSnapshots, snapshotHistory, verifySnapshot, renderLazyContextPrompt } = require('../native/runtime').taskShellContext;
+const { selectContext, clipTokens } = require('../native/runtime').getContextSelection();
+const { getNative } = require('../native/runtime');
+const excerptRendering = {
+  user: message => message.role === 'user',
+  fits: (text, budget) => estimateTokens(text) <= budget,
+  renderSnapshot: snapshot => renderSnapshots([snapshot]),
+  renderHandoff: handoff => require('../cli-switch').renderHandoffPrompt(handoff),
+  clipTask(checkpoint) {
+    const task = {};
+    for (const [key, value] of Object.entries(checkpoint.task || {})) {
+      task[key] = typeof value === 'string' ? clipTokens(value, 120) : value;
+    }
+    return task;
+  },
+  snapshotText(snapshot, rows, limit) {
+    const messages = rows.map(message => {
+      const { content, tools, evidenceExcerpt, ...meta } = message;
+      const raw = evidenceExcerpt || JSON.stringify({ content, tools });
+      const excerpt = clipTokens(raw, limit);
+      return { ...meta, evidenceExcerpt: excerpt, truncated: true, totalChars: message.totalChars || raw.length,
+        nextOffset: excerpt.endsWith('…') ? excerpt.length - 1 : excerpt.length };
+    });
+    const { hash: oldHash, ...data } = snapshot;
+    const bounded = { ...data, messages, omittedMessages: (snapshot.omittedMessages || 0) + snapshot.messages.length - rows.length, truncated: true };
+    return renderSnapshots([{ ...bounded, hash: hash(bounded) }]);
+  },
+  handoffText(handoff, cp, task, rows, limit) {
+    const transcript = rows.map(m => ({ ...m, text: clipTokens(String(m.text || ''), limit) }));
+    return this.renderHandoff({ ...handoff, checkpoint: { ...cp, task, transcript,
+      git: cp.git ? { commit: cp.git.commit, branch: cp.git.branch } : null } }) + '[检查点已节选；完整对话可通过 get_task_context 读取]\n';
+  },
+};
+function boundedSnapshot(snapshot, budget = 1600) {
+  return getNative().boundedContextExcerpt(false, snapshot, budget, excerptRendering);
+}
+function boundedHandoff(handoff, budget = 1500) {
+  return getNative().boundedContextExcerpt(true, handoff, budget, excerptRendering);
+}
 
 function createContextPlanner({ store, getRecord, getHistory, getTask, graphContextOf }) {
   function prepare(task, { receiptId, turnId, text = '', isFirstTurn = false, fallback = '', memory, budget = 4800, force = false }) {
@@ -124,4 +160,4 @@ function createContextPlanner({ store, getRecord, getHistory, getTask, graphCont
   }
   return { prepare, sent, complete };
 }
-module.exports = { createContextPlanner };
+module.exports = { boundedSnapshot, boundedHandoff, createContextPlanner };

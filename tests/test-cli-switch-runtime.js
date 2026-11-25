@@ -2270,7 +2270,7 @@ test('codex install job declares non-interactive env; npm lanes are untouched', 
 });
 
 test('homebrew owner detection follows the real path and refuses unsafe names', () => {
-  const { homebrewOwnerOf, takeoverCommand } = require('../src/cli/homebrew-takeover');
+  const { homebrewOwnerOf, takeoverCommand } = require('../src/cli/tools-host').homebrewTakeover;
   const links = {
     '/opt/homebrew/bin/gemini': '/opt/homebrew/Cellar/gemini-cli/0.29.5/bin/gemini',
     '/opt/homebrew/bin/codex': '/opt/homebrew/Caskroom/codex/0.40.0/codex-aarch64-apple-darwin',
@@ -2300,7 +2300,7 @@ test('homebrew owner detection follows the real path and refuses unsafe names', 
 });
 
 test('homebrew takeover keeps the runtime protected even behind an unrelated formula', () => {
-  const { homebrewOwnerOf } = require('../src/cli/homebrew-takeover');
+  const { homebrewOwnerOf } = require('../src/cli/tools-host').homebrewTakeover;
   assert.equal(homebrewOwnerOf('/opt/homebrew/bin/node', {
     realpath: () => '/opt/homebrew/Cellar/custom-cli/1/bin/node',
   }), null);
@@ -2312,7 +2312,7 @@ test('homebrew takeover keeps the runtime protected even behind an unrelated for
 });
 
 test('homebrew command bridging preserves UTF-16 and leaves unsupported commands untouched', () => {
-  const { takeoverCommand, isNpmGlobalInstall } = require('../src/cli/homebrew-takeover');
+  const { takeoverCommand, isNpmGlobalInstall } = require('../src/cli/tools-host').homebrewTakeover;
   const owner = { kind: 'formula', name: 'cli' };
   const command = '\ufeffnpm\tinstall -g cli \ud800';
   assert.equal(takeoverCommand(owner, command), `brew uninstall --formula cli && ${command}`);
@@ -2506,5 +2506,20 @@ test('线路准备与冻结入口保留返回值、输入展开顺序和失败�
       catch (e) { return [log,e.code,e.message,e.status,e.safe]; }
     }
     assert.deepEqual(await trace(current), await trace(old));
+  }
+});
+
+test('Homebrew 归属与接管命令保留冻结版的路径和对象语义', () => {
+  const current = require('../src/cli/tools-host').homebrewTakeover;
+  const previous = require('./helpers/frozen-file-batch8/homebrew-takeover');
+  for (const cmd of ['', 'not-in-test-path', './bin/tool', '/opt/homebrew/bin/tool']) {
+    for (const target of ['', '/opt/homebrew/Cellar/tool/1/bin/tool', '/tmp/tool']) {
+      const options = { envPath: '', realpath: () => target };
+      assert.deepEqual(current.homebrewOwnerOf(cmd, options), previous.homebrewOwnerOf(cmd, options));
+    }
+  }
+  for (const command of ['npm i -g tool', 'npm install -g tool', 'brew install tool', { toString: () => 'local' }]) {
+    const owner = { kind: 'formula', name: 'tool' };
+    assert.equal(current.takeoverCommand(owner, command), previous.takeoverCommand(owner, command));
   }
 });

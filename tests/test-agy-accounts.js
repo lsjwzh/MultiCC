@@ -162,7 +162,7 @@ async function call(app, method, routePath, { params = {}, body } = {}) {
 }
 
 test('the login terminal executor points HOME at the account it is given', async () => {
-  const { mountAgyAccountRoutes } = require('../src/routes/agy-accounts');
+  const { mountAgyAccountRoutes } = require('../src/routes/account-routes-host');
   const home = tempHome('login-route');
   const id = '0123456789abcdef';
   const dir = accountHome(home, id);

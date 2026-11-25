@@ -4,7 +4,8 @@
 // 公开路由、厂商 HTTP、查询编排、去重和失败回退由 Rust 前门执行。
 const { sanitizePublicText } = require('../http/public-safety');
 const { isLocalRequest } = require('../request-locality');
-const { providerLimitSnapshot } = require('../native/runtime');
+const { outboundFetch } = require('../network/outbound');
+const { providerLimitSnapshot, getNative } = require('../native/runtime');
 const HOST_PATH = '/api/__host/provider-balance';
 const mounts = new WeakMap();
 
@@ -77,4 +78,27 @@ function mountProviderBalanceHost(app, options) {
   });
 }
 
-module.exports = { HOST_PATH, mountProviderBalanceHost };
+function createProviderBalanceRuntime(options = {}) {
+  const request = async path => {
+    const url = getNative().providerBalanceUrl(options, path);
+    const response = await outboundFetch(url, { signal: AbortSignal.timeout(60000) });
+    return response.json();
+  };
+  const path = (type, id, cached) => getNative().providerBalancePath(type, id, cached);
+  const refreshOne = (type, id) => request(path(type, id, false)).catch(() => null);
+  return Object.freeze({
+    queryOne: refreshOne, refreshOne,
+    queryAll: () => request('/api/providers/balances'),
+    readCached: (type, id) => request(path(type, id, true)),
+  });
+}
+
+function mountProviderBalanceRoutes(app, options = {}) {
+  mountProviderBalanceHost(app, options);
+  return options.runtime || createProviderBalanceRuntime(options);
+}
+
+module.exports = {
+  HOST_PATH, mountProviderBalanceHost, createProviderBalanceRuntime,
+  mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes: mountProviderBalanceRoutes,
+};
