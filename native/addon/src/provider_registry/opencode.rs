@@ -3,18 +3,21 @@
 use crate::js_live::LiveValue as L;
 use multicc_core::{
     js::{JsString, JsValue as V},
-    provider_registry::{native_opencode_id, NATIVE_OPENCODE_ID_PATTERN, NATIVE_OPENCODE_PREFIX},
+    provider_registry::{
+        native_opencode_id, NATIVE_OPENCODE_ID_PATTERN, NATIVE_OPENCODE_PREFIX, OPENCODE_CLI,
+        OPENCODE_NAMES,
+    },
 };
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 
 #[napi]
 pub fn open_code_catalog_spec(env: Env) -> Result<sys::napi_value> {
-    let names = V::object(vec![
-        ("opencode", V::string("OpenCode Zen")),
-        ("opencodego", V::string("OpenCode Go")),
-        ("opencode-go", V::string("OpenCode Go")),
-    ]);
+    let names = V::object(
+        OPENCODE_NAMES
+            .map(|(id, name)| (id, V::string(name)))
+            .to_vec(),
+    );
     let spec = V::object(vec![
         ("prefix", V::string(NATIVE_OPENCODE_PREFIX)),
         ("pattern", V::string(NATIVE_OPENCODE_ID_PATTERN)),
@@ -71,6 +74,7 @@ pub fn open_code_catalog_entry(
     let key = ports.get(c"add")?.call_plain(&[prefix, id])?;
     let entry = id.from_value(&V::Object(vec![]))?;
     entry.set(c"id", key)?;
+    entry.set(c"appType", id.from_value(&V::string(OPENCODE_CLI))?)?;
     entry.set(c"name", name(id, L::new(&env, names))?)?;
     entry.set(c"nativeOpenCode", id.from_value(&V::Bool(true))?)?;
     entry.set(c"nativeProvider", id)?;

@@ -49,14 +49,7 @@ pub fn native_provider_line(
         }
     } else if phase == 2 {
         if let Some(native) = id.strip_prefix(prefix) {
-            let bytes = native.as_bytes();
-            let valid = !bytes.is_empty()
-                && bytes.len() <= 64
-                && bytes[0].is_ascii_alphanumeric()
-                && bytes
-                    .iter()
-                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'.' | b'_' | b'-'));
-            return if cli == Some("opencode") && valid {
+            return if cli == Some("opencode") && valid_opencode_suffix(native) {
                 1
             } else {
                 2
@@ -90,16 +83,72 @@ pub const VENDOR_NATIVE_CLIS: [&str; 8] = [
 /// Mirrors `NATIVE_VENDOR_SUFFIX` in `src/providers/native-vendor.js`.
 pub const NATIVE_VENDOR_SUFFIX: &str = "-native:";
 
-/// Auto creates exactly one account-owned line per vendor CLI.
-pub fn native_vendor_cli(provider_id: &str) -> Option<&'static str> {
-    let (cli, id) = provider_id.split_once(NATIVE_VENDOR_SUFFIX)?;
-    VENDOR_NATIVE_CLIS
-        .into_iter()
-        .find(|vendor| *vendor == cli && id == cli)
-}
 /// OpenCode owns the native provider namespace, including user-installed providers.
 pub const NATIVE_OPENCODE_PREFIX: &str = "opencode-native:";
+pub const OPENCODE_CLI: &str = "opencode";
 pub const NATIVE_OPENCODE_ID_PATTERN: &str = "^[a-z0-9][a-z0-9._-]{0,63}$";
+pub const OPENCODE_NAMES: [(&str, &str); 3] = [
+    ("opencode", "OpenCode Zen"),
+    ("opencodego", "OpenCode Go"),
+    ("opencode-go", "OpenCode Go"),
+];
+
+fn valid_opencode_suffix(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'.' | b'_' | b'-'))
+}
+
+pub enum NativeProviderLine<'a> {
+    Vendor(&'static str),
+    OpenCode(&'a str),
+}
+
+impl<'a> NativeProviderLine<'a> {
+    pub fn parse(provider_id: &'a str) -> Option<Self> {
+        if let Some(id) = provider_id.strip_prefix(NATIVE_OPENCODE_PREFIX) {
+            return valid_opencode_suffix(id).then_some(Self::OpenCode(id));
+        }
+        let (cli, id) = provider_id.split_once(NATIVE_VENDOR_SUFFIX)?;
+        VENDOR_NATIVE_CLIS
+            .into_iter()
+            .find(|vendor| *vendor == cli && id == cli)
+            .map(Self::Vendor)
+    }
+
+    pub fn cli(&self) -> &'static str {
+        match self {
+            Self::Vendor(cli) => cli,
+            Self::OpenCode(_) => OPENCODE_CLI,
+        }
+    }
+
+    // OpenCode 用实际传给 CLI 的 <provider>/<model> 选择账号。由 CLI 自选默认模型时无法证明账号。
+    pub fn matches_invocation(&self, cli: &str, wire_model: &str) -> bool {
+        self.cli() == cli
+            && match self {
+                Self::Vendor(_) => true,
+                Self::OpenCode(id) => wire_model
+                    .split_once('/')
+                    .is_some_and(|(owner, model)| owner == *id && !model.is_empty()),
+            }
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            Self::Vendor(cli) => crate::cli_capability::family_of(cli)
+                .map_or(*cli, |f| f.name)
+                .to_owned(),
+            Self::OpenCode(id) => OPENCODE_NAMES
+                .iter()
+                .find(|(key, _)| key == id)
+                .map_or_else(|| format!("OpenCode · {id}"), |(_, name)| name.to_string()),
+        }
+    }
+}
 
 /// A bare OpenCode prefix has an empty id. Only a missing prefix denotes a
 /// regular MultiCC provider. The suffix may contain arbitrary UTF-16 units.

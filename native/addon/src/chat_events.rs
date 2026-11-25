@@ -10,7 +10,7 @@
 //! serialized inside the process: objects are read and written through
 //! [`LiveValue`] with engine identity, getter order and property order intact.
 use crate::{
-    cli_completion::{compatible, completed},
+    cli_completion::{compatible, completed, result_completion},
     js_live::LiveValue,
 };
 use multicc_core::{
@@ -782,8 +782,63 @@ fn api_error_envelope<'a>(
     out.freeze()
 }
 
-/// Finalize a process or resident stream using the same structured error as
-/// the per-event reducer. Only write back when the envelope has a partial answer.
+/// 主结果的错误详情独立于回答正文。只有两者逐字相同，且正文仍覆盖整次尝试，
+/// 才能将已经显示的文字认作上游错误回显。重放及换线仍由尝试状态和错误策略决定。
+fn terminal_error_echo<'a>(
+    anchor: LV<'a>,
+    runner: LV<'a>,
+    result: LV<'a>,
+    provider: LV<'a>,
+    current: LV<'a>,
+) -> Result<LV<'a>> {
+    let message = result.optional(c"error")?.optional(c"message")?;
+    if !message.string()?.is_some_and(|s| !s.trim().is_empty()) || !current.equals(message)? {
+        return null(anchor);
+    }
+    let held_rows = runner.optional(c"heldAnswerRows")?;
+    if (held_rows.is_array()? && held_rows.get(c"length")?.number()? > 0.0)
+        || !result_completion(result)?
+            .optional(c"state")?
+            .is_string("failed")?
+    {
+        return null(anchor);
+    }
+    let settled = runner.optional(c"completionOutcome")?;
+    if settled.truthy()? && !settled.optional(c"state")?.is_string("failed")? {
+        return null(anchor);
+    }
+    let raw = fallback_api_error_raw(anchor, result, provider)?;
+    let status = raw.get(c"httpStatus")?;
+    if !matches!(
+        status.kind()?,
+        sys::ValueType::napi_number | sys::ValueType::napi_string
+    ) {
+        return null(anchor);
+    }
+    let code = status.number()?;
+    if !(400.0..=599.0).contains(&code) || code.fract() != 0.0 {
+        return null(anchor);
+    }
+    raw.set(c"body", null(anchor)?)?;
+    raw.freeze()
+}
+
+fn structured_error_envelope<'a>(
+    anchor: LV<'a>,
+    runner: LV<'a>,
+    result: LV<'a>,
+    provider: LV<'a>,
+    current: LV<'a>,
+) -> Result<LV<'a>> {
+    let envelope = api_error_envelope(anchor, runner, provider, current)?;
+    if envelope.nullish()? {
+        terminal_error_echo(anchor, runner, result, provider, current)
+    } else {
+        Ok(envelope)
+    }
+}
+
+/// 进程退出和常驻流结束共用同一判定。
 #[napi]
 pub fn chat_claude_boundary_envelope(
     env: Env,
@@ -795,24 +850,13 @@ pub fn chat_claude_boundary_envelope(
     let runner = LV::new(&env, runner);
     let provider = LV::new(&env, provider);
     let current = cs.optional(c"currentAssistantText")?;
-    let envelope = api_error_envelope(cs, runner, provider, current)?;
-    // WorkBuddy emits its upstream rejection as ordinary assistant text before
-    // the failed result. Corroborate the entire turn text with that result so
-    // quoting a 429 in a real answer cannot reopen the replay fence.
-    if envelope.nullish()? && provider.is_string("codebuddy")? {
-        let result = runner.optional(c"pendingClaudeResult")?;
-        let detail = result.optional(c"error")?;
-        let message = detail.optional(c"message")?;
-        if result.optional(c"is_error")?.is_true()?
-            && detail.optional(c"http_status")?.is_number(429.0)?
-            && message.string()?.is_some_and(|s| !s.trim().is_empty())
-            && current.equals(message)?
-        {
-            let raw = fallback_api_error_raw(cs, result, provider)?;
-            raw.set(c"body", null(cs)?)?;
-            return Ok(raw.freeze()?.raw());
-        }
-    }
+    let envelope = structured_error_envelope(
+        cs,
+        runner,
+        runner.optional(c"pendingClaudeResult")?,
+        provider,
+        current,
+    )?;
     let body = envelope.optional(c"body")?;
     if !body.nullish()? {
         cs.assign(c"currentAssistantText", body)?;
@@ -1157,7 +1201,7 @@ fn apply_result<'a>(
     let source = completion.optional(c"source")?.string()?;
     let api_failure = chat_events::is_api_failure(state.as_ref(), source.as_ref());
     let current_text = cs.optional(c"currentAssistantText")?;
-    let mut detected = api_error_envelope(anchor, runner, provider_name, current_text)?;
+    let mut detected = structured_error_envelope(anchor, runner, evt, provider_name, current_text)?;
     if !detected.truthy()? {
         detected = detect(anchor, provider_name, current_text)?;
     }

@@ -1913,7 +1913,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
     const cs = { currentAssistantText: text };
     assert.equal(chatClaudeBoundaryEnvelope(runner, session.cli, { currentAssistantText: '已完成第一步。' + text }), null);
     assert.equal(chatClaudeBoundaryEnvelope({}, session.cli, cs), null);
-    assert.equal(chatClaudeBoundaryEnvelope({ pendingClaudeResult: { ...result.raw, is_error: false } }, session.cli, cs), null);
+    assert.equal(chatClaudeBoundaryEnvelope({ pendingClaudeResult: { ...result.raw, subtype: 'success', is_error: false } }, session.cli, cs), null);
     const envelope = chatClaudeBoundaryEnvelope(runner, session.cli, cs);
     reconcileBoundaryErrorEnvelope(attempts, attempt, session.cli, cs, envelope);
     const facts = attempts.snapshot(session.id);
@@ -1930,5 +1930,65 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
     assert.equal(runtime.beginTurn({ session, turnId: 'wb-handoff' }).initial().providerId, 'backup');
   } finally {
     _resetCacheForTest();
+  }
+});
+
+test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具仍阻止重放', () => {
+  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+  const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+  const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine');
+  const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
+  const adapter = createQoderAdapter({ cmd: 'qoder' });
+  const message = '服务暂时繁忙，请稍后重试';
+  const cs = { currentAssistantText: message };
+  const failed = { type: 'result', terminal_reason: 'api_error', error_code: 503, error_message: message };
+  const result = adapter.decodeEvent(failed)[0].raw;
+  const boundary = (pendingClaudeResult, extra) => chatClaudeBoundaryEnvelope({ pendingClaudeResult, ...extra }, 'qoder', cs);
+  const envelope = boundary(result);
+  assert.equal(envelope.body, null);
+  assert.equal(envelope.httpStatus, 503);
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
+  const assistant = { type: 'assistant', message: { content: [{ type: 'text', text: message }] } };
+  for (const [events, expectedFence] of [
+    [[delta(message.slice(0, 4)), delta(message.slice(4)), assistant], 'none'],
+    [[delta(message), { type: 'part_delta', delta: { type: 'text', text: message } }, assistant], 'none'],
+    [[delta('已经写入部分内容'), assistant], 'visible_output'],
+    [[{ type: 'reasoning', text: '已展开推理' }, assistant], 'visible_output'],
+    [[{ type: 'tool_start', id: 't1' }, assistant], 'tool_intent'],
+    [[{ type: 'tool_result', id: 't1' }, assistant], 'side_effect'],
+  ]) {
+    const runtime = createProviderAttemptRuntime();
+    const attempt = runtime.beginAttempt({
+      sessionId: 'qoder', turnId: '失败回显', cli: 'qoder', providerId: 'qoder-native:qoder',
+      model: 'qoder-model', protocol: 'anthropic', providerRevision: 'q1', attemptNo: 1,
+    });
+    for (const event of events) runtime.observeEvent(attempt, event);
+    reconcileBoundaryErrorEnvelope(runtime, attempt, 'qoder', cs, envelope);
+    assert.equal(runtime.snapshot('qoder').replayFence, expectedFence);
+  }
+  assert.equal(boundary(result, { heldAnswerRows: [{ saved: true }] }), null);
+  assert.equal(boundary(result, { completionOutcome: { state: 'cancelled' } }), null);
+  assert.equal(boundary({ ...result, terminal_reason: 'cancelled', is_error: true }), null);
+  assert.equal(boundary({ ...result, parent_tool_use_id: '子任务' }), null);
+  assert.equal(boundary({ ...result, origin: { kind: 'task-notification' } }), null);
+  assert.equal(boundary(null, { apiErrorRaw: envelope }), null);
+  for (const http_status of [null, 200, 600, 429.5]) {
+    assert.equal(boundary({ ...result, error: { message, http_status } }), null);
+  }
+});
+
+test('只有状态码时，适配器保留结果正文，不用正文证明自己是纯报错', () => {
+  const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
+  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+  const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
+  const answer = '第一页已完成。';
+  for (const [adapter, fields] of [
+    [createCodebuddyAdapter({ cmd: 'codebuddy' }), { errors_info: [{ status: 429 }] }],
+    [createQoderAdapter({ cmd: 'qoder' }), { error_code: 503 }],
+  ]) {
+    const [event] = adapter.decodeEvent({ type: 'result', is_error: true, result: answer, ...fields });
+    assert.equal(event.raw.result, answer);
+    assert.equal(event.raw.error.message, undefined);
+    assert.equal(chatClaudeBoundaryEnvelope({ pendingClaudeResult: event.raw }, adapter.name, { currentAssistantText: answer }), null);
   }
 });

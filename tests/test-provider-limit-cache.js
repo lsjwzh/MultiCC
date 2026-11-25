@@ -1042,6 +1042,22 @@ async function testAsyncRecorderParity() {
   const parked = await newCache.get('codebuddy', workbuddy);
   assert.ok(parked?.summary?.blockedUntilMs > now(), 'catalog refresh preserves the WorkBuddy cooldown');
   assert.equal(await newRecorder.recordProviderFailure({ providerId: 'codebuddy-native:unknown', httpStatus: 429 }), null);
+  const first = 'opencode-native:my-provider', backup = 'opencode-native:opencode';
+  await newRecorder.recordProviderFailure({ providerId: first, category: 'billing_quota', httpStatus: 429 });
+  await newCache.prune(newRecorder.liveKeys());
+  assert.ok((await newCache.get('opencode', first))?.summary?.blockedUntilMs > now());
+  assert.equal(await newRecorder.recordProviderFailure({ providerId: 'opencode-native:无效/线路', httpStatus: 429 }), null);
+  const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
+  const runtime = createAutoProviderRuntime({ providers, providerLimitCache: newCache, now });
+  const session = { id: '额度冷却', cli: 'opencode', providerSelection: {
+    version: 1, mode: 'auto', sticky: false, maxAttempts: 2,
+    candidates: [
+      { providerId: first, model: 'my-provider/model', priority: 1 },
+      { providerId: backup, model: 'opencode/model', priority: 2 },
+    ],
+  } };
+  const turn = await runtime.beginTurnAsync({ session, turnId: '再次选线' });
+  assert.equal(turn.initial().providerId, backup, '选线读取已落盘并经目录刷新的冷却，跳过受限账号');
   oldCache.close();
   await newCache.close();
 }

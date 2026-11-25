@@ -296,7 +296,7 @@ function createProviderAttemptRuntime(options = {}) {
     // intent and side effects remain irreversible.
     const trustedError = getNative().providerHostTextEnvelope(event, HOST_ERROR_ENVELOPE);
     const previousFence = record.lifecycle.snapshot().replayFence;
-    if (trustedError && record.lifecycle.reconcileHostError()) {
+    if (trustedError && record.lifecycle.reconcileHostError(event)) {
       if (previousFence !== 'none') {
         auditOnly(sessionId, {
           type: 'provider_fence_reconciled', runtimeEpoch: record.runtimeEpoch,
@@ -307,8 +307,8 @@ function createProviderAttemptRuntime(options = {}) {
       }
       return Object.freeze({ accepted: true, code: null, ...getNative().providerAttemptSnapshot(record) });
     }
-    const fence = fenceForEvent(event);
-    if (record.lifecycle.advance(fence)) {
+    const fence = record.lifecycle.observeFence(event, HOST_ERROR_ENVELOPE);
+    if (fence) {
       auditOnly(sessionId, {
         type: 'provider_fence_advanced', runtimeEpoch: record.runtimeEpoch,
         turnId: record.turnId, routeAttemptId: record.routeAttemptId,
