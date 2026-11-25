@@ -547,3 +547,13 @@ test('removal tolerates a worktree dir the re-inited repo no longer tracks', asy
   assert.equal(forced.ok, true);
   assert.equal(fs.existsSync(session.worktreePath), true);
 });
+
+test('默认提交说明与冻结版使用相同的输入转换和输出文本', async () => {
+  const before = require('./helpers/frozen-host-ports/git-default-commit-message').quickCommitMessage;
+  const current = require('../src/native/runtime').quickCommitMessage;
+  for (const value of ['', null, false, ' M README.md\n?? 新文件.txt', Symbol('路径'), { toString: () => ' D old.js' }]) {
+    assert.equal(await current(value), await before(value));
+  }
+  const error = Error('转换中止'), value = { toString() { throw error; } };
+  for (const fn of [before, current]) assert.throws(() => fn(value), e => e === error);
+});

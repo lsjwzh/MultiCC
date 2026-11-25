@@ -12,7 +12,7 @@ const planning = require('../src/task-board/planning');
 const { boardRule } = require('../src/task-board/native-bridge');
 const { taskDomain, taskDomainAsync, cloneBoard } = require('../src/native/task-domain');
 const { openBoardStore } = require('../src/task-board/board-store');
-const { createTaskBoardRepository } = require('../src/task-board/repository');
+const { createTaskBoardRepository } = require('../src/native/task-domain');
 
 const NEW_IDS = Array.from({ length: 32 }, (_, i) => `${String(i).padStart(2, '0')}`.padEnd(32, 'a'));
 const plain = value => JSON.parse(JSON.stringify(value));

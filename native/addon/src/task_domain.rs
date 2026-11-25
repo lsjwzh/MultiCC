@@ -212,3 +212,58 @@ pub fn task_domain_async(input: String) -> AsyncTask<DomainJob> {
 pub fn task_domain_protocol_version() -> u32 {
     1
 }
+
+fn repository_command<'a>(
+    p: crate::js_live::LiveValue<'a>,
+    action: &str,
+) -> Result<crate::js_live::LiveValue<'a>> {
+    crate::js_live::fields(
+        p,
+        &[
+            ("op", p.from_value(&"repository".into())?),
+            ("file", p.get(c"file")?),
+            ("action", p.from_value(&action.into())?),
+        ],
+    )
+}
+
+/// Route through the existing board owner when a live mirror is supplied.
+#[napi]
+pub fn task_board_repository(
+    env: Env,
+    file: napi::bindgen_prelude::Unknown<'_>,
+    run: napi::bindgen_prelude::Unknown<'_>,
+) -> Result<napi::sys::napi_value> {
+    use crate::{
+        host_methods::method,
+        js_iteration::read,
+        js_live::{fields, LiveValue as L},
+    };
+    let file = L::new(&env, file);
+    let ports = fields(file, &[("file", file), ("run", L::new(&env, run))])?;
+    let load = method(&env, ports, "load", 0, 0, move |p, _| {
+        p.get(c"run")?.call_plain(&[repository_command(p, "load")?])
+    })?;
+    let save = method(&env, ports, "save", 2, 3, move |p, args| {
+        let opts = if args[2].undefined()? {
+            fields(p, &[])?
+        } else {
+            args[2]
+        };
+        let cmd = repository_command(p, "save")?;
+        cmd.define_key(p.from_value(&"board".into())?, args[0])?;
+        cmd.define_key(p.from_value(&"expectedRevision".into())?, args[1])?;
+        if read(opts, c"onConflict")?.truthy()? {
+            cmd.define_key(
+                p.from_value(&"onConflict".into())?,
+                read(opts, c"onConflict")?,
+            )?;
+        }
+        p.get(c"run")?.call_plain(&[cmd])
+    })?;
+    Ok(fields(
+        file,
+        &[("nativeFile", file), ("load", load), ("save", save)],
+    )?
+    .raw())
+}

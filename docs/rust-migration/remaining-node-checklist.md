@@ -1,5 +1,28 @@
 # 剩余 Node 后端清单
 
+## 第六批按文件迁移（2026-11-25）
+
+以任务分支 `ea7385cd` 为基线，本批从生产目录整份删除 8 个 JS 文件，共 259 行。保留的生产文件因兼容接线净增 60 行，**生产 Node 净减 199 行**。计入当前工作树，自 `dc0df5fe` 起六批累计退出 **17 个文件、净减 538 行**，从 495 个文件、126,693 行降至 **478 个文件、126,155 行**。统计包括根 `server.js` 及经它或其宿主脚本可达的 `src/` 文件，排除测试、前端及离线工具。[生产依赖清单](node-module-dependencies.md)
+
+| 整份退出的生产文件 | 迁前直接生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/chat/runtime-store.js` | `src/chat/index.js` | 65 | `4987f6c5` |
+| `src/classify/turn-state.js` | `src/classify/state-machine.js`、`src/turn-ledger/ledger.js` | 22 | `c5047971` |
+| `src/cli-adapters/step-completion.js` | `src/cli-adapters/opencode-like.js`、`src/cli-adapters/zcode.js` | 20 | `8125c370` |
+| `src/git/default-commit-message.js` | `src/git/service.js`、`src/routes/directory-host.js` | 20 | `a453eb43` |
+| `src/directory/repository.js` | `src/directory/index.js` | 58 | `e5ad4581` |
+| `src/task-board/repository.js` | `src/routes/task-board.js` | 19 | `414cd19c` |
+| `src/providers/native-store.js` | `src/providers/core.js` | 24 | `0b398d66` |
+| `src/task-shell/context-access.js` | `src/task-shell/runtime.js` | 31 | `be1cfcad` |
+
+原有 Rust 内核已负责回合状态判定、Git 提交说明生成和仓储落盘。本批接管回合接口的参数与所有者、CLI 步骤跟踪器装配、Git 输入转换、目录查找、任务板保存参数和供应商记录的版本关联。显式读取任务历史时，Rust 调用宿主查询，向原有规划与筛选函数传递所有权元数据，再按索引接回原始消息对象。[回合接口](../../native/addon/src/turn_runtime_store.rs) · [目录仓储](../../native/addon/src/directory_repository.rs) · [历史读取](../../native/addon/src/task_context/access.rs)
+
+Node 仍持有调用方使用的 V8 对象与回调，保留目录保存失败日志、任务板代理和错误映射、供应商存储的 JSON 编解码及历史读取端口。这些兼容接线可在相应宿主直接使用 Rust 仓储和记录后移除。
+
+八份测试副本与各自基线文件已逐一核对，差异仅为相对导入路径。迁前定向回归 **157/157**。八项迁移共用一次 macOS ARM64 发布构建，五份产物的摘要均匹配源码指纹 `7b7f7158d3ad25ef7de7dbdc`。使用该构建运行 20 个测试文件，共 **369/369** 通过、零跳过，覆盖版本冲突、宿主对象回收、隔离聊天回合、任务历史与 HTTP/WebSocket 接口。[冻结副本](../../tests/helpers/frozen-host-ports/) · [上下文差分](../../tests/test-context-plan.js) · [回合回归](../../tests/test-chat-runtime-native.js)
+
+原生扩展格式检查、源码行数门禁及测试分层检查通过。扩展的全目标严格 Clippy 检查退出码为 101。对 `ea7385cd` 的独立源码副本运行同一命令，两边均有 28 条去重诊断，文件、行号与诊断消息逐条相同。
+
 ## 宿主提示词、常驻进程回收条件与任务关系（2026-11-25）
 
 | 整份退出的生产文件 | 生产调用方 | 迁前行数 | 冻结的 Git blob |

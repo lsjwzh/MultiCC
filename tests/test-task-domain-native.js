@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createTaskShellStore } = require('../src/task-shell/store');
-const { createTaskBoardRepository } = require('../src/task-board/repository');
+const { createTaskBoardRepository } = require('../src/native/task-domain');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
 const { taskDomain, taskDomainAsync } = require('../src/native/task-domain');
 const { getNative, nativeCode } = require('../src/native/runtime');
@@ -370,4 +370,17 @@ test('原生 panic 被捕获为 TASK_DOMAIN_PANIC，且之后进程仍可用', (
     planningCode: 'TASK_DOMAIN_PANIC', cacheCode: 'TASK_DOMAIN_PANIC',
     afterSync: true, afterAsync: true, afterPlanning: true, afterCache: 'shadow',
   });
+});
+
+test('任务板仓储的加载、保存及版本冲突与冻结版一致', t => {
+  const old = require('./helpers/frozen-host-ports/task-board-repository').createTaskBoardRepository;
+  function trace(create, file) {
+    const repo = create(file), board = repo.load();
+    const saved = repo.save(board, board.revision);
+    let conflict;
+    try { repo.save(board, -1); } catch (e) { conflict = [e.code, e.message]; }
+    return [repo.nativeFile === file, Object.keys(repo), saved, repo.load(), conflict];
+  }
+  const root = directory(t);
+  assert.deepEqual(trace(createTaskBoardRepository, path.join(root, 'new.json')), trace(old, path.join(root, 'old.json')));
 });

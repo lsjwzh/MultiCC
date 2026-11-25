@@ -3,7 +3,7 @@
 const { renderPrompt } = require('../native/runtime').messageComposer;
 const { supportsEffort } = require('../cli/cli-capability');
 const { errorFields } = require('../provider-error');
-const { createStepCompletionTracker } = require('./step-completion');
+const { createStepCompletionTracker } = require('./completion');
 
 function createOpencodeLikeAdapter({
   name, label, cmd, supportsAgentVariant = false, includeThinking = false,

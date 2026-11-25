@@ -9,7 +9,7 @@
 // entry in Rust; the host port never builds the payload pair itself.
 const path = require('path');
 
-const { createFsDirectoryRepository } = require('./repository');
+const { createFsDirectoryRepository } = require('../native/runtime');
 const { createUiLayoutStore } = require('./ui-layout');
 const { createDirectoryHost } = require('../routes/directory-host');
 

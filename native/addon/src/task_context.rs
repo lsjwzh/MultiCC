@@ -1,3 +1,4 @@
+pub mod access;
 use multicc_core::task_context;
 use napi::Result;
 use napi_derive::napi;

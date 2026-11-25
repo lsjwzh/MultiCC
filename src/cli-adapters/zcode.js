@@ -1,6 +1,6 @@
 'use strict';
 
-const { createStepCompletionTracker } = require('./step-completion');
+const { createStepCompletionTracker } = require('./completion');
 
 // 专用 ZCode adapter —— 直接驱动官方 ZCode 桌面版内的 headless 引擎 zcode.cjs。
 //

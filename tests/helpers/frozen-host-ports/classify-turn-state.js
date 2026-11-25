@@ -8,7 +8,7 @@
 // closed to E; a live or unknown runner is always P). This module keeps the
 // export surface and forwards; tests/test-turn-state-rules.js pins behaviour.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 const native = getNative();
 const CATALOG = JSON.parse(native.turnStateCatalog());

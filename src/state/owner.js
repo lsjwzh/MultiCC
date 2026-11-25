@@ -65,4 +65,8 @@ function createStateOwner() {
   };
 }
 
-module.exports = { createStateOwner };
+function createTurnRuntimeStore(options = {}) {
+  return getNative().turnRuntimeStore(options, createStateOwner);
+}
+
+module.exports = { createTurnRuntimeStore, createStateOwner };

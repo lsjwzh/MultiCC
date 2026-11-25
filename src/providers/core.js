@@ -39,7 +39,7 @@ const {
 } = require('../codex/resident-route');
 const { codexAccountAuthFilePath } = require('../official-accounts');
 const { relayRouteFromBaseUrl } = require('./relay-share-store');
-const { getNative, nativeCode, codexProviderHome } = require('../native/runtime');
+const { getNative, nativeCode, codexProviderHome, createNativeProviderStore } = require('../native/runtime');
 const {
   assertProxyConfigApplied: assertCodexProxyConfigApplied,
   proxyConfigRequired: evaluateCodexProxyConfigRequired,
@@ -187,15 +187,16 @@ const WIRE_DEFAULT_MODEL = process.env.CLAUDE_WIRE_DEFAULT_MODEL || 'claude-sonn
 
 // ── multicc store (providers.json) ───────────────────────────────────────────
 
-const nativeProviderStore = require('./native-store').createNativeProviderStore(STORE_FILE);
+let nativeProviderStore;
+function providerRepository() { return nativeProviderStore ||= createNativeProviderStore(STORE_FILE); }
 // CLI 可用性探测（isCommandAvailable）会高频调用 hasCliRelayProvider，而 store 读取
 // 是全量反序列化。这里做 1s TTL 缓存，写入时立即失效。
 const CLI_RELAY_SCAN_TTL_MS = 1000;
 let cliRelayScanCache = null;
 function invalidateCliRelayScan() { cliRelayScanCache = null; }
-function loadStore() { return nativeProviderStore.read(); }
+function loadStore() { return providerRepository().read(); }
 function saveStore(list, source = list) {
-  nativeProviderStore.write(list, source);
+  providerRepository().write(list, source);
   invalidateCliRelayScan();
 }
 

@@ -47,4 +47,9 @@ function createProtocolCompletionTracker(protocol) {
   return createCompletionTracker({ observe: event => getNative().cliProtocolCompletion(protocol, event) });
 }
 
-module.exports = { completion, isCompleted, createCompletionTracker, createAdapterCompletion, createProtocolCompletionTracker };
+function createStepCompletionTracker({ streamBoundary = false } = {}) {
+  const native = getNative();
+  return native.cliStepTracker(!!streamBoundary, native.RustStepCompletionTracker, createCompletionTracker);
+}
+
+module.exports = { createStepCompletionTracker, completion, isCompleted, createCompletionTracker, createAdapterCompletion, createProtocolCompletionTracker };

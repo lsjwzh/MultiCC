@@ -176,7 +176,7 @@ function buildDeps(rawScenario) {
   const directories = new Map(Object.entries(scenario.directories || defaultDirectories()));
   const bag = {};
 
-  const repository = require('../../src/task-board/repository')
+  const repository = require('../../src/native/task-domain')
     .createTaskBoardRepository(boardFile);
   const recordingRepository = {
     load: () => repository.load(),

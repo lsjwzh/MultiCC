@@ -6,7 +6,7 @@ module.exports = {
   ...require('./api-error-policy'),
   ...require('./api-error-host'),
   ...require('../native/runtime').postTurnRouter,
-  ...require('./runtime-store'),
+  createTurnRuntimeStore: require('../state/owner').createTurnRuntimeStore,
   ...require('./turn-lifecycle'),
   ...require('./provider-attempt-runtime'),
   ...require('../native/runtime').providerInvocation,

@@ -764,3 +764,18 @@ test('persistent Claude ignores child/background results and joins its native pr
   assert.equal(result.result.result, 'main');
   assert.equal(isCompleted(tracker.finish({ kind: 'stream', resolved: true })), true);
 });
+
+test('步骤完成跟踪器与冻结入口在进程和流边界上保持一致', () => {
+  const before = require('./helpers/frozen-host-ports/cli-adapters-step-completion').createStepCompletionTracker;
+  const current = require('../src/cli-adapters/completion').createStepCompletionTracker;
+  for (const streamBoundary of [undefined, false, 1]) for (const kind of ['stream', 'process']) {
+    for (const reason of ['stop', 'tool-calls', null]) {
+      const run = create => {
+        const t = create({ streamBoundary });
+        return [t.observe({ type: 'step_start' }), t.observe({ type: 'step_finish', part: { reason } }),
+          t.finish({ kind, exitCode: 0 }), t.snapshot()];
+      };
+      assert.deepEqual(run(current), run(before));
+    }
+  }
+});

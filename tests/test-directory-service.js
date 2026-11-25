@@ -10,8 +10,7 @@
 //
 // What is left in Node is the process-local world and its effect order:
 //   src/routes/directory-host.js  the op envelope the front door calls
-//   src/directory/repository.js   the directories.json facade over the native
-//                                 table (repo.save() is the writer)
+//   src/native/runtime.js         the host save/log port for the native repository
 // These tests drive every op through in-memory fakes of the ports: no fs, no
 // git subprocess, no server.
 
@@ -20,7 +19,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createDirectoryHost, HOST_PATH } = require('../src/routes/directory-host');
-const { createFsDirectoryRepository } = require('../src/directory/repository');
+const { createFsDirectoryRepository } = require('../src/native/runtime');
 const { createDirectoryTable } = require('../src/directory/records');
 const { createStateOwner } = require('../src/state/owner');
 
@@ -427,4 +426,18 @@ test('registerDefaultDirectory is the one boot-time registry path', async () => 
   const failed = await world.host.registerDefaultDirectory({ name: 'B', path: '/data/ws2' });
   assert.deepEqual(failed, { ok: false, message: 'friendly:git-error: boom' });
   assert.equal(world.calls.saved, 1);
+});
+
+test('目录仓储保留表、对象身份、路径查找和持久化调用', () => {
+  const frozen = require('./helpers/frozen-host-ports/directory-repository').createFsDirectoryRepository;
+  function trace(create) {
+    const calls = [], map = new Map(), obj = { id: 'a', path: '/x' }, other = { id: 'b', path: '/X' };
+    const owner = { saveDirectories() { calls.push(this === owner); return '忽略'; } };
+    const r = create({ file: 'd', map, owner, realPathOf: raw => { calls.push(raw); return raw.toLowerCase(); } });
+    assert.equal(r.map(), map); assert.equal(r.add(obj), obj); r.add(other);
+    assert.equal(r.get('a'), obj); assert.equal(r.findByPath('/X', 'a'), other);
+    assert.equal(r.list()[0], obj); assert.equal(r.save(), undefined);
+    return [Object.keys(r), calls, r.remove('a'), r.findByPath('/none')];
+  }
+  assert.deepEqual(trace(createFsDirectoryRepository), trace(frozen));
 });

@@ -558,3 +558,21 @@ test('受管上下文保留宿主异常和回执身份，重建失败后仍可�
     assert.equal(api.prepareManagedContext({ ...params, host: null }), null);
   }
 });
+
+test('显式历史读取与冻结入口的端口顺序、记录和拒绝结果一致', () => {
+  const old = require('./helpers/frozen-host-ports/task-shell-context-access').relatedHistory;
+  const current = require('../src/task-shell/history-context').relatedHistory;
+  function run(read, mode) {
+    const calls = [], record = { id: 'm', taskId: 't', content: { opaque: true }, ts: 1 };
+    const target = { id: 't', sessionId: 's', historySessionIds: ['s'], refs: [{ sessionId: 's' }] };
+    const store = { get() { calls.push('get'); return mode === 'store' ? target : null; },
+      list(kind) { calls.push(kind); return []; } };
+    try {
+      const result = read({ store, targetId: 't', getTask: () => { calls.push('task'); return mode === 'missing' ? null : target; },
+        getRecord: id => { calls.push('record:' + id); return { taskBoundTaskId: 't' }; },
+        getHistory: id => { calls.push('history:' + id); return [record]; }, isDeletedTask: () => mode === 'deleted' });
+      assert.equal(result[0].content, record.content); return [calls, result];
+    } catch (e) { if (!e.status) throw e; return [calls, e.code, e.message, e.status]; }
+  }
+  for (const mode of ['store','fallback','missing','deleted']) assert.deepEqual(run(current, mode), run(old, mode));
+});

@@ -2,7 +2,7 @@
 
 // The default message generator lives in Rust. User-supplied messages are
 // passed to Git without a project-independent language policy.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 function native() {
   let addon;

@@ -740,7 +740,45 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+function quickCommitMessage(porcelain) {
+  let addon;
+  try { addon = getNative(); } catch {}
+  if (typeof addon?.quickCommitMessageValue !== 'function') {
+    throw new Error('提交说明生成模块不可用，请构建当前版本的 Rust 模块后重试');
+  }
+  return addon.quickCommitMessageValue(porcelain);
+}
+
+function saveDirectoryOwner(owner) {
+  try { owner.saveDirectories(); }
+  catch (error) {
+    console.error('[multicc] Failed to save directories.json:', error.message);
+    throw error;
+  }
+}
+function createFsDirectoryRepository({ file, map, realPathOf, owner }) {
+  return getNative().directoryRepository({ file, map, realPathOf, owner }, saveDirectoryOwner);
+}
+function providerStoreAccess(file, request) {
+  try { return JSON.parse(getNative().providerStore(file, JSON.stringify(request))); }
+  catch (error) { error.code = error.message; throw error; }
+}
+function createNativeProviderStore(file) {
+  return getNative().providerRepository(file, providerStoreAccess);
+}
+
+let turnState;
+function getTurnState() {
+  if (turnState) return turnState;
+  const native = getNative();
+  turnState = {
+    ABNORMAL_BOUNDARIES: new Set(JSON.parse(native.turnStateCatalog()).abnormalBoundaries),
+    resolveTurnState(input = {}) { return native.resolveTurnStateValue(input); },
+  };
+  return turnState;
+}
+
+module.exports = { getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
