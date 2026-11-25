@@ -197,7 +197,35 @@ fn versions_dir_mtime_picks_newest_file_and_symlink_wins() {
     assert_eq!(resolve_bundle(&dir.0), fs::canonicalize(&older).unwrap());
 
     let empty = TempDir::new();
-    assert!(resolve_bundle(&empty.0).as_os_str().is_empty());
+    assert!(resolve_bundle_in(&empty.0, std::iter::empty())
+        .as_os_str()
+        .is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn npm_global_symlink_resolves_to_the_scanned_bundle() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let dir = TempDir::new();
+    let bin = dir.0.join("prefix/bin");
+    fs::create_dir_all(&bin).unwrap();
+    let relative = "../lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe";
+    let bundle = dir.file(
+        "prefix/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+        b"claude-sonnet-9-2",
+    );
+    fs::set_permissions(&bundle, fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(relative, bin.join("claude")).unwrap();
+
+    let resolved = resolve_bundle_in(&dir.0, [bin].into_iter());
+    assert_eq!(resolved, bundle.canonicalize().unwrap());
+    let answer = answer(&mut None, &resolved, true, || 100);
+    assert_eq!(answer.source, Source::Cli);
+    assert_eq!(
+        answer.models,
+        [Model::new("claude-sonnet-9-2", "Sonnet 9.2")]
+    );
 }
 
 #[cfg(unix)]

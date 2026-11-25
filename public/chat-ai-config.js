@@ -313,7 +313,9 @@
     const cli = state && state.cli;
     try {
       // Codex 由选择器生命周期启动账号级刷新；纯渲染不能请求全局目录。
-      if (isClaudeCli(cli) && typeof loadClaudeModels === 'function') void loadClaudeModels();
+      if (isClaudeCli(cli) && typeof loadClaudeModels === 'function' && !readClaudeModelsSync().length) {
+        void loadClaudeModels();
+      }
     } catch (_) { /* best-effort */ }
   }
 
@@ -343,11 +345,8 @@
     const options = providerModelOptions(providerId, state);
     if (options.length) return [...options, '__custom__'];
     if (state && isClaudeCli(state.cli)) {
-      // Prefer the live list extracted from the installed claude CLI's bundle
-      // (localStorage cache filled by loadClaudeModels(); see
-      // public/shared/models.js) so new Anthropic releases appear without a
-      // multicc update. Falls back to the static table on old servers and on
-      // the first picker open before refreshClaudeModels() lands.
+      // The shared catalog also holds the server's fallback in memory. Use
+      // the page's static options until the first catalog is available.
       // No "default" row: MultiCC always resolves a concrete model from this
       // same list (see defaultModelChoice), so a blank option would only claim
       // the CLI's own config decides — exactly the terminal default we no
@@ -566,6 +565,7 @@
   }
 
   function readClaudeModelsSync() {
+    if (root && typeof root.readClaudeModelsSync === 'function') return root.readClaudeModelsSync();
     return readModelCacheSync('multicc.claude.models.v1');
   }
 
@@ -783,7 +783,7 @@
       if (!loader) return [];
       const prev = readClaudeModelsSync();
       const models = await loader({ force });
-      if (typeof rebuildCallback === 'function' && (force || prev.length === 0)) {
+      if (typeof rebuildCallback === 'function' && (force || (models.length && models !== prev))) {
         try { rebuildCallback(); } catch (_) { /* noop */ }
       }
       return Array.isArray(models) ? models : [];

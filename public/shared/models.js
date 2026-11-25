@@ -413,11 +413,14 @@
   const CLAUDE_MODELS_FRESH_MS = 60 * 60 * 1000;
   const CLAUDE_MODELS_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
   let claudeModelsPromise = null;
+  let claudeRequestId = 0;
+  let claudePageModels = null; // Last result when it could not or should not be persisted.
   let claudeCacheMemo = null; // { raw, models, at } keyed on the localStorage blob
 
   // Memoized sync read: modelShortName() consults this on every model render,
   // so the JSON must not be re-parsed per call. Returns [] on a miss/stale.
   function readClaudeModelsSync() {
+    if (claudePageModels) return claudePageModels;
     let raw = null;
     try { raw = window.localStorage && window.localStorage.getItem(CLAUDE_MODELS_KEY); } catch (_) { return []; }
     if (!raw) return [];
@@ -436,17 +439,12 @@
     return (Date.now() - at) < CLAUDE_MODELS_KEEP_MS ? models : [];
   }
 
-  function claudeModelsFresh() {
-    readClaudeModelsSync();
-    return !!(claudeCacheMemo && claudeCacheMemo.models.length
-      && (Date.now() - claudeCacheMemo.at) < CLAUDE_MODELS_FRESH_MS);
-  }
-
   function writeClaudeCache(models) {
     claudeCacheMemo = null; // drop the memo before the blob it keyed on changes
     try {
       if (window.localStorage) {
         window.localStorage.setItem(CLAUDE_MODELS_KEY, JSON.stringify({ at: Date.now(), models }));
+        claudePageModels = null;
       }
     } catch (_) { /* ignore quota / disabled storage */ }
   }
@@ -456,19 +454,28 @@
   async function loadClaudeModels(options) {
     const force = !!(options && options.force);
     const cached = readClaudeModelsSync();
-    if (!force && cached.length && claudeModelsFresh()) return cached;
     if (!force && claudeModelsPromise) return claudeModelsPromise;
+    if (!force && !claudePageModels && cached.length
+      && Date.now() - claudeCacheMemo.at < CLAUDE_MODELS_FRESH_MS) return cached;
+    const requestId = ++claudeRequestId;
     claudeModelsPromise = (async () => {
       try {
         const url = force ? '/api/claude/models?refresh=1' : '/api/claude/models';
         const data = await window.fetch(url, { credentials: 'same-origin' })
           .then(r => (r && r.ok ? r.json() : null));
         const models = data && Array.isArray(data.models) ? data.models : [];
+        if (requestId !== claudeRequestId) return readClaudeModelsSync();
         // Only persist the CLI-derived list: caching the offline fallback for a
         // day would hide the models once the CLI is readable again.
-        if (models.length && data.source !== 'fallback') writeClaudeCache(models);
-        return models.length ? models : cached;
-      } catch (_) { return cached; } finally { claudeModelsPromise = null; }
+        if (!models.length) return force ? [] : cached;
+        claudePageModels = models;
+        if (data.source !== 'fallback') writeClaudeCache(models);
+        return models;
+      } catch (_) {
+        return force ? [] : cached;
+      } finally {
+        if (requestId === claudeRequestId) claudeModelsPromise = null;
+      }
     })();
     return claudeModelsPromise;
   }

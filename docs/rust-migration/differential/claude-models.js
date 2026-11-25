@@ -56,6 +56,10 @@ const SHIM = path.join(HOME, '.local', 'bin', 'claude');
 
 function prepareEnvironment() {
   fs.mkdirSync(path.join(BASE, 'tmp'), { recursive: true });
+  // Only the synthetic HOME should supply models in the legacy-oracle cases.
+  const bin = path.join(BASE, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'claude.exe' : 'claude'), '', { mode: 0o755 });
   fs.rmSync(HOME, { recursive: true, force: true });
   fs.mkdirSync(HOME, { recursive: true });
   process.env.HOME = HOME;
@@ -894,6 +898,7 @@ function specFor(group) {
     },
     upstream: UPSTREAM,
     gatewayEnv: (work) => ({
+      PATH: path.join(BASE, 'bin') + path.delimiter + process.env.PATH,
       MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON,
       ...(group === 'relative-data-dir'
         ? { MULTICC_DATA_DIR: path.relative(path.join(work, 'gw'), path.join(work, 'gw-data')) }

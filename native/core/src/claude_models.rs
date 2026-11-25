@@ -498,24 +498,71 @@ pub struct Answer {
     pub stored: Option<Cache>,
 }
 
-/// Resolve a bundle path the way `resolveClaudeBundle(home)` does: the shim's
-/// realpath when it is a file, else the newest file under
-/// `~/.local/share/claude/versions`, else an empty path.
+/// Keep native installs first, then look for the binary or JS bundle linked
+/// by npm. GUI services on macOS may not inherit Homebrew's bin directory.
 pub fn resolve_bundle(home: &Path) -> PathBuf {
+    let search_path = std::env::var_os("PATH").unwrap_or_default();
+    let dirs = std::env::split_paths(&search_path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .chain([home.join(".npm-global/bin"), home.join(".npm/bin")]);
+    #[cfg(target_os = "macos")]
+    let dirs = dirs.chain([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ]);
+    resolve_bundle_in(home, dirs)
+}
+
+fn resolve_bundle_in(home: &Path, mut bin_dirs: impl Iterator<Item = PathBuf>) -> PathBuf {
     let shim = home.join(".local").join("bin").join("claude");
     if let Ok(real) = std::fs::canonicalize(&shim) {
         if std::fs::metadata(&real).is_ok_and(|meta| meta.is_file()) {
             return real;
         }
     }
+    newest_native_version(home)
+        .or_else(|| bin_dirs.find_map(|dir| bundle_on_path(&dir)))
+        .unwrap_or_default()
+}
+
+fn bundle_on_path(dir: &Path) -> Option<PathBuf> {
+    let command = dir.join(if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    });
+    if let Ok(real) = command.canonicalize() {
+        let meta = real.metadata().ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o111 == 0 {
+                return None;
+            }
+        }
+        if meta.is_file() {
+            return Some(real);
+        }
+    }
+    #[cfg(windows)]
+    if dir.join("claude.cmd").is_file() {
+        let package = dir.join("node_modules/@anthropic-ai/claude-code");
+        return ["bin/claude.exe", "cli.js"]
+            .iter()
+            .map(|name| package.join(name))
+            .find(|path| path.is_file())
+            .and_then(|path| path.canonicalize().ok());
+    }
+    None
+}
+
+fn newest_native_version(home: &Path) -> Option<PathBuf> {
     let versions = home
         .join(".local")
         .join("share")
         .join("claude")
         .join("versions");
-    let Ok(entries) = std::fs::read_dir(&versions) else {
-        return PathBuf::new();
-    };
+    let entries = std::fs::read_dir(&versions).ok()?;
     let mut files: Vec<(Vec<u8>, f64, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -528,11 +575,7 @@ pub fn resolve_bundle(home: &Path) -> PathBuf {
         files.push((name_bytes(&entry.file_name()), mtime_ms(&meta), path));
     }
     sort_version_files(&mut files);
-    files
-        .into_iter()
-        .next()
-        .map(|(_, _, path)| path)
-        .unwrap_or_default()
+    files.into_iter().next().map(|(_, _, path)| path)
 }
 
 /// Restore the order `readdirSync` hands to the mtime sort: libuv's scandir
