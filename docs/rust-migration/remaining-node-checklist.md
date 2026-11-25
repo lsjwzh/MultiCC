@@ -1,5 +1,11 @@
 # 剩余 Node 后端清单
 
+## 聊天适配器收尾（2026-11-25）
+
+`src/chat/adapter-completion.js` 的唯一生产调用方是聊天回合引擎。43 行旧实现已从生产目录整份删除。Rust 负责记录完成证据、处理缺失跟踪器，以及决定发送失败和收尾失败分别调用哪个回调。兼容入口保留 V8 的 Promise 回调和严格属性写入，待运行器和流的生命周期迁入 Rust 后可移除。[Rust 实现](../../native/addon/src/cli_completion/adapter.rs) · [聊天回合入口](../../src/chat/turn-engine.js)
+
+基线为任务分支提交 `1c4f66ea`。排除测试和离线工具后，生产入口可达的 Node 代码从 494 个文件、126,584 行降至 493 个文件、126,561 行，整份退出 1 个文件，净减 23 行。旧实现的 Git blob 为 `d475a8038c2447e6b25add4b93ad03d748c3a67a`，测试副本仅调整了两处依赖路径。迁前 222/222，迁后 223/223，覆盖 36 组成功与失败组合，并校验同步回调顺序、异常身份、冻结对象的错误文案及收尾次数。macOS ARM64 发布构建指纹为 `f3d2264231d18d96c6d73aed`。隔离网关聊天回合、聊天宿主、原生产物和 API 契约回归共 75/75。[定向回归](../../tests/test-cli-completion.js) · [生产依赖清单](node-module-dependencies.md)
+
 ## 按文件迁移：回合结束路由（2026-11-25）
 
 生产文件 `src/chat/post-turn-router.js` 的 111 行已整份移除。Rust 生成有序的交接、派发和网关投递效果，按已有回执去重，并验证投递证明。聊天宿主仍负责实际投递和持久化，通过三个同步原生接口传递活动对象，保留 getter 顺序与标识引用。这些调用随宿主迁出后即可移除。[路由实现](../../native/addon/src/post_turn_router.rs) · [调用方](../../src/chat/host-coordinator.js)

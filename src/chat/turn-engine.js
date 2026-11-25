@@ -13,7 +13,7 @@ const { createTurnTimingRecorder, createDeliveryProbeRegistry, createTurnTimelin
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
 const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
-const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
+const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../native/runtime').adapterCompletion;
 const { getNative, gatewayPath, deliveryClassForItem, historyFrame: { fitHistoryFrame } } = require('../native/runtime');
 const writerGroup = require('../workspace/writer-group');
 const {

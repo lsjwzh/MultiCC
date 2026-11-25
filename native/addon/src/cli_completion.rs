@@ -1,4 +1,6 @@
 //! Native completion evidence and the host's success/persistence boundary.
+pub mod adapter;
+
 use crate::js_live::LiveValue;
 use multicc_core::cli_completion::{completion_reason, StepCompletion, StepReason};
 use multicc_core::js::{JsString, JsValue};

@@ -11,7 +11,7 @@ const {
   tagProviderAttemptEvent,
 } = require('../src/chat/provider-attempt-runtime');
 const { createUsageObserved } = require('../src/usage-observed');
-const { canPersistAdapterCompletion } = require('../src/chat/adapter-completion');
+const { canPersistAdapterCompletion } = require('../src/native/runtime').adapterCompletion;
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/runtime').finalizationPlan;
 const { resolveTurnState } = require('../src/classify/turn-state');
 const { normalizeProxyOutcome } = require('../src/providers/proxy-outcome');

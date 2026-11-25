@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 491 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 490 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -32,7 +32,6 @@
 | `src/bus.js` | server.js | — | — | `events` | — | — |
 | `src/cdp-relay.js` | server.js | `src/cdpd.js` | — | `events`, `net` | `ws` | — |
 | `src/cdpd.js` | server.js | — | — | `child_process`, `fs`, `net`, `os`, `path` | — | — |
-| `src/chat/adapter-completion.js` | server.js | `src/cli-adapters/completion.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/chat/admission-progress.js` | server.js | `src/chat/api-error-policy.js` | — | — | — | — |
 | `src/chat/api-error-host.js` | server.js | `src/chat/api-error-policy.js`, `src/claude-auth/oauth-refresh.js`, `src/cli-adapters/vendor-login.js`, `src/network/global-proxy.js` | — | — | — | — |
 | `src/chat/api-error-policy.js` | server.js | `src/native/runtime.js`, `src/provider-error.js`, `src/upstream-error.js` | — | — | — | — |
@@ -76,7 +75,7 @@
 | `src/chat/stalled-turn-recovery.js` | server.js | `src/classify/vocab.js` | — | — | — | — |
 | `src/chat/stream-router.js` | server.js | `src/chat/workspace-residency.js` | — | — | — | — |
 | `src/chat/transcript-prune.js` | server.js | `src/native/runtime.js` | — | `os` | — | — |
-| `src/chat/turn-engine.js` | server.js | `src/chat/adapter-completion.js`, `src/chat/admission-progress.js`, `src/chat/auto-provider-runtime.js`, `src/chat/auto-route-notes.js`, `src/chat/chat-stream.js`, `src/chat/cli-relay-spawn.js`, `src/chat/codex-rollout-guard.js`, `src/chat/held-turn-injection.js`, `src/chat/host-coordinator.js`, `src/chat/host-prompts.js`, `src/chat/index.js`, `src/chat/managed-context.js`, `src/chat/native-session-guard.js`, `src/chat/opencode-context.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/session-notices.js`, `src/chat/transcript-prune.js`, `src/chat/turn-event-replay.js`, `src/chat/turn-progress.js`, `src/cli-adapters/completion.js`, `src/cli-switch.js`, `src/cli/cli-capability.js`, `src/cli/session-policy.js`, `src/cli/switch-runtime.js`, `src/codex/usage.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/observability.js`, `src/providers/auto-provider-config.js`, `src/providers/core.js`, `src/providers/egress-ip-policy.js`, `src/routes/chat-history.js`, `src/secrets-vault.js`, `src/wait/injector.js`, `src/workspace/writer-group.js` | — | `child_process`, `crypto` | — | — |
+| `src/chat/turn-engine.js` | server.js | `src/chat/admission-progress.js`, `src/chat/auto-provider-runtime.js`, `src/chat/auto-route-notes.js`, `src/chat/chat-stream.js`, `src/chat/cli-relay-spawn.js`, `src/chat/codex-rollout-guard.js`, `src/chat/held-turn-injection.js`, `src/chat/host-coordinator.js`, `src/chat/host-prompts.js`, `src/chat/index.js`, `src/chat/managed-context.js`, `src/chat/native-session-guard.js`, `src/chat/opencode-context.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/session-notices.js`, `src/chat/transcript-prune.js`, `src/chat/turn-event-replay.js`, `src/chat/turn-progress.js`, `src/cli-adapters/completion.js`, `src/cli-switch.js`, `src/cli/cli-capability.js`, `src/cli/session-policy.js`, `src/cli/switch-runtime.js`, `src/codex/usage.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/observability.js`, `src/providers/auto-provider-config.js`, `src/providers/core.js`, `src/providers/egress-ip-policy.js`, `src/routes/chat-history.js`, `src/secrets-vault.js`, `src/wait/injector.js`, `src/workspace/writer-group.js` | — | `child_process`, `crypto` | — | — |
 | `src/chat/turn-event-journal.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/chat/turn-event-replay.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/chat/turn-lifecycle.js` | server.js | `src/native/runtime.js` | — | — | — | — |

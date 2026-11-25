@@ -494,6 +494,26 @@ function getContextSelection() {
   };
   return selectionApi;
 }
+function settleAdapterCompletion(runner, boundary, logger) {
+  return getNative().cliSettleAdapterCompletion(runner, boundary, logger, assignHostProperty);
+}
+function finalizeCompletionStream(promise, { runner, finalize, onRejected, onFinalizeError, logger }) {
+  const native = getNative();
+  const ports = { runner, finalize, onRejected, onFinalizeError, logger, assignHostProperty };
+  return promise.then(
+    () => native.cliSettleCompletionStream(ports, false, undefined),
+    error => native.cliSettleCompletionStream(ports, true, error),
+  ).catch(error => native.cliFailCompletionStream(ports, error));
+}
+function canPersistAdapterCompletion(outcome, proxyFailure, errorEnvelope) {
+  return getNative().cliCanPersistCompletion(outcome, proxyFailure, errorEnvelope);
+}
+function isProxyFailureCompatibleWithCompletion(proxyFailure, outcome) {
+  return getNative().cliProxyFailureCompatible(proxyFailure, outcome);
+}
+const adapterCompletion = { settleAdapterCompletion, canPersistAdapterCompletion,
+  finalizeCompletionStream, isProxyFailureCompatibleWithCompletion };
+
 function routePostTurn(input = {}) { return getNative().chatRoutePostTurn(input); }
 function createDeliveryProof(input = {}) { return getNative().chatCreateDeliveryProof(input); }
 function acknowledgeDeliveredEffect(effect, proof) { return getNative().chatAcknowledgeDeliveredEffect(effect, proof); }
@@ -662,7 +682,7 @@ function createSessionPersistence() {
 }
 module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
-  postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
   pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };

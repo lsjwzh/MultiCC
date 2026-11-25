@@ -252,6 +252,7 @@ function probeAddon(file, node = process.execPath) {
       if(!ng.handles('dsh') || ng.handles('constructor') || ng.maxBytes!==10*1024*1024) process.exit(1);
     } finally { fs.rmSync(nsgHome,{recursive:true,force:true}); }
     if(['cliCompletion','cliIsCompleted','cliIsMainResult','cliResultCompletion','cliProtocolCompletion',
+      'cliSettleAdapterCompletion','cliSettleCompletionStream','cliFailCompletionStream',
       'cliProxyFailureCompatible','cliCanPersistCompletion'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustCliCompletionTracker!=='function'
       || ['acceptsRaw','observeDecoded','observeProtocol','finish'].some(key=>typeof a.RustCliCompletionTracker.prototype[key]!=='function')) process.exit(1);

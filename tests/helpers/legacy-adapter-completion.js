@@ -1,7 +1,7 @@
 'use strict';
 
-const { completion } = require('../cli-adapters/completion');
-const { getNative } = require('../native/runtime');
+const { completion } = require('../../src/cli-adapters/completion');
+const { getNative } = require('../../src/native/runtime');
 
 function settleAdapterCompletion(runner, boundary, logger) {
   const outcome = runner.completion?.finish(boundary)
