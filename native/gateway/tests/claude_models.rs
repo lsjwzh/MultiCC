@@ -96,6 +96,22 @@ impl Gateway {
             fs::create_dir_all(path).unwrap();
         }
         write_home(&home, &golden, home_key);
+        // Shadow any host CLI (including macOS's standard Homebrew prefixes)
+        // with an executable containing no catalog. Keep Node on PATH.
+        let bin = dir.join("bin");
+        fs::create_dir(&bin).unwrap();
+        let command_name = format!("claude{}", std::env::consts::EXE_SUFFIX);
+        let cli = bin.join(command_name);
+        fs::write(&cli, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let host_path = std::env::var_os("PATH").unwrap_or_default();
+        let search_path =
+            std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&host_path)))
+                .unwrap();
         fs::write(dir.join("server.js"), FIXTURE_JS).unwrap();
         let log = fs::File::create(dir.join("gateway.log")).unwrap();
         let mut command = Command::new(GATEWAY_BIN);
@@ -108,10 +124,7 @@ impl Gateway {
             .arg("--ephemeral-loopback")
             .arg("server.js")
             .env_clear()
-            .env(
-                "PATH",
-                std::env::var_os("PATH").unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".into()),
-            )
+            .env("PATH", search_path)
             .env("ACCESS_TOKEN", TOKEN)
             .env("HOME", &home)
             .env("MULTICC_DATA_DIR", &data)

@@ -85,6 +85,46 @@ test('opencode model picker: 刷新模型 bypasses both caches and repaints live
   });
 });
 
+test('Claude 首次打开可选模型，刷新显示完整降级清单，CLI 恢复后更新并保留选择', async t => {
+  if (!findChromeBinary()) return t.skip('需要 Chrome');
+  const { fallback } = require('../native/gateway/tests/fixtures/claude-models.json');
+  const retained = fallback.at(-1);
+  const live = [retained, { model: 'claude-sonnet-9-2', label: 'Sonnet 9.2' }];
+  let catalog = { models: [] };
+  const fixture = { ...routes, 'GET /api/claude/models': () => json(catalog) };
+  const cache = "localStorage.getItem('multicc.claude.models.v1')";
+  await withCdpHarness({ routes: fixture }, async page => {
+    await page.navigate('/run-config-host.html');
+    await page.evaluate(`MultiCCRunConfig.open({ configuration: { cli: 'claude-exp' } }, ['claude-exp'], () => {})`);
+    assert.ok(await page.waitFor(`${optionValues}.includes('claude-opus-5-5')`), '首次打开即有静态模型可选');
+
+    async function refresh(models, source) {
+      catalog = { models, source };
+      await page.evaluate(`document.querySelector('${D}.rc-model-refresh').click()`);
+      assert.ok(await page.waitFor(`!document.querySelector('${D}.rc-model-refresh').disabled`));
+      assert.deepEqual(await page.evaluate(optionValues), [...models.map(row => row.model), '__custom__']);
+      assert.match(await page.evaluate(`document.querySelector('${D}.rc-model-status').textContent`),
+        new RegExp(`\\b${models.length}\\b`));
+    }
+    await refresh(fallback, 'fallback');
+    assert.equal(await page.evaluate(cache), null, '降级清单只保留在本页');
+    await page.evaluate(`(() => {
+      const select = document.querySelector('${D}.rc-model');
+      select.value = ${JSON.stringify(retained.model)};
+      select.dispatchEvent(new Event('change'));
+    })()`);
+    await refresh(live, 'cli');
+    assert.equal(await page.evaluate(`document.querySelector('${D}.rc-model').value`), retained.model);
+    assert.deepEqual(JSON.parse(await page.evaluate(cache)).models, live);
+
+    catalog = { models: [] };
+    await page.evaluate(`document.querySelector('${D}.rc-model-refresh').click()`);
+    assert.ok(await page.waitFor(`!document.querySelector('${D}.rc-model-refresh').disabled`));
+    assert.match(await page.evaluate(`document.querySelector('${D}.rc-model-status').textContent`), /失败|failed/i);
+    assert.deepEqual(await page.evaluate(optionValues), [...live.map(row => row.model), '__custom__']);
+  });
+});
+
 // OpenCode Go 的线路 id 会在手写的 `opencodego` 与内置的 `opencode-go` 之间迁移
 // （配置改写只改 provider 名，模型不变）。刷新拿到新 id 时，线路和选中的模型都要
 // 跟着对齐；否则旧 id 过滤不到任何模型，下拉看起来像被清空，只能重开面板才恢复。

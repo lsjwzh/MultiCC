@@ -637,6 +637,38 @@ test('codex loader force asks the server to skip its account cache', async () =>
   assert.deepEqual(calls, ['/api/codex/models?providerId=codex-official-abc&refresh=1']);
 });
 
+test('Claude 强刷的降级清单可覆盖旧缓存显示，下次正常加载能恢复 CLI 清单', async () => {
+  const key = 'multicc.claude.models.v1';
+  const previous = JSON.stringify({ at: Date.now(), models: [{ model: 'old' }] });
+  const fallback = [{ model: 'offline' }], live = [{ model: 'live' }];
+  const { win, store, calls } = loadModelsModule({
+    store: { [key]: previous },
+    responses: [{ source: 'fallback', models: fallback }, { source: 'cli', models: live }],
+  });
+  await win.loadClaudeModels({ force: true });
+  assert.deepEqual(win.readClaudeModelsSync(), fallback);
+  assert.equal(store[key], previous);
+  await win.loadClaudeModels();
+  assert.deepEqual(win.readClaudeModelsSync(), live);
+  assert.deepEqual(JSON.parse(store[key]).models, live);
+  assert.deepEqual(calls, ['/api/claude/models?refresh=1', '/api/claude/models']);
+});
+
+test('Claude 后返回的预热请求不会覆盖手动刷新的目录', async () => {
+  const { win } = loadModelsModule();
+  let finishWarm;
+  const old = new Promise(resolve => { finishWarm = resolve; });
+  const live = [{ model: 'latest' }];
+  win.fetch = url => url.endsWith('?refresh=1')
+    ? Promise.resolve({ ok: true, json: async () => ({ source: 'cli', models: live }) })
+    : old;
+  const warm = win.loadClaudeModels();
+  await win.loadClaudeModels({ force: true });
+  finishWarm({ ok: true, json: async () => ({ source: 'fallback', models: [{ model: 'offline' }] }) });
+  await warm;
+  assert.deepEqual(win.readClaudeModelsSync(), live);
+});
+
 test('refreshModelsForCli dispatches the roster and forwards force/providerId', async () => {
   const modulePath = require.resolve('../public/chat-ai-config');
   const seen = {};

@@ -1085,6 +1085,7 @@
       return {
         cli,
         providers: list || providersOf(cli),
+        claudeModelOptions: scope().CLAUDE_MODEL_OPTIONS,
         defaults: (catalog && catalog.defaults) || {},
         // Only the session's own lane can reuse its computed default; after a
         // CLI/provider switch the value describes the line we just left.
@@ -2722,11 +2723,9 @@
       const rebuild = () => { if (marker === epoch) { renderFixed(); renderFooter(); } };
       if (cli === 'opencode') {
         if (!aiApi.openCodeNativeProviders().length) aiApi.refreshOpenCodeModels(rebuild);
-      } else if (cli === 'qoder') aiApi.refreshQoderModels(rebuild);
-      else if (cli === 'codebuddy') aiApi.refreshCodebuddyModels(rebuild);
-      else if (cli === 'commandcode') aiApi.refreshCommandcodeModels(rebuild);
-      else if (cli === 'grok') aiApi.refreshGrokModels(rebuild);
-      else if (cli === 'agy') aiApi.refreshModelsForCli('agy', rebuild);
+      } else if (['claude', 'claude-exp', 'qoder', 'codebuddy', 'commandcode', 'grok', 'agy'].includes(cli)) {
+        aiApi.refreshModelsForCli(cli, rebuild);
+      }
     }
 
     function selectCli(cli) {
