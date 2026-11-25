@@ -5,7 +5,7 @@ module.exports = {
   ...require('./retry-policy'),
   ...require('./api-error-policy'),
   ...require('./api-error-host'),
-  ...require('./post-turn-router'),
+  ...require('../native/runtime').postTurnRouter,
   ...require('./runtime-store'),
   ...require('./turn-lifecycle'),
   ...require('./provider-attempt-runtime'),

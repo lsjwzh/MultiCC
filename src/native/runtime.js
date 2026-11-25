@@ -494,6 +494,11 @@ function getContextSelection() {
   };
   return selectionApi;
 }
+function routePostTurn(input = {}) { return getNative().chatRoutePostTurn(input); }
+function createDeliveryProof(input = {}) { return getNative().chatCreateDeliveryProof(input); }
+function acknowledgeDeliveredEffect(effect, proof) { return getNative().chatAcknowledgeDeliveredEffect(effect, proof); }
+const postTurnRouter = { routePostTurn, createDeliveryProof, acknowledgeDeliveredEffect };
+
 const finalizationPlan = {
   classifyProcessExit: (input = {}) => getNative().chatClassifyProcessExit(input),
   normalizeHandoff: (input = {}) => getNative().chatFrozenFinalization('handoff', input),
@@ -657,7 +662,7 @@ function createSessionPersistence() {
 }
 module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
-  finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
   pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };

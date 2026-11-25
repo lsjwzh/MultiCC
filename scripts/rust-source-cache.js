@@ -207,6 +207,7 @@ function probeAddon(file, node = process.execPath) {
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
       'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['chatApplyClaudeEvent','chatClaudeBoundaryEnvelope','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',
+      'chatRoutePostTurn','chatCreateDeliveryProof','chatAcknowledgeDeliveredEffect',
       'chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.chatWsControlAction!=='function' || a.chatWsControlAction('ping','view')!=='pong'

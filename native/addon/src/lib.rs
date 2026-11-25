@@ -78,6 +78,7 @@ pub mod opencode_error;
 pub mod orchestration_owner;
 pub mod orchestration_store;
 pub mod path_safety;
+pub mod post_turn_router;
 pub mod process_spawn_args;
 pub mod provider_attempt_creation;
 pub mod provider_attempt_identity;
