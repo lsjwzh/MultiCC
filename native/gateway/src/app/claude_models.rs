@@ -47,6 +47,7 @@ fn write_cache_file(data_root: &Path, cache: &Cache) {
 /// `at` is taken once the scan finishes, like Node's two `Date.now()` reads.
 pub fn get(
     data_root: &Path,
+    package_root: &Path,
     home: &Path,
     original_url: &str,
     now_ms: fn() -> i64,
@@ -56,7 +57,7 @@ pub fn get(
         original_url,
         "refresh",
     ));
-    let bundle = claude_models::resolve_bundle(home);
+    let bundle = claude_models::resolve_bundle(package_root, home);
     let answer = claude_models::answer(&mut state.cache, &bundle, force, now_ms);
     if let Some(stored) = answer.stored.as_ref() {
         write_cache_file(data_root, stored);

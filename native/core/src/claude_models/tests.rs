@@ -189,12 +189,15 @@ fn versions_dir_mtime_picks_newest_file_and_symlink_wins() {
     };
     time(&older, 1_700_000_000);
     time(&newer, 1_700_000_100);
-    assert_eq!(resolve_bundle(&dir.0), newer);
+    assert_eq!(resolve_system_bundle(&dir.0), newer);
 
     let shim = dir.0.join(".local/bin/claude");
     fs::create_dir_all(shim.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&older, &shim).unwrap();
-    assert_eq!(resolve_bundle(&dir.0), fs::canonicalize(&older).unwrap());
+    assert_eq!(
+        resolve_system_bundle(&dir.0),
+        fs::canonicalize(&older).unwrap()
+    );
 
     let empty = TempDir::new();
     assert!(resolve_bundle_in(&empty.0, std::iter::empty())
@@ -255,7 +258,7 @@ fn versions_ties_pick_the_bytewise_earlier_name() {
     for path in [&later, &middle, &earlier] {
         set_time(path, 1_700_000_000, 123_456_789);
     }
-    assert_eq!(resolve_bundle(&dir.0), earlier);
+    assert_eq!(resolve_system_bundle(&dir.0), earlier);
 
     // The review's other shape: the byte-wise later name created last.
     let dir = TempDir::new();
@@ -265,7 +268,7 @@ fn versions_ties_pick_the_bytewise_earlier_name() {
     set_time(&first, 1_700_000_000, 500);
     let last = dir.file(".local/share/claude/versions/2.0.0", b"claude-opus-9");
     set_time(&last, 1_700_000_000, 500);
-    assert_eq!(resolve_bundle(&dir.0), first);
+    assert_eq!(resolve_system_bundle(&dir.0), first);
 }
 
 #[test]
@@ -313,7 +316,7 @@ fn versions_sub_millisecond_mtime_is_not_truncated() {
     assert_eq!(older_meta.mtime_nsec(), 123_000_000);
     assert_eq!(newer_meta.mtime_nsec(), 123_100_000);
     assert!(mtime_ms(&newer_meta) > mtime_ms(&older_meta));
-    assert_eq!(resolve_bundle(&dir.0), newer);
+    assert_eq!(resolve_system_bundle(&dir.0), newer);
 }
 
 #[test]

@@ -498,9 +498,47 @@ pub struct Answer {
     pub stored: Option<Cache>,
 }
 
-/// Keep native installs first, then look for the binary or JS bundle linked
-/// by npm. GUI services on macOS may not inherit Homebrew's bin directory.
-pub fn resolve_bundle(home: &Path) -> PathBuf {
+/// 模型目录优先使用配置的引擎或 MultiCC 随包安装的 SDK 平台二进制。
+pub fn resolve_bundle(package_root: &Path, home: &Path) -> PathBuf {
+    if let Some(binary) = std::env::var_os("MULTICC_CLAUDE_BIN") {
+        let path = Path::new(&binary);
+        if path.is_file() {
+            return path.canonicalize().unwrap_or_else(|_| path.to_owned());
+        }
+    }
+    bundled_sdk_binary(package_root).unwrap_or_else(|| resolve_system_bundle(home))
+}
+
+fn bundled_sdk_binary(package_root: &Path) -> Option<PathBuf> {
+    // 与 src/cli/claude-bundled-binary.js 一致，平台包可能被 npm 提升到上层。
+    // 搜索起点是 MultiCC 安装目录，不使用任务或会话的工作目录。
+    let package_root = package_root.canonicalize().ok()?;
+    let platform =
+        crate::egress_plugin::node_platform_arch_for(std::env::consts::OS, std::env::consts::ARCH);
+    let binary = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
+    let suffixes: &[&str] = if cfg!(target_os = "linux") {
+        &["", "-musl"]
+    } else {
+        &[""]
+    };
+    for suffix in suffixes {
+        let package = format!("node_modules/@anthropic-ai/claude-agent-sdk-{platform}{suffix}");
+        for root in package_root.ancestors() {
+            let dir = root.join(&package);
+            let path = dir.join(binary);
+            if dir.join("package.json").is_file() && path.is_file() {
+                return path.canonicalize().ok();
+            }
+        }
+    }
+    None
+}
+
+fn resolve_system_bundle(home: &Path) -> PathBuf {
     let search_path = std::env::var_os("PATH").unwrap_or_default();
     let dirs = std::env::split_paths(&search_path)
         .filter(|dir| !dir.as_os_str().is_empty())
