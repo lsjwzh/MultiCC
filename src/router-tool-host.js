@@ -49,6 +49,7 @@ function createRouterToolHost({
       createTask,
       operations: orchestrationRuntime?.operations,
       completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
+      detachedResult: (sessionId, operationId, version) => orchestrationRuntime.sessionScheduler.detachedResult(sessionId, operationId, version),
       schedulerStatus: id => orchestrationRuntime.sessionScheduler.status(id),
       cancelQueuedEntry: (id, entryId, opts) => orchestrationRuntime.sessionScheduler.cancelQueued(id, entryId, opts),
       cancelActiveTurnFn: typeof cancelActiveTurn === 'function' ? cancelActiveTurn : null,

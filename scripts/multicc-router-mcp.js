@@ -400,6 +400,21 @@ const TOOLS = [
     },
   },
   {
+    name: 'detached_result',
+    title: '读取或确认后台作业结果',
+    description: '读取本会话 run-detached 作业的状态、最终结果和 result_version。处理完结果后，再用同一 operation_id 和 acknowledge_version 确认收件，撤回仍在排队的通知。只查询不会撤回通知；leased 表示投递已开始。',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['operation_id'],
+      properties: {
+        operation_id: { type: 'string', minLength: 1, maxLength: 256, description: 'run-detached 返回的 operationId。' },
+        acknowledge_version: { type: 'string', pattern: '^[a-f0-9]{64}$', description: '处理完结果后，传入上次查询返回的 result_version。' },
+      },
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
     name: 'route_task',
     title: 'Route task (one way)',
     description: 'Durably queue one-way work; returns after admission and never collects the result. Use new_task for independent work, target_session_id for an existing task. Never pre-create tasks through management HTTP APIs. Unless the user named the target, prefer available over busy chats.',

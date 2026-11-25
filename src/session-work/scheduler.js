@@ -676,17 +676,31 @@ function createSessionWorkScheduler({
     const result = await store.mutate(draft => getNative().scheduleCancelQueuedLive(
       draft, sessionId, cleanEntryId, actor, reason, now,
       schedule => publicSchedule(schedule, queueForDraft(draft, sessionId), draft)));
-    if (result.ok) emit('queued_cancelled', {
+    if (result.ok) notifyQueuedCancellation(sessionId, result);
+    return result;
+  }
+
+  function notifyQueuedCancellation(sessionId, result) {
+    emit('queued_cancelled', {
       sessionId,
       entryId: result.cancelled.entryId,
-      actor,
+      actor: result.cancelled.actor,
       schedulerState: result.schedule.state,
       queued: result.schedule.queued.length,
       queuedItems: result.schedule.queued,
       freezeReason: result.schedule.freezeReason,
       schedule: result.schedule,
     });
-    return result;
+  }
+
+  async function detachedResult(sessionId, operationId, acknowledgeVersion) {
+    const inspect = draft => getNative().detachedResultLive(
+      draft, sessionId, operationId, acknowledgeVersion, now,
+      schedule => publicSchedule(schedule, queueForDraft(draft, sessionId), draft));
+    if (acknowledgeVersion == null) return store.read(inspect);
+    const { queueChange, ...reply } = await store.mutate(inspect);
+    if (queueChange) notifyQueuedCancellation(sessionId, queueChange);
+    return reply;
   }
 
   async function insertQueued(sessionId, entryId, { actor = 'user' } = {}) {
@@ -881,6 +895,7 @@ function createSessionWorkScheduler({
     resolve,
     settleUserInput,
     cancelQueued,
+    detachedResult,
     insertQueued,
     reorderQueued,
     editQueued,

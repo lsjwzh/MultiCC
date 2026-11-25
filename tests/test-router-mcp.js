@@ -110,7 +110,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     'get_task_context',
     'wait_for_user_answer', 'request_secret_input', 'list_secrets',
     'run_with_secrets', 'http_request_with_secret',
-    'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
+    'wait_for_external_result', 'get_external_wait', 'cancel_external_wait', 'detached_result',
     'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',
   ]);
@@ -138,6 +138,10 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     .find(tool => tool.name === 'get_external_wait');
   assert.deepEqual(waitStatusTool.inputSchema.required, ['wait_id']);
   assert.equal(waitStatusTool.annotations.readOnlyHint, true);
+  const detachedTool = listed.result.tools.find(tool => tool.name === 'detached_result');
+  assert.deepEqual(detachedTool.inputSchema.required, ['operation_id']);
+  assert.deepEqual(Object.keys(detachedTool.inputSchema.properties), ['operation_id', 'acknowledge_version']);
+  assert.equal(detachedTool.annotations.readOnlyHint, false);
   const asked = await plain.call('tools/call', {
     name: 'wait_for_user_answer',
     arguments: {
@@ -219,7 +223,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     'get_task_context',
     'wait_for_user_answer', 'request_secret_input', 'list_secrets',
     'run_with_secrets', 'http_request_with_secret',
-    'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
+    'wait_for_external_result', 'get_external_wait', 'cancel_external_wait', 'detached_result',
     'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',
   ]);
@@ -271,6 +275,7 @@ test('host prompt prefers scoped durable wait tools and keeps raw polling privil
   const source = require('../src/chat/host-prompts').createHostPrompts({}).multiccImgHint;
   assert.match(source, /it registers a durable wait/);
   assert.match(source, /wait_for_external_result/);
+  assert.match(source, /detached_result/);
   assert.match(source, /get_external_wait/);
   assert.match(source, /cancel_external_wait/);
   assert.match(source, /Only when the host itself must run a command or query a URL/);

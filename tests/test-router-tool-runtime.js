@@ -10,6 +10,8 @@ process.env.MULTICC_DATA_DIR = auditDir;
 test.after(() => fs.rmSync(auditDir, { recursive: true, force: true }));
 const { createOperationService } = require('../src/operation-service');
 const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createOutbox } = require('../src/outbox');
 const { createRouterToolRuntime } = require('../src/router-tool-runtime');
 
 function fixture(t, overrides = {}) {
@@ -140,6 +142,32 @@ function fixture(t, overrides = {}) {
 async function nextTurn() {
   await new Promise(resolve => setImmediate(resolve));
 }
+
+test('detached_result requires the originating capability and respects an existing FIFO claim', async t => {
+  const { operations, runtime, store } = fixture(t, {
+    detachedResult: (...args) => scheduler.detachedResult(...args),
+  });
+  const scheduler = createSessionWorkScheduler({ store });
+  const owner = runtime.issueContext({ sessionId: 'caller', turnId: 'one' });
+  const other = runtime.issueContext({ sessionId: 'worker-a', turnId: 'two' });
+  const job = await operations.admitDetached({ sessionId: 'caller', spec: { command: 'verify' } });
+  await operations.completeDetached(job.id, { exitCode: 0, logTail: 'all passed' });
+  const args = { operation_id: job.id };
+  const read = await runtime.execute(owner, 'detached_result', args);
+  assert.equal(read.result.logTail, 'all passed');
+  const ack = { ...args, acknowledge_version: read.result_version };
+  for (const attempt of [args, ack]) {
+    await assert.rejects(runtime.execute(other, 'detached_result', attempt), { code: 'detached_operation_not_found' });
+  }
+  await assert.rejects(runtime.execute(owner, 'detached_result', { ...ack, session_id: 'caller' }), { code: 'invalid_arguments' });
+  await assert.rejects(runtime.execute(owner, 'detached_result', { ...args, acknowledge_version: null }), { code: 'invalid_arguments' });
+  const outbox = createOutbox({ store });
+  const [claimed] = await outbox.claim({ workerId: 'delivery', limit: 1 });
+  assert.equal((await runtime.execute(owner, 'detached_result', ack)).notification, 'leased');
+  assert.equal((await outbox.get(claimed.id)).state, 'leased');
+  await outbox.defer(claimed.id, claimed.leaseToken, 'busy', { delayMs: 0 });
+  assert.equal((await runtime.execute(owner, 'detached_result', ack)).notification, 'withdrawn');
+});
 
 test('preferred wait_for_user_answer and its legacy alias share one idempotent signal', async t => {
   const { runtime, userInputSignals } = fixture(t);

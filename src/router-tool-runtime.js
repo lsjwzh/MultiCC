@@ -17,7 +17,7 @@ const TOOL_NAMES = new Set([
   'generate_image',
   'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
   'route_task', 'dispatch_master', 'dispatch_slave', 'dispatch_cancel',
-  'dispatch_status',
+  'dispatch_status', 'detached_result',
 ]);
 const MAX_MESSAGE_LENGTH = 256 * 1024;
 const MAX_RESULT_LENGTH = 512 * 1024;
@@ -176,6 +176,7 @@ function createRouterToolRuntime({
   listExternalWaits,
   cancelExternalWait,
   subscribeDispatchProgress = () => () => {},
+  detachedResult,
   schedulerStatus = async () => null,
   cancelQueuedEntry = null,
   cancelActiveTurnFn = null,
@@ -1291,6 +1292,20 @@ function createRouterToolRuntime({
       }
       const result = await getTaskContext(context, args);
       if (!result) throw new RouterToolError('task_context_unavailable', 'task context is unavailable', 404);
+      return result;
+    }
+    if (tool === 'detached_result') {
+      rejectUnknownArguments(args, new Set(['operation_id', 'acknowledge_version']));
+      if (typeof args.operation_id !== 'string') throw new RouterToolError('invalid_arguments', 'operation_id must be a string');
+      const operationId = cleanId(args.operation_id, 'operation_id');
+      const version = args.acknowledge_version;
+      if (version !== undefined && (typeof version !== 'string' || !/^[a-f0-9]{64}$/.test(version))) {
+        throw new RouterToolError('invalid_arguments', 'acknowledge_version must be the returned result_version');
+      }
+      const result = await detachedResult(context.sessionId, operationId, version);
+      if (!result.ok) {
+        throw new RouterToolError(result.code, result.code, result.code === 'detached_operation_not_found' ? 404 : 409);
+      }
       return result;
     }
     if (tool === 'generate_image') return generateImage(context, args, options);

@@ -365,13 +365,27 @@ pub fn schedule_cancel_queued_live(
     clock: Unknown<'_>,
     project: Unknown<'_>,
 ) -> Result<napi::sys::napi_value> {
-    let draft = L::new(&env, draft);
-    let session_id = L::new(&env, session_id);
-    let entry = L::new(&env, entry_id);
-    let actor = L::new(&env, actor);
-    let reason = L::new(&env, reason);
-    let clock = L::new(&env, clock);
-    let project = L::new(&env, project);
+    Ok(cancel_pending_entry(
+        L::new(&env, draft),
+        L::new(&env, session_id),
+        L::new(&env, entry_id),
+        L::new(&env, actor),
+        L::new(&env, reason),
+        L::new(&env, clock),
+        L::new(&env, project),
+    )?
+    .raw())
+}
+
+pub(crate) fn cancel_pending_entry<'a>(
+    draft: L<'a>,
+    session_id: L<'a>,
+    entry: L<'a>,
+    actor: L<'a>,
+    reason: L<'a>,
+    clock: L<'a>,
+    project: L<'a>,
+) -> Result<L<'a>> {
     let item = draft.get(c"outbox")?.get_key(entry)?;
     let fail = |code: &str| {
         draft.from_value(&V::object(vec![
@@ -380,7 +394,7 @@ pub fn schedule_cancel_queued_live(
         ]))
     };
     if !item.truthy()? || !item.get(c"sessionId")?.equals(session_id)? {
-        return Ok(fail("queued_entry_not_found")?.raw());
+        return fail("queued_entry_not_found");
     }
     let ensure_at = draft.from_value(&V::Number(clock.call_plain(&[])?.explicit_number()?))?;
     let schedule = ensure_schedule(draft, session_id, ensure_at)?;
@@ -390,10 +404,10 @@ pub fn schedule_cancel_queued_live(
         || (active_delivery.truthy()? && active_delivery.equals(entry)?)
         || item.get(c"state")?.is_string("leased")?
     {
-        return Ok(fail("queued_entry_already_claimed")?.raw());
+        return fail("queued_entry_already_claimed");
     }
     if !item.get(c"state")?.is_string("pending")? {
-        return Ok(fail("queued_entry_not_pending")?.raw());
+        return fail("queued_entry_not_pending");
     }
     let at = draft.from_value(&V::Number(clock.call_plain(&[])?.explicit_number()?))?;
     item.assign(c"state", draft.from_value(&V::string("cancelled"))?)?;
@@ -415,7 +429,7 @@ pub fn schedule_cancel_queued_live(
     let result = draft.from_value(&V::object(vec![("ok", true.into())]))?;
     result.set(c"cancelled", cancelled)?;
     result.set(c"schedule", public)?;
-    Ok(result.raw())
+    Ok(result)
 }
 
 // Separate live arguments preserve the original getter and clock order.
