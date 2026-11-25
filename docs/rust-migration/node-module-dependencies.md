@@ -72,7 +72,7 @@
 | `src/chat/resident-pool.js` | server.js | — | — | — | — | — |
 | `src/chat/retry-policy.js` | server.js | `src/chat/api-error-policy.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/chat/runtime-store.js` | server.js | `src/state/owner.js` | — | — | — | — |
-| `src/chat/session-notices.js` | server.js | — | — | — | — | — |
+| `src/chat/session-notices.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/chat/sessions.js` | server.js | `src/ws/ws-host.js` | — | — | — | — |
 | `src/chat/stalled-turn-recovery.js` | server.js | `src/classify/vocab.js` | — | — | — | — |
 | `src/chat/stream-router.js` | server.js | `src/chat/workspace-residency.js` | — | — | — | — |

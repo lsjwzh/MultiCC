@@ -38,6 +38,7 @@ pub mod chat_finalize_execution;
 pub mod chat_history;
 pub mod chat_history_repository;
 pub mod chat_history_runtime;
+pub mod chat_notices;
 pub mod chat_turn_effects;
 pub mod chat_turn_lifecycle;
 pub mod chat_ws_control;

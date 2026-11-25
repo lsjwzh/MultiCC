@@ -30,6 +30,7 @@ pub mod chat_history_file;
 pub mod chat_history_file_repository;
 pub mod chat_history_frame;
 pub mod chat_history_index;
+pub mod chat_notices;
 pub mod chat_replay_buffer;
 pub mod chat_runtime;
 pub mod chat_task_state_frame;
