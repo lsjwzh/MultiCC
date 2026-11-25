@@ -386,6 +386,14 @@ const finalizationPlan = {
   planRetryBlockedFinalization: (plan, overrides = {}) => getNative().chatFrozenFinalization('retryBlocked', plan, overrides),
   resolveTurnFinalization: (plan, outcome = {}) => getNative().chatFrozenFinalization('resolve', plan, outcome),
 };
+// Artifact reference recognition is Rust-only. Each member resolves the addon
+// lazily, so a module that merely loads this facade (src/artifacts.js in a bare
+// child process) needs no native module until it recognizes an id.
+const artifactReference = {
+  isArtifactId: value => getNative().artifactReferenceIsArtifactId(value),
+  normalizeRelativePath: value => getNative().artifactReferenceNormalizeRelativePath(value),
+  extractArtifactReferences: content => getNative().artifactReferenceExtract(content),
+};
 const taskShellContext = {
   hash: value => reference('hash', value),
   estimateTokens: value => reference('estimate', String(value ?? '')),
@@ -532,7 +540,7 @@ function createSessionPersistence() {
 }
 module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
-  finalizationPlan, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
   pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };

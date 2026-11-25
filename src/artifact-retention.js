@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { isArtifactId } = require('./artifact-reference');
+const { isArtifactId } = require('./native/runtime').artifactReference;
 
 const TEXT_FILES = /\.(?:html?|css|[cm]?js|json|map|svg|xml|md|txt|ya?ml)$/i;
 const MAX_BYTES = 64 * 1024 * 1024;

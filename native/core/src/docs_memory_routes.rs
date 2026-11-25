@@ -382,7 +382,7 @@ pub fn validate_entry(entry: &Value) -> Option<String> {
     None
 }
 
-/// `isArtifactId` in `src/artifact-reference.js`.
+/// `isArtifactId`, shared with `crate::artifact_reference::is_artifact_id`.
 pub fn valid_artifact_id(text: &str) -> bool {
     !text.is_empty()
         && text.len() <= 128

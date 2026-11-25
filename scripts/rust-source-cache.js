@@ -126,6 +126,11 @@ function probeAddon(file, node = process.execPath) {
     if(['contextSelectionValue','contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
       'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
       'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['artifactReferenceIsArtifactId','artifactReferenceNormalizeRelativePath','artifactReferenceExtract'].some(key=>typeof a[key]!=='function')
+      || a.artifactReferenceIsArtifactId('ab_CD-1')!==true || a.artifactReferenceIsArtifactId('a.b')!==false
+      || a.artifactReferenceNormalizeRelativePath('a//')!=='a' || a.artifactReferenceNormalizeRelativePath('/a')!==null) process.exit(1);
+    { const refs=a.artifactReferenceExtract(['/artifacts/ab_CD-1/a.png?x=1','https://h.test/artifacts/other']);
+      if(refs.length!==1 || refs[0].artifactId!=='ab_CD-1' || refs[0].relativePath!=='a.png') process.exit(1); }
     if(['apiErrorFacts','apiErrorSignaturesQuoted','apiErrorPrepare','apiErrorNormalize',
       'apiErrorDecide','apiErrorRetryNotice','apiErrorMetricToken','apiErrorIsErrorOnlyText',
       'apiErrorSplitTrailingEnvelope','apiErrorDetectEnvelope','apiErrorClaudeEnvelope',
@@ -215,6 +220,8 @@ function probeAddon(file, node = process.execPath) {
     if(['HostAttributionSettings','recoverModelTimeout','voiceHotwordMatch','voiceHotwordList','VoiceTypedVocabulary','voiceMineHotwordPairs','taskBoardPlanningResult','taskBoardSessionFact','prepareOpencodeRotationHandoff','chatFrozenFinalization','chatValidateFinalizationPorts','chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
       'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure','chatExecuteTurnFinalization',
       'chatCommitTurnFinalization'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['turnEventToolTiming','turnEventDiffTiming','turnEventOpenTasks'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(a.turnEventOpenTasks([{seq:1,ts:1000,event:{type:'monitor_started',task_id:'p'}},{seq:2,ts:1500,event:{type:'monitor_progress',task_id:'p'}}])[0].lastTs!==1500) process.exit(1);
     if(['transcriptPruneDefaults','transcriptProjectDir','transcriptFind','transcriptPruneFile',
       'transcriptPruneMaybe','transcriptMeasureFile','transcriptMeasure','transcriptRealUserTurn',
       'transcriptSubstantiveTurn','transcriptUserVisibleText','transcriptTriggersFor',

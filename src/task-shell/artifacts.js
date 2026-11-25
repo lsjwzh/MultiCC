@@ -1,6 +1,6 @@
 'use strict';
 
-const { extractArtifactReferences } = require('../artifact-reference');
+const { extractArtifactReferences } = require('../native/runtime').artifactReference;
 
 // The transcript is the historical authority. The registry adds titles and
 // publications made before an assistant's final reply. Never sweep a shell's
