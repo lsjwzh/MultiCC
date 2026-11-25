@@ -141,6 +141,7 @@ pub mod task_store;
 pub mod terminal_target;
 pub mod transcript_prune;
 pub mod turn_end_evidence;
+pub mod turn_event_replay;
 pub mod turn_ledger_contract;
 pub mod turn_progress;
 pub mod turn_request;

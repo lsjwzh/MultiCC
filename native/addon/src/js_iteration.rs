@@ -94,7 +94,6 @@ fn print_primitive(value: LiveValue<'_>) -> Result<Vec<u16>> {
 
 /// `target[name]` with V8's own TypeError text for nullish receivers.
 pub(crate) fn read<'env>(target: LiveValue<'env>, name: &CStr) -> Result<LiveValue<'env>> {
-    let env = target.env();
     let kind = target.kind()?;
     if matches!(
         kind,
@@ -110,6 +109,12 @@ pub(crate) fn read<'env>(target: LiveValue<'env>, name: &CStr) -> Result<LiveVal
             name.to_str().expect("static property")
         )));
     }
+    read_property(target, name)
+}
+
+/// The receiver was already checked, so there is no nullish error to format.
+pub(crate) fn read_property<'env>(target: LiveValue<'env>, name: &CStr) -> Result<LiveValue<'env>> {
+    let env = target.env();
     let mut value = ptr::null_mut();
     check_status!(unsafe {
         sys::napi_get_named_property(env, target.raw(), name.as_ptr(), &mut value)
@@ -173,10 +178,10 @@ impl<'env> IteratorRecord<'env> {
             units.extend(utf16(" is not an object"));
             return Err(type_error(result.env(), &units));
         }
-        if read(result, c"done")?.truthy()? {
+        if read_property(result, c"done")?.truthy()? {
             Ok(None)
         } else {
-            Ok(Some(read(result, c"value")?))
+            Ok(Some(read_property(result, c"value")?))
         }
     }
 
