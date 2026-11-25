@@ -117,7 +117,7 @@ test('many Air task records do not start any work and retain separate roles', as
 test('online attribution candidates do not create task B or rewrite the original receipt', async t => {
   const f = airFixture(t), created = await f.runtime.createStandalone({ dirId: 'd1', title: 'Source', clientMsgId: 'src' });
   const sent = await f.runtime.send(created.shellId, { text: 'Work', taskId: created.taskId, intent: 'work', clientMsgId: 'm' });
-  const { createCandidateStore } = require('../src/task-routing/candidates'), candidates = createCandidateStore(f.store);
+  const { createCandidateStore } = require('../src/native/runtime'), candidates = createCandidateStore(f.store);
   const before = f.runtime.view(created.shellId), original = f.store.get('receipt', sent.receiptId);
   const candidate = candidates.propose(created.sessionId, sent.receiptId, { taskId: 'tsk_new_candidate', taskName: 'New goal', turnId: 'turn1' });
   assert.equal(candidate.pending, true); assert.equal(candidate.candidate.state, 'pending');
@@ -703,4 +703,36 @@ test('Air snapshot lists tasks newest-message first, ties keep board order', asy
   });
   // old 的 updatedAt 最新，但最后一条消息最早 —— 元数据改动不能把旧任务顶上来。
   assert.deepEqual((await air.snapshot()).json.tasks.map(task => task.id), ['new', 'tie-a', 'tie-b', 'old']);
+});
+
+test('候选事务对照旧实现，保留来源校验、版本、重复提案和写入顺序', () => {
+  function trace(create, mode) {
+    const rows = new Map(Object.entries({
+      'receipt:r': { id: 'r', taskId: 'A', shellId: 'S', cursorVersion: 2 },
+      'task:A': { id: 'A', sessionId: 'session', dirId: 'D' },
+      'shell:S': { cursorReceiptId: 'r', currentTaskId: 'A', cursorVersion: 2 },
+    })), calls = [];
+    if (mode === 'other-dir') rows.set('task:B', { id: 'B', dirId: 'other' });
+    if (mode === 'same-dir') rows.set('task:B', { id: 'B', dirId: 'D' });
+    if (mode === 'stale') rows.get('shell:S').cursorVersion++;
+    const store = {
+      get(type,id) { calls.push(['get',type,id]); return rows.get(type + ':' + id); },
+      set(type,id,v) { calls.push(['set',type,id]); rows.set(type + ':' + id,v); },
+      list(type) { calls.push(['list',type]); return [...rows].filter(([k]) => k.startsWith(type + ':')).map(([,v]) => v); },
+      transaction(fn) { calls.push(['begin']); const result = fn(); calls.push(['commit']); return result; },
+    };
+    const api = create(store), attr = { taskId: mode === 'same' ? 'A' : 'B', turnId: 'turn\ud800', taskName: '😀'.repeat(61) };
+    const propose = () => api.propose(mode === 'wrong' ? 'unknown' : 'session', 'r', attr);
+    const first = propose(), repeat = propose(), latest = api.latest('A');
+    if (first.pending) assert.equal(first.candidate, repeat.candidate);
+    rows.get('shell:S').cursorVersion++;
+    return { first, repeat, latest, changed: api.latest('A'), calls };
+  }
+  const frozen = require('./helpers/frozen-file-batch7/candidates').createCandidateStore;
+  const current = require('../src/native/runtime').createCandidateStore;
+  const clock = Date.now;
+  try {
+    Date.now = () => 123456;
+    for (const mode of ['same-dir','other-dir','wrong','stale','same','new']) assert.deepEqual(trace(current, mode), trace(frozen, mode));
+  } finally { Date.now = clock; }
 });

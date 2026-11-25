@@ -756,3 +756,41 @@ pub fn turn_event_diff_timing(
     let derived = host.any;
     Ok(diff_tool_timing(&mut host, derived, blob, options)?.raw())
 }
+
+/// Build a fresh, frozen public interface over the same live-value kernels.
+/// Constructor calls to the original functions also returned their result array.
+#[napi]
+pub fn turn_event_replay_api(env: Env) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, js_live::fields};
+    let owner = LiveValue::from_raw(env.raw(), unsafe {
+        crate::js_bridge::write_value(env.raw(), &JsValue::Undefined)?
+    });
+    let timing = method(&env, owner, "deriveToolTiming", 1, 1, |_, args| {
+        derive_tool_timing(&mut Host::new(args[0]))
+    })?;
+    let diff = method(&env, owner, "diffToolTiming", 2, 3, |_, args| {
+        let options = if args[2].undefined()? {
+            fields(args[0], &[])?
+        } else {
+            args[2]
+        };
+        diff_tool_timing(&mut Host::new(args[0]), args[0], args[1], options)
+    })?;
+    let tasks = method(&env, owner, "deriveOpenTasks", 1, 1, |_, args| {
+        derive_open_tasks(&mut Host::new(args[0]))
+    })?;
+    Ok(fields(
+        owner,
+        &[
+            ("deriveToolTiming", timing),
+            ("diffToolTiming", diff),
+            ("deriveOpenTasks", tasks),
+            (
+                "DEFAULT_TOLERANCE_MS",
+                owner.from_value(&JsValue::Number(DEFAULT_TOLERANCE_MS))?,
+            ),
+        ],
+    )?
+    .freeze()?
+    .raw())
+}

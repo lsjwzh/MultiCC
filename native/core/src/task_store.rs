@@ -18,6 +18,7 @@ mod workspace_permit;
 type Result<T> = std::result::Result<T, String>;
 /// v2：引用列 task_ref/receipt_ref（仓储写入时维护）+ 台账独立成类 + 上下文记录分层。
 pub const SCHEMA_VERSION: i64 = 2;
+pub const RELATION_KINDS: &[&str] = &["related", "group"];
 fn items(v: &Value) -> &[Value] {
     v.as_array().map(Vec::as_slice).unwrap_or(&[])
 }

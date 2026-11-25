@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createTaskRelations } = require('../src/task-shell/relations');
+const { createTaskRelations } = require('../src/native/runtime').getTaskRelations();
 const { createTaskGraphRoutes } = require('../src/routes/task-graph');
 
 
@@ -111,4 +111,27 @@ test('the graph draws source and relation edges that carry no ownership', () => 
   const b = graph.nodes.find(node => node.id === 'tsk_b');
   assert.equal(b.independentFromSessionId, 's-2');
   assert.equal(b.parentTaskId, null, 'a source edge is not a parent edge');
+});
+
+test('关系列表、标题和幂等通知的时序与冻结版一致', () => {
+  const frozen = require('./helpers/legacy-relations').createTaskRelations;
+  const marker = Symbol('关系'), title = {};
+  function trace(create, created, removed, replayed) {
+    const events = [], relation = { fromTaskId: 'a', toTaskId: 'b', [marker]: 7 };
+    const store = { rule(req) {
+      events.push([this === store, req]);
+      return req.action === 'relationList' ? [relation] : { created, removed, replayed, relation, [marker]: title };
+    } };
+    const api = create({ store, now: () => { events.push('now'); return 42; },
+      taskTitle: id => { events.push(['title', id]); return id === 'a' ? title : ''; },
+      onChanged: id => { events.push(['change', id]); throw Error('通知失败'); } });
+    assert.ok(Object.isFrozen(api.KINDS)); assert.deepEqual(api.KINDS, ['related', 'group']);
+    const result = [api.create('s'), api.remove('s', null), api.list('s')];
+    assert.equal(result[0].relation.fromTitle, title);
+    assert.equal(result[0][marker], title);
+    return { events, result };
+  }
+  for (const created of [false, true]) for (const removed of [false, true]) for (const replayed of [false, true]) {
+    assert.deepEqual(trace(createTaskRelations, created, removed, replayed), trace(frozen, created, removed, replayed));
+  }
 });

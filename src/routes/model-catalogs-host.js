@@ -11,16 +11,71 @@
 //                                                出口绑定、原生 codexModelsPeek/Refresh、
 //                                                pending 单飞表）
 //
-// peek*() 导出仍留在各自模块里：Auto Provider / native-vendor 在热路径上同步读取
-// 缓存，而那些缓存正是上面这些 op 维护的那一份。Rust 接管这些进程内状态后本文件
-// 与相应模块的缓存一起删除。
+// 每个 CLI 的查询路由和自动选线共用该 CLI 的 Rust 解析器和缓存。
 //
 // 这不是公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest` 拒绝任何
 // 转发自真实远端客户端的请求（docs/gateway.md 的内网端口模型）。
 
 const { isLocalRequest } = require('../request-locality');
 
+const { execFile } = require('node:child_process');
+const { resolveCliCommands } = require('../cli-adapters/commands');
+const { getNative } = require('../native/runtime');
+
 const HOST_PATH = '/api/__host/model-catalogs';
+
+// Node owns process lookup, execFile and callback scheduling. The native
+// catalog owns parsing, freshness, fallback rows and publication of CLI reads.
+const VENDOR_PORTS = {
+  qoder: { bin: 'qoderclicn', arg: '--list-models', timeout: 15000, buffer: 256 * 1024,
+    parse: 'parseQoderStdout', suffix: 'QoderModels', fallback: 'QODER_TIER_FALLBACK' },
+  codebuddy: { bin: 'codebuddy', arg: '--help', timeout: 10000, buffer: 1024 * 1024,
+    parse: 'parseCodebuddyHelp', suffix: 'CodebuddyModels', fallback: 'CODEBUDDY_MODEL_FALLBACK' },
+  grok: { bin: 'grok', arg: 'models', timeout: 10000, buffer: 1024 * 1024,
+    parse: 'parseGrokModels', suffix: 'GrokModels', fallback: 'GROK_MODEL_FALLBACK' },
+  commandcode: { bin: 'commandcode', arg: '--list-models', timeout: 20000, buffer: 2 * 1024 * 1024,
+    parse: 'parseCommandcodeList', suffix: 'CommandcodeModels', fallback: 'COMMANDCODE_MODEL_FALLBACK' },
+};
+const vendorCatalogs = new Map();
+function getVendorCatalog(cli) {
+  if (vendorCatalogs.has(cli)) return vendorCatalogs.get(cli);
+  const spec = VENDOR_PORTS[cli];
+  const timeout = Number(process.env[cli.toUpperCase() + '_MODELS_TIMEOUT_MS'] || spec.timeout);
+  const native = new (getNative().RustVendorModelCatalog)(cli);
+  const state = { cache: null, fallback: native.defaults() };
+  let published = Promise.resolve();
+  const api = {
+    [spec.parse](input) { return native.parse(input); },
+    ['peek' + spec.suffix]() { return native.peek(state); },
+    ['list' + spec.suffix](callback, opts = {}) {
+      if (!opts.refresh && native.isFresh(state)) {
+        return setImmediate(() => callback(null, state.cache.models, 'cache'));
+      }
+      let bin = spec.bin;
+      try {
+        const cmd = resolveCliCommands()[cli];
+        if (typeof cmd === 'string' && cmd) bin = cmd;
+      } catch {}
+      const options = { timeout, maxBuffer: spec.buffer };
+      if (cli === 'qoder') options.windowsHide = true;
+      execFile(bin, [spec.arg], options, (error, stdout) => {
+        // Preserve child completion order while the worker pool parses stdout.
+        const result = published.then(async () => {
+          const listing = error ? null : await native.readListing(stdout);
+          return native.finish(state, listing);
+        });
+        published = result.then(() => {}, () => {});
+        result.then(({ models, source }) => process.nextTick(callback, null, models, source),
+          error => process.nextTick(callback, error));
+      });
+    },
+    [spec.fallback]: state.fallback,
+    _setCacheForTest(at, models) { state.cache = { at, models }; },
+    _resetCacheForTest() { state.cache = null; },
+  };
+  vendorCatalogs.set(cli, api);
+  return api;
+}
 
 // 每一条 CLI 目录路由的 503 文案（退役的 mount* 里的字面量）。
 const CLI_OPERATIONS = Object.freeze({
@@ -30,19 +85,19 @@ const CLI_OPERATIONS = Object.freeze({
   },
   qoder: {
     unavailable: 'qoder models unavailable',
-    list: (options, callback) => require('./qoder-models').listQoderModels(callback, options),
+    list: (options, callback) => getVendorCatalog('qoder').listQoderModels(callback, options),
   },
   grok: {
     unavailable: 'grok models unavailable',
-    list: (options, callback) => require('./grok-models').listGrokModels(callback, options),
+    list: (options, callback) => getVendorCatalog('grok').listGrokModels(callback, options),
   },
   commandcode: {
     unavailable: 'commandcode models unavailable',
-    list: (options, callback) => require('./commandcode-models').listCommandcodeModels(callback, options),
+    list: (options, callback) => getVendorCatalog('commandcode').listCommandcodeModels(callback, options),
   },
   codebuddy: {
     unavailable: 'codebuddy models unavailable',
-    list: (options, callback) => require('./codebuddy-models').listCodebuddyModels(callback, options),
+    list: (options, callback) => getVendorCatalog('codebuddy').listCodebuddyModels(callback, options),
   },
 });
 
@@ -149,4 +204,4 @@ function mountModelCatalogsHostRoute(app, options = {}) {
   });
 }
 
-module.exports = { mountModelCatalogsHostRoute, createModelCatalogsHost, HOST_PATH };
+module.exports = { getVendorCatalog, mountModelCatalogsHostRoute, createModelCatalogsHost, HOST_PATH };

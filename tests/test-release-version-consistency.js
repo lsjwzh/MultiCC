@@ -130,7 +130,7 @@ test('core runner covers every selected path and expands declared variants', () 
   // then registers three more, all of them the human-assist annotation contract:
   // tests/test-chat-annotate.js (the byte-exact block the web lightbox emits and
   // the App must reproduce, checked against public/chat-annotate.js and the
-  // agent-side contract in src/chat/host-prompts.js), tests/test-assist-snapshots.js
+  // agent-side contract in native/core/src/host_prompts.rs), tests/test-assist-snapshots.js
   // (the 7-day screenshot retention sweep: per-file window, emptied session dirs
   // dropped, symlinks left alone, unbounded roots refused, data-dir isolation),
   // and app/test/image_annotate_format_test.dart (the same contract on the Dart

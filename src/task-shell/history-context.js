@@ -1,6 +1,6 @@
 'use strict';
 
-const { hash } = require('../native/runtime').taskShellContext;
+const { getNative, taskShellContext: { hash } } = require('../native/runtime');
 
 // Canonical history stays on the execution that produced it. Task ownership is
 // an annotation, so a task's evidence can span several execution transcripts.
@@ -86,4 +86,8 @@ function pageSnapshots(page) {
   });
 }
 
-module.exports = { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots };
+function relatedHistory({ store, targetId, getTask, getRecord, getHistory, getLiveState, isDeletedTask }) {
+  return getNative().relatedTaskHistory({ store, targetId, getTask, getRecord, getHistory, getLiveState, isDeletedTask }, shellRecords);
+}
+
+module.exports = { relatedHistory, shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots };

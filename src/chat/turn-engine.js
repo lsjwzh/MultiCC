@@ -13,7 +13,7 @@ const { createTurnTimingRecorder, createDeliveryProbeRegistry, createTurnTimelin
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
 const { createSessionNotices } = require('./session-notices');
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
-const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('./adapter-completion');
+const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../native/runtime').adapterCompletion;
 const { getNative, gatewayPath, deliveryClassForItem, historyFrame: { fitHistoryFrame } } = require('../native/runtime');
 const writerGroup = require('../workspace/writer-group');
 const {
@@ -54,8 +54,8 @@ const { taskIdForShortCode } = require('../native/task-domain');
 const { taskStateSeed } = require('../native/runtime');
 const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../native/runtime').messageComposer;
 const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
-const { buildSubagentProviderHint } = require('./host-prompts');
-const managedContext = require('./managed-context');
+const { buildSubagentProviderHint } = require('../native/runtime').getHostPrompts();
+const managedContext = require('../native/runtime').managedContext;
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
   buildHandoffCheckpoint, clearAllNativeCliStates,
@@ -64,7 +64,7 @@ const { cliHandoffSummary } = require('../cli/switch-runtime');
 const { summarizeHistoryUsage } = require('../codex/usage');
 const { buildReplayMessages } = require('../routes/chat-history');
 const chatStream = require('./chat-stream');
-const { resolveCliRelayTarget, applyCliRelaySpawn } = require('./cli-relay-spawn');
+const { resolveCliRelayTarget, applyCliRelaySpawn } = require('../native/runtime');
 const { spawnContractOf } = require('./held-turn-injection');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
@@ -96,7 +96,7 @@ function claudeSettingsExtra(invocation, spawnOpts, binding, cli) {
 }
 
 const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
-const { deriveOpenTasks } = require('./turn-event-replay');
+const { deriveOpenTasks } = require('../native/runtime').getTurnEventReplay();
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context');

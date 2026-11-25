@@ -74,13 +74,12 @@ const {
 } = require('./src/codex/usage');
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { getNative, findProviderReferences, messageComposer, bootstrapState,
-  installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/native/runtime');
+  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/native/runtime');
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf, isAlias, nameOf: canonicalCli, watchEffortCatalog } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
-const { synchronizeCodexProfileRoute } = require('./src/cli/switch-preparation');
 const { renderPrompt } = messageComposer;
 const {
   applyCuratedMemoryAction,
@@ -193,7 +192,7 @@ const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('
 const { createTaskStateStore } = require('./src/routes/task-state-store');
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/host');
-const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/chat/host-prompts');
+const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/runtime').getHostPrompts();
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
@@ -435,8 +434,7 @@ const CLAUDE_CHAT_DISALLOWED_TOOLS = (process.env.CLAUDE_CHAT_DISALLOWED_TOOLS ?
   .map(s => s.trim())
   .filter(Boolean);
 
-// Host-authored chat prompt add-ons (codex ask-tool steering, stay-alive rules,
-// the multicc web-chat hint block) live in src/chat/host-prompts.js.
+// Rust supplies the Codex constraints and the web-chat hint.
 const {
   codexEnvConstraint: CODEX_ENV_CONSTRAINT,
   codexStayAlivePrompt: CODEX_STAY_ALIVE_PROMPT,
@@ -2615,7 +2613,7 @@ const chatTurnEngine = createChatTurnEngine({ replay: chatReplay,
   buildGatewayPrompt,
   buildDispatchContextPrompt,
   // Per-turn plan/progress layer (kind 'turn-plan'; aux/gateway excluded in the composer).
-  // markPlanContextReset re-arms the full block after a transcript prune — see host-prompts.js.
+  // markPlanContextReset re-arms the full block after a transcript prune.
   buildPlanPrompt: buildPlanProgressPrompt,
   markPlanContextReset,
   appendChatMessage,
@@ -3007,7 +3005,7 @@ app.use(safeErrorHandler(logger));
     try { voiceHost.prepareBoot(); } catch (err) { logger.warn('voice_boot_prepare_failed', { error: err.message }); }
     qwenAudioSupervisor.reconcileAll().catch(err => logger.warn('voice_reconcile_failed', { error: err && err.message }));
     // Resident children are a machine-wide process budget, not a per-directory one.
-    const residentPool = require('./src/chat/resident-composition').createResidentPoolComposition({ chatStream, backgroundTaskRuntime, sessionWorkHost, logger, getWorkspaceAdmission: () => workspaceAdmission }); trackServiceTimer(setInterval(() => residentPool.sweep(), residentPool.policy().sweepMs));
+    const residentPool = require('./src/chat/resident-pool').createResidentPoolComposition({ chatStream, backgroundTaskRuntime, sessionWorkHost, logger, getWorkspaceAdmission: () => workspaceAdmission }); trackServiceTimer(setInterval(() => residentPool.sweep(), residentPool.policy().sweepMs));
     trackServiceTimer(setTimeout(() => scanAndReclassify(), 6000));
     trackServiceTimer(setInterval(() => scanAndReclassify(), SCAN_INTERVAL_MS));
     trackServiceTimer(setInterval(() => processingWatchdog.sweep()

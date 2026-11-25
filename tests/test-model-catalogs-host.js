@@ -18,10 +18,10 @@ const {
 
 const CLI_MODULES = {
   opencode: require('../src/routes/opencode-models'),
-  qoder: require('../src/routes/qoder-models'),
-  grok: require('../src/routes/grok-models'),
-  commandcode: require('../src/routes/commandcode-models'),
-  codebuddy: require('../src/routes/codebuddy-models'),
+  qoder: require('../src/routes/model-catalogs-host').getVendorCatalog('qoder'),
+  grok: require('../src/routes/model-catalogs-host').getVendorCatalog('grok'),
+  commandcode: require('../src/routes/model-catalogs-host').getVendorCatalog('commandcode'),
+  codebuddy: require('../src/routes/model-catalogs-host').getVendorCatalog('codebuddy'),
 };
 const CLI_LIST_EXPORTS = {
   opencode: 'listOpenCodeModels',

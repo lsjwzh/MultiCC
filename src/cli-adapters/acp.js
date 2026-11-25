@@ -1,6 +1,6 @@
 'use strict';
 
-const { supportsEffort } = require('../cli/cli-capability');
+const { supportsEffort, displayNameOf } = require('../cli/cli-capability');
 
 // Shared adapter for every CLI that speaks ACP (Agent Client Protocol). The
 // host starts the Rust gateway ACP bridge, which drives the agent's own `acp`/`stdio`
@@ -12,7 +12,7 @@ const { supportsEffort } = require('../cli/cli-capability');
 
 const { errorFields } = require('../provider-error');
 const { createProtocolCompletionTracker } = require('./completion');
-const { gatewayPath, messageComposer: { renderPrompt } } = require('../native/runtime');
+const { getNative, gatewayPath, messageComposer: { renderPrompt } } = require('../native/runtime');
 
 const BRIDGE = 'acp-bridge';
 
@@ -246,4 +246,18 @@ function createAcpAdapter({
   };
 }
 
-module.exports = { BRIDGE, contentText, createAcpAdapter, createAcpCompletionTracker };
+// The terminal host preserves V8's coercion order for the command and each argument.
+function appendTerminalArg(cmd, flag, value) { return cmd + ` ${flag} ${value}`; }
+
+function createLaunchAdapter(name, { cmd, routerMcpNode, routerMcpScript, userInputReminder }) {
+  return createAcpAdapter({
+    name, label: displayNameOf(name), cmd, routerMcpNode, routerMcpScript, userInputReminder,
+    modelViaArgv: true, effortViaConfig: false,
+    agentArgs: options => getNative().acpLaunchArgs(name, options),
+    terminalCmd: session => getNative().acpLaunchTerminal(cmd, session, appendTerminalArg),
+  });
+}
+
+function createGeminiAdapter(deps) { return createLaunchAdapter('gemini', deps); }
+function createGrokAdapter(deps) { return createLaunchAdapter('grok', deps); }
+module.exports = { BRIDGE, contentText, createAcpAdapter, createAcpCompletionTracker, createGeminiAdapter, createGrokAdapter };

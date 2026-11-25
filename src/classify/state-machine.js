@@ -37,7 +37,7 @@ const {
   recentTaskContext,
   retrieveRelatedTasks,
 } = require('./task-attribution');
-const { resolveTurnState } = require('./turn-state');
+const { resolveTurnState } = require('../native/runtime').getTurnState();
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {

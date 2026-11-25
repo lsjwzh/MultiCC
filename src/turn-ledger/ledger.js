@@ -13,7 +13,7 @@
 // - The ledger never invents an E from silence. No evidence for a long time is
 //   surfaced as needsReview, not as an error.
 
-const { resolveTurnState } = require('../classify/turn-state');
+const { resolveTurnState } = require('../native/runtime').getTurnState();
 const { isProcessingLetter, isAbnormalLetter } = require('../classify/vocab');
 const {
   OWNERSHIP, SILENT_E_REASONS, transitionId, projectLiveness,

@@ -175,6 +175,15 @@ function probeAddon(file, node = process.execPath) {
     if(['pathSafetyRealPath','pathSafetyHomeOrAbove'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustModelDefaults!=='function') process.exit(1);
     if(new a.RustModelDefaults(0).resolve({appType:'claude',models:['probe']},()=>[],()=>0)!=='probe') process.exit(1);
+    if(['RustVendorModelCatalog','turnEventReplayApi','taskCandidatePropose','taskCandidateLatest',
+      'wakeSyncRequest','prepareHostSwitchRoute','codexProfileRouteFailure'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['turnRuntimeStore','resolveTurnStateValue','cliStepTracker','quickCommitMessageValue','directoryRepository',
+      'taskBoardRepository','providerRepository','relatedTaskHistory'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['RustPlanPromptState','hostCodexConstraint','hostPromptBundle','hostHumanAssist','hostSubagentHint',
+      'residentPoolBlocker','taskRelationKinds','taskRelationList','taskRelationChange','taskRelationPublicTitle'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['acpLaunchArgs','acpLaunchTerminal','managedContextPrepare','managedContextRole','managedContextAttempt',
+      'managedContextSent','managedContextCompleted'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['resolveCliRelayTarget','applyCliRelaySpawn'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.retryPolicyValue!=='function') process.exit(1);
     if(typeof a.resolveNotifySettingsUpdates !== 'function') process.exit(1);
     if(typeof a.AssistSnapshotRetention?.prototype?.stop!=='function') process.exit(1);
@@ -207,6 +216,7 @@ function probeAddon(file, node = process.execPath) {
       'providerNonMainProducerKey', 'providerProxyActivity', 'providerBoundProxyAttempt',
       'providerForceReleaseProducers', 'providerDrainStaleProducers'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['chatApplyClaudeEvent','chatClaudeBoundaryEnvelope','chatApplyAdapterEvent','chatCommitFinalPersist','chatCommitHeldAnswer',
+      'chatRoutePostTurn','chatCreateDeliveryProof','chatAcknowledgeDeliveredEffect',
       'chatOwnsCurrentRunner','chatAssignKillReason','chatClearSucceededErrors','chatRecordResultEvent',
       'chatRecordCloseResult','chatRecordPartialCheckpoint','chatHasPartialCheckpoint'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.chatWsControlAction!=='function' || a.chatWsControlAction('ping','view')!=='pong'
@@ -251,6 +261,7 @@ function probeAddon(file, node = process.execPath) {
       if(!ng.handles('dsh') || ng.handles('constructor') || ng.maxBytes!==10*1024*1024) process.exit(1);
     } finally { fs.rmSync(nsgHome,{recursive:true,force:true}); }
     if(['cliCompletion','cliIsCompleted','cliIsMainResult','cliResultCompletion','cliProtocolCompletion',
+      'cliSettleAdapterCompletion','cliSettleCompletionStream','cliFailCompletionStream',
       'cliProxyFailureCompatible','cliCanPersistCompletion'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.RustCliCompletionTracker!=='function'
       || ['acceptsRaw','observeDecoded','observeProtocol','finish'].some(key=>typeof a.RustCliCompletionTracker.prototype[key]!=='function')) process.exit(1);

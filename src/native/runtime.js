@@ -39,6 +39,42 @@ function fanOutAuxVerdictStaleness({ sessions, getTaskState, chatBroadcast, work
   return getNative().fanOutAuxVerdictStaleness(auxHealthProvider, sessions, getTaskState, chatBroadcast, workspaceBroadcast);
 }
 
+let hostPrompts;
+function getHostPrompts() {
+  if (hostPrompts) return hostPrompts;
+  const native = getNative(), plan = new native.RustPlanPromptState();
+  const lines = Object.freeze(JSON.parse(native.sessionQuestionRequest('prompt', 'null')));
+  function buildCodexUserInputConstraint(enabled = true) { return native.hostCodexConstraint(!!enabled); }
+  function buildSubagentProviderHint(subagent) { return native.hostSubagentHint(subagent); }
+  function buildHumanAssistPrompt(root) { return native.hostHumanAssist(root); }
+  function markPlanContextReset(name) { plan.mark(name); }
+  function buildPlanProgressPrompt(_persisted, name, opts) { return plan.progress(name, opts); }
+  function createHostPrompts(env = process.env, { assistRoot } = {}) {
+    return native.hostPromptBundle(env, assistRoot, lines);
+  }
+  hostPrompts = { USER_INPUT_SIGNAL_PROMPT: lines, buildCodexUserInputConstraint, buildSubagentProviderHint,
+    buildHumanAssistPrompt, markPlanContextReset, buildPlanProgressPrompt, createHostPrompts };
+  return hostPrompts;
+}
+
+let taskRelations;
+function getTaskRelations() {
+  if (taskRelations) return taskRelations;
+  const native = getNative(), kinds = Object.freeze(native.taskRelationKinds());
+  function createTaskRelations({ store, taskTitle, onChanged, now = Date.now }) {
+    const ports = { store, taskTitle, onChanged, now };
+    const project = row => native.taskRelationPublicTitle(row, taskTitle);
+    return {
+      list: shell => native.taskRelationList(store, shell, project),
+      create: (shell, input = {}) => native.taskRelationChange(ports, shell, input, false),
+      remove: (shell, input = {}) => native.taskRelationChange(ports, shell, input, true),
+      KINDS: kinds,
+    };
+  }
+  taskRelations = { createTaskRelations, RELATION_KINDS: kinds };
+  return taskRelations;
+}
+
 let notificationWords;
 function getPushNotificationCopy() {
   if (notificationWords) return notificationWords;
@@ -123,6 +159,20 @@ function assignHostProperty(target, key, value) { target[key] = value; }
 // host adapter until the provider host and its callback move into Rust.
 function pendingDesiredSession(session) { return getNative().sessionPendingDesiredSession(session, assignHostProperty); }
 
+
+function prepareManagedContext({ host, memory, sessionName, persisted, turn, opts, text, isFirstTurn }) {
+  const native = getNative();
+  const state = native.managedContextPrepare({ host, memory, sessionName, turn, opts, text, isFirstTurn }, assignHostProperty);
+  if (!state) return null;
+  return {
+    seed: state.seed,
+    rolePrompt: record => native.managedContextRole(memory, record),
+    attempt(envelope, options) { return native.managedContextAttempt(state, envelope, options); },
+  };
+}
+function contextSent(turn) { getNative().managedContextSent(turn); }
+function contextCompleted(context, resolved) { getNative().managedContextCompleted(context, resolved); }
+const managedContext = { prepareManagedContext, contextSent, contextCompleted };
 
 // Native prompt policies retain live callback, getter and opaque value identity.
 const messageComposer = {
@@ -396,6 +446,16 @@ const claudeSettingsOverride = {
 };
 const opencodeProcessError = (cli, raw, stderr) =>
   getNative().opencodeProcessError(cli, raw, stderr, require('../provider-error').classifyProviderError);
+function resolveCliRelayTarget(providers, cliName, providerId) {
+  return getNative().resolveCliRelayTarget(providers, cliName, providerId);
+}
+function applyCliRelaySpawn({ target, childEnv, cwd, persisted, prepared, gatewayBin,
+  rememberActiveCliState, savePersistedSessionsBestEffort }) {
+  const { invocation, invocationEnvelope } = prepared;
+  return getNative().applyCliRelaySpawn({ target, childEnv, cwd, persisted, invocation, invocationEnvelope,
+    gatewayBin, rememberActiveCliState, savePersistedSessionsBestEffort, assignHostProperty });
+}
+
 const processSpawnArgs = (invocation, settings = null) => getNative().processSpawnArgs(invocation, settings);
 const isZcodeSessionId = value => getNative().isZcodeSessionId(value);
 const repairZcodeSessionState = session => getNative().repairZcodeSessionState(session);
@@ -494,6 +554,31 @@ function getContextSelection() {
   };
   return selectionApi;
 }
+function settleAdapterCompletion(runner, boundary, logger) {
+  return getNative().cliSettleAdapterCompletion(runner, boundary, logger, assignHostProperty);
+}
+function finalizeCompletionStream(promise, { runner, finalize, onRejected, onFinalizeError, logger }) {
+  const native = getNative();
+  const ports = { runner, finalize, onRejected, onFinalizeError, logger, assignHostProperty };
+  return promise.then(
+    () => native.cliSettleCompletionStream(ports, false, undefined),
+    error => native.cliSettleCompletionStream(ports, true, error),
+  ).catch(error => native.cliFailCompletionStream(ports, error));
+}
+function canPersistAdapterCompletion(outcome, proxyFailure, errorEnvelope) {
+  return getNative().cliCanPersistCompletion(outcome, proxyFailure, errorEnvelope);
+}
+function isProxyFailureCompatibleWithCompletion(proxyFailure, outcome) {
+  return getNative().cliProxyFailureCompatible(proxyFailure, outcome);
+}
+const adapterCompletion = { settleAdapterCompletion, canPersistAdapterCompletion,
+  finalizeCompletionStream, isProxyFailureCompatibleWithCompletion };
+
+function routePostTurn(input = {}) { return getNative().chatRoutePostTurn(input); }
+function createDeliveryProof(input = {}) { return getNative().chatCreateDeliveryProof(input); }
+function acknowledgeDeliveredEffect(effect, proof) { return getNative().chatAcknowledgeDeliveredEffect(effect, proof); }
+const postTurnRouter = { routePostTurn, createDeliveryProof, acknowledgeDeliveredEffect };
+
 const finalizationPlan = {
   classifyProcessExit: (input = {}) => getNative().chatClassifyProcessExit(input),
   normalizeHandoff: (input = {}) => getNative().chatFrozenFinalization('handoff', input),
@@ -655,12 +740,86 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+function quickCommitMessage(porcelain) {
+  let addon;
+  try { addon = getNative(); } catch {}
+  if (typeof addon?.quickCommitMessageValue !== 'function') {
+    throw new Error('提交说明生成模块不可用，请构建当前版本的 Rust 模块后重试');
+  }
+  return addon.quickCommitMessageValue(porcelain);
+}
+
+function saveDirectoryOwner(owner) {
+  try { owner.saveDirectories(); }
+  catch (error) {
+    console.error('[multicc] Failed to save directories.json:', error.message);
+    throw error;
+  }
+}
+function createFsDirectoryRepository({ file, map, realPathOf, owner }) {
+  return getNative().directoryRepository({ file, map, realPathOf, owner }, saveDirectoryOwner);
+}
+function providerStoreAccess(file, request) {
+  try { return JSON.parse(getNative().providerStore(file, JSON.stringify(request))); }
+  catch (error) { error.code = error.message; throw error; }
+}
+function createNativeProviderStore(file) {
+  return getNative().providerRepository(file, providerStoreAccess);
+}
+
+let turnEventReplay;
+function getTurnEventReplay() { return turnEventReplay ||= getNative().turnEventReplayApi(); }
+
+// Let V8 apply the original addition operator and conversion hints to host IDs.
+const candidateKeyInput = (receiptId, attribution) => receiptId + '\0' + attribution.turnId;
+function createCandidateStore(store) {
+  const native = getNative();
+  return {
+    propose(sessionId, receiptId, attribution) {
+      return native.taskCandidatePropose(store, sessionId, receiptId, attribution, candidateKeyInput);
+    },
+    latest(taskId) { return native.taskCandidateLatest(store, taskId); },
+  };
+}
+
+async function syncWorktreeOnWake(dirPath, worktree, baseBranch) {
+  try {
+    const native = getNative();
+    if (typeof native.wakeSyncRequest !== 'function') return { ok: false, code: 'wake_sync_unavailable' };
+    return JSON.parse(await native.wakeSyncRequest(dirPath, worktree, baseBranch));
+  } catch { return { ok: false, code: 'wake_sync_failed' }; }
+}
+async function prepareCliSwitchRoute(input) {
+  return JSON.parse(await getNative().prepareHostSwitchRoute(input, require('node:os').homedir()));
+}
+async function synchronizeCodexProfileRoute(route) {
+  try { return await prepareCliSwitchRoute({ ...route, cli: 'codex' }); }
+  catch (error) {
+    const cause = nativeCode(error);
+    let native;
+    try { native = getNative(); } catch { throw cause; }
+    throw native.codexProfileRouteFailure(cause);
+  }
+}
+
+let turnState;
+function getTurnState() {
+  if (turnState) return turnState;
+  const native = getNative();
+  turnState = {
+    ABNORMAL_BOUNDARIES: new Set(JSON.parse(native.turnStateCatalog()).abnormalBoundaries),
+    resolveTurnState(input = {}) { return native.resolveTurnStateValue(input); },
+  };
+  return turnState;
+}
+
+module.exports = { getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
+  getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
-  finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
+  adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
-  claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
-  pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
+  claudeSettingsOverride, opencodeProcessError, processSpawnArgs, resolveCliRelayTarget, applyCliRelaySpawn, isZcodeSessionId, repairZcodeSessionState,
+  pathSafety, stateBootstrap, bootstrapState, messageComposer, managedContext, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
 // The stable PersistenceError class is created natively once per environment.
 Object.defineProperty(module.exports, 'PersistenceError', {
   enumerable: true,

@@ -1,7 +1,8 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { getNative } = require('../native/runtime');
+const { getNative, postTurnRouter } = require('../native/runtime');
+const { routePostTurn, acknowledgeDeliveredEffect } = postTurnRouter;
 const {
   ownsCurrentRunner,
   assignKillReason,
@@ -19,10 +20,6 @@ const {
   evaluatePostTurn,
   claimPostTurn,
 } = require('./turn-lifecycle');
-const {
-  routePostTurn,
-  acknowledgeDeliveredEffect,
-} = require('./post-turn-router');
 
 const CHAT_HOST_PORTS = Object.freeze({
   history: Object.freeze(['appendFinal']),

@@ -1,4 +1,6 @@
 //! Native completion evidence and the host's success/persistence boundary.
+pub mod adapter;
+
 use crate::js_live::LiveValue;
 use multicc_core::cli_completion::{completion_reason, StepCompletion, StepReason};
 use multicc_core::js::{JsString, JsValue};
@@ -818,4 +820,28 @@ pub fn cli_can_persist_completion(
     Ok(completed(outcome)?
         && !LiveValue::new(&env, error_envelope).truthy()?
         && (!failure.truthy()? || compatible(failure, outcome)?))
+}
+
+/// Adapt the per-runner Rust step state to the shared completion tracker.
+/// Bound arguments are held by V8 so independent runners never share state.
+#[napi]
+pub fn cli_step_tracker(
+    env: Env,
+    stream_boundary: bool,
+    class: Unknown<'_>,
+    create: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    use crate::{
+        host_methods::{call, method},
+        js_live::fields,
+    };
+    let class = LiveValue::new(&env, class);
+    let step = class.construct(&[class.from_value(&JsValue::Bool(stream_boundary))?])?;
+    let observe = method(&env, step, "observe", 1, 1, |step, a| {
+        call(step, c"observe", a)
+    })?;
+    let close = method(&env, step, "close", 3, 3, |step, a| call(step, c"close", a))?;
+    Ok(LiveValue::new(&env, create)
+        .call_plain(&[fields(step, &[("observe", observe), ("close", close)])?])?
+        .raw())
 }

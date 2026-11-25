@@ -1,6 +1,6 @@
 'use strict';
-const { taskDomain } = require('../native/task-domain');
-const { nativeCode } = require('../native/runtime');
+const { taskDomain } = require('../../../src/native/task-domain');
+const { nativeCode } = require('../../../src/native/runtime');
 function createTaskBoardRepository(file) {
   function run(action, args = {}) {
     try { return taskDomain({ op: 'repository', file, action, ...args }); }

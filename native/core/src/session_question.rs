@@ -311,6 +311,14 @@ fn recovery(input: &V) -> V {
     ])
 }
 
+pub fn codex_constraint(enabled: bool) -> String {
+    if enabled {
+        CODEX_CONSTRAINT.join("\n")
+    } else {
+        String::new()
+    }
+}
+
 pub fn request(op: &str, input: &str) -> Result<String, String> {
     let input = js::json_parse(input).map_err(|error| error.to_string())?;
     let output = match op {
@@ -324,11 +332,7 @@ pub fn request(op: &str, input: &str) -> Result<String, String> {
             }
         }
         "prompt" => V::Array(PROMPT.iter().copied().map(V::from).collect()),
-        "codexConstraint" => V::from(if js::truthy(&input) {
-            CODEX_CONSTRAINT.join("\n")
-        } else {
-            String::new()
-        }),
+        "codexConstraint" => V::from(codex_constraint(js::truthy(&input))),
         "requiredFrame" => required_frame(&input),
         "replay" => replay(&field(&input, "pending"), &field(&input, "last")),
         "dismissal" => dismissal(&input),

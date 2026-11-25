@@ -1,5 +1,99 @@
 # 剩余 Node 后端清单
 
+## 第七批按文件迁移（2026-11-25）
+
+上批提交 `5c7f6cfa` 时，生产入口可达的 Node 代码有 478 个文件、126,155 行。本批整份退出 **8 个生产文件**，删除 505 行，其余生产文件接线净增 86 行，**生产 Node 净减 419 行**。当前工作树剩余 **470 个生产文件、125,736 行**。从 `dc0df5fe` 的 495 个文件、126,693 行起，七批累计退出 **25 个文件、净减 957 行**。统计包含根 `server.js` 和从它或其宿主脚本可达的 `src/` 模块，排除测试、前端和离线工具。[生产依赖清单](node-module-dependencies.md)
+
+| 整份退出的生产文件 | 迁前直接生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/chat/turn-event-replay.js` | `src/chat/turn-engine.js` | 31 | `d40568c1` |
+| `src/task-routing/candidates.js` | `src/task-shell/host.js` | 36 | `2ed962df` |
+| `src/git/wake-sync.js` | `src/git/service.js` | 22 | `7f385486` |
+| `src/cli/switch-preparation.js` | `src/cli/switch-runtime.js`、`server.js` | 42 | `ef58c642` |
+| `src/routes/codebuddy-models.js` | `src/providers/native-vendor.js`、`src/routes/model-catalogs-host.js` | 92 | `b019b035` |
+| `src/routes/commandcode-models.js` | 同上 | 101 | `5d4677c1` |
+| `src/routes/grok-models.js` | 同上 | 83 | `0fe3b4d6` |
+| `src/routes/qoder-models.js` | 同上 | 98 | `0bb21378` |
+
+四个 CLI 的模型目录共用 Rust 入口。Rust 在工作线程按 UTF-16 码元解析命令输出，并负责去重、数量上限、离线模型、缓存有效期和刷新结果。Node 仍负责查找和启动 CLI，持有调用方使用的数组，按子进程完成顺序交付回调。等进程和缓存的消费方迁入 Rust 后，可移除这部分宿主接线。[目录解析](../../native/core/src/vendor_model_catalog.rs) · [缓存与工作线程](../../native/addon/src/vendor_model_catalog.rs) · [宿主端口](../../src/routes/model-catalogs-host.js)
+
+任务候选的来源校验、标识生成、事务内去重与失效判断已迁入 Rust。Node 继续提供宿主仓储和标识的 V8 类型转换。回合事件回放、Git 唤醒和 CLI 线路切换复用原有 Rust 内核，本批接管回放接口装配、唤醒参数读取、切线参数合并和 Codex 错误映射。宿主继续提供用户主目录、异步结果解码和原生扩展不可用时的错误处理。[任务候选](../../native/addon/src/task_candidates.rs) · [回放](../../native/addon/src/turn_event_replay.rs) · [唤醒](../../native/addon/src/worktree_sync.rs) · [切线](../../native/addon/src/cli_switch.rs)
+
+八份旧文件均冻结在测试目录，与基线原件逐一核对后，差异仅为相对导入路径。迁前 8 个定向测试文件 **208/208** 通过。八项迁移共用一次 macOS ARM64 发布构建，五份产物的摘要均匹配，源码指纹为 `10d375638de4beb92dc0c045`。同一构建上 18 个定向测试文件 **409/409** 通过，零跳过，覆盖隔离网关聊天回合、CLI 切线、模型刷新并发与出错后重试等路径。回放的 5,404 组差分摘要一致，捕获全部 56 个变异。[冻结副本](../../tests/helpers/frozen-file-batch7/) · [模型目录差分](../../tests/test-commandcode-grok-models-route.js) · [回放差分](../../tests/test-turn-event-replay.js)
+
+改动的 Rust 代码格式检查、源码行数门禁及测试分层检查均通过。扩展全目标严格 Clippy 仍报错。使用独立编译目录与 `5c7f6cfa` 比较，两边各有 28 条去重诊断，文件、行号和消息逐条相同。
+
+## 第六批按文件迁移（2026-11-25）
+
+以任务分支 `ea7385cd` 为基线，本批从生产目录整份删除 8 个 JS 文件，共 259 行。保留的生产文件因兼容接线净增 60 行，**生产 Node 净减 199 行**。计入当前工作树，自 `dc0df5fe` 起六批累计退出 **17 个文件、净减 538 行**，从 495 个文件、126,693 行降至 **478 个文件、126,155 行**。统计包括根 `server.js` 及经它或其宿主脚本可达的 `src/` 文件，排除测试、前端及离线工具。[生产依赖清单](node-module-dependencies.md)
+
+| 整份退出的生产文件 | 迁前直接生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/chat/runtime-store.js` | `src/chat/index.js` | 65 | `4987f6c5` |
+| `src/classify/turn-state.js` | `src/classify/state-machine.js`、`src/turn-ledger/ledger.js` | 22 | `c5047971` |
+| `src/cli-adapters/step-completion.js` | `src/cli-adapters/opencode-like.js`、`src/cli-adapters/zcode.js` | 20 | `8125c370` |
+| `src/git/default-commit-message.js` | `src/git/service.js`、`src/routes/directory-host.js` | 20 | `a453eb43` |
+| `src/directory/repository.js` | `src/directory/index.js` | 58 | `e5ad4581` |
+| `src/task-board/repository.js` | `src/routes/task-board.js` | 19 | `414cd19c` |
+| `src/providers/native-store.js` | `src/providers/core.js` | 24 | `0b398d66` |
+| `src/task-shell/context-access.js` | `src/task-shell/runtime.js` | 31 | `be1cfcad` |
+
+原有 Rust 内核已负责回合状态判定、Git 提交说明生成和仓储落盘。本批接管回合接口的参数与所有者、CLI 步骤跟踪器装配、Git 输入转换、目录查找、任务板保存参数和供应商记录的版本关联。显式读取任务历史时，Rust 调用宿主查询，向原有规划与筛选函数传递所有权元数据，再按索引接回原始消息对象。[回合接口](../../native/addon/src/turn_runtime_store.rs) · [目录仓储](../../native/addon/src/directory_repository.rs) · [历史读取](../../native/addon/src/task_context/access.rs)
+
+Node 仍持有调用方使用的 V8 对象与回调，保留目录保存失败日志、任务板代理和错误映射、供应商存储的 JSON 编解码及历史读取端口。这些兼容接线可在相应宿主直接使用 Rust 仓储和记录后移除。
+
+八份测试副本与各自基线文件已逐一核对，差异仅为相对导入路径。迁前定向回归 **157/157**。八项迁移共用一次 macOS ARM64 发布构建，五份产物的摘要均匹配源码指纹 `7b7f7158d3ad25ef7de7dbdc`。使用该构建运行 20 个测试文件，共 **369/369** 通过、零跳过，覆盖版本冲突、宿主对象回收、隔离聊天回合、任务历史与 HTTP/WebSocket 接口。[冻结副本](../../tests/helpers/frozen-host-ports/) · [上下文差分](../../tests/test-context-plan.js) · [回合回归](../../tests/test-chat-runtime-native.js)
+
+原生扩展格式检查、源码行数门禁及测试分层检查通过。扩展的全目标严格 Clippy 检查退出码为 101。对 `ea7385cd` 的独立源码副本运行同一命令，两边均有 28 条去重诊断，文件、行号与诊断消息逐条相同。
+
+## 宿主提示词、常驻进程回收条件与任务关系（2026-11-25）
+
+| 整份退出的生产文件 | 生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/chat/host-prompts.js` | `server.js`、`src/chat/turn-engine.js` | 80 | `ccbf4061` |
+| `src/chat/resident-composition.js` | `server.js` | 35 | `401727fe` |
+| `src/task-shell/relations.js` | `src/task-shell/runtime.js` | 20 | `da2f5cb6` |
+
+Rust 按会话保存和消费完整计划提示的重置标记，生成启动提示词组合，并按后台任务、工作区租约、运行槽顺序判断常驻进程是否可回收。任务关系复用 Rust 仓储的类型清单，Rust 负责调用事务、补入两端标题，并在新建或首次删除成功后通知宿主。Node 继续提供进程回收、工作负载查询、任务标题和变更通知回调；这些接口随各自宿主迁移后可撤掉。[宿主提示词](../../native/addon/src/host_prompts.rs) · [回收条件](../../native/addon/src/resident_pool.rs) · [任务关系](../../native/addon/src/task_relations.rs)
+
+以第四批提交 `a0c4b515` 为基线，生产入口可达的 Node 代码由 489 个文件、126,440 行降至 486 个文件、126,354 行。三份旧文件共 135 行，其余生产代码净增 49 行，本批净减 86 行。自 `dc0df5fe` 起，前四批已提交，累计退出 6 份、净减 253 行；计入本批工作树，五批共退出 9 份、净减 339 行。统计包含根 `server.js` 与它直接、间接或经宿主脚本引用的 `src/` 文件。[生产依赖清单](node-module-dependencies.md)
+
+迁前与迁后定向回归各 82/82，Rust 提示词内核 3/3，隔离聊天回合、原生产物、路由工具、上下文、任务图及源码行数回归合计 57/57。另以独立进程分别加载前后两版发布模块，608 组提示词和异常的汇总 SHA-256 均为 `75a48d9a72127ef9e302d11d1a40a6c423095b97328f09ba69445d8671a4049f`。一次 macOS ARM64 发布构建产生的五份文件均通过摘要及源码指纹 `d632b558513bbeafbd1b65ea` 校验。[提示词差分](../../tests/test-worktree-sync-prompt.js) · [回收差分](../../tests/test-resident-pool.js) · [关系差分](../../tests/test-task-shell-relations.js)
+
+## Gemini、Grok 启动参数与受管聊天上下文（2026-11-25）
+
+| 整份退出的生产文件 | 唯一生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/cli-adapters/gemini.js` | `src/cli-adapters/index.js` | 26 | `54766d1c` |
+| `src/cli-adapters/grok.js` | `src/cli-adapters/index.js` | 33 | `d476dea8` |
+| `src/chat/managed-context.js` | `src/chat/turn-engine.js` | 34 | `9986a5cc` |
+
+Rust 接管两个 CLI 的启动参数、终端续跑标志，以及受管上下文的首次准备、重试重建、提示词更新和完成判定。Node 的 ACP 适配器仍调用 V8 拼接终端命令，聊天宿主仍持有每次尝试使用的闭包并提供记忆和回执接口，以保留宿主对象身份、类型转换和回调行为。相应宿主迁出后可移除这部分接线。[CLI 启动策略](../../native/addon/src/acp_launch.rs) · [上下文实现](../../native/addon/src/message_composer/managed_context.rs)
+
+以第三批提交 `e66dec58` 为基线，生产入口可达的 Node 由 492 个文件、126,506 行降至 489 个文件、126,440 行。三份旧文件合计 93 行，其余生产文件接线净增 27 行，本批净减 66 行。以 `dc0df5fe` 为起点，前三批已提交，累计退出 3 份、净减 187 行；计入本批工作树，累计退出 6 份、净减 253 行。统计包含根 `server.js` 和从它或其宿主脚本可达的 `src/` 文件，排除测试、前端与离线工具。[生产依赖清单](node-module-dependencies.md)
+
+三份测试副本只调整了依赖路径。迁前定向回归 144/144，迁后 145/145，追加的一项覆盖重建失败后的重试和回执身份。Gemini 和 Grok 共比对 256 组启动或终端输入，受管上下文比对 24 组回执、首次计划、阻塞和成功状态组合。macOS ARM64 发布构建的五份产物均通过源码指纹和文件摘要校验，指纹为 `ac53c9ba37db0e657fa9e24a`。隔离网关聊天回合、API 契约和原生产物回归共 40/40。[CLI 差分](../../tests/test-acp-adapter.js) · [上下文差分](../../tests/test-context-plan.js)
+
+## CLI 中继启动参数（2026-11-25）
+
+`src/chat/cli-relay-spawn.js` 已从生产目录整份删除。唯一生产调用方是聊天回合引擎。Rust 接管 Claude/Codex 中继选择、参数顺序和续跑标志，首次 Claude 会话使用现有 Rust UUID v4 生成器，并依次调用宿主的状态登记和保存接口。Node 兼容入口传递宿主对象和回调，待聊天引擎直接持有这些状态后可移除。[Rust 实现](../../native/addon/src/process_spawn_args.rs) · [生产调用方](../../src/chat/turn-engine.js)
+
+相对任务分支 `755e5a18`，生产入口可达的 Node 从 493 个文件、126,561 行降至 492 个文件、126,506 行。删除 65 行，兼容接线净增 10 行，本批整份退出 1 个文件、净减 55 行。从 `dc0df5fe` 起三批累计整份退出 3 个文件、净减 187 行。[生产依赖清单](node-module-dependencies.md)
+
+旧 JS 冻结副本与原文件的 Git blob 均为 `f98d1ba92151c10afebfc8a3976c1a96ac064215`。迁前、迁后定向回归各 123/123，覆盖 16 组目标选择、81 组启动配置和 5 处失败时的状态；新 UUID 先校验格式和传递一致性，再归一化比较。macOS ARM64 发布构建的 5 份产物均匹配指纹 `39ac02c70c5f5a94c7101fb7`。另通过适配器参数回归 22/22，以及隔离聊天回合、API 契约与原生产物回归 40/40。[冻结差分](../../tests/test-agy-remote-bridge.js)
+
+## 聊天适配器收尾（2026-11-25）
+
+`src/chat/adapter-completion.js` 的唯一生产调用方是聊天回合引擎。43 行旧实现已从生产目录整份删除。Rust 负责记录完成证据、处理缺失跟踪器，以及决定发送失败和收尾失败分别调用哪个回调。兼容入口保留 V8 的 Promise 回调和严格属性写入，待运行器和流的生命周期迁入 Rust 后可移除。[Rust 实现](../../native/addon/src/cli_completion/adapter.rs) · [聊天回合入口](../../src/chat/turn-engine.js)
+
+基线为任务分支提交 `1c4f66ea`。排除测试和离线工具后，生产入口可达的 Node 代码从 494 个文件、126,584 行降至 493 个文件、126,561 行，整份退出 1 个文件，净减 23 行。旧实现的 Git blob 为 `d475a8038c2447e6b25add4b93ad03d748c3a67a`，测试副本仅调整了两处依赖路径。迁前 222/222，迁后 223/223，覆盖 36 组成功与失败组合，并校验同步回调顺序、异常身份、冻结对象的错误文案及收尾次数。macOS ARM64 发布构建指纹为 `f3d2264231d18d96c6d73aed`。隔离网关聊天回合、聊天宿主、原生产物和 API 契约回归共 75/75。[定向回归](../../tests/test-cli-completion.js) · [生产依赖清单](node-module-dependencies.md)
+
+## 按文件迁移：回合结束路由（2026-11-25）
+
+生产文件 `src/chat/post-turn-router.js` 的 111 行已整份移除。Rust 生成有序的交接、派发和网关投递效果，按已有回执去重，并验证投递证明。聊天宿主仍负责实际投递和持久化，通过三个同步原生接口传递活动对象，保留 getter 顺序与标识引用。这些调用随宿主迁出后即可移除。[路由实现](../../native/addon/src/post_turn_router.rs) · [调用方](../../src/chat/host-coordinator.js)
+
+以 `dc0df5fe` 为基线，排除测试和离线工具，从 `server.js` 或其宿主脚本路径可达的后端代码由 495 个文件、126,693 行降至 494 个文件、126,584 行，净减 109 行。旧文件冻结于测试目录，Git blob 为 `8b24e283eb580b1f125946026d33f37a4aaf3564`。迁前定向 97/97，迁后 100/100，含 480 组逐字节路由差分；隔离网关和聊天宿主回合通过。本机 macOS ARM64 发布构建中，同时生成交接与网关两项效果，7 组各 20,000 次，每组单次平均耗时的中位数为旧 JS 0.268 微秒、Rust 兼容入口 6.336 微秒。[冻结差分与回归](../../tests/test-chat-turn-core.js) · [依赖清单](node-module-dependencies.md)
+
 ## 会话公开文本脱敏（2026-11-25）
 
 公开会话说明与错误详情复用 Rust 的凭据和路径脱敏规则。兼容宿主按原顺序转换输入、调用原生接口，再以 UTF-16 码元截断。DTO 属性遍历、敏感字段检查和对象投影仍在 JavaScript 中执行，以保留自定义数组遍历、动态属性和对象引用。其余部分迁移前须验证这些行为，包括自定义遍历器暴露的敏感字段和调用方传入的对象身份。[原生入口](../../native/addon/src/session_dto.rs) · [公开会话边界测试](../../tests/test-session-domain.js)
@@ -14,7 +108,7 @@ macOS ARM64 release 中，迁前和迁后定向各 52/52，扩大范围后各 13
 
 ## 回合事件回放（2026-11-25）
 
-聊天引擎重连和报告 CLI 共用 Rust 的工具计时、日志与记录差分和未结束任务恢复。CommonJS 入口传递 V8 值以保留 getter、异常、迭代顺序和对象身份，待两个调用方迁出后可移除。[回放入口](../../src/chat/turn-event-replay.js) · [冻结差分](../../tests/test-turn-event-replay.js)
+聊天引擎重连和报告 CLI 共用 Rust 的工具计时、日志与记录差分和未结束任务恢复。当时的 CommonJS 入口传递 V8 值以保留 getter、异常、迭代顺序和对象身份。该文件在第七批整份退出。[当时的回放入口](../../tests/helpers/frozen-file-batch7/turn-event-replay.js) · [冻结差分](../../tests/test-turn-event-replay.js)
 
 子任务补丁基线 `eaf9f829`。整合时同时保留语音和回放的 addon 探针。CommonJS 薄桥恢复普通函数声明，三个导出均可按冻结版构造调用，省略差分选项时会读取默认对象继承的阈值。整合源码的迁前、迁后各 181/181，均通过 5,404 例冻结差分，摘要 `a0743527`，Rust 定向测试 6/6。以磁盘日志驱动实际 WebSocket 重连处理器，只有近期未结束的任务补发中断帧，已有活跃任务时跳过日志。macOS ARM64、Node v26.8.1 下，2390 条事件、1,024 个字符串 ID 的同步恢复耗时从 0.121 到 2.222 ms（七轮中位数）。同规模对象 ID 从 0.133 增至 19.240 ms，Symbol ID 从 0.125 增至 18.360 ms。这是初版按引用逐项比较的量测。
 

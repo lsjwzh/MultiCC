@@ -216,7 +216,7 @@ function waitForFrame(socket, type) {
   const originalBytes = fs.readFileSync(history.fileFor(dirtySessionId), 'utf8');
   // Seed through the real repository so the primary and recovery copy advance
   // together. A hard-coded revision can be older than the recovery sidecar.
-  const { createTaskBoardRepository } = require('../src/task-board/repository');
+  const { createTaskBoardRepository } = require('../src/native/task-domain');
   const boardRepository = createTaskBoardRepository(path.join(dataDir, 'task_board.json'));
   const previousBoard = boardRepository.load().raw;
   boardRepository.save({

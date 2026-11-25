@@ -38,6 +38,8 @@
 // children a burst of sessions would otherwise leave behind (each CLI child is a
 // real Node process), and high enough that ordinary parallel work never fights
 // the cap.
+const { getNative } = require('../native/runtime');
+
 const DEFAULT_LIMIT = 8;
 const DEFAULT_SWEEP_MS = 5 * 60 * 1000;
 
@@ -164,4 +166,16 @@ function createResidentPool(options = {}) {
   });
 }
 
-module.exports = { DEFAULT_LIMIT, DEFAULT_SWEEP_MS, createResidentPool, selectEvictions };
+function createResidentPoolComposition({ chatStream, backgroundTaskRuntime, getWorkspaceAdmission, sessionWorkHost, logger }) {
+  return createResidentPool({
+    residents: () => chatStream.residents(),
+    reclaim: (id, reason) => chatStream.recycle(id, reason),
+    blocked: id => getNative().residentPoolBlocker(backgroundTaskRuntime, getWorkspaceAdmission, sessionWorkHost, id),
+    limit: process.env.MULTICC_RESIDENT_LIMIT,
+    sweepMs: process.env.MULTICC_RESIDENT_SWEEP_MS,
+    onEvent: event => logger.info('resident_pool', event),
+    logger,
+  });
+}
+
+module.exports = { DEFAULT_LIMIT, DEFAULT_SWEEP_MS, createResidentPool, createResidentPoolComposition, selectEvictions };

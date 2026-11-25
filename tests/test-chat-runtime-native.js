@@ -5,7 +5,7 @@
 // pre-migration implementation is the oracle: every randomized step runs against
 // both and must agree on values, key order, frozenness and object identity.
 //
-// The stores are native-only (`src/chat/runtime-store.js` and
+// The stores are native-only (`src/state/owner.js` and
 // `src/chat/sessions.js` are facades); a divergence means the Rust owner drifted
 // from the frozen semantics, not that a fallback lane exists.
 
@@ -14,17 +14,15 @@ const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
-const { createStateOwner } = require('../src/state/owner');
+const { createStateOwner, createTurnRuntimeStore: createNativeRuntime } = require('../src/state/owner');
 const { createChatSessions } = require('../src/chat/sessions');
-const { createTurnRuntimeStore: createNativeRuntime } = require('../src/chat/runtime-store');
 const { createTurnRuntimeStore: createLegacyRuntime } = require('./helpers/legacy-chat-runtime-store');
 const { createLegacyChatSession, createLegacyChatSessions } = require('./helpers/legacy-chat-sessions');
 
 test('a runtime facade keeps its host anchor alive, then releases native/host cycles', () => {
   const result = spawnSync(process.execPath, ['--expose-gc', '-e', `
     const assert = require('node:assert/strict');
-    const { createStateOwner } = require('./src/state/owner');
-    const { createTurnRuntimeStore } = require('./src/chat/runtime-store');
+    const { createStateOwner, createTurnRuntimeStore } = require('./src/state/owner');
     (async () => {
       const fixture = (() => {
         const owner = createStateOwner();
@@ -510,4 +508,22 @@ test('the runtime store outlives chat-session deletion and needs no chat entry t
   assert.deepStrictEqual(native.store.list(), legacy.store.list());
   assert.equal(native.sessions.size, 0);
   assert.equal(legacy.sessions.size, 0);
+});
+
+test('回合入口保留宿主对象、默认参数、返回值和调用顺序', () => {
+  const old = require('./helpers/frozen-host-ports/chat-runtime-store').createTurnRuntimeStore;
+  function trace(create) {
+    const calls = [], value = Symbol('返回');
+    const native = new Proxy({}, { get(_, key) { return function (...args) {
+      calls.push([key, this === native, ...args.map(a => typeof a === 'function' ? '时钟' : a)]); return value;
+    }; } });
+    const ports = create({ owner: { native }, now: Date.now });
+    assert.ok(Object.isFrozen(ports));
+    for (const key of Object.keys(ports)) {
+      assert.equal(ports[key]('s', 't'), value);
+      assert.equal(ports[key]('s', 't', null, ['running']), value);
+    }
+    return calls;
+  }
+  assert.deepEqual(trace(createNativeRuntime), trace(old));
 });

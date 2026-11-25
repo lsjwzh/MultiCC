@@ -819,6 +819,92 @@ test('native retry decisions preserve cancellation precedence and host schedulin
   assert.equal(decideRetry({ event: 'empty-exit', cli: 'codex', guardedHandoff: true }).preserveHandoff, true);
 });
 
+const legacyPostTurn = require('./helpers/legacy-post-turn-router');
+
+test('回合路由与冻结实现逐字节一致，所有待投递效果均冻结', () => {
+  for (const sessionType of ['normal', 'gateway', 'aux', 'commander', undefined]) {
+    for (const originDispatchId of ['', ' d ']) {
+      for (const handoff of [null, { status: 'pending', completed: 1 }, { id: ' h ', status: 'pending', completed: true }]) {
+        for (let mask = 0; mask < 8; mask++) {
+          const keys = ['handoff:h', 'dispatch-return:d', 'gateway-turn:t'];
+          const receipts = keys.filter((_, bit) => mask & (1 << bit));
+          for (const handoffResumeFailure of [true, false]) {
+            const input = { sessionType, originDispatchId, handoff, receipts, handoffResumeFailure,
+              turnId: ' t ', sessionId: Symbol('s'), requestId: ' \ud800 ',
+              finalText: '\udfff\n<<dispatch target="x">>文字' };
+            const routed = routePostTurn(input);
+            assert.equal(JSON.stringify(routed), JSON.stringify(legacyPostTurn.routePostTurn(input)));
+            assert.ok(Object.isFrozen(routed) && Object.isFrozen(routed.effects));
+            assert.ok(routed.effects.every(Object.isFrozen));
+          }
+        }
+      }
+    }
+  }
+});
+
+test('路由兼容入口保留读取顺序、异常身份、回执转换和短路', () => {
+  const sentinel = new Error('getter');
+  function observe(api, invoke, stop = -1) {
+    const reads = [];
+    const watch = (name, data) => new Proxy(data, { get(target, key, receiver) {
+      reads.push(name + '.' + String(key));
+      if (reads.length === stop) throw sentinel;
+      return Reflect.get(target, key, receiver);
+    } });
+    try { return { reads, result: invoke(api, watch) }; }
+    catch (error) { assert.equal(error, sentinel); return { reads, threw: true }; }
+  }
+  const current = { routePostTurn, createDeliveryProof, acknowledgeDeliveredEffect };
+  const id = {};
+  for (const invoke of [
+    ...['gateway', 'commander'].map(sessionType => (api, watch) => api.routePostTurn(watch('input', {
+      sessionType, turnId: 't', handoff: watch('handoff', { status: 'pending', completed: true, id: 'h' }),
+      receipts: watch('receipts', [, Symbol('ignored')]), requestId: Symbol('correlation'),
+    }))),
+    (api, watch) => api.createDeliveryProof(watch('proof', { effectId: '\ud800', deliveryId: 0n, durable: 1, delivered: true })),
+    (api, watch) => api.acknowledgeDeliveredEffect(watch('effect', { effectId: id, requiresDeliveryProof: true }),
+      watch('proof', { kind: 'delivery-proof', effectId: id, deliveryId: id, durable: true, delivered: true })),
+  ]) {
+    const expected = observe(legacyPostTurn, invoke);
+    assert.deepEqual(observe(current, invoke), expected);
+    for (let stop = 1; stop <= expected.reads.length; stop++) {
+      assert.deepEqual(observe(current, invoke, stop), observe(legacyPostTurn, invoke, stop));
+    }
+  }
+  for (const value of [undefined, null, false, 0, 1n, 'x', Symbol('x')]) {
+    for (const fn of ['routePostTurn', 'createDeliveryProof']) {
+      if (value === null) {
+        assert.throws(() => current[fn](value), { name: 'TypeError', message:
+          "Cannot read properties of null (reading '" + (fn === 'routePostTurn' ? 'turnId' : 'effectId') + "')" });
+      } else {
+        assert.deepEqual(current[fn](value), legacyPostTurn[fn](value));
+      }
+    }
+  }
+  const receipts = [];
+  receipts.map = stringify => new Set([stringify('gateway-turn:t')]);
+  assert.deepEqual(routePostTurn({ receipts, turnId: 't', sessionType: 'gateway' }).effects, []);
+  receipts.map = null;
+  assert.throws(() => routePostTurn({ receipts }), { name: 'TypeError', message: 'receipts.map is not a function' });
+});
+
+test('投递证明只接受严格布尔值，确认回执保留原始标识引用', () => {
+  const proof = createDeliveryProof({ effectId: Symbol('job'), deliveryId: ' \ud800 ', durable: 1, delivered: true });
+  assert.ok(Object.isFrozen(proof));
+  assert.deepEqual(proof, { kind: 'delivery-proof', effectId: 'Symbol(job)', deliveryId: '\ud800', durable: false, delivered: true });
+  const id = {};
+  const effect = { effectId: id, requiresDeliveryProof: true };
+  const receipt = { kind: 'delivery-proof', effectId: id, deliveryId: {}, durable: true, delivered: true };
+  const ack = acknowledgeDeliveredEffect(effect, receipt);
+  assert.ok(Object.isFrozen(ack) && Object.isFrozen(ack.receipt));
+  assert.equal(ack.receipt.effectId, id);
+  assert.equal(ack.receipt.deliveryId, receipt.deliveryId);
+  const rejected = acknowledgeDeliveredEffect(effect, { ...receipt, effectId: {} });
+  assert.deepEqual(rejected, { ok: false, code: 'delivery_proof_required' });
+  assert.ok(Object.isFrozen(rejected));
+});
+
 test('origin dispatch return wins routing and exactly-once receipt prevents redispatch', () => {
   const first = routePostTurn({
     turnId: 't1', sessionId: 'worker', sessionType: 'normal',
@@ -1251,12 +1337,22 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
 });
 
 test('chat core modules import no runtime I/O dependencies', () => {
+  const root = path.join(__dirname, '..');
+  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js']) {
+    assert.equal(fs.existsSync(path.join(root, retired)), false, retired);
+  }
   for (const file of [
-    'turn-request.js', 'retry-policy.js', 'post-turn-router.js',
-    'runtime-store.js', 'turn-lifecycle.js',
-    'finalize-host.js',
+    'native/addon/src/post_turn_router.rs', 'native/addon/src/turn_runtime_store.rs',
+    'native/core/src/chat_runtime.rs',
   ]) {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', file), 'utf8');
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.doesNotMatch(source, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/, file);
+  }
+  for (const file of [
+    'src/chat/turn-request.js', 'src/chat/retry-policy.js', 'src/state/owner.js',
+    'src/chat/turn-lifecycle.js', 'src/chat/finalize-host.js',
+  ]) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
   }
 });

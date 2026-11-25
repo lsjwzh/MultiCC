@@ -1,7 +1,7 @@
 'use strict';
 // Synchronous compatibility port for the existing catalog API. Rust owns
 // bounded I/O, format compatibility, locking, revisions and atomic persistence.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 function createNativeProviderStore(file) {
   const revisions = new WeakMap();
   function access(input) {

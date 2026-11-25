@@ -1,7 +1,7 @@
 'use strict';
 
-const { createAcpAdapter } = require('./acp');
-const { displayNameOf } = require('../cli/cli-capability');
+const { createAcpAdapter } = require('../../src/cli-adapters/acp');
+const { displayNameOf } = require('../../src/cli/cli-capability');
 
 // Gemini CLI over ACP (`gemini --experimental-acp`). The model is fixed per
 // process with `-m`; resume uses session/load (Gemini advertises loadSession,

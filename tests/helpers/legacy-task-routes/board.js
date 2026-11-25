@@ -41,7 +41,7 @@ function createTaskBoardRuntime(deps) {
     ? deps.createSessionRecord : null;
   const logger = deps.logger || console;
 
-  const repository = deps.taskBoardRepository || require('../../../src/task-board/repository').createTaskBoardRepository(file);
+  const repository = deps.taskBoardRepository || require('../frozen-host-ports/task-board-repository').createTaskBoardRepository(file);
   const loaded = repository.load();
   if (loaded.restored) logger.log('[multicc/taskboard] restored planning board from v2 recovery sidecar');
   if (loaded.quarantined?.length) {

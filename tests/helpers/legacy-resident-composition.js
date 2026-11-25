@@ -4,7 +4,7 @@
 // the capacity policy in resident-pool.js. Extracted from server.js so the host
 // stays under its line budget; the policy and its reasons live in that module.
 
-const { createResidentPool } = require('./resident-pool');
+const { createResidentPool } = require('../../src/chat/resident-pool');
 
 function createResidentPoolComposition(deps) {
   const { chatStream, backgroundTaskRuntime, getWorkspaceAdmission, sessionWorkHost, logger } = deps;

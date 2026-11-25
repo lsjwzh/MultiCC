@@ -72,7 +72,7 @@ function createTaskShellHost(deps) {
   function getRuntime() {
     if (runtime) return runtime;
     ensureStore();
-    candidates = require('../task-routing/candidates').createCandidateStore(store);
+    candidates = require('../native/runtime').createCandidateStore(store);
     runtime = createTaskShellRuntime({
       store,
       taskShortCode: deps.taskShortCode,

@@ -69,7 +69,7 @@ function createCliSwitchRuntime(options) {
   }
   const clock = options.clock || Date.now;
   const handoffIdFactory = options.handoffIdFactory || (() => `handoff_${crypto.randomBytes(8).toString('hex')}`);
-  const prepareRoute = options.prepareCliSwitchRoute || require('./switch-preparation').prepareCliSwitchRoute;
+  const prepareRoute = options.prepareCliSwitchRoute || require('../native/runtime').prepareCliSwitchRoute;
   const preparations = new Map();
   const tools = createCliToolsHost(options);
 

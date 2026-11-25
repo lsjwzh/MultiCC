@@ -6,7 +6,7 @@ const {
   buildAdapterUserInputSignal,
   recordAdapterUserInput,
 } = require('../src/chat/host-coordinator');
-const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint } = require('../src/chat/host-prompts');
+const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint } = require('../src/native/runtime').getHostPrompts();
 const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
 const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
 

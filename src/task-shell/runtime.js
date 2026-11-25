@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 const {
   estimateTokens, snapshotHistory, renderSnapshots, hash,
 } = require('../native/runtime').taskShellContext;
-const { shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
+const { relatedHistory, shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
 const { getNative } = require('../native/runtime');
 
 function failure(code, message = code, status = 409) {
@@ -42,7 +42,7 @@ function createTaskShellRuntime(ports) {
   const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports: capacityPorts, ownerOf: taskActions.ownerOf, roles });
   const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
     getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
-  const relations = require('./relations').createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
+  const relations = require('../native/runtime').getTaskRelations().createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
     onChanged: id => ports.onRelationChanged?.(id) });
   const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();
@@ -521,7 +521,7 @@ function createTaskShellRuntime(ports) {
     if (!receipt || receipt.taskId !== task.id) throw failure('task_shell_context_unavailable', 'No active task-shell delivery was found', 409);
     const s = shell(receipt.shellId);
     const records = query.task_id
-      ? require('./context-access').relatedHistory({ store, targetId: query.task_id,
+      ? relatedHistory({ store, targetId: query.task_id,
         getTask, getRecord, getHistory, getLiveState: ports.getLiveState, isDeletedTask: ports.isDeletedTask })
       : shellRecords(chatScope(s.id), getHistory, ports.getLiveState);
     const page = Object.keys(query).length ? contextPage(records, query) : null;

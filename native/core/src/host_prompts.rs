@@ -6,6 +6,15 @@
 //! host safety contract.
 use crate::js::{self, JsValue as V};
 
+pub const KEEP_ALIVE_PROMPT: &str = "
+[Process keep-alive rules - mandatory]
+- When you have started a Monitor, a Bash command with run_in_background, or any other asynchronous background task, **do not end your turn (end_turn) immediately**.
+- Keep polling until every background task has finished and produced its final result.
+- Poll with Bash every few seconds (for example `cat /tmp/xxx.done 2>/dev/null`, `ps aux | grep xxx`) until completion is confirmed.
+- End the turn only after **all subtasks have completed and you have summarized the final result for the user**.
+- If you are unsure whether a subtask is still running, wait one more round rather than exiting early.
+[End of process keep-alive rules]";
+
 const EXECUTION_EFFICIENCY: &str = "\
 [Execution efficiency - batch calls & scope reads] Every extra sequential API round-trip replays the full conversation prefix, so minimize step count and context bloat:
 - Parallelize independent reads and searches: emit all independent Read, Grep, Glob, or Bash queries in ONE response rather than 1-by-1 serial calls; chain dependent shell steps with `&&` and independent checks with `;`.

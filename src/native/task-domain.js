@@ -243,7 +243,15 @@ function createAirTodoIgnoreRuntime(rawDeps) {
   return { file, limit: native.AIR_TODO_IGNORE_LIMIT, read, toggle, mountRoutes };
 }
 
-module.exports = { taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes,
+function runRepository(command) {
+  try { return taskDomain(command); }
+  catch (error) { throw nativeCode(error); }
+}
+function createTaskBoardRepository(file) {
+  return getNative().taskBoardRepository(file, runRepository);
+}
+
+module.exports = { createTaskBoardRepository, taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes,
   createAttributionSettings, createAttributionSettingsFromEnv,
   readStoredPinIds, normalizePins, createTaskIdListRuntime, createAirPinRuntime, createAirTodoRuntime,
   createAirTodoIgnoreRuntime, normalizeIgnores,

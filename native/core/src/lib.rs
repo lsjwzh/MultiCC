@@ -152,6 +152,7 @@ pub mod turn_state;
 pub mod unattended;
 pub mod usage;
 pub mod vault_metadata;
+pub mod vendor_model_catalog;
 pub mod virtual_provider;
 pub mod voice_gateway_routes;
 pub mod voice_hotword_list;

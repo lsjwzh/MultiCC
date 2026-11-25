@@ -102,3 +102,30 @@ pub fn materialize_planned_worktree(
         source,
     })
 }
+
+/// Unpack the restored worktree before scheduling Git on the existing worker.
+#[napi]
+pub fn wake_sync_request(
+    env: Env,
+    repo: napi::bindgen_prelude::Unknown<'_>,
+    worktree: napi::bindgen_prelude::Unknown<'_>,
+    base: napi::bindgen_prelude::Unknown<'_>,
+) -> Result<AsyncTask<WorktreeSync>> {
+    use crate::{js_iteration::read, js_live::LiveValue as L};
+    use napi::bindgen_prelude::FromNapiValue;
+    let row = L::new(&env, worktree);
+    let path = read(row, c"worktreePath")?;
+    let branch = read(row, c"branch")?;
+    let base = L::new(&env, base);
+    let string = |v: L<'_>| unsafe { String::from_napi_value(env.raw(), v.raw()) };
+    Ok(sync_worktree_on_wake(
+        string(L::new(&env, repo))?,
+        string(path)?,
+        string(branch)?,
+        if base.truthy()? {
+            Some(string(base)?)
+        } else {
+            None
+        },
+    ))
+}

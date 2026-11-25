@@ -1,6 +1,6 @@
 'use strict';
-const { shellRecords } = require('./history-context');
-const { getNative } = require('../native/runtime');
+const { shellRecords } = require('../../../src/task-shell/history-context');
+const { getNative } = require('../../../src/native/runtime');
 const fail = (code, status = 403) => Object.assign(new Error(code), { code, status });
 
 // Compatibility bridge: task-shell storage and history ports are still Node-owned.

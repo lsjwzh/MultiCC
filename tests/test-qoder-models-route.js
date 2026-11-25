@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const mod = require('../src/routes/qoder-models');
+const mod = require('../src/routes/model-catalogs-host').getVendorCatalog('qoder');
 const { parseQoderStdout, listQoderModels, QODER_TIER_FALLBACK } = mod;
 
 const ORIGINAL_QODER_CMD = process.env.QODER_CMD;

@@ -479,7 +479,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
 });
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {
-  const { multiccImgHint } = require('../src/chat/host-prompts').createHostPrompts({});
+  const { multiccImgHint } = require('../src/native/runtime').getHostPrompts().createHostPrompts({});
   assert.ok(multiccImgHint.includes('The /sync endpoint is mainly for manual sync by the user/UI'));
   assert.ok(multiccImgHint.includes('Self-sync: align with the local base branch directly with Git inside your own worktree'));
   assert.ok(multiccImgHint.includes('it is not the required path for an agent to sync itself'));
@@ -492,7 +492,7 @@ test('chat worktree guidance treats sync API as manual and permits safe Agent se
   assert.doesNotMatch(multiccImgHint, /目标完成后仍须 commit|都只在自己当前 worktree 里改并 commit/);
   // Sub-agent steering is per-session, never part of the global host hint.
   assert.doesNotMatch(multiccImgHint, /Sub-agent provider configured/);
-  const { buildSubagentProviderHint } = require('../src/chat/host-prompts');
+  const { buildSubagentProviderHint } = require('../src/native/runtime').getHostPrompts();
   assert.strictEqual(buildSubagentProviderHint(null), '');
   assert.match(buildSubagentProviderHint({ providerId: 'p', model: 'm' }), /Sub-agent provider configured.*p \/ m/);
 });

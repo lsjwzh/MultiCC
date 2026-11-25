@@ -10,7 +10,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { DEFAULT_LIMIT, createResidentPool, selectEvictions } = require('../src/chat/resident-pool');
-const { createResidentPoolComposition } = require('../src/chat/resident-composition');
+const { createResidentPoolComposition } = require('../src/chat/resident-pool');
 const { createStreamRouter } = require('../src/chat/stream-router');
 
 // Only the ORDER of lastUsedAt matters to the policy, so the tests use one base
@@ -242,4 +242,31 @@ test('the router reports every warm child a lane still holds, and forgets the re
 
   await router.closeAndWait('sdk-session');
   assert.deepEqual(router.residents(), []);
+});
+
+test('回收依照后台任务、工作区、运行槽顺序检查，并在租约异常时保留进程', async () => {
+  const frozen = require('./helpers/legacy-resident-composition').createResidentPoolComposition;
+  async function trace(create, fallback) {
+    const calls = [], names = ['bg', 'lease', 'unknown', 'run', 'free'];
+    const bg = function (id) { calls.push(['bg', id, this === undefined]); return id === 'bg'; };
+    const pool = create({
+      chatStream: { residents: () => names.map((name, i) => ({ name, lastUsedAt: i })),
+        recycle(name, reason) { calls.push(['recycle', name, reason]); return { applied: 'now' }; } },
+      backgroundTaskRuntime: { hasProcessBackgroundTasks: fallback ? null : bg, hasLiveBackgroundTasks: fallback ? bg : () => { throw Error('顺序'); } },
+      getWorkspaceAdmission: () => ({ hasActiveLease(id) { calls.push(['lease', id]); if (id === 'unknown') throw Error('租约'); return id === 'lease'; } }),
+      sessionWorkHost: { isRunActive(id) { calls.push(['run', id]); return id === 'run'; } },
+      logger: { info(key, event) { calls.push([key, event]); }, warn(key) { calls.push(key); } },
+    });
+    const result = await pool.sweep();
+    assert.deepEqual(calls.filter(([op]) => op === 'recycle'), [['recycle', 'free', 'resident_pool_evict']]);
+    return { calls, result };
+  }
+  const previous = process.env.MULTICC_RESIDENT_LIMIT;
+  try {
+    process.env.MULTICC_RESIDENT_LIMIT = '1';
+    for (const fallback of [false, true]) assert.deepEqual(await trace(createResidentPoolComposition, fallback), await trace(frozen, fallback));
+  } finally {
+    if (previous === undefined) delete process.env.MULTICC_RESIDENT_LIMIT;
+    else process.env.MULTICC_RESIDENT_LIMIT = previous;
+  }
 });

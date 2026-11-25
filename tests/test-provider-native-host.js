@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
-const { createNativeProviderStore } = require('../src/providers/native-store');
+const { createNativeProviderStore } = require('../src/native/runtime');
 const { credential, readCli } = require('../src/native/runtime').providerCredentials;
 const native = require('../src/native/runtime').getNative();
 const { createHopCredentialStore } = require(path.join(path.dirname(require.resolve('cli-provider-router')), 'proxy/hop-credentials'));
@@ -101,4 +101,16 @@ test('Rust 订阅查询使用指定出口，不跟随重定向，错误返回不
   assert.deepEqual(await query('/redirect'), { status: 'unavailable' }); assert.equal(leaked, false);
   assert.deepEqual(await query('/large'), { status: 'unavailable' });
   assert.deepEqual(await query('/ok', 'http://127.0.0.1:1'), { status: 'unavailable' }, '出口失败不能直连');
+});
+
+test('供应商仓储按来源数组保存修订号，旧来源冲突与冻结版一致', t => {
+  const old = require('./helpers/frozen-host-ports/providers-native-store').createNativeProviderStore;
+  function trace(create, file) {
+    const store = create(file), first = store.read(), stale = store.read();
+    const records = [{ id: 'a' }]; store.write(records, first); records.push({ id: 'b' }); store.write(records);
+    let error; try { store.write([], stale); } catch (e) { error = [e.code, e.message]; }
+    return [store.read(), error, JSON.parse(fs.readFileSync(file, 'utf8'))];
+  }
+  const root = temp(t);
+  assert.deepEqual(trace(createNativeProviderStore, path.join(root, 'new.json')), trace(old, path.join(root, 'old.json')));
 });

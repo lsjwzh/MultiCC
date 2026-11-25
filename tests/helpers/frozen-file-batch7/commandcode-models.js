@@ -14,7 +14,7 @@
 // (headless only)") are dropped, as is any banner/footer text around them.
 
 const { execFile } = require('child_process');
-const { resolveCliCommands } = require('../cli-adapters/commands');
+const { resolveCliCommands } = require('../../../src/cli-adapters/commands');
 
 const TTL_MS = 60 * 60 * 1000;
 const TIMEOUT_MS = Number(process.env.COMMANDCODE_MODELS_TIMEOUT_MS || 20000);

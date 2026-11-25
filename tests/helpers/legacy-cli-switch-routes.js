@@ -67,7 +67,7 @@ function createCliSwitchRuntime(options) {
   }
   const clock = options.clock || Date.now;
   const handoffIdFactory = options.handoffIdFactory || (() => `handoff_${crypto.randomBytes(8).toString('hex')}`);
-  const prepareRoute = options.prepareCliSwitchRoute || require('../../src/cli/switch-preparation').prepareCliSwitchRoute;
+  const prepareRoute = options.prepareCliSwitchRoute || require('./frozen-file-batch7/switch-preparation').prepareCliSwitchRoute;
   const preparations = new Map();
   const tools = createCliToolsHost(options);
 

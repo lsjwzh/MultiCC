@@ -1,7 +1,7 @@
 'use strict';
 
-const { createCompletionTracker } = require('./completion');
-const { getNative } = require('../native/runtime');
+const { createCompletionTracker } = require('../../../src/cli-adapters/completion');
+const { getNative } = require('../../../src/native/runtime');
 
 // OpenCode v1.18.2 session/prompt.ts keeps sampling after tool calls even if
 // the provider says stop. run.ts ends on idle and separately tracks errors.

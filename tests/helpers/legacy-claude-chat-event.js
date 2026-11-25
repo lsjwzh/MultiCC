@@ -14,7 +14,7 @@
 const { detectErrorEnvelope, envelopeSourceFor } = require('../../src/chat/api-error-policy');
 const { redactProviderRouteCapability } = require('../../src/observability');
 const { recordResultEvent } = require('../../src/chat/turn-lifecycle');
-const { canPersistAdapterCompletion } = require('../../src/chat/adapter-completion');
+const { canPersistAdapterCompletion } = require('./legacy-adapter-completion');
 
 function statusOf(value) {
   if (value == null || value === '') return null;

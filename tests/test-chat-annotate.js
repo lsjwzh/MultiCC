@@ -2,7 +2,7 @@
 
 // Human-assist screenshot annotation: the text block the web lightbox puts
 // into the composer. The App (image_annotate_screen.dart) must emit the same
-// bytes; the agent-side contract lives in src/chat/host-prompts.js.
+// bytes; the agent-side contract lives in native/core/src/host_prompts.rs.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -71,7 +71,7 @@ test('export filename and capture age', () => {
 });
 
 test('agent-side contract describes the same block the editors emit', () => {
-  const { buildHumanAssistPrompt, createHostPrompts } = require('../src/chat/host-prompts');
+  const { buildHumanAssistPrompt, createHostPrompts } = require('../src/native/runtime').getHostPrompts();
   const text = buildHumanAssistPrompt('/data/assist/').join('\n');
   assert.match(text, /`\/data\/assist\/\$MULTICC_SESSION_ID\/`/);
   for (const token of ['[annotation] src=<path> size=WxH', '[/annotation]', '#n point x,y', '#n box x1,y1-x2,y2', '#n arrow x1,y1->x2,y2', ' — <note>', 'note: <overall instructions>', '[annotation-refresh] src=<path>', 'wait_for_user_answer']) {

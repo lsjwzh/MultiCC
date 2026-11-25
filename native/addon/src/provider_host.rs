@@ -108,3 +108,61 @@ pub fn codex_official_error(input: String) -> Result<String> {
         .map_err(|_| napi::Error::from_reason("PROVIDER_REQUEST_INVALID_INPUT"))?;
     Ok(multicc_cpr::codex_official::public_error(&v).to_string())
 }
+
+/// Revision ownership follows the exact array returned by read, including
+/// writes of a replacement array derived from an earlier snapshot.
+#[napi]
+pub fn provider_repository(
+    env: napi::Env,
+    file: napi::bindgen_prelude::Unknown<'_>,
+    access: napi::bindgen_prelude::Unknown<'_>,
+) -> Result<napi::sys::napi_value> {
+    use crate::{
+        host_methods::{call, method},
+        js_live::{fields, LiveValue as L},
+    };
+    use multicc_core::js::JsValue as V;
+    let file = L::new(&env, file);
+    let revisions = file.global()?.get(c"WeakMap")?.construct(&[])?;
+    let ports = fields(
+        file,
+        &[
+            ("file", file),
+            ("revisions", revisions),
+            ("access", L::new(&env, access)),
+        ],
+    )?;
+    let read = method(&env, ports, "read", 0, 0, |p, _| {
+        let req = fields(p, &[("operation", p.from_value(&"read".into())?)])?;
+        let snapshot = p.get(c"access")?.call_plain(&[p.get(c"file")?, req])?;
+        let records = snapshot.get(c"records")?;
+        call(
+            p.get(c"revisions")?,
+            c"set",
+            &[records, snapshot.get(c"revision")?],
+        )?;
+        snapshot.get(c"records")
+    })?;
+    let write = method(&env, ports, "write", 1, 2, |p, args| {
+        let records = args[0];
+        let source = if args[1].undefined()? {
+            records
+        } else {
+            args[1]
+        };
+        let revisions = p.get(c"revisions")?;
+        let rev = call(revisions, c"get", &[source])?;
+        let req = fields(
+            p,
+            &[
+                ("operation", p.from_value(&"write".into())?),
+                ("records", records),
+                ("revision", rev),
+            ],
+        )?;
+        let next = p.get(c"access")?.call_plain(&[p.get(c"file")?, req])?;
+        call(revisions, c"set", &[records, next.get(c"revision")?])?;
+        p.from_value(&V::Undefined)
+    })?;
+    Ok(fields(file, &[("read", read), ("write", write)])?.raw())
+}

@@ -636,8 +636,94 @@ test('parseRelayShareCode accepts appType=agy share codes and rejects invalid pa
   assert.match(ctx.parseRelayShareCode(`mcrelay1.${badType}`).error, /appType/);
 });
 
+const relaySpawn = require('../src/native/runtime');
+const frozenRelaySpawn = require('./helpers/legacy-cli-relay-spawn');
+
+test('中继目标选择与冻结实现一致，保留短路、接收者和返回值身份', () => {
+  const id = {}, target = {};
+  function run(api, cli, providerId) {
+    const calls = [];
+    const providers = { get resolveCliRelayTarget() {
+      calls.push('get');
+      return function (family, gotId) {
+        assert.equal(this, providers);
+        assert.equal(gotId, id);
+        calls.push(family);
+        return target;
+      };
+    } };
+    return [api.resolveCliRelayTarget(providers, cli, providerId), calls];
+  }
+  for (const cli of ['claude', 'claude-exp', 'codex', 'codex-exp', 'agy', 'CODEX', null, Symbol('claude')]) {
+    for (const providerId of [null, id]) {
+      const [expected, reads] = run(frozenRelaySpawn, cli, providerId);
+      const [actual, actualReads] = run(relaySpawn, cli, providerId);
+      assert.equal(actual, expected);
+      assert.deepEqual(actualReads, reads);
+    }
+  }
+});
+
+test('中继启动参数、配置与副作用逐项对拍，仅归一化新生成的 UUID', () => {
+  const cwd = {}, gatewayBin = {}, uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  function run(api, appType, first, sid, opts) {
+    const trace = [], childEnv = { ordinary: 'keep' }, persisted = { cliSessionId: sid };
+    const session = { target: { appType, toJSON() { trace.push('json'); return { appType, marker: '中\n文' }; } },
+      childEnv, cwd, persisted, prepared: {
+        invocation: { get sdkOptions() { trace.push('sdk'); return { systemPromptAppend: Symbol('hint') }; },
+          get payload() { trace.push('payload'); return '\ud800 --flag'; } },
+        invocationEnvelope: { spawnOpts: opts, historyHandle: { isFirstTurn: first } },
+      }, gatewayBin,
+      rememberActiveCliState(record) { assert.equal(record, persisted); assert.match(record.cliSessionId, uuid); trace.push('remember'); },
+      savePersistedSessionsBestEffort(reason) { trace.push(reason); },
+    };
+    const result = api.applyCliRelaySpawn(session);
+    assert.equal(result.spawnCmd, gatewayBin);
+    assert.equal(result.finalSpawnArgs[2], cwd);
+    if (appType === 'claude') {
+      assert.equal(result.finalSpawnArgs[4], persisted.cliSessionId);
+      if (!sid) {
+        assert.match(persisted.cliSessionId, uuid);
+        result.finalSpawnArgs[4] = persisted.cliSessionId = '<uuid>';
+      }
+    }
+    return { result, persisted, childEnv, trace };
+  }
+  for (const appType of ['claude', 'codex', 'other']) {
+    for (const first of [true, false, 1]) {
+      for (const sid of [null, 'old', { toString() { return 'object-id'; } }]) {
+        for (const opts of [undefined, { effectiveModel: 2n }, { rawModel: Symbol('model'), rawEffort: ' high ' }]) {
+          const args = [appType, first, sid, opts];
+          assert.deepEqual(run(relaySpawn, ...args), run(frozenRelaySpawn, ...args));
+        }
+      }
+    }
+  }
+});
+
+test('中继启动失败保留异常及失败前已经完成的修改', () => {
+  const sentinel = new Error('probe');
+  function run(api, stop) {
+    const trace = [], persisted = {}, childEnv = stop === 'write' ? Object.freeze({}) : {};
+    const check = name => { trace.push(name); if (name === stop) throw sentinel; };
+    const target = { appType: 'claude', toJSON() { check('json'); return 'target'; } };
+    let error;
+    try {
+      api.applyCliRelaySpawn({ target, persisted, childEnv, cwd: '/', gatewayBin: 'gateway',
+        prepared: { invocation: { get payload() { check('payload'); return ''; } } },
+        rememberActiveCliState() { check('remember'); }, savePersistedSessionsBestEffort() { check('save'); } });
+    } catch (e) { error = e; }
+    if (stop === 'write') assert.ok(error instanceof TypeError);
+    else assert.equal(error, sentinel);
+    return { trace, minted: !!persisted.cliSessionId, childEnv, message: error.message };
+  }
+  for (const stop of ['remember', 'save', 'json', 'write', 'payload']) {
+    assert.deepEqual(run(relaySpawn, stop), run(frozenRelaySpawn, stop));
+  }
+});
+
 test('cli-relay-spawn builds claude-remote-bridge and codex-remote-bridge invocations cleanly', () => {
-  const { resolveCliRelayTarget, applyCliRelaySpawn } = require('../src/chat/cli-relay-spawn');
+  const { resolveCliRelayTarget, applyCliRelaySpawn } = relaySpawn;
   const mockProviders = {
     resolveCliRelayTarget(appType, id) {
       if (id === 'relay-1') {

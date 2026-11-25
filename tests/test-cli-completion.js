@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createAdapterCompletion, isCompleted } = require('../src/cli-adapters/completion');
-const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../src/chat/adapter-completion');
+const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../src/native/runtime').adapterCompletion;
 const { clearErrorFlagsForSucceededTurn, evaluatePostTurn } = require('../src/chat/turn-lifecycle');
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/runtime').finalizationPlan;
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
@@ -197,7 +197,7 @@ test('Rust completion tracker permits host reentry and preserves iterable cleanu
 test('native completion rules match legacy values, UTF-16 truncation and error types', () => {
   const { completion } = require('../src/cli-adapters/completion');
   const { isMainResult, resultCompletion } = require('../src/cli-adapters/result-completion');
-  const { isProxyFailureCompatibleWithCompletion } = require('../src/chat/adapter-completion');
+  const { isProxyFailureCompatibleWithCompletion } = require('../src/native/runtime').adapterCompletion;
   const source = Object.freeze({ marker: Symbol('source') });
   for (const state of ['completed', 'failed', 'cancelled', 'unknown']) {
     for (const reason of [undefined, null, false, 42, 42n, Symbol('reason'), {}, new String('boxed'), '', '\ud800', 'x'.repeat(159) + '😀tail']) {
@@ -556,6 +556,113 @@ test('durable native success followed by rejected send cannot suppress errors or
   assert.equal(canPersistAdapterCompletion(outcome, null, { message: 'provider error envelope' }), false);
 });
 
+test('适配器收尾保留回调顺序、结果引用与异常身份', async () => {
+  const legacy = require('./helpers/legacy-adapter-completion');
+  const implementations = [legacy.finalizeCompletionStream, finalizeCompletionStream];
+  const outcome = Object.freeze({ state: 'completed' });
+  const failure = new Error('controlled failure');
+  const boundaryError = new Error('boundary');
+  async function exercise(finalizeStream, rejectSend, tracker, finalizer, rejectHook) {
+    const trace = [];
+    const runner = {
+      get killReason() { trace.push('killReason'); return 'signal'; },
+      completion: { finish(boundary) {
+        trace.push(['finish', boundary]);
+        assert.equal(this, runner.completion);
+        if (tracker === 'throws') throw failure;
+        return tracker === 'absent' ? false : outcome;
+      } },
+    };
+    const logger = { info(name, fields) {
+      assert.equal(this, logger);
+      assert.equal(fields.completion, runner.completionOutcome);
+      trace.push([name, fields.boundary]);
+    } };
+    const result = await finalizeStream(rejectSend ? Promise.reject(boundaryError) : Promise.resolve(), {
+      runner, logger, onRejected(error) {
+        assert.equal(error, boundaryError);
+        trace.push('reject');
+        if (rejectHook) throw boundaryError;
+      },
+      finalize() {
+        trace.push('finalize');
+        if (finalizer === 'throws') throw failure;
+        if (finalizer === 'rejects') return Promise.reject(failure);
+        return outcome;
+      },
+      onFinalizeError(error) { assert.equal(error, failure); trace.push('failed'); return failure; },
+    });
+    assert.ok(result === outcome || result === failure);
+    if (tracker === 'returns' && result === outcome) assert.equal(runner.completionOutcome, outcome);
+    assert.ok(Object.isFrozen(runner.completionOutcome));
+    return { trace, resultIsFailure: result === failure, evidence: runner.completionOutcome };
+  }
+  for (const rejectSend of [false, true]) {
+    for (const tracker of ['returns', 'absent', 'throws']) {
+      for (const finalizer of ['returns', 'throws', 'rejects']) {
+        for (const rejectHook of [false, true]) {
+          const [before, after] = await Promise.all(implementations.map(fn =>
+            exercise(fn, rejectSend, tracker, finalizer, rejectHook)));
+          assert.deepEqual(after, before);
+        }
+      }
+    }
+  }
+});
+
+test('记录完成事件时按需读取元数据，保留 getter 和 setter 的顺序', () => {
+  const legacy = require('./helpers/legacy-adapter-completion');
+  function exercise(settle, withLogger) {
+    const trace = [];
+    const evidence = {};
+    const runner = {
+      get completion() { trace.push('completion'); return { finish() { trace.push('finish'); return evidence; } }; },
+      set completionOutcome(value) { assert.equal(value, evidence); trace.push('set outcome'); },
+      get turnId() { trace.push('turn'); return 't'; },
+      get runnerId() { trace.push('runner'); return 'r'; },
+      get providerAttempt() { trace.push('attempt'); return { sessionId: 's', routeAttemptId: 'a' }; },
+    };
+    const boundary = { get kind() { trace.push('kind'); return 'stream'; } };
+    const logger = withLogger && { get info() { trace.push('info'); return function (name, fields) {
+      assert.equal(this, logger); assert.equal(fields.completion, evidence); trace.push([name, Object.keys(fields)]);
+    }; } };
+    assert.equal(settle(runner, boundary, logger), evidence);
+    return trace;
+  }
+  for (const logging of [false, true]) {
+    assert.deepEqual(exercise(settleAdapterCompletion, logging), exercise(legacy.settleAdapterCompletion, logging));
+  }
+});
+
+test('收尾保留只读属性异常和自定义 thenable 的同步调用契约', () => {
+  const legacy = require('./helpers/legacy-adapter-completion');
+  for (const runner of [Object.freeze({ completionOutcome: null }), Object.freeze({}), 1]) {
+    let original;
+    try { legacy.settleAdapterCompletion(runner, {}); } catch (failure) { original = failure; }
+    assert.ok(original instanceof TypeError);
+    assert.throws(() => settleAdapterCompletion(runner, {}), { name: original.name, message: original.message });
+  }
+  function observe(finalizeStream) {
+    const trace = [];
+    const runner = { completion: { finish() { return {}; } } };
+    const token = {};
+    const chain = { catch(failed) {
+      assert.equal(this, chain);
+      trace.push([failed.length, 'prototype' in failed]);
+      return token;
+    } };
+    const thenable = { then(ok, reject) {
+      assert.equal(this, thenable);
+      trace.push([ok.length, reject.length, 'prototype' in ok, 'prototype' in reject]);
+      assert.equal(ok(), token);
+      return chain;
+    } };
+    assert.equal(finalizeStream(thenable, { runner, finalize() { trace.push('finalize'); return token; } }), token);
+    return trace;
+  }
+  assert.deepEqual(observe(finalizeCompletionStream), observe(legacy.finalizeCompletionStream));
+});
+
 test('a finalization exception is reported once, never replayed as a stream rejection', async () => {
   let calls = 0;
   const runner = { completion: play(adapters[0], [successResult]) };
@@ -656,4 +763,19 @@ test('persistent Claude ignores child/background results and joins its native pr
   const result = await stream.send(name, 'hello', raw => tracker.observe(raw, adapters[0].decodeEvent(raw)));
   assert.equal(result.result.result, 'main');
   assert.equal(isCompleted(tracker.finish({ kind: 'stream', resolved: true })), true);
+});
+
+test('步骤完成跟踪器与冻结入口在进程和流边界上保持一致', () => {
+  const before = require('./helpers/frozen-host-ports/cli-adapters-step-completion').createStepCompletionTracker;
+  const current = require('../src/cli-adapters/completion').createStepCompletionTracker;
+  for (const streamBoundary of [undefined, false, 1]) for (const kind of ['stream', 'process']) {
+    for (const reason of ['stop', 'tool-calls', null]) {
+      const run = create => {
+        const t = create({ streamBoundary });
+        return [t.observe({ type: 'step_start' }), t.observe({ type: 'step_finish', part: { reason } }),
+          t.finish({ kind, exitCode: 0 }), t.snapshot()];
+      };
+      assert.deepEqual(run(current), run(before));
+    }
+  }
 });

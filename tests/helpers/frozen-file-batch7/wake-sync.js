@@ -4,7 +4,7 @@
 // Rust checks the checkout, preserves its tip, and synchronizes local refs.
 // The existing hibernation host still calls Node ports; remove this adapter
 // when that lifecycle and its repository actor move to Rust.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 async function syncWorktreeOnWake(dirPath, worktree, baseBranch) {
   try {
