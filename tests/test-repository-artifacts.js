@@ -9,6 +9,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { evaluatePolicy, scanTrackedEntry, trackedEntries } = require('../scripts/check-repository-artifacts');
+const isolatedHostEnv = require('./helpers/isolated-host-env');
 
 function entry(path, content) {
   return { path, buffer: Buffer.isBuffer(content) ? content : Buffer.from(content || '') };
@@ -45,17 +46,54 @@ test('reviewed baseline accepts exact findings and reports stale entries', () =>
   assert.deepEqual(stale.stale, ['tracked-apk:old.apk']);
 });
 
-test('tracked entry scan tolerates files deleted in the uncommitted worktree', () => {
+function fixtureGitEnv() {
+  return { ...isolatedHostEnv(), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull };
+}
+
+const deletedEntryTest = 'tracked entry scan tolerates files deleted in the uncommitted worktree';
+test(deletedEntryTest, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-artifact-worktree-'));
+  const git = { cwd: root, env: fixtureGitEnv() };
   try {
-    childProcess.execFileSync('git', ['init', '-q'], { cwd: root });
+    childProcess.execFileSync('git', ['init', '-q'], git);
     fs.writeFileSync(path.join(root, 'keep.js'), 'module.exports = true;\n');
     fs.writeFileSync(path.join(root, 'drop.js'), 'module.exports = false;\n');
-    childProcess.execFileSync('git', ['add', 'keep.js', 'drop.js'], { cwd: root });
+    childProcess.execFileSync('git', ['add', 'keep.js', 'drop.js'], git);
     fs.unlinkSync(path.join(root, 'drop.js'));
-    assert.deepEqual(trackedEntries(root).map(entry => entry.path), ['keep.js']);
+    assert.deepEqual(trackedEntries(root, git.env).map(entry => entry.path), ['keep.js']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('artifact scan fixture preserves the external Git config and index', () => {
+  const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-artifact-caller-'));
+  try {
+    const git = { cwd: outer, env: fixtureGitEnv() };
+    childProcess.execFileSync('git', ['init', '-q'], git);
+    fs.writeFileSync(path.join(outer, 'staged.txt'), 'caller content\n');
+    childProcess.execFileSync('git', ['add', 'staged.txt'], git);
+
+    const gitDir = path.join(outer, '.git');
+    const config = path.join(gitDir, 'config');
+    const index = path.join(gitDir, 'index');
+    const beforeConfig = fs.readFileSync(config);
+    const beforeIndex = fs.readFileSync(index);
+    const exported = path.join(outer, 'export');
+    fs.mkdirSync(exported);
+    // A misdirected git add can succeed when the export contains the same filenames.
+    for (const name of ['keep.js', 'drop.js']) fs.writeFileSync(path.join(exported, name), 'exported copy\n');
+    const result = childProcess.spawnSync(process.execPath, [
+      '--test', `--test-name-pattern=^${deletedEntryTest}$`, __filename,
+    ], {
+      env: { ...git.env, GIT_DIR: gitDir, GIT_WORK_TREE: exported, GIT_INDEX_FILE: index },
+      encoding: 'utf8',
+    });
+    assert.deepEqual(fs.readFileSync(config), beforeConfig, 'fixture changed the caller config');
+    assert.deepEqual(fs.readFileSync(index), beforeIndex, 'fixture changed the caller index');
+    assert.equal(result.status, 0, result.error?.message || result.stdout + result.stderr);
+  } finally {
+    fs.rmSync(outer, { recursive: true, force: true });
   }
 });
 

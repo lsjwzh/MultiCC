@@ -95,8 +95,8 @@ function evaluatePolicy(entries, baseline) {
   };
 }
 
-function trackedEntries(root = ROOT) {
-  const output = childProcess.execFileSync('git', ['ls-files', '-z'], { cwd: root });
+function trackedEntries(root = ROOT, env = process.env) {
+  const output = childProcess.execFileSync('git', ['ls-files', '-z'], { cwd: root, env });
   const files = output.toString('utf8').split('\0').filter(Boolean);
   return files.filter(relativePath => fs.existsSync(path.join(root, relativePath))).map(relativePath => ({
     path: relativePath,
