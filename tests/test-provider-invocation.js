@@ -554,6 +554,26 @@ test('the budget travels with every physical attempt, the failover one included'
     'the switched line gets its own idle budget, not the failed attempt\'s leftovers');
 });
 
+test('WorkBuddy uses vendor login and carries the selected quota identity through proof and retry', () => {
+  const { calls, factory } = makeHarness();
+  const session = { id: 'session-1', cli: 'codebuddy' };
+  const request = normalizeTurnRequest({ sessionId: session.id, cli: session.cli, text: 'hello' });
+  const turn = createTurnLifecycle(request, { turnId: 'turn-1' });
+  const providerId = 'codebuddy-native:codebuddy';
+  const prepared = factory.prepare({
+    session, request, turn, attemptNo: 1, providerId, model: 'deepseek-v4.1-flash',
+    envelope: { userText: 'hello', spawnOpts: {}, historyHandle: {} },
+    provider: { buildInvocation: () => ({ cmd: 'codebuddy', args: [] }) },
+  });
+  assert.deepEqual(calls.map(call => call.providerId), ['']);
+  assert.equal(prepared.binding.providerId, null);
+  assert.equal(prepared.attempt.providerName, 'WorkBuddy');
+  assert.equal(prepared.attempt.providerId, providerId);
+  assert.equal(prepared.routeProof.route.providerId, providerId);
+  assert.equal(prepared.usageAttribution.providerId, providerId);
+  assert.equal(providerRetryRouteOptions(prepared.attempt).providerId, providerId);
+});
+
 test('an OpenCode-native line spawns as a provider-less opencode session on its own model', () => {
   const { calls, factory } = makeHarness();
   // The session keeps its own provider/model; only this attempt's route changes.

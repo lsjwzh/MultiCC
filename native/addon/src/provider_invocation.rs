@@ -290,7 +290,21 @@ pub fn provider_invocation_prepare(
     let binding_options = copy(overrides)?;
     binding_options.set(c"model", model)?;
     let binding = method(router, c"createBinding", &[session, binding_options])?;
-    let provider_id = or(binding.get(c"providerId")?, || Ok(default))?;
+    // The CLI owns login, so spawn keeps its empty binding. Auto, usage and
+    // quota accounting must still refer to the selected line.
+    let requested_id = input.get(c"providerId")?;
+    let requested_text = requested_id.string()?;
+    let vendor_cli = requested_text.as_ref().and_then(|id| {
+        multicc_core::provider_registry::native_vendor_cli(id.as_str_lossy().as_ref())
+    });
+    let proof_binding = if vendor_cli.is_some() {
+        let logical = copy(binding_options)?;
+        logical.set(c"providerId", requested_id)?;
+        method(router, c"createBinding", &[session, logical])?
+    } else {
+        binding
+    };
+    let provider_id = or(proof_binding.get(c"providerId")?, || Ok(default))?;
     let selected = or(route_binding.get(c"model")?.clean_text()?, || {
         or(resolution.get(c"providerModel")?.clean_text()?, || {
             let models = resolution.get(c"providerModels")?;
@@ -333,7 +347,10 @@ pub fn provider_invocation_prepare(
                 summary
             }
             .clean_text()?,
-            || Ok(provider_id),
+            || match vendor_cli.and_then(cli_capability::family_of) {
+                Some(family) => text(input, family.name),
+                None => Ok(provider_id),
+            },
         )
     })?;
     let revision_input = object(
@@ -486,7 +503,7 @@ pub fn provider_invocation_prepare(
             input,
             &[
                 (c"resolved", yes),
-                (c"binding", binding),
+                (c"binding", proof_binding),
                 (c"providerName", name),
                 (c"protocol", wire_protocol),
                 (c"runtimeEpoch", attempt.get(c"runtimeEpoch")?),

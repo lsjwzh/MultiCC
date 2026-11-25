@@ -126,6 +126,15 @@ test('OpenCode replay-unsafe network errors continue on the same provider, cappe
   }));
   assert.equal(poolExhausted.action, 'retry-api');
   assert.equal(poolExhausted.retry.poolExhausted, true);
+  // With a reserved cross-CLI destination, the host schedules the handoff
+  // after finalization. Retrying here would strand the reservation.
+  for (const runnerKind of ['process', 'stream']) {
+    const handoff = planTurnFinalization(base({
+      runnerKind, cli: 'codebuddy', apiError: true, autoHandoffReserved: true,
+      apiErrorDecision: { action: 'fail_fast', poolExhausted: true, error: { category: 'rate_limit' } },
+    }));
+    assert.equal(handoff.action, 'finalize');
+  }
 });
 
 test('process empty exit gets one fresh retry but adapter, explicit kill and retry do not', () => {

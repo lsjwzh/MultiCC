@@ -792,12 +792,27 @@ pub fn chat_claude_boundary_envelope(
     cs: Unknown<'_>,
 ) -> Result<sys::napi_value> {
     let cs = LV::new(&env, cs);
-    let envelope = api_error_envelope(
-        cs,
-        LV::new(&env, runner),
-        LV::new(&env, provider),
-        cs.optional(c"currentAssistantText")?,
-    )?;
+    let runner = LV::new(&env, runner);
+    let provider = LV::new(&env, provider);
+    let current = cs.optional(c"currentAssistantText")?;
+    let envelope = api_error_envelope(cs, runner, provider, current)?;
+    // WorkBuddy emits its upstream rejection as ordinary assistant text before
+    // the failed result. Corroborate the entire turn text with that result so
+    // quoting a 429 in a real answer cannot reopen the replay fence.
+    if envelope.nullish()? && provider.is_string("codebuddy")? {
+        let result = runner.optional(c"pendingClaudeResult")?;
+        let detail = result.optional(c"error")?;
+        let message = detail.optional(c"message")?;
+        if result.optional(c"is_error")?.is_true()?
+            && detail.optional(c"http_status")?.is_number(429.0)?
+            && message.string()?.is_some_and(|s| !s.trim().is_empty())
+            && current.equals(message)?
+        {
+            let raw = fallback_api_error_raw(cs, result, provider)?;
+            raw.set(c"body", null(cs)?)?;
+            return Ok(raw.freeze()?.raw());
+        }
+    }
     let body = envelope.optional(c"body")?;
     if !body.nullish()? {
         cs.assign(c"currentAssistantText", body)?;

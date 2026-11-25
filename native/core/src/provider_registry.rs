@@ -89,6 +89,14 @@ pub const VENDOR_NATIVE_CLIS: [&str; 8] = [
 ];
 /// Mirrors `NATIVE_VENDOR_SUFFIX` in `src/providers/native-vendor.js`.
 pub const NATIVE_VENDOR_SUFFIX: &str = "-native:";
+
+/// Auto creates exactly one account-owned line per vendor CLI.
+pub fn native_vendor_cli(provider_id: &str) -> Option<&'static str> {
+    let (cli, id) = provider_id.split_once(NATIVE_VENDOR_SUFFIX)?;
+    VENDOR_NATIVE_CLIS
+        .into_iter()
+        .find(|vendor| *vendor == cli && id == cli)
+}
 /// OpenCode owns the native provider namespace, including user-installed providers.
 pub const NATIVE_OPENCODE_PREFIX: &str = "opencode-native:";
 pub const NATIVE_OPENCODE_ID_PATTERN: &str = "^[a-z0-9][a-z0-9._-]{0,63}$";

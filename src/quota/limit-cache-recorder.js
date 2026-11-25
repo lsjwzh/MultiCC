@@ -26,7 +26,7 @@ function createLimitRecorder({ cache, persistedSessions, providers, now = Date.n
     let provider;
     try { provider = providers.getProvider(undefined, key); } catch (_) { return null; }
     // Credentials/settings are not part of an identity query.
-    return request('providerIdentity', { id: provider?.id, appType: provider?.appType,
+    return request('providerIdentity', { requestedId: key, id: provider?.id, appType: provider?.appType,
       activeAccountId: provider?.activeAccountId });
   }
   function previousOptional(appType, providerId) {

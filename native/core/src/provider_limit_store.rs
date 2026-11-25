@@ -1094,6 +1094,10 @@ impl Store {
                 .map_err(err)?;
             for row in rows {
                 let (app_type, id) = row.map_err(err)?;
+                // Vendor-owned lines exist independently of the managed catalog.
+                if crate::provider_registry::native_vendor_cli(&id) == Some(app_type.as_str()) {
+                    continue;
+                }
                 if !live_keys.contains(&format!("{app_type}:{id}")) {
                     removed += tx
                         .execute(

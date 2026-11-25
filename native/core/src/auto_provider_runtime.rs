@@ -350,6 +350,7 @@ pub struct Runtime {
     pending: BTreeMap<String, Value>,
     seed_lane: BTreeMap<String, Value>,
     hops: BTreeMap<String, i64>,
+    hop_request: BTreeMap<String, String>,
     turns: BTreeMap<u64, Turn>,
     next_turn: u64,
 }
@@ -382,6 +383,7 @@ impl Runtime {
         self.pending.remove(&session_id);
         self.seed_lane.remove(&session_id);
         self.hops.remove(&session_id);
+        self.hop_request.remove(&session_id);
         self.selection_key.insert(session_id.clone(), key.clone());
         if !truthy(&last) {
             // seedFromPool also needs a `lastGoodRoute` lookup; JavaScript owns
@@ -572,6 +574,20 @@ impl Runtime {
                 .unwrap_or(true)
         };
 
+        // Independent user/scheduler deliveries get their own switch budget.
+        // A redelivery or an automatic continuation stays on the same budget.
+        if !background && (!origin_continue || direct_input) {
+            if let Some(id) = request
+                .get("requestId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                if self.hop_request.get(&session_id).map(String::as_str) != Some(id) {
+                    self.hop_request.insert(session_id.clone(), id.to_owned());
+                    self.hops.remove(&session_id);
+                }
+            }
+        }
         let pending = self.pending.get(&session_id).cloned();
         if let Some(pending) = &pending {
             // Re-admission is completing an already reserved switch, not
@@ -1440,6 +1456,7 @@ impl Runtime {
         self.pending.remove(session_id);
         self.seed_lane.remove(session_id);
         self.hops.remove(session_id);
+        self.hop_request.remove(session_id);
         let stale: Vec<u64> = self
             .turns
             .iter()
