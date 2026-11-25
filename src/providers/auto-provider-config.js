@@ -8,7 +8,7 @@
 // the key order of each DTO) lives in native/core/src/auto_provider_config.rs.
 // This file only:
 //   * assembles the cross-module facts once at load (the Jev gateway table from
-//     jev-client, the native-line namespaces from native-opencode/native-vendor)
+//     jev-client, the native-line namespaces from the OpenCode and vendor catalogs)
 //     and hands them to the core as data;
 //   * asks the core for one frozen snapshot of its own constants;
 //   * drives the provider-registry callbacks the core asks for, in the exact
@@ -26,7 +26,7 @@ const {
   JEV_GATEWAYS,
   MAX_ENDPOINT_CHARS,
 } = require('./jev-client');
-const { NATIVE_OPENCODE_ID, NATIVE_OPENCODE_PREFIX } = require('./native-opencode');
+const { NATIVE_OPENCODE_ID, NATIVE_OPENCODE_PREFIX } = require('../native/runtime').getNativeOpenCodeCatalog();
 const {
   MODEL_ID: NATIVE_VENDOR_MODEL_ID,
   NATIVE_VENDOR_ID,

@@ -2,7 +2,7 @@
 use super::{Document, Query, SearchIndex};
 use crate::{
     js::string::{is_js_whitespace_char, js_trim, utf16_len, JsString},
-    search_tokens::weighted_terms,
+    search_tokens::board_query_terms,
     task_domain::{host::Facts, normalize, text, truth},
 };
 use icu_collator::{options::CollatorOptions, Collator};
@@ -129,12 +129,7 @@ fn snippet(fields: &[String; 4], marks: &[String]) -> Value {
 
 pub fn search_board(raw: &Value, options: &Value) -> Result<Value, &'static str> {
     let normalized = folded(text(&options["query"]));
-    let mut terms: Vec<_> = weighted_terms(&normalized)
-        .keys()
-        .map(|s| (s.to_string(), if utf16_len(s) == 1 { 0.34 } else { 1.0 }))
-        .collect();
-    terms.sort_by_key(|(s, _)| std::cmp::Reverse(utf16_len(s)));
-    terms.truncate(12);
+    let terms = board_query_terms(&normalized);
     if terms.is_empty() {
         return Ok(json!([]));
     }

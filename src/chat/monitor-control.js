@@ -1,7 +1,7 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { createMonitorAdmission, CALLBACK_ID } = require('./monitor-admission');
+const { createMonitorAdmission, CALLBACK_ID } = require('../native/runtime').getMonitorAdmission();
 
 // stream-json exposes the same hook protocol used by the SDK. Install before
 // the first prompt; unsupported/failed initialization must not silently allow

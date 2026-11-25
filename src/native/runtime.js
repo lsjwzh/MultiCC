@@ -169,6 +169,7 @@ function rerankSearchHits(hits, { limit = 20, perRefQuota = 3, dedupeContentHash
 // 两个搜索入口在首次处理文本时加载同一原生分词器。
 const searchTokenizer = {
   tokenize: text => getNative().searchTokenize(text),
+  boardQueryTerms: text => getNative().searchBoardQueryTerms(text),
   normalizeText: text => getNative().searchNormalizeText(text),
   indexTokens: text => getNative().searchIndexTokens(text),
   matchGroups: text => getNative().searchMatchGroups(text),
@@ -198,6 +199,122 @@ function findProviderReferences(input = {}) {
 
 function gatewayPath() {
   return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
+}
+let monitorAdmission;
+function getMonitorAdmission() {
+  if (monitorAdmission) return monitorAdmission;
+  const addon = getNative();
+  const hasFrame = (prompt, open, close) => prompt.startsWith(open) && prompt.includes(close);
+  const copy = event => ({ ...event });
+  const includesReason = (event, reason) => event.result.includes(reason);
+  monitorAdmission = {
+    CALLBACK_ID: addon.MONITOR_CALLBACK_ID,
+    isMonitorHandoffResult: event => addon.monitorHandoffResult(event, includesReason),
+    createMonitorAdmission(deliver, isOwnPrompt = () => false) {
+      const owns = prompt => isOwnPrompt(prompt);
+      return async input => {
+        const events = addon.monitorAdmissionEvents(input, owns, hasFrame);
+        if (!events) return {};
+        let reply;
+        for (let index = 0; ; index++) {
+          const step = addon.monitorDeliveryStep(events, index, reply, copy);
+          if (Object.hasOwn(step, 'outcome')) return step.outcome;
+          reply = await deliver(step.event);
+        }
+      };
+    },
+  };
+  return monitorAdmission;
+}
+const resolveOpenCodeModelLimit = (catalog, id) => getNative().openCodeModelLimit(catalog, id);
+const catalogJsonParse = JSON.parse;
+const catalogValues = Object.values;
+const catalogIterator = Array.prototype[Symbol.iterator];
+const catalogMin = Math.min;
+const jsonPrototypes = [Object.prototype, Array.prototype, String.prototype, Number.prototype, Boolean.prototype];
+// Private JSON has no accessors of its own. Inherited fields and customized
+// enumeration or arithmetic still need the live V8 path on every lookup.
+function plainCatalogFields(id) {
+  return Object.values === catalogValues && Array.prototype[Symbol.iterator] === catalogIterator &&
+    Math.min === catalogMin && !(id in Object.prototype) && !(id in Array.prototype) &&
+    jsonPrototypes.every(p => !('models' in p || 'limit' in p || 'context' in p || 'output' in p));
+}
+function createOpencodeModelLimitResolver(deps = {}) {
+  const fs = deps.fsImpl || require('node:fs');
+  const cachePath = deps.cachePath ? () => deps.cachePath :
+    () => path.join(process.env.HOME || require('node:os').homedir(), '.cache', 'opencode', 'models.json');
+  const state = { snapshot: undefined, mtime: -1 };
+  function read(file) {
+    try {
+      const parse = JSON.parse;
+      const catalog = parse.call(JSON, fs.readFileSync(file, 'utf8'));
+      return { catalog, memo: parse === catalogJsonParse ? new Map() : null };
+    } catch { return undefined; }
+  }
+  return Object.freeze({
+    resolve(id) {
+      const file = cachePath();
+      let stat;
+      try { stat = fs.statSync(file); } catch { return resolveOpenCodeModelLimit(null, id); }
+      return { ...getNative().openCodeCachedModelLimit(state, stat.mtimeMs, file, read, id, plainCatalogFields) };
+    },
+    resolveLimit(id) {
+      const { context, output } = this.resolve(id);
+      return Object.freeze({ context, output });
+    },
+    resetCache() { state.snapshot = undefined; state.mtime = -1; },
+  });
+}
+let fallbackModelLimit;
+const openCodeModelLimits = {
+  createOpencodeModelLimitResolver, resolveOpenCodeModelLimit,
+  get FALLBACK_LIMIT() {
+    if (!fallbackModelLimit) {
+      const { context, output } = resolveOpenCodeModelLimit(null, '');
+      fallbackModelLimit = Object.freeze({ context, output });
+    }
+    return fallbackModelLimit;
+  },
+};
+
+let nativeOpenCodeCatalog;
+function getNativeOpenCodeCatalog() {
+  if (nativeOpenCodeCatalog) return nativeOpenCodeCatalog;
+  const addon = getNative();
+  const { prefix, pattern, names } = addon.openCodeCatalogSpec();
+  // V8 owns species-aware map/filter, iterable spread and the default hint of +.
+  const ports = {
+    mapModels: models => (Array.isArray(models) ? models : [])
+      .map(model => String(model ?? '').trim()).filter(Boolean),
+    spread: values => [...values],
+    add: (left, right) => left + right,
+  };
+  nativeOpenCodeCatalog = {
+    NATIVE_OPENCODE_ID: new RegExp(pattern, 'i'),
+    NATIVE_OPENCODE_PREFIX: prefix,
+    nativeOpenCodeId: value => addon.openCodeCatalogId(String(value ?? '')),
+    nativeOpenCodeName: id => addon.openCodeCatalogName(id, names),
+    syntheticNativeOpenCodeProvider: (id, modelOptions = []) => addon.openCodeCatalogEntry(id, modelOptions, names, ports),
+  };
+  return nativeOpenCodeCatalog;
+}
+const voiceSpeech = {
+  stripTruncatedLegacyMarker: raw => getNative().voiceSpeechText(String(raw || ''), undefined),
+  sanitizeVoiceSpeech(raw, { privateValues = [] } = {}) {
+    const text = String(raw || '');
+    const values = [];
+    for (const value of privateValues) values.push(String(value || ''));
+    return getNative().voiceSpeechText(text, values);
+  },
+};
+let migrationProgress;
+function getTaskStoreMigrationProgress() {
+  if (migrationProgress) return migrationProgress;
+  const addon = getNative();
+  const steps = addon.taskStoreProgressSteps();
+  return migrationProgress = { STEPS: steps, describeMigration(state, { now = Date.now(), statSize = () => 0, failure = null } = {}) {
+    return addon.describeTaskStoreMigration(state, now, statSize, failure, steps);
+  } };
 }
 function addonPath() {
   return process.env.MULTICC_RUST_ADDON || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.resolve(__dirname, '../../native/prebuilt'),
@@ -412,7 +529,7 @@ const providerInvocation = {
       revision: require('../chat/provider-attempt-runtime').createProviderRevision,
       policy: resolveModelRequestPolicy,
       proof: require('../chat/turn-request').createProviderRouteProof,
-      nativeOpenCodeId: require('../providers/native-opencode').nativeOpenCodeId,
+      nativeOpenCodeId: getNativeOpenCodeCatalog().nativeOpenCodeId,
       nativeVendorOf: require('../providers/native-vendor').nativeVendorOf,
     });
     return Object.freeze({ prepare: (input = {}) => native.providerInvocationPrepare(input, ports) });
@@ -538,7 +655,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

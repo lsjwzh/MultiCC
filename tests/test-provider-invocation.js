@@ -606,8 +606,11 @@ function frozenInvocationFactory() {
   const legacy = new Module(filename);
   legacy.filename = filename;
   legacy.paths = Module._nodeModulePaths(path.dirname(filename));
-  legacy.require = name => name === './model-request-policy'
-    ? require('./helpers/legacy-model-request-policy') : Module.prototype.require.call(legacy, name);
+  legacy.require = name => {
+    if (name === '../providers/native-opencode') return require('./helpers/frozen-native-opencode');
+    if (name === './model-request-policy') return require('./helpers/legacy-model-request-policy');
+    return Module.prototype.require.call(legacy, name);
+  };
   legacy._compile(source, filename);
   return legacy.exports.createProviderInvocationFactory;
 }

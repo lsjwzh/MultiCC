@@ -34,7 +34,7 @@ const { createProviderRoutes } = require('../src/routes/providers');
 const legacy = require('./helpers/legacy-provider-cli-rules');
 const { fixtureDefaultsOwner } = require('./helpers/provider-defaults-owner');
 const { nativeVendorOf } = require('../src/providers/native-vendor');
-const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('../src/providers/native-opencode');
+const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('./helpers/frozen-native-opencode');
 
 // ── corpus ──────────────────────────────────────────────────────────────────
 const CLIS = [
@@ -357,4 +357,77 @@ test('each injected rule break turns the differential red', (t) => {
     assert.ok(differences > 0, `mutation ${mutation} was not caught`);
     t.diagnostic(`mutation ${mutation}: ${differences} differences`);
   }
+});
+
+test('OpenCode catalog matches the frozen provider, coercion order and mutability', () => {
+  const actual = require('../src/native/runtime').getNativeOpenCodeCatalog();
+  const frozenFile = require.resolve('./helpers/frozen-native-opencode.js');
+  const frozen = require(frozenFile);
+  const source = require('node:fs').readFileSync(frozenFile);
+  const hash = require('node:crypto').createHash('sha1').update('blob ' + source.length + '\0').update(source);
+  assert.equal(hash.digest('hex'), 'cd60a9160fcee6544911a20db766edfa0dd8d109');
+  assert.equal(actual.NATIVE_OPENCODE_PREFIX, frozen.NATIVE_OPENCODE_PREFIX);
+  assert.equal(actual.NATIVE_OPENCODE_ID.source, frozen.NATIVE_OPENCODE_ID.source);
+  assert.equal(actual.NATIVE_OPENCODE_ID.flags, frozen.NATIVE_OPENCODE_ID.flags);
+  const ids = [null, undefined, '', 'opencode', 'opencodego', 'opencode-go', 'third-party', 10, true,
+    'constructor', 'toString', '__proto__', 'a'.repeat(64), 'a'.repeat(65), 'opencode-native:', 'opencode-native:\ud800', Symbol('s')];
+  const opts = [undefined, null, 'bad', {}, [], [' o/m ', 'o/m', null, false, 0, '', Symbol('opt')], Array(3), ['\ufeff', '\udfff']];
+  const trace = (api, rawId, models, wrapped) => {
+    const calls = [], sentinel = {};
+    const id = wrapped ? {
+      [Symbol.toPrimitive](hint) {
+        calls.push(hint);
+        if (typeof rawId === 'symbol') throw sentinel;
+        return rawId;
+      },
+    } : rawId;
+    function capture(f) {
+      try { return { result: f() }; }
+      catch (e) { return { thrown: e === sentinel ? 'sentinel' : [e.name, e.message] }; }
+    }
+    const nativeId = capture(() => api.nativeOpenCodeId(id));
+    const name = capture(() => api.nativeOpenCodeName(id));
+    const entry = capture(() => {
+      const data = api.syntheticNativeOpenCodeProvider(id, models);
+      return { sameNativeId: Object.is(data.nativeProvider, id), fields: Object.keys(data), id: data.id, name: data.name, model: data.model,
+        options: data.modelOptions, frozen: Object.isFrozen(data), optionsFrozen: Object.isFrozen(data.modelOptions), native: data.nativeOpenCode };
+    });
+    return { nativeId, name, entry, calls };
+  };
+  for (const id of ids) for (const models of opts) for (const wrapped of [false, true]) {
+    assert.deepEqual(trace(actual, id, models, wrapped), trace(frozen, id, models, wrapped));
+  }
+});
+
+test('OpenCode catalog preserves custom model arrays, exceptions and the iteration order', () => {
+  const actual = require('../src/native/runtime').getNativeOpenCodeCatalog();
+  const old = require('./helpers/frozen-native-opencode');
+  function trace(api, fail) {
+    const events = [];
+    const sentinel = {};
+    const opaque = {};
+    const models = [];
+    models.map = function (convert) {
+      assert.equal(this, models);
+      events.push(['map', convert(null), convert(false), convert(' x '), convert(Symbol('m'))]);
+      return { filter(predicate) {
+        events.push(['filter', predicate === Boolean, predicate(''), predicate(1)]);
+        if (fail) throw sentinel;
+        return (function* () { events.push('iterate'); yield opaque; yield opaque; yield 'y'; })();
+      } };
+    };
+    const id = { [Symbol.toPrimitive](hint) { events.push(hint); return 'vendor'; } };
+    try {
+      const entry = api.syntheticNativeOpenCodeProvider(id, models);
+      assert.equal(entry.modelOptions[0], opaque);
+      assert.equal(entry.model, opaque);
+      assert.equal(entry.nativeProvider, id);
+      events.push(entry.id, entry.modelOptions.length, entry.modelOptions[1], entry.name);
+    } catch (e) {
+      if (e !== sentinel) throw e;
+      events.push('same thrown object');
+    }
+    return events;
+  }
+  for (const fail of [false, true]) assert.deepEqual(trace(actual, fail), trace(old, fail));
 });

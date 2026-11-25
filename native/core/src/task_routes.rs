@@ -114,25 +114,24 @@ pub fn filter_too_long(value: &str) -> bool {
     utf16_len(value) > MAX_FILTER_CHARS
 }
 
-/// `responseStatus()` from `src/routes/task-planning.js`, plus the one extra
-/// planning code the front door now maps instead of passing a rendered body
-/// through (there is none today: `directory_not_found` keeps its own 409 body
-/// on the host side).
+/// Default rejection status shared by the front door and the planning host.
+/// An explicit host reply, such as a directory refusal, keeps its own status.
 pub fn planning_status(code: &str) -> u16 {
-    match code {
-        "task_not_found" => 404,
-        "persistence_failed" => 500,
-        "revision_conflict"
-        | "task_not_planned"
-        | "task_archived"
-        | "task_deleting"
-        | "task_exists"
-        | "move_anchor_not_found"
-        | "invalid_move_anchor_order"
-        | "invalid_move_anchor"
-        | "record_type_immutable" => 409,
-        _ => 400,
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PlanningStatuses {
+        default_status: u16,
+        codes: std::collections::HashMap<String, u16>,
     }
+    static STATUSES: std::sync::LazyLock<PlanningStatuses> = std::sync::LazyLock::new(|| {
+        serde_json::from_str(include_str!("task_planning_status.json"))
+            .expect("invalid embedded planning status table")
+    });
+    STATUSES
+        .codes
+        .get(code)
+        .copied()
+        .unwrap_or(STATUSES.default_status)
 }
 
 /// `success(res, task)` from the planning runtime.

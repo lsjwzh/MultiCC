@@ -6,7 +6,7 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const { parentPort, workerData } = require('node:worker_threads');
-const { describeMigration } = require('./migration-progress');
+const { describeMigration } = require('../native/runtime').getTaskStoreMigrationProgress();
 
 const signal = new Int32Array(workerData.signal);
 let failure = null;

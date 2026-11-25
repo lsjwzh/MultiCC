@@ -94,11 +94,7 @@ function proseOf(text) {
     .replace(/\$[A-Z_][A-Z0-9_]*/g, ' ');
 }
 
-// messages: [{ session, text }]. Returns Map(lower → { term, count, sessions }).
-// A word qualifies once the user wrote it in a name-like spelling twice; the
-// term is then their usual spelling, so a habitual "multicc" stays lower-case
-// even though "MultiCC" is what proved it a name.
-function mineTypedTerms(messages) {
+function collectVocabulary(messages) {
   const tally = new (getNative().VoiceTypedVocabulary)();
   const sessionIds = new Map();
   for (const { session, text } of messages) {
@@ -106,13 +102,25 @@ function mineTypedTerms(messages) {
     if (!sessionIds.has(session)) sessionIds.set(session, sessionIds.size);
     tally.observe(sessionIds.get(session), prose);
   }
+  return { tally, sessionIds, flags: tally.spellings().map(distinctive) };
+}
+
+// Keep the public vocabulary's original session identities and spelling counts.
+function mineTypedTerms(messages) {
+  const { tally, sessionIds, flags } = collectVocabulary(messages);
   const sessions = [...sessionIds.keys()];
   const terms = new Map();
-  for (const row of tally.terms(tally.spellings().map(distinctive))) {
+  for (const row of tally.terms(flags)) {
     terms.set(row.key, { term: row.term, count: row.count,
       sessions: new Set(row.sessionIds.map(id => sessions[id])), forms: new Map(row.forms) });
   }
   return terms;
+}
+
+function rankTypedHotwords(own, fromModel) {
+  const user = collectVocabulary(own);
+  const model = collectVocabulary(fromModel);
+  return getNative().voiceRankTypedHotwords(user.tally, user.flags, model.tally, model.flags);
 }
 
 // ── Final list ──
@@ -160,6 +168,7 @@ module.exports = {
   tokenize,
   minePairs,
   mineTypedTerms,
+  rankTypedHotwords,
   distinctive,
   pairKey,
   vetoedBy,

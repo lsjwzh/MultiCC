@@ -2,7 +2,7 @@
 
 // Frozen from src/routes/providers.js before moving native-line rules to Rust.
 const { nativeVendorOf } = require('../../src/providers/native-vendor');
-const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('../../src/providers/native-opencode');
+const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('./frozen-native-opencode');
 
 function validProviderId(deps, cli, id) {
   const appType = deps.providers.appTypeForCli(cli);

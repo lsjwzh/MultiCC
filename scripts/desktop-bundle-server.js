@@ -182,7 +182,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   // 1) source trees the server reads at runtime. plugins/ is not optional:
   //   server.js requires ./plugins/bridges/* at boot (caught by the local
   //   real-server smoke, not by the sentinel list alone).
-  for (const entry of ['server.js', 'src', 'public', 'plugins', 'skills']) {
+  for (const entry of ['server.js', 'src', 'public', 'plugins', 'skills', 'native/core/src/task_planning_status.json']) {
     const src = path.join(repoRoot, entry);
     if (!fs.existsSync(src)) throw new Error(`missing ${src} — run from the repo root`);
     if (entry === 'public') copyTree(src, path.join(out, 'public'), { filter: PUBLIC_EXCLUDE });

@@ -93,6 +93,11 @@ test('source cache lives in the primary worktree and fingerprints source/config 
   assert.notEqual(withMessages, configured, 'compiled quota messages must invalidate the addon cache');
   write(root, messages, '{"quotaLoading":"Checking"}');
   assert.notEqual(sourceFingerprint(root, env), withMessages, 'message edits must rebuild native code');
+  const statusTable = 'native/core/src/task_planning_status.json';
+  write(root, statusTable, '{"defaultStatus":400,"codes":{}}');
+  const withStatuses = sourceFingerprint(root, env);
+  write(root, statusTable, '{"defaultStatus":400,"codes":{"test":409}}');
+  assert.notEqual(sourceFingerprint(root, env), withStatuses, 'planning status edits must rebuild native code');
   const worktree = path.join(root, 'sibling');
   assert.equal(spawnSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     'commit', '--allow-empty', '-qm', 'fixture']).status, 0);
@@ -117,14 +122,14 @@ test('addon preflight rejects an exported audit function that cannot write', t =
   };`);
   assert.equal(probeAddon(staleSessionState), false, 'a stale addon cannot omit the session state service factory');
   for (const name of ['handoffZipCreate', 'handoffZipRead', 'handoffZipLooksLike', 'handoffZipCrc32', 'handoffZipApi',
-    'sessionSubagentNormalize', 'sessionSubagentWithSource', 'sessionSubagentFamilyDefault',
+    'voiceRankTypedHotwords', 'voiceHistoryTemplateMask', 'sessionSubagentNormalize', 'sessionSubagentWithSource', 'sessionSubagentFamilyDefault',
     'sessionForkConfiguration', 'sessionSubagentApi', 'sessionForkConfigurationApi',
     'sessionIsInternalExecutionSlot', 'sessionPublicAccessApi',
     'sessionAssertSessionRecordsPort', 'sessionAssertSessionRuntimePort', 'sessionAssertWorkspaceFactsPort',
     'sessionAssertDirectoryRecordsPort', 'sessionAssertChatHistoryPort', 'sessionPortsApi',
     'createTaskHistoryRetention', 'taskHistoryRefusal', 'taskHistoryRetentionApi', 'claudeExpHasNativeHistory',
     'turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
-      'confirmTurnEnd', 'searchNormalizeText', 'searchTokenize', 'searchIndexTokens', 'searchMatchGroups', 'searchMatchExpression',
+    'confirmTurnEnd', 'searchNormalizeText', 'searchTokenize', 'searchBoardQueryTerms', 'searchIndexTokens', 'searchMatchGroups', 'searchMatchExpression',
     'chatHistoryFileRepositoryCreate', 'sessionCreateRecordFactory', 'sessionRuntimeIsChatStateBusy', 'sessionRuntimeProcessAlive',
     'sessionPendingConfigurationFields', 'sessionPendingReadConfiguration', 'sessionPendingDesiredSession', 'sessionPendingConfigurationBusy', 'sessionPendingStageConfiguration', 'sessionLoginTerminalDisposer', 'sessionDeliveryApi', 'sessionHibernationReclaimerCreate', 'sessionPersistenceCreate', 'sessionPersistenceErrorClass', 'sessionPersistenceJsonClone', 'acpBridgeKernel', 'taskBoardQueueRunState',
     'grokProviderModelConfig', 'taskDisplayFields', 'taskDisplayMessages', 'taskDisplayTask', 'taskBoardAssertDeps', 'taskBoardLinkRelated', 'taskBoardStableTaskId', 'taskBoardCanonicalMessages', 'taskBoardCanonicalTaskBody',

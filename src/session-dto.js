@@ -1,5 +1,6 @@
 'use strict';
 
+const { getNative } = require('./native/runtime');
 const { providerSelectionDto } = require('./providers/auto-provider-config');
 
 // Public session contract. This boundary deliberately excludes filesystem and
@@ -12,13 +13,7 @@ const SENSITIVE_KEY = /(?:token|secret|password|stack|(?:^|_)path|cwd|cliSession
 
 function sanitizePublicText(value, max = 1000) {
   if (value === undefined || value === null || value === '') return null;
-  return String(value)
-    .replace(/\bBearer\s+[^\s]+/gi, 'Bearer [redacted]')
-    .replace(/\b(?:sk|gh[pousr])[-_][A-Za-z0-9_-]{8,}\b/g, '[redacted]')
-    .replace(/\b(api[_-]?key|token|secret|password)\s*([:=])\s*["']?[^\s,;"']+/gi, '$1$2[redacted]')
-    .replace(/[A-Za-z]:\\(?:[^\\\s]+\\){1,}[^\s]*/g, '[path]')
-    .replace(/(?:\/[A-Za-z0-9._~@+-]+){2,}/g, '[path]')
-    .slice(0, max);
+  return getNative().sessionDtoRedactText(String(value)).slice(0, max);
 }
 
 function nullableString(value, max = 512) {

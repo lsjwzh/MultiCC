@@ -1,7 +1,7 @@
 'use strict';
 
 const { isMainResult } = require('../cli-adapters/result-completion');
-const { isMonitorHandoffResult } = require('./monitor-admission');
+const { isMonitorHandoffResult } = require('../native/runtime').getMonitorAdmission();
 const { createMonitorControl } = require('./monitor-control');
 const { createBackgroundHold } = require('./background-hold');
 const { decideMissingResume } = require('./missing-resume-recovery');

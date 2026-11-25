@@ -784,3 +784,39 @@ test('held query identities preserve identical adjacent answers across history r
   assert.equal(store.get('s').length, 2);
   assert.equal(create().read('s').length, 2);
 });
+
+test('public session text redacts before truncating in UTF-16 units', () => {
+  const { sanitizePublicText } = require('../src/session-dto');
+  assert.equal(sanitizePublicText('Bearer demo sk-abcdefgh token=x C:\\home\\a.txt /demo/path'), 'Bearer [redacted] [redacted] token=[redacted] [path] [path]');
+  assert.equal(sanitizePublicText('😀x', 1), '\ud83d');
+  assert.equal(sanitizePublicText('\udfff/one/two!', -1), '\udfff[path]');
+  assert.throws(() => sanitizePublicText('text', 2n), TypeError);
+  const calls = [];
+  assert.equal(sanitizePublicText({ toString() { calls.push('text'); return 'secret=demo'; } },
+    { valueOf() { calls.push('max'); return 10; } }), 'secret=[re');
+  assert.deepEqual(calls, ['text', 'max']);
+  assert.equal(sanitizePublicText(null, { valueOf() { throw new Error('unused'); } }), null);
+});
+
+test('public DTO traversal follows live arrays, property deletion and passthrough identity', () => {
+  const { assertDtoSafe, toSessionDto, unattendedDto, SUPPORTED_CLIS } = require('../src/session-dto');
+  const injected = [];
+  injected.forEach = visit => visit({ cwd: 'fixture' }, 'tag');
+  assert.throws(() => assertDtoSafe(injected), { message: 'sensitive DTO key at $[tag].cwd' });
+  const emptied = [{ cwd: 'fixture' }];
+  emptied.forEach = () => {};
+  assert.equal(assertDtoSafe(emptied), emptied);
+  const changed = { get first() { delete this.cwd; return 1; }, cwd: 'fixture' };
+  assert.equal(assertDtoSafe(changed), changed);
+  const marker = {};
+  class CustomDate extends Date { toISOString() { return marker; } }
+  SUPPORTED_CLIS.add(marker);
+  try {
+    const dto = toSessionDto({ id: 's', cli: marker, createdAt: new CustomDate(0) });
+    assert.equal(dto.cli, marker);
+    assert.equal(dto.createdAt, marker);
+  } finally { SUPPORTED_CLIS.delete(marker); }
+  const criteria = ['before'];
+  criteria.slice = () => ['after'];
+  assert.deepEqual(unattendedDto({ criteria }).criteria, ['after']);
+});

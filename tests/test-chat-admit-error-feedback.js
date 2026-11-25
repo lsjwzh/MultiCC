@@ -18,6 +18,56 @@ const { createSessionNotices } = require('../src/chat/session-notices');
 const { createQueuedTurnPreparation } = require('../src/chat/admission-progress');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
+test('session notice text matches the frozen host for coercions, UTF-16 and minute boundaries', () => {
+  const previous = require('./helpers/frozen-session-notices');
+  const current = require('../src/chat/session-notices');
+  function observe(api, method, makeInput) {
+    const trace = [];
+    const sentinel = new Error('notice getter');
+    try {
+      return { value: api[method](makeInput(trace, sentinel)), trace };
+    } catch (error) {
+      return { type: error.name, message: error.message, sentinel: error === sentinel, trace };
+    }
+  }
+  function compare(method, makeInput) {
+    assert.deepEqual(observe(current, method, makeInput), observe(previous, method, makeInput));
+  }
+  for (const value of [undefined, null, false, 0n, -Infinity, NaN, -1, 0, 0.5, 1, 1.5,
+    29_999.9999, 30_000, 89_999.9999, 90_000, 1e25, Infinity, '60000', Symbol('time')]) {
+    compare('heldBackgroundText', () => ({ waitedMs: value }));
+    compare('heldCapText', () => ({ minutes: value }));
+    for (const reason of ['delivery_locked', 'session_busy', null, '\ud800']) {
+      compare('stuckDeliveryText', () => ({ reason, reasons: ['a', null, '\udfff'], waitedMs: value }));
+    }
+  }
+  for (const detail of ['', '\uFEFF\n\t', '\u00a0多行\n修复\ud800\uFEFF', Symbol('detail')]) {
+    for (const message of [null, '\n第二行', '第一行\r\n第二行', '\udfff', Symbol('msg')]) {
+      compare('lostMessageText', trace => ({
+        get code() {
+          trace.push('code');
+          return { toString() { trace.push('stringify code'); return 'code-' + trace.length; } };
+        },
+        get detail() { trace.push('detail'); return detail; },
+        get message() { trace.push('message'); return message; },
+      }));
+    }
+  }
+  compare('lostMessageText', () => ({ code: Symbol('code') }));
+  compare('lostMessageText', (trace, sentinel) => ({
+    get detail() { trace.push('detail'); throw sentinel; },
+  }));
+  for (const next of [-2.5, Infinity, NaN]) {
+    compare('heldCapText', trace => ({
+      minutes: { valueOf() { trace.push('number'); return trace.length === 1 ? 2 : next; } },
+    }));
+  }
+  compare('stuckDeliveryText', trace => ({
+    reasons: { length: 1, join(s) { trace.push(s); return { toString() { trace.push('list'); return 'x'; } }; } },
+    waitedMs: { valueOf() { trace.push('time'); return 45_000; } },
+  }));
+});
+
 const noop = () => {};
 
 // Regression scaffold for the read-only history ports. `viewChatHistory` hands

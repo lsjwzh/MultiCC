@@ -11,6 +11,10 @@ pub(crate) fn is_object(value: LiveValue<'_>) -> Result<bool> {
     ))
 }
 
+pub(crate) fn is_null(value: LiveValue<'_>) -> Result<bool> {
+    Ok(value.kind()? == sys::ValueType::napi_null)
+}
+
 pub(crate) fn boolean(value: LiveValue<'_>) -> Result<bool> {
     let mut flag = false;
     check_status!(unsafe { sys::napi_get_value_bool(value.env(), value.raw(), &mut flag) })?;

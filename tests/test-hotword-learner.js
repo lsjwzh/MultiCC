@@ -195,6 +195,56 @@ test('the voice host only starts learning when the real server opts in', () => {
   assert.doesNotMatch(config, /autoHotwords\.start\(\)/, 'requiring the config module must not start a scan');
 });
 
+test('refresh drops all three template prefixes per speaker at 24 UTF-16 units', async t => {
+  const dir = tmpDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const history = path.join(dir, 'history');
+  const file = path.join(dir, 'words.json');
+  fs.mkdirSync(history);
+  const edge = '甲'.repeat(23);
+  const shared = '乙'.repeat(24);
+  const userRows = [
+    [edge + '🙂一', shared + '一', '短', edge + '\ud800一', '尾'],
+    [edge + '🙃二', shared + '二', '短\0', edge + '\ufffd二', '尾\0'],
+    [edge + '\ud83d三', '短\0', '短\0', '尾\0', '尾\0'],
+  ];
+  for (const [i, rows] of userRows.entries()) {
+    const messages = rows.map(content => ({ role: 'user', content }));
+    messages.push({ role: 'assistant', content: shared + i });
+    const name = path.join(history, i + '.json');
+    fs.writeFileSync(name, messages.map(m => JSON.stringify(m)).join('\n'));
+    fs.utimesSync(name, 1700000000 - i, 1700000000 - i);
+  }
+  const learner = createHotwordLearner({ file, chatHistoryDir: history, log: quiet });
+  await learner.refresh();
+  const { keptTexts } = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(keptTexts, [shared + '一', '短', edge + '\ud800一', '尾', shared + '二', edge + '\ufffd二']);
+});
+
+test('refresh persists the top 80 words in stable order across both sources', async t => {
+  const dir = tmpDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const history = path.join(dir, 'chat_history');
+  const file = path.join(dir, 'voice_hotwords.json');
+  fs.mkdirSync(history);
+  const tied = Array.from({ length: 82 }, (_, i) =>
+    'Name' + String.fromCharCode(65 + Math.floor(i / 26), 97 + i % 26));
+  for (let i = 0; i < 6; i++) {
+    const messages = [{ role: 'assistant', content: `第${i}次 ModelFirst NameAa` }];
+    if (i < 5) {
+      messages.push({ role: 'user', content: `第${i}次 ${tied.join(' ')}` });
+      messages[0].content += ' ModelTied';
+    }
+    fs.writeFileSync(path.join(history, i + '.json'), messages.map(m => JSON.stringify(m)).join('\n'));
+  }
+  const learner = createHotwordLearner({ file, chatHistoryDir: history, log: quiet });
+  await learner.refresh();
+  const expected = [{ term: 'ModelFirst', count: 6, sessions: 6, source: 'assistant' },
+    ...tied.slice(0, 79).map(term => ({ term, count: 5, sessions: 5, source: 'user' }))];
+  assert.deepEqual(learner.snapshot().typed, expected);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).typed, expected);
+});
+
 test('语音纠错按冻结输入对拍 UTF-16 边界、重复片段和拼音回退', () => {
   const { compileFunction } = require('node:vm');
   const { createRequire } = require('node:module');

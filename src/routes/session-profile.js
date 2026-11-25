@@ -22,7 +22,7 @@ const {
   sharedCliKeyAccountStore,
 } = require('../cli-key-accounts');
 const { nativeVendorName, nativeVendorOf } = require('../providers/native-vendor');
-const { nativeOpenCodeId, nativeOpenCodeName } = require('../providers/native-opencode');
+const { nativeOpenCodeId, nativeOpenCodeName } = require('../native/runtime').getNativeOpenCodeCatalog();
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
 // rolePrompt/memory/auto-flags/provider/subagent/cliAccounts edits) and POST

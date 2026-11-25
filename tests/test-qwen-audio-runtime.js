@@ -197,7 +197,8 @@ test('supervisor starts one isolated Fleet process and injects only the voice cr
   let spawnSpec;
   const child = new FakeChild();
   const supervisor = createQwenAudioSupervisor({
-    childProxyEnv: async env => ({ ...env, https_proxy: 'http://proxy.test:8080', no_proxy: 'localhost,127.0.0.1' }),
+    childProxyEnv: async env => ({ ...env, https_proxy: 'http://proxy.test:8080', no_proxy: 'localhost,127.0.0.1',
+      MULTICC_RUST_ADDON: '/private/custom/addon.node', MULTICC_RUST_PREBUILT_DIR: '/private/custom/prebuilt' }),
     records: gatewayRecords(),
     directories: new Map([['dir-1', { id: 'dir-1', path: '/tmp/fleet-one' }]]),
     installer,
@@ -232,6 +233,8 @@ test('supervisor starts one isolated Fleet process and injects only the voice cr
   assert.equal(spawnSpec.options.env.AGENT_PROTOCOL, 'acp');
   assert.equal(spawnSpec.options.env.https_proxy, 'http://proxy.test:8080');
   assert.equal(spawnSpec.options.env.no_proxy, 'localhost,127.0.0.1');
+  assert.equal(spawnSpec.options.env.MULTICC_RUST_ADDON, '/private/custom/addon.node');
+  assert.equal(spawnSpec.options.env.MULTICC_RUST_PREBUILT_DIR, '/private/custom/prebuilt');
   assert.equal(spawnSpec.options.env.ACP_COMMAND, runtime.nodePath);
   assert.deepEqual(JSON.parse(spawnSpec.options.env.ACP_ARGS), [
     '/opt/multicc/multicc-acp-agent.mjs', '--directory-id', 'dir-1',

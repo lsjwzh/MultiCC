@@ -8,7 +8,11 @@ const { createHash } = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 // include_str! inputs are executable source dependencies, not test fixtures.
-const COMPILED_ASSETS = new Set(['native/core/src/quota_bar_view/messages.json', 'native/core/src/cli_efforts.json']);
+const COMPILED_ASSETS = new Set([
+  'native/core/src/quota_bar_view/messages.json',
+  'native/core/src/cli_efforts.json',
+  'native/core/src/task_planning_status.json',
+]);
 
 function cacheRoot(repoRoot) {
   const result = spawnSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain', '-z'],
@@ -120,12 +124,13 @@ function probeAddon(file, node = process.execPath) {
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
       'airDescribeIssue','airRecordStorageNotice','airTodoIgnoreKinds','airNormalizeIgnores','airTodoIgnoreRun',
       'airTaskListSpec','airNormalizeTaskIds','airStoredPins','RustAirTaskList',
-      'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
+      'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchBoardQueryTerms','searchIndexTokens','searchMatchGroups','searchMatchExpression']
       .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3
       || a.searchMatchExpression('缓存层')!=='("缓存" AND "存层")' || a.searchTokenize('缓存').get('缓')!==0.5) process.exit(1);
     if(['contextSelectionValue','contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
       'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
       'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.sessionDtoRedactText!=='function' || a.sessionDtoRedactText('token=sample')!=='token=[redacted]') process.exit(1);
     if(['artifactReferenceIsArtifactId','artifactReferenceNormalizeRelativePath','artifactReferenceExtract'].some(key=>typeof a[key]!=='function')
       || a.artifactReferenceIsArtifactId('ab_CD-1')!==true || a.artifactReferenceIsArtifactId('a.b')!==false
       || a.artifactReferenceNormalizeRelativePath('a//')!=='a' || a.artifactReferenceNormalizeRelativePath('/a')!==null) process.exit(1);
@@ -217,9 +222,10 @@ function probeAddon(file, node = process.execPath) {
       || typeof a.chatHistoryPublicCommittedMessage!=='function' || typeof a.chatHistoryBuildReplayMessages!=='function'
       || a.chatHistoryPublicCommittedMessage({role:'assistant',id:'x'})!==null
       || a.chatHistoryPublicCommittedMessage({role:'user',id:'u',content:'c'}).role!=='user') process.exit(1);
-    if(['HostAttributionSettings','recoverModelTimeout','voiceHotwordMatch','voiceHotwordList','VoiceTypedVocabulary','voiceMineHotwordPairs','taskBoardPlanningResult','taskBoardSessionFact','prepareOpencodeRotationHandoff','chatFrozenFinalization','chatValidateFinalizationPorts','chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
+    if(['openCodeModelLimit','openCodeCachedModelLimit','chatLostNotice','chatQueuedNotice','chatHeldNotice','chatHoldCapNotice','monitorAdmissionEvents','monitorDeliveryStep','monitorHandoffResult','openCodeCatalogSpec','openCodeCatalogId','openCodeCatalogName','openCodeCatalogEntry','voiceSpeechText','taskStoreProgressSteps','describeTaskStoreMigration','HostAttributionSettings','recoverModelTimeout','voiceHotwordMatch','voiceHotwordList','VoiceTypedVocabulary','voiceMineHotwordPairs','taskBoardPlanningResult','taskBoardSessionFact','prepareOpencodeRotationHandoff','chatFrozenFinalization','chatValidateFinalizationPorts','chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
       'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure','chatExecuteTurnFinalization',
       'chatCommitTurnFinalization'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['voiceRankTypedHotwords','voiceHistoryTemplateMask'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnEventToolTiming','turnEventDiffTiming','turnEventOpenTasks'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(a.turnEventOpenTasks([{seq:1,ts:1000,event:{type:'monitor_started',task_id:'p'}},{seq:2,ts:1500,event:{type:'monitor_progress',task_id:'p'}}])[0].lastTs!==1500) process.exit(1);
     if(['transcriptPruneDefaults','transcriptProjectDir','transcriptFind','transcriptPruneFile',

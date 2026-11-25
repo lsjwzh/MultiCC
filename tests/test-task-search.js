@@ -15,6 +15,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const search = require('../src/task-board/search');
+const legacySearch = require('./helpers/legacy-task-search');
 const { createTaskSearchRoutes, MAX_QUERY_CHARS } = require('../src/routes/task-search');
 const taskSearchUi = require('../public/task-search.js');
 
@@ -48,6 +49,23 @@ test('tokenize keeps latin runs whole and gives CJK both bigrams and characters'
   assert.ok(terms.has('air.js'), 'latin runs stay one token');
   assert.equal(search.tokenize('AIR.JS').has('air.js'), true, 'latin is case-folded');
   assert.equal(search.tokenize('ＡＩＲ').has('air'), true, 'NFKC folds full-width latin');
+});
+
+test('board queries preserve the frozen term cap, tie order and highlight references', () => {
+  const capped = Array.from({ length: 16 }, (_, i) => 'id' + i.toString(16));
+  const queries = [
+    false, null, '', ' \t ', '!!!', '索', '索 索 全', '查找 空格',
+    '中 ＡＡ 查找 ＢＢ 索 aa 查找', '\ud800 ＴＥＳＴ\t索\nＡＢ \udfff',
+    capped.join(' '), capped.reverse().join(' '), { toString: () => ' 索　ＡＡ ' },
+    Array.from({ length: 8001 }, (_, i) => 'word' + i).join(' ') + ' excludedlongest',
+  ];
+  for (const query of queries) {
+    const expected = legacySearch.analyzeQuery(query);
+    const actual = search.analyzeQuery(query);
+    assert.deepEqual(actual, expected);
+    assert.equal(actual.highlight === actual.strong, expected.highlight === expected.strong);
+    assert.equal(actual.highlight === actual.all, expected.highlight === expected.all);
+  }
 });
 
 test('analyzeQuery refuses to let weak single characters satisfy a word query', () => {

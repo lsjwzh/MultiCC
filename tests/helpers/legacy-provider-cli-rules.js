@@ -24,7 +24,7 @@
 
 const { getNative } = require('../../src/native/runtime');
 const { nativeVendorOf } = require('../../src/providers/native-vendor');
-const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('../../src/providers/native-opencode');
+const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('./frozen-native-opencode');
 
 const API_FORMATS = Object.freeze({
   ANTHROPIC: 'anthropic',

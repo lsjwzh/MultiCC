@@ -50,6 +50,21 @@ pub fn weighted_terms(text: &str) -> IndexMap<&str, f64> {
     terms
 }
 
+/// Board search takes the twelve longest distinct terms. Equal lengths keep
+/// tokenizer order. A single UTF-16 unit contributes only weak evidence.
+pub fn board_query_terms(text: &str) -> Vec<(String, f64)> {
+    let mut terms: Vec<_> = weighted_terms(text)
+        .into_keys()
+        .map(|term| (term, crate::js::string::utf16_len(term)))
+        .collect();
+    terms.sort_by_key(|&(_, length)| std::cmp::Reverse(length));
+    terms.truncate(12);
+    terms
+        .into_iter()
+        .map(|(term, length)| (term.to_owned(), if length == 1 { 0.34 } else { 1.0 }))
+        .collect()
+}
+
 pub fn index_tokens(text: &str) -> Vec<&str> {
     latin_runs(text)
         .chain(cjk_runs(text).flat_map(bigrams))
