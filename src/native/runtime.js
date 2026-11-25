@@ -199,6 +199,32 @@ function findProviderReferences(input = {}) {
 function gatewayPath() {
   return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
+let monitorAdmission;
+function getMonitorAdmission() {
+  if (monitorAdmission) return monitorAdmission;
+  const addon = getNative();
+  const hasFrame = (prompt, open, close) => prompt.startsWith(open) && prompt.includes(close);
+  const copy = event => ({ ...event });
+  const includesReason = (event, reason) => event.result.includes(reason);
+  monitorAdmission = {
+    CALLBACK_ID: addon.MONITOR_CALLBACK_ID,
+    isMonitorHandoffResult: event => addon.monitorHandoffResult(event, includesReason),
+    createMonitorAdmission(deliver, isOwnPrompt = () => false) {
+      const owns = prompt => isOwnPrompt(prompt);
+      return async input => {
+        const events = addon.monitorAdmissionEvents(input, owns, hasFrame);
+        if (!events) return {};
+        let reply;
+        for (let index = 0; ; index++) {
+          const step = addon.monitorDeliveryStep(events, index, reply, copy);
+          if (Object.hasOwn(step, 'outcome')) return step.outcome;
+          reply = await deliver(step.event);
+        }
+      };
+    },
+  };
+  return monitorAdmission;
+}
 let nativeOpenCodeCatalog;
 function getNativeOpenCodeCatalog() {
   if (nativeOpenCodeCatalog) return nativeOpenCodeCatalog;
@@ -577,7 +603,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

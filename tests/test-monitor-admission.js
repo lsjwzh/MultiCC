@@ -11,7 +11,7 @@ const { createBackgroundTaskRuntime } = require('../src/chat/background-task-run
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { createSessionDelivery } = require('../src/native/runtime').getSessionDeliveryApi();
 const sdkFixture = require('./helpers/claude-sdk-fixture');
-const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/chat/monitor-admission');
+const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/native/runtime').getMonitorAdmission();
 
 test('Monitor hook only captures known native notifications and never captures submitted user text', async () => {
   const seen = [];
@@ -557,4 +557,71 @@ test(`real sdk background Agent finishing inside its turn reaches that turn nati
   await new Promise(resolve => setTimeout(resolve, 800));
   assert.ok(s.main.some(messages => messages.includes('AGENT_FINAL_REPORT')), `the turn receives the report (${s.decisions.join(', ')})`);
   assert.deepEqual(s.injections, [], 'no 🔇 for a report the turn received');
+});
+
+test('Monitor 的混合通知、来源、字段限长与异步投递轨迹匹配冻结版本', async () => {
+  const old = require('./helpers/frozen-monitor-admission');
+  const api = require('../src/native/runtime').getMonitorAdmission();
+  const raw = fs.readFileSync(require.resolve('./helpers/frozen-monitor-admission'));
+  const hash = require('node:crypto').createHash('sha1').update('blob ' + raw.length + '\0').update(raw).digest('hex');
+  assert.equal(hash, '743d9912ea3704f4e2ce21198689d00393a1246e');
+  assert.equal(api.CALLBACK_ID, old.CALLBACK_ID);
+  const block = (id, more = '') => '<task-notification><task-id>' + id + '</task-id>' + more + '</task-notification>';
+  const text = 'x'.repeat(239) + '😀&lt;&amp;lt;\ud800';
+  const prompts = ['', 'free text', ' ' + block('t'), block('t'), block('t') + block('next'), block('-_A0'),
+    block('x'.repeat(160)), block('x'.repeat(161)), block('invalid.id') + block('good'),
+    block('ok', '<event>' + text.repeat(36) + '</event><summary>' + text + '</summary><result>&quot;&apos;&lt;&amp;&gt;</result>'),
+    block('ok', '<result>' + 'a'.repeat(65535) + '😀</result><output-file>\udfff</output-file>'),
+    block('ok', '<event>a<b</event><event>second</event>') + 'z', block('ok') + ' '.repeat(128 * 1024)];
+
+  async function trace(owner, prompt, mode, source) {
+    const log = [], sentinel = {};
+    let reads = 0;
+    const input = {
+      get source() { log.push('source'); return source; },
+      get prompt() { log.push('prompt'); return prompt; },
+      get hook_event_name() { log.push('hook'); return 'UserPromptSubmit'; },
+      get prompt_id() { log.push('id'); return ++reads % 2 ? 'p' : reads; },
+    };
+    const hook = owner.createMonitorAdmission(async event => {
+      log.push(event);
+      if (mode === 'reject') throw sentinel;
+      return { get monitorOwned() { log.push('owned'); return mode !== 'other' || event.task_id !== 'next'; } };
+    }, value => {
+      log.push('own:' + String(value === prompt));
+      return mode === 'own';
+    });
+    try {
+      const out = await hook(input);
+      const result = { type: 'result', origin: { kind: 'task-notification' }, num_turns: 0, result: 'trace ' + (out.reason || '') };
+      return { log, out, handoff: owner.isMonitorHandoffResult(result) };
+    } catch (error) {
+      if (error !== sentinel) throw error;
+      return { log, sameError: true };
+    }
+  }
+  for (const prompt of prompts) {
+    for (const mode of ['ok', 'other', 'reject', 'own']) {
+      for (const source of ['sdk', 'user', 'host']) {
+        assert.deepEqual(await trace(api, prompt, mode, source), await trace(old, prompt, mode, source));
+      }
+    }
+  }
+  function changedResult(owner, second) {
+    let reads = 0;
+    const sentinel = {};
+    const event = {
+      type: 'result', num_turns: 0, origin: { kind: 'task-notification' },
+      get result() {
+        if (++reads === 1) return '';
+        if (second === 'throw') throw sentinel;
+        return second;
+      },
+    };
+    try { return { value: owner.isMonitorHandoffResult(event), reads }; }
+    catch (err) { return { error: err === sentinel ? 'same exception' : [err.name, err.message], reads }; }
+  }
+  for (const second of [null, undefined, { includes: 0 }, { includes: reason => reason.length }, 'throw']) {
+    assert.deepEqual(changedResult(api, second), changedResult(old, second));
+  }
 });

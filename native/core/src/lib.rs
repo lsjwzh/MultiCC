@@ -68,6 +68,7 @@ pub mod missing_resume_recovery;
 pub mod model_default;
 pub mod model_request_policy;
 pub mod model_stream_progress;
+pub mod monitor_admission;
 pub mod mutagen_runtime;
 pub mod native_session_guard;
 pub mod network_policy;
