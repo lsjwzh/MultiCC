@@ -4,7 +4,7 @@ const { sanitizePublicText } = require('../http/public-safety');
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
 const { VENDOR_NATIVE_CLIS, NATIVE_VENDOR_SUFFIX } = require('../providers/native-vendor');
-const { NATIVE_OPENCODE_PREFIX } = require('../providers/native-opencode');
+const { NATIVE_OPENCODE_PREFIX } = require('../native/runtime').getNativeOpenCodeCatalog();
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);

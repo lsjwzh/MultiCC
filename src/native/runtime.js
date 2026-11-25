@@ -199,6 +199,27 @@ function findProviderReferences(input = {}) {
 function gatewayPath() {
   return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
+let nativeOpenCodeCatalog;
+function getNativeOpenCodeCatalog() {
+  if (nativeOpenCodeCatalog) return nativeOpenCodeCatalog;
+  const addon = getNative();
+  const { prefix, pattern, names } = addon.openCodeCatalogSpec();
+  // V8 owns species-aware map/filter, iterable spread and the default hint of +.
+  const ports = {
+    mapModels: models => (Array.isArray(models) ? models : [])
+      .map(model => String(model ?? '').trim()).filter(Boolean),
+    spread: values => [...values],
+    add: (left, right) => left + right,
+  };
+  nativeOpenCodeCatalog = {
+    NATIVE_OPENCODE_ID: new RegExp(pattern, 'i'),
+    NATIVE_OPENCODE_PREFIX: prefix,
+    nativeOpenCodeId: value => addon.openCodeCatalogId(String(value ?? '')),
+    nativeOpenCodeName: id => addon.openCodeCatalogName(id, names),
+    syntheticNativeOpenCodeProvider: (id, modelOptions = []) => addon.openCodeCatalogEntry(id, modelOptions, names, ports),
+  };
+  return nativeOpenCodeCatalog;
+}
 const voiceSpeech = {
   stripTruncatedLegacyMarker: raw => getNative().voiceSpeechText(String(raw || ''), undefined),
   sanitizeVoiceSpeech(raw, { privateValues = [] } = {}) {
@@ -430,7 +451,7 @@ const providerInvocation = {
       revision: require('../chat/provider-attempt-runtime').createProviderRevision,
       policy: resolveModelRequestPolicy,
       proof: require('../chat/turn-request').createProviderRouteProof,
-      nativeOpenCodeId: require('../providers/native-opencode').nativeOpenCodeId,
+      nativeOpenCodeId: getNativeOpenCodeCatalog().nativeOpenCodeId,
       nativeVendorOf: require('../providers/native-vendor').nativeVendorOf,
     });
     return Object.freeze({ prepare: (input = {}) => native.providerInvocationPrepare(input, ports) });
@@ -556,7 +577,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

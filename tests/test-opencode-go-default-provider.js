@@ -136,6 +136,20 @@ test('opencode session keeps its native OpenCode Go model when saving the defaul
   assert.equal(res.body.effectiveModel, 'opencodego/glm-5.2');
 });
 
+test('OpenCode native profile changes publish the catalog display name', () => {
+  for (const [id, name] of [['opencodego', 'OpenCode Go'], ['custom-id', 'OpenCode · custom-id']]) {
+    const provider = 'opencode-native:' + id;
+    const { session, handler, effects } = fixture({
+      id: 's1', dirId: 'd1', cli: 'opencode', kind: 'chat', label: '会话', provider: null, model: null,
+    }, {}, [{ id: provider, name: 'managed catalog label', modelOptions: [] }]);
+    const res = invoke(handler, { params: { id: 's1' }, body: { provider } });
+    assert.equal(res.statusCode, 200);
+    assert.equal(session.provider, provider);
+    assert.deepEqual(effects.events.filter(event => event[1] === 'session_provider_changed'),
+      [['d1', 'session_provider_changed', '会话 → ' + name, 's1']]);
+  }
+});
+
 test('opencode session saving default provider with empty model clears to CLI default', () => {
   const { session, handler } = fixture({
     id: 's1', dirId: 'd1', cli: 'opencode', kind: 'chat', provider: null, model: 'opencodego/glm-5.2',

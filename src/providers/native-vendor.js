@@ -8,7 +8,7 @@
 // structural so a stored pool survives a cold boot and the vendor CLI never has
 // to be online to save one.
 //
-// OpenCode keeps its own module (native-opencode.js): one lane may hold several
+// OpenCode keeps its own native catalog: one lane may hold several
 // native providers, and its wire model carries the `<provider>/<model>` prefix.
 // The vendors here have a single catalog and a bare model id.
 

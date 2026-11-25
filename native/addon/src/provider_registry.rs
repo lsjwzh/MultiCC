@@ -1,4 +1,6 @@
 //! Node transport for provider registry rules.
+mod opencode;
+
 use crate::js_live::LiveValue as L;
 use multicc_core::js::JsValue as V;
 use multicc_core::provider_registry::{ProviderCliFacts, ProviderIdQueries};

@@ -86,8 +86,20 @@ pub const VENDOR_NATIVE_CLIS: [&str; 8] = [
 ];
 /// Mirrors `NATIVE_VENDOR_SUFFIX` in `src/providers/native-vendor.js`.
 pub const NATIVE_VENDOR_SUFFIX: &str = "-native:";
-/// Mirrors `NATIVE_OPENCODE_PREFIX` in `src/providers/native-opencode.js`.
+/// OpenCode owns the native provider namespace, including user-installed providers.
 pub const NATIVE_OPENCODE_PREFIX: &str = "opencode-native:";
+pub const NATIVE_OPENCODE_ID_PATTERN: &str = "^[a-z0-9][a-z0-9._-]{0,63}$";
+
+/// A bare OpenCode prefix has an empty id. Only a missing prefix denotes a
+/// regular MultiCC provider. The suffix may contain arbitrary UTF-16 units.
+pub fn native_opencode_id(text: &crate::js::JsString) -> Option<crate::js::JsString> {
+    let prefix = NATIVE_OPENCODE_PREFIX;
+    let head = text.as_units().get(..prefix.len())?;
+    head.iter()
+        .copied()
+        .eq(prefix.bytes().map(u16::from))
+        .then(|| text.slice_units(prefix.len(), text.len()))
+}
 
 /// The Anthropic pool, in the retired table's order.
 const ANTHROPIC_COMPATIBLE_CLIS: [&str; 6] =
@@ -1098,6 +1110,16 @@ pub fn unique_models(models: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_catalog_preserves_the_utf16_suffix_and_distinguishes_an_empty_id() {
+        use crate::js::JsString;
+        let mut text = JsString::from(NATIVE_OPENCODE_PREFIX);
+        assert_eq!(native_opencode_id(&text), Some(JsString::new()));
+        text.push_unit(0xd800);
+        assert_eq!(native_opencode_id(&text).unwrap().as_units(), &[0xd800]);
+        assert!(native_opencode_id(&JsString::from("OpenCode-native:other")).is_none());
+    }
 
     #[test]
     fn a_trimmed_auto_pool_collapses_to_manual_below_two_enabled_candidates() {

@@ -19,7 +19,7 @@ const {
   NATIVE_OPENCODE_PREFIX,
   nativeOpenCodeId,
   syntheticNativeOpenCodeProvider,
-} = require('../providers/native-opencode');
+} = require('../native/runtime').getNativeOpenCodeCatalog();
 const {
   VENDOR_NATIVE_SET,
   syntheticVendorProvider,

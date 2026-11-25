@@ -20,7 +20,7 @@ const {
   NATIVE_OPENCODE_PREFIX,
   nativeOpenCodeId,
   syntheticNativeOpenCodeProvider,
-} = require('../../src/providers/native-opencode');
+} = require('./frozen-native-opencode');
 const {
   VENDOR_NATIVE_SET,
   syntheticVendorProvider,

@@ -787,7 +787,7 @@ main({
     fs.writeFileSync(worldPath, JSON.stringify({ case: 'initial', answers: {} }));
     const world = require(path.join(repo, 'tests/helpers/session-routes-scripted-world'));
     const legacy = require(path.join(repo, 'tests/helpers/legacy-session-routes'));
-    const { mountPublicSessionAccessGuard } = require(path.join(repo, 'src/session/public-session-access'));
+    const { mountPublicSessionAccessGuard } = require(path.join(repo, 'tests/helpers/legacy-public-session-access'));
     bag = world.buildDeps({ case: 'initial', answers: {} });
     mountPublicSessionAccessGuard(app, { records: bag.deps.meta.persistedSessions });
     // The whole server also answers GET on this path (owned by session-admin);
