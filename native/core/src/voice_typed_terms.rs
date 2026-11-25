@@ -2,11 +2,25 @@
 //! while every occurrence of each spelling contributes to its preferred form.
 use indexmap::{IndexMap, IndexSet};
 use regex::Regex;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 static WORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*").expect("ASCII hotword pattern")
 });
+
+pub const TEMPLATE_PREFIX_UNITS: usize = 24;
+
+/// Each call covers one speaker. A third occurrence removes all messages
+/// with that prefix, including the first two, without reordering other rows.
+pub fn history_template_mask<'a>(messages: impl Iterator<Item = &'a [u16]> + Clone) -> Vec<u8> {
+    let prefixes = messages.map(|s| &s[..s.len().min(TEMPLATE_PREFIX_UNITS)]);
+    let mut counts = HashMap::new();
+    for prefix in prefixes.clone() {
+        *counts.entry(prefix).or_insert(0usize) += 1;
+    }
+    prefixes.map(|p| u8::from(counts[p] < 3)).collect()
+}
 
 #[derive(Default)]
 struct Word {
@@ -136,6 +150,26 @@ impl Vocabulary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn templates_count_utf16_prefixes_and_keep_the_original_order() {
+        let mut prefix = vec![97; 23];
+        prefix.push(0xd83d);
+        let rows = [
+            [prefix.as_slice(), &[0xde42]].concat(),
+            vec![97, 0],
+            prefix.clone(),
+            vec![97],
+            [prefix.as_slice(), &[0xde43]].concat(),
+            vec![97, 0],
+            vec![97, 0],
+        ];
+        assert_eq!(
+            history_template_mask(rows.iter().map(Vec::as_slice)),
+            [0, 0, 0, 1, 0, 0, 0]
+        );
+    }
+
     #[test]
     fn repeated_forms_vote_per_occurrence_and_sessions_once_per_message() {
         let mut words = Vocabulary::default();

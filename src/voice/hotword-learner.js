@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { getNative } = require('../native/runtime');
 const { atomicWriteJson } = require('../runtime-security');
 const miner = require('./hotword-miner');
 
@@ -196,8 +197,7 @@ function createHotwordLearner({ file, examplesFile, chatHistoryDir, log = consol
     }
     // A prompt that recurs verbatim is a template (cron jobs, task board), and
     // so is a canned reply. Drop those from both sides before mining.
-    const own = dropTemplates(messages);
-    const fromModel = dropTemplates(modelMessages);
+    const [own, fromModel] = await Promise.all([dropTemplates(messages), dropTemplates(modelMessages)]);
 
     const typed = miner.rankTypedHotwords(own, fromModel);
 
@@ -209,13 +209,9 @@ function createHotwordLearner({ file, examplesFile, chatHistoryDir, log = consol
     log.log(`[multicc/hotwords] Scanned ${Math.min(files.length, MAX_FILES)} sessions: ${typed.length} typed terms (${typed.filter(t => t.source === 'assistant').length} from model replies), ${result().active.length} active hotwords`);
   }
 
-  function dropTemplates(list) {
-    const counts = new Map();
-    for (const m of list) {
-      const prefix = m.text.slice(0, 24);
-      counts.set(prefix, (counts.get(prefix) || 0) + 1);
-    }
-    return list.filter(m => counts.get(m.text.slice(0, 24)) < 3);
+  async function dropTemplates(list) {
+    const keep = await getNative().voiceHistoryTemplateMask(list);
+    return list.filter((_, index) => keep[index]);
   }
 
   function refresh() {
