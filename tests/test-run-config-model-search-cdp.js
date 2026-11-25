@@ -2,7 +2,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
-const { parseCommandcodeList } = require('../src/routes/commandcode-models');
+const { parseCommandcodeList } = require('../src/routes/model-catalogs-host').getVendorCatalog('commandcode');
 
 // 运行配置里的模型下拉在真 Chrome 里走一遍：Command Code 的 94 个模型按厂商
 // 自己的分组画 <optgroup>、目录长就出现搜索框、过滤不丢当前选中值；目录短的车道

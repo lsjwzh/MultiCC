@@ -7,8 +7,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { defaultRepoActor, DEFAULT_TIMEOUT_MS } = require('../repo-actor');
-const { quickCommitMessage } = require('../native/runtime');
-const { syncWorktreeOnWake } = require('./wake-sync');
+const { quickCommitMessage, syncWorktreeOnWake } = require('../native/runtime');
 
 const execFileAsync = promisify(execFile);
 const WORKTREE_SUBDIR = '.multicc-worktrees';

@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { resolveDataDir } = require('../src/paths');
-const { deriveToolTiming, diffToolTiming } = require('../src/chat/turn-event-replay');
+const { deriveToolTiming, diffToolTiming } = require('../src/native/runtime').getTurnEventReplay();
 
 function main(argv) {
   const sessionId = argv.find(a => !a.startsWith('--'));

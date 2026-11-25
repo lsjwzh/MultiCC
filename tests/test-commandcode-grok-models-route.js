@@ -14,8 +14,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const cc = require('../src/routes/commandcode-models');
-const grok = require('../src/routes/grok-models');
+const cc = require('../src/routes/model-catalogs-host').getVendorCatalog('commandcode');
+const grok = require('../src/routes/model-catalogs-host').getVendorCatalog('grok');
 
 const CC_REAL = fs.readFileSync(path.join(__dirname, 'fixtures', 'commandcode-list-models.txt'), 'utf8');
 const GROK_AUTHED = 'Default model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n  - grok-5-preview\n';
@@ -131,4 +131,85 @@ test('grok: refresh skips the one-hour cache', async () => {
   const fresh = await listGrok({ refresh: true });
   assert.equal(fresh.source, 'cli');
   assert.deepEqual(fresh.models.map(m => m.model), ['grok-4.7', 'grok-5-preview']);
+});
+
+test('四份 CLI 模型目录与冻结版逐项核对顺序、截断、缓存和回调', async () => {
+  const cases = [
+    [cc, require('./helpers/frozen-file-batch7/commandcode-models'), 'parseCommandcodeList', 'peekCommandcodeModels', 'listCommandcodeModels', 3600000],
+    [grok, require('./helpers/frozen-file-batch7/grok-models'), 'parseGrokModels', 'peekGrokModels', 'listGrokModels', 3600000],
+    [require('../src/routes/model-catalogs-host').getVendorCatalog('qoder'), require('./helpers/frozen-file-batch7/qoder-models'), 'parseQoderStdout', 'peekQoderModels', 'listQoderModels', 86400000],
+    [require('../src/routes/model-catalogs-host').getVendorCatalog('codebuddy'), require('./helpers/frozen-file-batch7/codebuddy-models'), 'parseCodebuddyHelp', 'peekCodebuddyModels', 'listCodebuddyModels', 3600000],
+  ];
+  const ids = Array.from({ length: 450 }, (_, i) => 'model-' + i);
+  const captures = [null, 0, {}, Symbol('catalog'), CC_REAL, GROK_ANON, GROK_AUTHED,
+    'Available models:\r\n* x\n- x (default)\n- y (DEFAULT)\n',
+    'MODEL\n\ufeffa\nhi\tignored\nalpha\u0085beta\n\ud800\n' + '😀'.repeat(61),
+    '标题\udfff\n\nfoo/bar   描述\ud800\nwrong:\t\t忽略\nfoo/bar  又见\n',
+    'CURRENTLY SUPPORTED:\t(a,a,b,foo/bar,[31mc[0m,\u001b[32md\u001b[0m)',
+    'MODEL\n' + ids.join('\n'), 'Currently supported: (' + ids.join(',') + ')',
+    'available models:\n' + ids.map(id => ' - ' + id).join('\n'),
+    'group\n\n' + ids.map(id => id + '  描述').join('\n')];
+  const savedNow = Date.now;
+  let now = 100;
+  try {
+    Date.now = () => now;
+    for (const [current, old, parse, peek, list, ttl] of cases) {
+      for (const input of captures) assert.deepEqual(current[parse](input), old[parse](input));
+      for (const api of [old, current]) {
+        const failure = new Error('input'); assert.throws(() => api[parse]({ toString() { throw failure; } }), e => e === failure);
+        api._resetCacheForTest(); const fallback = api[peek]();
+        assert.deepEqual(fallback, old[peek]()); assert.notEqual(fallback, api[peek]());
+        now = 100; const first = [], replacement = [{ model: 'new' }];
+        api._setCacheForTest(now, first);
+        now += ttl - 1; assert.equal(api[peek](), first);
+        const result = new Promise(resolve => api[list]((err, models, source) => resolve([err, models, source])));
+        api._setCacheForTest(100, replacement);
+        const [err, models, source] = await result;
+        assert.equal(err, null); assert.equal(models, replacement); assert.equal(source, 'cache');
+        now++; assert.deepEqual(api[peek](), fallback);
+        api._resetCacheForTest();
+      }
+    }
+  } finally { Date.now = savedNow; for (const [a,b] of cases) { a._resetCacheForTest(); b._resetCacheForTest(); } }
+});
+
+test('同一 CLI 并发刷新按子进程完成顺序发布，解析失败后仍可刷新', async t => {
+  const callbacks = [];
+  t.mock.method(require('node:child_process'), 'execFile', (_bin, _args, _opts, done) => callbacks.push(done));
+  const hostPath = require.resolve('../src/routes/model-catalogs-host');
+  const cachedHost = require.cache[hostPath];
+  delete require.cache[hostPath];
+  let catalog;
+  try { catalog = require(hostPath).getVendorCatalog('grok'); }
+  finally { require.cache[hostPath] = cachedHost; }
+
+  const gate = Promise.withResolvers();
+  const prototype = require('../src/native/runtime').getNative().RustVendorModelCatalog.prototype;
+  const parse = prototype.readListing;
+  const failure = new Error('worker failed');
+  t.mock.method(prototype, 'readListing', async function (text) {
+    if (text === 'failed') throw failure;
+    if (text === 'first') await gate.promise;
+    return parse.call(this, 'Available models:\n- ' + text);
+  });
+  const published = [];
+  const refresh = () => new Promise((resolve, reject) => catalog.listGrokModels((err, models) => {
+    if (err) return reject(err);
+    published.push(models[0].model);
+    resolve(models);
+  }, { refresh: true }));
+  const first = refresh(), second = refresh();
+  callbacks.shift()(null, 'first');
+  callbacks.shift()(null, 'second');
+  await new Promise(setImmediate);
+  assert.deepEqual(published, []);
+  gate.resolve();
+  await first;
+  assert.equal(await second, catalog.peekGrokModels());
+  const rejected = refresh(), recovery = refresh();
+  callbacks.shift()(null, 'failed');
+  callbacks.shift()(null, 'third');
+  await assert.rejects(rejected, e => e === failure);
+  assert.equal(await recovery, catalog.peekGrokModels());
+  assert.deepEqual(published, ['first', 'second', 'third']);
 });

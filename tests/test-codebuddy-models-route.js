@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const mod = require('../src/routes/codebuddy-models');
+const mod = require('../src/routes/model-catalogs-host').getVendorCatalog('codebuddy');
 const { parseCodebuddyHelp, listCodebuddyModels, CODEBUDDY_MODEL_FALLBACK } = mod;
 
 const ORIGINAL_CODEBUDDY_CMD = process.env.CODEBUDDY_CMD;

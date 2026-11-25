@@ -159,13 +159,13 @@ function mountLegacyModelCatalogRoutes(app, options = {}) {
   }
   mountOpenCodeModelRoutes(app, options);
   mountCliModelRoutes(app, options, 'qoder', '/api/qoder/models',
-    'src/routes/qoder-models', 'listQoderModels', 'qoder models unavailable');
+    'tests/helpers/frozen-file-batch7/qoder-models', 'listQoderModels', 'qoder models unavailable');
   mountCliModelRoutes(app, options, 'grok', '/api/grok/models',
-    'src/routes/grok-models', 'listGrokModels', 'grok models unavailable');
+    'tests/helpers/frozen-file-batch7/grok-models', 'listGrokModels', 'grok models unavailable');
   mountCliModelRoutes(app, options, 'commandcode', '/api/commandcode/models',
-    'src/routes/commandcode-models', 'listCommandcodeModels', 'commandcode models unavailable');
+    'tests/helpers/frozen-file-batch7/commandcode-models', 'listCommandcodeModels', 'commandcode models unavailable');
   mountCliModelRoutes(app, options, 'codebuddy', '/api/codebuddy/models',
-    'src/routes/codebuddy-models', 'listCodebuddyModels', 'codebuddy models unavailable');
+    'tests/helpers/frozen-file-batch7/codebuddy-models', 'listCodebuddyModels', 'codebuddy models unavailable');
   mountProviderModelRoutes(app, options);
   mountCodexModelRoutes(app, options.codexRuntime, options.accountRuntime,
     options.providerModelsRuntime || options.providerRuntime, options);

@@ -1,5 +1,28 @@
 # 剩余 Node 后端清单
 
+## 第七批按文件迁移（2026-11-25）
+
+上批提交 `5c7f6cfa` 时，生产入口可达的 Node 代码有 478 个文件、126,155 行。本批整份退出 **8 个生产文件**，删除 505 行，其余生产文件接线净增 86 行，**生产 Node 净减 419 行**。当前工作树剩余 **470 个生产文件、125,736 行**。从 `dc0df5fe` 的 495 个文件、126,693 行起，七批累计退出 **25 个文件、净减 957 行**。统计包含根 `server.js` 和从它或其宿主脚本可达的 `src/` 模块，排除测试、前端和离线工具。[生产依赖清单](node-module-dependencies.md)
+
+| 整份退出的生产文件 | 迁前直接生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/chat/turn-event-replay.js` | `src/chat/turn-engine.js` | 31 | `d40568c1` |
+| `src/task-routing/candidates.js` | `src/task-shell/host.js` | 36 | `2ed962df` |
+| `src/git/wake-sync.js` | `src/git/service.js` | 22 | `7f385486` |
+| `src/cli/switch-preparation.js` | `src/cli/switch-runtime.js`、`server.js` | 42 | `ef58c642` |
+| `src/routes/codebuddy-models.js` | `src/providers/native-vendor.js`、`src/routes/model-catalogs-host.js` | 92 | `b019b035` |
+| `src/routes/commandcode-models.js` | 同上 | 101 | `5d4677c1` |
+| `src/routes/grok-models.js` | 同上 | 83 | `0fe3b4d6` |
+| `src/routes/qoder-models.js` | 同上 | 98 | `0bb21378` |
+
+四个 CLI 的模型目录共用 Rust 入口。Rust 在工作线程按 UTF-16 码元解析命令输出，并负责去重、数量上限、离线模型、缓存有效期和刷新结果。Node 仍负责查找和启动 CLI，持有调用方使用的数组，按子进程完成顺序交付回调。等进程和缓存的消费方迁入 Rust 后，可移除这部分宿主接线。[目录解析](../../native/core/src/vendor_model_catalog.rs) · [缓存与工作线程](../../native/addon/src/vendor_model_catalog.rs) · [宿主端口](../../src/routes/model-catalogs-host.js)
+
+任务候选的来源校验、标识生成、事务内去重与失效判断已迁入 Rust。Node 继续提供宿主仓储和标识的 V8 类型转换。回合事件回放、Git 唤醒和 CLI 线路切换复用原有 Rust 内核，本批接管回放接口装配、唤醒参数读取、切线参数合并和 Codex 错误映射。宿主继续提供用户主目录、异步结果解码和原生扩展不可用时的错误处理。[任务候选](../../native/addon/src/task_candidates.rs) · [回放](../../native/addon/src/turn_event_replay.rs) · [唤醒](../../native/addon/src/worktree_sync.rs) · [切线](../../native/addon/src/cli_switch.rs)
+
+八份旧文件均冻结在测试目录，与基线原件逐一核对后，差异仅为相对导入路径。迁前 8 个定向测试文件 **208/208** 通过。八项迁移共用一次 macOS ARM64 发布构建，五份产物的摘要均匹配，源码指纹为 `10d375638de4beb92dc0c045`。同一构建上 18 个定向测试文件 **409/409** 通过，零跳过，覆盖隔离网关聊天回合、CLI 切线、模型刷新并发与出错后重试等路径。回放的 5,404 组差分摘要一致，捕获全部 56 个变异。[冻结副本](../../tests/helpers/frozen-file-batch7/) · [模型目录差分](../../tests/test-commandcode-grok-models-route.js) · [回放差分](../../tests/test-turn-event-replay.js)
+
+改动的 Rust 代码格式检查、源码行数门禁及测试分层检查均通过。扩展全目标严格 Clippy 仍报错。使用独立编译目录与 `5c7f6cfa` 比较，两边各有 28 条去重诊断，文件、行号和消息逐条相同。
+
 ## 第六批按文件迁移（2026-11-25）
 
 以任务分支 `ea7385cd` 为基线，本批从生产目录整份删除 8 个 JS 文件，共 259 行。保留的生产文件因兼容接线净增 60 行，**生产 Node 净减 199 行**。计入当前工作树，自 `dc0df5fe` 起六批累计退出 **17 个文件、净减 538 行**，从 495 个文件、126,693 行降至 **478 个文件、126,155 行**。统计包括根 `server.js` 及经它或其宿主脚本可达的 `src/` 文件，排除测试、前端及离线工具。[生产依赖清单](node-module-dependencies.md)
@@ -85,7 +108,7 @@ macOS ARM64 release 中，迁前和迁后定向各 52/52，扩大范围后各 13
 
 ## 回合事件回放（2026-11-25）
 
-聊天引擎重连和报告 CLI 共用 Rust 的工具计时、日志与记录差分和未结束任务恢复。CommonJS 入口传递 V8 值以保留 getter、异常、迭代顺序和对象身份，待两个调用方迁出后可移除。[回放入口](../../src/chat/turn-event-replay.js) · [冻结差分](../../tests/test-turn-event-replay.js)
+聊天引擎重连和报告 CLI 共用 Rust 的工具计时、日志与记录差分和未结束任务恢复。当时的 CommonJS 入口传递 V8 值以保留 getter、异常、迭代顺序和对象身份。该文件在第七批整份退出。[当时的回放入口](../../tests/helpers/frozen-file-batch7/turn-event-replay.js) · [冻结差分](../../tests/test-turn-event-replay.js)
 
 子任务补丁基线 `eaf9f829`。整合时同时保留语音和回放的 addon 探针。CommonJS 薄桥恢复普通函数声明，三个导出均可按冻结版构造调用，省略差分选项时会读取默认对象继承的阈值。整合源码的迁前、迁后各 181/181，均通过 5,404 例冻结差分，摘要 `a0743527`，Rust 定向测试 6/6。以磁盘日志驱动实际 WebSocket 重连处理器，只有近期未结束的任务补发中断帧，已有活跃任务时跳过日志。macOS ARM64、Node v26.8.1 下，2390 条事件、1,024 个字符串 ID 的同步恢复耗时从 0.121 到 2.222 ms（七轮中位数）。同规模对象 ID 从 0.133 增至 19.240 ms，Symbol ID 从 0.125 增至 18.360 ms。这是初版按引用逐项比较的量测。
 

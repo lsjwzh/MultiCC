@@ -9,7 +9,7 @@
 // addon reads every property from the caller's objects lazily, so getters,
 // exceptions, coercion order and reference identity behave as before.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 function deriveToolTiming(records) {
   return getNative().turnEventToolTiming(records);

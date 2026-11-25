@@ -767,6 +767,41 @@ function createNativeProviderStore(file) {
   return getNative().providerRepository(file, providerStoreAccess);
 }
 
+let turnEventReplay;
+function getTurnEventReplay() { return turnEventReplay ||= getNative().turnEventReplayApi(); }
+
+// Let V8 apply the original addition operator and conversion hints to host IDs.
+const candidateKeyInput = (receiptId, attribution) => receiptId + '\0' + attribution.turnId;
+function createCandidateStore(store) {
+  const native = getNative();
+  return {
+    propose(sessionId, receiptId, attribution) {
+      return native.taskCandidatePropose(store, sessionId, receiptId, attribution, candidateKeyInput);
+    },
+    latest(taskId) { return native.taskCandidateLatest(store, taskId); },
+  };
+}
+
+async function syncWorktreeOnWake(dirPath, worktree, baseBranch) {
+  try {
+    const native = getNative();
+    if (typeof native.wakeSyncRequest !== 'function') return { ok: false, code: 'wake_sync_unavailable' };
+    return JSON.parse(await native.wakeSyncRequest(dirPath, worktree, baseBranch));
+  } catch { return { ok: false, code: 'wake_sync_failed' }; }
+}
+async function prepareCliSwitchRoute(input) {
+  return JSON.parse(await getNative().prepareHostSwitchRoute(input, require('node:os').homedir()));
+}
+async function synchronizeCodexProfileRoute(route) {
+  try { return await prepareCliSwitchRoute({ ...route, cli: 'codex' }); }
+  catch (error) {
+    const cause = nativeCode(error);
+    let native;
+    try { native = getNative(); } catch { throw cause; }
+    throw native.codexProfileRouteFailure(cause);
+  }
+}
+
 let turnState;
 function getTurnState() {
   if (turnState) return turnState;
@@ -778,7 +813,8 @@ function getTurnState() {
   return turnState;
 }
 
-module.exports = { getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
+  getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

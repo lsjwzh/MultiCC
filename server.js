@@ -74,13 +74,12 @@ const {
 } = require('./src/codex/usage');
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { getNative, findProviderReferences, messageComposer, bootstrapState,
-  installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/native/runtime');
+  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/native/runtime');
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf, isAlias, nameOf: canonicalCli, watchEffortCatalog } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
-const { synchronizeCodexProfileRoute } = require('./src/cli/switch-preparation');
 const { renderPrompt } = messageComposer;
 const {
   applyCuratedMemoryAction,

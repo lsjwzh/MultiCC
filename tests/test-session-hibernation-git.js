@@ -447,3 +447,13 @@ test('生产任务清理删除已合并分支后，重启及唤醒保留会话�
   assert.equal(fs.readFileSync(path.join(added.worktreePath, 'tracked.txt'), 'utf8'), 'delivered\n');
   assert.equal((await gitWorktreeValidate(dirPath, added.worktreePath, added.branch)).ok, true);
 });
+
+test('工作树唤醒端口与冻结版保留失败码和字段访问顺序', async () => {
+  const current = require('../src/native/runtime').syncWorktreeOnWake;
+  const old = require('./helpers/frozen-file-batch7/wake-sync').syncWorktreeOnWake;
+  async function trace(sync) {
+    const log = [], worktree = { get worktreePath() { log.push('path'); return '/absent'; }, get branch() { log.push('branch'); throw Error('getter'); } };
+    return [await sync('/unused', worktree, null), await sync('/unused', null), log];
+  }
+  assert.deepEqual(await trace(current), await trace(old));
+});

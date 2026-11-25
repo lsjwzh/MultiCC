@@ -13,10 +13,7 @@
 // The vendors here have a single catalog and a bare model id.
 
 const { displayNameOf } = require('../cli/cli-capability');
-const { peekCommandcodeModels } = require('../routes/commandcode-models');
-const { peekQoderModels } = require('../routes/qoder-models');
-const { peekCodebuddyModels } = require('../routes/codebuddy-models');
-const { peekGrokModels } = require('../routes/grok-models');
+const { getVendorCatalog } = require('../routes/model-catalogs-host');
 const { peekAgyModels } = require('../routes/agy-models');
 
 // Lanes that own a vendor catalog. dsh/grok are additionally managed-capable
@@ -70,10 +67,10 @@ function modelIds(entries) {
 // bundled snapshot; dsh/gemini are static; pi has none.
 function nativeVendorModels(cli) {
   try {
-    if (cli === 'commandcode') return modelIds(peekCommandcodeModels());
-    if (cli === 'qoder') return modelIds(peekQoderModels());
-    if (cli === 'codebuddy') return modelIds(peekCodebuddyModels());
-    if (cli === 'grok') return modelIds(peekGrokModels());
+    if (cli === 'commandcode') return modelIds(getVendorCatalog(cli).peekCommandcodeModels());
+    if (cli === 'qoder') return modelIds(getVendorCatalog(cli).peekQoderModels());
+    if (cli === 'codebuddy') return modelIds(getVendorCatalog(cli).peekCodebuddyModels());
+    if (cli === 'grok') return modelIds(getVendorCatalog(cli).peekGrokModels());
     if (cli === 'agy') return modelIds(peekAgyModels());
   } catch (_) { /* a cold route must not break a turn */ }
   if (cli === 'dsh') return [...DSH_MODELS];

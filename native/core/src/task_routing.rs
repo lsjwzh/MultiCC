@@ -17,6 +17,13 @@
 //! non-negative safe integer, and blockers dedupe in first-seen order.
 use serde_json::{json, Value};
 
+/// Candidate keys bind the original receipt and turn, without creating a task.
+pub fn candidate_id(preimage: &crate::js::JsString) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(preimage.utf8_lossy_bytes());
+    format!("candidate_{:.32}", format!("{digest:x}"))
+}
+
 pub const MODES: [&str; 4] = ["off", "shadow", "suggest", "auto"];
 pub const DEFAULT_MODE: &str = "suggest";
 

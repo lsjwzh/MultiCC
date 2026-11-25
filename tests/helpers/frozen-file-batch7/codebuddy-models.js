@@ -19,7 +19,7 @@
 // them itself, so this route serves concrete ids only.
 
 const { execFile } = require('child_process');
-const { resolveCliCommands } = require('../cli-adapters/commands');
+const { resolveCliCommands } = require('../../../src/cli-adapters/commands');
 
 const CODEBUDDY_TTL_MS = 60 * 60 * 1000; // 1 hour — local call, fast-moving CLI
 const CODEBUDDY_TIMEOUT_MS = Number(process.env.CODEBUDDY_MODELS_TIMEOUT_MS || 10000);

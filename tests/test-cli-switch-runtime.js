@@ -16,7 +16,7 @@ const {
   buildHandoffCheckpoint,
 } = require('../src/cli-switch');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('../src/cli/switch-runtime');
-const { synchronizeCodexProfileRoute } = require('../src/cli/switch-preparation');
+const { synchronizeCodexProfileRoute } = require('../src/native/runtime');
 const { getNative } = require('../src/native/runtime');
 const { recordsOf } = require('./helpers/session-records');
 
@@ -2492,4 +2492,19 @@ test('an unconfirmed exit of the old CLI process defers the turn instead of fail
   assert.equal(await h.runtime.applyPendingConfiguration('s1'), false);
   assert.equal(h.session.cli, 'codex', 'the switch itself is applied; only the turn waits');
   assert.equal(h.session.pendingConfiguration, undefined);
+});
+
+test('线路准备与冻结入口保留返回值、输入展开顺序和失败边界', async () => {
+  const current = require('../src/native/runtime');
+  const old = require('./helpers/frozen-file-batch7/switch-preparation');
+  for (const method of ['prepareCliSwitchRoute','synchronizeCodexProfileRoute']) {
+    async function trace(api) {
+      const log = [], error = new Error('host getter');
+      const v = { get cli() { log.push('cli'); return 'claude'; }, get homeDir() { log.push('homeDir'); throw error; } };
+      try { await api[method](v); } catch (e) { assert.equal(e,error); }
+      try { return [log, await api[method]({ cli:'claude', homeDir:'/unused' })]; }
+      catch (e) { return [log,e.code,e.message,e.status,e.safe]; }
+    }
+    assert.deepEqual(await trace(current), await trace(old));
+  }
 });

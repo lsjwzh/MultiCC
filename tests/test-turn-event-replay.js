@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
 
-const { deriveToolTiming, diffToolTiming, deriveOpenTasks } = require('../src/chat/turn-event-replay');
+const { deriveToolTiming, diffToolTiming, deriveOpenTasks } = require('../src/native/runtime').getTurnEventReplay();
 
 // Journal-line helpers: the derivation consumes {seq, ts, event} records.
 const line = (seq, ts, event) => ({ seq, ts, event });
@@ -181,10 +181,7 @@ const K = v => () => v; // corpus dimension entry: a factory evaluated per trial
 const ABSENT = Symbol('absent');
 const set = (o, k, v) => { if (v !== ABSENT) o[k] = v; return o; };
 
-const MODULE_PATH = path.join(__dirname, '..', 'src', 'chat', 'turn-event-replay.js');
-const currentSource = () => fs.readFileSync(MODULE_PATH, 'utf8');
-
-// Both sides are compiled from source for every case. A long-lived JS module
+// Each case uses a freshly compiled JS oracle and a fresh native API object. A long-lived JS module
 // goes through V8's tiering: once one for-of site has seen two iterator
 // methods (the corpus installs custom ones), its non-callable @@iterator error
 // turns into "number 5 is not a function" instead of the site constant
@@ -196,7 +193,7 @@ function compileModule(source, require_ = require) {
   new Function('module', 'exports', 'require', source)(mod, mod.exports, require_);
   return mod.exports;
 }
-const coldCurrent = () => compileModule(currentSource(), require('node:module').createRequire(MODULE_PATH));
+const coldCurrent = () => require('../src/native/runtime').getNative().turnEventReplayApi();
 
 function frozenSource() {
   const actual = crypto.createHash('sha1')
@@ -1118,7 +1115,7 @@ test('the corpus observes every mutated rule of the frozen source', () => {
 });
 
 test('module surface is frozen with the four public names', () => {
-  const mod = require('../src/chat/turn-event-replay');
+  const mod = require('../src/native/runtime').getTurnEventReplay();
   assert.ok(Object.isFrozen(mod));
   assert.deepEqual(Object.keys(mod), ['deriveToolTiming', 'diffToolTiming', 'deriveOpenTasks', 'DEFAULT_TOLERANCE_MS']);
   assert.deepEqual(
@@ -1282,5 +1279,16 @@ test('重连遇到不可调用的 Map 方法时保留参数读取顺序和异常
   }
   for (const method of ['has', 'set', 'delete', 'get']) {
     assert.deepEqual(capture(deriveOpenTasks, method), capture(legacy, method));
+  }
+});
+
+test('回放入口与冻结宿主公开相同的函数签名、默认容差和结果', () => {
+  const old = require('./helpers/frozen-file-batch7/turn-event-replay');
+  const current = require('../src/native/runtime').getTurnEventReplay();
+  assert.deepEqual(Object.keys(current), Object.keys(old));
+  assert.equal(current.DEFAULT_TOLERANCE_MS, old.DEFAULT_TOLERANCE_MS);
+  for (const key of ['deriveToolTiming','deriveOpenTasks','diffToolTiming']) {
+    assert.equal(current[key].name, old[key].name); assert.equal(current[key].length, old[key].length);
+    assert.deepEqual(current[key]([],[]),old[key]([],[]));
   }
 });

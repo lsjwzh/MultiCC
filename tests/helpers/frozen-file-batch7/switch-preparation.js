@@ -3,7 +3,7 @@
 // Native adapter only. History lookup, missing/ambiguous decisions and checked
 // copies run on the Rust worker; there is no Node implementation or fallback.
 const os = require('node:os');
-const { getNative, nativeCode } = require('../native/runtime');
+const { getNative, nativeCode } = require('../../../src/native/runtime');
 
 const PROFILE_ROUTE_ERRORS = Object.freeze({
   CODEX_SESSION_ROLLOUT_AMBIGUOUS: 'Codex 原生会话历史存在多份副本，无法安全切换线路；请先清理重复的 rollout 文件。',
