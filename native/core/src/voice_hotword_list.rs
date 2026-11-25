@@ -13,7 +13,7 @@ mod tests {
 
     #[test]
     fn digits_and_lowercase_ascii_join_adjacent_aliases() {
-        for unit in [b'a', b'z', b'0', b'9'] {
+        for unit in *b"az09" {
             assert!(word_character(&[u16::from(unit)]));
         }
     }
