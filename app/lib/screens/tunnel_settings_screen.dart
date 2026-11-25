@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../widgets/named_back_button.dart';
 
 import '../services/manage_service.dart';
@@ -19,9 +20,11 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
   late final ManageService _manage = ManageService(settings: widget.settings);
 
   Map<String, dynamic>? _status;
+  Map<String, dynamic>? _sshTunnel;
   bool _loading = true;
   String? _error;
   String? _restartingProvider;
+  bool _sshBusy = false;
 
   @override
   void initState() {
@@ -35,10 +38,14 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
       _error = null;
     });
     try {
-      final s = await _manage.fetchTunnelStatus();
+      final results = await Future.wait<Map<String, dynamic>?>([
+        _manage.fetchTunnelStatus(),
+        _manage.fetchSshTunnelStatus().catchError((_) => <String, dynamic>{}),
+      ]);
       if (!mounted) return;
       setState(() {
-        _status = s;
+        _status = results[0];
+        _sshTunnel = results[1];
         _loading = false;
       });
     } catch (e) {
@@ -103,6 +110,8 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
                 children: [
                   _monitorCard(),
                   const SizedBox(height: 12),
+                  _sshTunnelCard(),
+                  const SizedBox(height: 12),
                   _providerCard('花生壳 (phddns)', 'phddns', Icons.dns_outlined),
                   const SizedBox(height: 12),
                   _providerCard(
@@ -119,6 +128,154 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
                 ],
               ),
             ),
+    );
+  }
+
+  Future<void> _applySshAuto() async {
+    setState(() => _sshBusy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await _manage.applySshTunnelPreset(const {
+        'provider': 'auto',
+        'localPort': 22,
+      });
+      if (!mounted) return;
+      setState(() => _sshTunnel = res);
+      final msg = (res['message'] ?? '已开启 SSH 映射').toString();
+      messenger.showSnackBar(SnackBar(content: Text('✓ $msg')));
+    } catch (e) {
+      if (!mounted) return;
+      final text = e is LocalOnlyException ? '仅可在本机操作 SSH 映射' : '映射失败：$e';
+      messenger.showSnackBar(SnackBar(content: Text(text)));
+    } finally {
+      if (mounted) setState(() => _sshBusy = false);
+    }
+  }
+
+  Future<void> _stopSsh() async {
+    setState(() => _sshBusy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await _manage.stopSshTunnel();
+      if (!mounted) return;
+      setState(() => _sshTunnel = res);
+      final msg = (res['message'] ?? '已停止 SSH 映射').toString();
+      messenger.showSnackBar(SnackBar(content: Text('✓ $msg')));
+    } catch (e) {
+      if (!mounted) return;
+      final text = e is LocalOnlyException ? '仅可在本机停止 SSH 映射' : '停止失败：$e';
+      messenger.showSnackBar(SnackBar(content: Text(text)));
+    } finally {
+      if (mounted) setState(() => _sshBusy = false);
+    }
+  }
+
+  Widget _sshTunnelCard() {
+    final raw = _sshTunnel ?? {};
+    final snap = raw['snapshot'] as Map?;
+    final active = snap?['active'] == true;
+    final sshdListening = snap?['sshdListening'] == true;
+    final canEdit = snap?['canEdit'] == true;
+    final config = (snap?['config'] as Map?) ?? {};
+    final suggested = snap?['suggested'] as Map?;
+    final sshTarget = (suggested?['sshTarget'] ?? '') as String;
+    final sshPort = suggested?['sshPort'];
+    final providerLabel = (suggested?['providerLabel'] ?? '') as String;
+
+    final badgeColor = active
+        ? AppColors.accent
+        : (sshdListening ? AppColors.muted : AppColors.amber);
+    final badgeText = active ? '已映射' : (sshdListening ? '未映射' : '22 未监听');
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.terminal, size: 18, color: AppColors.blue),
+              const SizedBox(width: 8),
+              const Text(
+                'SSH（22 端口）映射',
+                style: TextStyle(
+                  color: AppColors.textBright,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: badgeColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  badgeText,
+                  style: TextStyle(color: badgeColor, fontSize: 11),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (snap == null)
+            const Text(
+              '当前服务端不支持 SSH 映射查询',
+              style: TextStyle(color: AppColors.muted, fontSize: 12),
+            )
+          else ...[
+            _row('本机 22 端口', sshdListening ? '正在监听' : '未在监听'),
+            if (sshTarget.isNotEmpty) ...[
+              _row('通道', providerLabel.isNotEmpty ? providerLabel : 'SSH'),
+              _row('SSH 目标', '$sshTarget:${sshPort ?? 22}'),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: sshTarget));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('已复制 $sshTarget')),
+                    );
+                  },
+                  icon: const Icon(Icons.copy, size: 15),
+                  label: const Text('复制目标'),
+                ),
+              ),
+            ],
+            const SizedBox(height: 6),
+            if (!canEdit)
+              const Text(
+                '仅可在本机操作一键映射或停止（当前为远程访问）。',
+                style: TextStyle(color: AppColors.muted, fontSize: 11),
+              )
+            else
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _sshBusy ? null : _applySshAuto,
+                      icon: const Icon(Icons.bolt, size: 18),
+                      label: const Text('一键映射 SSH（22）'),
+                    ),
+                  ),
+                  if (config['enabled'] == true) ...[
+                    const SizedBox(width: 8),
+                    OutlinedButton(
+                      onPressed: _sshBusy ? null : _stopSsh,
+                      child: const Text('停止'),
+                    ),
+                  ],
+                ],
+              ),
+          ],
+        ],
+      ),
     );
   }
 

@@ -830,6 +830,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/share_code_test.dart",
+      "tier": "other",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/shell_config_entry_test.dart",
       "tier": "flow",
       "lane": "flutter"

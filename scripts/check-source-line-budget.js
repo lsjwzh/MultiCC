@@ -833,8 +833,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +7 bilingual keys (airProviderCliRelay*) + 1 key (airProviderSyncToTerminalCliRelayHint):
     // Claude/Codex 借道线路的「远程 CLI（Remote CLI）」模式开关、徽标、提示与终端同步禁用意图说明。
     // 中英各 8 行 = +16 行；重跑生成器实测 10796/703320。
-    maxLines: 10796,
-    maxBytes: 703320,
+    // +29 bilingual keys (airTunnelSsh*): SSH（22 端口）一键映射面板与状态提示文案。
+    // 中英各 29 行 = +58 行；重跑生成器 countLines 口径实测 10854/706873。
+    maxLines: 10854,
+    maxBytes: 706873,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });
