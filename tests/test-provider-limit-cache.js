@@ -1036,6 +1036,12 @@ async function testAsyncRecorderParity() {
     providerId: 'p', category: 'authentication_permission', httpStatus: 401,
   }));
   await compare('release', recorder => recorder.releaseProviderFailure({ providerId: 'p' }));
+  const workbuddy = 'codebuddy-native:codebuddy';
+  await newRecorder.recordProviderFailure({ providerId: workbuddy, category: 'billing_quota', httpStatus: 429 });
+  await newCache.prune(newRecorder.liveKeys());
+  const parked = await newCache.get('codebuddy', workbuddy);
+  assert.ok(parked?.summary?.blockedUntilMs > now(), 'catalog refresh preserves the WorkBuddy cooldown');
+  assert.equal(await newRecorder.recordProviderFailure({ providerId: 'codebuddy-native:unknown', httpStatus: 429 }), null);
   oldCache.close();
   await newCache.close();
 }

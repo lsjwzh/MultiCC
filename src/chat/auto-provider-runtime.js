@@ -329,6 +329,7 @@ function createAutoProviderRuntime(options = {}) {
       routingDecision: decision,
       originContinue: !!turnOptions.originContinue,
       directUserInput: !!turnOptions.directUserInput,
+      requestId: turnOptions.clientMsgId || turnOptions.deliveryId || turnOptions.requestId || null,
       // Whether a background notification may leave its lane is decided in
       // Rust (plan_turn): only a sibling adapter, only when this lane is empty.
       backgroundNotification,

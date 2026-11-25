@@ -1165,6 +1165,26 @@ test('the hop budget caps lane switches and a successful turn resets it', () => 
   assert.equal(runtime.planTurn({ session, text: '继续' }).cli, 'codex');
 });
 
+test('an independent scheduled delivery has a fresh hop budget after a failed chain', () => {
+  const { runtime, session, limits } = crossFixture({});
+  const plan = (clientMsgId, extra = {}) => runtime.planTurn({
+    session, text: 'run', turnOptions: { clientMsgId, ...extra },
+  });
+  for (let hop = 0; hop < 4; hop++) {
+    limits.clear();
+    exhaust(limits, session.cli === 'claude' ? ['claude-a', 'claude-b'] : ['codex-a', 'codex-b']);
+    const next = hop === 0 ? plan('scheduled-1') : plan('handoff-' + hop, { originContinue: true });
+    session.cli = next.cli;
+    assert.equal(runtime.beginTurn({ session, turnId: 'turn-' + hop }).initial().providerId, next.providerId);
+  }
+  limits.clear();
+  exhaust(limits, ['claude-a', 'claude-b']);
+  assert.equal(plan('scheduled-1'), null);
+  assert.equal(plan('background', { bgTaskIds: ['task'] }), null);
+  assert.equal(plan('handoff-last', { originContinue: true }), null);
+  assert.equal(plan('scheduled-2').cli, 'codex');
+});
+
 test('a background notification never moves to an unrelated CLI', () => {
   const { runtime, session, events } = crossFixture({ exhausted: ['claude-a', 'claude-b'] });
   // A background report belongs to the CLI whose tools it reports on: an
@@ -1844,7 +1864,7 @@ test('a Command Code native line runs as a provider-less lane with the vendor mo
   }
 });
 
-test('a WorkBuddy native line resolves from the vendor catalog', () => {
+test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () => {
   const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/codebuddy-models');
   _setCacheForTest(Date.now(), [{ model: 'hy4-preview-f', label: 'hy4-preview-f' }]);
   try {
@@ -1860,7 +1880,7 @@ test('a WorkBuddy native line resolves from the vendor catalog', () => {
     const session = {
       id: 'wb-native', cli: 'codebuddy',
       providerSelection: {
-        version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: false,
+        version: 1, mode: 'auto', protocol: 'anthropic', maxAttempts: 2, sticky: false, cliSwitch: 'failover',
         candidates: [
           { providerId: 'codebuddy-native:codebuddy', cli: 'codebuddy', model: 'hy4-preview-f', priority: 1 },
           { providerId: 'backup', cli: 'claude', model: 'good-model', priority: 2 },
@@ -1874,6 +1894,40 @@ test('a WorkBuddy native line resolves from the vendor catalog', () => {
       reasonCode: 'auto_initial_selection',
     });
     assert.equal(runtime.snapshot('wb-native').providerName, 'WorkBuddy');
+    const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
+    const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+    const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine');
+    const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
+    const attempts = createProviderAttemptRuntime();
+    const attempt = attempts.beginAttempt({
+      ...openAttempt('codebuddy-native:codebuddy'), sessionId: session.id, turnId: 'wb-turn', cli: session.cli,
+      model: 'hy4-preview-f', protocol: 'anthropic', providerRevision: 'wb-rev', attemptNo: 1,
+    });
+    const text = '429 额度已用尽，请访问以下链接，购买加量包以获取更多额度：https://www.codebuddy.cn/profile/usage  (request/session)';
+    const assistant = { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+    attempts.observeEvent(attempt, assistant);
+    const adapter = createCodebuddyAdapter({ cmd: 'codebuddy' });
+    const [result] = adapter.decodeEvent({ type: 'result', subtype: 'error_during_execution', is_error: true,
+      errors_info: [{ status: 429, code: 14018, details: text }], errors: [text] });
+    const runner = { pendingClaudeResult: result.raw };
+    const cs = { currentAssistantText: text };
+    assert.equal(chatClaudeBoundaryEnvelope(runner, session.cli, { currentAssistantText: '已完成第一步。' + text }), null);
+    assert.equal(chatClaudeBoundaryEnvelope({}, session.cli, cs), null);
+    assert.equal(chatClaudeBoundaryEnvelope({ pendingClaudeResult: { ...result.raw, is_error: false } }, session.cli, cs), null);
+    const envelope = chatClaudeBoundaryEnvelope(runner, session.cli, cs);
+    reconcileBoundaryErrorEnvelope(attempts, attempt, session.cli, cs, envelope);
+    const facts = attempts.snapshot(session.id);
+    assert.equal(facts.replayFence, 'none');
+    assert.equal(envelope.httpStatus, 429);
+    const decision = evaluateApiError(envelope, { phase: 'before_first_token', partialOutput: facts.visibleOutputObserved });
+    assert.equal(decision.error.category, 'billing_quota');
+    assert.equal(failoverSafety(decision, facts).ok, true);
+    assert.equal(turn.failover(decision, facts).invocationOptions, null);
+    const reservation = turn.prepareHandoff(decision, facts);
+    assert.equal(reservation.fromProviderId, attempt.providerId);
+    assert.equal(reservation.cli, 'claude');
+    session.cli = reservation.cli;
+    assert.equal(runtime.beginTurn({ session, turnId: 'wb-handoff' }).initial().providerId, 'backup');
   } finally {
     _resetCacheForTest();
   }

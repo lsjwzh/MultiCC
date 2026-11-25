@@ -746,6 +746,7 @@ pub fn plan_turn_finalization(input: &JsValue, deps: &JsValue, now_ms: f64) -> J
 
     let api_retry = !retry_unavailable
         && !guarded_handoff_resume_failure
+        && !is_true(prop(input, "autoHandoffReserved"))
         && (matches!(
             api_error_decision.get("action"),
             Some(JsValue::String(action)) if action.as_str_lossy() == "retry"
