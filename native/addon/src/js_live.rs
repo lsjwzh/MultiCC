@@ -470,3 +470,32 @@ impl<'env> LiveValue<'env> {
         Error::new(Status::PendingException, message)
     }
 }
+
+pub(crate) fn fields<'a>(
+    anchor: LiveValue<'a>,
+    entries: &[(&str, LiveValue<'a>)],
+) -> Result<LiveValue<'a>> {
+    let out = anchor.from_value(&JsValue::Object(vec![]))?;
+    for (key, value) in entries {
+        out.define_key(out.from_value(&JsValue::from(*key))?, *value)?;
+    }
+    Ok(out)
+}
+
+pub(crate) fn spread(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
+    let copy = fields(value, &[])?;
+    copy.spread_from(value)?;
+    Ok(copy)
+}
+
+pub(crate) fn invoke<'a>(
+    receiver: LiveValue<'a>,
+    method: LiveValue<'a>,
+    args: &[LiveValue<'a>],
+    site: &str,
+) -> Result<LiveValue<'a>> {
+    if method.kind()? != sys::ValueType::napi_function {
+        return Err(receiver.type_error(&format!("{site} is not a function")));
+    }
+    method.call(receiver, args)
+}

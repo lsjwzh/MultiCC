@@ -1,5 +1,19 @@
 # 剩余 Node 后端清单
 
+## 宿主提示词、常驻进程回收条件与任务关系（2026-11-25）
+
+| 整份退出的生产文件 | 生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/chat/host-prompts.js` | `server.js`、`src/chat/turn-engine.js` | 80 | `ccbf4061` |
+| `src/chat/resident-composition.js` | `server.js` | 35 | `401727fe` |
+| `src/task-shell/relations.js` | `src/task-shell/runtime.js` | 20 | `da2f5cb6` |
+
+Rust 按会话保存和消费完整计划提示的重置标记，生成启动提示词组合，并按后台任务、工作区租约、运行槽顺序判断常驻进程是否可回收。任务关系复用 Rust 仓储的类型清单，Rust 负责调用事务、补入两端标题，并在新建或首次删除成功后通知宿主。Node 继续提供进程回收、工作负载查询、任务标题和变更通知回调；这些接口随各自宿主迁移后可撤掉。[宿主提示词](../../native/addon/src/host_prompts.rs) · [回收条件](../../native/addon/src/resident_pool.rs) · [任务关系](../../native/addon/src/task_relations.rs)
+
+以第四批提交 `a0c4b515` 为基线，生产入口可达的 Node 代码由 489 个文件、126,440 行降至 486 个文件、126,354 行。三份旧文件共 135 行，其余生产代码净增 49 行，本批净减 86 行。自 `dc0df5fe` 起，前四批已提交，累计退出 6 份、净减 253 行；计入本批工作树，五批共退出 9 份、净减 339 行。统计包含根 `server.js` 与它直接、间接或经宿主脚本引用的 `src/` 文件。[生产依赖清单](node-module-dependencies.md)
+
+迁前与迁后定向回归各 82/82，Rust 提示词内核 3/3，隔离聊天回合、原生产物、路由工具、上下文、任务图及源码行数回归合计 57/57。另以独立进程分别加载前后两版发布模块，608 组提示词和异常的汇总 SHA-256 均为 `75a48d9a72127ef9e302d11d1a40a6c423095b97328f09ba69445d8671a4049f`。一次 macOS ARM64 发布构建产生的五份文件均通过摘要及源码指纹 `d632b558513bbeafbd1b65ea` 校验。[提示词差分](../../tests/test-worktree-sync-prompt.js) · [回收差分](../../tests/test-resident-pool.js) · [关系差分](../../tests/test-task-shell-relations.js)
+
 ## Gemini、Grok 启动参数与受管聊天上下文（2026-11-25）
 
 | 整份退出的生产文件 | 唯一生产调用方 | 迁前行数 | 冻结的 Git blob |

@@ -42,7 +42,7 @@ function createTaskShellRuntime(ports) {
   const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports: capacityPorts, ownerOf: taskActions.ownerOf, roles });
   const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
     getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
-  const relations = require('./relations').createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
+  const relations = require('../native/runtime').getTaskRelations().createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
     onChanged: id => ports.onRelationChanged?.(id) });
   const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();

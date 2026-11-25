@@ -2,29 +2,9 @@
 //! state alive; each native call only borrows it for the duration of the call.
 use super::{render_prompt, text, Env, Result, Unknown, L, V};
 use crate::js_iteration::read;
+use crate::js_live::{fields, invoke, spread};
 use napi::{bindgen_prelude::ToNapiValue, sys};
 use napi_derive::napi;
-
-fn fields<'a>(anchor: L<'a>, entries: &[(&str, L<'a>)]) -> Result<L<'a>> {
-    let out = anchor.from_value(&V::Object(vec![]))?;
-    for (key, value) in entries {
-        out.define_key(text(out, key)?, *value)?;
-    }
-    Ok(out)
-}
-
-fn spread(value: L<'_>) -> Result<L<'_>> {
-    let copy = fields(value, &[])?;
-    copy.spread_from(value)?;
-    Ok(copy)
-}
-
-fn invoke<'a>(receiver: L<'a>, method: L<'a>, args: &[L<'a>], site: &str) -> Result<L<'a>> {
-    if method.kind()? != sys::ValueType::napi_function {
-        return Err(receiver.type_error(&format!("{site} is not a function")));
-    }
-    method.call(receiver, args)
-}
 
 fn prepare<'a>(host: L<'a>, session: L<'a>, input: L<'a>) -> Result<L<'a>> {
     invoke(

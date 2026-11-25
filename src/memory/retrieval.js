@@ -21,7 +21,7 @@ function builtinChunks(text) {
   return owned;
 }
 
-// These CLIs receive the host system prompt (src/chat/host-prompts.js), which
+// These CLIs receive the host system prompt (native/core/src/host_prompts.rs), which
 // already carries [Secrets safety rules] and [Shared files]; injecting those
 // rules again would bill the same instructions twice on every call. Other lanes
 // have no host system prompt, so the managed context remains their only copy.

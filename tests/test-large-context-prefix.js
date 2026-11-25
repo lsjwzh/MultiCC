@@ -22,7 +22,7 @@ const {
   createHostPrompts,
   buildSubagentProviderHint,
   buildPlanProgressPrompt,
-} = require('../src/chat/host-prompts');
+} = require('../src/native/runtime').getHostPrompts();
 
 const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'large-context-sanitized.json');
 const DATA = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));

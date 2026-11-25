@@ -326,7 +326,7 @@ impl TaskStore {
         } else {
             "related"
         };
-        if !["related", "group"].contains(&kind) {
+        if !super::RELATION_KINDS.contains(&kind) {
             return Err(fail(
                 "invalid_input",
                 "kind must be one of related, group",

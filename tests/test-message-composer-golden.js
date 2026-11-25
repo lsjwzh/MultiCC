@@ -80,9 +80,9 @@ function codexModelConfigArg(session) {
 // preserves the byte identity buildGatewayPrompt('') + X === buildGatewayPrompt(X).
 const GATEWAY_PREFIX = '<<GATEWAY-BLOCK>>\n\n';
 const DISPATCH_BLOCK = '<<DISPATCH-CONTEXT>>\n';
-// The real builder (src/chat/host-prompts.js buildPlanProgressPrompt) is a
+// The real builder (native/core/src/host_prompts.rs plan_progress_prompt) is a
 // constant block; a sentinel keeps this gate about PLACEMENT and GATING rather
-// than about its wording, which tests/test-host-prompts.js pins.
+// than about its wording, which tests/test-worktree-sync-prompt.js pins.
 const PLAN_BLOCK = '<<TURN-PLAN>>\n\n';
 const IMG_HINT = '<<MULTICC_IMG_HINT>>';
 const ROLE_PROMPT = '<<ROLE: 你是一个严谨的翻译助手>>';
@@ -476,7 +476,7 @@ console.log('── Suite 5: task-context layer (bound-session cold start) ─�
 console.log('── Suite 6: sub-agent provider hint ──');
 
 (function suite6() {
-  const { buildSubagentProviderHint } = require('../src/chat/host-prompts');
+  const { buildSubagentProviderHint } = require('../src/native/runtime').getHostPrompts();
   const deps = makeDeps({ buildSubagentProviderHint });
   const opts = { isFirstTurn: true, mode: 'per-turn' };
 
@@ -524,7 +524,7 @@ console.log('');
 console.log('── Suite 7: turn-plan layer ──');
 
 (function suite7() {
-  const { buildPlanProgressPrompt } = require('../src/chat/host-prompts');
+  const { buildPlanProgressPrompt } = require('../src/native/runtime').getHostPrompts();
   const deps = makeDeps({ buildPlanPrompt: buildPlanProgressPrompt });
   const sessionName = 's1';
   delete notesStore[sessionName];
@@ -606,7 +606,7 @@ console.log('── Suite 7: turn-plan layer ──');
   // turn re-carries the full block — the dropped turns may have taken the
   // original full block with them — and the turn after falls back to the
   // reminder.
-  const { markPlanContextReset } = require('../src/chat/host-prompts');
+  const { markPlanContextReset } = require('../src/native/runtime').getHostPrompts();
   const rs = 's7i-reset';
   markPlanContextReset(rs);
   const reset1 = composeMessage({ text, persisted: basePersisted({ type: null }), sessionName: rs, opts: { isFirstTurn: false }, deps });

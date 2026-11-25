@@ -54,7 +54,7 @@ const { taskIdForShortCode } = require('../native/task-domain');
 const { taskStateSeed } = require('../native/runtime');
 const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../native/runtime').messageComposer;
 const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
-const { buildSubagentProviderHint } = require('./host-prompts');
+const { buildSubagentProviderHint } = require('../native/runtime').getHostPrompts();
 const managedContext = require('../native/runtime').managedContext;
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,

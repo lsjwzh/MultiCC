@@ -6,7 +6,7 @@
 // sizing live in Rust (`native/core/src/host_prompts.rs`); this module is the
 // thin Node bridge plus session-scoped plan-reset marker.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../src/native/runtime');
 
 function hostPrompt(op, payload) {
   return JSON.parse(getNative().hostPromptsRequest(op, JSON.stringify(payload ?? null)));

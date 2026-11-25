@@ -39,6 +39,42 @@ function fanOutAuxVerdictStaleness({ sessions, getTaskState, chatBroadcast, work
   return getNative().fanOutAuxVerdictStaleness(auxHealthProvider, sessions, getTaskState, chatBroadcast, workspaceBroadcast);
 }
 
+let hostPrompts;
+function getHostPrompts() {
+  if (hostPrompts) return hostPrompts;
+  const native = getNative(), plan = new native.RustPlanPromptState();
+  const lines = Object.freeze(JSON.parse(native.sessionQuestionRequest('prompt', 'null')));
+  function buildCodexUserInputConstraint(enabled = true) { return native.hostCodexConstraint(!!enabled); }
+  function buildSubagentProviderHint(subagent) { return native.hostSubagentHint(subagent); }
+  function buildHumanAssistPrompt(root) { return native.hostHumanAssist(root); }
+  function markPlanContextReset(name) { plan.mark(name); }
+  function buildPlanProgressPrompt(_persisted, name, opts) { return plan.progress(name, opts); }
+  function createHostPrompts(env = process.env, { assistRoot } = {}) {
+    return native.hostPromptBundle(env, assistRoot, lines);
+  }
+  hostPrompts = { USER_INPUT_SIGNAL_PROMPT: lines, buildCodexUserInputConstraint, buildSubagentProviderHint,
+    buildHumanAssistPrompt, markPlanContextReset, buildPlanProgressPrompt, createHostPrompts };
+  return hostPrompts;
+}
+
+let taskRelations;
+function getTaskRelations() {
+  if (taskRelations) return taskRelations;
+  const native = getNative(), kinds = Object.freeze(native.taskRelationKinds());
+  function createTaskRelations({ store, taskTitle, onChanged, now = Date.now }) {
+    const ports = { store, taskTitle, onChanged, now };
+    const project = row => native.taskRelationPublicTitle(row, taskTitle);
+    return {
+      list: shell => native.taskRelationList(store, shell, project),
+      create: (shell, input = {}) => native.taskRelationChange(ports, shell, input, false),
+      remove: (shell, input = {}) => native.taskRelationChange(ports, shell, input, true),
+      KINDS: kinds,
+    };
+  }
+  taskRelations = { createTaskRelations, RELATION_KINDS: kinds };
+  return taskRelations;
+}
+
 let notificationWords;
 function getPushNotificationCopy() {
   if (notificationWords) return notificationWords;
@@ -704,7 +740,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
