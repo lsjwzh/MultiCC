@@ -444,3 +444,58 @@ test('远程 CLI 开关在新建时就能出现，可见性跟随 Base URL 输�
   assert.match(app, /if \(_showCliRelay\) \.\.\.\[/);
   assert.equal((app.match(/cliRelay: _showCliRelay \? _cliRelay : null/g) || []).length, 2);
 });
+
+// SSH 借用码（mcssh1.）不是借道码：载荷里带私钥，导入后会写成 0600 文件并
+// 走 transport=ssh。两种码必须互不串味，否则导入端会拿着私钥去当 Bearer 用。
+function encodeSsh(payload) {
+  return 'mcssh1.' + Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+test('parseSshShareCode round-trips the ssh borrow payload', () => {
+  const ctx = loadModule();
+  const payload = {
+    v: 1,
+    kind: 'multicc-ssh',
+    name: '本机反重力 · SSH 借用',
+    appType: 'agy',
+    sshTarget: 'me@10.0.0.5',
+    sshPort: 2222,
+    identityKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n',
+    fileMode: 'mutagen',
+    shareId: '0123456789abcdef',
+  };
+  const { payload: parsed, error } = ctx.parseSshShareCode(encodeSsh(payload));
+  assert.equal(error, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed)), payload);
+});
+
+test('parseSshShareCode defaults a missing fileMode to mutagen', () => {
+  const ctx = loadModule();
+  const parsed = ctx.parseSshShareCode(encodeSsh({
+    kind: 'multicc-ssh',
+    appType: 'agy',
+    sshTarget: 'me@host',
+    identityKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----',
+  })).payload;
+  assert.equal(parsed.fileMode, 'mutagen');
+});
+
+test('parseSshShareCode rejects malformed or cross-kind codes', () => {
+  const ctx = loadModule();
+  assert.match(ctx.parseSshShareCode('mcrelay1.abc').error, /mcssh1\./);
+  assert.match(ctx.parseSshShareCode('').error, /mcssh1\./);
+  assert.match(ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-relay', appType: 'agy' })).error, /不是 MultiCC SSH 借用码/);
+  assert.match(ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'claude', sshTarget: 'h' })).error, /只支持反重力/);
+  assert.match(ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy', sshTarget: '' })).error, /缺少 SSH 目标/);
+  assert.match(ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy', sshTarget: 'h' })).error, /缺少借用的私钥/);
+  assert.match(
+    ctx.parseSshShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy', sshTarget: 'h', identityKey: '-----BEGIN OPENSSH PRIVATE KEY-----', fileMode: 'weird' })).error,
+    /同步方式无效/,
+  );
+});
+
+test('the relay parser does not accept an ssh borrow code', () => {
+  const ctx = loadModule();
+  const { error } = ctx.parseRelayShareCode(encodeSsh({ kind: 'multicc-ssh', appType: 'agy' }));
+  assert.match(error, /mcrelay1\./);
+});

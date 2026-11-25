@@ -32,6 +32,9 @@ pub enum Route {
     TestRemotePost,
     RelaySharePost,
     RelayImportCodeGet,
+    SshSharePreflightGet,
+    SshSharePost,
+    SshShareDelete,
     UpdateRemotePatch,
     Delete,
     MutagenStatusGet,
@@ -114,6 +117,21 @@ static LAYERS: &[Layer] = &[
         kind: Route::RelayImportCodeGet,
     },
     Layer {
+        segs: &["agy", "accounts", ":id", "ssh-share", "preflight"],
+        method: "GET",
+        kind: Route::SshSharePreflightGet,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "ssh-share"],
+        method: "POST",
+        kind: Route::SshSharePost,
+    },
+    Layer {
+        segs: &["agy", "accounts", ":id", "ssh-shares", ":shareId"],
+        method: "DELETE",
+        kind: Route::SshShareDelete,
+    },
+    Layer {
         segs: &["agy", "accounts", ":id"],
         method: "PATCH",
         kind: Route::UpdateRemotePatch,
@@ -151,7 +169,7 @@ fn segments(path: &str) -> Option<Vec<&str>> {
 fn layer_matches(layer: &Layer, parts: &[&str]) -> bool {
     layer.segs.len() == parts.len()
         && layer.segs.iter().zip(parts).all(|(name, part)| {
-            if *name == ":id" {
+            if name.starts_with(':') {
                 !part.is_empty()
             } else {
                 part.eq_ignore_ascii_case(name)
@@ -223,6 +241,20 @@ fn account_id_in(path: &str) -> Option<String> {
 
 fn account_id(ctx: &RequestCtx) -> Option<String> {
     account_id_in(&ctx.path)
+}
+
+/// `/api/agy/accounts/:id/ssh-shares/:shareId` → `shareId`.
+fn share_id_in(path: &str) -> Option<String> {
+    let parts = segments(path)?;
+    let named = |index: usize, name: &str| {
+        parts
+            .get(index)
+            .is_some_and(|part| part.eq_ignore_ascii_case(name))
+    };
+    if named(0, "agy") && named(1, "accounts") && named(3, "ssh-shares") {
+        return parts.get(4).map(|id| (*id).to_owned());
+    }
+    None
 }
 
 async fn state_with_mutagen(home: &Path) -> Value {
@@ -459,6 +491,74 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
                 Err(error) => failure(400, error),
             }
         }
+        Route::SshSharePreflightGet => {
+            let Some(_id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            express::json(
+                ctx,
+                200,
+                &multicc_core::ssh_share::preflight(&home),
+                &[("Cache-Control", "no-store")],
+            )
+        }
+        Route::SshSharePost => {
+            let Some(id) = account_id(ctx) else {
+                return failure(400, "invalid account id".to_owned());
+            };
+            let Some(acct_label) = store::get_local_account_label(&home, &id) else {
+                return failure(
+                    404,
+                    "仅支持为本机（Host）反重力账号生成 SSH 借用码".to_owned(),
+                );
+            };
+            let request = multicc_core::ssh_share::ShareRequest {
+                account_id: &id,
+                account_label: &acct_label,
+                ssh_target: body.get("sshTarget").and_then(Value::as_str).unwrap_or(""),
+                ssh_port: body
+                    .get("sshPort")
+                    .and_then(Value::as_u64)
+                    .and_then(|port| u16::try_from(port).ok()),
+                file_mode: body.get("fileMode").and_then(Value::as_str),
+                label: body.get("label").and_then(Value::as_str).unwrap_or(""),
+                models: &[],
+                install: body
+                    .get("install")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                restrict_from: body.get("restrictFrom").and_then(Value::as_str),
+            };
+            match multicc_core::ssh_share::create_share(&home, &request) {
+                Ok(created) => express::json(
+                    ctx,
+                    200,
+                    &json!({
+                        "ok": true,
+                        "code": created.code,
+                        "share": created.share,
+                        "authorizedKeysLine": created.authorized_keys_line,
+                    }),
+                    &[("Cache-Control", "no-store")],
+                ),
+                Err(error) => failure(400, error),
+            }
+        }
+        Route::SshShareDelete => {
+            let Some(share_id) = share_id_in(&ctx.path) else {
+                return failure(400, "invalid share id".to_owned());
+            };
+            match multicc_core::ssh_share::revoke_share(&home, &share_id) {
+                Ok(true) => express::json(
+                    ctx,
+                    200,
+                    &json!({ "ok": true, "shares": multicc_core::ssh_share::list_shares(&home, None).unwrap_or_default() }),
+                    &[("Cache-Control", "no-store")],
+                ),
+                Ok(false) => failure(404, "未找到这条 SSH 借用记录".to_owned()),
+                Err(error) => failure(400, error),
+            }
+        }
         Route::RemoteLoginStartPost => {
             let Some(id) = account_id(ctx) else {
                 return failure(400, "invalid account id".to_owned());
@@ -611,6 +711,8 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
             let Some(id) = account_id(ctx) else {
                 return failure(400, "invalid account id".to_owned());
             };
+            // 删账号前先收回它借出去的 SSH 密钥，别把 authorized_keys 留成后门。
+            let _ = multicc_core::ssh_share::revoke_account_shares(&home, &id);
             match store::delete_account(&home, &id) {
                 Ok(()) => {
                     invalidate_spawn_caches().await;
@@ -822,5 +924,53 @@ mod tests {
         );
         assert_eq!(account_id_in("/api/agy/accounts"), None);
         assert_eq!(account_id_in("/api/agy/quota"), None);
+    }
+
+    #[test]
+    fn claims_the_ssh_share_shapes() {
+        assert_eq!(
+            claim(&Method::POST, "/api/agy/accounts/0123456789abcdef/ssh-share"),
+            Some(Route::SshSharePost)
+        );
+        assert_eq!(
+            claim(
+                &Method::GET,
+                "/api/agy/accounts/0123456789abcdef/ssh-share/preflight"
+            ),
+            Some(Route::SshSharePreflightGet)
+        );
+        assert_eq!(
+            claim(
+                &Method::DELETE,
+                "/api/agy/accounts/0123456789abcdef/ssh-shares/feedfacefeedface"
+            ),
+            Some(Route::SshShareDelete)
+        );
+        // Reading a borrow code is not a thing; only issuing one is.
+        assert_eq!(
+            claim(&Method::GET, "/api/agy/accounts/0123456789abcdef/ssh-share"),
+            None
+        );
+        assert_eq!(
+            claim(
+                &Method::POST,
+                "/api/agy/accounts/0123456789abcdef/ssh-shares/feedfacefeedface"
+            ),
+            None
+        );
+        assert_eq!(
+            options_share("/api/agy/accounts/0123456789abcdef/ssh-share").as_deref(),
+            Some("POST")
+        );
+    }
+
+    #[test]
+    fn share_id_reads_the_parameter_segment() {
+        assert_eq!(
+            share_id_in("/api/agy/accounts/0123456789abcdef/ssh-shares/feedfacefeedface").as_deref(),
+            Some("feedfacefeedface")
+        );
+        assert_eq!(share_id_in("/api/agy/accounts/0123456789abcdef/ssh-share"), None);
+        assert_eq!(share_id_in("/api/agy/accounts"), None);
     }
 }

@@ -491,6 +491,14 @@ pub fn create_remote_account(
     if isolate_home && remote.remote_home.is_none() {
         remote.remote_home = Some(format!(".multicc-remote/agy-accounts/{id}"));
     }
+    // SSH 借用码带的是 Host 借出的私钥：落到本机 0600 文件，账号里只记路径。
+    if let Some(private_key) = raw_remote.get("identityKey").and_then(Value::as_str) {
+        if remote.is_relay() {
+            return Err("借道分享码不接受 SSH 私钥".to_string());
+        }
+        let path = crate::ssh_share::store_identity_key(home, &id, private_key)?;
+        remote.ssh_identity_file = Some(path.to_string_lossy().into_owned());
+    }
     let meta = meta_file(home, &id).ok_or("invalid account id")?;
     let effective_label = if label.trim().is_empty() {
         if let Some(host_label) = remote
