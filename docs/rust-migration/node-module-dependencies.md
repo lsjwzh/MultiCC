@@ -213,7 +213,7 @@
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/memory/task-distill.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/model-history-converter.js` | server.js | — | — | `crypto` | — | — |
-| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `332 require(file)` |
+| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `333 require(file)` |
 | `src/native/task-domain.js` | server.js | `src/native/runtime.js`, `src/paths.js`, `src/state/store.js` | — | `fs` | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-search.js` | server.js | `src/native/runtime.js`, `src/task-board/search.js` | — | — | — | — |

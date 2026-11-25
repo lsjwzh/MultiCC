@@ -120,7 +120,7 @@ function probeAddon(file, node = process.execPath) {
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
       'airDescribeIssue','airRecordStorageNotice','airTodoIgnoreKinds','airNormalizeIgnores','airTodoIgnoreRun',
       'airTaskListSpec','airNormalizeTaskIds','airStoredPins','RustAirTaskList',
-      'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchIndexTokens','searchMatchGroups','searchMatchExpression']
+      'searchDiversityCandidate','searchDiversityPick','confirmTurnEnd','searchNormalizeText','searchTokenize','searchBoardQueryTerms','searchIndexTokens','searchMatchGroups','searchMatchExpression']
       .some(key=>typeof a[key]!=='function') || a.SEARCH_MAX_MATCH_TERMS!==24 || a.SEARCH_MAX_PHRASE_BIGRAMS!==3
       || a.searchMatchExpression('缓存层')!=='("缓存" AND "存层")' || a.searchTokenize('缓存').get('缓')!==0.5) process.exit(1);
     if(['contextSelectionValue','contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',

@@ -207,6 +207,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn board_search_caps_equal_length_terms_in_tokenizer_order() {
+        let all = "aa bb cc dd ee ff gg hh ii jj kk ll mm";
+        let board = serde_json::json!({"tasks": {
+            "t1": {"id":"t1", "title":all}, "t2": {"id":"t2", "title":"mm"}
+        }});
+        let hits = search_board(&board, &serde_json::json!({"query":all})).unwrap();
+        let hits = hits.as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["taskId"], "t1");
+        assert_eq!(
+            hits[0]["matchedTerms"],
+            serde_json::json!(all.split_whitespace().take(12).collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
     fn documents_with_lone_surrogates_still_index() {
         let docs = r#"[{"taskId":"t1","fields":["bad \ud800 air","","",""],"dirId":null,"status":"active"}]"#;
         let index = SearchIndex::build(docs).unwrap();

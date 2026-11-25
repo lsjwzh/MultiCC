@@ -169,6 +169,7 @@ function rerankSearchHits(hits, { limit = 20, perRefQuota = 3, dedupeContentHash
 // 两个搜索入口在首次处理文本时加载同一原生分词器。
 const searchTokenizer = {
   tokenize: text => getNative().searchTokenize(text),
+  boardQueryTerms: text => getNative().searchBoardQueryTerms(text),
   normalizeText: text => getNative().searchNormalizeText(text),
   indexTokens: text => getNative().searchIndexTokens(text),
   matchGroups: text => getNative().searchMatchGroups(text),

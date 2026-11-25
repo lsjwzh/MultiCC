@@ -50,6 +50,17 @@ pub fn search_tokenize(env: Env, value: Unknown<'_>) -> Result<sys::napi_value> 
 }
 
 #[napi]
+pub fn search_board_query_terms(env: Env, value: Unknown<'_>) -> Result<sys::napi_value> {
+    let value = LiveValue::new(&env, value);
+    let text = token_input(value, false)?;
+    let terms = search_tokens::board_query_terms(&text)
+        .into_iter()
+        .map(|(term, weight)| JsValue::Array(vec![term.into(), weight.into()]))
+        .collect();
+    Ok(value.from_value(&JsValue::Array(terms))?.raw())
+}
+
+#[napi]
 pub fn search_index_tokens(env: Env, value: Unknown<'_>) -> Result<Vec<String>> {
     let text = token_input(LiveValue::new(&env, value), false)?;
     Ok(search_tokens::index_tokens(&text)

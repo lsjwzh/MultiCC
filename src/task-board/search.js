@@ -2,7 +2,7 @@
 
 // The tokenizer is shared with the durable message index (src/search/index-store.js)
 // so that a query means the same thing whichever corpus answers it.
-const { normalizeText, tokenize } = require('../native/runtime').searchTokenizer;
+const { normalizeText, tokenize, boardQueryTerms } = require('../native/runtime').searchTokenizer;
 
 // Full-text search over the task board.
 //
@@ -32,12 +32,8 @@ const { normalizeText, tokenize } = require('../native/runtime').searchTokenizer
 const FIELD_WEIGHTS = { title: 6, module: 2, areas: 3, body: 4 };
 const BM25_K1 = 1.4;
 const BM25_B = 0.6;
-const MAX_QUERY_TERMS = 12;
 const SNIPPET_RADIUS = 40;
 const SNIPPET_MAX = 160;
-// A single CJK character is a legal query but weak evidence: it appears inside
-// far too many words to rank on its own.
-const WEAK_QUERY_WEIGHT = 0.34;
 
 function taskModuleName(board, task) {
   const module = task?.moduleId ? board?.modules?.[task.moduleId] : null;
@@ -146,16 +142,7 @@ function buildTaskSearchIndex(board, options = {}) {
 function analyzeQuery(query) {
   const raw = String(query || '').trim();
   if (!raw) return { text: '', terms: [], strong: [], all: [], highlight: [], phrase: '' };
-  // A lone CJK character is weak no matter how often the query repeats it: it is
-  // the *kind* of term that decides, not its frequency.
-  // Ties keep tokenize's insertion order (first occurrence in the query), which
-  // is the closest thing to "what the sentence is about" once length has been
-  // weighed: a term the user wrote first is a better subject than a later one.
-  const collected = [...tokenize(raw).keys()]
-    // Latin runs have at least two code units. Only a CJK unigram has length one.
-    .map(term => [term, term.length === 1 ? WEAK_QUERY_WEIGHT : 1])
-    .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
-    .slice(0, MAX_QUERY_TERMS);
+  const collected = boardQueryTerms(raw);
   const strong = collected.filter(([term, weight]) => weight >= 1).map(([term]) => term);
   const all = collected.map(([term]) => term);
   return {

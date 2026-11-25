@@ -124,7 +124,7 @@ test('addon preflight rejects an exported audit function that cannot write', t =
     'sessionAssertDirectoryRecordsPort', 'sessionAssertChatHistoryPort', 'sessionPortsApi',
     'createTaskHistoryRetention', 'taskHistoryRefusal', 'taskHistoryRetentionApi', 'claudeExpHasNativeHistory',
     'turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
-      'confirmTurnEnd', 'searchNormalizeText', 'searchTokenize', 'searchIndexTokens', 'searchMatchGroups', 'searchMatchExpression',
+    'confirmTurnEnd', 'searchNormalizeText', 'searchTokenize', 'searchBoardQueryTerms', 'searchIndexTokens', 'searchMatchGroups', 'searchMatchExpression',
     'chatHistoryFileRepositoryCreate', 'sessionCreateRecordFactory', 'sessionRuntimeIsChatStateBusy', 'sessionRuntimeProcessAlive',
     'sessionPendingConfigurationFields', 'sessionPendingReadConfiguration', 'sessionPendingDesiredSession', 'sessionPendingConfigurationBusy', 'sessionPendingStageConfiguration', 'sessionLoginTerminalDisposer', 'sessionDeliveryApi', 'sessionHibernationReclaimerCreate', 'sessionPersistenceCreate', 'sessionPersistenceErrorClass', 'sessionPersistenceJsonClone', 'acpBridgeKernel', 'taskBoardQueueRunState',
     'grokProviderModelConfig', 'taskDisplayFields', 'taskDisplayMessages', 'taskDisplayTask', 'taskBoardAssertDeps', 'taskBoardLinkRelated', 'taskBoardStableTaskId', 'taskBoardCanonicalMessages', 'taskBoardCanonicalTaskBody',
