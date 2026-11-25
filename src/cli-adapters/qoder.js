@@ -1,6 +1,6 @@
 'use strict';
 
-const { createResultCompletionTracker, isMainResult } = require('./result-completion');
+const { createResultCompletionTracker, isMainResult, resultCompletion } = require('./result-completion');
 
 const { renderPrompt } = require('../native/runtime').messageComposer;
 const { claudeLikeMcpArgs } = require('./router-mcp');
@@ -37,8 +37,8 @@ function qoderEffortLevel(session) {
 // every session and these frames carry no session id to correlate them.
 function httpStatusOf(value) {
   const number = Number(value);
-  return value !== null && value !== '' && Number.isFinite(number)
-    && number >= 400 && number <= 599 ? Math.round(number) : undefined;
+  return value !== null && value !== '' && Number.isInteger(number)
+    && number >= 400 && number <= 599 ? number : undefined;
 }
 
 function firstMessage(...values) {
@@ -49,14 +49,12 @@ function firstMessage(...values) {
 }
 
 function resultErrorFields(event) {
-  if (event.type !== 'result') return null;
-  if (event.is_error !== true && !/^error(?:_|$)/.test(String(event.subtype || ''))) return null;
+  if (resultCompletion(event)?.state !== 'failed') return null;
   const httpStatus = httpStatusOf(event.error_code)
     ?? httpStatusOf(event.http_status ?? event.status_code ?? event.status);
   const message = firstMessage(
     event.error_message,
     Array.isArray(event.errors) ? event.errors.find(value => typeof value === 'string' && value.trim()) : undefined,
-    event.result,
   );
   if (httpStatus === undefined && message === undefined) return null;
   return {

@@ -597,10 +597,29 @@ test('an OpenCode-native line spawns as a provider-less opencode session on its 
   assert.equal(first.binding.providerId, null);
   assert.equal(first.binding.cli, 'opencode');
   assert.equal(first.binding.model, 'opencode/big-pickle');
-  assert.equal(first.attempt.providerId, '_default_');
+  assert.equal(first.attempt.providerId, 'opencode-native:opencode');
+  assert.equal(first.attempt.providerName, 'OpenCode Zen');
+  assert.equal(first.routeProof.route.providerId, first.attempt.providerId);
+  assert.equal(first.usageAttribution.providerId, first.attempt.providerId);
+  assert.equal(providerRetryRouteOptions(first.attempt).providerId, first.attempt.providerId);
   assert.equal(first.routeOverrides.model, 'opencode/big-pickle');
   assert.equal(session.provider, 'zen-managed', 'the session provider is never rewritten');
   assert.equal(session.model, 'zen-model');
+});
+
+test('OpenCode 自选默认模型或实际模型属于另一家时不归因给候选账号', () => {
+  for (const model of [null, '另一个模型', 'other/some-model']) {
+    const { factory } = makeHarness();
+    const session = { id: '冷缓存', cli: 'opencode' };
+    const request = normalizeTurnRequest({ sessionId: session.id, text: '测试', cli: session.cli });
+    const prepared = factory.prepare({
+      session, request, turn: createTurnLifecycle(request, { turnId: '冷缓存' }),
+      providerId: 'opencode-native:opencode', model, attemptNo: 1,
+      envelope: { userText: '测试', spawnOpts: {}, historyHandle: {} },
+      provider: { buildInvocation: () => ({ cmd: 'opencode' }) },
+    });
+    assert.equal(prepared.attempt.providerId, '_default_');
+  }
 });
 
 test('a managed provider id is passed through to the router unchanged', () => {

@@ -1,7 +1,9 @@
+use crate::js_live::LiveValue;
 use multicc_core::js::{JsString, JsValue};
 use multicc_core::provider_attempt_lifecycle::{
     AttemptBudget, AttemptFence, AttemptGenerations, AttemptIdentity, AttemptStatus,
     CurrentAttempts, Fence, MainProducer, MainProducers, NonMainProducers, SharedMainProducer,
+    StreamObservation, StreamOutputEvidence,
 };
 use napi::bindgen_prelude::{JsValue as _, ToNapiValue, Unknown};
 use napi::{check_status, sys, Env, Error, Result};
@@ -39,7 +41,8 @@ pub struct FenceSnapshot {
 
 #[napi]
 pub struct RustProviderAttemptLifecycle {
-    inner: AttemptFence,
+    inner: RefCell<AttemptFence>,
+    stream_output: RefCell<StreamOutputEvidence>,
     budget: AttemptBudget,
     status: AttemptStatus,
     identity: AttemptIdentity,
@@ -435,7 +438,8 @@ impl RustProviderAttemptLifecycle {
         identity: AttemptIdentity,
     ) -> Self {
         Self {
-            inner,
+            inner: RefCell::new(inner),
+            stream_output: RefCell::default(),
             budget,
             status: AttemptStatus::default(),
             identity,
@@ -462,31 +466,66 @@ impl RustProviderAttemptLifecycle {
             .ok_or_else(|| Error::from_reason("invalid provider replay fence"))?;
         let identity =
             unsafe { crate::js_bridge::read_value(env.raw(), identity.raw(), 0, &mut Vec::new()) }?;
-        Ok(Self {
-            inner: AttemptFence::new(level, visible, tool, side_effect),
-            budget: AttemptBudget::new(deadline, failures),
-            status: AttemptStatus::default(),
-            identity: AttemptIdentity::new(&identity),
-        })
+        Ok(Self::from_parts(
+            AttemptFence::new(level, visible, tool, side_effect),
+            AttemptBudget::new(deadline, failures),
+            AttemptIdentity::new(&identity),
+        ))
     }
     #[napi]
     pub fn snapshot(&self) -> FenceSnapshot {
+        let inner = self.inner.borrow();
         FenceSnapshot {
-            replay_fence: self.inner.level.as_str().into(),
-            visible_output_observed: self.inner.visible,
-            tool_intent_observed: self.inner.tool,
-            side_effect_observed: self.inner.side_effect,
+            replay_fence: inner.level.as_str().into(),
+            visible_output_observed: inner.visible,
+            tool_intent_observed: inner.tool,
+            side_effect_observed: inner.side_effect,
         }
     }
     #[napi]
-    pub fn advance(&mut self, value: String) -> Result<bool> {
-        let next = Fence::parse(&value)
-            .ok_or_else(|| Error::from_reason("invalid provider replay fence"))?;
-        Ok(self.inner.advance(next))
+    pub fn observe_fence(
+        &self,
+        env: Env,
+        event: Unknown<'_>,
+        marker: Unknown<'_>,
+    ) -> Result<Option<String>> {
+        let mut observation = StreamObservation::None;
+        let evidence = (!self.inner.borrow().tool).then_some(&mut observation);
+        let next = crate::provider_event_policy::event_fence(
+            &env,
+            LiveValue::new(&env, event),
+            LiveValue::new(&env, marker),
+            evidence,
+        )?;
+        self.stream_output.borrow_mut().record(observation);
+        Ok(self
+            .inner
+            .borrow_mut()
+            .advance(next)
+            .then(|| next.as_str().to_owned()))
     }
     #[napi]
-    pub fn reconcile_host_error(&mut self) -> bool {
-        self.inner.reconcile_host_error()
+    pub fn advance(&self, value: String) -> Result<bool> {
+        let next = Fence::parse(&value)
+            .ok_or_else(|| Error::from_reason("invalid provider replay fence"))?;
+        Ok(self.inner.borrow_mut().advance(next))
+    }
+    #[napi]
+    pub fn reconcile_host_error(&self, env: Env, event: Option<Unknown<'_>>) -> Result<bool> {
+        let mut message = JsString::new();
+        if let Some(event) = event {
+            let content = LiveValue::new(&env, event)
+                .optional(c"message")?
+                .optional(c"content")?;
+            content.for_each(|block| {
+                if let Some(part) = block.optional(c"text")?.string()? {
+                    message.push(&part);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(self.stream_output.borrow().agrees_with(&message)
+            && self.inner.borrow_mut().reconcile_host_error())
     }
 
     #[napi]

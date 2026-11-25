@@ -402,15 +402,18 @@ pub fn cli_is_main_result(env: Env, event: Unknown<'_>) -> Result<bool> {
 
 #[napi]
 pub fn cli_result_completion(env: Env, event: Unknown<'_>) -> Result<sys::napi_value> {
-    let event = LiveValue::new(&env, event);
+    Ok(result_completion(LiveValue::new(&env, event))?.raw())
+}
+
+pub(crate) fn result_completion(event: LiveValue<'_>) -> Result<LiveValue<'_>> {
     if !main_result(event)? {
-        return Ok(event.from_value(&JsValue::Null)?.raw());
+        return event.from_value(&JsValue::Null);
     }
     let reason = event.get(c"terminal_reason")?;
     let protocol = event.from_value(&JsValue::string("protocol"))?;
     for cancel in ["cancelled", "aborted", "interrupted"] {
         if reason.is_string(cancel)? {
-            return Ok(completion(event, "cancelled", reason, protocol)?.raw());
+            return completion(event, "cancelled", reason, protocol);
         }
     }
     let is_error = if event.get(c"is_error")?.is_true()? {
@@ -439,7 +442,7 @@ pub fn cli_result_completion(env: Env, event: Unknown<'_>) -> Result<sys::napi_v
                 event.from_value(&JsValue::string("error_result"))?
             }
         };
-        return Ok(completion(event, "failed", reason, protocol)?.raw());
+        return completion(event, "failed", reason, protocol);
     }
     let (state, reason) = if !reason.undefined()? && !reason.is_string("completed")? {
         (
@@ -461,7 +464,7 @@ pub fn cli_result_completion(env: Env, event: Unknown<'_>) -> Result<sys::napi_v
             event.from_value(&JsValue::string("unrecognized_result"))?,
         )
     };
-    Ok(completion(event, state, reason, protocol)?.raw())
+    completion(event, state, reason, protocol)
 }
 
 fn prefixed<'a>(

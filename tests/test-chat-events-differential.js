@@ -650,6 +650,36 @@ function heldRun() {
   return { run, ports, saved, apply, answer, boundary };
 }
 
+test('兼容协议在逐帧收取和收尾时，对相同错误采用一致的证据', () => {
+  const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
+  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+  const message = '本次请求暂时无法处理';
+  for (const [adapter, fields, status] of [
+    [createCodebuddyAdapter({ cmd: 'codebuddy' }), { errors_info: [{ status: 429, details: message }] }, 429],
+    [createQoderAdapter({ cmd: 'qoder' }), { error_code: 503, error_message: message }, 503],
+  ]) {
+    const h = heldRun();
+    h.run.providerName = adapter.name;
+    const events = [
+      ...[message.slice(0, 4), message.slice(4)].map(text => ({ type: 'assistant', message: { content: [{ type: 'text', text }] } })),
+      { type: 'result', subtype: 'error_during_execution', is_error: true, ...fields },
+    ];
+    for (const wire of events) {
+      for (const event of adapter.decodeEvent(wire)) h.apply(event.raw);
+    }
+    const { runner, cs } = h.run;
+    assert.equal(cs.currentAssistantText, message);
+    runner.completionOutcome = native.cliResultCompletion(runner.pendingClaudeResult);
+    const atClose = native.chatClaudeBoundaryEnvelope(runner, adapter.name, cs);
+    assert.equal(atClose.httpStatus, status);
+    assert.equal(atClose.body, null);
+    h.apply(runner.pendingClaudeResult);
+    assert.deepEqual(runner.apiErrorRaw, atClose);
+    assert.equal(runner.sawApiError, true);
+    assert.notEqual(h.run.turn.resultDurable, true);
+  }
+});
+
 test('held query boundaries save separate answers without completing the host turn', () => {
   const h = heldRun();
   let acknowledged = 0;

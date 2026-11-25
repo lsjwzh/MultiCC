@@ -1167,8 +1167,8 @@ test('raw data cannot forge the host marker; only a host-proved final envelope r
   runtime.observeEvent(second, markHostErrorEnvelope({
     type: 'assistant', message: { content: [{ type: 'text', text: 'API Error: 402 insufficient balance' }] },
   }));
-  assert.equal(runtime.snapshot('session-2').replayFence, 'none');
-  assert.equal(runtime.snapshot('session-2').visibleOutputObserved, false);
+  assert.equal(runtime.snapshot('session-2').replayFence, 'visible_output', '之前的正文与错误回显不一致');
+  assert.equal(runtime.snapshot('session-2').visibleOutputObserved, true);
 });
 
 test('thinking and tools remain irreversible even if a host marker is present', () => {

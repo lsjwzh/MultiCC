@@ -652,9 +652,11 @@ pub fn request(op: &str, input: &JsValue) -> JsValue {
             let app = prop(input, "appType");
             if !truthy(id) {
                 let requested = prop(input, "requestedId");
-                if let Some(cli) = crate::provider_registry::native_vendor_cli(&s(requested)) {
+                if let Some(line) =
+                    crate::provider_registry::NativeProviderLine::parse(&s(requested))
+                {
                     return object(vec![
-                        ("appType", cli.into()),
+                        ("appType", line.cli().into()),
                         ("providerId", requested.clone()),
                     ]);
                 }

@@ -1094,8 +1094,10 @@ impl Store {
                 .map_err(err)?;
             for row in rows {
                 let (app_type, id) = row.map_err(err)?;
-                // Vendor-owned lines exist independently of the managed catalog.
-                if crate::provider_registry::native_vendor_cli(&id) == Some(app_type.as_str()) {
+                // 原生线路独立于托管供应商目录。
+                if crate::provider_registry::NativeProviderLine::parse(&id)
+                    .is_some_and(|line| line.cli() == app_type)
+                {
                     continue;
                 }
                 if !live_keys.contains(&format!("{app_type}:{id}")) {

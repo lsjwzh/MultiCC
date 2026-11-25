@@ -1,6 +1,7 @@
 //! Authoritative replay fence for one provider attempt.
 use crate::js::{JsString, JsValue};
 use crate::quota_guard::prop;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
@@ -241,6 +242,70 @@ pub struct AttemptFence {
     pub visible: bool,
     pub tool: bool,
     pub side_effect: bool,
+}
+
+/// 流增量可能已经交付给客户端，却没有出现在最终正文快照里。尝试只保留
+/// UTF-16 长度和摘要，收尾时可核实所有已交付的增量确实来自同一段错误文字。
+#[derive(Default)]
+pub struct StreamOutputEvidence {
+    cli: StreamedText,
+    proxy: StreamedText,
+    other_output: bool,
+}
+
+#[derive(Default)]
+pub enum StreamObservation {
+    #[default]
+    None,
+    CliText(JsString),
+    ProxyText(JsString),
+    OtherOutput,
+}
+
+impl StreamOutputEvidence {
+    pub fn record(&mut self, observation: StreamObservation) {
+        match observation {
+            StreamObservation::None => (),
+            StreamObservation::CliText(text) => self.cli.append(&text),
+            StreamObservation::ProxyText(text) => self.proxy.append(&text),
+            StreamObservation::OtherOutput => self.other_output = true,
+        }
+    }
+
+    pub fn agrees_with(&self, envelope: &JsString) -> bool {
+        !self.other_output && self.cli.agrees_with(envelope) && self.proxy.agrees_with(envelope)
+    }
+}
+
+// 代理和 CLI 可以各自上报同一段流，须分别与最终消息核对。
+#[derive(Default)]
+struct StreamedText {
+    digest: Sha256,
+    units: usize,
+}
+
+impl StreamedText {
+    fn update(digest: &mut Sha256, units: &[u16]) {
+        let bytes: Vec<_> = units.iter().flat_map(|unit| unit.to_le_bytes()).collect();
+        digest.update(bytes);
+    }
+
+    fn append(&mut self, text: &JsString) {
+        Self::update(&mut self.digest, text.as_units());
+        self.units += text.len();
+    }
+
+    fn agrees_with(&self, envelope: &JsString) -> bool {
+        if self.units == 0 {
+            return true;
+        }
+        let Some(units) = envelope.as_units().get(..self.units) else {
+            return false;
+        };
+        let mut prefix = Sha256::new();
+        Self::update(&mut prefix, units);
+        prefix.finalize() == self.digest.clone().finalize()
+    }
 }
 
 impl AttemptFence {

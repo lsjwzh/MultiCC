@@ -1,7 +1,9 @@
 //! Physical attempts resolve their route on every preparation. Node supplies
 //! existing CLI/SDK ports; ordering, identity and failure cleanup live here.
 use crate::js_live::LiveValue as L;
-use multicc_core::{cli_capability, js::JsValue as V, provider_invocation};
+use multicc_core::{
+    cli_capability, js::JsValue as V, provider_invocation, provider_registry::NativeProviderLine,
+};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 use std::ffi::CStr;
@@ -294,10 +296,19 @@ pub fn provider_invocation_prepare(
     // quota accounting must still refer to the selected line.
     let requested_id = input.get(c"providerId")?;
     let requested_text = requested_id.string()?;
-    let vendor_cli = requested_text.as_ref().and_then(|id| {
-        multicc_core::provider_registry::native_vendor_cli(id.as_str_lossy().as_ref())
-    });
-    let proof_binding = if vendor_cli.is_some() {
+    let requested_text = requested_text.as_ref().map(|id| id.as_str_lossy());
+    let native_line = requested_text
+        .as_deref()
+        .and_then(NativeProviderLine::parse);
+    let native_line = if let Some(line) = native_line {
+        let cli = binding.get(c"cli")?.coerce_string()?;
+        let wire_model = spawn.get(c"rawModel")?.string()?.unwrap_or_default();
+        line.matches_invocation(&cli.as_str_lossy(), &wire_model.as_str_lossy())
+            .then_some(line)
+    } else {
+        None
+    };
+    let proof_binding = if native_line.is_some() {
         let logical = copy(binding_options)?;
         logical.set(c"providerId", requested_id)?;
         method(router, c"createBinding", &[session, logical])?
@@ -347,8 +358,8 @@ pub fn provider_invocation_prepare(
                 summary
             }
             .clean_text()?,
-            || match vendor_cli.and_then(cli_capability::family_of) {
-                Some(family) => text(input, family.name),
+            || match native_line {
+                Some(line) => text(input, &line.name()),
                 None => Ok(provider_id),
             },
         )

@@ -389,7 +389,8 @@ test('OpenCode catalog matches the frozen provider, coercion order and mutabilit
     const name = capture(() => api.nativeOpenCodeName(id));
     const entry = capture(() => {
       const data = api.syntheticNativeOpenCodeProvider(id, models);
-      return { sameNativeId: Object.is(data.nativeProvider, id), fields: Object.keys(data), id: data.id, name: data.name, model: data.model,
+      if (api === actual) assert.equal(data.appType, 'opencode');
+      return { sameNativeId: Object.is(data.nativeProvider, id), fields: Object.keys(data).filter(key => key !== 'appType'), id: data.id, name: data.name, model: data.model,
         options: data.modelOptions, frozen: Object.isFrozen(data), optionsFrozen: Object.isFrozen(data.modelOptions), native: data.nativeOpenCode };
     });
     return { nativeId, name, entry, calls };

@@ -1,6 +1,6 @@
 'use strict';
 
-const { createResultCompletionTracker, isMainResult } = require('./result-completion');
+const { createResultCompletionTracker, isMainResult, resultCompletion } = require('./result-completion');
 
 const { renderPrompt } = require('../native/runtime').messageComposer;
 const { claudeLikeMcpArgs } = require('./router-mcp');
@@ -36,20 +36,18 @@ function codebuddyEffortLevel(session) {
 // category covers both 429 limiter and billing exhaustion.
 function httpStatusOf(value) {
   const number = Number(value);
-  return value !== null && value !== '' && Number.isFinite(number)
-    && number >= 400 && number <= 599 ? Math.round(number) : undefined;
+  return value !== null && value !== '' && Number.isInteger(number)
+    && number >= 400 && number <= 599 ? number : undefined;
 }
 
 function resultErrorFields(event) {
-  if (event.type !== 'result') return null;
-  if (event.is_error !== true && !/^error(?:_|$)/.test(String(event.subtype || ''))) return null;
+  if (resultCompletion(event)?.state !== 'failed') return null;
   const info = Array.isArray(event.errors_info)
     ? event.errors_info.find(item => item && typeof item === 'object') : null;
   const detail = info && typeof info.details === 'string' && info.details.trim() ? info.details : undefined;
   const firstError = Array.isArray(event.errors)
     ? event.errors.find(value => typeof value === 'string' && value.trim()) : undefined;
-  const message = detail || firstError
-    || (typeof event.result === 'string' && event.result.trim() ? event.result : undefined);
+  const message = detail || firstError;
   const httpStatus = httpStatusOf(info?.status ?? info?.statusCode)
     ?? httpStatusOf(event.http_status ?? event.status_code ?? event.status);
   if (httpStatus === undefined && message === undefined) return null;

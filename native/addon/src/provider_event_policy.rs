@@ -2,6 +2,7 @@
 //! is passed as an opaque key; JSON frames cannot manufacture that authority.
 use crate::js_live::LiveValue;
 use multicc_core::js::JsValue;
+use multicc_core::provider_attempt_lifecycle::{Fence, StreamObservation};
 use napi::bindgen_prelude::{ToNapiValue, Unknown};
 use napi::{sys, Env, Result};
 use napi_derive::napi;
@@ -99,16 +100,21 @@ pub fn provider_host_text_envelope(
 #[napi]
 pub fn provider_event_fence(env: Env, event: Unknown<'_>, marker: Unknown<'_>) -> Result<String> {
     let event = LiveValue::new(&env, event);
-    Ok(event_fence(&env, event, LiveValue::new(&env, marker))?.to_owned())
+    Ok(
+        event_fence(&env, event, LiveValue::new(&env, marker), None)?
+            .as_str()
+            .to_owned(),
+    )
 }
 
-fn event_fence<'a>(
+pub(crate) fn event_fence<'a>(
     env: &'a Env,
     event: LiveValue<'a>,
     marker: LiveValue<'a>,
-) -> Result<&'static str> {
+    mut evidence: Option<&mut StreamObservation>,
+) -> Result<Fence> {
     if !event.truthy()? || event.kind()? != sys::ValueType::napi_object {
-        return Ok("none");
+        return Ok(Fence::None);
     }
     if event.get(c"type")?.is_string("stream_event")?
         && event.get(c"event")?.truthy()?
@@ -121,24 +127,34 @@ fn event_fence<'a>(
             && block.truthy()?
             && block.get(c"type")?.is_string("tool_use")?
         {
-            return Ok("tool_intent");
+            return Ok(Fence::ToolIntent);
         }
         if nested.get(c"type")?.is_string("content_block_delta")? && delta.truthy()? {
             if delta.get(c"type")?.is_string("input_json_delta")? {
-                return Ok("tool_intent");
+                return Ok(Fence::ToolIntent);
             }
-            if delta.get(c"type")?.is_string("text_delta")?
-                || delta.get(c"type")?.is_string("thinking_delta")?
-            {
+            let is_text = delta.get(c"type")?.is_string("text_delta")?;
+            if is_text || delta.get(c"type")?.is_string("thinking_delta")? {
                 let text = delta.get(c"text")?;
-                if clean(if text.truthy()? {
+                let output = if text.truthy()? {
                     text
                 } else {
                     delta.get(c"thinking")?
-                })?
-                .truthy()?
-                {
-                    return Ok("visible_output");
+                };
+                let visible = clean(output)?.truthy()?;
+                if let Some(evidence) = evidence.as_deref_mut() {
+                    if is_text {
+                        if let Some(text) = text.string()? {
+                            *evidence = StreamObservation::CliText(text);
+                        } else if visible {
+                            *evidence = StreamObservation::OtherOutput;
+                        }
+                    } else if visible {
+                        *evidence = StreamObservation::OtherOutput;
+                    }
+                }
+                if visible {
+                    return Ok(Fence::VisibleOutput);
                 }
             }
         }
@@ -155,29 +171,43 @@ fn event_fence<'a>(
             || delta.get(c"tool")?.truthy()?
             || delta.get(c"toolId")?.truthy()?
         {
-            return Ok("tool_intent");
+            return Ok(Fence::ToolIntent);
         }
-        if delta.get(c"type")?.is_string("text")?
+        let is_text = delta.get(c"type")?.is_string("text")?;
+        if is_text
             || delta.get(c"type")?.is_string("reasoning")?
             || delta.get(c"type")?.is_string("source")?
         {
-            return Ok("visible_output");
+            if let Some(evidence) = evidence {
+                *evidence = if is_text {
+                    delta
+                        .get(c"text")?
+                        .string()?
+                        .map_or(StreamObservation::OtherOutput, StreamObservation::ProxyText)
+                } else {
+                    StreamObservation::OtherOutput
+                };
+            }
+            return Ok(Fence::VisibleOutput);
         }
-        return Ok("none");
+        return Ok(Fence::None);
     }
     if event.get(c"type")?.is_string("reasoning")? && clean(event.get(c"text")?)?.truthy()? {
-        return Ok("visible_output");
+        if let Some(evidence) = evidence {
+            *evidence = StreamObservation::OtherOutput;
+        }
+        return Ok(Fence::VisibleOutput);
     }
     if event.get(c"type")?.is_string("assistant_text")? && clean(event.get(c"text")?)?.truthy()? {
-        return Ok("visible_output");
+        return Ok(Fence::VisibleOutput);
     }
     if event.get(c"type")?.is_string("tool_start")?
         || event.get(c"type")?.is_string("tool_update")?
     {
-        return Ok("tool_intent");
+        return Ok(Fence::ToolIntent);
     }
     if event.get(c"type")?.is_string("tool_result")? {
-        return Ok("side_effect");
+        return Ok(Fence::SideEffect);
     }
     if event.get(c"type")?.is_string("assistant")? {
         let blocks = blocks(event)?;
@@ -185,22 +215,25 @@ fn event_fence<'a>(
             && matches(env, blocks, c"every", BlockKind::Text)?
             && event.get_key(marker)?.is_true()?
         {
-            return Ok("none");
+            return Ok(Fence::None);
         }
         if matches(env, blocks, c"some", BlockKind::ToolUse)? {
-            return Ok("tool_intent");
+            return Ok(Fence::ToolIntent);
         }
         if matches(env, blocks, c"some", BlockKind::ThinkingOutput)? {
-            return Ok("visible_output");
+            if let Some(evidence) = evidence {
+                *evidence = StreamObservation::OtherOutput;
+            }
+            return Ok(Fence::VisibleOutput);
         }
         if matches(env, blocks, c"some", BlockKind::TextOutput)? {
-            return Ok("visible_output");
+            return Ok(Fence::VisibleOutput);
         }
     }
     if event.get(c"type")?.is_string("user")?
         && matches(env, blocks(event)?, c"some", BlockKind::ToolResult)?
     {
-        return Ok("side_effect");
+        return Ok(Fence::SideEffect);
     }
-    Ok("none")
+    Ok(Fence::None)
 }
