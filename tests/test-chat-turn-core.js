@@ -1338,15 +1338,21 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
 
 test('chat core modules import no runtime I/O dependencies', () => {
   const root = path.join(__dirname, '..');
-  assert.equal(fs.existsSync(path.join(root, 'src/chat/post-turn-router.js')), false);
-  const router = fs.readFileSync(path.join(root, 'native/addon/src/post_turn_router.rs'), 'utf8');
-  assert.doesNotMatch(router, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/);
+  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js']) {
+    assert.equal(fs.existsSync(path.join(root, retired)), false, retired);
+  }
   for (const file of [
-    'turn-request.js', 'retry-policy.js',
-    'runtime-store.js', 'turn-lifecycle.js',
-    'finalize-host.js',
+    'native/addon/src/post_turn_router.rs', 'native/addon/src/turn_runtime_store.rs',
+    'native/core/src/chat_runtime.rs',
   ]) {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', file), 'utf8');
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.doesNotMatch(source, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/, file);
+  }
+  for (const file of [
+    'src/chat/turn-request.js', 'src/chat/retry-policy.js', 'src/state/owner.js',
+    'src/chat/turn-lifecycle.js', 'src/chat/finalize-host.js',
+  ]) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
   }
 });
