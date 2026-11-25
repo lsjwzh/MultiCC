@@ -414,8 +414,7 @@ const express = require(require.resolve('express', { paths: [REPO] }));
 const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/http-errors'));
 const { jsonCompression } = require(path.join(REPO, 'src/http/json-compression'));
 const { createPublicSessionAccessGuard } = require(path.join(REPO, 'src/native/runtime')).getNative().sessionPublicAccessApi();
-const { createAuxRunRoutes, createOrchestrationHost } = require(path.join(REPO, 'src/routes/orchestration-host'));
-const { mountUnattendedRoutes } = require(path.join(REPO, 'src/unattended/routes'));
+const { createAuxRunRoutes, createOrchestrationHost, mountUnattendedRoutes } = require(path.join(REPO, 'src/routes/orchestration-host'));
 const { mountAuxGoalRoutes } = require(path.join(REPO, 'src/routes/aux-goal'));
 const { createOrchestrationRoutes } = require(path.join(REPO, 'src/routes/orchestration'));
 

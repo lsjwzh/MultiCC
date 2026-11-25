@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { mountUnattendedRoutes } = require('../src/unattended/routes');
+const { mountUnattendedRoutes } = require('../src/routes/orchestration-host');
 
 function createApp() {
   const routes = new Map();

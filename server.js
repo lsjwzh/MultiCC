@@ -117,9 +117,8 @@ const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLi
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
-const { mountSystemHostRoute } = require('./src/routes/system-host');
 const { createApkDistribution } = require('./src/apk-distribution');
-const { mountHostReadHostRoute, mountScanHistoryHostRoute, mountTurnLedgerHostRoute, mountAgentResourcesHostRoute, mountTokenUsageHostRoute } = require('./src/routes/host-read-host');
+const { mountSystemHostRoute, mountProviderRelayHostRoute, mountHostReadHostRoute, mountScanHistoryHostRoute, mountTurnLedgerHostRoute, mountAgentResourcesHostRoute, mountTokenUsageHostRoute } = require('./src/routes/host-read-host');
 const { mountPushHostRoute } = require('./src/routes/push-host');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
@@ -142,8 +141,8 @@ const { mountSecretsVaultHostRoute } = require('./src/routes/secrets-vault-host'
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
 const { createSessionRoutesHost } = require('./src/routes/session-routes-host');
 const { createShareMachinesHost } = require('./src/routes/share-machines-host');
-const { createAccountRoutesHost } = require('./src/routes/account-routes-host');
-const { mountCodexOAuthRoutes } = require('./src/routes/codex-oauth'); const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
+const { createAccountRoutesHost, mountCliKeyAccountRoutes, mountCommandcodeAuthRoutes, readCommandcodeLogin, mountCodexOAuthRoutes } = require('./src/routes/account-routes-host');
+const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes, mountZcodeAuthLoginRoute } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes, mountKimiAuthLoginRoute } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
 const { createChatTurnEngine } = require('./src/chat/turn-engine'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/providers/auto-provider-config');
@@ -2130,14 +2129,14 @@ const { providerDefaults, validProviderId } = providerRoutes;
 // /api/providers/:id/models, /api/codex/models[/sync], model_catalogs.rs) are
 // served by the Rust front door; Node keeps only the CLI spawns and caches.
 mountModelCatalogsHostRoute(app);
-require('./src/routes/provider-relay-host').mountProviderRelayHostRoute(app, { authRuntime, modelCatalogRuntime: providerRelayModelCatalogRuntime });
-require('./src/routes/cli-key-accounts').mountCliKeyAccountRoutes(accountRoutesHost.app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence });
-require('./src/routes/commandcode-auth').mountCommandcodeAuthRoutes(accountRoutesHost.app, {
+mountProviderRelayHostRoute(app, { authRuntime, modelCatalogRuntime: providerRelayModelCatalogRuntime });
+mountCliKeyAccountRoutes(accountRoutesHost.app, { store: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), sessionPersistence });
+mountCommandcodeAuthRoutes(accountRoutesHost.app, {
   directories, createSessionRecord, disposeLoginTerminal,
   getStatus: () => {
     const env = { ...process.env };
     secretsVault.applyEnvOverlay(env, { source: 'commandcode_login' });
-    return require('./src/routes/commandcode-auth').readCommandcodeLogin({ env });
+    return readCommandcodeLogin({ env });
   },
 });
 // GET /api/claude/models is served by the Rust front door (native/gateway, docs/gateway.md §9); ids are extracted from the local claude CLI bundle.

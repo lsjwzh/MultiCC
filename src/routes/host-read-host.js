@@ -231,7 +231,62 @@ function mountTurnLedgerHostRoute(app, options = {}) {
   });
 }
 
+const SYSTEM_PATH = '/api/__host/system';
+const PROVIDER_RELAY_PATH = '/api/__host/provider-relay';
+const LS_REMOTE_ARGS = ['ls-remote', '--tags', 'https://github.com/lsjwzh/MultiCC.git', 'refs/tags/v*'];
+const LS_REMOTE_TIMEOUT_MS = 15000;
+
+function mountSystemHostRoute(app, options = {}) {
+  assertPost(app, 'system');
+  const { fs, path, rootDir, networkInterfaces, getPort, getBindHost, authRequired, gitRun } = options;
+  if (!fs || !path || !rootDir) {
+    throw new TypeError('[system-host] fs, path and rootDir are required');
+  }
+  for (const [name, value] of Object.entries({ networkInterfaces, getPort, authRequired, gitRun })) {
+    if (typeof value !== 'function') throw new TypeError(`[system-host] ${name} must be a function`);
+  }
+  // 测试注入；生产解析与其余路由同一个实现，每次请求现取。
+  const isLocal = options.isLocal || isLocalRequest;
+  const uptimeSeconds = typeof options.uptimeSeconds === 'function' ? options.uptimeSeconds : () => process.uptime();
+  const now = typeof options.now === 'function' ? options.now : Date.now;
+
+  // 与退役的 createServerInfoHandler 一致：版本在处理器创建时读一次，
+  // 读取失败不是健康依赖——省略 version 键，其余字段照常。
+  let serverVersion = null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+    serverVersion = pkg.version || '0.0.0';
+  } catch (_) {
+    serverVersion = null;
+  }
+
+  const facts = () => getNative().systemHostFacts({ networkInterfaces, getPort, getBindHost, authRequired, now, uptimeSeconds }, serverVersion);
+  const lsRemote = async res => {
+    try {
+      const output = await gitRun(rootDir, LS_REMOTE_ARGS, { timeout: LS_REMOTE_TIMEOUT_MS, kind: 'version-check' });
+      return res.json({ ok: true, output: String(output || '') });
+    } catch { return res.json({ ok: false }); }
+  };
+  const trace = limit => require('../codex/proxy-trace').codexProxyTrace().snapshot(limit);
+  app.post(SYSTEM_PATH, async (req, res) => {
+    if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
+    return getNative().systemHostOperation(objectBody(req), res, facts, lsRemote, trace);
+  });
+}
+
+function mountProviderRelayHostRoute(app, { authRuntime, modelCatalogRuntime, isLocal = isLocalRequest }) {
+  app.post(PROVIDER_RELAY_PATH, async (req, res) => {
+    if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
+    const body = req.body || {};
+    try {
+      return await getNative().relayHostOperation(app, body, authRuntime, modelCatalogRuntime,
+        async (json, value) => Reflect.apply(json, res, [await value]), res);
+    } catch { return res.status(500).json({ error: 'host operation failed' }); }
+  });
+}
+
 module.exports = {
+  SYSTEM_PATH, mountSystemHostRoute, PROVIDER_RELAY_PATH, mountProviderRelayHostRoute,
   HOST_PATH, mountHostReadHostRoute, createHostReadHost,
   AGENT_RESOURCES_PATH, mountAgentResourcesHostRoute, createAgentResourcesHost,
   SCAN_HISTORY_PATH, mountScanHistoryHostRoute,

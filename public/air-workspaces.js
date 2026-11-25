@@ -1,7 +1,7 @@
 'use strict';
 
 // Air 原生「工作区」面板 —— worktree 休眠回收的看板（原生 DOM，不再嵌旧 manage 页）。
-// 后端契约见 src/routes/workspaces.js：
+// 后端契约见 src/routes/share-machines-host.js：
 //   GET  /api/workspaces/overview        → { status, totals, directories, removedIgnoredAudit, orphans }
 //   POST /api/workspaces/sweep[?orphans=1] → { ok, sweep, orphans }
 //

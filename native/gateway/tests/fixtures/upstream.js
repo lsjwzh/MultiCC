@@ -710,7 +710,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   // Host port for the system routes retired from src/routes/system.js
-  // (src/routes/system-host.js, native/gateway/src/app/system.rs). The script
+  // (src/routes/host-read-host.js, native/gateway/src/app/system.rs). The script
   // carries the process facts under `system.serverInfo`, the ls-remote answer
   // under `system.lsRemote` and the raw trace ring (oldest first) under
   // `system.traceEntries`. The trace branch repeats the host route's own

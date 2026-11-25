@@ -205,7 +205,7 @@ function createShareMachinesHost(deps = {}) {
   // mountWorkspaceRoutes。顺序只影响 Express 的 Allow 并集，这里同样保留。
   machines.mount(app, express);
   require('./share').mountShareRoutes(app, share);
-  require('./workspaces').mountWorkspaceRoutes(app, workspaces);
+  mountWorkspaceRoutes(app, workspaces);
 
   function mountRoute(expressApp, options = {}) {
     if (!expressApp || typeof expressApp.post !== 'function') {
@@ -234,4 +234,43 @@ function createShareMachinesHost(deps = {}) {
   return { app, mountRoute };
 }
 
-module.exports = { HOST_PATH, OPS, createShareMachinesHost };
+function buildOverview(deps) {
+  return require('../native/runtime').getNative().workspaceOverview(deps,
+    (a, b) => String(b.at).localeCompare(String(a.at)));
+}
+
+function createOverviewHandler(deps) {
+  return function overviewHandler(req, res) {
+    try { res.json(buildOverview(deps)); }
+    catch (error) { res.status(500).json({ error: error?.message || 'overview failed' }); }
+  };
+}
+
+function createSweepHandler(deps) {
+  return async function sweepHandler(req, res) {
+    const runtime = deps.getHibernation();
+    if (!runtime) return res.status(503).json({ error: 'hibernation runtime not ready' });
+    try {
+      const result = await runtime.sweep();
+      let orphans = null;
+      if (req.query?.orphans === '1') orphans = await deps.getOrphanScanner()?.scan() || null;
+      res.json({ ok: true, sweep: result, orphans });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error?.message || 'sweep failed' });
+    }
+  };
+}
+
+function mountWorkspaceRoutes(app, deps) {
+  if (!app || typeof app.get !== 'function') throw new TypeError('Express app is required');
+  for (const name of ['getHibernation', 'getOrphanScanner']) {
+    if (typeof deps?.[name] !== 'function') throw new TypeError(`workspace route dependency missing: ${name}`);
+  }
+  if (!(deps.records instanceof Map) || !(deps.directories instanceof Map)) {
+    throw new TypeError('workspace routes require record and directory maps');
+  }
+  app.get('/api/workspaces/overview', createOverviewHandler(deps));
+  app.post('/api/workspaces/sweep', createSweepHandler(deps));
+}
+
+module.exports = { HOST_PATH, OPS, buildOverview, mountWorkspaceRoutes, createShareMachinesHost };

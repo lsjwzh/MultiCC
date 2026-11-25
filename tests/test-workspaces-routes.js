@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { buildOverview, mountWorkspaceRoutes } = require('../src/routes/workspaces');
+const { buildOverview, mountWorkspaceRoutes } = require('../src/routes/share-machines-host');
 
 function fixture() {
   const records = new Map([

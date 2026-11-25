@@ -2,7 +2,7 @@
 
 // Live host ports only. The gateway owns relay route matching and model DTOs;
 // the existing Rust HTTP entry owner retains admission and scoped grant state.
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../../../src/request-locality');
 const HOST_PATH = '/api/__host/provider-relay';
 
 function mountProviderRelayHostRoute(app, { authRuntime, modelCatalogRuntime, isLocal = isLocalRequest }) {

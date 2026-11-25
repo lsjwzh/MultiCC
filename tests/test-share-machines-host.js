@@ -22,12 +22,14 @@ const path = require('node:path');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'share-machines-host-'));
 const addonFile = path.join(tmp, 'fake-addon.js');
+const nativeAddon = require('../src/native/runtime').addonPath();
 fs.writeFileSync(addonFile, `
 'use strict';
 const calls = [];
 globalThis.__shareMachineCalls = calls;
 const fail = operation => JSON.stringify({ status: 503, data: { code: 'machine_native_unavailable', error: '多电脑组件尚未就绪，请更新后手动重启服务' } });
 module.exports = {
+  workspaceOverview: require(${JSON.stringify(nativeAddon)}).workspaceOverview,
   protocolVersion: () => 1,
   buildSearchIndex() {}, computeUsage() {}, cprClaudeQuota() {},
   machineOperation(root, operation, raw) {

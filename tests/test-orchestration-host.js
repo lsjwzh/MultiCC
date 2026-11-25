@@ -23,7 +23,7 @@ const path = require('node:path');
 
 const { createOrchestrationHost, HOST_PATH, OPS } = require('../src/routes/orchestration-host');
 const { createWorld, FROZEN_NOW } = require('./helpers/legacy-orchestration-routes/world');
-const { mountUnattendedRoutes } = require('../src/unattended/routes');
+const { mountUnattendedRoutes } = require('../src/routes/orchestration-host');
 const { mountAuxGoalRoutes } = require('../src/routes/aux-goal');
 const { createAuxRunRoutes } = require('../src/routes/orchestration-host');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');

@@ -8,7 +8,7 @@
 //! trace ring, and `git ls-remote` (repo-actor owns the git environment: the
 //! runtime-patched PATH, the non-interactive env and the per-repo queue). All
 //! of that crosses the host port ([`crate::host_port`]); see
-//! `src/routes/system-host.js` for that side.
+//! `src/routes/host-read-host.js` for that side.
 //!
 //! The GitHub release fetch moved here and uses the front door's shared
 //! outbound client ([`crate::outbound`]), so it follows the same proxy policy
@@ -34,7 +34,7 @@ use crate::app::App;
 use crate::host_port;
 use crate::outbound::{Outbound, Request};
 
-/// The host port the Node child serves (`src/routes/system-host.js`).
+/// The host port the Node child serves (`src/routes/host-read-host.js`).
 const HOST_PATH: &str = "/api/__host/system";
 
 const RELEASES_URL: &str = "https://api.github.com/repos/lsjwzh/MultiCC/releases/latest";

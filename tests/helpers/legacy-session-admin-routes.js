@@ -20,7 +20,7 @@ const { auxVerdictStaleness } = require('./legacy-aux-verdict-health');
 const { providerSelectionDto } = require('../../src/providers/auto-provider-config');
 // HEAD's task-goal module, frozen next to this oracle (the live one no longer mounts).
 const { mountTaskGoalRoutes } = require('./legacy-session-admin-routes/task-goal');
-const { mountUnattendedRoutes } = require('../../src/unattended/routes');
+const { mountUnattendedRoutes } = require('./frozen-file-batch10/routes');
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[session-admin] ${name} must be a function`);

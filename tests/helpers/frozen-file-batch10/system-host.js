@@ -19,7 +19,7 @@
 // 这不是一条公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest`
 // 拒绝任何转发自真实远端客户端的请求（docs/gateway.md 的内网端口模型）。
 
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../../../src/request-locality');
 
 const HOST_PATH = '/api/__host/system';
 // 与退役的 system.js 一致：GitHub 发现失败后的 git 回退与 15s 超时。
@@ -87,7 +87,7 @@ function mountSystemHostRoute(app, options = {}) {
       // 再封顶只是防御，正常流量上恒等。
       const limit = Number.isSafeInteger(body.limit) && body.limit > 0 ? Math.min(body.limit, 200) : 100;
       // 与退役路由一致：proxy-trace 保持惰性加载。
-      return res.json({ entries: require('../codex/proxy-trace').codexProxyTrace().snapshot(limit) });
+      return res.json({ entries: require('../../../src/codex/proxy-trace').codexProxyTrace().snapshot(limit) });
     }
     return res.status(400).json({ error: 'unknown host operation' });
   });

@@ -159,7 +159,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/plugins-host.js',
     'src/routes/plugins.js',
     'src/routes/provider-balance-host.js',
-    'src/routes/provider-relay-host.js',
     // Passes the dependency through to the provider runtime, does not decide.
     'src/routes/providers-host.js',
     'src/routes/providers.js',
@@ -175,7 +174,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/session-routes-host.js',
     'src/routes/share-machines-host.js',
     'src/routes/subagent-defaults-host.js',
-    'src/routes/system-host.js',
     'src/routes/task-routes-host.js',
     'src/routes/voice-gateway-host.js',
     'src/routes/voice-host.js',

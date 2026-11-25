@@ -1,5 +1,34 @@
 # 剩余 Node 后端清单
 
+## 第十批按文件迁移（2026-11-26）
+
+任务分支 `b707608d` 已包含本地 `main` 的最新提交 `fe2d52fb`，合入检查时分支领先 3 个提交、落后 0 个。以此干净工作树重新构建并完成全量基线。生产入口可达的 Node 文件由 **454 减至 446 个**，物理行数由 **125,226 减至 124,846 行**。本批整份退出 **8 个文件、584 行**，其余生产接线净增 204 行，生产 Node 净减 **380 行**。自 `dc0df5fe` 的 495 个文件、126,693 行起，十批累计退出 **49 个文件**、净减 **1,847 行**。[生产依赖清单](node-module-dependencies.md)
+
+| 退出的生产文件 | 迁前直接生产调用方 | 旧行数 | 冻结 blob |
+|---|---|---:|---|
+| `src/routes/system-host.js` | `server.js` | 96 | `26b2256c` |
+| `src/routes/provider-relay-host.js` | `server.js` | 46 | `a3d2a193` |
+| `src/routes/commandcode-auth.js` | `server.js` | 49 | `39029c65` |
+| `src/routes/codex-oauth.js` | `server.js` | 83 | `0de8f149` |
+| `src/routes/cli-key-accounts.js` | `server.js` | 82 | `d0a95947` |
+| `src/routes/agy-accounts.js` | `src/routes/session-create.js` | 79 | `f6e5e156` |
+| `src/routes/workspaces.js` | `src/routes/share-machines-host.js` | 81 | `b56209e5` |
+| `src/unattended/routes.js` | `src/routes/session-admin.js` | 68 | `f84aab07` |
+
+Rust 接管系统事实与跟踪快照、供应商中继的请求构造与分派、三种 CLI 的登录状态或终端记录、CLI Key 账户增删改查、工作区概览和无人值守动作。Express 挂载、回环检查、查询解析器、仓库串行执行器、登录终端与存储事务回调、Promise 等待及 ICU 排序仍使用 Node 的进程内端口。相应的监听器和宿主运行时转为原生后可移除这些接线。[系统与中继](../../native/addon/src/host_system_relay.rs) · [登录终端](../../native/addon/src/account_login_routes.rs) · [账户事务](../../native/addon/src/cli_account_routes.rs)
+
+| 验收范围 | 实测结果 |
+|---|---|
+| 基线全量 `npm test` | 退出 0。Node 测试运行器汇总 8,081 项通过、11 项跳过、1 项待实现 |
+| 冻结和定向回归 | 8 份冻结副本仅调整相对导入。迁前 12 个文件 126/126 通过，迁后 13 个文件 134/134 通过 |
+| 跨批回归 | 77 个测试文件，1,281 项通过、0 项失败、1 项因缺少 Electron 打包工具链跳过 |
+| 迁后全量 `npm test` | 退出 0。Node 测试运行器汇总 8,089 项通过、11 项跳过、1 项待实现 |
+| 真实网关 HTTP 对照 | 账号 114/114、系统与扫描 41/41、分享与工作区 66/66、编排 256/256 一致。另验证编排 2/2 项预期差异。账号的 113 个副作用场景、编排的 296 次副作用调用及分享存储均一致 |
+
+正式定向、跨批、全量与四组 HTTP 对照使用同一套 macOS ARM64 发布产物，源码指纹 `58e87a6e916d4bb77f269580`。测试前后分别核对 addon、网关、CDP、远控和重启监督程序的来源记录及 SHA-256。[冻结副本](../../tests/helpers/frozen-file-batch10/) · [逐入口对照](../../tests/test-captured-route-differential.js)
+
+首次调试修正了机器服务夹具对原生工作区接口的覆盖，首轮跨批回归发现发布核心集的数量断言仍为 489；现已登记第 490 个用例文件并校验其测试类别。严格 Clippy 检查发现的本批参数数目告警已修正，最终仍以 101 退出，剩余 5 条诊断均位于与基线一致的 `turn_event_replay.rs`。独立在线分类测试取用例时本机服务返回 HTTP 503，按 `live` 类别单列。
+
 ## 第九批按文件迁移（2026-11-25）
 
 任务分支将第八批提交 `6608ef94` 与本地 `main` 的 7 个新增提交（截至 `fe2d52fb`）合并，得到基线 `8810d587`。从该基线起，生产入口可达的 Node 文件由 **462 减至 454 个**，物理行数由 **125,543 减至 125,226 行**。本批整份退出 8 个文件、共 465 行，其余生产接线净增 148 行，生产 Node 净减 **317 行**。自 `dc0df5fe` 起累计退出 **41 个文件**、净减 **1,467 行**。统计覆盖根 `server.js` 及其直接、间接和通过宿主脚本可达的文件。[生产依赖清单](node-module-dependencies.md)

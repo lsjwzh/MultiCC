@@ -26,7 +26,7 @@ const VENDOR_LOGIN = Object.freeze({
   }),
   // agy signs in through its own TUI (bare `agy` → Google OAuth); there is no
   // login subcommand. The per-account flow pins HOME at the account's mini-home
-  // (src/routes/agy-accounts.js), so this entry is only the "machine's own
+  // (src/routes/account-routes-host.js), so this entry is only the "machine's own
   // login" variant plus the loginFlow → cli mapping create-record requires.
   agy: Object.freeze({
     loginFlow: 'agy-login',

@@ -11,7 +11,7 @@
 // docs/rust-migration/differential/system-scan.js）：
 //
 //   GET /api/server-info             网卡排序、DTO 组装 → Rust；进程事实经
-//                                    src/routes/system-host.js 宿主端口
+//                                    src/routes/host-read-host.js 宿主端口
 //   GET /api/version-check           GitHub 发现、tag 选择、DTO → Rust；
 //                                    git ls-remote 回退经宿主端口（repo-actor
 //                                    独占 git 环境）

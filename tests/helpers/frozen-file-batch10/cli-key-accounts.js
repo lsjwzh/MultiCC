@@ -11,7 +11,7 @@
 //   DELETE /api/cli-accounts/:cli/:id        remove; sessions that picked it
 //                                            fall back to the CLI's own login
 
-const { isKeyAccountCli, releaseCliAccountReferences } = require('../cli-key-accounts');
+const { isKeyAccountCli, releaseCliAccountReferences } = require('../../../src/cli-key-accounts');
 
 function mountCliKeyAccountRoutes(app, deps = {}) {
   if (!app || typeof app.get !== 'function') throw new TypeError('[cli-key-accounts] Express-compatible app is required');

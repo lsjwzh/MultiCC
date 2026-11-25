@@ -170,4 +170,22 @@ function createAuxRunRoutes({ records, getLog } = {}) {
   return Object.freeze({ mountRoutes });
 }
 
-module.exports = { HOST_PATH, OPS, createOrchestrationHost, createAuxRunRoutes };
+function mountUnattendedRoutes(app, deps = {}) {
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
+    throw new TypeError('[unattended-routes] Express app is required');
+  }
+  const records = deps.records;
+  if (!records || typeof records.get !== 'function') {
+    throw new TypeError('[unattended-routes] records map is required');
+  }
+  const { getNative } = require('../native/runtime');
+  const { LIMITS } = require('../unattended/kernel');
+  const settle = async (res, result) => getNative().unattendedRouteResult(res, await result, LIMITS);
+  const ports = { records, deps, limits: LIMITS, settle };
+  app.get('/api/sessions/:id/unattended', (req, res) =>
+    getNative().unattendedRouteRequest(ports, false, req, res));
+  app.post('/api/sessions/:id/unattended', async (req, res) =>
+    getNative().unattendedRouteRequest(ports, true, req, res));
+}
+
+module.exports = { HOST_PATH, OPS, mountUnattendedRoutes, createOrchestrationHost, createAuxRunRoutes };

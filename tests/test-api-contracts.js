@@ -344,7 +344,7 @@ test('orchestration and unattended routes: host port mounted once without public
   // Both waits listings are ours now, but they stay two routes with two DTOs.
   assert.ok(hostHalf.includes("app.get('/api/sessions/:id/waits'"));
   assert.ok(hostHalf.includes("app.get('/api/v1/sessions/:id/waits'"));
-  for (const file of ['src/routes/aux-goal.js', 'src/routes/orchestration-host.js', 'src/unattended/routes.js']) {
+  for (const file of ['src/routes/aux-goal.js', 'src/routes/orchestration-host.js', 'native/addon/src/unattended_routes.rs']) {
     assert.equal(/\bapp\s*=\s*express\(\)/.test(fs.readFileSync(path.join(ROOT, file), 'utf8')), false);
   }
 });
@@ -842,8 +842,8 @@ test('/api share, machine and workspace routes are owned by the Rust front door;
     'src/machines.js registers its ten JSON routes on the capture app');
   assert.ok(host.includes("require('./share').mountShareRoutes(app, share);"),
     'src/routes/share.js registers on the capture app');
-  assert.ok(host.includes("require('./workspaces').mountWorkspaceRoutes(app, workspaces);"),
-    'src/routes/workspaces.js registers on the capture app');
+  assert.ok(host.includes("mountWorkspaceRoutes(app, workspaces);"),
+    'src/routes/share-machines-host.js registers on the capture app');
   assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
   assert.ok(host.includes("'/api/__host/share-machines'"), 'and it is not a public path');
   assert.ok(host.includes('runHandler'), 'the host port returns {ok,value} envelopes');

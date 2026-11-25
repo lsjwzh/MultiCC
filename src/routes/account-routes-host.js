@@ -222,4 +222,97 @@ function createAccountRoutesHost() {
   return { app, mountRoute };
 }
 
-module.exports = { HOST_PATH, OPS, createAccountRoutesHost };
+const { getNative } = require('../native/runtime');
+const { isKeyAccountCli, releaseCliAccountReferences } = require('../cli-key-accounts');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const CODEX_LOGIN_SESSION_ID = 'codex-login';
+const AGY_LOGIN_FLOW = 'agy-login';
+
+function readCommandcodeLogin({ home = os.homedir(), env = process.env } = {}) {
+  return getNative().commandcodeLoginStatus(env, suffix =>
+    fs.readFileSync(path.join(home, '.commandcode', suffix), 'utf8'));
+}
+
+function mountCommandcodeAuthRoutes(app, deps) {
+  const { directories, createSessionRecord, disposeLoginTerminal = async () => 0, getStatus = readCommandcodeLogin } = deps;
+  app.get('/api/commandcode/auth/status', (_req, res) => { res.json({ ok: true, ...getStatus() }); });
+  app.post('/api/commandcode/auth/login', async (_req, res) => {
+    try {
+      const native = getNative(), dir = native.loginTerminalDirectory(directories, true);
+      if (!dir) return res.status(409).json({ ok: false, error: '请先添加一个项目目录，再打开登录终端。' });
+      await disposeLoginTerminal('commandcode-login');
+      const result = await createSessionRecord(native.loginTerminalRecord('commandcode', dir, undefined));
+      return native.loginTerminalResult('commandcode', result, res);
+    } catch { res.status(500).json({ ok: false, error: '无法打开 Command Code 登录终端。' }); }
+  });
+}
+
+function createLoginSessionOpener(deps) {
+  const { directories, createSessionRecord, disposeLoginTerminal = async () => 0 } = deps;
+  return async function openCodexLoginSession() {
+    const native = getNative(), dir = native.loginTerminalDirectory(directories, false);
+    if (!dir) return { ok: false, error: 'no directory available' };
+    await disposeLoginTerminal(CODEX_LOGIN_SESSION_ID);
+    const result = await createSessionRecord(native.loginTerminalRecord('codex', dir, undefined));
+    return native.loginTerminalResult('codex', result, undefined);
+  };
+}
+
+function mountCodexOAuthRoutes(app, deps) {
+  if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') throw new TypeError('[codex-oauth] Express-compatible app is required');
+  if (!deps || typeof deps.getStatus !== 'function') throw new TypeError('[codex-oauth] getStatus is required');
+  const open = typeof deps.openLoginSession === 'function' ? deps.openLoginSession : createLoginSessionOpener(deps);
+  app.get('/api/codex/oauth/status', (_req, res) => { res.json(getNative().codexLoginStatus(deps.getStatus())); });
+  app.post('/api/codex/oauth/login', async (_req, res) => {
+    try {
+      const result = await open();
+      if (!result || !result.ok) return res.status(500).json({ ok: false, error: (result && result.error) || 'login session unavailable' });
+      return res.json({ ok: true, sessionId: result.sessionId, reused: !!result.reused,
+        hint: '在打开的终端里完成浏览器登录，登录后 multicc 会自动恢复' });
+    } catch (error) { return res.status(500).json({ ok: false, error: error.message }); }
+  });
+}
+
+function mountAgyAccountRoutes(app, rawDeps) {
+  if (!app || typeof app.post !== 'function') throw new TypeError('[agy-accounts] Express-compatible app is required');
+  const deps = rawDeps || {};
+  const { directories, createSessionRecord } = deps;
+  if (typeof createSessionRecord !== 'function') throw new TypeError('[agy-accounts] createSessionRecord is required');
+  const wrap = typeof deps.asyncHandler === 'function' ? deps.asyncHandler : fn => fn;
+  const dispose = typeof deps.disposeLoginTerminal === 'function' ? deps.disposeLoginTerminal : async () => 0;
+  app.post('/api/agy/accounts/:id/login-terminal', wrap(async (req, res) => {
+    const home = String((req.body && req.body.home) || '');
+    if (!home) return res.status(400).json({ error: 'account home required' });
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+    const native = getNative(), dir = native.loginTerminalDirectory(directories, false);
+    if (!dir) return res.status(500).json({ error: 'no directory available' });
+    const loginEnv = native.agyLoginEnvironment(home, req);
+    await dispose(AGY_LOGIN_FLOW);
+    const result = await createSessionRecord(native.loginTerminalRecord('agy', dir, loginEnv));
+    return native.loginTerminalResult('agy', result, res);
+  }));
+}
+
+function mountCliKeyAccountRoutes(app, deps = {}) {
+  if (!app || typeof app.get !== 'function') throw new TypeError('[cli-key-accounts] Express-compatible app is required');
+  const { store, sessionPersistence } = deps;
+  if (!store || typeof store.list !== 'function') throw new TypeError('[cli-key-accounts] deps.store is required');
+  if (!sessionPersistence || typeof sessionPersistence.mutate !== 'function') {
+    throw new TypeError('[cli-key-accounts] deps.sessionPersistence (with mutate) is required');
+  }
+  const release = (cli, id) => sessionPersistence.mutate('http.cli-account-delete',
+    records => releaseCliAccountReferences(records, cli, id));
+  const handler = action => (req, res) => getNative().cliAccountResponse(action, store, isKeyAccountCli, release, req, res);
+  app.get('/api/cli-accounts/:cli', handler('list'));
+  app.post('/api/cli-accounts/:cli', handler('create'));
+  app.patch('/api/cli-accounts/:cli/:id', handler('update'));
+  app.delete('/api/cli-accounts/:cli/:id', handler('delete'));
+}
+
+module.exports = {
+  HOST_PATH, OPS, createAccountRoutesHost, mountCliKeyAccountRoutes, readCommandcodeLogin, mountCommandcodeAuthRoutes,
+  mountCodexOAuthRoutes, createLoginSessionOpener, CODEX_LOGIN_SESSION_ID,
+  mountAgyAccountRoutes, AGY_LOGIN_FLOW, AGY_LOGIN_SESSION_ID: AGY_LOGIN_FLOW,
+};

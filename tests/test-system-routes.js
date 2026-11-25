@@ -3,7 +3,7 @@
 // 系统面测试。三层分工：
 //   1. Node 侧剩下的系统路由：APK/iOS OTA 发布资产与四组宿主修复面板
 //      （src/routes/system.js）。
-//   2. 宿主端口（src/routes/system-host.js）：/api/server-info、
+//   2. 宿主端口（src/routes/host-read-host.js）：/api/server-info、
 //      /api/version-check、/api/debug/codex-proxy-trace 已由 Rust 前门独占
 //      （native/gateway/src/app/system.rs；网卡排序、semver、tag 选择、DTO
 //      形状的逐字节对比在 docs/rust-migration/differential/system-scan.js），
@@ -23,7 +23,7 @@ const {
   mountSystemHostRoutes,
   mountApkDownload,
 } = require('../src/routes/system');
-const { mountSystemHostRoute, HOST_PATH } = require('../src/routes/system-host');
+const { mountSystemHostRoute, SYSTEM_PATH: HOST_PATH } = require('../src/routes/host-read-host');
 const { createApkDistribution } = require('../src/apk-distribution');
 
 function captureResponse(handler, req = {}) {
