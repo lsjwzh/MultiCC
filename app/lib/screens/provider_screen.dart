@@ -11,6 +11,7 @@ import '../models/vendor_quota.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
+import '../widgets/import_share_code_sheet.dart';
 import '../widgets/provider_option.dart';
 import '../widgets/provider_reassign_dialog.dart';
 import '../widgets/provider_subscription.dart';
@@ -101,6 +102,15 @@ class _ProviderScreenState extends State<ProviderScreen> {
 
   List<Map<String, dynamic>> _byType(String t) =>
       _providers.where((p) => p['appType'] == t).toList();
+
+  /// 粘贴另一台 MultiCC 的分享码建线路 / 反重力账号；反重力账号不在本页展示，
+  /// 由网页管理台的「官方账号」面板承载。
+  Future<void> _importShareCode() async {
+    final done = await showImportShareCodeSheet(context, manage: _manage);
+    if (done == null || !mounted) return;
+    _snack(done);
+    await _refresh();
+  }
 
   Future<void> _import() async {
     setState(() => _importing = true);
@@ -664,6 +674,17 @@ class _ProviderScreenState extends State<ProviderScreen> {
                   ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent))
                   : const Icon(Icons.download_rounded, size: 18, color: AppColors.accent),
               label: Text(_importing ? '导入中…' : '从 CC-Switch 导入', style: const TextStyle(color: AppColors.accent)),
+              style: OutlinedButton.styleFrom(side: const BorderSide(color: AppColors.lineStrong)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 42,
+            child: OutlinedButton.icon(
+              key: const ValueKey('provider-import-share-code'),
+              onPressed: _importing ? null : _importShareCode,
+              icon: const Icon(Icons.qr_code_2_rounded, size: 18, color: AppColors.accent),
+              label: const Text('从分享码导入', style: TextStyle(color: AppColors.accent)),
               style: OutlinedButton.styleFrom(side: const BorderSide(color: AppColors.lineStrong)),
             ),
           ),

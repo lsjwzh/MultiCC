@@ -198,6 +198,59 @@
           </section>
         </div>
 
+        <section id="air-tunnel-ssh" class="air-tunnel-ssh admin-panel" aria-labelledby="air-tunnel-ssh-title">
+          <div class="air-tunnel-ssh-head">
+            <div>
+              <span class="eyebrow">SSH · TCP 22</span>
+              <h3 id="air-tunnel-ssh-title">${t('airTunnelSshTitle')}</h3>
+              <p>${t('airTunnelSshSubtitle')}</p>
+            </div>
+            <span id="air-ssh-status" class="air-tunnel-chip neutral">${t('airTunnelReading')}</span>
+          </div>
+          <div class="air-tunnel-facts">
+            <div><span>${t('airTunnelSshSshdLabel')}</span><strong id="air-ssh-sshd">${t('airTunnelReadingEllipsis')}</strong></div>
+            <div><span>${t('airTunnelSshLocalUser')}</span><strong id="air-ssh-user">${t('airTunnelReadingEllipsis')}</strong></div>
+            <div class="wide"><span>${t('airTunnelSshChannelsLabel')}</span><strong id="air-ssh-channels">${t('airTunnelReadingEllipsis')}</strong></div>
+          </div>
+          <div class="air-tunnel-ssh-controls">
+            <label><span>${t('airTunnelSshProviderLabel')}</span>
+              <select id="air-ssh-provider">
+                <option value="auto">${t('airTunnelSshProviderAuto')}</option>
+                <option value="cpolar">${t('airTunnelSshProviderCpolar')}</option>
+                <option value="sakurafrp">${t('airTunnelSshProviderSakura')}</option>
+                <option value="tailscale">${t('airTunnelSshProviderTailscale')}</option>
+                <option value="custom">${t('airTunnelSshProviderCustom')}</option>
+              </select>
+            </label>
+            <label><span>${t('airTunnelSshLocalPortLabel')}</span><input id="air-ssh-local-port" type="number" min="1" max="65535" value="22"></label>
+            <div class="air-tunnel-actions">
+              <button id="air-ssh-oneclick" class="primary" type="button">${t('airTunnelSshOneClickBtn')}</button>
+              <button id="air-ssh-stop" class="danger" type="button" hidden>${t('airTunnelSshStopBtn')}</button>
+              <button id="air-ssh-recheck" type="button">${t('airTunnelRecheckClient')}</button>
+            </div>
+          </div>
+          <div id="air-ssh-custom-wrap" class="air-tunnel-ssh-custom" hidden>
+            <label><span>${t('airTunnelSshCustomHostLabel')}</span><input id="air-ssh-remote-host" type="text" placeholder="3.tcp.cpolar.top"></label>
+            <label><span>${t('airTunnelSshCustomPortLabel')}</span><input id="air-ssh-remote-port" type="number" min="1" max="65535" value="22"></label>
+            <button id="air-ssh-save-custom" type="button">${t('airTunnelSshSaveCustomBtn')}</button>
+          </div>
+          <div id="air-ssh-sakura-hint" class="air-tunnel-ssh-note" hidden>
+            <a href="https://www.natfrp.com/tunnel/" target="_blank" rel="noopener noreferrer">${t('airTunnelSshSakuraCreateLink')}</a>
+          </div>
+          <div id="air-ssh-result" class="air-tunnel-ssh-result" hidden>
+            <div>
+              <div class="air-tunnel-ssh-note" id="air-ssh-result-meta"></div>
+              <div class="air-tunnel-ssh-target" id="air-ssh-target-text"></div>
+            </div>
+            <div class="air-tunnel-actions">
+              <button id="air-ssh-copy-target" type="button">${t('airTunnelSshCopyTarget')}</button>
+              <button id="air-ssh-copy-cmd" type="button">${t('airTunnelSshCopyCmd')}</button>
+            </div>
+          </div>
+          <p class="air-tunnel-ssh-note">${t('airTunnelSshIndependentHint')}</p>
+          <p id="air-ssh-message" class="air-tunnel-message" role="status"></p>
+        </section>
+
         <details class="air-tunnel-advanced">
           <summary><span><b>${t('airTunnelAdvancedTitle')}</b><small>${t('airTunnelBrandPhddns')} / Natapp / cpolar / ${t('airTunnelAdvancedCompatHint')}</small></span><span>${t('airTunnelExpandConfig')}</span></summary>
           <div class="air-tunnel-advanced-body">
@@ -280,15 +333,16 @@
     const generation = ++loadGeneration;
     setMessage('air-sf-message', t('airTunnelReadingSakura'));
     setMessage('air-ts-message', t('airTunnelReadingTailscale'));
-    const [settings, access, sakura, funnel, ipv6] = await Promise.all([
+    const [settings, access, sakura, funnel, ipv6, ssh] = await Promise.all([
       softRequest('/api/settings/tunnel'),
       softRequest('/api/settings/access-token'),
       softRequest('/api/tunnel/sakurafrp'),
       softRequest('/api/tunnel/funnel'),
       softRequest('/api/tunnel/ipv6'),
+      softRequest('/api/tunnel/ssh'),
     ]);
     if (generation !== loadGeneration || !host.isConnected) return;
-    snapshot = { settings: sanitizeSettings(settings), access, sakura, funnel, ipv6 };
+    snapshot = { settings: sanitizeSettings(settings), access, sakura, funnel, ipv6, ssh };
     paint();
   }
 
@@ -403,10 +457,91 @@
     }
   }
 
+  function updateSshProviderVisibility() {
+    const provider = byId('air-ssh-provider')?.value || 'auto';
+    const customWrap = byId('air-ssh-custom-wrap');
+    if (customWrap) customWrap.hidden = provider !== 'custom';
+    const sshSnap = snapshot?.ssh?.snapshot || {};
+    const sakuraCand = sshSnap.candidates?.sakurafrp || {};
+    const sakuraHint = byId('air-ssh-sakura-hint');
+    if (sakuraHint) sakuraHint.hidden = !(provider === 'sakurafrp' && !sakuraCand.tunnel);
+    const oneClick = byId('air-ssh-oneclick');
+    if (oneClick) {
+      oneClick.textContent = provider === 'auto' ? t('airTunnelSshOneClickBtn') : t('airTunnelSshApplyBtn');
+    }
+  }
+
+  function paintSsh() {
+    const raw = snapshot?.ssh || {};
+    const s = raw.snapshot;
+    if (!raw.ok || !s) {
+      setChip('air-ssh-status', t('airTunnelReadFailed'), 'danger');
+      setText('air-ssh-sshd', raw.message || t('airTunnelApiUnavailable'));
+      return;
+    }
+    const localPort = s.localPort || 22;
+    const config = s.config || {};
+    if (s.active) setChip('air-ssh-status', t('airTunnelSshStatusActive'), 'success');
+    else if (!s.sshdListening) setChip('air-ssh-status', t('airTunnelSshStatusNoSshd'), 'warning');
+    else setChip('air-ssh-status', t('airTunnelSshStatusIdle'), 'neutral');
+
+    setText('air-ssh-sshd', s.sshdListening
+      ? t('airTunnelSshSshdListening', { port: localPort })
+      : t('airTunnelSshSshdOff', { port: localPort }));
+    setText('air-ssh-user', s.localUser || '—');
+
+    const cands = s.candidates || {};
+    const channelParts = [];
+    if (cands.sakurafrp?.tunnel) {
+      const sf = cands.sakurafrp.tunnel;
+      channelParts.push(`SakuraFrp TCP (${sf.remoteHost}:${sf.remotePort}${sf.online ? ' · ' + t('airTunnelOnline') : ' · ' + t('airTunnelOffline')})`);
+    }
+    if (cands.cpolar?.available) {
+      channelParts.push(cands.cpolar.alive && cands.cpolar.remoteHost
+        ? `cpolar (${cands.cpolar.remoteHost}:${cands.cpolar.remotePort})`
+        : 'cpolar CLI');
+    }
+    if (cands.tailscale?.host) channelParts.push(`Tailscale (${cands.tailscale.host})`);
+    setText('air-ssh-channels', channelParts.length ? channelParts.join(' / ') : '—');
+
+    const providerSelect = byId('air-ssh-provider');
+    if (providerSelect && document.activeElement !== providerSelect && config.enabled && config.provider) {
+      providerSelect.value = config.provider;
+    }
+    setValue('air-ssh-local-port', localPort);
+    if (config.provider === 'custom') {
+      setValue('air-ssh-remote-host', config.remoteHost || '');
+      setValue('air-ssh-remote-port', config.remotePort || 22);
+    }
+
+    const canEdit = s.canEdit !== false;
+    for (const id of ['air-ssh-oneclick', 'air-ssh-save-custom', 'air-ssh-stop']) {
+      const btn = byId(id);
+      if (btn) btn.disabled = !canEdit;
+    }
+    const stopBtn = byId('air-ssh-stop');
+    if (stopBtn) stopBtn.hidden = !config.enabled;
+
+    const ep = s.suggested;
+    const resultBox = byId('air-ssh-result');
+    if (resultBox) {
+      if (ep && ep.sshTarget) {
+        resultBox.hidden = false;
+        setText('air-ssh-result-meta', `${ep.providerLabel || ep.source || 'SSH'} · ${t('airTunnelSshTargetLabel')}${ep.active ? ' (' + t('airTunnelSshStatusActive') + ')' : ''}`);
+        setText('air-ssh-target-text', `${ep.sshTarget}:${ep.sshPort || 22}  (${ep.command || ''})`);
+      } else {
+        resultBox.hidden = true;
+      }
+    }
+    if (!canEdit) setMessage('air-ssh-message', t('airTunnelSshLocalOnlyHint'), 'warning');
+    updateSshProviderVisibility();
+  }
+
   function paint() {
     paintAccess();
     paintSakura();
     paintTailscale();
+    paintSsh();
     paintAdvanced();
   }
 
@@ -548,6 +683,43 @@
     await load();
   }
 
+  async function applySshTunnel(overrideProvider) {
+    const provider = overrideProvider || byId('air-ssh-provider')?.value || 'auto';
+    const localPort = Number.parseInt(byId('air-ssh-local-port')?.value || '22', 10);
+    const body = { provider, localPort: Number.isInteger(localPort) ? localPort : 22 };
+    if (provider === 'custom') {
+      body.remoteHost = byId('air-ssh-remote-host')?.value.trim() || '';
+      const rp = Number.parseInt(byId('air-ssh-remote-port')?.value || '22', 10);
+      body.remotePort = Number.isInteger(rp) ? rp : 22;
+    }
+    const result = await context.api('/api/tunnel/ssh', body, 'POST');
+    if (snapshot) snapshot.ssh = result;
+    paintSsh();
+    setMessage('air-ssh-message', result.message || t('airTunnelSshStatusActive'), 'success');
+  }
+
+  async function stopSshTunnel() {
+    const result = await context.api('/api/tunnel/ssh/stop', {}, 'POST');
+    if (snapshot) snapshot.ssh = result;
+    paintSsh();
+    setMessage('air-ssh-message', result.message || t('airTunnelSshStopped'), 'success');
+  }
+
+  async function copySshText(kind) {
+    const ep = snapshot?.ssh?.snapshot?.suggested;
+    if (!ep) return;
+    const text = kind === 'cmd' ? (ep.command || '') : (ep.sshTarget || '');
+    if (!text) return;
+    try {
+      if (root.navigator?.clipboard?.writeText) {
+        await root.navigator.clipboard.writeText(text);
+        setMessage('air-ssh-message', `${t('airTunnelSshCopied')}: ${text}`, 'success');
+        return;
+      }
+    } catch (_) { /* fall back */ }
+    setMessage('air-ssh-message', text, 'info');
+  }
+
   function runAction(button, busyLabel, messageId, action) {
     busy(button, busyLabel, async () => {
       try { await action(); }
@@ -569,6 +741,13 @@
     byId('air-ts-toggle').onclick = event => runAction(event.currentTarget, t('airTunnelApplying'), 'air-ts-message', toggleFunnel);
     byId('air-ts-restart').onclick = event => runAction(event.currentTarget, t('airTunnelReconnecting'), 'air-ts-message', () => restartProvider('tailscale', 'air-ts-message'));
     byId('air-ts-ipv6-check').onclick = event => runAction(event.currentTarget, t('airTunnelDetecting'), 'air-ts-message', load);
+    byId('air-ssh-provider').onchange = updateSshProviderVisibility;
+    byId('air-ssh-oneclick').onclick = event => runAction(event.currentTarget, t('airTunnelApplying'), 'air-ssh-message', () => applySshTunnel());
+    byId('air-ssh-save-custom').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-ssh-message', () => applySshTunnel('custom'));
+    byId('air-ssh-stop').onclick = event => runAction(event.currentTarget, t('airTunnelSshStopping'), 'air-ssh-message', stopSshTunnel);
+    byId('air-ssh-recheck').onclick = event => runAction(event.currentTarget, t('airTunnelDetecting'), 'air-ssh-message', load);
+    byId('air-ssh-copy-target').onclick = () => copySshText('target');
+    byId('air-ssh-copy-cmd').onclick = () => copySshText('cmd');
     byId('air-tunnel-policy-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-tunnel-policy-message', savePolicy);
     host.querySelectorAll('[data-save-provider]').forEach(button => {
       button.onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), `air-${button.dataset.saveProvider}-message`, () => saveCompatibility(button.dataset.saveProvider));

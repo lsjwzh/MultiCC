@@ -346,6 +346,23 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
+  /// 从分享码导入反重力账号：`transport=relay` 是借道，`transport=ssh` 是
+  /// 借用码（私钥随码下发，服务端落盘后只在账号记录里留路径）。
+  Future<Map<String, dynamic>> createAgyRemoteAccount({
+    required String label,
+    required Map<String, dynamic> remote,
+  }) async {
+    final res = await _send(
+      'POST',
+      '/api/agy/accounts/remote',
+      body: jsonEncode({'label': label, 'remote': remote}),
+      timeout: const Duration(seconds: 30),
+    );
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
   /// Finish a pending account sign-in from the address the browser ended on
   /// (or `code#state`); the PKCE exchange stays on the server.
   Future<Map<String, dynamic>> submitAccountLoginCallback(
@@ -926,6 +943,46 @@ class ManageService {
         )
         .timeout(const Duration(seconds: 20));
     if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// Fetches the independent SSH (port 22) TCP tunnel preset snapshot.
+  Future<Map<String, dynamic>> fetchSshTunnelStatus() async {
+    final res = await _send(
+      'GET',
+      '/api/tunnel/ssh',
+      timeout: const Duration(seconds: 10),
+    );
+    if (res.statusCode >= 400) _throw(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// Applies or starts the SSH (port 22) tunnel preset (localhost only).
+  Future<Map<String, dynamic>> applySshTunnelPreset(
+    Map<String, dynamic> body,
+  ) async {
+    final res = await _send(
+      'POST',
+      '/api/tunnel/ssh',
+      body: jsonEncode(body),
+      timeout: const Duration(seconds: 15),
+    );
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
+  /// Stops the managed SSH (port 22) tunnel preset (localhost only).
+  Future<Map<String, dynamic>> stopSshTunnel() async {
+    final res = await _send(
+      'POST',
+      '/api/tunnel/ssh/stop',
+      body: jsonEncode(const <String, dynamic>{}),
+      timeout: const Duration(seconds: 10),
+    );
+    if (res.statusCode >= 400) _throwWrite(res);
     return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
         .cast<String, dynamic>();
   }

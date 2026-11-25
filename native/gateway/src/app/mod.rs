@@ -72,6 +72,7 @@ pub mod session_routes;
 pub mod share_entry;
 mod share_machine_routes;
 pub mod source_workspaces;
+mod ssh_tunnel;
 mod standalone_catalog;
 pub mod static_assets_routes;
 pub mod static_web_root;
@@ -246,6 +247,7 @@ pub enum Route {
     Air(air_routes::Route),
     Quota(quota_routes::Route),
     AgyAccounts(agy_accounts::Route),
+    SshTunnel(ssh_tunnel::Route),
     Account(account_routes::Route),
     Events(event_routes::Route),
     DocsMemory(docs_memory_routes::Route),
@@ -296,6 +298,7 @@ static OPTIONS_SOURCES: &[fn(&str) -> Option<String>] = &[
     task_shell::options_share,
     quota_routes::options_share,
     agy_accounts::options_share,
+    ssh_tunnel::options_share,
     account_routes::options_share,
     event_routes::options_share,
     docs_memory_routes::options_share,
@@ -498,6 +501,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     // overlaps another cluster.
     if let Some(route) = agy_accounts::claim(method, path) {
         return Some(Route::AgyAccounts(route));
+    }
+    if let Some(route) = ssh_tunnel::claim(method, path) {
+        return Some(Route::SshTunnel(route));
     }
     if let Some(route) = quota_routes::claim(method, path) {
         return Some(Route::Quota(route));
@@ -1450,6 +1456,9 @@ pub async fn handle(
         Route::Push(route) => return push_routes::handle(&app, route, &ctx, &body, host).await,
         Route::Air(route) => return air_routes::handle(&app, route, &ctx, &body, host).await,
         Route::AgyAccounts(route) => return agy_accounts::handle(&ctx, route, &body, host).await,
+        Route::SshTunnel(route) => {
+            return ssh_tunnel::handle(&app, &ctx, route, &body, &peer).await
+        }
         Route::Quota(route) => return quota_routes::handle(&app, route, &ctx, &body, host).await,
         Route::Account(route) => {
             return account_routes::handle(&app, route, &ctx, &body, host).await
