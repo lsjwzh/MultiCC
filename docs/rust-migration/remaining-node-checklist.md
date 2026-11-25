@@ -1,5 +1,19 @@
 # 剩余 Node 后端清单
 
+## Gemini、Grok 启动参数与受管聊天上下文（2026-11-25）
+
+| 整份退出的生产文件 | 唯一生产调用方 | 迁前行数 | 冻结的 Git blob |
+|---|---|---:|---|
+| `src/cli-adapters/gemini.js` | `src/cli-adapters/index.js` | 26 | `54766d1c` |
+| `src/cli-adapters/grok.js` | `src/cli-adapters/index.js` | 33 | `d476dea8` |
+| `src/chat/managed-context.js` | `src/chat/turn-engine.js` | 34 | `9986a5cc` |
+
+Rust 接管两个 CLI 的启动参数、终端续跑标志，以及受管上下文的首次准备、重试重建、提示词更新和完成判定。Node 的 ACP 适配器仍调用 V8 拼接终端命令，聊天宿主仍持有每次尝试使用的闭包并提供记忆和回执接口，以保留宿主对象身份、类型转换和回调行为。相应宿主迁出后可移除这部分接线。[CLI 启动策略](../../native/addon/src/acp_launch.rs) · [上下文实现](../../native/addon/src/message_composer/managed_context.rs)
+
+以第三批提交 `e66dec58` 为基线，生产入口可达的 Node 由 492 个文件、126,506 行降至 489 个文件、126,440 行。三份旧文件合计 93 行，其余生产文件接线净增 27 行，本批净减 66 行。以 `dc0df5fe` 为起点，前三批已提交，累计退出 3 份、净减 187 行；计入本批工作树，累计退出 6 份、净减 253 行。统计包含根 `server.js` 和从它或其宿主脚本可达的 `src/` 文件，排除测试、前端与离线工具。[生产依赖清单](node-module-dependencies.md)
+
+三份测试副本只调整了依赖路径。迁前定向回归 144/144，迁后 145/145，追加的一项覆盖重建失败后的重试和回执身份。Gemini 和 Grok 共比对 256 组启动或终端输入，受管上下文比对 24 组回执、首次计划、阻塞和成功状态组合。macOS ARM64 发布构建的五份产物均通过源码指纹和文件摘要校验，指纹为 `ac53c9ba37db0e657fa9e24a`。隔离网关聊天回合、API 契约和原生产物回归共 40/40。[CLI 差分](../../tests/test-acp-adapter.js) · [上下文差分](../../tests/test-context-plan.js)
+
 ## CLI 中继启动参数（2026-11-25）
 
 `src/chat/cli-relay-spawn.js` 已从生产目录整份删除。唯一生产调用方是聊天回合引擎。Rust 接管 Claude/Codex 中继选择、参数顺序和续跑标志，首次 Claude 会话使用现有 Rust UUID v4 生成器，并依次调用宿主的状态登记和保存接口。Node 兼容入口传递宿主对象和回调，待聊天引擎直接持有这些状态后可移除。[Rust 实现](../../native/addon/src/process_spawn_args.rs) · [生产调用方](../../src/chat/turn-engine.js)

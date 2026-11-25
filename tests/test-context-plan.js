@@ -8,7 +8,7 @@ const { readMemoryFolder } = require('../src/memory-store');
 const { estimateTokens } = require('../src/native/runtime').taskShellContext;
 const selectionApi = require('../src/native/runtime').getContextSelection();
 const { selectContext } = selectionApi;
-const { prepareManagedContext, contextSent, contextCompleted } = require('../src/chat/managed-context');
+const { prepareManagedContext, contextSent, contextCompleted } = require('../src/native/runtime').managedContext;
 
 function memoryFor(f) {
   return createFolderMemoryService({ fs, path, memoryStoreRoot: path.join(path.dirname(f.file), 'memory'),
@@ -474,4 +474,87 @@ test('上下文选择用同一组冻结输入核对五个生产入口', () => {
     return rows;
   }
   assert.deepEqual(trace(selectionApi), trace(mod.exports));
+});
+
+test('受管上下文与冻结实现的回调顺序、重建、引用和完成判定一致', () => {
+  const frozen = require('./helpers/legacy-managed-context');
+  const marker = Symbol('宿主键');
+  function scenario(api, receiptId, initial, blocked, success) {
+    const trace = [], opts = { firstTurn: true, [marker]: '保留' };
+    const turn = { turnId: 't' }, memory = {
+      resolveRolePrompt(record, args) { trace.push(['role', this === memory, record, args]); return record; },
+    };
+    const host = {
+      prepareTaskContext(name, input) {
+        trace.push(['prepare', this === host, name, input.receiptId, input.turnId, input.text,
+          input.isFirstTurn, input.fallback, input.memory === memory, input.force, input[marker]]);
+        input[marker] = '宿主';
+        if (receiptId === 'skip') return null;
+        return { initial: initial || input.force, text: input.force ? '更新' : '首份' };
+      },
+      taskContextSent(...args) { trace.push(['sent', this === host, ...args]); return '已发送'; },
+      taskContextComplete(...args) { trace.push(['done', this === host, ...args]); return '已完成'; },
+    };
+    const state = api.prepareManagedContext({ host, memory, sessionName: 's', turn,
+      opts: { taskShellReceiptId: receiptId, taskContextSeed: 'seed' }, text: '问题', isFirstTurn: false });
+    if (state) {
+      assert.equal(turn.managedContext.host, host);
+      const record = {};
+      assert.equal(state.rolePrompt(record), record);
+      const env = { contextLayers: [{ kind: 'task-context', text: '旧' }, { kind: 'prefix', order: 1, text: '前' }],
+        userText: '用户\ud800', suffix: '尾' };
+      const other = { firstTurn: 1 };
+      assert.equal(state.attempt(env, other), other);
+      trace.push(state.seed, state.attempt(env, opts), state.attempt(env, opts), env.contextLayers.length);
+    }
+    assert.equal(api.contextSent(turn), undefined);
+    const effects = [{ type: '无关', get classification() { throw Error('不应读取'); } },
+      { type: 'classify-turn-end', classification: success ? 'succeeded' : 'failed' }];
+    assert.equal(api.contextCompleted({ turn, terminalBlocked: blocked },
+      { get effects() { trace.push('effects'); return effects; } }), undefined);
+    return trace;
+  }
+  for (const receipt of ['', 'skip', 'r']) for (const initial of [false, true]) {
+    for (const blocked of [false, true]) for (const success of [false, true]) {
+      const args = [receipt, initial, blocked, success];
+      assert.deepEqual(scenario({ prepareManagedContext, contextSent, contextCompleted }, ...args), scenario(frozen, ...args));
+    }
+  }
+});
+
+test('受管上下文保留宿主异常和回执身份，重建失败后仍可重试', () => {
+  const frozen = require('./helpers/legacy-managed-context');
+  for (const api of [frozen, { prepareManagedContext, contextSent, contextCompleted }]) {
+    const receipt = {}, failure = new Error('宿主重建失败'), forwarded = [];
+    let attempts = 0;
+    const host = {
+      prepareTaskContext(name, input) {
+        switch (++attempts) {
+          case 1: input.receiptId = receipt; return { initial: false, text: '原' };
+          case 2: throw failure;
+          default: return { initial: true, text: '新' };
+        }
+      },
+      taskContextSent(...args) { forwarded.push(args); },
+      taskContextComplete(...args) { forwarded.push(args); },
+    };
+    const turn = { turnId: 't' };
+    const params = { host, sessionName: 's', turn, opts: { taskShellReceiptId: 'r' } };
+    const ctx = api.prepareManagedContext(params);
+    assert.equal(turn.managedContext.receiptId, receipt);
+    const envelope = { contextLayers: [], userText: '文', suffix: '' }, options = { firstTurn: true };
+    assert.throws(() => ctx.attempt(envelope, options), err => err === failure);
+    assert.equal(ctx.attempt(envelope, options).bareText, '新文');
+    assert.equal(ctx.seed, '原');
+    const result = Symbol('宿主返回值');
+    api.contextSent(turn);
+    api.contextCompleted({ turn }, { effects: { some(check) {
+      assert.equal(check({ type: 'classify-turn-end', classification: 'succeeded' }), true);
+      return result;
+    } } });
+    assert.equal(forwarded[0][1], receipt);
+    assert.equal(forwarded[1][3], result);
+    assert.throws(() => api.prepareManagedContext({ ...params, turn: Object.freeze({}) }), TypeError);
+    assert.equal(api.prepareManagedContext({ ...params, host: null }), null);
+  }
 });

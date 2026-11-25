@@ -55,7 +55,7 @@ const { taskStateSeed } = require('../native/runtime');
 const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../native/runtime').messageComposer;
 const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
 const { buildSubagentProviderHint } = require('./host-prompts');
-const managedContext = require('./managed-context');
+const managedContext = require('../native/runtime').managedContext;
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
   buildHandoffCheckpoint, clearAllNativeCliStates,

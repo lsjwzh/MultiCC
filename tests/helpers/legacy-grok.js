@@ -1,7 +1,7 @@
 'use strict';
 
-const { createAcpAdapter } = require('./acp');
-const { displayNameOf } = require('../cli/cli-capability');
+const { createAcpAdapter } = require('../../src/cli-adapters/acp');
+const { displayNameOf } = require('../../src/cli/cli-capability');
 
 // Grok Build (@xai-official/grok) over ACP (`grok agent stdio`). Model and
 // reasoning effort are launch flags of `grok agent` and must precede the

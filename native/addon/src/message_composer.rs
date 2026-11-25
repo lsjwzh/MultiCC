@@ -11,6 +11,8 @@ use napi::{sys, Env, Result};
 use napi_derive::napi;
 use std::ffi::CStr;
 
+mod managed_context;
+
 fn text<'a>(a: L<'a>, value: &str) -> Result<L<'a>> {
     a.from_value(&V::from(value))
 }
@@ -584,7 +586,10 @@ fn default_primitive(value: L<'_>) -> Result<L<'_>> {
 
 #[napi]
 pub fn message_render_prompt(env: Env, envelope: Unknown<'_>) -> Result<sys::napi_value> {
-    let envelope = L::new(&env, envelope);
+    Ok(render_prompt(&env, L::new(&env, envelope))?.raw())
+}
+
+fn render_prompt<'a>(env: &'a Env, envelope: L<'a>) -> Result<L<'a>> {
     let layers = array(envelope)?;
     let mut index = 0;
     envelope.get(c"contextLayers")?.for_each(|item| {
@@ -592,7 +597,7 @@ pub fn message_render_prompt(env: Env, envelope: Unknown<'_>) -> Result<sys::nap
         index += 1;
         Ok(())
     })?;
-    let layers = sort(&env, layers)?;
+    let layers = sort(env, layers)?;
     let map = layers.get(c"map")?;
     let callback = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
         "promptLayerText",
@@ -602,10 +607,10 @@ pub fn message_render_prompt(env: Env, envelope: Unknown<'_>) -> Result<sys::nap
                 .raw())
         },
     )?;
-    let texts = map.call(layers, &[L::new(&env, callback.into_unknown(&env)?)])?;
+    let texts = map.call(layers, &[L::new(env, callback.into_unknown(env)?)])?;
     let joined = method(texts, c"join", &[text(envelope, "")?])?;
     let mut rendered = joined.coerce_string()?;
     rendered.push(&default_primitive(envelope.get(c"userText")?)?.coerce_string()?);
     rendered.push(&default_primitive(envelope.get(c"suffix")?)?.coerce_string()?);
-    Ok(envelope.from_value(&V::String(rendered))?.raw())
+    envelope.from_value(&V::String(rendered))
 }

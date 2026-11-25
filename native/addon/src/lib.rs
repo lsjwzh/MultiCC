@@ -1,4 +1,5 @@
 pub mod acp_bridge;
+pub mod acp_launch;
 use multicc_core::{search::SearchIndex, usage};
 use napi::{bindgen_prelude::AsyncTask, Env, Result, Task};
 use napi_derive::napi;

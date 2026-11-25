@@ -7,10 +7,8 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { createAcpAdapter } = require('../src/cli-adapters/acp');
+const { createAcpAdapter, createGeminiAdapter, createGrokAdapter } = require('../src/cli-adapters/acp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
-const { createGeminiAdapter } = require('../src/cli-adapters/gemini');
-const { createGrokAdapter } = require('../src/cli-adapters/grok');
 const { pickPermissionOption, routerMcpServers } = require('./helpers/native-acp-bridge');
 const { gatewayPath } = require('../src/native/runtime');
 
@@ -581,3 +579,33 @@ test('Rust CLI registry closures retain live adapters, release cycles and do not
   assert.equal(result.code, 0, output);
   assert.match(output, /registry GC and exit PASS/);
 });
+
+for (const [lane, create, frozen] of [
+  ['gemini', createGeminiAdapter, require('./helpers/legacy-gemini').createGeminiAdapter],
+  ['grok', createGrokAdapter, require('./helpers/legacy-grok').createGrokAdapter],
+]) {
+  test(`${lane} 的启动参数和终端命令与冻结版一致`, () => {
+    const token = Symbol('model'), opaque = {}, values = [undefined, '', 0, false, '模\ud800型', 2n, token, opaque];
+    function invoke(factory, model, effort) {
+      const reads = [], env = envelope({ first: !model, sessionId: effort ? 'sid' : null });
+      env.spawnOpts = new Proxy({ rawModel: model, rawEffort: effort }, {
+        get(target, key) { reads.push(key); return target[key]; },
+      });
+      const adapter = factory({ cmd: lane, routerMcpNode: '/node', routerMcpScript: '/router', userInputReminder: '提醒' });
+      return { invocation: adapter.buildInvocation(env), reads };
+    }
+    for (const model of values) for (const effort of values) {
+      assert.deepEqual(invoke(create, model, effort), invoke(frozen, model, effort));
+    }
+    function terminal(factory, model, id) {
+      const trace = [], cmd = { [Symbol.toPrimitive](hint) { trace.push(hint); return lane; } };
+      const input = { get model() { trace.push('model'); return model; },
+        get cliSessionId() { trace.push('resume'); return id; } };
+      const outcome = registryOutcome(() => factory({ cmd }).buildTerminalCmd(input));
+      return { outcome: outcome.value === cmd ? '原命令对象' : outcome, trace };
+    }
+    for (const model of values) for (const id of values) {
+      assert.deepEqual(terminal(create, model, id), terminal(frozen, model, id));
+    }
+  });
+}

@@ -17,7 +17,7 @@ const { readMemoryFolder } = require('../src/memory-store');
 const { estimateTokens, verifySnapshot } = require('../src/native/runtime').taskShellContext;
 const { historySnapshot } = require('../src/task-shell/history-context');
 const { boundedSnapshot, boundedHandoff } = require('../src/task-shell/context-snapshot');
-const { prepareManagedContext } = require('../src/chat/managed-context');
+const { prepareManagedContext } = require('../src/native/runtime').managedContext;
 const {
   createHostPrompts,
   buildSubagentProviderHint,

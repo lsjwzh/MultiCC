@@ -124,6 +124,20 @@ function assignHostProperty(target, key, value) { target[key] = value; }
 function pendingDesiredSession(session) { return getNative().sessionPendingDesiredSession(session, assignHostProperty); }
 
 
+function prepareManagedContext({ host, memory, sessionName, persisted, turn, opts, text, isFirstTurn }) {
+  const native = getNative();
+  const state = native.managedContextPrepare({ host, memory, sessionName, turn, opts, text, isFirstTurn }, assignHostProperty);
+  if (!state) return null;
+  return {
+    seed: state.seed,
+    rolePrompt: record => native.managedContextRole(memory, record),
+    attempt(envelope, options) { return native.managedContextAttempt(state, envelope, options); },
+  };
+}
+function contextSent(turn) { getNative().managedContextSent(turn); }
+function contextCompleted(context, resolved) { getNative().managedContextCompleted(context, resolved); }
+const managedContext = { prepareManagedContext, contextSent, contextCompleted };
+
 // Native prompt policies retain live callback, getter and opaque value identity.
 const messageComposer = {
   composeMessage: input => getNative().messageCompose(input, process.env, console),
@@ -695,7 +709,7 @@ module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCa
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, resolveCliRelayTarget, applyCliRelaySpawn, isZcodeSessionId, repairZcodeSessionState,
-  pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
+  pathSafety, stateBootstrap, bootstrapState, messageComposer, managedContext, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
 // The stable PersistenceError class is created natively once per environment.
 Object.defineProperty(module.exports, 'PersistenceError', {
   enumerable: true,

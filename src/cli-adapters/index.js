@@ -12,9 +12,8 @@ const { createQoderAdapter } = require('./qoder');
 const { createKimiAdapter } = require('./kimi');
 const { createCodebuddyAdapter } = require('./codebuddy');
 const { createDshAdapter } = require('./dsh');
-const { createGeminiAdapter } = require('./gemini');
+const { createGeminiAdapter, createGrokAdapter } = require('./acp');
 const { createCommandCodeAdapter } = require('./command-code');
-const { createGrokAdapter } = require('./grok');
 const { createAgyAdapter } = require('./agy');
 const { createPiAdapter } = require('./pi');
 
