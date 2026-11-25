@@ -410,7 +410,10 @@ main({
     // revision is pinned to the parent of the retiring commit.
     const legacyNotes = loadDeleted(repo, LEGACY_REV, 'src/notes-store.js');
     const legacyMemory = loadDeleted(repo, LEGACY_REV, 'src/routes/memory-browser.js');
-    const legacyMemo = loadDeleted(repo, LEGACY_REV, 'src/memo/router.js');
+    const legacyMemo = loadDeleted(repo, LEGACY_REV, 'src/memo/router.js', {
+      'src/http/error-map': require.resolve('../../../tests/helpers/frozen-file-batch13/error-map'),
+      'src/http/http-error': require.resolve('../../../tests/helpers/frozen-file-batch13/http-error'),
+    });
     const legacyDocs = loadDeleted(repo, LEGACY_REV, 'src/docs-registry.js');
     const { createMemoController } = require('../../../tests/helpers/frozen-file-batch12/controller');
     const { createMemoFilePort } = require('../../../tests/helpers/frozen-file-batch12/file-port');

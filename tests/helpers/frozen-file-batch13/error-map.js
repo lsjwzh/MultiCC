@@ -4,9 +4,9 @@ const {
   DOMAIN_KINDS,
   isDomainError,
   isInfrastructureError,
-} = require('./domain-error');
+} = require('../../../src/http/domain-error');
 const { HttpError, isHttpError } = require('./http-error');
-const { safeCode, sanitizePublicText } = require('./public-safety');
+const { safeCode, sanitizePublicText } = require('../../../src/http/public-safety');
 
 const DOMAIN_ERROR_MAP = Object.freeze({
   [DOMAIN_KINDS.BAD_REQUEST]: Object.freeze({ status: 400, code: 'invalid_request', error: 'request_error' }),

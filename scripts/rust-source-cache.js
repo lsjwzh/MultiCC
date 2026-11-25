@@ -482,7 +482,8 @@ function probeAddon(file, node = process.execPath) {
     if(['providerAttributeProxyUsage','providerObserveProxyOutcome','providerProxyFailure',
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',
-      'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+      'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds',
+      'httpErrorTrustedStatus','httpErrorMessage','httpErrorInitialize','httpErrorDefinitions','httpErrorMap','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['createCookie','verifyCookie','verifyAccessToken','issueWsTicket','consumeWsTicket','pruneTickets','ticketCount','accessToken','setAccessToken','shuttingDown','setShuttingDown','connectGateway']
       .some(key=>typeof a.RustAuthSecurity.prototype[key]!=='function')) process.exit(1);
     const authAnchor={};

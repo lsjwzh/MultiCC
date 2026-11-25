@@ -4,7 +4,7 @@ const {
   safeCode,
   sanitizeCompatibility,
   sanitizePublicText,
-} = require('./public-safety');
+} = require('../../../src/http/public-safety');
 
 const HTTP_ERROR = Symbol('MultiCC.HttpError');
 

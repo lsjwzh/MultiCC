@@ -74,6 +74,7 @@ pub mod host_prompts;
 mod host_read_operations;
 mod host_system_relay;
 pub mod http_entry;
+pub mod http_error_map;
 pub mod js_bridge;
 mod js_iteration;
 mod js_live;

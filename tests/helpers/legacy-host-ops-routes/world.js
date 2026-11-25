@@ -10,6 +10,7 @@
 // the only filesystem work is inside the temporary `rootDir` the restart and
 // update preflights read (a fake ./multicc manager and .git dir).
 const path = require('node:path');
+const { DomainError } = require('../../../src/http/domain-error');
 
 // Both sides freeze the clock: the restart route counts streaming turns with
 // Date.now(), and the update route stamps `startedAt`.
@@ -232,7 +233,11 @@ function createWorld({ rootDir }) {
     unlockPassword: {
       isAvailable: () => true,
       hasPassword: async () => state.hasPassword,
-      setPassword: async () => { state.hasPassword = true; },
+      setPassword: async value => {
+        if (value === 'fixture-locked') throw new DomainError('conflict', 'keychain busy');
+        if (value === 'fixture-failure') throw new Error('private fixture detail');
+        state.hasPassword = true;
+      },
       clearPassword: async () => { state.hasPassword = false; },
     },
     powerPreferences: {

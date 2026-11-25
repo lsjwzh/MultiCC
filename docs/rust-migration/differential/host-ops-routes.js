@@ -187,6 +187,8 @@ function corpus(ctx) {
   add('save the password again', () => post('/api/settings/power/unlock-password', { password: 'hunter2' }));
   add('authorize with a password saved', () => post('/api/settings/power/unlock-password/authorize', {}));
   add('save the password from a remote peer', () => post('/api/settings/power/unlock-password', { password: 'hunter2' }, REMOTE));
+  add('keychain conflict', () => post('/api/settings/power/unlock-password', { password: 'fixture-locked' }));
+  add('unknown keychain failure', () => post('/api/settings/power/unlock-password', { password: 'fixture-failure' }));
   add('save an empty password', () => post('/api/settings/power/unlock-password', { password: '' }));
   add('task attribution update', () => post('/api/settings/task-attribution', { mode: 'manual' }));
   add('task attribution rejects an unknown mode', () => post('/api/settings/task-attribution', { mode: 'bogus' }));
@@ -515,6 +517,8 @@ main({
     expect('funnel with an invalid port', 400, 'port must be an integer');
     expect('access token update', 200, '"hasToken":true');
     expect('lid mode without an unlock password', 409, 'unlock_setup_required');
+    expect('keychain conflict', 409, '"error":"keychain busy"');
+    expect('unknown keychain failure', 500, '"error":"internal_error"');
     expect('save the unlock password', 200, '"set":true');
     expect('lid mode with the password and authorization', 200, '"enabled":true');
     expect('enable auto unlock', 200, '"ok":true');
