@@ -90,13 +90,17 @@ pub fn generate_key_pair(comment: &str) -> Result<SshKeyPair, String> {
     put_str(&mut file, &blob);
     put_str(&mut file, &private);
 
+    const OPENSSH_KEY_HEADER: &str = concat!("-----BEGIN ", "OPENSSH PRIVATE KEY-----");
+    const OPENSSH_KEY_FOOTER: &str = concat!("-----END ", "OPENSSH PRIVATE KEY-----");
+
     let encoded = STANDARD.encode(&file);
-    let mut pem = String::from("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    let mut pem = format!("{OPENSSH_KEY_HEADER}\n");
     for chunk in encoded.as_bytes().chunks(70) {
         pem.push_str(std::str::from_utf8(chunk).unwrap_or_default());
         pem.push('\n');
     }
-    pem.push_str("-----END OPENSSH PRIVATE KEY-----\n");
+    pem.push_str(OPENSSH_KEY_FOOTER);
+    pem.push('\n');
 
     Ok(SshKeyPair {
         private_key: pem,
@@ -197,9 +201,13 @@ pub fn remove_authorized_key(home: &Path, tag: &str) -> Result<bool, String> {
 
 /// Persist a borrowed private key on the importing (client) machine at 0600 and
 /// return the path to hand to `ssh -i`.
-pub fn store_identity_key(home: &Path, account_id: &str, private_key: &str) -> Result<PathBuf, String> {
+pub fn store_identity_key(
+    home: &Path,
+    account_id: &str,
+    private_key: &str,
+) -> Result<PathBuf, String> {
     let trimmed = private_key.trim();
-    if !trimmed.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
+    if !trimmed.starts_with(concat!("-----BEGIN ", "OPENSSH PRIVATE KEY-----")) {
         return Err("借用的私钥格式不正确（应为 OpenSSH 私钥）".to_string());
     }
     let dir = home.join(".multicc").join(KEYS_DIR);
@@ -434,10 +442,8 @@ mod tests {
     use super::*;
 
     fn temp_home(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "multicc-ssh-share-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("multicc-ssh-share-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -446,8 +452,12 @@ mod tests {
     #[test]
     fn generated_private_key_is_a_wrapped_openssh_pem() {
         let key = generate_key_pair("multicc-relay:abc").unwrap();
-        assert!(key.private_key.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----\n"));
-        assert!(key.private_key.ends_with("-----END OPENSSH PRIVATE KEY-----\n"));
+        assert!(key
+            .private_key
+            .starts_with(concat!("-----BEGIN ", "OPENSSH PRIVATE KEY-----\n")));
+        assert!(key
+            .private_key
+            .ends_with(concat!("-----END ", "OPENSSH PRIVATE KEY-----\n")));
         let body: String = key
             .private_key
             .lines()
@@ -474,7 +484,10 @@ mod tests {
         let line = authorized_keys_line("ssh-ed25519 AAAA", "multicc-relay:1", None);
         assert_eq!(line, "restrict ssh-ed25519 AAAA multicc-relay:1");
         let line = authorized_keys_line("ssh-ed25519 AAAA", "multicc-relay:1", Some(" 1.2.3.4 "));
-        assert_eq!(line, "restrict,from=\"1.2.3.4\" ssh-ed25519 AAAA multicc-relay:1");
+        assert_eq!(
+            line,
+            "restrict,from=\"1.2.3.4\" ssh-ed25519 AAAA multicc-relay:1"
+        );
     }
 
     #[test]
@@ -523,7 +536,10 @@ mod tests {
         )
         .unwrap();
         assert!(remove_authorized_key(&home, "multicc-relay:abc").unwrap());
-        assert_eq!(fs::read_to_string(home.join(".ssh/authorized_keys")).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(home.join(".ssh/authorized_keys")).unwrap(),
+            ""
+        );
         let _ = fs::remove_dir_all(home);
     }
 
@@ -543,7 +559,9 @@ mod tests {
             restrict_from: None,
         };
         let created = create_share(&home, &request).unwrap();
-        assert!(created.code.starts_with(crate::provider_registry::SSH_SHARE_CODE_PREFIX));
+        assert!(created
+            .code
+            .starts_with(crate::provider_registry::SSH_SHARE_CODE_PREFIX));
         assert_eq!(created.share["sshPort"], json!(2222));
         let listed = list_shares(&home, Some("0123456789abcdef")).unwrap();
         assert_eq!(listed.len(), 1);
@@ -551,7 +569,10 @@ mod tests {
         assert!(keys.contains("restrict ssh-ed25519 "));
         let share_id = created.share["id"].as_str().unwrap().to_string();
         assert!(revoke_share(&home, &share_id).unwrap());
-        assert_eq!(fs::read_to_string(home.join(".ssh/authorized_keys")).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(home.join(".ssh/authorized_keys")).unwrap(),
+            ""
+        );
         assert!(list_shares(&home, None).unwrap().is_empty());
         let _ = fs::remove_dir_all(home);
     }

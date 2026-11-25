@@ -929,7 +929,10 @@ mod tests {
     #[test]
     fn claims_the_ssh_share_shapes() {
         assert_eq!(
-            claim(&Method::POST, "/api/agy/accounts/0123456789abcdef/ssh-share"),
+            claim(
+                &Method::POST,
+                "/api/agy/accounts/0123456789abcdef/ssh-share"
+            ),
             Some(Route::SshSharePost)
         );
         assert_eq!(
@@ -967,10 +970,14 @@ mod tests {
     #[test]
     fn share_id_reads_the_parameter_segment() {
         assert_eq!(
-            share_id_in("/api/agy/accounts/0123456789abcdef/ssh-shares/feedfacefeedface").as_deref(),
+            share_id_in("/api/agy/accounts/0123456789abcdef/ssh-shares/feedfacefeedface")
+                .as_deref(),
             Some("feedfacefeedface")
         );
-        assert_eq!(share_id_in("/api/agy/accounts/0123456789abcdef/ssh-share"), None);
+        assert_eq!(
+            share_id_in("/api/agy/accounts/0123456789abcdef/ssh-share"),
+            None
+        );
         assert_eq!(share_id_in("/api/agy/accounts"), None);
     }
 }
