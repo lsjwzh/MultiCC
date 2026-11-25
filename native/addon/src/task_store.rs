@@ -1,3 +1,4 @@
+mod progress;
 use crate::guard::guard;
 use crate::js_live::LiveValue;
 use multicc_core::task_store::TaskStore;

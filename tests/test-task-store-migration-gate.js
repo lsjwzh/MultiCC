@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), net = require('node:net');
 const { spawn } = require('node:child_process');
-const { describeMigration } = require('../src/task-shell/migration-progress');
+const { describeMigration } = require('../src/native/runtime').getTaskStoreMigrationProgress();
 const { runTaskStoreMigrationGate } = require('../src/task-shell/migration-gate');
 
 test('进度：各阶段折算成单调递增的总百分比，失败带上空间数字', () => {
@@ -127,4 +127,48 @@ test('闸门：迁移失败不崩溃重启，端口报告原因；SIGTERM 照常
   const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve(signal)));
   child.kill('SIGTERM');
   assert.equal(await exited, 'SIGTERM');
+});
+
+test('冻结的升级进度在相同的时钟、计数、失败与文件状态下得到相同结果', () => {
+  const frozen = require('./helpers/frozen-migration-progress');
+  const { createHash } = require('node:crypto');
+  const source = fs.readFileSync(require.resolve('./helpers/frozen-migration-progress'));
+  assert.equal(createHash('sha1').update('blob ' + source.length + '\0').update(source).digest('hex'),
+    '2135ed0db8b4c6544ee7c734cd0e5187cb0bd87b');
+  const at = 1700000000000;
+  function project(fn, fields, failure, size) {
+    const trace = [];
+    const state = fields && new Proxy(fields, { get(obj, key) { trace.push(key); return obj[key]; } });
+    const thrown = new Error('stat failed');
+    try {
+      const view = fn(state, { now: at, failure, statSize(file) {
+        trace.push(['stat', file]);
+        if (size === 'throw') throw thrown;
+        return size;
+      } });
+      if (view.total && typeof view.total === 'object') assert.equal(view.total, fields.total);
+      return { trace, view, keys: Object.keys(view) };
+    } catch (error) {
+      if (error !== thrown) throw error;
+      return { trace, statFailed: true };
+    }
+  }
+  const compare = (state, failure = null, size = 7) =>
+    assert.deepEqual(project(describeMigration, state, failure, size),
+      project(frozen.describeMigration, state, failure, size));
+  compare(null);
+  for (const phase of ['backup', 'scan', 'rewrite', 'compact', 'ledger', 'vacuum', 'failed', 'new-phase', 'constructor']) {
+    for (const total of [undefined, null, 0, -1, '25', 16, {}, Infinity]) {
+      for (const done of [undefined, -3, 0, 13, '40']) {
+        compare({ phase, total, done, startedAt: at - 12, updatedAt: at - 8000, dbBytes: 80, backupPartial: '/p' });
+      }
+    }
+  }
+  for (const age of [-1, 0, 1, 8000, 40000, 3600000]) compare({ phase: 'vacuum', updatedAt: at - age });
+  for (const size of ['throw', NaN, -9, 120]) compare({ phase: 'backup', dbBytes: 10, backupPartial: '/p' }, null, size);
+  for (const failure of [{}, { retrying: true, message: '\ufeffcode : why' }, { error: '   :test' }, { error: '坏\ud800:磁盘' }]) {
+    compare({ phase: 'failed', startedAt: '0', needBytes: 0, freeBytes: '9', error: 'older' }, failure);
+    compare({ phase: 'rewrite', done: 1, total: 1 }, failure);
+  }
+  compare({ phase: 'failed', needBytes: 12, freeBytes: 0, error: 'disk_full: retry' });
 });

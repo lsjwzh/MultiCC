@@ -199,6 +199,15 @@ function findProviderReferences(input = {}) {
 function gatewayPath() {
   return path.join(path.dirname(addonPath()), process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
+let migrationProgress;
+function getTaskStoreMigrationProgress() {
+  if (migrationProgress) return migrationProgress;
+  const addon = getNative();
+  const steps = addon.taskStoreProgressSteps();
+  return migrationProgress = { STEPS: steps, describeMigration(state, { now = Date.now(), statSize = () => 0, failure = null } = {}) {
+    return addon.describeTaskStoreMigration(state, now, statSize, failure, steps);
+  } };
+}
 function addonPath() {
   return process.env.MULTICC_RUST_ADDON || path.join(process.env.MULTICC_RUST_PREBUILT_DIR || path.resolve(__dirname, '../../native/prebuilt'),
     `${process.platform}-${process.arch}`, 'multicc_core.node');
@@ -538,7 +547,7 @@ function jsonClone(value) {
 function createSessionPersistence() {
   return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
 }
-module.exports = { getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
+module.exports = { getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,

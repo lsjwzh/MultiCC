@@ -214,7 +214,7 @@
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/memory/task-distill.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/model-history-converter.js` | server.js | — | — | `crypto` | — | — |
-| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `216 require(file)` |
+| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `225 require(file)` |
 | `src/native/task-domain.js` | server.js | `src/native/runtime.js`, `src/paths.js`, `src/state/store.js` | — | `fs` | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-search.js` | server.js | `src/native/runtime.js`, `src/task-board/search.js` | — | — | — | — |
@@ -455,8 +455,7 @@
 | `src/task-shell/host.js` | server.js | `src/classify/vocab.js`, `src/docs-registry.js`, `src/git/service.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/request-locality.js`, `src/task-board/core.js`, `src/task-routing/candidates.js`, `src/task-shell/artifacts.js`, `src/task-shell/attribution-decisions.js`, `src/task-shell/chat-history.js`, `src/task-shell/runtime.js`, `src/task-shell/store.js`, `src/task-shell/task-index.js`, `src/task-shell/task-operations.js`, `src/task-shell/workspace.js`, `src/workspace/separation-transfer.js` | — | `child_process`, `crypto`, `util` | — | — |
 | `src/task-shell/independent-continue.js` | server.js | `src/native/runtime.js`, `src/task-shell/history-context.js` | — | — | — | — |
 | `src/task-shell/migration-gate.js` | server.js | `src/gateway-child.js`, `src/native/runtime.js`, `src/network-policy.js`, `src/paths.js` | `src/task-shell/migration-page-worker.js` | `fs`, `path`, `worker_threads` | — | — |
-| `src/task-shell/migration-page-worker.js` | 宿主脚本路径 | `src/gateway-child.js`, `src/task-shell/migration-progress.js` | — | `fs`, `http`, `worker_threads` | — | — |
-| `src/task-shell/migration-progress.js` | 宿主脚本路径 | — | — | — | — | — |
+| `src/task-shell/migration-page-worker.js` | 宿主脚本路径 | `src/gateway-child.js`, `src/native/runtime.js` | — | `fs`, `http`, `worker_threads` | — | — |
 | `src/task-shell/relations.js` | server.js | — | — | — | — | — |
 | `src/task-shell/role-bindings.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/task-shell/runtime.js` | server.js | `src/native/runtime.js`, `src/task-shell/context-access.js`, `src/task-shell/context-plan.js`, `src/task-shell/history-context.js`, `src/task-shell/independent-continue.js`, `src/task-shell/relations.js`, `src/task-shell/role-bindings.js`, `src/task-shell/separation.js`, `src/task-shell/task-actions.js`, `src/task-shell/task-first.js` | — | `crypto` | — | — |
