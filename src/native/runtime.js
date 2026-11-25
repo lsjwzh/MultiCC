@@ -396,6 +396,16 @@ const claudeSettingsOverride = {
 };
 const opencodeProcessError = (cli, raw, stderr) =>
   getNative().opencodeProcessError(cli, raw, stderr, require('../provider-error').classifyProviderError);
+function resolveCliRelayTarget(providers, cliName, providerId) {
+  return getNative().resolveCliRelayTarget(providers, cliName, providerId);
+}
+function applyCliRelaySpawn({ target, childEnv, cwd, persisted, prepared, gatewayBin,
+  rememberActiveCliState, savePersistedSessionsBestEffort }) {
+  const { invocation, invocationEnvelope } = prepared;
+  return getNative().applyCliRelaySpawn({ target, childEnv, cwd, persisted, invocation, invocationEnvelope,
+    gatewayBin, rememberActiveCliState, savePersistedSessionsBestEffort, assignHostProperty });
+}
+
 const processSpawnArgs = (invocation, settings = null) => getNative().processSpawnArgs(invocation, settings);
 const isZcodeSessionId = value => getNative().isZcodeSessionId(value);
 const repairZcodeSessionState = session => getNative().repairZcodeSessionState(session);
@@ -684,7 +694,7 @@ module.exports = { openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCa
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
-  claudeSettingsOverride, opencodeProcessError, processSpawnArgs, isZcodeSessionId, repairZcodeSessionState,
+  claudeSettingsOverride, opencodeProcessError, processSpawnArgs, resolveCliRelayTarget, applyCliRelaySpawn, isZcodeSessionId, repairZcodeSessionState,
   pathSafety, stateBootstrap, bootstrapState, messageComposer, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
 // The stable PersistenceError class is created natively once per environment.
 Object.defineProperty(module.exports, 'PersistenceError', {

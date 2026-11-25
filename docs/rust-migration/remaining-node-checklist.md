@@ -1,5 +1,13 @@
 # 剩余 Node 后端清单
 
+## CLI 中继启动参数（2026-11-25）
+
+`src/chat/cli-relay-spawn.js` 已从生产目录整份删除。唯一生产调用方是聊天回合引擎。Rust 接管 Claude/Codex 中继选择、参数顺序和续跑标志，首次 Claude 会话使用现有 Rust UUID v4 生成器，并依次调用宿主的状态登记和保存接口。Node 兼容入口传递宿主对象和回调，待聊天引擎直接持有这些状态后可移除。[Rust 实现](../../native/addon/src/process_spawn_args.rs) · [生产调用方](../../src/chat/turn-engine.js)
+
+相对任务分支 `755e5a18`，生产入口可达的 Node 从 493 个文件、126,561 行降至 492 个文件、126,506 行。删除 65 行，兼容接线净增 10 行，本批整份退出 1 个文件、净减 55 行。从 `dc0df5fe` 起三批累计整份退出 3 个文件、净减 187 行。[生产依赖清单](node-module-dependencies.md)
+
+旧 JS 冻结副本与原文件的 Git blob 均为 `f98d1ba92151c10afebfc8a3976c1a96ac064215`。迁前、迁后定向回归各 123/123，覆盖 16 组目标选择、81 组启动配置和 5 处失败时的状态；新 UUID 先校验格式和传递一致性，再归一化比较。macOS ARM64 发布构建的 5 份产物均匹配指纹 `39ac02c70c5f5a94c7101fb7`。另通过适配器参数回归 22/22，以及隔离聊天回合、API 契约与原生产物回归 40/40。[冻结差分](../../tests/test-agy-remote-bridge.js)
+
 ## 聊天适配器收尾（2026-11-25）
 
 `src/chat/adapter-completion.js` 的唯一生产调用方是聊天回合引擎。43 行旧实现已从生产目录整份删除。Rust 负责记录完成证据、处理缺失跟踪器，以及决定发送失败和收尾失败分别调用哪个回调。兼容入口保留 V8 的 Promise 回调和严格属性写入，待运行器和流的生命周期迁入 Rust 后可移除。[Rust 实现](../../native/addon/src/cli_completion/adapter.rs) · [聊天回合入口](../../src/chat/turn-engine.js)
