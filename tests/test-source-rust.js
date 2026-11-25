@@ -93,6 +93,11 @@ test('source cache lives in the primary worktree and fingerprints source/config 
   assert.notEqual(withMessages, configured, 'compiled quota messages must invalidate the addon cache');
   write(root, messages, '{"quotaLoading":"Checking"}');
   assert.notEqual(sourceFingerprint(root, env), withMessages, 'message edits must rebuild native code');
+  const statusTable = 'native/core/src/task_planning_status.json';
+  write(root, statusTable, '{"defaultStatus":400,"codes":{}}');
+  const withStatuses = sourceFingerprint(root, env);
+  write(root, statusTable, '{"defaultStatus":400,"codes":{"test":409}}');
+  assert.notEqual(sourceFingerprint(root, env), withStatuses, 'planning status edits must rebuild native code');
   const worktree = path.join(root, 'sibling');
   assert.equal(spawnSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
     'commit', '--allow-empty', '-qm', 'fixture']).status, 0);

@@ -377,7 +377,7 @@
 | `src/routes/task-board.js` | server.js | `src/classify/vocab.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/routes/task-planning.js`, `src/session-work/scheduler.js`, `src/task-board/board-store.js`, `src/task-board/core.js`, `src/task-board/lifecycle.js`, `src/task-board/native-bridge.js`, `src/task-board/planning.js`, `src/task-board/relocate.js`, `src/task-board/repository.js`, `src/task-board/retention.js`, `src/task-worktree.js`, `src/voice/router.js` | — | `crypto`, `fs` | — | — |
 | `src/routes/task-goal.js` | server.js | `src/classify/vocab.js` | — | — | — | — |
 | `src/routes/task-graph.js` | server.js | `src/http/public-safety.js`, `src/task-board/core.js` | — | — | — | — |
-| `src/routes/task-planning.js` | server.js | `src/native/task-domain.js`, `src/task-board/planning.js` | — | — | — | — |
+| `src/routes/task-planning.js` | server.js | `native/core/src/task_planning_status.json`, `src/native/task-domain.js`, `src/task-board/planning.js` | — | — | — | — |
 | `src/routes/task-routes-host.js` | server.js | `src/request-locality.js`, `src/routes/task-planning.js` | — | — | — | — |
 | `src/routes/task-search.js` | server.js | `src/native/task-search.js` | — | — | — | — |
 | `src/routes/task-state-store.js` | server.js | `src/native/runtime.js`, `src/session/records.js` | — | — | — | — |

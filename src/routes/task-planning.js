@@ -2,14 +2,11 @@
 
 const planning = require('../task-board/planning');
 const { cloneBoard } = require('../native/task-domain');
+const { defaultStatus, codes } = require('../../native/core/src/task_planning_status.json');
+const planningStatuses = new Map(Object.entries(codes));
 
 function responseStatus(error) {
-  if (error === 'task_not_found') return 404;
-  if (error === 'persistence_failed') return 500;
-  if (['revision_conflict', 'task_not_planned', 'task_archived', 'task_deleting', 'task_exists',
-    'move_anchor_not_found', 'invalid_move_anchor_order', 'invalid_move_anchor',
-    'record_type_immutable'].includes(error)) return 409;
-  return 400;
+  return planningStatuses.get(error) ?? defaultStatus;
 }
 
 function expectedRevision(body) {

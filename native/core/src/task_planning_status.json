@@ -1,0 +1,16 @@
+{
+  "defaultStatus": 400,
+  "codes": {
+    "task_not_found": 404,
+    "persistence_failed": 500,
+    "revision_conflict": 409,
+    "task_not_planned": 409,
+    "task_archived": 409,
+    "task_deleting": 409,
+    "task_exists": 409,
+    "move_anchor_not_found": 409,
+    "invalid_move_anchor_order": 409,
+    "invalid_move_anchor": 409,
+    "record_type_immutable": 409
+  }
+}

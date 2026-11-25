@@ -11,6 +11,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { responseStatus } = require('../src/routes/task-planning');
 
 const { mountTaskRoutesHostRoute, HOST_PATH } = require('../src/routes/task-routes-host');
 
@@ -173,6 +174,23 @@ test('a planning refusal on the ladder is an outcome, not a rendered reply', asy
   });
   const res = await respond(handler, { op: 'planning-update', taskId: 'tk-ghost', body: {} });
   assert.deepEqual(res.body, { ok: true, value: { outcome: { error: 'task_not_found', taskId: 'tk-ghost' } } });
+});
+
+test('planning errors use exact string codes and preserve explicit host refusals', async () => {
+  assert.equal(responseStatus('persistence_failed'), 500);
+  assert.equal(responseStatus('revision_conflict'), 409);
+  assert.equal(responseStatus('task_not_found'), 404);
+  for (const code of [null, Symbol('task_not_found'), Object('task_not_found'),
+    { toString() { throw new Error('unexpected conversion'); } }, 'task_not_found\0',
+    'TASK_NOT_FOUND', '__proto__', 'constructor']) {
+    assert.equal(responseStatus(code), 400);
+  }
+  const { deps } = fakeDeps();
+  const { handler } = mount({ deps: { ports: { ...deps.ports,
+    planningUpdate: (_ctx, res) => res.status(423).json({ error: 'task_not_found' }),
+  } } });
+  const res = await respond(handler, { op: 'planning-update', taskId: 'locked', body: {} });
+  assert.deepEqual(res.body.value, { reply: { status: 423, body: { error: 'task_not_found' } } });
 });
 
 test('mark-achieved write failures keep the retired handler envelope', async () => {
