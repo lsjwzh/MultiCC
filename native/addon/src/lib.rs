@@ -78,6 +78,8 @@ pub mod js_bridge;
 mod js_iteration;
 mod js_live;
 pub mod machines;
+mod memo_controller;
+mod memo_file_port;
 pub mod message_composer;
 pub mod missing_resume_recovery;
 pub mod model_default;

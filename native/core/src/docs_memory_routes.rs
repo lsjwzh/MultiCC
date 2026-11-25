@@ -55,7 +55,7 @@ pub const MEMORY_FILE_MAX_CHARS: usize = 200_000;
 pub const MEM_GRAPH_MAX_NODES: usize = 600;
 /// `MEM_TREE_MAX_FILES`.
 pub const MEM_TREE_MAX_FILES: usize = 2_000;
-/// `MEMO_MAX_BYTES` in `src/memo/controller.js`.
+/// Shared UTF-8 size limit for the memo controller and its HTTP endpoint.
 pub const MEMO_MAX_BYTES: usize = 5 * 1024 * 1024;
 /// `WORKTREE_SUBDIR` in `src/docs-registry.js`.
 pub const WORKTREE_SUBDIR: &str = ".multicc-worktrees";

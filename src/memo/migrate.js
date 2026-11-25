@@ -16,7 +16,7 @@
 const { execFile } = require('child_process');
 const path = require('path');
 
-const { MEMO_FILENAME, LEGACY_PROJECT_MEMO_FILENAME } = require('./controller');
+const { MEMO_FILENAME, LEGACY_PROJECT_MEMO_FILENAME } = require('../native/runtime').getNative();
 
 // 'tracked' | 'untracked' | 'unknown'. Anything we cannot positively classify
 // is 'unknown', and 'unknown' never deletes. Async because production request

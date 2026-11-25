@@ -7,12 +7,8 @@
 // request bodies and the "text required" style validation are Rust's, and the
 // differential (docs/rust-migration/differential/docs-memory-routes.js) pins them.
 //
-// What stayed in Node, and what this test isolates with a temporary
-// MULTICC_DATA_DIR plus an injected fake runTurn port (so no native CLI or AI
-// process can be started): the memo controller — where the memo file lives, the
-// 5MB cap, the directory registry checks, the runTurn delivery, and the
-// `<project>/multicc.memo.md` migration — and the host-port envelope the front
-// door calls for them.
+// Exercise the native controller through the production host port using an isolated
+// store and a fake runTurn. The legacy project memo migration uses the same file port.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');

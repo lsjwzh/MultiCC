@@ -5,7 +5,7 @@ const {
   DOMAIN_KINDS,
   DomainError,
   InfrastructureError,
-} = require('../http/domain-error');
+} = require('../../../src/http/domain-error');
 
 // The memo used to be written into the project itself, as
 // `<project>/multicc.memo.md`. That put a multicc-owned scratch file inside

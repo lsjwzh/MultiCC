@@ -43,7 +43,7 @@
 // test still exists.
 const fs = require('fs');
 const path = require('path');
-const { main, loadDeleted } = require('./lib');
+const { main, loadDeleted, waitForFixture } = require('./lib');
 
 // Parent of the commit that retired the Node docs/memory/memo routes
 // (feat(gateway): move eleven route clusters into the Rust front door).
@@ -337,6 +337,7 @@ const memo = createMemoModule(world.memoDeps(state)).controller;
 const notes = createNotesStore(world.notesDeps(state));
 
 const app = express();
+app.get('/__health', (_req, res) => res.type('text/plain').send('ok'));
 app.use(requestIdMiddleware, jsonCompression);
 app.use(express.json({ limit: '50mb' }));
 createDocsMemoryHost({
@@ -411,15 +412,17 @@ main({
     const legacyMemory = loadDeleted(repo, LEGACY_REV, 'src/routes/memory-browser.js');
     const legacyMemo = loadDeleted(repo, LEGACY_REV, 'src/memo/router.js');
     const legacyDocs = loadDeleted(repo, LEGACY_REV, 'src/docs-registry.js');
-    const { createMemoModule } = require(path.join(repo, 'src/memo'));
+    const { createMemoController } = require('../../../tests/helpers/frozen-file-batch12/controller');
+    const { createMemoFilePort } = require('../../../tests/helpers/frozen-file-batch12/file-port');
 
     // server.js registration order: notes, memo, memory, docs.
     legacyNotes.createNotesStore(world.notesDeps(state)).mountRoutes(app);
-    app.use(legacyMemo.createMemoRouter(createMemoModule(world.memoDeps(state)).controller));
+    app.use(legacyMemo.createMemoRouter(createMemoController({ ...world.memoDeps(state), files: createMemoFilePort() })));
     legacyMemory.createMemoryBrowserRoutes(world.memoryDeps(state)).mountRoutes(app);
     legacyDocs.mount(app, world.docsDeps());
     upstreamText = upstreamSource(repo);
   },
+  ready: waitForFixture,
   get upstream() {
     return upstreamText;
   },
