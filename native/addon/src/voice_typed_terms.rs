@@ -3,6 +3,36 @@ use napi::{sys, Env, Result};
 use napi_derive::napi;
 
 #[napi]
+pub fn voice_rank_typed_hotwords(
+    env: Env,
+    user: &VoiceTypedVocabulary,
+    user_flags: Vec<bool>,
+    model: &VoiceTypedVocabulary,
+    model_flags: Vec<bool>,
+) -> Result<sys::napi_value> {
+    let user_terms = user
+        .tally
+        .terms(&user_flags)
+        .map_err(napi::Error::from_reason)?;
+    let model_terms = model
+        .tally
+        .terms(&model_flags)
+        .map_err(napi::Error::from_reason)?;
+    let rows = multicc_core::voice_typed_terms::rank_scan_terms(user_terms, model_terms)
+        .into_iter()
+        .map(|t| {
+            JsValue::object(vec![
+                ("term", JsValue::string(t.term)),
+                ("count", JsValue::Number(t.count as f64)),
+                ("sessions", JsValue::Number(t.sessions as f64)),
+                ("source", JsValue::string(t.source)),
+            ])
+        })
+        .collect();
+    unsafe { crate::js_bridge::write_value(env.raw(), &JsValue::Array(rows)) }
+}
+
+#[napi]
 #[derive(Default)]
 pub struct VoiceTypedVocabulary {
     tally: Vocabulary,

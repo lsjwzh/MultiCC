@@ -30,6 +30,46 @@ pub struct Term<'a> {
     pub forms: &'a IndexMap<String, usize>,
 }
 
+pub struct RankedTerm<'a> {
+    pub term: &'a str,
+    pub count: usize,
+    pub sessions: usize,
+    pub source: &'static str,
+}
+
+/// User spellings win collisions before sorting. Equal counts keep encounter
+/// order within each source, with user words first across the two sources.
+pub fn rank_scan_terms<'a>(user: Vec<Term<'a>>, model: Vec<Term<'a>>) -> Vec<RankedTerm<'a>> {
+    let user = user
+        .into_iter()
+        .filter(|t| t.count >= 3 && t.sessions.len() >= 2);
+    let model = model.into_iter().filter(|t| {
+        let acronym = t
+            .spelling
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+        t.sessions.len() >= if acronym { 10 } else { 5 }
+    });
+    let mut seen = IndexSet::new();
+    let mut ranked = Vec::new();
+    for (t, source) in user
+        .map(|t| (t, "user"))
+        .chain(model.map(|t| (t, "assistant")))
+    {
+        if seen.insert(t.key) {
+            ranked.push(RankedTerm {
+                term: t.spelling,
+                count: t.count,
+                sessions: t.sessions.len(),
+                source,
+            });
+        }
+    }
+    ranked.sort_by_key(|t| std::cmp::Reverse(t.count));
+    ranked.truncate(80);
+    ranked
+}
+
 impl Vocabulary {
     pub fn observe(&mut self, session: u32, prose: &str) {
         self.messages += 1;

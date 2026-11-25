@@ -224,6 +224,7 @@ function probeAddon(file, node = process.execPath) {
     if(['openCodeModelLimit','openCodeCachedModelLimit','chatLostNotice','chatQueuedNotice','chatHeldNotice','chatHoldCapNotice','monitorAdmissionEvents','monitorDeliveryStep','monitorHandoffResult','openCodeCatalogSpec','openCodeCatalogId','openCodeCatalogName','openCodeCatalogEntry','voiceSpeechText','taskStoreProgressSteps','describeTaskStoreMigration','HostAttributionSettings','recoverModelTimeout','voiceHotwordMatch','voiceHotwordList','VoiceTypedVocabulary','voiceMineHotwordPairs','taskBoardPlanningResult','taskBoardSessionFact','prepareOpencodeRotationHandoff','chatFrozenFinalization','chatValidateFinalizationPorts','chatPlanTurnFinalization','chatPlanRetryBlockedFinalization','chatResolveTurnFinalization',
       'chatClassifyProcessExit','chatNormalizeHandoff','chatIsGuardedHandoffFailure','chatExecuteTurnFinalization',
       'chatCommitTurnFinalization'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.voiceRankTypedHotwords!=='function') process.exit(1);
     if(['turnEventToolTiming','turnEventDiffTiming','turnEventOpenTasks'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(a.turnEventOpenTasks([{seq:1,ts:1000,event:{type:'monitor_started',task_id:'p'}},{seq:2,ts:1500,event:{type:'monitor_progress',task_id:'p'}}])[0].lastTs!==1500) process.exit(1);
     if(['transcriptPruneDefaults','transcriptProjectDir','transcriptFind','transcriptPruneFile',

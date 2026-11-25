@@ -195,6 +195,30 @@ test('the voice host only starts learning when the real server opts in', () => {
   assert.doesNotMatch(config, /autoHotwords\.start\(\)/, 'requiring the config module must not start a scan');
 });
 
+test('refresh persists the top 80 words in stable order across both sources', async t => {
+  const dir = tmpDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const history = path.join(dir, 'chat_history');
+  const file = path.join(dir, 'voice_hotwords.json');
+  fs.mkdirSync(history);
+  const tied = Array.from({ length: 82 }, (_, i) =>
+    'Name' + String.fromCharCode(65 + Math.floor(i / 26), 97 + i % 26));
+  for (let i = 0; i < 6; i++) {
+    const messages = [{ role: 'assistant', content: `第${i}次 ModelFirst NameAa` }];
+    if (i < 5) {
+      messages.push({ role: 'user', content: `第${i}次 ${tied.join(' ')}` });
+      messages[0].content += ' ModelTied';
+    }
+    fs.writeFileSync(path.join(history, i + '.json'), messages.map(m => JSON.stringify(m)).join('\n'));
+  }
+  const learner = createHotwordLearner({ file, chatHistoryDir: history, log: quiet });
+  await learner.refresh();
+  const expected = [{ term: 'ModelFirst', count: 6, sessions: 6, source: 'assistant' },
+    ...tied.slice(0, 79).map(term => ({ term, count: 5, sessions: 5, source: 'user' }))];
+  assert.deepEqual(learner.snapshot().typed, expected);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).typed, expected);
+});
+
 test('语音纠错按冻结输入对拍 UTF-16 边界、重复片段和拼音回退', () => {
   const { compileFunction } = require('node:vm');
   const { createRequire } = require('node:module');

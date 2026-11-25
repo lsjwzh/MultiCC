@@ -33,15 +33,6 @@ const TAIL_BYTES = 512 * 1024;
 const MAX_FILES = 300;
 const MAX_MESSAGE_CHARS = 1500;
 const KEPT_CHARS = 800;
-const MIN_TYPED_COUNT = 3;
-const MIN_TYPED_SESSIONS = 2;
-// Model-sourced terms need far more evidence than the user's own words: they
-// must recur across sessions, and an all-caps token (where stock tickers and
-// generic shouting live) needs twice as many.
-const MIN_MODEL_SESSIONS = 5;
-const MIN_MODEL_CAPS_SESSIONS = 10;
-const ALL_CAPS = /^[A-Z0-9]+$/;
-const MAX_TYPED = 80;
 const MAX_KEPT_TEXTS = 1000;
 const MAX_SEEN = 500;
 
@@ -208,23 +199,7 @@ function createHotwordLearner({ file, examplesFile, chatHistoryDir, log = consol
     const own = dropTemplates(messages);
     const fromModel = dropTemplates(modelMessages);
 
-    const userTerms = [...miner.mineTypedTerms(own).values()]
-      .filter(t => t.count >= MIN_TYPED_COUNT && t.sessions.size >= MIN_TYPED_SESSIONS);
-    // Model text only adds terms the user never wrote; the user's own spelling
-    // always wins, so those entries are merged second and never overwrite.
-    const modelTerms = [...miner.mineTypedTerms(fromModel).values()]
-      .filter(t => t.sessions.size >= (ALL_CAPS.test(t.term) ? MIN_MODEL_CAPS_SESSIONS : MIN_MODEL_SESSIONS));
-
-    const seen = new Set();
-    const typed = [];
-    for (const t of [...userTerms.map(t => ({ t, source: 'user' })), ...modelTerms.map(t => ({ t, source: 'assistant' }))]) {
-      const key = t.t.term.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      typed.push({ term: t.t.term, count: t.t.count, sessions: t.t.sessions.size, source: t.source });
-    }
-    typed.sort((a, b) => b.count - a.count);
-    typed.length = Math.min(typed.length, MAX_TYPED);
+    const typed = miner.rankTypedHotwords(own, fromModel);
 
     load();
     state.typed = typed;
