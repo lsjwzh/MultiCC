@@ -155,6 +155,7 @@ pub mod voice_hotword_list;
 pub mod voice_hotword_pairs;
 pub mod voice_routes;
 pub mod voice_runtime_routes;
+pub mod voice_speech;
 pub mod voice_typed_terms;
 pub mod windows_tools;
 pub mod workspace_release;

@@ -341,6 +341,8 @@ function createQwenAudioSupervisor({
       'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'HTTPS_PROXY', 'HTTP_PROXY',
       'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy', 'ALL_PROXY', 'all_proxy',
       'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE',
+      // The managed ACP child loads MultiCC's speech policy from the host build.
+      'MULTICC_RUST_ADDON', 'MULTICC_RUST_PREBUILT_DIR',
     ]) {
       if (sourceEnv[name]) env[name] = sourceEnv[name];
     }

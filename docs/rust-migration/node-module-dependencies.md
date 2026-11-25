@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 497 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 496 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -160,7 +160,7 @@
 | `src/directory/repository.js` | server.js | — | — | — | — | — |
 | `src/directory/sample-workspace.js` | server.js | — | — | `path` | — | — |
 | `src/directory/ui-layout.js` | server.js | `src/state/store.js` | — | — | — | — |
-| `src/dispatch/gateway-host.js` | server.js | `src/bus.js`, `src/cli/cli-capability.js`, `src/dispatch/targeting.js`, `src/voice/speech.js` | — | — | — | — |
+| `src/dispatch/gateway-host.js` | server.js | `src/bus.js`, `src/cli/cli-capability.js`, `src/dispatch/targeting.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/dispatch/progress.js` | server.js | — | — | — | — | — |
 | `src/dispatch/targeting.js` | server.js | `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/session-dto.js` | — | — | — | — |
 | `src/docs-registry.js` | server.js | `src/artifact-retention.js`, `src/artifacts.js`, `src/native/runtime.js`, `src/paths.js`, `src/runtime-security.js` | — | `child_process`, `fs`, `net`, `path` | — | — |
@@ -214,7 +214,7 @@
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/memory/task-distill.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/model-history-converter.js` | server.js | — | — | `crypto` | — | — |
-| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `225 require(file)` |
+| `src/native/runtime.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/provider-error.js`, `src/providers/native-opencode.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path` | — | `234 require(file)` |
 | `src/native/task-domain.js` | server.js | `src/native/runtime.js`, `src/paths.js`, `src/state/store.js` | — | `fs` | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-search.js` | server.js | `src/native/runtime.js`, `src/task-board/search.js` | — | — | — | — |
@@ -485,7 +485,7 @@
 | `src/upstream-error.js` | server.js | `src/observability.js` | — | — | — | — |
 | `src/usage-limit-poller.js` | server.js | `src/native/runtime.js`, `src/network/outbound.js`, `src/providers/core.js`, `src/providers/egress-ip-policy.js`, `src/quota/codex-usage-request.js`, `src/upstream-error.js` | — | `crypto` | — | — |
 | `src/usage-observed.js` | server.js | `src/native/runtime.js`, `src/providers/binding.js`, `src/providers/proxy-outcome.js` | — | — | — | — |
-| `src/voice/acp-bridge.js` | 宿主脚本路径 | `src/voice/speech.js` | — | `crypto` | `ws` | — |
+| `src/voice/acp-bridge.js` | 宿主脚本路径 | `src/native/runtime.js` | — | `crypto` | `ws` | — |
 | `src/voice/asr-local.js` | server.js | `src/voice/config.js`, `src/voice/hotword-corrector.js` | — | `child_process`, `fs`, `os`, `path` | `sherpa-onnx-node` | — |
 | `src/voice/asr-model-installer.js` | server.js | — | — | `fs`, `path`, `stream`, `stream/promises` | — | — |
 | `src/voice/config.js` | server.js | `src/paths.js`, `src/runtime-security.js`, `src/voice/hotword-corrector.js`, `src/voice/hotword-learner.js` | — | `fs` | — | — |
@@ -499,7 +499,6 @@
 | `src/voice/qwen-audio-installer.js` | server.js | `src/network/outbound.js`, `src/runtime-security.js` | — | `child_process`, `crypto`, `fs`, `path` | — | — |
 | `src/voice/qwen-audio-supervisor.js` | server.js | `src/network/outbound.js`, `src/runtime-security.js`, `src/voice/gateway.js` | — | `child_process`, `crypto`, `fs`, `net`, `path` | — | — |
 | `src/voice/router.js` | server.js | — | — | `fs`, `path` | — | — |
-| `src/voice/speech.js` | server.js | — | — | — | — | — |
 | `src/voice/tts-service.js` | server.js | `src/network/outbound.js` | — | `child_process`, `https` | `ws` | — |
 | `src/wait/injector.js` | server.js | `src/native/runtime.js` | — | `crypto` | — | — |
 | `src/wait/service.js` | server.js | `src/native/runtime.js`, `src/outbox.js` | — | `crypto` | — | — |

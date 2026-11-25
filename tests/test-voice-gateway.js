@@ -1348,3 +1348,52 @@ test('fleetRuntime and fleetRestart project the one global child or answer for t
   res = await runtimeHostCall(throwing, { op: 'fleetRestart', id: 'dir-1' });
   assert.deepEqual(res.body, { thrown: { code: undefined, message: 'restart exploded' } });
 });
+
+test('speech egress matches the frozen policy for markers, paths and private values', () => {
+  const reference = require('./helpers/frozen-voice-speech');
+  const actual = require('../src/native/runtime').voiceSpeech;
+  const bytes = require('node:fs').readFileSync(require.resolve('./helpers/frozen-voice-speech'));
+  assert.equal(require('node:crypto').createHash('sha1').update('blob ' + bytes.length + '\0')
+    .update(bytes).digest('hex'), 'f630eb5ce118b8a379d3e907b2fc96b123e05536');
+  const whitespace = [' ', '\t', '\r\n', '\u0085', '\ufeff', '\u2004', '\u2029'];
+  const controls = ['dispatch', 'ROUTE', 'ro', 'routé', 'dispatchMore', '', 'keep'];
+  let count = 0;
+  function compare(text, privateValues) {
+    assert.equal(actual.stripTruncatedLegacyMarker(text), reference.stripTruncatedLegacyMarker(text));
+    assert.equal(actual.sanitizeVoiceSpeech(text, { privateValues }), reference.sanitizeVoiceSpeech(text, { privateValues }));
+    count++;
+  }
+  for (const space of whitespace) {
+    for (const tag of controls) {
+      for (const close of ['route', 'DISPATCH']) {
+        const start = '前\ud800<<' + space + tag;
+        compare(start + ' id=12>secret😺</' + space + close + space + '>>完', ['secret', '\ud800']);
+        compare(start + '=>\n<<rou', []);
+        compare(start + '>\n<<dispatch>nested</dispatch>>尾</route>> /home/tmp。', new Set(['nested']));
+      }
+    }
+    compare('a' + space + '/Users/person/file，b C:\\Private\\file' + space + 'c', []);
+  }
+  for (const tag of ['qwen_audio_agent_backend_instructions', 'qwen_audio_agent_request']) {
+    compare('前<' + tag.toUpperCase() + '>\u2028正文\n</' + tag + '>后', []);
+    compare('前<' + tag + '>未完', []);
+  }
+  for (const text of [null, 0, false, 7, Symbol('word'), 'aaa', 'x  \n\n  y', '/home/a/tmp/b', 'ab\udc00cd', 'a<<route中>b</route>z']) {
+    compare(text, [' aa ', 'b', '', '\udc00']);
+  }
+  function thrownTrace(api) {
+    const trace = [];
+    const sentinel = {};
+    const raw = { toString() { trace.push('text'); return 'redaction'; } };
+    function* values() {
+      try {
+        yield { toString() { trace.push('first'); return 'red'; } };
+        yield { toString() { trace.push('second'); throw sentinel; } };
+      } finally { trace.push('closed'); }
+    }
+    assert.throws(() => api.sanitizeVoiceSpeech(raw, { privateValues: values() }), error => error === sentinel);
+    return trace;
+  }
+  assert.deepEqual(thrownTrace(actual), thrownTrace(reference));
+  assert.equal(count, 315);
+});
