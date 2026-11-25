@@ -87,6 +87,10 @@ struct Gateway {
 
 impl Gateway {
     fn start(tag: &str, home_key: &str) -> Self {
+        Self::start_with_engine(tag, home_key, None)
+    }
+
+    fn start_with_engine(tag: &str, home_key: &str, engine: Option<&str>) -> Self {
         let golden = golden();
         let dir = unique(tag);
         let data = dir.join("data");
@@ -135,6 +139,9 @@ impl Gateway {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log));
+        if let Some(name) = engine {
+            command.env("MULTICC_CLAUDE_BIN", dir.join(name));
+        }
         for key in [
             "TMPDIR",
             "SystemRoot",
@@ -363,6 +370,40 @@ fn claude_models_replays_golden_cases() {
         .map(|entry| entry["model"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(ids, expected, "extracted ids vs bundle response");
+}
+
+#[test]
+fn catalog_tracks_bundled_engine_and_explicit_override_ahead_of_system_cli() {
+    let gateway = Gateway::start_with_engine("sdk", "home", Some("configured-claude"));
+    let package = gateway.dir.join("node_modules/@anthropic-ai").join(format!(
+        "claude-agent-sdk-{}",
+        multicc_core::egress_plugin::node_platform_arch_for(
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    ));
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("package.json"), "{}").unwrap();
+    let bundled = package.join(format!("claude{}", std::env::consts::EXE_SUFFIX));
+    fs::write(&bundled, "claude-sonnet-8-2").unwrap();
+
+    let verify = |expected: &str, binary: &Path| {
+        let response = gateway.exchange("GET", "/api/claude/models", &[]);
+        assert_eq!(response.status, 200);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["source"], "cli");
+        assert_eq!(parse_models(&response.text()), [expected]);
+        let cache: Value =
+            serde_json::from_slice(&fs::read(gateway.cache_file()).unwrap()).unwrap();
+        assert!(cache["bundleKey"]
+            .as_str()
+            .unwrap()
+            .starts_with(binary.canonicalize().unwrap().to_str().unwrap()));
+    };
+    verify("claude-sonnet-8-2", &bundled);
+    let configured = gateway.dir.join("configured-claude");
+    fs::write(&configured, "claude-opus-9").unwrap();
+    verify("claude-opus-9", &configured);
 }
 
 #[test]

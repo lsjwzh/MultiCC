@@ -384,6 +384,10 @@ fn standalone_reads_the_deployed_settings_file_before_binding() {
 #[test]
 fn a_local_access_token_answers_the_same_auth_shapes_as_node() {
     let gateway = Gateway::start("local-token", Some(&format!("ACCESS_TOKEN={TOKEN}\n")), &[]);
+    // 固定空目录响应，避免开发机的 Homebrew 安装影响鉴权用例。
+    let bin = gateway.dir.join("home/.local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("claude"), b"").unwrap();
     let log = gateway.wait_for_log("authentication runtime owned locally (--no-node)");
     assert!(
         log.contains("authentication runtime owned locally (--no-node)"),

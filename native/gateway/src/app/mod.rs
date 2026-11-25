@@ -1504,8 +1504,14 @@ pub async fn handle(
                 .claude_models
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let value =
-                claude_models::get(root, &worker.home_dir, &original_url, now_ms, &mut state);
+            let value = claude_models::get(
+                root,
+                &worker.package_root,
+                &worker.home_dir,
+                &original_url,
+                now_ms,
+                &mut state,
+            );
             return (200, multicc_core::js::serde::js_json_stringify(&value));
         }
         // Keep this route's saved JSON lossless: unknown fields can contain
