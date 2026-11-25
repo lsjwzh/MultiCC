@@ -108,6 +108,7 @@ pub mod search_tokens;
 pub mod secret_audit;
 pub mod session_create_record;
 pub mod session_delivery;
+pub mod session_dto;
 pub mod session_hibernation_reclaimer;
 pub mod session_login_terminal;
 pub mod session_pending_configuration;

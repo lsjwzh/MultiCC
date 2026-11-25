@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 493 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 492 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -403,7 +403,7 @@
 | `src/secrets-vault.js` | server.js | `src/paths.js`, `src/runtime-security.js`, `src/secret-audit.js` | — | `crypto`, `fs`, `path` | — | — |
 | `src/server-processes.js` | server.js | — | — | `child_process`, `fs`, `path` | — | — |
 | `src/server-restart.js` | server.js | `src/host-env.js` | — | `child_process`, `crypto`, `fs`, `net`, `path` | — | — |
-| `src/session-dto.js` | server.js | `src/providers/auto-provider-config.js` | — | — | — | — |
+| `src/session-dto.js` | server.js | `src/native/runtime.js`, `src/providers/auto-provider-config.js` | — | — | — | — |
 | `src/session-work/host.js` | server.js | `src/classify/vocab.js`, `src/cli-adapters/kimi-auth.js`, `src/cli-adapters/zcode-auth.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/observability.js`, `src/orchestration/native-store-host.js`, `src/session-work/scheduler.js` | — | `crypto` | — | — |
 | `src/session-work/scheduler.js` | server.js | `src/classify/vocab.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/session/chat-history-service.js` | server.js | `src/native/runtime.js` | — | — | — | — |

@@ -267,7 +267,18 @@ pub fn sanitize_public_text(value: Option<&Value>, max: usize) -> Value {
         Some(Value::String(text)) if text.is_empty() => return Value::Null,
         Some(inner) => js_string(inner),
     };
-    let view = to_unit_view(&JsString::from_rust_str(&text));
+    let view = redacted_unit_view(&JsString::from_rust_str(&text));
+    let cut: String = view.chars().take(max).collect();
+    Value::String(from_unit_view(&cut).to_string_lossy())
+}
+
+/// Apply the shared session redactions without converting lone UTF-16 surrogates.
+pub fn redact_session_text(text: &JsString) -> JsString {
+    from_unit_view(&redacted_unit_view(text))
+}
+
+fn redacted_unit_view(text: &JsString) -> String {
+    let view = to_unit_view(text);
     let view = bearer_pattern()
         .replace_all(&view, "Bearer [redacted]")
         .into_owned();
@@ -284,11 +295,9 @@ pub fn sanitize_public_text(value: Option<&Value>, max: usize) -> Value {
     let view = windows_path_pattern()
         .replace_all(&view, "[path]")
         .into_owned();
-    let view = posix_path_pattern()
+    posix_path_pattern()
         .replace_all(&view, "[path]")
-        .into_owned();
-    let cut: String = view.chars().take(max).collect();
-    Value::String(from_unit_view(&cut).to_string_lossy())
+        .into_owned()
 }
 
 /// `subagentDto(value)`.

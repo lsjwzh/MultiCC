@@ -130,6 +130,7 @@ function probeAddon(file, node = process.execPath) {
     if(['contextSelectionValue','contextSelectionTerms','contextSelectionRelevance','contextSelectionMinRelevance',
       'contextSelectionClipTokens','contextSelectionSelect','usageObservedCatalog',
       'usageObservedRequestValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(typeof a.sessionDtoRedactText!=='function' || a.sessionDtoRedactText('token=sample')!=='token=[redacted]') process.exit(1);
     if(['artifactReferenceIsArtifactId','artifactReferenceNormalizeRelativePath','artifactReferenceExtract'].some(key=>typeof a[key]!=='function')
       || a.artifactReferenceIsArtifactId('ab_CD-1')!==true || a.artifactReferenceIsArtifactId('a.b')!==false
       || a.artifactReferenceNormalizeRelativePath('a//')!=='a' || a.artifactReferenceNormalizeRelativePath('/a')!==null) process.exit(1);

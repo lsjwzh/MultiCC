@@ -6,7 +6,7 @@
 //! the host. Rust owns the bookkeeping: insertion-ordered SameValueZero maps,
 //! the Number/BigInt comparison and the shape of the returned objects.
 
-use crate::js_iteration::{boolean, call, is_object, read, read_property, IteratorRecord};
+use crate::js_iteration::{boolean, call, is_null, is_object, read, read_property, IteratorRecord};
 use crate::js_live::LiveValue;
 use multicc_core::js::{JsString, JsValue};
 use multicc_core::turn_event_replay::{
@@ -124,10 +124,6 @@ impl<'env> Host<'env> {
             }
         })
     }
-}
-
-fn is_null(value: LiveValue<'_>) -> Result<bool> {
-    Ok(value.kind()? == sys::ValueType::napi_null)
 }
 
 fn bigint_words(value: LiveValue<'_>) -> Result<(bool, Vec<u64>)> {
