@@ -25,6 +25,9 @@ pub const MAX_PROBE_CANDIDATE_LENGTH: usize = 200;
 pub const MAX_RELAY_MODELS: usize = 100;
 pub const MAX_RELAY_MODEL_LENGTH: usize = 256;
 pub const RELAY_CODE_PREFIX: &str = "mcrelay1.";
+/// SSH 借用码。与 `mcrelay1.` 是两种东西：它带的是 Host 一次性生成的私钥，
+/// 接收方拿到就能以 Host 用户登录，所以只能在分享端强提示后发放。
+pub const SSH_SHARE_CODE_PREFIX: &str = "mcssh1.";
 pub const RELAY_FALLBACK_ID: &str = "mcr1";
 
 /// Deferred native-line checks for the synchronous provider validator.
@@ -835,6 +838,41 @@ pub fn encode_relay_share_code(
     payload.insert("mode".into(), json!(mode));
     let text = js_json_stringify(&Value::Object(payload));
     format!("{RELAY_CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(text))
+}
+
+/// `encodeSshShareCode`: `mcssh1.` + base64url of the UTF-8 JSON payload.
+///
+/// 明文可解，和借道码一样；区别是 `identityKey` 是 Host 借出的私钥，拿到码就
+/// 等于拿到那台机器的登录权。默认端口（22）不写进载荷，保持分享码短一点。
+#[allow(clippy::too_many_arguments)]
+pub fn encode_ssh_share_code(
+    name: &str,
+    app_type: &str,
+    ssh_target: &str,
+    ssh_port: u16,
+    identity_key: &str,
+    file_mode: &str,
+    share_id: &str,
+    models: &[String],
+) -> String {
+    let mut payload = Map::new();
+    payload.insert("v".into(), json!(1));
+    payload.insert("kind".into(), json!("multicc-ssh"));
+    payload.insert("name".into(), json!(name));
+    payload.insert("appType".into(), json!(app_type));
+    payload.insert("sshTarget".into(), json!(ssh_target));
+    if ssh_port != 22 {
+        payload.insert("sshPort".into(), json!(ssh_port));
+    }
+    payload.insert("identityKey".into(), json!(identity_key));
+    payload.insert("fileMode".into(), json!(file_mode));
+    payload.insert("shareId".into(), json!(share_id));
+    if let Some(first) = models.first().filter(|first| !first.is_empty()) {
+        payload.insert("model".into(), json!(first));
+        payload.insert("models".into(), json!(models));
+    }
+    let text = js_json_stringify(&Value::Object(payload));
+    format!("{SSH_SHARE_CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(text))
 }
 
 /// `parseCredential` (`mcr1.<id>.<secret>`).

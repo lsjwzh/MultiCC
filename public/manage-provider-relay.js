@@ -34,8 +34,7 @@ function parseRelayShareCode(raw) {
 }
 
 // 分享方式的中文说明；提示与导入共用一份，避免两处措辞漂移。
-function relayModeLabel(mode) {
-  if (mode === 'cli') return '远程 CLI 分享';
+function relayModeLabel(mode) {  if (mode === 'cli') return '远程 CLI 分享';
   return '反代分享';
 }
 
@@ -321,7 +320,7 @@ function shareRelayProvider(appType, id) {
 
 function shareAgyAccount(accountId, accountLabel) {
   const displayName = String(accountLabel || accountId || '反重力账号');
-  const { overlay } = _relayOverlay(`
+  const { overlay, close } = _relayOverlay(`
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:560px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">反重力借道分享 · ${escapeHtml(displayName)}</div>
       <div style="font-size:12px;color:var(--faint);line-height:1.6;margin-bottom:10px">生成独立可撤销的反重力分享码。对方免装 agy、免配 SSH 即可直接使用此账号，流量自动锁定本 Host 绑定的出口 IP；命令与文件读写仍在对方真机执行，绝不暴露你的 VPS 权限或 OAuth 凭据。</div>
@@ -334,7 +333,7 @@ function shareAgyAccount(accountId, accountLabel) {
       <p data-k="network-hint" style="font-size:12px;line-height:1.6;color:var(--faint)"></p>
       <textarea data-k="code" rows="4" readonly placeholder="生成后分享码显示在这里，可随时在共享记录中重新复制或撤销" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap">
-        <button class="btn" data-act="records" style="font-size:13px">共享记录</button><button class="btn" data-act="close" style="font-size:13px">关闭</button><button class="btn" data-act="copy" style="font-size:13px" disabled>复制分享码</button><button class="btn btn-green" data-act="gen" style="font-size:13px">生成分享码</button>
+        <button class="btn" data-act="ssh" style="font-size:13px">改用 SSH 借用码…</button><button class="btn" data-act="records" style="font-size:13px">共享记录</button><button class="btn" data-act="close" style="font-size:13px">关闭</button><button class="btn" data-act="copy" style="font-size:13px" disabled>复制分享码</button><button class="btn btn-green" data-act="gen" style="font-size:13px">生成分享码</button>
       </div>
       <div data-k="status" class="status-text" style="margin-top:8px"></div>
     </div>`);
@@ -363,6 +362,7 @@ function shareAgyAccount(accountId, accountLabel) {
   sel.onchange = () => { customEl.style.display = sel.value === '__custom' ? 'block' : 'none'; updateHint(); };
   customEl.oninput = updateHint;
   overlay.querySelector('[data-act="records"]').onclick = () => manageRelayShares('agy', accountId);
+  overlay.querySelector('[data-act="ssh"]').onclick = () => { close(); shareAgySshAccount(accountId, displayName); };
   overlay.querySelector('[data-act="copy"]').onclick = async () => {
     _relayCopyResult(st, await _relayCopyText(codeEl.value, codeEl));
   };
@@ -378,6 +378,142 @@ function shareAgyAccount(accountId, accountLabel) {
       overlay.querySelector('[data-act="copy"]').disabled = false;
       st.textContent = `已记录链接 ${d.share.tokenFingerprint}；请立即复制分享码。`; st.className = 'status-text ok';
     } catch (err) { st.textContent = 'Failed: ' + err.message; st.className = 'status-text err'; }
+  };
+}
+
+// SSH 借用码：和借道码不是一回事。码里是 Host 一次性生成的私钥，接收方用它
+// 直接 SSH 登录 Host，才能跑 Mutagen 的对端 agent；借道码走 WSS，永远拿不到
+// 真实文件副本。因为等于交出登录权，生成前必须让分享人看见这句话再看一次。
+function parseSshShareCode(raw) {
+  const text = String(raw || '').trim();
+  if (!text.startsWith('mcssh1.')) return { error: '不是 SSH 借用码（应以 mcssh1. 开头）' };
+  let payload = null;
+  try {
+    const b64 = text.slice('mcssh1.'.length).replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
+    const json = decodeURIComponent(bytes.split('').map(ch => '%' + ('00' + ch.charCodeAt(0).toString(16)).slice(-2)).join(''));
+    payload = JSON.parse(json);
+  } catch (_) { return { error: '借用码无法解码，请检查是否复制完整' }; }
+  if (!payload || payload.kind !== 'multicc-ssh') return { error: '不是 MultiCC SSH 借用码' };
+  if (payload.appType !== 'agy') return { error: 'SSH 借用码目前只支持反重力 agy' };
+  if (!String(payload.sshTarget || '').trim()) return { error: '借用码缺少 SSH 目标' };
+  if (!String(payload.identityKey || '').includes('BEGIN OPENSSH PRIVATE KEY')) return { error: '借用码缺少借用的私钥' };
+  if (payload.fileMode && payload.fileMode !== 'mutagen' && payload.fileMode !== 'remote_mcp') {
+    return { error: '借用码的同步方式无效' };
+  }
+  return { payload: { ...payload, fileMode: payload.fileMode || 'mutagen' } };
+}
+
+function shareAgySshAccount(accountId, accountLabel) {
+  const displayName = String(accountLabel || accountId || '反重力账号');
+  const { overlay, close } = _relayOverlay(`
+    <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:600px;max-width:94vw;">
+      <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">反重力 SSH 借用码 · ${escapeHtml(displayName)}</div>
+      <div style="border:1px solid #f85149;background:rgba(248,81,73,.08);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.7;color:#ffb3ae">
+        <strong>这会把你在这台机器上的登录权交出去。</strong><br>
+        借用码里是一次性生成的私钥；谁拿到码，谁就能以你的用户身份 SSH 登录。只发给你自己的设备，或完全信任的人。用完请在下面的「已借出」里撤销，密钥会立刻从 authorized_keys 删除。
+      </div>
+      <div style="font-size:12px;color:var(--faint);line-height:1.7;margin-bottom:12px">
+        SSH 借用是唯一能跑 Mutagen 双向同步的方式（借道码固定走 remote_mcp，文件读写回调到接收方本机）。代价是接收方需要能连上本机的 SSH 端口。
+      </div>
+      <label style="display:block;margin-bottom:8px"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">对方连接时使用的 SSH 目标</div>
+        <input data-k="sshTarget" type="text" placeholder="用户名@地址，例如 me@192.168.1.20" autocomplete="off" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <label style="flex:1"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">端口</div>
+          <input data-k="sshPort" type="number" min="1" max="65535" value="22" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box"></label>
+        <label style="flex:2"><div style="font-size:12px;color:var(--faint);margin-bottom:4px">文件同步方式</div>
+          <select data-k="fileMode" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
+            <option value="mutagen">Mutagen 双向同步（借用码的意义所在）</option>
+            <option value="remote_mcp">remote_mcp（不落盘到本机）</option>
+          </select></label>
+      </div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;font-size:12px;color:#c9d1d9;line-height:1.6;cursor:pointer">
+        <input data-k="install" type="checkbox" checked style="margin-top:2px">
+        <span>自动写入 <code>~/.ssh/authorized_keys</code>（带 <code>restrict</code>：禁端口转发、禁 agent 转发、禁 pty），并记入「已借出」。不勾选则只生成码，由你自己粘贴那一行。</span>
+      </label>
+      <div data-k="preflight" style="font-size:12px;line-height:1.7;color:var(--faint);margin-bottom:10px">正在检查本机 SSH 状态…</div>
+      <div data-k="egress" style="font-size:12px;line-height:1.7;color:var(--faint);margin-bottom:10px"></div>
+      <textarea data-k="code" rows="3" readonly placeholder="生成后借用码只在这里显示一次" style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
+      <pre data-k="aks" style="display:none;white-space:pre-wrap;word-break:break-all;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:11px;padding:8px 10px;margin:8px 0 0"></pre>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap">
+        <button class="btn" data-act="close" style="font-size:13px">关闭</button>
+        <button class="btn" data-act="copy" style="font-size:13px" disabled>复制借用码</button>
+        <button class="btn btn-green" data-act="gen" style="font-size:13px">生成借用码</button>
+      </div>
+      <div data-k="status" class="status-text" style="margin-top:8px"></div>
+    </div>`);
+  const el = k => overlay.querySelector(`[data-k="${k}"]`);
+  const st = el('status');
+  const codeEl = el('code');
+  const preflightEl = el('preflight');
+  const copyBtn = overlay.querySelector('[data-act="copy"]');
+  overlay.querySelector('[data-act="close"]').onclick = () => close();
+  copyBtn.onclick = async () => { _relayCopyResult(st, await _relayCopyText(codeEl.value, codeEl)); };
+
+  // 出口提示是静态的：SSH 不是 http，没有可探测的 base URL，只能把事实讲清楚。
+  el('egress').innerHTML = '对方要能直接连到这台机器的 SSH 端口：同一局域网填内网地址即可；跨公网需要把端口映射出去（「隧道」面板加一条 TCP 映射到本机 22），或等 SSH over WSS 上线。';
+
+  const renderPreflight = (d) => {
+    const rows = [];
+    const sshd = d && d.sshd ? d.sshd : {};
+    if (sshd.listening) {
+      rows.push('<span style="color:#3fb950">本机 SSH 正在监听 22 端口</span>');
+    } else {
+      rows.push('<span style="color:#f85149">本机 22 端口没有在监听：先在「系统设置 → 通用 → 共享 → 远程登录」打开（macOS），或 <code>systemctl enable --now ssh</code>（Linux）。</span>');
+    }
+    const aks = d && d.authorizedKeys ? d.authorizedKeys : {};
+    if (aks.writable === false) {
+      rows.push(`<span style="color:#f85149">${escapeHtml(aks.path || '~/.ssh/authorized_keys')} 不可写，请检查权限后再试。</span>`);
+    } else {
+      rows.push(`写入位置：<code>${escapeHtml(aks.path || '~/.ssh/authorized_keys')}</code>`);
+    }
+    const shares = (Array.isArray(d && d.shares) ? d.shares : []).filter(s => s && s.accountId === accountId);
+    if (shares.length) {
+      rows.push('<div style="margin-top:6px;color:#c9d1d9">已借出：</div>');
+      for (const s of shares) {
+        const when = s.createdAt ? new Date(s.createdAt).toLocaleString() : '';
+        rows.push(`<div style="display:flex;gap:8px;align-items:center;margin-top:4px"><span style="flex:1;word-break:break-all">${escapeHtml(s.label || 'SSH 借用')} · ${escapeHtml(s.sshTarget || '')} · ${escapeHtml(when)}</span><button class="btn" data-revoke="${escapeHtml(s.id || '')}" style="font-size:12px;padding:2px 8px">撤销</button></div>`);
+      }
+    }
+    preflightEl.innerHTML = rows.join('<br>');
+  };
+  const loadPreflight = () => providerApi.json(`/api/agy/accounts/${encodeURIComponent(accountId)}/ssh-share/preflight`)
+    .then(renderPreflight)
+    .catch(err => { preflightEl.textContent = '无法检查本机 SSH 状态：' + err.message; });
+  overlay.addEventListener('click', async (event) => {
+    const btn = event.target.closest('[data-revoke]');
+    if (!btn) return;
+    try {
+      await providerApi.json(`/api/agy/accounts/${encodeURIComponent(accountId)}/ssh-shares/${encodeURIComponent(btn.dataset.revoke)}`, { method: 'DELETE' });
+      st.textContent = '已撤销，并从 authorized_keys 删除该密钥。'; st.className = 'status-text ok';
+      loadPreflight();
+    } catch (err) { st.textContent = '撤销失败：' + err.message; st.className = 'status-text err'; }
+  });
+  loadPreflight();
+
+  overlay.querySelector('[data-act="gen"]').onclick = async () => {
+    st.textContent = ''; st.className = 'status-text';
+    const sshTarget = el('sshTarget').value.trim();
+    if (!sshTarget) { st.textContent = '请填写对方连接使用的 SSH 目标（形如 用户名@地址）'; st.className = 'status-text err'; return; }
+    const port = Number(el('sshPort').value) || 22;
+    try {
+      const d = await providerApi.json(`/api/agy/accounts/${encodeURIComponent(accountId)}/ssh-share`, {
+        method: 'POST',
+        json: { sshTarget, sshPort: port, fileMode: el('fileMode').value || 'mutagen', install: el('install').checked, label: '' },
+      });
+      codeEl.value = d.code;
+      copyBtn.disabled = false;
+      if (d.share && d.share.installed) {
+        st.textContent = `已写入 authorized_keys（指纹 ${d.share.fingerprint}）。把借用码发给对方，用完记得撤销。`;
+        st.className = 'status-text ok';
+      } else {
+        st.textContent = '未写入本机：请把下面这行手动加到 ~/.ssh/authorized_keys。';
+        st.className = 'status-text';
+        el('aks').style.display = 'block';
+        el('aks').textContent = d.authorizedKeysLine || '';
+      }
+      loadPreflight();
+    } catch (err) { st.textContent = '生成失败：' + err.message; st.className = 'status-text err'; }
   };
 }
 
@@ -400,8 +536,8 @@ function importRelayProvider() {
   const { overlay, close } = _relayOverlay(`
     <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:480px;max-width:92vw;">
       <div style="font-size:14px;color:#c9d1d9;font-weight:600;margin-bottom:10px">使用其他设备的线路</div>
-      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">粘贴另一台 MultiCC 生成的分享码（支持 Claude / Codex / 反重力 agy）。分享码里已经写明对方选择的分享方式（反代 / 远程 CLI），导入即可直接使用。</div>
-      <textarea data-k="code" rows="5" placeholder="mcrelay1.…"
+      <div style="font-size:12px;color:var(--faint);margin-bottom:10px">粘贴另一台 MultiCC 生成的分享码（Claude / Codex / 反重力 agy 借道码，或反重力 SSH 借用码）。分享码里已经写明对方的分享方式与传输方式，导入即可直接使用。</div>
+      <textarea data-k="code" rows="5" placeholder="mcrelay1.… 或 mcssh1.…"
         style="width:100%;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:12px;padding:8px 10px;outline:none;box-sizing:border-box;font-family:ui-monospace,monospace"></textarea>
       <div data-k="mode-line" style="display:none;margin-top:10px;padding:8px 10px;border:1px solid #30363d;border-radius:6px;font-size:12px;color:#c9d1d9;line-height:1.6"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
@@ -413,11 +549,20 @@ function importRelayProvider() {
   const st = overlay.querySelector('[data-k="status"]');
   const codeEl = overlay.querySelector('[data-k="code"]');
   const modeLine = overlay.querySelector('[data-k="mode-line"]');
+  // SSH 借用码和借道码是两种码：前缀不同，导入后的传输方式也不同。
+  const parseAnyShareCode = (raw) => {
+    const text = String(raw || '').trim();
+    return text.startsWith('mcssh1.') ? parseSshShareCode(text) : parseRelayShareCode(text);
+  };
   // 分享方式随分享码下发，导入端只负责展示，不再让人二次猜测。
   const syncRelayHint = () => {
-    const { payload } = parseRelayShareCode(codeEl.value);
+    const { payload } = parseAnyShareCode(codeEl.value);
     if (!payload) { modeLine.style.display = 'none'; return; }
     modeLine.style.display = 'block';
+    if (payload.kind === 'multicc-ssh') {
+      modeLine.innerHTML = `<strong>方式：SSH 借用（${escapeHtml(payload.fileMode === 'remote_mcp' ? 'remote_mcp' : 'Mutagen 双向同步')}）</strong><br><span style="color:var(--faint)">借用码里带着对方借给你的私钥，会存到本机 0600 文件；连不上对方 SSH 时会导入失败。</span>`;
+      return;
+    }
     modeLine.innerHTML = payload.mode
       ? `<strong>分享方式：${escapeHtml(relayModeLabel(payload.mode))}</strong><br><span style="color:var(--faint)">${escapeHtml(relayModeHint(payload.mode))}</span>`
       : '<strong>分享方式：未标注（旧版分享码）</strong><br><span style="color:var(--faint)">旧版分享码没有记录分享方式，将按反代分享导入；需要远程 CLI 可在导入后于卡片上开启。</span>';
@@ -425,9 +570,34 @@ function importRelayProvider() {
   codeEl.oninput = syncRelayHint;
   overlay.querySelector('[data-act="import"]').onclick = async () => {
     st.textContent = ''; st.className = 'status-text';
-    const { payload, error } = parseRelayShareCode(codeEl.value);
+    const { payload, error } = parseAnyShareCode(codeEl.value);
     if (error) { st.textContent = error; st.className = 'status-text err'; return; }
     try {
+      if (payload.kind === 'multicc-ssh') {
+        await providerApi.json('/api/agy/accounts/remote', {
+          method: 'POST',
+          json: {
+            label: payload.name || '反重力 SSH 借用账号',
+            remote: {
+              transport: 'ssh',
+              sshTarget: payload.sshTarget,
+              ...(payload.sshPort ? { sshPort: payload.sshPort } : {}),
+              fileMode: payload.fileMode || 'mutagen',
+              identityKey: payload.identityKey,
+            },
+          },
+        });
+        showToast('已导入反重力 SSH 借用账号：' + (payload.sshTarget || ''));
+        close();
+        if (window.MultiCCOfficialAccounts && typeof window.MultiCCOfficialAccounts.load === 'function') {
+          window.MultiCCOfficialAccounts.load();
+        }
+        if (typeof window.MultiCCAgyAccountsReload === 'function') {
+          window.MultiCCAgyAccountsReload();
+        }
+        loadProviders();
+        return;
+      }
       if (payload.appType === 'agy') {
         await providerApi.json('/api/agy/accounts/remote', {
           method: 'POST',

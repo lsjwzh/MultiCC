@@ -120,6 +120,7 @@ pub mod session_routes;
 pub mod session_subagent;
 pub mod share_machine_routes;
 pub mod sqlite;
+pub mod ssh_share;
 pub mod state_file;
 pub mod static_assets_routes;
 pub mod static_web;
