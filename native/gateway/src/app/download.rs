@@ -141,6 +141,18 @@ fn decoded_candidate(path: &str) -> Option<String> {
     decode_uri_component(path).filter(|decoded| decoded != path)
 }
 
+/// Chat source references may end in `:line` or `:line:column`.
+fn source_file(path: &str) -> Option<&str> {
+    fn strip_number(path: &str) -> Option<&str> {
+        let (prefix, number) = path.rsplit_once(':')?;
+        (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then_some(prefix)
+    }
+
+    let prefix = strip_number(path)?;
+    let file = strip_number(prefix).unwrap_or(prefix);
+    (!file.is_empty() && !file.ends_with(['/', '\\'])).then_some(file)
+}
+
 /// `GET|HEAD /api/download`.
 pub async fn download(app: &App, ctx: &RequestCtx) -> Response<Body> {
     let raw = match query_param(&ctx.original_url, "path") {
@@ -152,14 +164,21 @@ pub async fn download(app: &App, ctx: &RequestCtx) -> Response<Body> {
         }
     };
     let inline = query_param(&ctx.original_url, "inline") == QueryParam::Text("1".into());
-    let file_path = js_trim(&raw).to_string();
+    let file_path = js_trim(&raw);
     if file_path.is_empty() {
         return express::json(ctx, 400, &json!({ "error": "path required" }), &[]);
     }
-    let mut candidates = vec![file_path.clone()];
-    candidates.extend(decoded_candidate(&file_path));
+    let decoded = decoded_candidate(file_path);
+    let mut candidates = vec![file_path];
+    candidates.extend(decoded.as_deref());
+    // Try both exact filenames first. A single-file ticket must never gain
+    // a second target by interpreting its filename as a source reference.
+    if query_param(&ctx.original_url, "download_ticket") == QueryParam::Missing {
+        candidates.extend(source_file(file_path));
+        candidates.extend(decoded.as_deref().and_then(source_file));
+    }
     for candidate in candidates {
-        let resolved = resolve(&app.node_cwd, &candidate);
+        let resolved = resolve(&app.node_cwd, candidate);
         let Ok(meta) = tokio::fs::metadata(&resolved).await else {
             continue;
         };
