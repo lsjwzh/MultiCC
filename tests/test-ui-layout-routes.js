@@ -10,8 +10,8 @@
 // native/gateway/tests/directory_routes.rs and the byte comparison is
 // docs/rust-migration/differential/directory-routes.js).
 //
-// What stayed in Node is the durable half these tests pin:
-//   src/directory/ui-layout.js        the ui-layout.json store (load/save/known)
+// These tests also exercise the native layout store behind the host:
+//   native/addon/src/directory_layout.rs   ui-layout.json load/save/known
 //   src/routes/directory-host.js      the op envelope the front door calls:
 //                                    layout-load / layout-save / layout-known
 
@@ -21,8 +21,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createUiLayoutStore } = require('../src/directory/ui-layout');
-const { createDirectoryHost } = require('../src/routes/directory-host');
+const { createDirectoryHost, createDirectoryModule, createUiLayoutStore } = require('../src/routes/directory-host');
 
 function tempFile() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-ui-layout-'));
@@ -162,4 +161,103 @@ test('the store requires its ports instead of inventing empty ones', () => {
     () => createUiLayoutStore({ file: '/tmp/x.json', listDirIds: () => [] }),
     /listSessionIds/,
   );
+});
+
+const frozen = require('./helpers/frozen-file-batch11');
+const frozenLayout = require('./helpers/frozen-file-batch11/ui-layout');
+const frozenSample = require('./helpers/frozen-file-batch11/sample-workspace');
+
+function temporaryRoot(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-directory-contract-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+test('目录装配与冻结入口对照默认和指定布局路径，保留活表与会话读取顺序', async t => {
+  async function run(create, customPath, withSessions) {
+    const root = temporaryRoot(t);
+    const file = path.join(root, 'directories.json');
+    const uiLayoutFile = customPath ? path.join(root, 'other', 'layout.json') : undefined;
+    const map = new Map([['d1', { id: 'd1' }]]);
+    const reads = [];
+    const sessions = withSessions ? { listByDir(id) {
+      assert.equal(this, sessions);
+      reads.push(id);
+      return [{ id: id + '-session' }];
+    } } : undefined;
+    const { repo, host } = create({
+      repository: { file, uiLayoutFile, map, owner: { saveDirectories() {} } },
+      sessions, helpers: { realPathOf: s => s }, logger: { warn: assert.fail },
+    });
+    assert.equal(repo.map(), map);
+    const before = await host.invoke({ op: 'layout-known' });
+    repo.add({ id: 'd2' });
+    const after = await host.invoke({ op: 'layout-known' });
+    const doc = { dirOrder: ['d2', 'd1'] };
+    await host.invoke({ op: 'layout-save', doc });
+    assert.equal((await host.invoke({ op: 'layout-load' })).data, doc);
+    const saved = JSON.parse(fs.readFileSync(uiLayoutFile || path.join(root, 'ui-layout.json')));
+    return { before, after, reads, savedData: saved.data, schema: saved.__multiccSchema.kind };
+  }
+  for (const custom of [false, true]) for (const sessions of [false, true]) {
+    assert.deepEqual(await run(createDirectoryModule, custom, sessions),
+      await run(frozen.createDirectoryModule, custom, sessions));
+  }
+});
+
+test('布局缓存与冻结入口对照损坏文件、脱离对象的方法和保存失败后的引用', t => {
+  function run(create) {
+    const root = temporaryRoot(t);
+    const file = path.join(root, 'layout.json');
+    fs.writeFileSync(file, '{broken');
+    const warnings = [];
+    const deps = {
+      file, listDirIds() { assert.equal(this, deps); return new Set(['d2', 'd1']); },
+      *listSessionIds(id) { assert.equal(this, deps); yield id; yield id; },
+      logger: { warn: message => warnings.push(message.replaceAll(root, '<root>')) },
+    };
+    const { load, save, known } = create(deps);
+    const before = load();
+    assert.equal(load(), before);
+    // A circular document cannot be persisted but the hint remains available to this process.
+    const circular = {}; circular.self = circular;
+    assert.equal(save(circular), undefined);
+    assert.equal(load().data, circular);
+    assert.equal(load(), load());
+    assert.equal(warnings.length, 2);
+    return { before, known: known(), warnings };
+  }
+  assert.deepEqual(run(createUiLayoutStore), run(frozenLayout.createUiLayoutStore));
+});
+
+test('示例工作区与冻结入口逐字节对照，重试保留已有文件和写入顺序', async () => {
+  async function run(ensure, failAt) {
+    const files = new Map(), calls = [];
+    let failure = failAt;
+    const port = {
+      sampleRoot() { assert.equal(this, port); return path.join('data', 'samples'); },
+      mkdirp(dir) { assert.equal(this, port); calls.push(['mkdir', dir]); },
+      writeFileExclusive(file, body) {
+        assert.equal(this, port);
+        calls.push(['write', file, body]);
+        if (path.basename(file) === failure) { failure = null; throw new Error('sample write failed'); }
+        if (files.has(file)) return false;
+        files.set(file, body);
+        return true;
+      },
+    };
+    const invoke = async () => {
+      try { return await ensure(port); } catch (err) { return { error: err.message }; }
+    };
+    const first = await invoke();
+    const readme = path.join('data', 'samples', 'getting-started', 'README.md');
+    files.set(readme, 'user edits');
+    const retry = await invoke();
+    assert.equal(files.get(readme), 'user edits');
+    return { first, retry, calls, files: [...files] };
+  }
+  const current = fsPort => createDirectoryHost({ fsPort }).invoke({ op: 'sample-ensure' });
+  for (const failAt of [null, 'index.html', 'TASKS.md']) {
+    assert.deepEqual(await run(current, failAt), await run(frozenSample.ensureSampleWorkspace, failAt));
+  }
 });

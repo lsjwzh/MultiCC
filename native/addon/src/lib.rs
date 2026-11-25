@@ -61,6 +61,8 @@ pub mod cli_switch_runtime;
 pub mod cli_tools_runtime;
 pub mod codex_provider_home;
 pub mod cpr;
+mod directory_layout;
+mod directory_module;
 pub mod directory_repository;
 pub mod event_host;
 pub mod events;

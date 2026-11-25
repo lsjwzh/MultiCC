@@ -547,7 +547,8 @@ function probeAddon(file, node = process.execPath) {
     if(JSON.parse(a.cliSwitchRuntimeRequest('currentAllowed',JSON.stringify({reservation:true})))!==false) process.exit(1);
     const cliTools=new a.RustCliToolsRuntime({specs:{},supported:[],catalog:[],npmPackages:{}});
     if(cliTools.request('force',{query:{refresh:'1'}})!==true) process.exit(1);
-    if(['systemHostFacts','systemHostOperation','relayHostOperation','commandcodeLoginStatus','codexLoginStatus',
+    if(['directoryModule','directoryLayoutStore','directoryEnsureSample',
+      'systemHostFacts','systemHostOperation','relayHostOperation','commandcodeLoginStatus','codexLoginStatus',
       'loginTerminalDirectory','agyLoginEnvironment','loginTerminalRecord','loginTerminalResult','cliAccountResponse',
       'unattendedRouteResult','unattendedRouteRequest','workspaceOverview','agentResourceOperation','tokenUsageOperation','scanHistoryResponse','turnLedgerOperation','turnLedgerTrust',
       'auxRunResponse','skillSyncResponse','taskStateStore','providerBalancePath','providerBalanceUrl',

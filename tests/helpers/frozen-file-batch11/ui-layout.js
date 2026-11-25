@@ -19,7 +19,7 @@
 // arrangement and nothing else, which is why it is not journalled alongside
 // sessions.json/directories.json.
 
-const stateStore = require('../state/store');
+const stateStore = require('../../../src/state/store');
 
 function createUiLayoutStore(rawDeps) {
   const deps = rawDeps || {};

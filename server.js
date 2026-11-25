@@ -739,12 +739,8 @@ for (const session of persistedSessions.values()) {
   if (ensureCliStates(session)) _state.needsSave = true;
 }
 
-// ── Directory domain (src/directory: controller / service / repository) ──
-// Composition root: bind the domain's ports to this file's runtime state. The
-// repository wraps the boot-loaded Map, so `directories` below keeps the same
-// shared reference handed to src/state.js — legacy call sites stay valid while
-// they are migrated over. saveDirectories() remains as a delegate for them.
-const { createDirectoryModule } = require('./src/directory');
+// The Rust directory module shares the boot-loaded table with the session owner.
+const { createDirectoryModule } = require('./src/routes/directory-host');
 
 // Directories own tasks; registering one never seeds a role execution/worktree.
 async function seedCommanderSession(dir) {

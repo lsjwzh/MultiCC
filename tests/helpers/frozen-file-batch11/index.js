@@ -9,9 +9,9 @@
 // entry in Rust; the host port never builds the payload pair itself.
 const path = require('path');
 
-const { createFsDirectoryRepository } = require('../native/runtime');
+const { createFsDirectoryRepository } = require('../../../src/native/runtime');
 const { createUiLayoutStore } = require('./ui-layout');
-const { createDirectoryHost } = require('../routes/directory-host');
+const { createDirectoryHost } = require('../../../src/routes/directory-host');
 
 function createDirectoryModule({ repository, git, sessions, events, fsPort, helpers, tx, logger }) {
   const repo = createFsDirectoryRepository({ ...repository, realPathOf: helpers.realPathOf });

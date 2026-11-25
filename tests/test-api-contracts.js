@@ -695,10 +695,8 @@ test('/api push subscribe, notify, channel, fcm and bark routes are owned by the
 
 test('/api directories, fs browse, onboarding and ui-layout routes are owned by the Rust front door', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  const index = fs.readFileSync(path.join(ROOT, 'src', 'directory', 'index.js'), 'utf8');
-  const layout = fs.readFileSync(path.join(ROOT, 'src', 'directory', 'ui-layout.js'), 'utf8');
   const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'directory-host.js'), 'utf8');
-  assert.ok(source.includes("require('./src/directory')"),
+  assert.ok(source.includes("require('./src/routes/directory-host')"),
     'server.js composes the directory module');
   assert.ok(source.includes('createDirectoryModule({'), 'and wires its runtime adapters once');
   assert.ok(source.includes('directoryModule.host.mount(app)'),
@@ -707,6 +705,9 @@ test('/api directories, fs browse, onboarding and ui-layout routes are owned by 
   // the retired Node handlers must not come back and the remaining files must
   // keep only their process-local runtime.
   for (const gone of [
+    ['src', 'directory', 'index.js'],
+    ['src', 'directory', 'ui-layout.js'],
+    ['src', 'directory', 'sample-workspace.js'],
     ['src', 'directory', 'controller.js'],
     ['src', 'directory', 'service.js'],
     ['src', 'directory', 'ports.js'],
@@ -715,13 +716,9 @@ test('/api directories, fs browse, onboarding and ui-layout routes are owned by 
     assert.equal(fs.existsSync(path.join(ROOT, ...gone)), false,
       `${gone.join('/')} must not come back`);
   }
-  for (const [file, text] of [
-    ['src/directory/index.js', index],
-    ['src/directory/ui-layout.js', layout],
-  ]) {
-    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false,
-      `${file} must not register routes`);
-  }
+  assert.ok(host.includes('getNative().directoryModule('), 'composition uses the native owner');
+  assert.ok(host.includes('getNative().directoryEnsureSample('), 'sample files use the native owner');
+  assert.doesNotMatch(host, /app\.(get|put|patch|delete)\(/, 'the directory host registers only its internal POST');
   assert.ok(host.includes('HOST_PATH'), 'the internal host port path lives in the runtime');
   assert.ok(host.includes("'/api/__host/directory'"), 'and it is not a public path');
   assert.ok(host.includes("case 'sample-ensure':"),

@@ -23,7 +23,18 @@
 const path = require('path');
 const crypto = require('crypto');
 const { isLocalRequest } = require('../request-locality');
-const { ensureSampleWorkspace } = require('../directory/sample-workspace');
+const { getNative, createFsDirectoryRepository } = require('../native/runtime');
+const stateStore = require('../state/store');
+
+function createDirectoryModule(deps) {
+  return getNative().directoryModule(deps, {
+    createFsDirectoryRepository, createDirectoryHost, stateStore, path, sessionId: session => session.id,
+  });
+}
+
+function createUiLayoutStore(deps) {
+  return getNative().directoryLayoutStore(deps, stateStore);
+}
 
 const HOST_PATH = '/api/__host/directory';
 
@@ -374,7 +385,7 @@ function createDirectoryHost(rawDeps = {}) {
         return dirsReorder(Array.isArray(body.order) ? body.order : []);
 
       case 'sample-ensure':
-        try { return ensureSampleWorkspace(fsPort); }
+        try { return getNative().directoryEnsureSample(fsPort, path); }
         catch (e) { return { error: e.message }; }
 
       case 'sample-mark': {
@@ -473,4 +484,4 @@ function mountDirectoryHostRoute(app, options = {}) {
   createDirectoryHost(options).mount(app);
 }
 
-module.exports = { HOST_PATH, createDirectoryHost, mountDirectoryHostRoute };
+module.exports = { HOST_PATH, createDirectoryHost, mountDirectoryHostRoute, createDirectoryModule, createUiLayoutStore };
