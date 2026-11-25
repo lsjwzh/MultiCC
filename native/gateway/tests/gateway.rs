@@ -1387,6 +1387,39 @@ fn percent_encoded_download_paths_are_retried_once_decoded() {
 }
 
 #[test]
+fn download_chat_source_references_open_the_referenced_file() {
+    let gateway = Gateway::start("download-source", "echo", &[]);
+    let mut client = gateway.connect();
+    let file = gateway.dir.join("host_prompts.rs");
+    fs::write(&file, "source").unwrap();
+    let file = file.to_str().unwrap();
+    for suffix in [":115", ":115:8"] {
+        let r = get_path(&mut client, &format!("{file}{suffix}"), &[]);
+        assert_eq!((r.status, r.text().as_str()), (200, "source"));
+        assert_eq!(
+            r.header("content-disposition"),
+            Some("attachment; filename=\"host_prompts.rs\"")
+        );
+    }
+    for suffix in [":", ":L115", ":115:bad"] {
+        assert_eq!(
+            get_path(&mut client, &format!("{file}{suffix}"), &[]).status,
+            404
+        );
+    }
+    let name = "中文 名.rs";
+    fs::write(gateway.dir.join(name), "decoded").unwrap();
+    let encoded = format!("{}/{}:15", gateway.dir.display(), enc(name));
+    assert_eq!(get_path(&mut client, &encoded, &[]).text(), "decoded");
+
+    #[cfg(unix)]
+    {
+        fs::write(gateway.dir.join(format!("{name}:15")), "literal").unwrap();
+        assert_eq!(get_path(&mut client, &encoded, &[]).text(), "literal");
+    }
+}
+
+#[test]
 fn a_download_ticket_opens_one_file_for_a_remote_client() {
     let token = "secret-token-1";
     let gateway = Gateway::start("ticket", "echo", &[("ACCESS_TOKEN", token.to_string())]);
@@ -1473,6 +1506,27 @@ fn a_download_ticket_opens_one_file_for_a_remote_client() {
     );
 
     let authed = [remote, JSON_TYPE, ("X-Access-Token", token)];
+    let reference = format!("{file}:115");
+    let issued = request(
+        &mut client,
+        &api(
+            "POST",
+            "/api/auth/download-ticket",
+            &authed,
+            &serde_json::json!({ "path": reference }).to_string(),
+        ),
+    )
+    .json();
+    let url = format!(
+        "{}&download_ticket={}",
+        issued["target"].as_str().unwrap(),
+        issued["ticket"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(&mut client, &api("GET", &url, &[remote], "")).status,
+        404
+    );
+
     let r = request(
         &mut client,
         &api("POST", "/api/auth/download-ticket", &authed, "{}"),
