@@ -22,6 +22,7 @@ pub mod aux_verdict_health;
 pub mod background_hold;
 pub mod code_revision;
 pub mod delivery_class;
+mod detached_result;
 pub mod notify_settings;
 pub mod workspace_release;
 pub mod zcode_engine;

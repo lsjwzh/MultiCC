@@ -52,6 +52,8 @@ function buildRuntime(shared, overrides = {}) {
   });
   return createOrchestrationRuntime({
     file: shared.file,
+    databaseFile: overrides.databaseFile,
+    onSchedulerEvent: overrides.onSchedulerEvent,
     now: () => ++shared.clock.value,
     runChatTurn,
     isBusy: overrides.isBusy || (() => false),
@@ -110,6 +112,59 @@ test('detached completion after service crash is reconciled once and delivered a
   );
   await rebuilt.stop();
 });
+
+for (const backend of ['json', 'sqlite']) {
+  test(`detached result confirmation survives recovery and withdraws only its own wake-up (${backend})`, async t => {
+    const shared = dataFixture(t);
+    const detached = fakeDetached();
+    const events = [];
+    const options = {
+      detachedAdapter: detached, isBusy: () => true,
+      databaseFile: backend === 'sqlite' ? path.join(shared.dataDir, 'state.sqlite') : null,
+      onSchedulerEvent: event => events.push(event),
+    };
+    const first = buildRuntime(shared, options);
+    let current = first;
+    try {
+      const start = async label => (await first.startDetached({
+        sessionId: 'owner', spec: { command: label, label },
+      })).operation;
+      const observed = await start('first-build');
+      const unseen = await start('second-build');
+      const inspect = version => first.sessionScheduler.detachedResult('owner', observed.id, version);
+      assert.equal((await inspect()).result_version, undefined);
+      assert.equal((await inspect('0'.repeat(64))).code, 'detached_result_not_ready');
+      for (const [job, exitCode] of [[observed, 1], [unseen, 0]]) {
+        detached.states.set(job.externalId, {
+          ...detached.states.get(job.externalId), running: false, done: true, exitCode, logTail: job.spec.label,
+        });
+      }
+      await first.tick();
+      const read = await inspect();
+      assert.equal(read.status, 'failed');
+      assert.equal(read.result.exitCode, 1);
+      assert.match(read.result_version, /^[a-f0-9]{64}$/);
+      assert.equal((await inspect('0'.repeat(64))).code, 'detached_result_version_mismatch');
+      assert.equal((await first.sessionScheduler.status('owner')).queued.length, 2);
+      const confirmations = await Promise.all([inspect(read.result_version), inspect(read.result_version)]);
+      assert.deepEqual(confirmations.map(row => row.notification), ['withdrawn', 'withdrawn']);
+      assert.equal(events.filter(event => event.type === 'queued_cancelled').length, 1);
+      assert.equal((await first.sessionScheduler.status('owner')).queued.length, 1);
+      await first.dispose();
+      current = buildRuntime(shared, { ...options, isBusy: () => false });
+      await current.start();
+      assert.deepEqual(shared.deliveries.map(row => row.opts.deliveryId), [`operation:${unseen.id}:result`]);
+      assert.deepEqual(await current.sessionScheduler.detachedResult('owner', observed.id), read);
+      const replay = await current.sessionScheduler.detachedResult('owner', observed.id, read.result_version);
+      assert.equal(replay.notification, 'withdrawn');
+      const delivered = await current.sessionScheduler.detachedResult('owner', unseen.id);
+      assert.equal((await current.sessionScheduler.detachedResult('owner', unseen.id, delivered.result_version)).notification,
+        'delivered');
+    } finally {
+      await current.dispose();
+    }
+  });
+}
 
 test('dead detached ownership without a done marker fails closed instead of repeating side effects', async t => {
   const shared = dataFixture(t);
