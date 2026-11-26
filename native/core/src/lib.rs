@@ -140,6 +140,7 @@ pub mod task_history_retention;
 pub mod task_read_model;
 pub mod task_routes;
 pub mod task_routing;
+pub mod responses_history;
 pub mod task_run_context;
 pub mod task_shell;
 pub mod task_short_code;
