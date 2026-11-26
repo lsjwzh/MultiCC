@@ -429,7 +429,7 @@ test('resuming a cross-provider history converts foreign item IDs without breaki
 });
 
 test('the actual rejection cause survives relay, Codex decoding, policy and user notice', async () => {
-  const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
+  const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
   const { normalizeApiError, retryNotice } = require('../src/chat/api-error-policy');
   const cause = {
     message: "Invalid 'input[6].id': 'tool_9YShioVyW54hGPy24ul8O3Cg'. Expected an ID that begins with 'fc'.",

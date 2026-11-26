@@ -385,7 +385,7 @@ test('生产任务清理删除已合并分支后，重启及唤醒保留会话�
   const { gitWorktreeRemove, gitMergeBack, gitWorktreeMergeState } = require('../src/git/service');
   const { defaultRepoActor } = require('../src/repo-actor');
   const { createTaskLifecycleHost } = require('../src/task-board/lifecycle-host');
-  const { createSessionPersistence } = require('../src/native/runtime');
+  const { createSessionPersistence } = require('../src/native/binding');
   const { mkRuntime } = require('./helpers/task-board-runtime');
   const dirPath = repo();
   t.after(() => fs.rmSync(dirPath, { recursive: true, force: true }));
@@ -449,7 +449,7 @@ test('生产任务清理删除已合并分支后，重启及唤醒保留会话�
 });
 
 test('工作树唤醒端口与冻结版保留失败码和字段访问顺序', async () => {
-  const current = require('../src/native/runtime').syncWorktreeOnWake;
+  const current = require('../src/native/binding').syncWorktreeOnWake;
   const old = require('./helpers/frozen-file-batch7/wake-sync').syncWorktreeOnWake;
   async function trace(sync) {
     const log = [], worktree = { get worktreePath() { log.push('path'); return '/absent'; }, get branch() { log.push('branch'); throw Error('getter'); } };

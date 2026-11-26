@@ -8,7 +8,7 @@ const vm = require('node:vm');
 
 const { createEventController } = require('../public/chat-event-controller');
 const { createHistoryView } = require('../public/chat-history-view');
-const { createChatHistoryRuntime } = require('../src/routes/chat-history');
+const { createChatHistoryRuntime } = require('../src/routes/chat-history/index');
 
 const ROOT = path.join(__dirname, '..');
 

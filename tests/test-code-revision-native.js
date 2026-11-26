@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 const { defaultRepoActor } = require('../src/repo-actor');
 const current = require('../src/task-routing/code-revision');
 const legacy = require('./helpers/legacy-code-revision');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'code-revision-native-')));

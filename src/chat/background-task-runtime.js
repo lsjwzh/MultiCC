@@ -8,8 +8,8 @@
 // control-channel glue that cannot live in Rust (Promises). No bookkeeping
 // state may return here — Node is frozen.
 
-const { getNative } = require('../native/runtime');
-const { safeText } = require('../native/runtime').codexBackground;
+const { getNative } = require('../native/binding');
+const { safeText } = require('../native/binding').codexBackground;
 const { redactProviderRouteCapability } = require('../observability');
 
 // `undefined` means "host did not decide", which is the production case: the

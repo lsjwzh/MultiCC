@@ -57,7 +57,10 @@ fn official_models(home: &Path, account: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn project(p: &Value, home: &Path) -> Result<(Value, Option<Value>), &'static str> {
+fn project(
+    p: &Value,
+    catalog_models: impl FnOnce(Option<&str>, bool) -> Vec<Value>,
+) -> Result<(Value, Option<Value>), &'static str> {
     let cfg = provider_catalog::config_of(p).map_err(|_| "invalid provider settings")?;
     let kind = string(&p["appType"]);
     let claude = kind == "claude";
@@ -117,11 +120,7 @@ fn project(p: &Value, home: &Path) -> Result<(Value, Option<Value>), &'static st
     };
     let account = cfg["officialAccount"]["id"].as_str();
     let options = if !claude && base.is_empty() {
-        if official {
-            official_models(home, &json!(account))
-        } else {
-            vec![]
-        }
+        catalog_models(account, official)
     } else {
         settings::unique_models(&options)
             .into_iter()
@@ -196,13 +195,48 @@ fn project(p: &Value, home: &Path) -> Result<(Value, Option<Value>), &'static st
     Ok((public, aux))
 }
 
+/// Projection for a live CLI host. Its account-specific model resolver can
+/// have newer entitlement data than the file on disk.
+pub fn host_summary(p: &Value, port: &str) -> Result<(Value, bool), &'static str> {
+    let mut row = p.clone();
+    if p["appType"] == "codex" {
+        row["settingsConfig"] = super::provider_routing::effective_codex(p, port);
+    }
+    let mut needs_models = false;
+    let (mut summary, _) = project(&row, |_, _| {
+        needs_models = true;
+        vec![]
+    })?;
+    if p["appType"] == "codex" && !truthy(&p["virtual"]) {
+        summary["isOfficial"] = provider_catalog::official_codex(p).into();
+    }
+    if p["appType"] == "codex" && !needs_models {
+        let mut ordered = Vec::new();
+        for model in std::iter::once(summary["model"].clone())
+            .chain(models(&row["settingsConfig"]["modelCatalog"]))
+        {
+            if truthy(&model) && !ordered.contains(&model) {
+                ordered.push(model);
+            }
+        }
+        summary["modelOptions"] = ordered.into();
+    }
+    Ok((summary, needs_models))
+}
+
 pub fn read(root: &Path, home: &Path) -> Result<Catalog, &'static str> {
     let mut providers = Vec::new();
     let mut aux = json!({"anthropic":[],"openai":[]});
     let rows =
         provider_catalog::list(root, home, "").map_err(|_| "provider catalog unavailable")?;
     for p in rows {
-        let (summary, target) = project(&p, home)?;
+        let (summary, target) = project(&p, |account, official| {
+            if official {
+                official_models(home, &json!(account))
+            } else {
+                vec![]
+            }
+        })?;
         providers.push(summary);
         if let Some(target) = target {
             let protocol = if p["appType"] == "codex" {
@@ -246,7 +280,13 @@ pub fn aux_provider(
         .find(|p| p["id"] == id)
         .ok_or("provider not found")?;
     let cfg = provider_catalog::config_of(&p).map_err(|_| "provider settings unavailable")?;
-    let (summary, target) = project(&p, home)?;
+    let (summary, target) = project(&p, |account, official| {
+        if official {
+            official_models(home, &json!(account))
+        } else {
+            vec![]
+        }
+    })?;
     let base = provider_writes::toml_value(cfg.get("config"), "base_url");
     let dto = target.ok_or_else(|| {
         if kind == "claude" {

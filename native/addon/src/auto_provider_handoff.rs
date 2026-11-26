@@ -330,3 +330,104 @@ impl RustAutoProviderHandoff {
         Ok(())
     }
 }
+
+#[napi]
+pub fn create_auto_provider_handoff(e: Env, options: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::host_methods::{arg, default_object, env, function, raw};
+    use crate::route_response::{call, fields};
+    use std::rc::Rc;
+    let input = default_object(L::new(&e, options))?;
+    let ports = raw(input, auto_provider_handoff_ports(env(input), arg(input)?)?);
+    let owner = Rc::new(RustAutoProviderHandoff::new());
+    let schedule = owner.clone();
+    let schedule = function(ports, "schedule", 0, 1, move |p, a| {
+        let promise = p.global()?.get(c"Promise")?;
+        let undefined = p.from_value(&V::Undefined)?;
+        let start = || -> Result<L<'_>> {
+            let plan = raw(
+                p,
+                schedule.prepare(env(p), arg(default_object(a[0])?)?, arg(p)?)?,
+            );
+            if plan.get(c"done")?.truthy()? {
+                return call(promise, c"resolve", &[plan.get(c"result")?]);
+            }
+            let state = fields(p, &[("plan", plan), ("ports", p)])?;
+            let finish = |failed| {
+                let owner = schedule.clone();
+                function(state, "", 1, 1, move |s, a| {
+                    let undefined = s.from_value(&V::Undefined)?;
+                    Ok(raw(
+                        s,
+                        owner.finish(
+                            env(s),
+                            arg(s.get(c"plan")?)?,
+                            arg(if failed { undefined } else { a[0] })?,
+                            arg(if failed { a[0] } else { undefined })?,
+                            failed,
+                            arg(s.get(c"ports")?)?,
+                        )?,
+                    ))
+                })
+            };
+            let injected = (|| {
+                let mut args = Vec::new();
+                plan.get(c"args")?.for_each(|v| {
+                    args.push(v);
+                    Ok(())
+                })?;
+                p.get(c"inject")?.call_plain(&args)
+            })();
+            match injected {
+                Ok(value) => call(
+                    call(promise, c"resolve", &[value])?,
+                    c"then",
+                    &[finish(false)?, finish(true)?],
+                ),
+                Err(error) => {
+                    let cause = exception(p, error)?;
+                    let result = raw(
+                        p,
+                        schedule.finish(
+                            env(p),
+                            arg(plan)?,
+                            arg(undefined)?,
+                            arg(cause)?,
+                            true,
+                            arg(p)?,
+                        )?,
+                    );
+                    call(promise, c"resolve", &[result])
+                }
+            }
+        };
+        match start() {
+            Ok(promise) => Ok(promise),
+            Err(error) => call(promise, c"reject", &[exception(p, error)?]),
+        }
+    })?;
+    Ok(fields(
+        ports,
+        &[
+            ("schedule", schedule),
+            (
+                "clearSession",
+                function(ports, "clearSession", 1, 1, move |p, a| {
+                    owner.clear_session(env(p), arg(a[0])?)?;
+                    p.from_value(&V::Undefined)
+                })?,
+            ),
+        ],
+    )?
+    .freeze()?
+    .raw())
+}
+
+fn exception(anchor: L<'_>, error: napi::Error) -> Result<L<'_>> {
+    match anchor.exception_value()? {
+        Some(cause) => Ok(cause),
+        None => anchor
+            .global()?
+            .get(c"Error")?
+            .construct(&[text(anchor, &error.reason)?]),
+    }
+}

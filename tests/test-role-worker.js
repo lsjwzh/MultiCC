@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createDispatchTargeting } = require('../src/dispatch/targeting');
-const { composeMessage } = require('../src/native/runtime').messageComposer;
+const { composeMessage } = require('../src/native/binding').messageComposer;
 const { recordsOf } = require('./helpers/session-records');
 
 const ROOT = path.join(__dirname, '..');

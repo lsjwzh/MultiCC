@@ -299,7 +299,7 @@ test('ACP lane refuses a retired model before spawning the agent', () => {
   _setCacheForTest(Date.now(), LIVE_CACHE);
   const adapter = createOpencodeAdapter({ cmd: 'opencode', env: {} });
   const invocation = adapter.buildInvocation(envelopeFor('opencodego/deepseek-v4-flash'));
-  assert.equal(invocation.cmd, require('../src/native/runtime').gatewayPath());
+  assert.equal(invocation.cmd, require('../src/native/binding').gatewayPath());
   assert.equal(invocation.args[0], 'acp-model-error');
   assert.equal(invocation.payload, '');
 
@@ -332,7 +332,7 @@ test('ACP lane lets a live model spawn normally', () => {
   _setCacheForTest(Date.now(), LIVE_CACHE);
   const adapter = createOpencodeAdapter({ cmd: 'opencode', env: {} });
   const invocation = adapter.buildInvocation(envelopeFor('opencodego/deepseek-v4.1-flash'));
-  assert.equal(invocation.cmd, require('../src/native/runtime').gatewayPath());
+  assert.equal(invocation.cmd, require('../src/native/binding').gatewayPath());
   assert.equal(invocation.args[0], 'acp-bridge');
   assert.equal(invocation.payload, 'hello');
 });

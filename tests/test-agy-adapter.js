@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAgyAdapter } = require('../src/cli-adapters/index');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 function envelope({ first = true, sessionId = null, model = null, effort = null, userText = 'hello' } = {}) {
   return {

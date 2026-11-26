@@ -22,7 +22,7 @@ const path = require('node:path');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'share-machines-host-'));
 const addonFile = path.join(tmp, 'fake-addon.js');
-const nativeAddon = require('../src/native/runtime').addonPath();
+const nativeAddon = require('../src/native/binding').addonPath();
 fs.writeFileSync(addonFile, `
 'use strict';
 const calls = [];

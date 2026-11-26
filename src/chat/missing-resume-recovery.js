@@ -17,7 +17,7 @@
 // in JS is exactly how the SDK lane drifted into a permanent "No conversation
 // found" loop with no recovery at all.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const native = getNative();
 const CATALOG = Object.freeze(JSON.parse(native.missingResumeRecoveryCatalog()));

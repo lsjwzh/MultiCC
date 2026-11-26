@@ -8,7 +8,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { taskBoardRunContext: buildTaskRunContext } = require('../src/native/runtime').getNative();
+const { taskBoardRunContext: buildTaskRunContext } = require('../src/native/binding').getNative();
 
 const HEADER = '[MultiCC task run context v1]';
 

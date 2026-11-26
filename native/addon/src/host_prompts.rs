@@ -55,7 +55,9 @@ pub fn host_human_assist(env: Env, root: Unknown<'_>) -> Result<sys::napi_value>
 
 #[napi]
 pub fn host_subagent_hint(env: Env, subagent: Unknown<'_>) -> Result<String> {
-    let subagent = L::new(&env, subagent);
+    subagent_hint(L::new(&env, subagent))
+}
+fn subagent_hint(subagent: L<'_>) -> Result<String> {
     if subagent.kind()? != sys::ValueType::napi_object {
         return Ok(String::new());
     }
@@ -82,7 +84,14 @@ pub fn host_prompt_bundle(
     root: Unknown<'_>,
     lines: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let settings = L::new(&env, settings);
+    Ok(bundle(
+        L::new(&env, settings),
+        L::new(&env, root),
+        L::new(&env, lines),
+    )?
+    .raw())
+}
+fn bundle<'a>(settings: L<'a>, root: L<'a>, lines: L<'a>) -> Result<L<'a>> {
     let empty = settings.from_value(&"".into())?;
     let constraint =
         host_codex_constraint(!read(settings, c"CODEX_NO_ASK_TOOL_HINT")?.is_string("0")?);
@@ -91,9 +100,8 @@ pub fn host_prompt_bundle(
     } else {
         settings.from_value(&prompts::KEEP_ALIVE_PROMPT.into())?
     };
-    let root = or(L::new(&env, root), "".into())?;
+    let root = or(root, "".into())?;
     let port = as_string(or(read(settings, c"PORT")?, V::Number(3000.0))?)?;
-    let lines = L::new(&env, lines);
     let hint = render(
         "host-hint",
         fields(
@@ -108,7 +116,7 @@ pub fn host_prompt_bundle(
     let reminder = lines
         .get(c"join")?
         .call(lines, &[settings.from_value(&"\n".into())?])?;
-    Ok(fields(
+    fields(
         settings,
         &[
             (
@@ -119,8 +127,7 @@ pub fn host_prompt_bundle(
             ("multiccImgHint", hint),
             ("userInputReminder", reminder),
         ],
-    )?
-    .raw())
+    )
 }
 
 #[derive(Default)]
@@ -138,18 +145,24 @@ impl RustPlanPromptState {
 
     #[napi]
     pub fn mark(&self, env: Env, session: Unknown<'_>) -> Result<()> {
-        let name = trimmed(L::new(&env, session))?;
+        self.mark_live(L::new(&env, session))
+    }
+
+    #[napi]
+    pub fn progress(&self, env: Env, session: Unknown<'_>, opts: Unknown<'_>) -> Result<String> {
+        self.progress_live(L::new(&env, session), L::new(&env, opts))
+    }
+}
+impl RustPlanPromptState {
+    fn mark_live(&self, session: L<'_>) -> Result<()> {
+        let name = trimmed(session)?;
         if !name.is_empty() {
             self.pending.borrow_mut().insert(name);
         }
         Ok(())
     }
-
-    #[napi]
-    pub fn progress(&self, env: Env, session: Unknown<'_>, opts: Unknown<'_>) -> Result<String> {
-        let opts = L::new(&env, opts);
+    fn progress_live(&self, session: L<'_>, opts: L<'_>) -> Result<String> {
         let first = !opts.truthy()? || !read(opts, c"isFirstTurn")?.is_false()?;
-        let session = L::new(&env, session);
         // Consume even on a first turn. Conversion can reenter this owner.
         let reset = if session.truthy()? {
             let key = as_string(session)?.coerce_string()?;
@@ -159,4 +172,92 @@ impl RustPlanPromptState {
         };
         Ok(prompts::plan_progress_prompt(first || reset).into())
     }
+}
+
+#[napi]
+pub fn host_prompts_api(env: Env, process: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::{
+        host_methods::method,
+        route_response::{call, text},
+    };
+    use std::rc::Rc;
+    let process = L::new(&env, process);
+    let prompt = multicc_core::session_question::request("prompt", "null")
+        .map_err(napi::Error::from_reason)?;
+    let lines = call(
+        process.global()?.get(c"JSON")?,
+        c"parse",
+        &[text(process, &prompt)?],
+    )?
+    .freeze()?;
+    let owner = fields(process, &[("process", process), ("lines", lines)])?;
+    let plan = Rc::new(RustPlanPromptState::new());
+    let marker = plan.clone();
+    Ok(fields(
+        owner,
+        &[
+            ("USER_INPUT_SIGNAL_PROMPT", lines),
+            (
+                "buildCodexUserInputConstraint",
+                method(
+                    &env,
+                    owner,
+                    "buildCodexUserInputConstraint",
+                    0,
+                    1,
+                    |s, a| {
+                        text(
+                            s,
+                            &host_codex_constraint(a[0].undefined()? || a[0].truthy()?),
+                        )
+                    },
+                )?,
+            ),
+            (
+                "buildSubagentProviderHint",
+                method(&env, owner, "buildSubagentProviderHint", 1, 1, |s, a| {
+                    text(s, &subagent_hint(a[0])?)
+                })?,
+            ),
+            (
+                "buildHumanAssistPrompt",
+                method(&env, owner, "buildHumanAssistPrompt", 1, 1, |s, a| {
+                    render(
+                        "human-assist",
+                        fields(s, &[("assistRoot", or(a[0], "".into())?)])?,
+                    )
+                })?,
+            ),
+            (
+                "markPlanContextReset",
+                method(&env, owner, "markPlanContextReset", 1, 1, move |s, a| {
+                    marker.mark_live(a[0])?;
+                    s.from_value(&V::Undefined)
+                })?,
+            ),
+            (
+                "buildPlanProgressPrompt",
+                method(&env, owner, "buildPlanProgressPrompt", 3, 3, move |s, a| {
+                    text(s, &plan.progress_live(a[1], a[2])?)
+                })?,
+            ),
+            (
+                "createHostPrompts",
+                method(&env, owner, "createHostPrompts", 0, 2, |s, a| {
+                    let settings = if a[0].undefined()? {
+                        s.get(c"process")?.get(c"env")?
+                    } else {
+                        a[0]
+                    };
+                    let root = if a[1].undefined()? {
+                        a[1]
+                    } else {
+                        read(a[1], c"assistRoot")?
+                    };
+                    bundle(settings, root, s.get(c"lines")?)
+                })?,
+            ),
+        ],
+    )?
+    .raw())
 }

@@ -141,7 +141,7 @@ function createDoctorHost({ persistedSessions, loadChatHistory, cwdForSession, a
   const path = require('node:path');
   const { probeEnv, execShell } = require('../routes/ops-terminal');
   const { createEnvironmentDoctor } = require('./environment');
-  const native = require('../native/runtime').getNative();
+  const native = require('../native/binding').getNative();
   const resolveTarget = () => native.doctorHttpTarget(auxQueue, getAuxConfig);
   const envDoctor = createEnvironmentDoctor({
     resolveTarget,

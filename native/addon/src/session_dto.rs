@@ -305,7 +305,29 @@ fn joined<'a>(anchor: L<'a>, parts: &[L<'a>]) -> Result<L<'a>> {
     }
     anchor.from_value(&V::String(JsString::from_units(units)))
 }
-fn assert_safe<'a>(state: L<'a>, value: L<'a>, location: L<'a>) -> Result<L<'a>> {
+pub(crate) fn install_safety<'a>(env: &'a Env, state: L<'a>) -> Result<()> {
+    let anchor = state;
+    state.set(
+        c"sensitive",
+        anchor.global()?.get(c"RegExp")?.construct(&[
+            text(
+                anchor,
+                "(?:token|secret|password|stack|(?:^|_)path|cwd|cliSessionId|worktree)",
+            )?,
+            text(anchor, "i")?,
+        ])?,
+    )?;
+    state.set(
+        c"arrayVisit",
+        method(env, state, "", 3, 3, |s, a| {
+            let path = joined(s, &[a[0], text(s, "[")?, a[2], text(s, "]")?])?;
+            assert_safe(s, a[1], path)
+        })?,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn assert_safe<'a>(state: L<'a>, value: L<'a>, location: L<'a>) -> Result<L<'a>> {
     if value.is_array()? {
         // Bind only the location. The host's actual forEach still controls
         // sparse arrays, mutations, injected indexes and callback invocation.
@@ -349,11 +371,51 @@ fn assert_safe<'a>(state: L<'a>, value: L<'a>, location: L<'a>) -> Result<L<'a>>
                 .construct(&[message])?
                 .throw_error());
         }
-        state.get(c"assertDtoSafe")?.call_plain(&[child, path])?;
+        assert_safe(state, child, path)?;
         Ok(())
     })?;
     Ok(value)
 }
+fn selection_dto(wire: L<'_>) -> Result<L<'_>> {
+    let input = wire.coerce_string()?;
+    let output = crate::auto_provider_config::provider_selection_dto(input.to_string_lossy())?;
+    let source = call(
+        wire.global()?.get(c"JSON")?,
+        c"parse",
+        &[text(wire, &output)?],
+    )?;
+    if !source.truthy()? {
+        return null(wire);
+    }
+    let out = fields(
+        wire,
+        &[
+            ("version", num(wire, 1.)?),
+            ("mode", text(wire, "auto")?),
+            ("protocol", source.get(c"protocol")?),
+            ("candidates", source.get(c"candidates")?),
+            ("maxAttempts", source.get(c"maxAttempts")?),
+            ("sticky", source.get(c"sticky")?),
+            (
+                "preferMaxQuota",
+                flag(wire, !source.get(c"preferMaxQuota")?.is_false()?)?,
+            ),
+            ("allowCrossTrust", source.get(c"allowCrossTrust")?),
+        ],
+    )?;
+    for key in [c"cliSwitch", c"routing", c"presetId"] {
+        let value = source.get(key)?;
+        if value.truthy()? {
+            out.set(key, value)?;
+        }
+    }
+    Ok(out)
+}
+#[napi]
+pub fn provider_selection_dto_value(env: Env, wire: Unknown<'_>) -> Result<sys::napi_value> {
+    Ok(selection_dto(L::new(&env, wire))?.raw())
+}
+
 fn project<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
     let cli = selected(state, c"SUPPORTED_CLIS", source, c"cli", "claude")?;
     let kind = selected(state, c"SUPPORTED_KINDS", source, c"kind", "terminal")?;
@@ -390,9 +452,11 @@ fn project<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
     }
     out.assign(
         c"providerSelection",
-        state
-            .get(c"providerSelectionDto")?
-            .call_plain(&[read(source, c"providerSelection")?])?,
+        selection_dto(
+            state
+                .get(c"selectionRequest")?
+                .call_plain(&[read(source, c"providerSelection")?])?,
+        )?,
     )?;
     out.assign(
         c"experimentalMode",
@@ -441,7 +505,7 @@ fn project<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
     if !out.get(c"id")?.truthy()? {
         return Err(state.type_error("session DTO requires id"));
     }
-    state.get(c"assertDtoSafe")?.call_plain(&[out])
+    assert_safe(state, out, text(state, "$")?)
 }
 
 #[napi]
@@ -453,7 +517,7 @@ pub fn session_dto_api(
     let anchor = L::new(&env, anchor);
     let state = fields(
         anchor,
-        &[("providerSelectionDto", L::new(&env, provider_selection))],
+        &[("selectionRequest", L::new(&env, provider_selection))],
     )?;
     for (key, items) in [
         (
@@ -493,16 +557,7 @@ pub fn session_dto_api(
         let array = anchor.from_value(&V::Array(items.iter().map(|s| V::from(*s)).collect()))?;
         state.set(key, anchor.global()?.get(c"Set")?.construct(&[array])?)?;
     }
-    state.set(
-        c"sensitive",
-        anchor.global()?.get(c"RegExp")?.construct(&[
-            text(
-                anchor,
-                "(?:token|secret|password|stack|(?:^|_)path|cwd|cliSessionId|worktree)",
-            )?,
-            text(anchor, "i")?,
-        ])?,
-    )?;
+    install_safety(&env, state)?;
     state.set(
         c"criterion",
         method(&env, state, "", 1, 1, |_, a| bounded(a[0], 300.0))?,
@@ -510,13 +565,6 @@ pub fn session_dto_api(
     state.set(
         c"historyRow",
         method(&env, state, "", 1, 1, |s, a| history(s, a[0]))?,
-    )?;
-    state.set(
-        c"arrayVisit",
-        method(&env, state, "", 3, 3, |s, a| {
-            let path = joined(s, &[a[0], text(s, "[")?, a[2], text(s, "]")?])?;
-            s.get(c"assertDtoSafe")?.call_plain(&[a[1], path])
-        })?,
     )?;
     let assert = method(&env, state, "assertDtoSafe", 1, 2, |s, a| {
         let location = if a[1].undefined()? {
@@ -526,7 +574,6 @@ pub fn session_dto_api(
         };
         assert_safe(s, a[0], location)
     })?;
-    state.set(c"assertDtoSafe", assert)?;
     Ok(fields(
         state,
         &[

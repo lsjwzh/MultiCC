@@ -6,8 +6,8 @@
 // Read-only: no mutation of either store, computed per request like the
 // memory graph.
 
-const { taskDirId } = require('../task-board/core');
-const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
+const { taskDirId } = require('../task-board/core/index');
+const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 
 const TASK_GRAPH_MAX_NODES = 800;
 const TASK_GRAPH_MAX_EDGES = 2400;

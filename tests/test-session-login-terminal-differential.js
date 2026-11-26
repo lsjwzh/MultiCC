@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const implementations = [
   require('./helpers/legacy-session-login-terminal'),
-  { createLoginTerminalDisposer: deps => require('../src/native/runtime').getNative().sessionLoginTerminalDisposer(deps) },
+  { createLoginTerminalDisposer: deps => require('../src/native/binding').getNative().sessionLoginTerminalDisposer(deps) },
 ];
 
 function fixture(implementation, options = {}) {
@@ -163,7 +163,7 @@ test('the returned promise waits for each asynchronous cleanup before deleting',
 
 test('native factory cycles can be garbage collected', () => {
   const { spawnSync } = require('node:child_process');
-  const addon = require('../src/native/runtime').addonPath();
+  const addon = require('../src/native/binding').addonPath();
   const script = String.raw`
     const a=require(process.argv[1]);
     function cycle() { let factory; const deps={ persistedSessions:new Map(), tmuxKillSession(){return factory;} }; factory=a.sessionLoginTerminalDisposer(deps); return new WeakRef(factory); }

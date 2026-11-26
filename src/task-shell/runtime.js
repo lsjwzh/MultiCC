@@ -1,12 +1,12 @@
 'use strict';
-const { MAX_TASKS_PER_DIRECTORY, directoryAtCapacity } = require('../native/runtime').taskShellCapacity;
+const { MAX_TASKS_PER_DIRECTORY, directoryAtCapacity } = require('../native/binding').taskShellCapacity;
 
 const { randomUUID } = require('node:crypto');
 const {
   estimateTokens, snapshotHistory, renderSnapshots, hash,
-} = require('../native/runtime').taskShellContext;
+} = require('../native/binding').taskShellContext;
 const { relatedHistory, shellRecords, historySnapshot, handoffSnapshot, contextPage, pageSnapshots } = require('./history-context');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 function failure(code, message = code, status = 409) {
   return Object.assign(new Error(message), { code, status });
@@ -42,7 +42,7 @@ function createTaskShellRuntime(ports) {
   const separation = require('./separation').createTaskSeparation({ store, getRecord, getHistory, getExecution, createExecution, indexTask, ports: capacityPorts, ownerOf: taskActions.ownerOf, roles });
   const independent = require('./independent-continue').createIndependentContinuation({ store, getRecord, getHistory,
     getExecution, createExecution, indexTask, ports, ownerOf: taskActions.ownerOf, roles, hasCapacity });
-  const relations = require('../native/runtime').getTaskRelations().createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
+  const relations = require('../native/binding').getTaskRelations().createTaskRelations({ store, taskTitle: id => store.get('task', id)?.title || null,
     onChanged: id => ports.onRelationChanged?.(id) });
   const taskFirst = require('./task-first').createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports });
   const launching = new Set();

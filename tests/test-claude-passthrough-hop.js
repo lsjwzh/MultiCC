@@ -37,7 +37,7 @@ fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 // below must not depend on it, so it is set here to the value a live install has.
 process.env.CLAUDE_OFFICIAL_VIA_PROXY = '1';
 
-const providers = require('../src/providers/core');
+const providers = require('../src/providers/host');
 const { createProviderStoreAdapter } = require('../src/providers/router-adapter');
 const { createHandler } = require('cli-provider-router/proxy/claude');
 

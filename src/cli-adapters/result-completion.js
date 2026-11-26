@@ -1,7 +1,6 @@
 'use strict';
 
-const { createCompletionTracker } = require('./completion');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 function isMainResult(event) {
   return getNative().cliIsMainResult(event);
@@ -16,7 +15,7 @@ function resultCompletion(event) {
 }
 
 function createResultCompletionTracker() {
-  return createCompletionTracker({ observe: resultCompletion });
+  return getNative().createResultCompletionTracker();
 }
 
 module.exports = { isMainResult, resultCompletion, createResultCompletionTracker };

@@ -4,7 +4,7 @@
 // Proxy identity required by existing domain callers, never a local connection.
 const {
   OrchestrationStoreCorruptError, _cloneJson: cloneJson, _deepFreeze: deepFreeze,
-} = require('./store');
+} = require('./json-store-host');
 const { createDraft, COLLECTIONS } = require('./draft-host');
 
 const DATABASE_SCHEMA_VERSION = 2;

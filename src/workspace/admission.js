@@ -10,7 +10,7 @@ const { createWorkspaceRegistry } = require('./registry');
 const { createWriterEscalation } = require('./writer-escalation');
 const { WORKTREE_SUBDIR } = require('../git/service');
 const { captureCodeRevision } = require('../task-routing/code-revision');
-const { getWriterGroup, getNative } = require('../native/runtime');
+const { getWriterGroup, getNative } = require('../native/binding');
 const BACKPRESSURE_CODES = new Set([
   'workspace_busy',
   'workspace_lease_unavailable',

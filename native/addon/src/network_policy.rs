@@ -144,7 +144,6 @@ pub fn network_policy_api(
     env: Env,
     native: Unknown<'_>,
     process: Unknown<'_>,
-    wrap_async: Unknown<'_>,
 ) -> Result<sys::napi_value> {
     let native = L::new(&env, native);
     let state = fields(
@@ -162,9 +161,8 @@ pub fn network_policy_api(
     })?;
     state.set(c"find", find)?;
     let select = method(&env, state, "selectListenPort", 1, 2, |s, a| {
-        select(s, a[0], a[1])
+        crate::host_methods::async_result(s, || select(s, a[0], a[1]))
     })?;
-    let select = L::new(&env, wrap_async).call_plain(&[select])?;
     Ok(fields(
         state,
         &[

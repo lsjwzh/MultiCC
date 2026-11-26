@@ -575,7 +575,7 @@ test('every CLI the server accepts has a display entry', () => {
   // A lane added on the server without a row here would render as its own raw id
   // on every surface (that is the fallback, on purpose) — this turns "someone
   // forgot the display table" into a red test instead of a mystery on screen.
-  const { SUPPORTED_CLIS } = require('../src/native/runtime').getSessionDto();
+  const { SUPPORTED_CLIS } = require('../src/native/binding').getSessionDto();
   const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
   const schema = JSON.parse(read('contracts/v1/schemas/session.schema.json'));
   const sets = [
@@ -765,8 +765,8 @@ test('no page file defines its own CLI id → label map', () => {
 });
 
 test('native quota labels name the provider subscription rather than a CLI display map', () => {
-  const quota = require('../src/native/runtime').getQuotaBarView();
-  assert.match(read('src/native/runtime.js'), /getNative\(\)\.quotaBarViewApi/);
+  const quota = require('../src/native/binding').getQuotaBarView();
+  assert.match(read('src/native/binding.js'), /getNative\(\)\.quotaBarViewApi/);
   assert.match(read('native/addon/src/quota_bar_view.rs'), /multicc_core::quota_bar_view::request/);
   assert.equal(SERVER.ark, undefined, 'Ark is a quota vendor, not a CLI');
   assert.equal(SERVER.zhipu, undefined, 'Zhipu is a quota vendor, not a CLI');

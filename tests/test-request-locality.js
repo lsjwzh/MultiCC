@@ -111,7 +111,8 @@ test('locality checks stay limited to authentication and sensitive host controls
   const server = fs.readFileSync('server.js', 'utf8');
   const authRoutes = fs.readFileSync('src/routes/auth.js', 'utf8');
   const routerToolHost = fs.readFileSync('src/router-tool-host.js', 'utf8');
-  const taskBoardRoutes = fs.readFileSync('src/routes/task-board.js', 'utf8');
+  const taskBoardRoutes = ['src/routes/task-board/index.js', 'native/addon/src/task_board_runtime/route_ports.rs',
+    'native/addon/src/task_board_runtime/lifecycle/status.rs'].map(file => fs.readFileSync(file, 'utf8')).join('\n');
   const hostReadHost = fs.readFileSync('src/routes/host-read-host.js', 'utf8');
   const hostWriteRoutes = fs.readFileSync('src/routes/host-write.js', 'utf8');
   const wsConnectionRouter = fs.readFileSync('src/ws/connection-router.js', 'utf8');

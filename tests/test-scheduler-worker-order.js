@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work');
 
 function frozenScheduler() {
   const Module = require('node:module');
@@ -169,28 +169,26 @@ test('reorder uses Rust with a synchronous commit and nonblocking queue preparat
   // mutator changes the observed index. A real SQLite run with 160 pending
   // rows delayed a zero-delay timer by 117 ms, so moving the existing scan to
   // a synchronous NAPI command is not a nonblocking migration either.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'session-work', 'scheduler.js'), 'utf8');
-  const start = source.indexOf('  async function reorderQueued(');
-  const end = source.indexOf('  async function editQueued(', start);
-  assert.ok(start >= 0 && end > start, 'reorderQueued implementation is present');
-  const body = source.slice(start, end);
-  assert.ok(!/candidate\.queueOrder\s*=/.test(body),
-    'reorderQueued still owns the Node queue mutation; worker preparation must preserve the current synchronous index observation');
-  assert.ok(/store\.mutateSync\s*\(/.test(body),
-    'reorderQueued must commit synchronously without an intervening microtask');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src',
+    'session_work_scheduler', 'operations.rs'), 'utf8');
+  const body = source.match(/Reorder => \{([\s\S]*?)\n        \}\n        Status \|/u)?.[1];
+  assert.ok(body, 'scheduler dispatches reorder through the store');
+  assert.doesNotMatch(body, /queueOrder|then\(/u,
+    'the scheduler must neither rewrite queue order nor yield before the transaction');
+  assert.match(body, /call\(store, c"mutateSync", &\[text\(s, "scheduleReorder"\)/u,
+    'reorder must enqueue the owner command synchronously');
 });
 
 test('recovery uses Rust with a synchronous commit and nonblocking session preparation', () => {
   // The SQLite regression above shows worker preparation before the callback
   // changes the observed classify fact. A real SQLite run with 1000 sessions
   // delayed a zero-delay timer by 210 ms on the current synchronous scan.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'session-work', 'scheduler.js'), 'utf8');
-  const start = source.indexOf('  async function recover({');
-  const end = source.indexOf('\n  return Object.freeze(', start);
-  assert.ok(start >= 0 && end > start, 'recover implementation is present');
-  const body = source.slice(start, end);
-  assert.ok(!/schedule\.(?:active|state|classifyState)\s*=/.test(body),
-    'recover still owns Node state transitions; worker preparation must preserve synchronous classify observations');
-  assert.ok(/store\.mutateSync\s*\(/.test(body),
-    'recover must commit synchronously without an intervening microtask');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src',
+    'session_work_scheduler', 'recovery.rs'), 'utf8');
+  const owned = source.match(/if callable\(store\.get\(c"mutateSync"\)([\s\S]*?)\} else \{/u)?.[1];
+  assert.ok(owned, 'scheduler recovery supports a transaction owned by the store');
+  const submit = owned.match(/call\(\s*store,\s*c"mutateSync",\s*&\[text\(s, "scheduleRecoverOwned"\)/u);
+  assert.ok(submit, 'recovery enqueues the versioned recovery command');
+  assert.doesNotMatch(owned.slice(0, submit.index), /then\(|\.set\(c"(?:active|state|classifyState)"/u,
+    'the scheduler must neither change durable state nor yield before enqueuing the command');
 });

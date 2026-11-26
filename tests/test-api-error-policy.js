@@ -66,7 +66,7 @@ test('OpenCode compaction overflow is permanent even inside an internal-error en
 });
 
 test('OpenCode process stderr preserves overflow before truncation and respects RPC error precedence', () => {
-  const { opencodeProcessError } = require('../src/native/runtime');
+  const { opencodeProcessError } = require('../src/native/binding');
   const stderr = 'Error: Conversation history too large to compact - exceeds model context limit'
     + '\nstack frame'.repeat(100);
   assert.doesNotMatch(stderr.slice(-300), /context limit/);
@@ -86,7 +86,7 @@ test('OpenCode process stderr preserves overflow before truncation and respects 
 
 test('OpenCode process error matches the frozen module across error and stderr shapes', () => {
   const legacy = require('./helpers/legacy-opencode-error');
-  const { opencodeProcessError } = require('../src/native/runtime');
+  const { opencodeProcessError } = require('../src/native/binding');
   let count = 0;
   for (const cli of ['opencode', 'gemini', null, { toString() { return 'opencode'; } }]) {
     for (const raw of [undefined, null, false, 0, {}, { code: 'agent_exited' },
@@ -109,7 +109,7 @@ test('OpenCode process error matches the frozen module across error and stderr s
 });
 
 test('OpenCode process error preserves classifier call identity and short circuiting', () => {
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   const native = getNative();
   const stderr = { raw: 'fixture' };
   for (const answer of [null, false, 0, {}, true]) {

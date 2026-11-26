@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
 const { createOutbox } = require('../src/outbox');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const Database = require('better-sqlite3');
@@ -271,7 +271,7 @@ test('SQLite claim works with the production session scheduler and preserves pay
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-claim-scheduler-'));
   const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
   t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
-  const scheduler = require('../src/session-work/scheduler').createSessionWorkScheduler({ store });
+  const scheduler = require('../src/session-work').createSessionWorkScheduler({ store });
   const outbox = createOutbox({ store });
   const message = 'message-data-'.repeat(8192) + '\ud83d';
   await outbox.enqueue({ id: 'a', sessionId: 's', payload: { type: 'session.work', workKind: 'task', message } });

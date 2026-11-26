@@ -21,7 +21,7 @@ const app = express();
 app.use(require(path.join(repo, 'src/http-errors')).requestIdMiddleware,
  require(path.join(repo, 'src/http/json-compression')).jsonCompression, express.json());
 const { exercise } = require(path.join(repo, 'tests/helpers/retry-policy-fixture'));
-const api = require(path.join(repo, 'src/native/runtime')).getRetryPolicy(); 
+const api = require(path.join(repo, 'src/native/binding')).getRetryPolicy();
 app.post('/api/retry-policy-fixture', async (req, res) => res.json(await exercise(api, req.body)));
 app.get('/__health', (_req, res) => res.type('text/plain').send('ok'));
 const server = http.createServer(app);

@@ -23,7 +23,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const { isLocalRequest } = require('../request-locality');
-const { getNative, createFsDirectoryRepository } = require('../native/runtime');
+const { getNative, createFsDirectoryRepository } = require('../native/binding');
 const stateStore = require('../state/store');
 
 function createDirectoryModule(deps) {
@@ -221,7 +221,7 @@ function createDirectoryHost(rawDeps = {}) {
     const dir = findDir(id);
     if (!dir) return { error: 'directory not found' };
     try {
-      const { quickCommitMessage } = require('../native/runtime');
+      const { quickCommitMessage } = require('../native/binding');
       return { message: await quickCommitMessage(await git.statusPorcelain(dir.path)) };
     } catch (e) {
       return { error: e.message };

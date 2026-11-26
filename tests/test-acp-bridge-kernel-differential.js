@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const legacy = require('./helpers/load-legacy-acp-bridge');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 function native(input) {
   return getNative().acpBridgeKernel(JSON.stringify(input));

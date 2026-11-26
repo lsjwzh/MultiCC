@@ -349,10 +349,7 @@ fn error<'a>(event: L<'a>, ports: L<'a>) -> Result<L<'a>> {
         event,
         &[
             (c"type", text(event, "error")?),
-            (
-                c"label",
-                port(ports, c"displayNameOf", &[text(event, "codex")?])?,
-            ),
+            (c"label", ports.get(c"displayName")?),
             (c"message", message),
             (c"kind", text(event, kind)?),
             (c"error", data),

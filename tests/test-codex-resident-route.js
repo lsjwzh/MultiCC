@@ -235,5 +235,5 @@ test('a teardown path that never ran a resident codex turn is inert', () => {
   // closed. Nothing above this test touched the shared singleton, which is
   // exactly the state a process that only ever served claude sessions is in.
   assert.equal(releaseResidentRoute('session-1'), false);
-  assert.equal(require.cache[require.resolve('../src/providers/core')], undefined);
+  assert.equal(require.cache[require.resolve('../src/providers/host')], undefined);
 });

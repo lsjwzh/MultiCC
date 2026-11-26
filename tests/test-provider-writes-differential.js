@@ -17,7 +17,7 @@ const assert = require('node:assert');
 
 const { createLegacyWrites } = require('./helpers/legacy-provider-writes');
 const legacySettings = require('./helpers/legacy-settings-config');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 const native = getNative();
 const PORT = '3000';
@@ -413,48 +413,54 @@ test('deleteProvider：内置别名不可删、官方 id 走目录、普通 id �
   }
 });
 
-test('生产 core.js 的写入路径已经只是转发桩', () => {
-  const source = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, '../src/providers/core.js'), 'utf8');
-
-  // 取一个顶层函数的函数体（到下一个顶层声明为止）。
-  const bodyOf = name => {
-    const start = source.indexOf(`\nfunction ${name}(`);
-    assert.ok(start >= 0, `core.js 里找不到 ${name}`);
-    const rest = source.slice(start + 1);
-    const next = rest.slice(1).search(/\n(?:function |const |let |module\.exports)/);
-    return next < 0 ? rest : rest.slice(0, next + 1);
-  };
-
-  // 旧实现独有的函数不能再存在。
-  for (const gone of [
-    'function buildSettingsConfig', 'function parseModelList', 'function applyAliasMapToEnv',
-    'function assertApiFormatMatchesAppType', 'function normalizeEgressBinding',
-    'function saveVirtualProvider',
-  ]) {
-    assert.ok(!source.includes(gone), `core.js 仍保留旧实现: ${gone}`);
+test('宿主直接导出 Rust 注册表的写入方法，保留并发检查使用的源数组', () => {
+  const fs = require('node:fs');
+  const host = fs.readFileSync(require.resolve('../src/providers/host'), 'utf8');
+  assert.match(host, /providerRegistryService/);
+  assert.doesNotMatch(host, /function (createProvider|updateProvider|deleteProvider|runCommit|writeFacts|saveVirtualProvider)/);
+  const native = fs.readFileSync(require('node:path').join(__dirname,
+    '../native/addon/src/provider_service/registry.rs'), 'utf8');
+  for (const op of ['create_provider', 'update_provider', 'delete_provider']) {
+    assert.ok(native.includes('writes::' + op));
   }
-  // 三个桩自己不许再做任何决策：没有 throw、没有 loadStore().filter/find/push。
-  for (const name of ['createProvider', 'updateProvider', 'deleteProvider']) {
-    const body = bodyOf(name);
-    // 只允许把 Rust 给出的消息按本进程的 Error 身份抛出（`throw new Error(x.error)`），
-    // 不允许任何字面量或拼接出来的消息——那意味着决策还留在 Node。
-    for (const m of body.matchAll(/throw new Error\(([^)]*)\)/g)) {
-      assert.ok(/^\w+\.error$/.test(m[1].trim()), `${name} 里还有自己的 throw: ${m[0]}`);
-    }
-    assert.ok(!/\.(?:filter|find|push|splice)\(/.test(body), `${name} 里还在自己改记录清单`);
-    assert.ok(body.split('\n').length < 45, `${name} 不再是薄桩（${body.split('\n').length} 行）`);
-  }
-  // 乐观并发：saveStore 的第二个实参必须是 loadStore() 返回的那个数组
-  assert.ok(source.includes('saveStore(commit.records, loaded)'),
-    'runCommit 丢了 revision 来源，store 的乐观并发会失效');
-  for (const wired of ['providerCreate(', 'providerCreateRecord(', 'providerUpdate(', 'providerDelete(']) {
-    assert.ok(source.includes(wired), `core.js 没有接上 ${wired}`);
-  }
+  assert.match(native, /save\(p,\s*live\(p,\s*&records\)\?,\s*source\)/);
 });
 
 test('对拍规模与副作用覆盖都足够', () => {
   assert.ok(comparisons > 1000, `对拍次数只有 ${comparisons}`);
   assert.equal(sideEffectChecks, comparisons, '有对拍没检查副作用序列');
   console.log(`  对拍请求数: ${comparisons}；逐字节一致数: ${comparisons * 3}（返回值+记录清单+错误）；副作用序列比对数: ${sideEffectChecks}`);
+});
+
+test('写冲突原样返回，重试从存储重新读取版本', t => {
+  const fs = require('node:fs'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'provider-registry-race-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { createNativeProviderStore } = require('../src/native/binding');
+  const file = path.join(dir, 'providers.json');
+  const owner = createNativeProviderStore(file), peer = createNativeProviderStore(file);
+  let conflict;
+  let writes = 0;
+  const registry = native.providerRegistryService({
+    store: {
+      read: () => owner.read(),
+      write(next, revision) {
+        if (++writes === 1) {
+          const rows = peer.read();
+          rows.push({ id: 'concurrent', appType: 'claude', name: '已有线路' });
+          peer.write(rows);
+        }
+        try { owner.write(next, revision); }
+        catch (error) { conflict = error; throw error; }
+      },
+    },
+    uuid: () => NEW_ID,
+    getPort: () => PORT,
+  });
+  const request = { appType: 'claude', name: '新线路' };
+  assert.throws(() => registry.createProvider(request),
+    error => error === conflict && error.code === 'PROVIDER_STORE_CONFLICT');
+  assert.deepStrictEqual(peer.read().map(row => row.id), ['concurrent']);
+  registry.createProvider(request);
+  assert.deepStrictEqual(peer.read().map(row => row.id), ['concurrent', NEW_ID]);
 });

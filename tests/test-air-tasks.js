@@ -117,7 +117,7 @@ test('many Air task records do not start any work and retain separate roles', as
 test('online attribution candidates do not create task B or rewrite the original receipt', async t => {
   const f = airFixture(t), created = await f.runtime.createStandalone({ dirId: 'd1', title: 'Source', clientMsgId: 'src' });
   const sent = await f.runtime.send(created.shellId, { text: 'Work', taskId: created.taskId, intent: 'work', clientMsgId: 'm' });
-  const { createCandidateStore } = require('../src/native/runtime'), candidates = createCandidateStore(f.store);
+  const { createCandidateStore } = require('../src/native/binding'), candidates = createCandidateStore(f.store);
   const before = f.runtime.view(created.shellId), original = f.store.get('receipt', sent.receiptId);
   const candidate = candidates.propose(created.sessionId, sent.receiptId, { taskId: 'tsk_new_candidate', taskName: 'New goal', turnId: 'turn1' });
   assert.equal(candidate.pending, true); assert.equal(candidate.candidate.state, 'pending');
@@ -729,7 +729,7 @@ test('候选事务对照旧实现，保留来源校验、版本、重复提案�
     return { first, repeat, latest, changed: api.latest('A'), calls };
   }
   const frozen = require('./helpers/frozen-file-batch7/candidates').createCandidateStore;
-  const current = require('../src/native/runtime').createCandidateStore;
+  const current = require('../src/native/binding').createCandidateStore;
   const clock = Date.now;
   try {
     Date.now = () => 123456;

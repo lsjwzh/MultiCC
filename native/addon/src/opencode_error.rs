@@ -24,7 +24,7 @@ pub fn opencode_process_error(
     cli: Unknown<'_>,
     raw: Unknown<'_>,
     stderr: Unknown<'_>,
-    classify: Unknown<'_>,
+    classifier: Unknown<'_>,
 ) -> Result<sys::napi_value> {
     let cli = LiveValue::new(&env, cli);
     let raw = LiveValue::new(&env, raw);
@@ -38,6 +38,24 @@ pub fn opencode_process_error(
     error.set(c"source", cli.from_value(&JsValue::from("process_stderr"))?)?;
     error.set(c"provider", cli)?;
     error.set(c"message", LiveValue::new(&env, stderr))?;
-    let decision = LiveValue::new(&env, classify).call_plain(&[error, error])?;
-    Ok(if decision.truthy()? { error } else { null }.raw())
+    // Custom classifiers belong to callers that supply one explicitly.
+    let classifier = LiveValue::new(&env, classifier);
+    if classifier.kind()? == sys::ValueType::napi_function {
+        let recognized = classifier.call_plain(&[error, error])?.truthy()?;
+        return Ok(if recognized { error } else { null }.raw());
+    }
+    // Only this bounded stderr observation reaches the ordinary provider classifier.
+    // Keep the original, untruncated error for the caller when it is recognized.
+    let decision = cli.catch(|| {
+        let stderr=error.get(c"message")?;
+        let wire_error=if let Some(value)=stderr.string()? {
+            serde_json::json!({"message":value.truncate_units(65536).to_string_lossy()})
+        } else if let Some(value)=stderr.number_value()?.filter(|n|n.is_finite()) {
+            serde_json::json!({"message":value})
+        } else {serde_json::json!({})};
+        let request=serde_json::json!({"source":"process_stderr","provider":"opencode","error":wire_error});
+        let decision=classify_provider_error(request.to_string())?;
+        Ok(decision!="null")
+    })?.unwrap_or(false);
+    Ok(if decision { error } else { null }.raw())
 }

@@ -5,7 +5,7 @@ const test = require('node:test');
 const {
   SYSTEM_PREFIX,
   createSessionDelivery,
-} = require('../src/native/runtime').getSessionDeliveryApi();
+} = require('../src/native/binding').getSessionDeliveryApi();
 
 function harness() {
   const admissions = [];

@@ -32,7 +32,9 @@ fn score(value: L<'_>) -> Result<L<'_>> {
 
 #[napi]
 pub fn search_diversity_candidate(env: Env, hit: Unknown<'_>) -> Result<sys::napi_value> {
-    let hit = L::new(&env, hit);
+    Ok(candidate(L::new(&env, hit))?.raw())
+}
+fn candidate(hit: L<'_>) -> Result<L<'_>> {
     if hit.nullish()? {
         let message = if hit.undefined()? {
             "Cannot read properties of undefined (reading 'sessionId')"
@@ -54,7 +56,7 @@ pub fn search_diversity_candidate(env: Env, hit: Unknown<'_>) -> Result<sys::nap
     row.set(c"updatedAt", score(hit.get(c"updatedAt")?)?)?;
     row.set(c"taskId", text(hit.get(c"taskId")?)?)?;
     row.set(c"dirId", text(hit.get(c"dirId")?)?)?;
-    Ok(row.raw())
+    Ok(row)
 }
 
 #[napi]
@@ -66,12 +68,27 @@ pub fn search_diversity_pick(
     quota: Unknown<'_>,
     dedupe: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let hits = L::new(&env, hits);
+    Ok(pick(
+        L::new(&env, hits),
+        L::new(&env, candidates),
+        limit,
+        L::new(&env, quota),
+        L::new(&env, dedupe),
+    )?
+    .raw())
+}
+fn pick<'a>(
+    hits: L<'a>,
+    candidates: L<'a>,
+    limit: f64,
+    quota: L<'a>,
+    dedupe: L<'a>,
+) -> Result<L<'a>> {
     let request = hits.from_value(&J::Object(vec![]))?;
-    request.set(c"candidates", L::new(&env, candidates))?;
+    request.set(c"candidates", candidates)?;
     request.set(c"limit", hits.from_value(&J::Number(limit))?)?;
-    request.set(c"perRefQuota", L::new(&env, quota))?;
-    request.set(c"dedupeContentHash", L::new(&env, dedupe))?;
+    request.set(c"perRefQuota", quota)?;
+    request.set(c"dedupeContentHash", dedupe)?;
     // Caller-provided options can implement toJSON, throw, or even shrink hits.
     let json = hits.global()?.get(c"JSON")?;
     let wire = json
@@ -92,5 +109,19 @@ pub fn search_diversity_pick(
             break;
         }
     }
-    Ok(output.raw())
+    Ok(output)
+}
+
+#[napi]
+pub fn search_rank_live(
+    env: Env,
+    hits: Unknown<'_>,
+    limit: f64,
+    quota: Unknown<'_>,
+    dedupe: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let hits = L::new(&env, hits);
+    let project = crate::host_methods::method(&env, hits, "", 1, 1, |_, a| candidate(a[0]))?;
+    let rows = crate::host_methods::call(hits, c"map", &[project])?;
+    Ok(pick(hits, rows, limit, L::new(&env, quota), L::new(&env, dedupe))?.raw())
 }

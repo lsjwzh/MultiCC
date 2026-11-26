@@ -27,7 +27,7 @@ const legacyHeartbeat = require('./helpers/legacy-progress-heartbeat');
 const legacyTiming = require('./helpers/legacy-turn-timing');
 const legacyTimeline = require('./helpers/legacy-turn-timeline');
 const legacyProbe = require('./helpers/legacy-delivery-probe');
-const progress = require('../src/native/runtime').getTurnProgress();
+const progress = require('../src/native/binding').getTurnProgress();
 const { createStateOwner } = require('../src/state/owner');
 const { createChatSessions } = require('../src/chat/sessions');
 

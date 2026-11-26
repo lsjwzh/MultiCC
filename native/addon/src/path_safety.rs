@@ -11,7 +11,7 @@ use std::ffi::CStr;
 fn call<'a>(receiver: L<'a>, name: &CStr, args: &[L<'a>]) -> Result<L<'a>> {
     receiver.get(name)?.call(receiver, args)
 }
-fn real_path<'a>(value: L<'a>, fs: L<'a>, path: L<'a>) -> Result<L<'a>> {
+pub(crate) fn real_path<'a>(value: L<'a>, fs: L<'a>, path: L<'a>) -> Result<L<'a>> {
     let absolute = call(path, c"resolve", &[value])?;
     let mut cursor = absolute;
     let mut tail = Vec::new();
@@ -58,6 +58,9 @@ pub fn path_safety_home_or_above(
     let fs = L::new(&env, fs);
     let path = L::new(&env, path);
     let os = L::new(&env, os);
+    home_or_above(value, fs, path, os)
+}
+pub(crate) fn home_or_above<'a>(value: L<'a>, fs: L<'a>, path: L<'a>, os: L<'a>) -> Result<bool> {
     let resolved = real_path(value, fs, path)?;
     let home = real_path(call(os, c"homedir", &[])?, fs, path)?;
     if resolved.equals(home)? {

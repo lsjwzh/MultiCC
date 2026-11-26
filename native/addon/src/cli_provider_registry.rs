@@ -44,40 +44,7 @@ impl RustCliProviderRegistryFactory {
     ) -> Result<sys::napi_value> {
         let adapters = L::new(&env, adapters);
         let fallback_name = L::new(&env, fallback_name);
-        let table = adapters.global()?.get(c"Map")?.construct(&[])?;
-        adapters.for_each(|adapter| {
-            if !adapter.truthy()? || !adapter.get(c"name")?.truthy()? {
-                return Ok(());
-            }
-            if adapter.get(c"buildInvocation")?.kind()? != sys::ValueType::napi_function {
-                return Err(missing_method(adapter, "buildInvocation")?);
-            }
-            if adapter.get(c"decodeEvent")?.kind()? != sys::ValueType::napi_function {
-                return Err(missing_method(adapter, "decodeEvent")?);
-            }
-            method(table, c"set", &[adapter.get(c"name")?, adapter])?;
-            Ok(())
-        })?;
-        let fallback = method(table, c"get", &[fallback_name])?;
-        if !fallback.truthy()? {
-            let mut message =
-                multicc_core::js::JsString::from_rust_str("missing fallback CLI adapter: ");
-            message.push(&fallback_name.coerce_string()?);
-            return Err(error(adapters, adapters.from_value(&V::String(message))?)?);
-        }
-        let object = adapters.global()?.get(c"Object")?;
-        let from_entries = object.get(c"fromEntries")?;
-        let entries = method(table, c"entries", &[])?;
-        let providers = from_entries.call(object, &[entries])?;
-        let state = adapters.from_value(&V::Object(vec![]))?;
-        for (key, value) in [
-            (c"table", table),
-            (c"fallback", fallback),
-            (c"providers", providers),
-        ] {
-            state.set(key, value)?;
-        }
-        Ok(state.raw())
+        Ok(make(adapters, fallback_name)?.raw())
     }
 
     #[napi]
@@ -89,12 +56,79 @@ impl RustCliProviderRegistryFactory {
     ) -> Result<sys::napi_value> {
         let state = L::new(&env, state);
         let cli = L::new(&env, cli);
-        let adapter = method(state.get(c"table")?, c"get", &[cli])?;
-        Ok(if adapter.truthy()? {
-            adapter
-        } else {
-            state.get(c"fallback")?
-        }
-        .raw())
+        Ok(lookup(state, cli)?.raw())
     }
+}
+
+fn make<'a>(adapters: L<'a>, fallback_name: L<'a>) -> Result<L<'a>> {
+    let table = adapters.global()?.get(c"Map")?.construct(&[])?;
+    adapters.for_each(|adapter| {
+        if !adapter.truthy()? || !adapter.get(c"name")?.truthy()? {
+            return Ok(());
+        }
+        if adapter.get(c"buildInvocation")?.kind()? != sys::ValueType::napi_function {
+            return Err(missing_method(adapter, "buildInvocation")?);
+        }
+        if adapter.get(c"decodeEvent")?.kind()? != sys::ValueType::napi_function {
+            return Err(missing_method(adapter, "decodeEvent")?);
+        }
+        method(table, c"set", &[adapter.get(c"name")?, adapter])?;
+        Ok(())
+    })?;
+    let fallback = method(table, c"get", &[fallback_name])?;
+    if !fallback.truthy()? {
+        let mut message =
+            multicc_core::js::JsString::from_rust_str("missing fallback CLI adapter: ");
+        message.push(&fallback_name.coerce_string()?);
+        return Err(error(adapters, adapters.from_value(&V::String(message))?)?);
+    }
+    let object = adapters.global()?.get(c"Object")?;
+    let from_entries = object.get(c"fromEntries")?;
+    let entries = method(table, c"entries", &[])?;
+    let providers = from_entries.call(object, &[entries])?;
+    let state = adapters.from_value(&V::Object(vec![]))?;
+    for (key, value) in [
+        (c"table", table),
+        (c"fallback", fallback),
+        (c"providers", providers),
+    ] {
+        state.set(key, value)?;
+    }
+    Ok(state)
+}
+fn lookup<'a>(state: L<'a>, cli: L<'a>) -> Result<L<'a>> {
+    let adapter = method(state.get(c"table")?, c"get", &[cli])?;
+    if adapter.truthy()? {
+        Ok(adapter)
+    } else {
+        state.get(c"fallback")
+    }
+}
+#[napi]
+pub fn create_cli_provider_registry(
+    env: Env,
+    adapters: Unknown<'_>,
+    fallback_name: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let adapters = L::new(&env, adapters);
+    let fallback_name = L::new(&env, fallback_name);
+    let state = make(
+        adapters,
+        if fallback_name.undefined()? {
+            adapters.from_value(&"claude".into())?
+        } else {
+            fallback_name
+        },
+    )?;
+    Ok(crate::js_live::fields(
+        state,
+        &[
+            ("providers", state.get(c"providers")?),
+            (
+                "get",
+                crate::host_methods::method(&env, state, "get", 1, 1, |s, a| lookup(s, a[0]))?,
+            ),
+        ],
+    )?
+    .raw())
 }

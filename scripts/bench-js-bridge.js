@@ -11,7 +11,7 @@
 //
 // Usage: MULTICC_RUST_ADDON=<artifact.js> node scripts/bench-js-bridge.js
 
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 const native = getNative();
 

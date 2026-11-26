@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { resolveTurnState } = require('../src/native/runtime').getTurnState();
+const { resolveTurnState } = require('../src/native/binding').getTurnState();
 
 const inactive = { state: 'inactive', reason: 'runner_closed' };
 
@@ -36,8 +36,8 @@ test('gateway success uses the same resolver with gateway evidence', () => {
 
 test('回合状态保留 JSON 输入边界与冻结结果', () => {
   const old = require('./helpers/frozen-host-ports/classify-turn-state');
-  const current = require('../src/native/runtime').getTurnState();
-  assert.equal(current, require('../src/native/runtime').getTurnState());
+  const current = require('../src/native/binding').getTurnState();
+  assert.equal(current, require('../src/native/binding').getTurnState());
   assert.deepEqual([...current.ABNORMAL_BOUNDARIES], [...old.ABNORMAL_BOUNDARIES]);
   const value = fn => { try { return fn(); } catch (e) { return [e.name, e.message]; } };
   for (const v of [null, undefined, 5, {}, { toJSON: () => ({ boundary: 'succeeded', liveness: inactive }) },

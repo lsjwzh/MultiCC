@@ -23,7 +23,7 @@ const test = require('node:test');
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
 const BRIDGE = 'codex-app-bridge';
-const BRIDGE_CMD = require('../src/native/runtime').gatewayPath();
+const BRIDGE_CMD = require('../src/native/binding').gatewayPath();
 
 function startBridge(root, extraArgs = [], envExtra = {}) {
   const logFile = path.join(root, `requests-${extraArgs.length}-${Math.random().toString(36).slice(2)}.jsonl`);

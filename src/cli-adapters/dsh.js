@@ -4,7 +4,7 @@ const { createProtocolCompletionTracker } = require('./completion');
 
 const fs = require('fs');
 const path = require('path');
-const { renderPrompt } = require('../native/runtime').messageComposer;
+const { renderPrompt } = require('../native/binding').messageComposer;
 
 /**
  * DeepSeek Harness (dsh) adapter (@deepseek-ai/dsh).

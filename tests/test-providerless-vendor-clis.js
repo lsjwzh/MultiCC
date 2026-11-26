@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const providers = require('../src/providers/core');
+const providers = require('../src/providers/host');
 
 test('vendor-auth CLIs stay providerless while pool-capable CLIs resolve MultiCC provider pools', () => {
   assert.equal(providers.appTypeForCli('claude'), 'claude');
@@ -82,7 +82,7 @@ test('stale vendor provider ids cannot silently fall through to another account'
 test('host spawn paths apply CLI-specific proxies only after resolving the provider route', () => {
   const root = path.join(__dirname, '..');
   const terminalSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   assert.match(terminalSource, /providerRouterRuntime\.resolveSpawnEnv\(persisted\)/);
 
   // Execute the actual host adaptation boundaries with inert provider ports.
@@ -148,7 +148,7 @@ test('host spawn paths apply CLI-specific proxies only after resolving the provi
 });
 
 test('vendor login flows map each vendor-auth CLI to a whitelisted login terminal spec', () => {
-  const { VENDOR_LOGIN, vendorLoginForCli, cliForLoginFlow, vendorLoginTerminalCmd } = require('../src/native/runtime').getVendorLogin();
+  const { VENDOR_LOGIN, vendorLoginForCli, cliForLoginFlow, vendorLoginTerminalCmd } = require('../src/native/binding').getVendorLogin();
   assert.deepEqual(Object.keys(VENDOR_LOGIN).sort(), ['agy', 'codebuddy', 'commandcode', 'qoder']);
   assert.equal(vendorLoginForCli('codebuddy').loginFlow, 'codebuddy-login');
   assert.equal(vendorLoginForCli('codebuddy').label, 'WorkBuddy');
@@ -173,7 +173,7 @@ test('vendor login flows map each vendor-auth CLI to a whitelisted login termina
 
 test('原生登录目录与旧 JS 的顺序、冻结对象和终端命令一致', () => {
   const old = require('./helpers/legacy-session-routes/vendor-login');
-  const api = require('../src/native/runtime').getVendorLogin();
+  const api = require('../src/native/binding').getVendorLogin();
   assert.deepEqual(Object.entries(api.VENDOR_LOGIN), Object.entries(old.VENDOR_LOGIN));
   assert.ok(Object.isFrozen(api.VENDOR_LOGIN));
   for (const [cli, spec] of Object.entries(api.VENDOR_LOGIN)) {
@@ -197,4 +197,15 @@ test('Pi local credentials do not acquire a MultiCC provider route', () => {
   assert.deepEqual(providers.resolveSpawnEnv({ cli: 'pi', provider: 'stale-provider' }).env, {});
   const base = { PI_CODING_AGENT_DIR: '/pi-config', OPENAI_API_KEY: 'fixture-local-key' };
   assert.deepEqual(providers.buildChildEnv(base, { cli: 'pi' }).env, base);
+});
+
+test('DSH 的直接构造入口只读取 Anthropic 环境凭据', () => {
+  const provider = {
+    id: 'cross-pool', name: '跨池测试', appType: 'codex',
+    settingsConfig: { auth: { OPENAI_API_KEY: 'fixture-codex' }, config: 'base_url = "https://example.test/v1"' },
+  };
+  assert.throws(() => providers.buildDshRoute(provider, { id: 'session' }), /DSH Provider 缺少可用的 API Key/);
+  provider.settingsConfig.env = { ANTHROPIC_API_KEY: 'fixture-dsh', ANTHROPIC_BASE_URL: 'https://dsh.test' };
+  assert.deepEqual(providers.buildDshRoute(provider, { id: 'session' }).env,
+    { DEEPSEEK_API_KEY: 'fixture-dsh', DEEPSEEK_BASE_URL: 'https://dsh.test' });
 });

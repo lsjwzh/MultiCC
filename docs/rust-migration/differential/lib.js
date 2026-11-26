@@ -103,7 +103,7 @@ function nodePipeline(repo, dataRoot, spec, ctx) {
   const { isLocalRequest, isPrivateRequestPeer } = R('src/request-locality');
   const { createErrorDto } = R('tests/helpers/frozen-file-batch20/api-contract');
   const createAuthRuntime = legacy.createAuthRuntime || R('src/routes/auth').createAuthRuntime;
-  const { getNative } = R('src/native/runtime');
+  const { getNative } = R('src/native/binding');
   const app = express();
   const authSecurity = createAuthSecurity({ getSecret: () => TOKEN });
   const quiet = { warn() {}, info() {}, error() {} };

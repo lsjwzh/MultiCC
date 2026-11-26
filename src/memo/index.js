@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { DomainError, InfrastructureError } = require('../http-errors');
 const { createGitTrackPort, migrateProjectMemos } = require('./migrate');
 const { MEMO_FILENAME, LEGACY_PROJECT_MEMO_FILENAME, MEMO_MAX_BYTES } = getNative();

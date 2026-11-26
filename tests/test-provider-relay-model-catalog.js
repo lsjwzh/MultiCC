@@ -9,7 +9,7 @@ const {
   normalizeModels,
 } = require('../src/providers/relay-model-catalog');
 const { mountProviderRelayHostRoute, PROVIDER_RELAY_PATH: HOST_PATH } = require('../src/routes/host-read-host');
-const { applyProviderRelayModelCatalog, summarize } = require('../src/providers/core');
+const { applyProviderRelayModelCatalog, summarize } = require('../src/providers/host');
 
 function response(body, status = 200) {
   const text = JSON.stringify(body);

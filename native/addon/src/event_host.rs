@@ -1,5 +1,6 @@
 //! Adapt live event-engine inputs to the shared rules, including lazy task-state
 //! reads and the two factories that run only after a rule has been accepted.
+mod facade;
 use crate::js_live::LiveValue as L;
 use multicc_core::js::JsValue as J;
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
@@ -228,18 +229,21 @@ pub fn event_host_request(
     let first = L::new(&env, first);
     let second = L::new(&env, second);
     let port = L::new(&env, port);
-    let result = match op.as_str() {
+    Ok(dispatch(&op, first, second, port)?.raw())
+}
+fn dispatch<'a>(op: &str, first: L<'a>, second: L<'a>, port: L<'a>) -> Result<L<'a>> {
+    let result = match op {
         "isKnownPattern" | "matchesPattern" | "matchesAny" => {
-            pattern_request(&op, first, second, port)?
+            pattern_request(op, first, second, port)?
         }
         "matchesFilter" => filter(first, second)?,
         "channelActions" => channel_actions(first)?,
         "channelProblem" => channel_problem(first, second)?,
         "validateEventRule" => validate_rule(first, second)?,
-        "redactText" | "clipText" | "summaryOf" => text_request(&op, first, second, port)?,
+        "redactText" | "clipText" | "summaryOf" => text_request(op, first, second, port)?,
         _ => {
             let input = object(first)?;
-            match op.as_str() {
+            match op {
                 "validateAction" | "validateWebhookUrl" => input.set(c"raw", first)?,
                 "letterOf" | "goalOf" | "segmentKey" => {
                     input.set(c"state", project_state(first)?)?
@@ -254,8 +258,8 @@ pub fn event_host_request(
                 }
                 _ => return Err(napi::Error::from_reason(format!("events_unknown_op: {op}"))),
             }
-            request(&op, input)?
+            request(op, input)?
         }
     };
-    Ok(result.raw())
+    Ok(result)
 }

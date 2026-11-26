@@ -1,10 +1,14 @@
 //! Task-relation host projections over the transactional Rust store.
 use crate::{
+    host_methods::method,
     js_iteration::read,
     js_live::{fields, invoke, spread, LiveValue as L},
 };
 use multicc_core::{js::JsValue as V, task_store::RELATION_KINDS};
-use napi::{bindgen_prelude::Unknown, sys, Env, Result};
+use napi::{
+    bindgen_prelude::{ToNapiValue, Unknown},
+    sys, Env, Result,
+};
 use napi_derive::napi;
 
 #[napi]
@@ -50,23 +54,25 @@ pub fn task_relation_list(
     shell: Unknown<'_>,
     project: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let store = L::new(&env, store);
+    Ok(list(
+        L::new(&env, store),
+        L::new(&env, shell),
+        L::new(&env, project),
+    )?
+    .raw())
+}
+
+fn list<'a>(store: L<'a>, shell: L<'a>, project: L<'a>) -> Result<L<'a>> {
     let rule = read(store, c"rule")?;
     let req = fields(
         store,
         &[
             ("action", store.from_value(&"relationList".into())?),
-            ("shellId", L::new(&env, shell)),
+            ("shellId", shell),
         ],
     )?;
     let rows = invoke(store, rule, &[req], "store.rule")?;
-    Ok(invoke(
-        rows,
-        read(rows, c"map")?,
-        &[L::new(&env, project)],
-        "store.rule(...).map",
-    )?
-    .raw())
+    invoke(rows, read(rows, c"map")?, &[project], "store.rule(...).map")
 }
 
 #[napi]
@@ -77,9 +83,17 @@ pub fn task_relation_change(
     input: Unknown<'_>,
     remove: bool,
 ) -> Result<sys::napi_value> {
-    let ports = L::new(&env, ports);
+    Ok(change(
+        L::new(&env, ports),
+        L::new(&env, shell),
+        L::new(&env, input),
+        remove,
+    )?
+    .raw())
+}
+
+fn change<'a>(ports: L<'a>, shell: L<'a>, input: L<'a>, remove: bool) -> Result<L<'a>> {
     let store = ports.get(c"store")?;
-    let shell = L::new(&env, shell);
     let rule = read(store, c"rule")?;
     let action = if remove {
         "relationRemove"
@@ -93,7 +107,7 @@ pub fn task_relation_change(
         &[
             ("action", ports.from_value(&action.into())?),
             ("shellId", shell),
-            ("input", L::new(&env, input)),
+            ("input", input),
             ("now", time),
         ],
     )?;
@@ -109,5 +123,77 @@ pub fn task_relation_change(
     let output = spread(result)?;
     let relation = public_title(read(result, c"relation")?, ports.get(c"taskTitle")?)?;
     output.define_key(ports.from_value(&"relation".into())?, relation)?;
-    Ok(output.raw())
+    Ok(output)
+}
+
+fn create<'a>(kinds: L<'a>, options: L<'a>) -> Result<L<'a>> {
+    let store = read(options, c"store")?;
+    let title = read(options, c"taskTitle")?;
+    let changed = read(options, c"onChanged")?;
+    let now = read(options, c"now")?;
+    let now = if now.undefined()? {
+        kinds.global()?.get(c"Date")?.get(c"now")?
+    } else {
+        now
+    };
+    let env = Env::from_raw(kinds.env());
+    let project = method(&env, title, "project", 1, 1, |title, args| {
+        public_title(args[0], title)
+    })?;
+    let ports = fields(
+        kinds,
+        &[
+            ("store", store),
+            ("taskTitle", title),
+            ("onChanged", changed),
+            ("now", now),
+            ("project", project),
+        ],
+    )?;
+    let list = method(&env, ports, "list", 1, 1, |ports, args| {
+        list(ports.get(c"store")?, args[0], ports.get(c"project")?)
+    })?;
+    let mutation = |name, remove| {
+        method(&env, ports, name, 1, 2, move |ports, args| {
+            let input = if args[1].undefined()? {
+                fields(ports, &[])?
+            } else {
+                args[1]
+            };
+            change(ports, args[0], input, remove)
+        })
+    };
+    let api = fields(
+        kinds,
+        &[
+            ("list", list),
+            ("create", mutation("create", false)?),
+            ("remove", mutation("remove", true)?),
+            ("KINDS", kinds),
+        ],
+    )?;
+    Ok(L::from_raw(kinds.env(), api.raw()))
+}
+
+#[napi]
+pub fn task_relations_api(env: Env) -> Result<sys::napi_value> {
+    let anchor = L::new(&env, ().into_unknown(&env)?);
+    let kinds = anchor
+        .from_value(&V::Array(
+            RELATION_KINDS.iter().map(|kind| V::from(*kind)).collect(),
+        ))?
+        .freeze()?;
+    Ok(fields(
+        anchor,
+        &[
+            (
+                "createTaskRelations",
+                method(&env, kinds, "createTaskRelations", 1, 1, |kinds, args| {
+                    create(kinds, args[0])
+                })?,
+            ),
+            ("RELATION_KINDS", kinds),
+        ],
+    )?
+    .raw())
 }

@@ -3,14 +3,14 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { createClassifyStateMachine } = require('../src/classify/state-machine');
+const { createClassifyStateMachine } = require('../src/classify/task-attribution');
 const { classifyDisplay } = require('../src/classify/vocab');
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 
 function fixture({
   cli = 'opencode', goal = '已识别任务', isStreaming = true, type = 'worker',
   history = null, auxText = null, auxError = null, taskShell = false, toolCalls = [], separationResult = null,
-  board = null, messageSearch = null,
+  board = null, messageSearch = null, ports = {},
 } = {}) {
   const record = {
     id: 's1', kind: 'chat', cli, type,
@@ -126,6 +126,7 @@ function fixture({
     }],
     appendChatMessage() {},
     annotateChatTurn: (...args) => { observed.annotations.push(args); return []; },
+    ...ports,
   });
   return { machine, record, chatState, chatSessions, observed };
 }
@@ -817,4 +818,53 @@ test('an unwired or broken message index changes no verdict and no prompt', asyn
   assert.equal(throwing.record.taskState.classifyState, 'D', '索引坏了不能改变回合判定');
   assert.equal(throwing.observed.transitions, 1);
   assert.equal(throwing.observed.enqueued, 0);
+});
+
+test('分类扫描历史按实例隔离，只保留最近 100 轮和每轮前 400 条决定', () => {
+  const first = fixture().machine.scanHistory;
+  const second = fixture().machine.scanHistory;
+  for (let i = 0; i < 101; ++i) first.push({ decisions: [i] });
+  const record = { decisions: Array.from({ length: 402 }, (_, i) => i) };
+  first.push(record);
+  assert.equal(first.seq, 102);
+  assert.equal(first.passes.length, 100);
+  assert.equal(first.passes.at(-1).pass, 3);
+  assert.equal(first.passes[0], record);
+  assert.equal(record.decisionsTruncated, true);
+  assert.equal(record.decisions.length, 400);
+  assert.equal(record.decisions.at(-1), 399);
+  assert.deepEqual([second.seq, second.passes], [0, []]);
+});
+
+test('attribution rejects with the original activation error and annotates superseded turns best-effort', async () => {
+  const fault = new Error('activation failed');
+  for (const activateTurnAsync of [() => { throw fault; }, () => Promise.reject(fault)]) {
+    const { machine, chatState } = fixture({ ports: { getUserInputSignalHost: () => ({ activateTurnAsync }) } });
+    const pending = machine.applyTaskAttributionResult(chatState, 's1', { relation: 'same' }, {
+      anchorStatus: { changed: false },
+    });
+    assert.ok(pending instanceof Promise);
+    await assert.rejects(pending, error => error === fault);
+  }
+  const warnings = [];
+  const { machine, chatState } = fixture({ ports: {
+    annotateChatTurn: () => Promise.reject(fault),
+    logger: { info() {}, warn: (event, details) => warnings.push([event, details]) },
+  } });
+  const settled = await machine.applyTaskAttributionResult(chatState, 's1', {}, { supersededReason: 'newer_aux_request' });
+  assert.deepEqual(settled.annotated, []);
+  assert.equal(settled.superseded, true);
+  assert.deepEqual(warnings, [['aux_message_annotation_failed', { sessionId: 's1', error: fault.message }]]);
+});
+
+test('admission preserves legacy title serialization and sequence coercion exceptions', () => {
+  const { machine, chatState } = fixture();
+  const title = { toJSON(key) { assert.equal(key, 'value'); return '从历史记录恢复任务'; } };
+  assert.equal(machine.ensureCurrentTask(chatState, 's1', title, true).goal, '从历史记录恢复任务');
+  chatState.currentTask.turnSeq = { [Symbol.toPrimitive](hint) { assert.equal(hint, 'default'); return '07'; } };
+  assert.equal(machine.ensureCurrentTask(chatState, 's1', '').turnSeq, '071');
+  const fault = new Error('legacy getter');
+  chatState.currentTask.turnSeq = { valueOf() { throw fault; } };
+  assert.throws(() => machine.ensureCurrentTask(chatState, 's1', ''), error => error === fault);
+  assert.throws(() => machine.ensureCurrentTask(chatState, 's1', { toJSON() { throw fault; } }, true), error => error === fault);
 });

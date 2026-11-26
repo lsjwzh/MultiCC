@@ -18,7 +18,7 @@ const nativeChatEvents = fs.readFileSync(
 // The classify E-branch (with its classifier_legacy fallback) now lives in the
 // extracted classify state machine.
 const classifyStateMachine = fs.readFileSync(
-  path.join(root, 'src', 'classify', 'state-machine.js'), 'utf8');
+  path.join(root, 'native/addon/src/classify_machine/dispatch/settle.rs'), 'utf8');
 const apiErrorHost = fs.readFileSync(
   path.join(root, 'src', 'chat', 'api-error-host.js'), 'utf8');
 const waitInjector = fs.readFileSync(path.join(root, 'src', 'wait', 'injector.js'), 'utf8');
@@ -27,12 +27,12 @@ test('Classify no longer owns an uncapped API retry or error-text pruning channe
   assert.equal(server.includes('API error -> retry (uncapped)'), false);
   assert.equal(server.includes('pruneErrorTurnPairs'), false);
   assert.equal(server.includes('API_RETRY_DELAY_MS'), false);
-  assert.equal(classifyStateMachine.includes("source: 'classifier_legacy'"), true);
+  assert.equal(classifyStateMachine.includes('"classifier_legacy"'), true);
   assert.equal(waitInjector.includes('API retries now live in src/chat/api-error-policy.js'), true);
 });
 
 test('process and stream retries reuse the owned turn without appending a second user message', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const processPlan = fs.readFileSync(path.join(root, 'native/addon/src/turn_process_close.rs'), 'utf8');
   const processEffects = fs.readFileSync(path.join(root, 'native/addon/src/turn_process_close/execute.rs'), 'utf8');
   assert.ok(processPlan.indexOf('let guarded =') >= 0 && processPlan.indexOf('let classify =') > processPlan.indexOf('let guarded ='));

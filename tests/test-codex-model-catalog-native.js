@@ -14,11 +14,11 @@ const path = require('node:path');
 const test = require('node:test');
 const { createCodexAccountModelCatalogRuntime } = require('../src/codex/model-catalog');
 const { createModelCatalogsHost } = require('../src/routes/model-catalogs-host');
-const { summarize } = require('../src/providers/core');
+const { summarize } = require('../src/providers/host');
 
 let addon;
 try { addon = process.env.MULTICC_RUST_ADDON ? require(process.env.MULTICC_RUST_ADDON)
-  : require('../src/native/runtime').getNative(); } catch (_) {}
+  : require('../src/native/binding').getNative(); } catch (_) {}
 const nativeReady = typeof addon?.codexModelsRefresh === 'function';
 
 test('原生目录经账号桥完成冷启动、缓存命中、升级刷新与失败保留', { skip: !nativeReady }, async t => {

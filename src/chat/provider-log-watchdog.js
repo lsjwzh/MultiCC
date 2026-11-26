@@ -28,7 +28,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { sanitizeMessage } = require('./api-error-policy');
-const { normalizeWindowEvent, windowEventBar } = require('../native/runtime').getQuotaBarView();
+const { normalizeWindowEvent, windowEventBar } = require('../native/binding').getQuotaBarView();
 
 const DEFAULT_INTERVAL_MS = 5_000;
 // A scan only starts after the turn has been this silent — but silence alone

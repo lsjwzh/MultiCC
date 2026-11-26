@@ -2,7 +2,7 @@
 // Test-only buffered adapter to the same external runtime hosted by Axum.
 // No network orchestration, state ownership or streaming implementation in JS.
 const source = require('../../src/fleet-sharing');
-const { getNative } = require('../../src/native/runtime');
+const { getNative } = require('../../src/native/binding');
 function unwrap(raw) {
   const result = JSON.parse(raw);
   if (result.ok) return result.value;

@@ -6,7 +6,7 @@ const test = require('node:test');
 const {
   RUNTIME_REQUIREMENT,
   createSqliteRuntime,
-} = require('../src/sqlite-runtime');
+} = require('../src/sqlite/driver');
 
 const DB_PATH = '/tmp/cc-switch.db';
 const RAW_RUNTIME_ERROR = 'No such built-in module: node:sqlite (from /Users/private/project/server.js)';

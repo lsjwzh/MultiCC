@@ -25,7 +25,7 @@ const path = require('node:path');
 const { resolveDataDir, createPaths } = require('../src/paths');
 const { createSearchIndex } = require('../src/search/index-store');
 const { createMessageCorpus, MESSAGE_SCOPE } = require('../src/search/message-corpus');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const { reportFailure } = require('../src/state/store');
 
 function parseArgs(argv) {

@@ -186,5 +186,36 @@ function isSqliteAvailable() {
   try { const Database = databaseConstructor(); const db = new Database(':memory:'); db.close(); return true; }
   catch (_) { return false; }
 }
-module.exports = { CompatDatabase, CompatStatement, DEFAULT_TIMEOUT_MS, SqliteUnavailableError,
+// Keep diagnostics available when the platform addon itself cannot be loaded.
+const RUNTIME_REQUIREMENT = '与当前平台和架构匹配的 Rust SQLite 模块';
+function sqliteUnavailableMessage() {
+  return 'SQLite 不可用，需要' + RUNTIME_REQUIREMENT
+    + '；请安装完整 MultiCC 包，源码运行先执行 npm run build:rust 并配置 MULTICC_RUST_PREBUILT_DIR。';
+}
+function createSqliteRuntime({ loadDatabase = databaseConstructor, existsSync = require('fs').existsSync } = {}) {
+  let api;
+  function resolve() {
+    try { return api ||= loadSqliteModule().ccSwitchDatabaseApi({ loadDatabase, existsSync }); }
+    catch (error) { if (!(error instanceof SqliteUnavailableError)) throw error; }
+  }
+  function getStatus(file) {
+    const runtime = resolve();
+    if (runtime) return runtime.getStatus(file);
+    const dbPath = String(file || '');
+    const dbFound = !!dbPath && existsSync(dbPath);
+    return { available: false, dbFound, dbPath, reason: dbFound ? 'native-runtime-unavailable' : 'database-not-found',
+      message: dbFound ? sqliteUnavailableMessage() : 'CC-Switch database was not found at ' + dbPath + '.' };
+  }
+  return { getStatus,
+    probe() { return resolve()?.probe() || { available: false, reason: 'native-runtime-unavailable', cause: new SqliteUnavailableError() }; },
+    openReadonly(file, options) {
+      const runtime = resolve();
+      if (runtime) return runtime.openReadonly(file, options);
+      const status = getStatus(file);
+      throw Object.assign(new Error(status.message), { reason: status.reason,
+        code: status.dbFound ? 'SQLITE_NATIVE_RUNTIME_UNAVAILABLE' : 'CC_SWITCH_DB_NOT_FOUND' });
+    },
+  };
+}
+module.exports = { createSqliteRuntime, RUNTIME_REQUIREMENT, sqliteUnavailableMessage, CompatDatabase, CompatStatement, DEFAULT_TIMEOUT_MS, SqliteUnavailableError,
   databaseConstructor, isSqliteAvailable, loadSqliteModule, normalizeError };

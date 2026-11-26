@@ -30,7 +30,7 @@ pub fn session_work_is_user_typed(env: Env, payload: Unknown<'_>) -> Result<bool
         .truthy()
 }
 
-fn kind<'a>(item: L<'a>) -> Result<L<'a>> {
+pub(crate) fn kind<'a>(item: L<'a>) -> Result<L<'a>> {
     let transfer = item.optional(c"turnLineage")?.optional(c"workKind")?;
     if transfer.truthy()? {
         return Ok(transfer);
@@ -69,7 +69,7 @@ fn kind<'a>(item: L<'a>) -> Result<L<'a>> {
         },
     ))
 }
-fn has(value: L<'_>, names: &[&str]) -> Result<bool> {
+pub(crate) fn has(value: L<'_>, names: &[&str]) -> Result<bool> {
     for name in names {
         if value.is_string(name)? {
             return Ok(true);
@@ -77,7 +77,7 @@ fn has(value: L<'_>, names: &[&str]) -> Result<bool> {
     }
     Ok(false)
 }
-fn control(item: L<'_>) -> Result<bool> {
+pub(crate) fn control(item: L<'_>) -> Result<bool> {
     has(
         kind(item)?,
         &[
@@ -90,7 +90,7 @@ fn control(item: L<'_>) -> Result<bool> {
         ],
     )
 }
-fn answer(item: L<'_>) -> Result<bool> {
+pub(crate) fn answer(item: L<'_>) -> Result<bool> {
     let payload = item.optional(c"payload")?;
     if !payload.optional(c"type")?.is_string("session.work")? || !kind(item)?.is_string("answer")? {
         return Ok(false);
@@ -295,7 +295,7 @@ unsafe extern "C" fn sort_compare(
     }
 }
 
-fn sort<'a>(items: &mut [L<'a>], priority: L<'a>) -> Result<()> {
+pub(crate) fn sort<'a>(items: &mut [L<'a>], priority: L<'a>) -> Result<()> {
     let array = priority.from_value(&V::Array(Vec::new()))?;
     for (index, item) in items.iter().enumerate() {
         array.set_element(index as u32, *item)?;
@@ -349,7 +349,7 @@ fn sort<'a>(items: &mut [L<'a>], priority: L<'a>) -> Result<()> {
     }
     Ok(())
 }
-fn classify_fallback<'a>(schedule: L<'a>) -> Result<L<'a>> {
+pub(crate) fn classify_fallback<'a>(schedule: L<'a>) -> Result<L<'a>> {
     let state = schedule.optional(c"classifyState")?;
     if has(state, &["P", "D", "W", "B", "E"])? {
         return Ok(state);

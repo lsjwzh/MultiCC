@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const { sessionRuntimeIsChatStateBusy: isChatStateBusy, sessionRuntimeProcessAlive: processAlive } = require('../src/native/runtime').getNative();
+const { sessionRuntimeIsChatStateBusy: isChatStateBusy, sessionRuntimeProcessAlive: processAlive } = require('../src/native/binding').getNative();
 const { createStateOwner } = require('../src/state/owner');
 const { createChatSessions } = require('../src/chat/sessions');
 
@@ -104,7 +104,7 @@ test('a reaped or nonexistent child is not busy', () => {
 
 test('the retired Node port delegates through the native owner', () => {
   assert.equal(fs.existsSync(path.join(ROOT, 'src/session/runtime-busy.js')), false);
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   assert.equal(typeof native.sessionRuntimeIsChatStateBusy, 'function');
   assert.equal(typeof native.sessionRuntimeProcessAlive, 'function');
   assert.match(read('native/core/src/active_turns.rs'), /fn chat_state_busy/);
@@ -133,9 +133,9 @@ test('every call site asks the one predicate', () => {
   assert.match(read('native/addon/src/session_pending_configuration.rs'), /session_runtime_is_chat_state_busy/);
   // session-work/host.js 只用它的 processAlive 一半：停止等待刻意不算 _activeRunner
   // （见下一条），所以这里单独钉，不进上面的 isChatStateBusy 列表。
-  const workHost = read('src/session-work/host.js');
-  assert.match(workHost, /getNative\(\)\.sessionRuntimeProcessAlive\(/);
-  assert.match(workHost, /sessionRuntimeProcessAlive\(state\._cancelledProc\)/);
+  const workHost = read('native/addon/src/session_work_host/cancel/runners.rs');
+  assert.match(workHost, /session_records::session_runtime_process_alive\(/);
+  assert.match(workHost, /process_alive\(state\.get\(c"_cancelledProc"\)/);
   assert.doesNotMatch(workHost, /function processAlive\(proc\) \{/,
     'the repo keeps one processAlive, in native/core/src/active_turns.rs');
 });
@@ -165,12 +165,12 @@ test('the active-turn count has no Node fallback', () => {
 test('the deliberately narrower call sites stay narrower', () => {
   // 1. cancel 的停止等待：已取消的常驻轮次在 cancel 走完之前一直持有
   //    _activeRunner，把它算进来会让这个循环永不收敛（只能靠超时收场）。
-  const workHost = read('src/session-work/host.js');
-  const stopped = workHost.slice(workHost.indexOf('function runnerStopped(sessionId) {'));
-  const stoppedBody = stopped.slice(0, stopped.indexOf('\n  }'));
-  assert.ok(stoppedBody.includes('Deliberately NOT the shared chat-runtime busy predicate'),
+  const workHost = read('native/addon/src/session_work_host/cancel/runners.rs');
+  const stopped = workHost.slice(workHost.indexOf('fn stopped('));
+  const stoppedBody = stopped.slice(0, stopped.indexOf('\n}'));
+  assert.ok(stoppedBody.includes('resident runner keeps _activeRunner'),
     'the reason must stay written down');
-  assert.doesNotMatch(stoppedBody, /state\._activeRunner/, 'the code must not read it even though the comment names it');
+  assert.doesNotMatch(stoppedBody, /c"_activeRunner"/, 'the code must not read it even though the comment names it');
   // 2. shutdown drain：收尾中的轮次不该延长停机宽限。这段表达式被
   //    tests/test-architecture-boundaries.js 逐字钉住。
   const drain = read('src/host-lifecycle.js');
@@ -187,8 +187,8 @@ test('the sites that ask a different question stay out of it, with reasons writt
   // 这些地方也在读 isStreaming，但没有改用共享判定 —— 它们问的是另一件事，而且
   // 理由都写在原地（marker），别再靠记忆判断哪处是有意的。
   const narrow = [
-    ['src/session-work/host.js', 'Widening it here would refuse answers it must accept'],
-    ['src/classify/state-machine.js', 'single bounded retry'],
+    ['native/addon/src/session_work_host/transitions/questions.rs', 'c"isStreaming"'],
+    ['native/addon/src/classify_machine/dispatch.rs', 'single bounded retry'],
     ['src/chat/stalled-turn-recovery.js', 'is a STREAM in flight'],
     ['src/triggers/index.js', 'nothing is streaming'],
   ];

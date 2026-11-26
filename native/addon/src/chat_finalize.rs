@@ -237,3 +237,86 @@ pub fn chat_replay_safe_handoff_provider_error(env: Env, input: Unknown<'_>) -> 
     let value = unsafe { crate::js_bridge::read_value(raw, input.raw(), 0, &mut Vec::new()) }?;
     Ok(multicc_core::chat_finalize::replay_safe_handoff_provider_error(&value))
 }
+
+mod facade {
+    use crate::{
+        host_methods::{arg, args_default, env, function, raw},
+        route_response::*,
+    };
+    use napi_derive::napi;
+    #[napi]
+    pub fn finalization_api(e: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
+        use super as finish;
+        let h = L::new(&e, anchor);
+        let plan = |name, op: &'static str, length, first_default| {
+            function(h, name, length, 2, move |s, a| {
+                Ok(raw(
+                    s,
+                    finish::chat_frozen_finalization(
+                        env(s),
+                        op.into(),
+                        if first_default {
+                            args_default(a[0])?
+                        } else {
+                            arg(a[0])?
+                        },
+                        args_default(a[1])?,
+                    )?,
+                ))
+            })
+        };
+        Ok(fields(
+            h,
+            &[
+                (
+                    "classifyProcessExit",
+                    function(h, "classifyProcessExit", 0, 1, |s, a| {
+                        text(
+                            s,
+                            &finish::chat_classify_process_exit(env(s), args_default(a[0])?)?,
+                        )
+                    })?,
+                ),
+                (
+                    "normalizeHandoff",
+                    plan("normalizeHandoff", "handoff", 0, true)?,
+                ),
+                (
+                    "isGuardedHandoffFailure",
+                    function(h, "isGuardedHandoffFailure", 2, 2, |s, a| {
+                        flag(
+                            s,
+                            finish::chat_is_guarded_handoff_failure(
+                                env(s),
+                                arg(a[0])?,
+                                arg(a[1])?,
+                            )?,
+                        )
+                    })?,
+                ),
+                (
+                    "replaySafeHandoffProviderError",
+                    function(h, "replaySafeHandoffProviderError", 1, 1, |s, a| {
+                        flag(
+                            s,
+                            finish::chat_replay_safe_handoff_provider_error(env(s), arg(a[0])?)?,
+                        )
+                    })?,
+                ),
+                (
+                    "planTurnFinalization",
+                    plan("planTurnFinalization", "plan", 0, true)?,
+                ),
+                (
+                    "planRetryBlockedFinalization",
+                    plan("planRetryBlockedFinalization", "retryBlocked", 1, false)?,
+                ),
+                (
+                    "resolveTurnFinalization",
+                    plan("resolveTurnFinalization", "resolve", 1, false)?,
+                ),
+            ],
+        )?
+        .raw())
+    }
+}

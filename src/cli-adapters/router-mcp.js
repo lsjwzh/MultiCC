@@ -3,7 +3,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const ROUTER_ENV_KEYS = [
   'MULTICC_SESSION_ID',

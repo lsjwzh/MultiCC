@@ -5,15 +5,15 @@
 // streams, child processes, SDK callbacks and Promise continuations. Each port
 // can be removed when its resource and callers move into the Rust host.
 
-const { assignHostProperty } = require('../native/runtime');
+const { assignHostProperty } = require('../native/binding');
 const crypto = require('crypto');
 const { createTurnTimingRecorder, createDeliveryProbeRegistry, createTurnTimelinePort,
-  shouldReexecutePersistedDelivery } = require('../native/runtime').getTurnProgress();
+  shouldReexecutePersistedDelivery } = require('../native/binding').getTurnProgress();
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
-const { createSessionNotices } = require('../native/runtime').getSessionNotices();
+const { createSessionNotices } = require('../native/binding').getSessionNotices();
 const { createAdapterCompletion } = require('../cli-adapters/completion');
-const { finalizeCompletionStream } = require('../native/runtime').adapterCompletion;
-const { getWriterGroup, getNative, gatewayPath, deliveryClassForItem, historyFrame: { fitHistoryFrame } } = require('../native/runtime');
+const { finalizeCompletionStream } = require('../native/binding').adapterCompletion;
+const { getWriterGroup, getNative, gatewayPath, deliveryClassForItem, historyFrame: { fitHistoryFrame } } = require('../native/binding');
 const {
   TurnRequestError,
   normalizeTurnRequest,
@@ -29,30 +29,29 @@ const {
 } = require('./index');
 const { createProviderAttemptRuntime, markHostErrorEnvelope, providerAttemptFields,
   tagProviderAttemptEvent } = require('./provider-attempt-runtime');
-const { createProviderInvocationFactory } = require('../native/runtime').providerInvocation;
+const { createProviderInvocationFactory } = require('../native/binding').providerInvocation;
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { createAutoRouteNotes } = require('./auto-route-notes');
 const { deliverAfterPendingMemory, createQueuedTurnPreparation } = require('./admission-progress');
-const { createAutoProviderHandoff } = require('../native/runtime');
+const { createAutoProviderHandoff } = require('../native/binding');
 const { redactProviderRouteCapability } = require('../observability');
 const { taskIdForShortCode } = require('../native/task-domain');
-const { taskStateSeed } = require('../native/runtime');
+const { taskStateSeed } = require('../native/binding');
 const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
-const { buildSubagentProviderHint } = require('../native/runtime').getHostPrompts();
-const managedContext = require('../native/runtime').managedContext;
+const { buildSubagentProviderHint } = require('../native/binding').getHostPrompts();
+const managedContext = require('../native/binding').managedContext;
 const {
   rememberActiveCliState, renderHandoffPrompt, stateSummary: cliStateSummary,
   buildHandoffCheckpoint,
 } = require('../cli-switch');
 const { cliHandoffSummary } = require('../cli/switch-runtime');
 const { summarizeHistoryUsage } = require('../codex/usage');
-const { buildReplayMessages } = require('../routes/chat-history');
+const { buildReplayMessages } = require('../routes/chat-history/index');
 const chatStream = require('./chat-stream');
-const { resolveCliRelayTarget, applyCliRelaySpawn } = require('../native/runtime');
 const { spawnContractOf } = require('./held-turn-injection');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
-const providers = require('../providers/core');
+const providers = require('../providers/host');
 const { claudeSettingsExtra, appendAdapterAssistantText, adapterReasoningProgressEvent,
   normalizeClaudeToolResultContent, normalizeClaudeAssistantSnapshot, closeOpenThinkingTool,
   markReplaySafeAssistantEnvelope, reconcileBoundaryErrorEnvelope } = getNative().chatTurnEventHelpers({
@@ -60,11 +59,10 @@ const { claudeSettingsExtra, appendAdapterAssistantText, adapterReasoningProgres
   });
 
 const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
-const { deriveOpenTasks } = require('../native/runtime').getTurnEventReplay();
+const { deriveOpenTasks } = require('../native/binding').getTurnEventReplay();
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context');
-const { opencodeProcessError, processSpawnArgs } = require('../native/runtime');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 const { isResident, isResidentSession } = require('../cli/cli-capability');
 
@@ -233,7 +231,7 @@ function createChatTurnEngine(deps) {
     persistedSessions, providerLimitCache, autoProviderRuntime, providers, autoProviderHandoff,
     getUnattendedHost, chatBroadcast, attemptRuntime, logger, tagProviderAttemptEvent,
     turnProgressHeartbeat, replay, turnTiming, taskContextHost, chatStream, cwdForSession,
-    getTranscriptPruning: require('../native/runtime').getTranscriptPruning,
+    getTranscriptPruning: require('../native/binding').getTranscriptPruning,
     appendEvent, markPlanContextReset, chatSessions, getChatHistoryService, viewChatHistory,
     deliveryClassForItem, runChatTurn, GATEWAY_ID, appendChatMessage, pushToGateway,
   });
@@ -393,7 +391,7 @@ function createChatTurnEngine(deps) {
     const spawnChat = (prepared, isRetry, apiRetryAttempt = 0) => {
       const state = getNative().chatSpawnProcess({
         env: process.env, crypto, providers, providerRouterRuntime, getPort, getClaudeOfficialViaProxy,
-        attemptRuntime, resolveCliRelayTarget, processSpawnArgs, claudeSettingsExtra, applyCliRelaySpawn,
+        attemptRuntime, claudeSettingsExtra, assignHostProperty,
         gatewayPath, rememberActiveCliState, savePersistedSessionsBestEffort, createRunnerOwnership,
         createAdapterCompletion, getWorkspaceAdmission, getWriterGroup, routerToolHost, spawn,
         finishProviderAttempt, turnTiming, managedContext, isCurrentTurnRunner, applyAdapterChatEvent,
@@ -405,7 +403,7 @@ function createChatTurnEngine(deps) {
         const closeContext = { sessionName, cs, persisted, turn, runner, proc, code, signal, isRetry, promptText,
           retryLimits: { codexDisconnect: CODEX_STREAM_DISCONNECT_CONTINUE_MAX, apiNetworkContinue: API_NETWORK_CONTINUE_MAX } };
         const closePorts = { providers, provider, mark: markHostErrorEnvelope, assignHostProperty, attemptRuntime, autoTurn, forward, logger, meaningfulTurnOutput, turnHasSideEffects,
-          sanitizeApiErrorMessage, opencodeProcessError, evaluateTurnApiError, chatBroadcast, assistantCheckpointKey,
+          sanitizeApiErrorMessage, evaluateTurnApiError, chatBroadcast, assistantCheckpointKey,
           prepareInvocation, spawnChat, finishProviderAttempt, replay, turnProgressHeartbeat, turnTiming, turnFinalizationExecutor,
           rememberActiveCliState, savePersistedSessionsBestEffort, randomUUID: crypto.randomUUID,
           isGlm52Session, setSessionStatus, codexStreamDisconnectContinuePrompt, apiNetworkContinuePrompt,

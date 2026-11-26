@@ -119,10 +119,24 @@ pub fn task_candidate_propose(
     attr: Unknown<'_>,
     key_input: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let store = L::new(&env, store);
-    let session = L::new(&env, session);
-    let receipt_id = L::new(&env, receipt_id);
-    let attr = L::new(&env, attr);
+    Ok(propose(
+        &env,
+        L::new(&env, store),
+        L::new(&env, session),
+        L::new(&env, receipt_id),
+        L::new(&env, attr),
+        Some(L::new(&env, key_input)),
+    )?
+    .raw())
+}
+fn propose<'a>(
+    env: &'a Env,
+    store: L<'a>,
+    session: L<'a>,
+    receipt_id: L<'a>,
+    attr: L<'a>,
+    key_input: Option<L<'a>>,
+) -> Result<L<'a>> {
     let receipt = get(store, "receipt", || Ok(receipt_id))?;
     let source = if receipt.truthy()? {
         get(store, "task", || read(receipt, c"taskId"))?
@@ -133,17 +147,16 @@ pub fn task_candidate_propose(
         || !read(source, c"sessionId")?.equals(session)?
         || !read(attr, c"turnId")?.truthy()?
     {
-        return Ok(rejected(store, "candidate_source_unverified")?.raw());
+        return rejected(store, "candidate_source_unverified");
     }
     if read(attr, c"taskId")?.equals(read(source, c"id")?)? {
-        return Ok(fields(
+        return fields(
             store,
             &[
                 ("ok", store.from_value(&V::Bool(true))?),
                 ("changed", store.from_value(&V::Bool(false))?),
             ],
-        )?
-        .raw());
+        );
     }
     let shell = get(store, "shell", || read(receipt, c"shellId"))?;
     let stale = !shell
@@ -157,11 +170,18 @@ pub fn task_candidate_propose(
             .equals(read(receipt, c"cursorVersion")?)?;
     let target = get(store, "task", || read(attr, c"taskId"))?;
     if target.truthy()? && !read(target, c"dirId")?.equals(read(source, c"dirId")?)? {
-        return Ok(rejected(store, "project_mismatch")?.raw());
+        return rejected(store, "project_mismatch");
     }
-    let key = L::new(&env, key_input)
-        .call_plain(&[receipt_id, attr])?
-        .coerce_string()?;
+    let key = if let Some(callback) = key_input {
+        callback.call_plain(&[receipt_id, attr])?.coerce_string()?
+    } else {
+        let mut key = crate::message_composer::default_primitive(receipt_id)?.coerce_string()?;
+        key.push_str("\0");
+        key.push(
+            &crate::message_composer::default_primitive(read(attr, c"turnId")?)?.coerce_string()?,
+        );
+        key
+    };
     let p = fields(
         store,
         &[
@@ -177,7 +197,7 @@ pub fn task_candidate_propose(
         ],
     )?;
     let tx = method(&env, p, "", 0, 0, |p, _| commit(p))?;
-    Ok(call(store, c"transaction", &[tx])?.raw())
+    call(store, c"transaction", &[tx])
 }
 
 #[napi]
@@ -186,19 +206,21 @@ pub fn task_candidate_latest(
     store: Unknown<'_>,
     task: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let store = L::new(&env, store);
+    Ok(latest(&env, L::new(&env, store), L::new(&env, task))?.raw())
+}
+fn latest<'a>(env: &'a Env, store: L<'a>, task: L<'a>) -> Result<L<'a>> {
     let rows = call(
         store,
         c"list",
         &[store.from_value(&"attribution-candidate".into())?],
     )?;
-    let predicate = method(&env, L::new(&env, task), "", 1, 1, |task, args| {
+    let predicate = method(env, task, "", 1, 1, |task, args| {
         task.from_value(&V::Bool(read(args[0], c"sourceTaskId")?.equals(task)?))
     })?;
     let matches = call(rows, c"filter", &[predicate])?;
     let row = call(matches, c"at", &[store.from_value(&V::Number(-1.))?])?;
     if !row.truthy()? {
-        return Ok(store.from_value(&V::Null)?.raw());
+        return store.from_value(&V::Null);
     }
     let receipt = get(store, "receipt", || read(row, c"receiptId"))?;
     let shell = if receipt.truthy()? {
@@ -210,7 +232,7 @@ pub fn task_candidate_latest(
         && read(shell, c"cursorReceiptId")?.equals(read(row, c"receiptId")?)?
         && read(shell, c"cursorVersion")?.equals(read(row, c"expectedCursorVersion")?)?
     {
-        return Ok(row.raw());
+        return Ok(row);
     }
     let copy = spread(row)?;
     copy.define_key(
@@ -221,5 +243,21 @@ pub fn task_candidate_latest(
         store.from_value(&"blockers".into())?,
         blockers(store, true)?,
     )?;
-    Ok(copy.raw())
+    Ok(copy)
+}
+
+#[napi]
+pub fn candidate_store(env: Env, store: Unknown<'_>) -> Result<sys::napi_value> {
+    let store = L::new(&env, store);
+    let propose = method(&env, store, "propose", 3, 3, |store, a| {
+        let env = Env::from_raw(store.env());
+        let out = propose(&env, store, a[0], a[1], a[2], None)?;
+        Ok(L::from_raw(store.env(), out.raw()))
+    })?;
+    let latest = method(&env, store, "latest", 1, 1, |store, a| {
+        let env = Env::from_raw(store.env());
+        let out = latest(&env, store, a[0])?;
+        Ok(L::from_raw(store.env(), out.raw()))
+    })?;
+    Ok(fields(store, &[("propose", propose), ("latest", latest)])?.raw())
 }

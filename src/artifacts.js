@@ -16,7 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createPaths } = require('./paths');
-const { isArtifactId } = require('./native/runtime').artifactReference;
+const { isArtifactId } = require('./native/binding').artifactReference;
 
 const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 

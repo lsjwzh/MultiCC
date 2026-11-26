@@ -7,7 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const tl = require('../src/native/runtime').getTurnProgress();
+const tl = require('../src/native/binding').getTurnProgress();
 
 const ROOT = path.join(__dirname, '..');
 const se = (event, extra = {}) => ({ type: 'stream_event', event, parent_tool_use_id: null, ...extra });

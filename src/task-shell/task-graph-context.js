@@ -12,9 +12,9 @@
 // detail 版本同时返回 sources（引用了哪些任务/哪份记忆、注入了哪一行），
 // 落进 receipt 后由 contextTrace 呈现在「引用来源」面板。
 
-const { estimateTokens, hash } = require('../native/runtime').taskShellContext;
-const { relevance, selectContext } = require('../native/runtime').getContextSelection();
-const { getNative } = require('../native/runtime');
+const { estimateTokens, hash } = require('../native/binding').taskShellContext;
+const { relevance, selectContext } = require('../native/binding').getContextSelection();
+const { getNative } = require('../native/binding');
 
 const DEFAULT_TOKEN_BUDGET = 1200;
 const PARENT_MEMORY_CHARS = 700;
@@ -179,7 +179,7 @@ function createTaskGraphContextService(deps) {
         const task = board.tasks?.[id];
         return task ? { ...task, dirId: task.dirId || board.modules?.[task.moduleId]?.dirId } : null;
       },
-      groupOf: id => require('../task-board/core').relatedTaskGroup(board, id),
+      groupOf: id => require('../task-board/core/index').relatedTaskGroup(board, id),
       linkedTaskIds: () => links.sort((a, b) => (tasks.get(b)?.createdAt || 0) - (tasks.get(a)?.createdAt || 0)),
       snapshot: id => read(() => deps.getSnapshot?.(id), null),
       readTaskMemory: (dirId, id) => read(() => deps.readTaskMemory?.(dirId, id), ''),

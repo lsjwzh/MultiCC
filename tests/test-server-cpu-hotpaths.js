@@ -6,11 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createChatHistoryService } = require('../src/session/chat-history-service');
+const { createChatHistoryService } = require('../src/session/chat-history-service/index');
 const { projectHistoryUsage, createCodexUsageHost } = require('../src/codex/usage');
 const { createLivenessRuntime } = require('../src/liveness/runtime');
-const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationRuntime } = require('../src/orchestration/host');
+const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
 const { createOutbox } = require('../src/outbox');
 const { createProcessProbe } = require('../src/liveness/process-probe');
 const { createRolloutPathResolver } = require('../src/liveness/rollout-path');

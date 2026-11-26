@@ -1,7 +1,7 @@
 'use strict';
 
 const { monitorEventLoopDelay } = require('perf_hooks');
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 // The text rules (secret field names, bearer/query/key=value secrets, provider
 // route capabilities, exact secrets) are native/core/src/redaction.rs and

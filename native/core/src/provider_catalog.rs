@@ -293,7 +293,10 @@ fn parse_object(value: Option<&Value>) -> Value {
     }
 }
 
-pub(super) fn official_codex(record: &Value) -> bool {
+pub fn official_codex(record: &Value) -> bool {
+    if record["appType"] != "codex" {
+        return false;
+    }
     static BASE_URL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let pattern = BASE_URL.get_or_init(|| {
         regex::Regex::new("(?i)(?:^|\\n)[\\s\\u{feff}]*base_url[\\s\\u{feff}]*=")
@@ -331,7 +334,7 @@ pub(super) fn official_codex(record: &Value) -> bool {
 
 /// `isOfficial(record)`: content-based only (an official-shaped id alone is
 /// not enough; the id filter below covers those).
-fn is_official(record: &Value) -> Result<bool, ()> {
+pub fn is_official(record: &Value) -> Result<bool, ()> {
     let Some(kind) = record.get("appType").and_then(Value::as_str) else {
         return Ok(false);
     };
@@ -347,7 +350,7 @@ fn is_official(record: &Value) -> Result<bool, ()> {
 
 /// `isOfficialProviderId(type, id)` for a raw record id (non-strings never
 /// match: the first check is strict equality, the second requires a string).
-fn is_official_provider_id(kind: &str, id: Option<&Value>) -> bool {
+pub fn is_official_provider_id(kind: &str, id: Option<&Value>) -> bool {
     let Some(Value::String(id)) = id else {
         return false;
     };
@@ -393,6 +396,25 @@ pub(super) fn list(data_root: &Path, home: &Path, kind: &str) -> Result<Vec<Valu
         .into_iter()
         .filter(|row| kind.is_empty() || row.get("appType").and_then(Value::as_str) == Some(kind))
         .collect())
+}
+
+pub fn initial_selection(records: &Value, defaults: &Value) -> Value {
+    let mut choice = json!({});
+    for kind in TYPES {
+        let record = records
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|r| r["appType"] == kind && r["id"] == defaults[kind]);
+        let marker = record
+            .and_then(|r| config_of(r).ok())
+            .map(|cfg| js_string(&cfg["officialAccount"]["id"]));
+        choice[kind] = marker
+            .filter(|s| is_account_id(s))
+            .unwrap_or_else(|| "global".into())
+            .into();
+    }
+    choice
 }
 
 pub fn normalize_default(

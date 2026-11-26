@@ -256,10 +256,17 @@ test('an adapter error label follows the display table, and the parsers accept e
   // "Codex"），三处按前缀解析的地方必须同时认旧拼法和新拼法 —— 只认一种，瞬时重连
   // 会被当成真错误画进对话，错误信封会被当成正文留在记录里。
   const source = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
-  assert.match(source('native/addon/src/codex_adapter/events.rs'), /c"label",\s*port\(ports, c"displayNameOf", &\[text\(event, "codex"\)\?\]\)\?/);
-  assert.match(source('native/addon/src/codex_app_adapter/events.rs'), /c"label",\s*label\(ports\)\?/);
-  assert.match(source('native/addon/src/codex_app_adapter/events.rs'), /c"displayNameOf", &\[text\(ports, "codex-exp"\)\?\]/);
-  assert.doesNotMatch(source('native/addon/src/codex_adapter/events.rs'), /c"label",\s*text\([^,]+,\s*"Codex"/);
+  const { codexAdapter, codexAppAdapter } = require('../src/native/binding');
+  const sample = 'label fixture';
+  for (const [cli, adapter, event] of [
+    ['codex', codexAdapter.createCodexAdapter({}), { type: 'error', message: sample }],
+    ['codex-exp', codexAppAdapter.createCodexExpAdapter({}), { method: 'error', params: { error: { message: sample } } }],
+  ]) {
+    const [result] = adapter.decodeEvent(event);
+    assert.equal(result.type, 'error');
+    assert.equal(result.message, sample);
+    assert.equal(result.label, displayNameOf(cli));
+  }
   // 正文里不能再自称一个界面上已经不存在的名字。
   assert.doesNotMatch(source('native/addon/src/codex_app_adapter/events.rs'), /Codex Exp v1 does not support/);
   assert.match(source('native/addon/src/codex_app_adapter/events.rs'), /c"message",\s*text\(event, "Codex v1 does not support/);
@@ -313,7 +320,7 @@ test('Pi is a providerless per-turn CLI with its own install artifact', () => {
 
 test('宿主启动从缓存恢复，同一进程后续切换到更高修订的档位', async t => {
   const cap = require('../src/cli/cli-capability');
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const pi = require('../src/cli-adapters/pi').createPiAdapter();
   const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'effort-catalog-'));
   const file = path.join(dir, 'cache.json');
@@ -370,7 +377,7 @@ test('Rust 目录所有查询与冻结 JS 一致，静态行保持引用，选�
 });
 
 test('内置 Claude 引擎优先使用有效覆盖路径，平台包缺失时按系统依次回退', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const calls = [];
   function locate(override, platform, packages, binaries) {
     calls.length = 0;
@@ -398,7 +405,7 @@ test('内置 Claude 引擎优先使用有效覆盖路径，平台包缺失时按
 });
 
 test('CLI 可用性沿用目录顺序，按需探测远程线路并传播普通命令错误', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const calls = [];
   const clis = ['codex', 'claude', 'dsh'];
   const providers = { hasCliRelayProvider(cli) { calls.push(cli); return true; } };

@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), net = require('node:net');
 const { spawn } = require('node:child_process');
-const { describeMigration } = require('../src/native/runtime').getTaskStoreMigrationProgress();
+const { describeMigration } = require('../src/native/binding').getTaskStoreMigrationProgress();
 const { runTaskStoreMigrationGate } = require('../src/task-shell/migration-gate');
 
 test('进度：各阶段折算成单调递增的总百分比，失败带上空间数字', () => {

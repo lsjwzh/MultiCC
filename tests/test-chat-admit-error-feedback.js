@@ -14,7 +14,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createChatTurnEngine, deliverAfterPendingMemory } = require('../src/chat/turn-engine-host');
-const { createSessionNotices } = require('../src/native/runtime').getSessionNotices();
+const { createSessionNotices } = require('../src/native/binding').getSessionNotices();
 const { createQueuedTurnPreparation } = require('../src/chat/admission-progress');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 const frozenNoticeApi = require('./helpers/frozen-file-batch23/session-notices');
@@ -56,12 +56,12 @@ test('notice facade preserves captured ports, durable ordering and sync versus a
     catch (error) { return { stage: 'async', identity: error === sentinel, name: error.name, message: error.message, events }; }
   }
   for (const mode of ['saved', 'empty', 'throw', 'reject', 'resolve', 'resolve-empty', 'thenable', 'then-getter', 'broadcast-throw', 'warn-throw', 'no-append', 'bad-now', 'bad-broadcast', 'empty-id']) {
-    assert.deepEqual(await capture(require('../src/native/runtime').getSessionNotices(), mode), await capture(frozenNoticeApi, mode), mode);
+    assert.deepEqual(await capture(require('../src/native/binding').getSessionNotices(), mode), await capture(frozenNoticeApi, mode), mode);
   }
 });
 
 test('notice facade retains parameter errors, clock defaults and public function shapes', () => {
-  const current = require('../src/native/runtime').getSessionNotices();
+  const current = require('../src/native/binding').getSessionNotices();
   function observe(run) { try { return { value: run() }; } catch (error) { return { name: error.name, message: error.message }; } }
   assert.deepEqual(Object.keys(current), Object.keys(frozenNoticeApi));
   for (const name of Object.keys(current)) {
@@ -102,12 +102,12 @@ test('notice warning getters keep their original exception boundary', async () =
     await assert.rejects(pending, error => error === sentinel);
     return 'async';
   }
-  for (const async of [false, true]) assert.equal(await capture(require('../src/native/runtime').getSessionNotices(), async), await capture(frozenNoticeApi, async));
+  for (const async of [false, true]) assert.equal(await capture(require('../src/native/binding').getSessionNotices(), async), await capture(frozenNoticeApi, async));
 });
 
 test('session notice text matches the frozen host for coercions, UTF-16 and minute boundaries', () => {
   const previous = require('./helpers/frozen-session-notices');
-  const current = require('../src/native/runtime').getSessionNotices();
+  const current = require('../src/native/binding').getSessionNotices();
   function observe(api, method, makeInput) {
     const trace = [];
     const sentinel = new Error('notice getter');

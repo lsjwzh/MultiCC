@@ -7,10 +7,10 @@ const path = require('path');
 const test = require('node:test');
 
 const { assertTestDir } = require('../src/paths');
-const { createChatHistoryService } = require('../src/session/chat-history-service');
+const { createChatHistoryService } = require('../src/session/chat-history-service/index');
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { createSessionQueryService } = require('../src/session/query-service');
-const { createSessionStateService, transitionSessionState } = require('../src/native/runtime').getNative().sessionStateApi();
+const { createSessionStateService, transitionSessionState } = require('../src/native/binding').getNative().sessionStateApi();
 const { createWorkspaceService } = require('../src/session/workspace-service');
 
 function assertNoSensitiveKeys(value) {
@@ -727,7 +727,7 @@ test('native session transitions match the frozen policy over numeric and status
   Date.now = () => 1794182756492;
   t.after(() => { Date.now = realNow; });
   const old = require('./helpers/legacy-session-state-transition');
-  const next = require('../src/native/runtime').getNative().sessionStateApi();
+  const next = require('../src/native/binding').getNative().sessionStateApi();
   const statuses = [...old.SESSION_STATUSES, undefined, null, false, 4, '', 'unknown', '中文\ud800', 'a\0b', ['running'], Symbol('bad')];
   const numbers = [undefined, null, false, true, -0, 0, 1, -1, 3.5, NaN, Infinity, -Infinity, '', '2', 'bad', [], [3], 4n, new Date(50)];
   function outcome(fn) { try { const value = fn(); return { value, frozen: Object.isFrozen(value), stateFrozen: Object.isFrozen(value.state), keys: Object.keys(value.state) }; }
@@ -752,7 +752,7 @@ test('native session transitions match the frozen policy over numeric and status
 
 test('native session transition reads only selected fields in the original getter order', () => {
   const old = require('./helpers/legacy-session-state-transition');
-  const next = require('../src/native/runtime').getNative().sessionStateApi();
+  const next = require('../src/native/binding').getNative().sessionStateApi();
   function exercise(module, changedStatus) {
     const reads = []; let statusReads = 0;
     const previous = { get status() { reads.push('status'); return ++statusReads === 1 ? 'running' : changedStatus; },
@@ -786,7 +786,7 @@ test('held query identities preserve identical adjacent answers across history r
 });
 
 test('public session text redacts before truncating in UTF-16 units', () => {
-  const { sanitizePublicText } = require('../src/native/runtime').getSessionDto();
+  const { sanitizePublicText } = require('../src/native/binding').getSessionDto();
   assert.equal(sanitizePublicText('Bearer demo sk-abcdefgh token=x C:\\home\\a.txt /demo/path'), 'Bearer [redacted] [redacted] token=[redacted] [path] [path]');
   assert.equal(sanitizePublicText('😀x', 1), '\ud83d');
   assert.equal(sanitizePublicText('\udfff/one/two!', -1), '\udfff[path]');
@@ -799,7 +799,7 @@ test('public session text redacts before truncating in UTF-16 units', () => {
 });
 
 test('public DTO traversal follows live arrays, property deletion and passthrough identity', () => {
-  const { assertDtoSafe, toSessionDto, unattendedDto, SUPPORTED_CLIS } = require('../src/native/runtime').getSessionDto();
+  const { assertDtoSafe, toSessionDto, unattendedDto, SUPPORTED_CLIS } = require('../src/native/binding').getSessionDto();
   const injected = [];
   injected.forEach = visit => visit({ cwd: 'fixture' }, 'tag');
   assert.throws(() => assertDtoSafe(injected), { message: 'sensitive DTO key at $[tag].cwd' });
@@ -833,7 +833,7 @@ function sessionDtoOutcome(api, name, make) {
   catch (error) { return { thrown: error.name, message: error.message, events }; }
 }
 function compareSessionDto(name, make) {
-  const candidate = require('../src/native/runtime').getSessionDto();
+  const candidate = require('../src/native/binding').getSessionDto();
   assert.deepEqual(sessionDtoOutcome(candidate, name, make), sessionDtoOutcome(frozenSessionDto, name, make), name);
 }
 
@@ -864,7 +864,7 @@ test('frozen DTO traversal snapshots object entries and preserves sparse array a
   compareSessionDto('assertDtoSafe', events => [{ get first() { events.push('first'); delete this.cwd; return { safe: true }; }, cwd: '/fixture' }]);
   compareSessionDto('assertDtoSafe', () => [{ nested: [{ password: 'fixture' }] }]);
   compareSessionDto('assertDtoSafe', events => { const values = [1, , 3]; Object.defineProperty(values, 0, { get() { events.push('zero'); values[1] = { ok: true }; return 1; } }); return [values]; });
-  const candidate = require('../src/native/runtime').getSessionDto();
+  const candidate = require('../src/native/binding').getSessionDto();
   for (const name of ['SUPPORTED_CLIS','SUPPORTED_KINDS']) {
     assert.deepEqual([...candidate[name]], [...frozenSessionDto[name]]);
     const marker = {}; candidate[name].add(marker); frozenSessionDto[name].add(marker);

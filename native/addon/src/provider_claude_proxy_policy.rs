@@ -53,7 +53,15 @@ pub fn assert_claude_proxy_env_applied(env: Env, options: Unknown<'_>) -> Result
     // Destructuring reads both properties, in order, even when `required` is false.
     let required = property(&mut reader, options, c"required")?;
     let applied = property(&mut reader, options, c"applied")?;
-    if required.is_true()? && !applied.is_true()? {
+    ensure_applied(options, required.is_true()?, applied)
+}
+
+pub(crate) fn ensure_applied(
+    options: LiveValue<'_>,
+    required: bool,
+    applied: LiveValue<'_>,
+) -> Result<bool> {
+    if required && !applied.is_true()? {
         let message = options.from_value(&JsValue::string("Claude managed provider route could not be materialized; refusing to spawn a direct connection to the provider endpoint"))?;
         let error = options.global()?.get(c"Error")?.construct(&[message])?;
         assign_error_code(

@@ -260,7 +260,10 @@ pub fn claude_adapter_invocation(
         )?;
         let logged = input.from_value(&V::Array(vec![]))?;
         args.for_each(|value| push(logged, &[value]))?;
-        push(logged, &[port(ports, c"renderPrompt", &[input])?])?;
+        push(
+            logged,
+            &[crate::message_composer::render_prompt(&env, input)?],
+        )?;
         debug.call_plain(&[meta, logged])?;
     }
     let output = object(
@@ -268,7 +271,10 @@ pub fn claude_adapter_invocation(
         &[
             (c"cmd", ports.get(c"executable")?),
             (c"args", args),
-            (c"payload", port(ports, c"renderPrompt", &[input])?),
+            (
+                c"payload",
+                crate::message_composer::render_prompt(&env, input)?,
+            ),
             (
                 c"sdkOptions",
                 object(
@@ -312,10 +318,7 @@ pub fn claude_adapter_decode(
             event,
             &[
                 (c"type", text(event, "error")?),
-                (
-                    c"label",
-                    port(ports, c"displayNameOf", &[text(event, "claude")?])?,
-                ),
+                (c"label", ports.get(c"displayName")?),
                 (c"kind", text(event, "provider")?),
                 (
                     c"message",
@@ -327,7 +330,7 @@ pub fn claude_adapter_decode(
         )?
     } else {
         if event.optional(c"type")?.is_string("result")?
-            && !port(ports, c"isMainResult", &[event])?.truthy()?
+            && !crate::cli_completion::main_result(event)?
         {
             return Ok(rows.raw());
         }

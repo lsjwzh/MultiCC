@@ -9,12 +9,12 @@ const { createSdkStream } = require('../src/chat/claude-sdk-stream');
 const { createStreamRouter } = require('../src/chat/stream-router');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-const { createSessionDelivery } = require('../src/native/runtime').getSessionDeliveryApi();
+const { createSessionDelivery } = require('../src/native/binding').getSessionDeliveryApi();
 const sdkFixture = require('./helpers/claude-sdk-fixture');
-const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/native/runtime').getMonitorAdmission();
+const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/native/binding').getMonitorAdmission();
 
 test('stream-json Monitor control matches the frozen handshake, hook and failure behavior', async () => {
-  const api = require('../src/native/runtime').getMonitorControl();
+  const api = require('../src/native/binding').getMonitorControl();
   const frozen = require('./helpers/frozen-file-batch28/monitor-control');
   const { exercise } = require('./helpers/monitor-control-fixture');
   for (let mode = 0; mode < 8; mode++) for (let flag = 0; flag < 6; flag++) {
@@ -572,7 +572,7 @@ test(`real sdk background Agent finishing inside its turn reaches that turn nati
 
 test('Monitor 的混合通知、来源、字段限长与异步投递轨迹匹配冻结版本', async () => {
   const old = require('./helpers/frozen-monitor-admission');
-  const api = require('../src/native/runtime').getMonitorAdmission();
+  const api = require('../src/native/binding').getMonitorAdmission();
   const raw = fs.readFileSync(require.resolve('./helpers/frozen-monitor-admission'));
   const hash = require('node:crypto').createHash('sha1').update('blob ' + raw.length + '\0').update(raw).digest('hex');
   assert.equal(hash, '743d9912ea3704f4e2ce21198689d00393a1246e');

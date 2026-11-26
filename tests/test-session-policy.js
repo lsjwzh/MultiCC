@@ -469,7 +469,7 @@ test('Pi thinking levels remain native and never inherit Claude defaults', t => 
 
 // 原生默认模型缓存：这些用例使用真实 TTL，补充上面禁用缓存的选择规则用例。
 function defaultResolver(options = {}) {
-  return require('../src/native/runtime').createModelDefaultResolver({
+  return require('../src/native/binding').createModelDefaultResolver({
     history: () => [], now: () => 0, historyTtlMs: 30, ...options,
   });
 }
@@ -633,7 +633,7 @@ test('原生模型所有者不保活已经结束的宿主读回调', () => {
   const { spawnSync } = require('node:child_process');
   const script = `
     const assert = require('node:assert/strict');
-    const {getNative} = require('./src/native/runtime');
+    const {getNative} = require('./src/native/binding');
     const owner = new (getNative().RustModelDefaults)(30000);
     let callback = () => [];
     const weak = new WeakRef(callback);

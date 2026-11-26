@@ -5,9 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
+const { createOrchestrationRuntime } = require('../src/orchestration/host');
 const { DELIVERY_CLASS } = require('./helpers/legacy-delivery-classes');
-const { deliveryClassForItem } = require('../src/native/runtime');
+const { deliveryClassForItem } = require('../src/native/binding');
 const { deliveryClassForItem: legacyDeliveryClass } = require('./helpers/legacy-delivery-classes');
 
 test('delivery classes match frozen legacy lookup, lazy reads and exceptions', () => {
@@ -151,7 +151,7 @@ function fixture(t, overrides = {}) {
     storeOptions: overrides.storeOptions || {},
   });
   if (databaseFile) {
-    input = require('../src/session-work/host').createProductionQuestionHost({
+    input = require('../src/session-work').createProductionQuestionHost({
       getStore: () => runtime.store, getSession: id => ({ _currentTaskId: recovery(id)?.taskId || null }),
       getState: id => { const state = recovery(id) || {}; return { ...state, pendingUserInput: state.pendingUserInput || null }; },
       getRecord: id => ({ unattended: recovery(id)?.unattended || null }), setState: () => {}, now: () => clock.value,
@@ -1635,8 +1635,8 @@ test('permanent dispatch identity failures settle once and return a durable fail
 // fixture or the shared module instance. Module replacement is synchronous and
 // restored before any asynchronous work begins.
 function runtimeWithStoreFactory(factory) {
-  const runtimePath = require.resolve('../src/orchestration/runtime');
-  const storePath = require.resolve('../src/orchestration/store');
+  const runtimePath = require.resolve('../src/orchestration/host');
+  const storePath = require.resolve('../src/orchestration/json-store-host');
   const savedRuntime = require.cache[runtimePath];
   const savedStore = require.cache[storePath];
   try {
@@ -1650,7 +1650,7 @@ function runtimeWithStoreFactory(factory) {
 }
 
 test('保留维护不占住当前投递轮次，重复轮次不重入且关闭等待维护结束', async t => {
-  const { createOrchestrationStore } = require('../src/orchestration/store');
+  const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-retention-lifecycle-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let release;
@@ -1683,7 +1683,7 @@ test('保留维护不占住当前投递轮次，重复轮次不重入且关闭�
 });
 
 test('编排统计用数据库计数，不读取终态记录或正文', async t => {
-  const { createOrchestrationStore } = require('../src/orchestration/store');
+  const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-bounded-stats-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const makeRuntime = runtimeWithStoreFactory(options => {

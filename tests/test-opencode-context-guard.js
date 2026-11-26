@@ -8,7 +8,7 @@ const Database = require('better-sqlite3');
 const readerApi = require('../src/chat/opencode-context');
 const { createOpencodeContextReader, clampThreshold, resolveThreshold,
   createOpencodeContextGuard, enforceOpencodeContextForTurn } = readerApi;
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 function fixture(t, catalog = { provider: { models: { model: { limit: { context: 1000, output: 100 } } } } }) {
   assert.equal(typeof getNative().readOpencodeContext, 'function', '必须使用当前源码的原生模块');

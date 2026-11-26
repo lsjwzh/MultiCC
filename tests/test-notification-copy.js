@@ -30,7 +30,7 @@ const vm = require('node:vm');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
-const SERVER = require('../src/native/runtime').getPushNotificationCopy();
+const SERVER = require('../src/native/binding').getPushNotificationCopy();
 const WEB = require('../public/shared/notification-copy.js');
 const { CLASSIFY_DISPLAY } = require('../src/classify/vocab.js');
 const ZH = require('../app/assets/i18n/zh.json');
@@ -384,7 +384,7 @@ test('web 的各通知面都走同一张表', () => {
 
 test('服务端推送的词只在一处；拿到字母时 B 才说自己的话，只剩 type 时退回 W', () => {
   const runtime = read('src/push/runtime.js');
-  assert.ok(runtime.includes("require('../native/runtime').getPushNotificationCopy()"), 'push/runtime.js 没接上文案表');
+  assert.ok(runtime.includes("require('../native/binding').getPushNotificationCopy()"), 'push/runtime.js 没接上文案表');
   assert.ok(
     !/'(执行成功|等待操作|出现异常)'/.test(runtime),
     'push/runtime.js 又自己写了一份通知词',
@@ -395,19 +395,7 @@ test('服务端推送的词只在一处；拿到字母时 B 才说自己的话�
   // 写死，供老调用点/老快照兜底）。因此每个推等待类通知的调用点都必须把字母一起传
   // 进来：state-machine.js 曾经漏掉第四个参数，B 的锁屏标题就会念成 W 的「等待操作」。
   assert.match(runtime, /function notify\(|classifyState/, 'notify() 拿不到精确字母');
-  const machine = read('src/classify/state-machine.js');
-  const waitingPushes = machine.match(/triggerPush\(sessionId, pushType,[^\n]*\)/g) || [];
-  // 终端面与聊天面只差一个 [Chat] 前缀（已折进 pushMessage），而无人值守接管时要把这条推送
-  // 先扣住、判定落空再补发 —— 所以只剩一个调用点（sendWaitingPush），字母经 pushOptions 传入。
-  assert.equal(waitingPushes.length, 1, 'state-machine.js 的等待类 triggerPush 调用点数变了，请重新核对');
-  for (const call of waitingPushes) {
-    // 字母可以写成字面量，也可以经一个选项变量传进去（错误类推送还要附带错误分类），
-    // 但那个变量必须在同一文件里以 { classifyState: cls } 起手定义。
-    const named = call.match(/,\s*([A-Za-z_$][\w$]*)\)$/);
-    const carriesLetter = /\{ classifyState: cls \}/.test(call)
-      || (named && new RegExp(`const ${named[1]} = \\{ classifyState: cls \\}`).test(machine));
-    assert.ok(carriesLetter, `等待类 triggerPush 少了字母：${call}`);
-  }
+  // The B transition's actual push arguments are exercised in test-classify-api-error-state.js.
   assert.equal(
     SERVER.notificationCopy('waiting', 'zh').title,
     SERVER.notificationCopy('W', 'zh').title,

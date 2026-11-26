@@ -6,18 +6,18 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createOutbox } = require('../src/outbox');
 const {
   FREEZE_REASON_CLASSIFY,
   createSessionWorkScheduler,
   runStateForFreezeReason,
-} = require('../src/session-work/scheduler');
+} = require('../src/session-work');
 const { runStateForClassify } = require('../src/classify/vocab');
 const { createSessionWorkScheduler: legacyScheduler } = require('./helpers/legacy-session-work-selection');
 const { isUserTypedWork: legacyUserTyped } = require('./helpers/legacy-session-work-user-input');
-const { addonPath, getNative } = require('../src/native/runtime');
+const { addonPath, getNative } = require('../src/native/binding');
 
 test('user input classification preserves legacy values, lazy reads and errors', () => {
   const classify = payload => getNative().sessionWorkIsUserTyped(payload);
@@ -2545,4 +2545,11 @@ test('dismissed W question clears durable queue correlation without admitting ne
   assert.equal(queue.active, null);
   assert.equal(queue.queued.length, 0);
   assert.equal(queue.lastDecision.action, 'dismiss_user_input');
+});
+
+test('invalid resolution rejects with the original UTF-16 action text', async () => {
+  const scheduler = createSessionWorkScheduler({ store: { read() {}, mutate() {} } });
+  const action = 'unknown\0\ud800';
+  await assert.rejects(scheduler.resolve('s', { action }),
+    error => error instanceof TypeError && error.message === 'invalid resolution action: ' + action);
 });

@@ -370,7 +370,7 @@ test('Rust authentication: real HTTP login, cookie exchange and ticket endpoints
 });
 
 test('宿主 Cookie 保留原始顺序、重复键、裸键和 UTF-16 内容', () => {
-  const { httpParseCookies } = require('../src/native/runtime').getNative();
+  const { httpParseCookies } = require('../src/native/binding').getNative();
   for (const absent of [undefined, null, '']) assert.deepEqual(httpParseCookies(absent), {});
   const parsed = httpParseCookies(' b=a=b ; a=1; b=2; lone; __proto__=x; =skip; constructor=v; \uFEFFx=\uD800 ');
   assert.deepEqual(Object.keys(parsed), ['b', 'a', 'lone', 'constructor', 'x']);

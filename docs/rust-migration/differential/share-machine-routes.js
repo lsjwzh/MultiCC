@@ -355,7 +355,7 @@ function mountOracle(app, { repo, work, dataRoot }) {
   const express = require(require.resolve('express', { paths: [repo] }));
   const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
   const authSecurity = createAuthSecurity({ getSecret: () => 'secret-token-1' });
-  const { getNative } = require(path.join(repo, 'src/native/runtime'));
+  const { getNative } = require(path.join(repo, 'src/native/binding'));
   const legacy = name => path.join(repo, 'tests/helpers/legacy-share-machine-routes', name);
   frozen = {
     machines: require(legacy('machines')),

@@ -164,7 +164,7 @@ const traceFile = process.env.PROVIDER_MISC_RUST_TRACE;
 const readScenario = () => { try { return JSON.parse(fs.readFileSync(scenarioFile, 'utf8')); } catch (_) { return {}; } };
 const append = record => fs.appendFileSync(traceFile, JSON.stringify(record) + '\\n');
 
-const native = require(path.join(REPO, 'src/native/runtime')).getNative();
+const native = require(path.join(REPO, 'src/native/binding')).getNative();
 const defaultsFile = path.join(process.env.MULTICC_DATA_DIR, 'provider-defaults.json');
 fs.writeFileSync(defaultsFile, '{}');
 const defaultsOwner = new native.RustProviderDefaultsStore(defaultsFile);

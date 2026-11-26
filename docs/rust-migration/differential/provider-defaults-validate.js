@@ -158,7 +158,7 @@ function createWorld(options) {
     },
   };
 
-  const native = require(${JSON.stringify(path.join(repo, 'src/native/runtime'))}).getNative();
+  const native = require(${JSON.stringify(path.join(repo, 'src/native/binding'))}).getNative();
   const defaultsFile = options.defaultsFile;
   try { fs.writeFileSync(defaultsFile, JSON.stringify(scenario.defaults || { claude: null, codex: null })); } catch (_) {}
   deps.defaultsOwner = new native.RustProviderDefaultsStore(defaultsFile);

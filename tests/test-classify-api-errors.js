@@ -86,7 +86,9 @@ function readServerCode() {
       'server.js',
       'src/session/records.js',
       'src/classify/vocab.js',
-      'src/classify/state-machine.js',
+      'native/addon/src/classify_machine/dispatch.rs',
+      'native/addon/src/classify_machine/dispatch/settle.rs',
+      'native/addon/src/classify_machine/turn.rs',
       'src/chat/api-error-policy.js',
       'src/chat/api-error-host.js',
       'src/chat/turn-engine-host.js',
@@ -230,7 +232,7 @@ function readServerCode() {
       // the head of the condition rather than pinning its exact text — this check
       // is about the delegation, not about how the branch is spelled.
       { name: 'classify E branch delegates to evaluateTurnApiError as legacy fallback', pattern: /if \(error[^)]*\)[\s\S]{0,120}_lastApiErrorDecision[\s\S]{0,160}evaluateTurnApiError/ },
-      { name: 'a deterministic turn verdict goes through the shared applier', pattern: /function classifyTurnEnd[\s\S]{0,800}cancelClassifyFor\(sessionName\)[\s\S]{0,2200}applyClassifyResult\(/ },
+      { name: 'a deterministic turn verdict goes through the shared applier', pattern: /fn end[\s\S]*?c"cancelClassifyFor"[\s\S]*?turn_state::resolve_live\(facts\)[\s\S]*?verdict::apply\(/ },
       { name: 'retry vs fail_fast gated by policy decision .action', pattern: /_lastApiErrorDecision\?\.action/ },
       { name: 'wait message driven by retryNotice(decision), not injection', pattern: /retryNotice\(cs\._lastApiErrorDecision\)/ },
     ];

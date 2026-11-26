@@ -5,11 +5,9 @@ const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createSessionWorkHost } = require('../src/session-work/host');
+const { createSessionWorkHost, createSessionWorkScheduler, createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work');
 const { createShellWorkspaceHost } = require('../src/task-shell/workspace');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
-const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 function fixture(options = {}) {

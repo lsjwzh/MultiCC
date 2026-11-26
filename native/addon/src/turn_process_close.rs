@@ -286,14 +286,14 @@ impl<'a> Close<'a> {
         } else if boundary.truthy()? {
             boundary
         } else {
-            let opencode = self.invoke(
-                c"opencodeProcessError",
-                &[
-                    cs.get(c"cli")?,
-                    run.get(c"apiErrorRaw")?,
-                    c.get(c"stderrBuf")?,
-                ],
+            let opencode = crate::opencode_error::opencode_process_error(
+                Env::from_raw(cs.env()),
+                unknown(cs.get(c"cli")?),
+                unknown(run.get(c"apiErrorRaw")?),
+                unknown(c.get(c"stderrBuf")?),
+                unknown(cs.from_value(&V::Undefined)?),
             )?;
+            let opencode = L::from_raw(cs.env(), opencode);
             either(opencode, || {
                 either(run.get(c"apiErrorRaw")?, || {
                     either(proxy, || {

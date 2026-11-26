@@ -11,7 +11,7 @@ const { captureNativeSessionId } = require('./helpers/legacy-native-session-stat
 const {
   createProviderInvocationFactory,
   providerRetryRouteOptions,
-} = require('../src/native/runtime').providerInvocation;
+} = require('../src/native/binding').providerInvocation;
 const { normalizeTurnRequest, createTurnLifecycle } = require('../src/chat');
 
 function makeHarness(makeFactory = createProviderInvocationFactory) {

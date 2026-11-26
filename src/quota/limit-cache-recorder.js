@@ -2,7 +2,7 @@
 
 // Rust owns observation policy. This adapter retains injected stores, clocks,
 // callback ordering and the identity of cache results until those hosts migrate.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const request = (op, input) => getNative().limitCacheRecorderRequestValue(op, input);
 const { PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS } = request('constants', {});
 const isRevokedCategory = category => request('isRevokedCategory', { category });

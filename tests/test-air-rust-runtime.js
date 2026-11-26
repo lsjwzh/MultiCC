@@ -4,7 +4,7 @@ const { EventEmitter } = require('node:events');
 const { createHash } = require('node:crypto');
 const { createAirIndex } = require('../src/workspace/air-index-port');
 const { createAirSyncRuntime } = require('../src/workspace/air-sync-runtime');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 let addon = null;
 try { addon = getNative(); } catch (_) { /* availability is asserted below */ }
 const native = addon?.taskReadModelProtocolVersion?.() === 1;

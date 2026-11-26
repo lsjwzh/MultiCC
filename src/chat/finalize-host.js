@@ -1,7 +1,7 @@
 'use strict';
 
-const { getNative } = require('../native/runtime');
-const { getTurnProgress } = require('../native/runtime');
+const { getNative } = require('../native/binding');
+const { getTurnProgress } = require('../native/binding');
 
 function assertFinalizeHostPorts(ports) {
   return getNative().chatValidateFinalizationPorts(ports);

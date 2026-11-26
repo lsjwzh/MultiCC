@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const test = require('node:test');
 
-const { deriveToolTiming, diffToolTiming, deriveOpenTasks } = require('../src/native/runtime').getTurnEventReplay();
+const { deriveToolTiming, diffToolTiming, deriveOpenTasks } = require('../src/native/binding').getTurnEventReplay();
 
 // Journal-line helpers: the derivation consumes {seq, ts, event} records.
 const line = (seq, ts, event) => ({ seq, ts, event });
@@ -193,7 +193,7 @@ function compileModule(source, require_ = require) {
   new Function('module', 'exports', 'require', source)(mod, mod.exports, require_);
   return mod.exports;
 }
-const coldCurrent = () => require('../src/native/runtime').getNative().turnEventReplayApi();
+const coldCurrent = () => require('../src/native/binding').getNative().turnEventReplayApi();
 
 function frozenSource() {
   const actual = crypto.createHash('sha1')
@@ -1115,7 +1115,7 @@ test('the corpus observes every mutated rule of the frozen source', () => {
 });
 
 test('module surface is frozen with the four public names', () => {
-  const mod = require('../src/native/runtime').getTurnEventReplay();
+  const mod = require('../src/native/binding').getTurnEventReplay();
   assert.ok(Object.isFrozen(mod));
   assert.deepEqual(Object.keys(mod), ['deriveToolTiming', 'diffToolTiming', 'deriveOpenTasks', 'DEFAULT_TOLERANCE_MS']);
   assert.deepEqual(
@@ -1284,7 +1284,7 @@ test('重连遇到不可调用的 Map 方法时保留参数读取顺序和异常
 
 test('回放入口与冻结宿主公开相同的函数签名、默认容差和结果', () => {
   const old = require('./helpers/frozen-file-batch7/turn-event-replay');
-  const current = require('../src/native/runtime').getTurnEventReplay();
+  const current = require('../src/native/binding').getTurnEventReplay();
   assert.deepEqual(Object.keys(current), Object.keys(old));
   assert.equal(current.DEFAULT_TOLERANCE_MS, old.DEFAULT_TOLERANCE_MS);
   for (const key of ['deriveToolTiming','deriveOpenTasks','diffToolTiming']) {

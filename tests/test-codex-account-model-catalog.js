@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createCodexAccountModelCatalogRuntime } = require('../src/codex/model-catalog');
-const { summarize } = require('../src/providers/core');
+const { summarize } = require('../src/providers/host');
 const { createProviderRelayModelCatalogRuntime } = require('../src/providers/relay-model-catalog');
 const A = 'a'.repeat(16), B = 'b'.repeat(16);
 function provider(id) { return { id: `codex-official-${id}`, appType: 'codex', activeAccountId: id,

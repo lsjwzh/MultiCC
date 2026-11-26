@@ -243,7 +243,7 @@ fn terminal<'a>(session: L<'a>, ports: L<'a>) -> Result<L<'a>> {
     }
     Ok(command)
 }
-fn invocation<'a>(input: L<'a>, ports: L<'a>) -> Result<L<'a>> {
+fn invocation<'a>(env: &'a Env, input: L<'a>, ports: L<'a>) -> Result<L<'a>> {
     let so = input.get(c"spawnOpts")?;
     let session = object(
         input,
@@ -259,7 +259,7 @@ fn invocation<'a>(input: L<'a>, ports: L<'a>) -> Result<L<'a>> {
         ],
     )?;
     let first = input.get(c"historyHandle")?.get(c"isFirstTurn")?;
-    let prompt = port(ports, c"renderPrompt", &[input])?;
+    let prompt = crate::message_composer::render_prompt(env, input)?;
     let mut payload = if first.truthy()? {
         let role = input.get(c"rolePrompt")?;
         let subagent = input.get(c"subagentHint")?;
@@ -390,7 +390,7 @@ pub fn codex_adapter_call(
             )?,
         )?,
         "terminal" => terminal(input, ports)?,
-        "invocation" => invocation(input, ports)?,
+        "invocation" => invocation(&env, input, ports)?,
         "decode" => events::decode(input, ports)?,
         _ => return Err(napi::Error::from_reason("unknown_codex_adapter_operation")),
     };

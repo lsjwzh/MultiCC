@@ -27,7 +27,7 @@ const {
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 const { createSliceRunner } = require('../src/search/slice-runner');
 
-const { rerankSearchHits: rerank } = require('../src/native/runtime');
+const { rerankSearchHits: rerank } = require('../src/native/binding');
 
 const logger = { warn() {}, log() {}, info() {} };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

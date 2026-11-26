@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const windowsEnv = require('../windows-env');
-const { zcodeEngineCandidates } = require('../native/runtime').zcodeEngine;
+const { zcodeEngineCandidates } = require('../native/binding').zcodeEngine;
 
 const WINDOWS_DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
 
@@ -81,7 +81,7 @@ function remoteCliAvailable(candidate, options = {}) {
   try {
     if (stem === 'agy') return !!require('../agy-accounts').hasRemoteAccount();
     if (stem === 'claude' || stem === 'codex') {
-      return !!require('../providers/core').hasCliRelayProvider(stem);
+      return !!require('../providers/host').hasCliRelayProvider(stem);
     }
   } catch (_) {}
   return false;

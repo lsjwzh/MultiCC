@@ -25,7 +25,7 @@ process.env.HOME = path.join(tmpRoot, 'home');
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 fs.mkdirSync(process.env.HOME, { recursive: true });
 
-const providers = require('../src/providers/core.js');
+const providers = require('../src/providers/host.js');
 const { createSessionPolicy } = require('../src/cli/session-policy.js');
 const { createSessionProfileRoutes } = require('../src/routes/session-profile.js');
 
@@ -307,8 +307,8 @@ test('Codex provider switch with a blank model pins the new default before resum
     assert.equal(res.body.effectiveModel, 'gpt-5.4');
     assert.equal(session.cliSessionId, 'native-ds', 'keep conversation history');
     const adapter = cli === 'codex'
-      ? require('../src/native/runtime').codexAdapter.createCodexAdapter({ cmd: 'codex', ...sessionPolicy })
-      : require('../src/native/runtime').codexAppAdapter.createCodexExpAdapter(sessionPolicy);
+      ? require('../src/native/binding').codexAdapter.createCodexAdapter({ cmd: 'codex', ...sessionPolicy })
+      : require('../src/native/binding').codexAppAdapter.createCodexExpAdapter(sessionPolicy);
     const invocation = adapter.buildInvocation({ spawnOpts: { rawModel: session.model },
       historyHandle: { isFirstTurn: false, cliSessionId: session.cliSessionId },
       contextLayers: [], userText: 'continue', suffix: '' });

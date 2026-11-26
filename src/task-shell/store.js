@@ -1,5 +1,5 @@
 'use strict';
-const { getNative, nativeCode } = require('../native/runtime');
+const { getNative, nativeCode } = require('../native/binding');
 
 // 迁移桥接：Rust 拥有连接、SQL、索引、JSON 缓存及其版本。这里仅维持同步调用
 // 契约和原有只读 JS 对象的身份；镜像的更换完全由原生返回的 token 决定。

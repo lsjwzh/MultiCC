@@ -28,7 +28,7 @@ function isInjectedOrJunkGoal(goal) {
   return g.startsWith(SYSTEM_PREFIX) || g.startsWith('<') || g.startsWith('"<');
 }
 
-function buildDeps(initialWorld = {}, contract = require('../../src/native/runtime').getApiContract()) {
+function buildDeps(initialWorld = {}, contract = require('../../src/native/binding').getApiContract()) {
   const { createErrorDto, withApiMeta } = contract;
   const records = new Map();
   const directories = new Map();

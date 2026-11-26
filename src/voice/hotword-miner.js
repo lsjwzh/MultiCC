@@ -18,7 +18,7 @@
 //
 // Pure: no fs, no timers. hotword-learner.js owns persistence and scheduling.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { nearSyllable, toSyllables } = require('./hotword-corrector');
 
 const ACTIVATE_AT = 2;

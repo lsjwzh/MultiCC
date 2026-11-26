@@ -30,7 +30,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const barView = require('../../src/native/runtime').getQuotaBarView();
+const barView = require('../../src/native/binding').getQuotaBarView();
 const barState = require('../../src/quota/claude-bar-state');
 const usageQueue = require('../../src/quota/claude-usage-queue');
 const kimi = require('../../src/routes/kimi-quota');

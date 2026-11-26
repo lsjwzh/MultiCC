@@ -23,12 +23,12 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
-const { createProductionQuestionHost } = require('../src/session-work/host');
+const { createOrchestrationRuntime } = require('../src/orchestration/host');
+const { createProductionQuestionHost } = require('../src/session-work');
 const {
   createHeldTurnInjection, spawnContractFacts, spawnContractOf, isDirectUserTyped,
 } = require('../src/chat/held-turn-injection');
-const { heldBackgroundText, heldCapText, createSessionNotices } = require('../src/native/runtime').getSessionNotices();
+const { heldBackgroundText, heldCapText, createSessionNotices } = require('../src/native/binding').getSessionNotices();
 
 const RECORD = {
   cli: 'claude', provider: 'official', providerSelection: { mode: 'auto' },
@@ -410,7 +410,7 @@ test('the hold cap is one visible notice, never a release', () => {
 });
 
 test('answered injection retries history after configuration drift and cannot release early', async () => {
-  const owner = new (require('../src/native/runtime').getNative().RustBackgroundHold)({ quietMs: 1 });
+  const owner = new (require('../src/native/binding').getNative().RustBackgroundHold)({ quietMs: 1 });
   owner.start({ type: 'result', subtype: 'success', is_error: false, result: 'main' },
     { mainResult: true, backgroundActive: true });
   let saves = 0, writes = 0, save = false, stale = false, readFails = false;

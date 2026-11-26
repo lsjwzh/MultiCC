@@ -20,7 +20,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const taskSearch = require('../src/task-board/search');
-const tokenizeModule = require('../src/native/runtime').searchTokenizer;
+const tokenizeModule = require('../src/native/binding').searchTokenizer;
 const legacyTokens = require('./helpers/legacy-search-tokenize');
 const { createSearchIndex, hashOf, buildSnippet, escapeLike } = require('../src/search/index-store');
 const {

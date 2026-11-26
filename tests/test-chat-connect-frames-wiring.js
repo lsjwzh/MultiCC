@@ -23,7 +23,7 @@ const frozenTaskState = require('./helpers/legacy-chat-task-state-frame');
 const historyCorpus = require('../docs/rust-migration/differential/chat-history-frame-corpus.json');
 const taskStateCorpus = require('../docs/rust-migration/differential/chat-task-state-frame-corpus.json');
 const connectCorpus = require('../docs/rust-migration/differential/chat-connect-replay-golden.json');
-const { getNative, installAuxHealthProvider, auxVerdictStaleness, taskStateSeed, taskStatePayload } = require('../src/native/runtime');
+const { getNative, installAuxHealthProvider, auxVerdictStaleness, taskStateSeed, taskStatePayload } = require('../src/native/binding');
 
 // The task-short-code registry mints into a persisted file on first use, which
 // is exactly the side effect the connect path must not trigger needlessly, so
@@ -31,11 +31,11 @@ const { getNative, installAuxHealthProvider, auxVerdictStaleness, taskStateSeed,
 // registry is stubbed; the Aux health reading stays the real module.
 let shortCode = '';
 const shortCodeCalls = [];
-test.mock.method(require('../src/native/task-domain'), 'taskShortCode', taskId => {
+test.mock.getter(require('../src/native/task-domain'), 'taskCodeRegistryState', () => taskId => {
   shortCodeCalls.push(taskId);
   return shortCode;
 });
-const { fitHistoryFrame, DEFAULT_MAX_BYTES, messageBytes } = require('../src/native/runtime').historyFrame;
+const { fitHistoryFrame, DEFAULT_MAX_BYTES, messageBytes } = require('../src/native/binding').historyFrame;
 
 // JSON cannot carry `undefined`, so the corpus marks those slots and both
 // sides rehydrate them (see chat-history-frame-oracle.js).

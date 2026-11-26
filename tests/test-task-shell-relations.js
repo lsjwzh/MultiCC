@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { createTaskRelations } = require('../src/native/runtime').getTaskRelations();
+const { createTaskRelations } = require('../src/native/binding').getTaskRelations();
 const { createTaskGraphRoutes } = require('../src/routes/task-graph');
 
 

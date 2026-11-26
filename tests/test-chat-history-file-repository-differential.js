@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const Module = require('node:module');
 const { createPaths } = require('../src/paths');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const { reportFailure } = require('../src/state/store');
 
 // Compile the unchanged frozen source at its former path so relative imports

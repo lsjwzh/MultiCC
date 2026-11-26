@@ -2,7 +2,7 @@
 
 const { defaultRepoActor } = require('../repo-actor');
 const { gitWorktreeSnapshot } = require('../git/service');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { existsSync } = require('node:fs');
 const fail = (code, message = code) => Object.assign(new Error(message), { code, status: 409 });
 

@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const implementations = [
   require('./helpers/legacy-hibernation-reclaimer'),
-  { createHibernationReclaimer: deps => require('../src/native/runtime').getNative().sessionHibernationReclaimerCreate(deps) },
+  { createHibernationReclaimer: deps => require('../src/native/binding').getNative().sessionHibernationReclaimerCreate(deps) },
 ];
 
 function makeRecord(id, extra = {}) {

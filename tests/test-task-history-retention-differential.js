@@ -19,7 +19,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const legacy = require('./helpers/legacy-task-history-retention');
 
 function enoent() {

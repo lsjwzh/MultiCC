@@ -12,7 +12,7 @@ const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const frozen = path.join(__dirname, 'helpers/legacy-acp-bridge.cjs');
 const virtualPath = path.join(root, 'src/cli-adapters/acp-bridge.cjs');
-const gateway = process.env.MULTICC_TEST_ACP_GATEWAY || require('../src/native/runtime').gatewayPath();
+const gateway = process.env.MULTICC_TEST_ACP_GATEWAY || require('../src/native/binding').gatewayPath();
 const wrapper = `const fs=require('node:fs'),Module=require('node:module'),path=require('node:path');
 const virtual=process.env.ACP_TEST_VIRTUAL, m=new Module(virtual,module);m.filename=virtual;m.paths=Module._nodeModulePaths(path.dirname(virtual));
 process.argv=[process.execPath,virtual,...process.argv.slice(1)];m._compile(fs.readFileSync(process.env.ACP_TEST_ORACLE,'utf8')+'\\nmain();',virtual);`;

@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const capability = require('./cli-capability');
 const cliUpstream = require('./cli-upstream-version');
 function homebrewOwnerOf(cmd, { envPath = process.env.PATH, realpath = require('node:fs').realpathSync } = {}) {

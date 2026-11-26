@@ -25,7 +25,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createWsEnvelope } = require('../src/native/runtime').getApiContract();
+const { createWsEnvelope } = require('../src/native/binding').getApiContract();
 const golden = require('../docs/rust-migration/differential/ws-envelope-golden.json');
 
 test('the frozen envelope golden still matches the live JavaScript', () => {

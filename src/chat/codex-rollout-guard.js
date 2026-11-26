@@ -21,7 +21,7 @@
 // thread. Fail-open by design.
 
 const os = require('node:os');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const DEFAULTS = getNative().codexRolloutGuardDefaults();
 

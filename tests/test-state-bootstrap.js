@@ -11,7 +11,7 @@ const {
   hasMigratableOldSessions,
   migrateOldSchema,
   bootstrapState,
-} = require('../src/native/runtime').stateBootstrap;
+} = require('../src/native/binding').stateBootstrap;
 
 function createHarness(t, overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-state-bootstrap-'));

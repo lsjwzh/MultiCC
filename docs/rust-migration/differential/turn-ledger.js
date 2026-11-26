@@ -110,7 +110,7 @@ const REPO = ${JSON.stringify(repo)};
 const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
 const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
 const { createTurnLedger } = require(path.join(REPO, 'src/turn-ledger/ledger'));
-const { normalizeEnvelope } = require(path.join(REPO, 'src/native/runtime')).getTurnLedgerContract();
+const { normalizeEnvelope } = require(path.join(REPO, 'src/native/binding')).getTurnLedgerContract();
 const { createTurnLedgerHost } = require(path.join(REPO, 'src/routes/host-read-host'));
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);

@@ -3,8 +3,8 @@
 // Compatibility callbacks and proxies only. SQLite ownership, path queries,
 // filtering, persistence, retention and streaming export live in Rust.
 const path = require('node:path');
-const { addonPath, getNative } = require('../native/runtime');
-const { invokeNativeCommand, commandEnvelope } = require('../native/runtime');
+const { addonPath, getNative } = require('../native/binding');
+const { invokeNativeCommand, commandEnvelope } = require('../native/binding');
 const { OutboxConflictError } = require('../outbox');
 const { types: { isProxy, isNativeError } } = require('node:util');
 const { AsyncLocalStorage } = require('node:async_hooks');

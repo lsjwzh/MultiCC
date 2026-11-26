@@ -10,7 +10,7 @@ const { promisify } = require('util');
 
 const { gitExportSessionBundle, gitImportSessionBundle } = require('../git/service');
 const { createHandoffEnvService } = require('../session/handoff-env');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { DOCS_REGISTRY_RULE } = require('../memory/builtin-rules');
 
 const execFileAsync = promisify(execFile);

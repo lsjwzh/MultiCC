@@ -8,15 +8,15 @@ const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 const { createOperationService } = require('../src/operation-service');
-const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationRuntime } = require('../src/orchestration/host');
+const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
 const {
   OrchestrationSqliteConflictError,
   OrchestrationSqliteError,
   createOrchestrationSqliteStore,
 } = require('../src/orchestration/sqlite-store');
 const { createWaitService } = require('../src/wait/service');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -1228,9 +1228,10 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
 
   const driver = fs.readFileSync(path.join(root, 'src/sqlite/driver.js'), 'utf8');
   assert.match(driver, /RustDatabase/);
+  assert.match(driver, /ccSwitchDatabaseApi/);
   assert.doesNotMatch(driver, /require\('node:sqlite'\)/);
   for (const file of ['src/task-shell/store.js',
-    'src/orchestration/sqlite-store.js', 'src/sqlite-runtime.js']) {
+    'src/orchestration/sqlite-store.js']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     // task-shell 仓储迁移后不再经 JS 打开 SQLite：整个 store 由原生
     // RustTaskStore 承载，同属“只用 Rust、绝不碰 npm addon”的边界。
@@ -1249,7 +1250,7 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   const quotaHost = fs.readFileSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js'), 'utf8');
   const dependencies = source => [...source.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)]
     .map(match => match[1]);
-  assert.deepEqual(dependencies(quotaHost), ['../native/runtime']);
+  assert.deepEqual(dependencies(quotaHost), ['../native/binding']);
   const quotaExports = require('../src/quota/provider-limit-cache-native-host');
   assert.equal(quotaExports.createProviderLimitCache, quotaExports.createNativeProviderLimitCache);
   assert.equal(quotaExports.STALE_MS_DEFAULT, 10 * 60 * 1000);

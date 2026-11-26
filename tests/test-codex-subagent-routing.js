@@ -52,7 +52,7 @@ const {
 const {
   materializeCodexAuth,
   materializeCodexRoutingHome,
-} = require('../src/providers/core');
+} = require('../src/providers/host');
 
 let passed = 0;
 let failed = 0;

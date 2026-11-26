@@ -313,7 +313,7 @@ test('domain constructors preserve setter order, coercion errors and optional ca
 });
 
 const frozenPublicSafety = require('./helpers/frozen-file-batch19/public-safety');
-const currentPublicSafety = require('../src/native/runtime').getPublicSafety();
+const currentPublicSafety = require('../src/native/binding').getPublicSafety();
 
 test('public error cleaning matches frozen UTF-16, whitespace and pattern boundaries', () => {
   const values = [undefined, null, false, 0, NaN, Infinity, 12n, Symbol('safe'), {},

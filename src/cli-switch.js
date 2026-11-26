@@ -9,11 +9,11 @@
 // `repairZcodeSessionState`, the CLI-table lookups (provider-less lanes, resident
 // transport) and the vendor facts behind `routingSelection`.
 
-const { getNative } = require('./native/runtime');
-const { repairZcodeSessionState } = require('./native/runtime');
+const { getNative } = require('./native/binding');
+const { repairZcodeSessionState } = require('./native/binding');
 const { isResidentSession, providerlessClis, isDeprecated } = require('./cli/cli-capability');
 const { nativeVendorOf } = require('./providers/native-vendor');
-const { nativeOpenCodeId } = require('./native/runtime').getNativeOpenCodeCatalog();
+const { nativeOpenCodeId } = require('./native/binding').getNativeOpenCodeCatalog();
 
 // No Node fallback: these kernels are Rust-only.
 const native = getNative();

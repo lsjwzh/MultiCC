@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const legacy = require('./helpers/legacy-handoff-zip');
 
 const api = () => getNative().handoffZipApi();

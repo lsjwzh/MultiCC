@@ -33,7 +33,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const prune = require('../src/native/runtime').getTranscriptPruning();
+const prune = require('../src/native/binding').getTranscriptPruning();
 
 function parseArgs(argv) {
   const args = {

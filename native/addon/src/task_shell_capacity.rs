@@ -15,7 +15,7 @@ pub fn task_directory_capacity(
     store: Unknown<'_>,
     directory: Unknown<'_>,
     capacity: bool,
-    domain: Unknown<'_>,
+    domain: Option<Unknown<'_>>,
 ) -> Result<sys::napi_value> {
     let store = L::new(&env, store);
     let directory = L::new(&env, directory);
@@ -48,7 +48,14 @@ pub fn task_directory_capacity(
         list.call(store, &[store.from_value(&V::from("task"))?])?,
     )?;
     input.set(c"dirId", directory)?;
-    let result = L::new(&env, domain).call_plain(&[input])?;
+    let result = if let Some(domain) = domain {
+        L::new(&env, domain).call_plain(&[input])?
+    } else {
+        let json = store.global()?.get(c"JSON")?;
+        let wire = crate::host_methods::call(json, c"stringify", &[input])?.coerce_string()?;
+        let answer = crate::task_domain::task_domain(wire.to_string_lossy())?;
+        crate::host_methods::call(json, c"parse", &[store.from_value(&V::from(answer))?])?
+    };
     Ok(result
         .get(if capacity { c"atCapacity" } else { c"count" })?
         .raw())

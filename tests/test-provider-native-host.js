@@ -6,9 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
-const { createNativeProviderStore } = require('../src/native/runtime');
-const { credential, readCli } = require('../src/native/runtime').providerCredentials;
-const native = require('../src/native/runtime').getNative();
+const { createNativeProviderStore } = require('../src/native/binding');
+const { credential, readCli } = require('../src/native/binding').providerCredentials;
+const native = require('../src/native/binding').getNative();
 const { createHopCredentialStore } = require(path.join(path.dirname(require.resolve('cli-provider-router')), 'proxy/hop-credentials'));
 function temp(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-native-host-'));
@@ -40,7 +40,7 @@ test('跨进程写入只能有一个胜者，不会静默覆盖配置', async t 
   const file = path.join(temp(t), 'providers.json');
   const store = createNativeProviderStore(file), initial = store.read(); store.write(initial);
   const snapshot = JSON.parse(native.providerStore(file, '{"operation":"read"}'));
-  const script = `const n=require('./src/native/runtime').getNative();try { n.providerStore(process.argv[1],process.argv[2]);process.exitCode=0; }catch(e){ process.exitCode=/PROVIDER_STORE_(CONFLICT|BUSY)/.test(e.message)?2:3; }`;
+  const script = `const n=require('./src/native/binding').getNative();try { n.providerStore(process.argv[1],process.argv[2]);process.exitCode=0; }catch(e){ process.exitCode=/PROVIDER_STORE_(CONFLICT|BUSY)/.test(e.message)?2:3; }`;
   const writes = [1, 2].map(id => new Promise(resolve => {
     const child = spawn(process.execPath, ['-e', script, file,
       JSON.stringify({ operation: 'write', revision: snapshot.revision, records: [{ id }] })], { stdio: 'ignore' });
@@ -113,4 +113,16 @@ test('供应商仓储按来源数组保存修订号，旧来源冲突与冻结�
   }
   const root = temp(t);
   assert.deepEqual(trace(createNativeProviderStore, path.join(root, 'new.json')), trace(old, path.join(root, 'old.json')));
+});
+
+test('仓储直接调用 Rust 时保留 toJSON 原异常和可重试的来源版本', t => {
+  const store = createNativeProviderStore(path.join(temp(t), 'providers.json'));
+  const original = new TypeError('无法序列化这条记录');
+  const records = store.read();
+  records.push({ toJSON() { throw original; } });
+  assert.throws(() => store.write(records), error => error === original && error.code === original.message);
+  assert.deepEqual(store.read(), []);
+  records[0] = { id: 'retry' };
+  store.write(records);
+  assert.deepEqual(store.read(), records);
 });

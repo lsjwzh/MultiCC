@@ -12,7 +12,9 @@
 //! cannot see are restored by [`enrich`]: an `Error` instance keeps
 //! `message`/`code` on the prototype, and a `Headers`-like receiver answers
 //! only through its `get` method.
+mod decision;
 use crate::js_live::LiveValue;
+pub(crate) use decision::decide as decide_live;
 use multicc_core::{
     api_error_policy::{self, NormalizeDeps},
     js::{js_to_number, js_to_string, JsString, JsValue},

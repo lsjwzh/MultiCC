@@ -22,7 +22,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { codexAuthSubscription } = require('./native/runtime');
+const { codexAuthSubscription } = require('./native/binding');
 
 const { ensurePrivateDir, secureFile } = require('./runtime-security');
 
@@ -95,7 +95,7 @@ function rewrittenSince(file, importedAt) {
   try { return fs.statSync(file).mtimeMs > at + 2000; } catch (_) { return false; }
 }
 
-const { credential } = require('./native/runtime').providerCredentials;
+const { credential } = require('./native/binding').providerCredentials;
 function readJsonIfExists(file) { return credential({ operation: 'readJson', file }); }
 function writeAccountJson(file, data) { return credential({ operation: 'writeJson', file, data }); }
 

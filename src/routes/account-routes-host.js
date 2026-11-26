@@ -222,7 +222,7 @@ function createAccountRoutesHost() {
   return { app, mountRoute };
 }
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { isKeyAccountCli, releaseCliAccountReferences } = require('../cli-key-accounts');
 const fs = require('node:fs');
 const path = require('node:path');

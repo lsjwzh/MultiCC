@@ -85,7 +85,7 @@ async function runSdk({ root, env, sessionId, settingsPath }) {
 }
 
 async function runNative({ root, env, sessionId, settingsPath, binary, binaryArgs }) {
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   const messages = [];
   let resultSeen = null;
   const lane = new (getNative().RustClaudeLane)((payload) => {

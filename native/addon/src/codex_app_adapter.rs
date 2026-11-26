@@ -6,7 +6,7 @@ use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 use std::cell::RefCell;
 mod events;
-mod invocation;
+pub(crate) mod invocation;
 const DELTA: usize = 0;
 const REASONING: usize = 1;
 const USAGE: usize = 2;
@@ -203,7 +203,7 @@ impl RustCodexAppAdapter {
         input: Unknown<'_>,
         ports: Unknown<'_>,
     ) -> Result<sys::napi_value> {
-        Ok(invocation::build(L::new(&env, input), L::new(&env, ports))?.raw())
+        Ok(invocation::build(&env, L::new(&env, input), L::new(&env, ports))?.raw())
     }
     #[napi]
     pub fn decode(

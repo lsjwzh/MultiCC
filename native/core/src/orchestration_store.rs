@@ -11,6 +11,7 @@ mod receipts;
 mod record;
 mod schedule_admit;
 mod schedule_admit_live;
+pub use schedule_admit_live::project_schedule;
 pub mod schedule_background;
 mod schedule_claim;
 pub mod schedule_guard;

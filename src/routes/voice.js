@@ -10,7 +10,7 @@
 // The full pre-migration implementation is frozen in
 // tests/helpers/legacy-voice-routes.js as the differential oracle.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { mountVoiceHostRoute } = require('./voice-host');
 
 function requireFunction(value, name) {

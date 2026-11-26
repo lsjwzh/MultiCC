@@ -96,3 +96,58 @@ pub fn assert_codex_proxy_config_applied(env: Env, options: Unknown<'_>) -> Resu
     }
     Ok(applied)
 }
+
+#[napi]
+pub fn codex_strip_official_env(env: Env, raw: Unknown<'_>) -> Result<()> {
+    use crate::route_response::call;
+    let raw = LiveValue::new(&env, raw);
+    let reflect = raw.global()?.get(c"Reflect")?;
+    let keys = call(raw.global()?.get(c"Object")?, c"keys", &[raw])?;
+    keys.for_each(|key| {
+        let name = key.coerce_string()?;
+        if home::official_env_key(&name.as_str_lossy())
+            && !call(reflect, c"deleteProperty", &[raw, key])?.truthy()?
+        {
+            let kind = call(
+                raw.global()?
+                    .get(c"Object")?
+                    .get(c"prototype")?
+                    .get(c"toString")?,
+                c"call",
+                &[raw],
+            )?;
+            return Err(raw.type_error(&format!(
+                "Cannot delete property '{}' of {}",
+                name.as_str_lossy(),
+                kind.coerce_string()?.as_str_lossy()
+            )));
+        }
+        Ok(())
+    })
+}
+#[napi]
+pub fn codex_materialize_value(
+    env: Env,
+    home: String,
+    global_auth: String,
+    settings: Unknown<'_>,
+    auth_only: bool,
+) -> Result<napi::sys::napi_value> {
+    use crate::route_response::{call, fields, text};
+    let settings = LiveValue::new(&env, settings);
+    let json = settings.global()?.get(c"JSON")?;
+    let settings = if settings.nullish()? {
+        fields(settings, &[])?
+    } else {
+        settings
+    };
+    let wire = call(json, c"stringify", &[settings])?.coerce_string()?;
+    let value = codex_provider_materialize(home, global_auth, wire.to_string_lossy(), auth_only)?;
+    let value = text(settings, &value)?;
+    Ok(if auth_only {
+        value
+    } else {
+        call(json, c"parse", &[value])?
+    }
+    .raw())
+}

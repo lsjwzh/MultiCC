@@ -50,13 +50,13 @@ fs.writeFileSync(path.join(HOME, '.codex', 'config.toml'),
 
 // The host enables the unified official-provider catalog at boot; the official
 // id shape is only recognized after that. Isolated temp HOME keeps this local.
-require('../src/providers/core').enableUnifiedOfficialProviders();
+require('../src/providers/host').enableUnifiedOfficialProviders();
 
 const { createSessionPolicy } = require('../src/cli/session-policy');
-const { createClaudeAdapter } = require('../src/native/runtime');
-const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
-const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
-const { settingsOverrideFor } = require('../src/native/runtime').claudeSettingsOverride;
+const { createClaudeAdapter } = require('../src/native/binding');
+const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
+const { createCodexExpAdapter } = require('../src/native/binding').codexAppAdapter;
+const { settingsOverrideFor } = require('../src/native/binding').claudeSettingsOverride;
 const { claudeSettingsExtra } = require('../src/chat/turn-engine-host');
 const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/claude-models');
 

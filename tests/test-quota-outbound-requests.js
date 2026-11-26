@@ -196,7 +196,7 @@ test('余量和账户请求不能重新绕过统一网络入口', () => {
 
 test('Codex usage preserves the signal, header order, JS coercion and fetch result', () => {
   const frozen = require('./helpers/frozen-file-batch16/codex-usage-request');
-  const current = require('../src/native/runtime');
+  const current = require('../src/native/binding');
   const signal = new AbortController().signal;
   const result = Promise.resolve('fixture');
   const account = Object.freeze({ id: 'opaque' });

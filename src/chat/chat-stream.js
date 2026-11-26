@@ -1,8 +1,8 @@
 'use strict';
 
 const { isMainResult } = require('../cli-adapters/result-completion');
-const { isMonitorHandoffResult } = require('../native/runtime').getMonitorAdmission();
-const { createMonitorControl } = require('../native/runtime').getMonitorControl();
+const { isMonitorHandoffResult } = require('../native/binding').getMonitorAdmission();
+const { createMonitorControl } = require('../native/binding').getMonitorControl();
 const { createBackgroundHold } = require('./background-hold');
 const { decideMissingResume } = require('./missing-resume-recovery');
 const { envDigest } = require('../secrets-vault');
@@ -38,7 +38,7 @@ const { envDigest } = require('../secrets-vault');
 //     --session-id and respawn with --resume <same id>.
 
 const { spawn } = require('child_process');
-const { getWriterGroup } = require('../native/runtime');
+const { getWriterGroup } = require('../native/binding');
 
 // session name -> state
 //   { proc, sessionId, cwd, cmd, baseArgs,
@@ -55,7 +55,7 @@ const CLOSE_KILL_GRACE_MS = 1_500;
 // How long a recycle waits for a graceful exit before escalating. A recycle is
 // not urgent, and the prompt exits on its own once stdin quiesces.
 const RECYCLE_KILL_GRACE_MS = 3_000;
-const closer = require('../native/runtime').getProcessCloser().createProcessCloser({
+const closer = require('../native/binding').getProcessCloser().createProcessCloser({
   timeoutMs: CLOSE_KILL_GRACE_MS + 1_000, code: 'CHAT_STREAM_CLOSE_TIMEOUT',
 });
 

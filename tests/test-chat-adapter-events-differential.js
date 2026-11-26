@@ -12,7 +12,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const crypto = require('node:crypto');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const { applyAdapterChatEventLegacy } = require('./helpers/legacy-adapter-chat-event');
 const { applyClaudeChatEventLegacy } = require('./helpers/legacy-claude-chat-event');
 const { captureNativeSessionId } = require('./helpers/legacy-native-session-state');

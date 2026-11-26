@@ -1,15 +1,16 @@
 //! Retry composition and scheduling over live clock, random and classifier ports.
 use crate::{host_methods::method, js_iteration::read, js_live::invoke, route_response::*};
 use multicc_core::js::JsString;
-use napi::bindgen_prelude::JsValue as _;
 use napi_derive::napi;
 
 #[napi]
 pub fn retry_policy_value(env: Env, input: Unknown<'_>) -> Result<sys::napi_value> {
-    let raw = env.raw();
-    let input = unsafe { crate::js_bridge::read_value(raw, input.raw(), 0, &mut Vec::new()) }?;
-    let result = multicc_core::retry_policy::decide(&input);
-    unsafe { crate::js_bridge::write_value(raw, &result) }
+    Ok(kernel(L::new(&env, input))?.raw())
+}
+fn kernel(request: L<'_>) -> Result<L<'_>> {
+    let env = request.env();
+    let input = unsafe { crate::js_bridge::read_value(env, request.raw(), 0, &mut Vec::new()) }?;
+    request.from_value(&multicc_core::retry_policy::decide(&input))
 }
 
 fn retry_options(value: L<'_>) -> Result<L<'_>> {
@@ -192,7 +193,6 @@ fn retry_decide<'a>(api: L<'a>, input: L<'a>, deps: L<'a>) -> Result<L<'a>> {
     let event = stringify.call_plain(&[fallback(read(input, c"event")?, "completed".into())?])?;
     let attempts = fallback(read(input, c"attempts")?, V::Object(vec![]))?;
     if event.equals(text(api, "api-error")?)? {
-        let classify = api.get(c"classify")?;
         let error = fallback(read(input, c"error")?, V::Object(vec![]))?;
         let context = fields(api, &[])?;
         context.spread_from(fallback(read(input, c"context")?, V::Object(vec![]))?)?;
@@ -218,7 +218,12 @@ fn retry_decide<'a>(api: L<'a>, input: L<'a>, deps: L<'a>) -> Result<L<'a>> {
             api.from_value(&V::Undefined)?
         };
         context.define_key(text(api, "maxAttempts")?, maximum)?;
-        let decision = classify.call_plain(&[error, context, deps])?;
+        let custom = api.get(c"classifier")?;
+        let decision = if custom.kind()? == sys::ValueType::napi_function {
+            custom.call_plain(&[error, context, deps])?
+        } else {
+            crate::api_error_policy::decide_live(api.get(c"errorPorts")?, error, context, deps)?
+        };
         if !read(decision, c"action")?.equals(text(api, "retry")?)? {
             return retry_terminal(api, decision);
         }
@@ -249,8 +254,6 @@ fn retry_decide<'a>(api: L<'a>, input: L<'a>, deps: L<'a>) -> Result<L<'a>> {
             extra,
         );
     }
-    let native = api.get(c"native")?;
-    let decide = read(native, c"retryPolicyValue")?;
     let request = fields(
         api,
         &[
@@ -304,7 +307,7 @@ fn retry_decide<'a>(api: L<'a>, input: L<'a>, deps: L<'a>) -> Result<L<'a>> {
             )?,
         )?;
     }
-    let plan = decide.call(native, &[request])?;
+    let plan = kernel(request)?;
     if !read(plan, c"delayKey")?.truthy()? {
         return plan.freeze();
     }
@@ -319,10 +322,10 @@ fn retry_decide<'a>(api: L<'a>, input: L<'a>, deps: L<'a>) -> Result<L<'a>> {
 #[napi]
 pub fn retry_policy_api(
     env: Env,
-    native: Unknown<'_>,
-    classify: Unknown<'_>,
+    error_ports: Unknown<'_>,
+    classifier: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let native = L::new(&env, native);
+    let native = L::new(&env, error_ports);
     let limits = fields(
         native,
         &[
@@ -345,8 +348,8 @@ pub fn retry_policy_api(
     let api = fields(
         native,
         &[
-            ("native", native),
-            ("classify", L::new(&env, classify)),
+            ("errorPorts", native),
+            ("classifier", L::new(&env, classifier)),
             ("limits", limits),
             ("delays", delays),
         ],

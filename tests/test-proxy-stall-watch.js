@@ -17,7 +17,7 @@ const { observeProxyRequest } = require('../src/providers/proxy-outcome');
 const { createProviderProxyAdmission, createProviderProxyGuard } = require('../src/providers/proxy-guard');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { createApiErrorPolicyRuntime } = require('../src/chat/api-error-policy');
-const { failoverSafety } = require('../src/native/runtime').getAutoProviderPolicy();
+const { failoverSafety } = require('../src/native/binding').getAutoProviderPolicy();
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 
 // ---------------------------------------------------------------------------
@@ -706,13 +706,13 @@ function virtualClock() {
   };
 }
 
-const { resolveModelRequestPolicy } = require('../src/native/runtime');
+const { resolveModelRequestPolicy } = require('../src/native/binding');
 // The retired `auto-stall-timeout` host entry point only forwarded here, so
 // the stall budget is read straight off the Rust-owned policy value.
 const stallBudget = (session, env) => resolveModelRequestPolicy(session, env).stallTimeoutMs;
 const { recoverModelTimeout } = require('../src/providers/proxy-stall-watch');
 const { withModelConnectWatch } = require('../src/providers/model-connect-watch');
-const { createModelStreamProgress } = require('../src/native/runtime');
+const { createModelStreamProgress } = require('../src/native/binding');
 
 test('native stream progress handles split UTF-8, mixed chunks and oversized frames', () => {
   const progress = createModelStreamProgress();
@@ -726,7 +726,7 @@ test('native stream progress handles split UTF-8, mixed chunks and oversized fra
 });
 
 test('Rust connection deadlines fire once and cancellation prevents delivery', async () => {
-  const { RustRequestTimer } = require('../src/native/runtime').getNative();
+  const { RustRequestTimer } = require('../src/native/binding').getNative();
   let calls = 0;
   let signalExpiry;
   const delivered = new Promise(resolve => { signalExpiry = resolve; });
@@ -748,7 +748,7 @@ test('Rust connection deadlines fire once and cancellation prevents delivery', a
 });
 
 test('the native scheduler normalizes delay and cancels callbacks already queued for JS', async () => {
-  const { scheduleRequestTimer } = require('../src/native/runtime').getNative();
+  const { scheduleRequestTimer } = require('../src/native/binding').getNative();
   let calls = 0;
   const handle = scheduleRequestTimer(() => { calls++; }, 2n);
   assert.equal(handle.unref(), handle);
@@ -763,7 +763,7 @@ test('the native scheduler normalizes delay and cancels callbacks already queued
 
 test('an outstanding Rust connection deadline does not keep Node alive', () => {
   const { spawnSync } = require('node:child_process');
-  const runtime = require.resolve('../src/native/runtime');
+  const runtime = require.resolve('../src/native/binding');
   const child = spawnSync(process.execPath, ['-e',
     `const { getNative } = require(${JSON.stringify(runtime)}); global.timer = new (getNative().RustRequestTimer)(60000, () => {});`,
   ], { env: process.env, encoding: 'utf8', timeout: 3000 });
@@ -1304,7 +1304,7 @@ test('native progress reader allows reentry during Buffer conversion before muta
 
 test('native progress callbacks and cycles are collectible and do not keep Node alive', () => {
   const { spawnSync } = require('node:child_process');
-  const runtime = require.resolve('../src/native/runtime');
+  const runtime = require.resolve('../src/native/binding');
   const legacy = require.resolve('./helpers/legacy-model-stream-progress');
   const child = spawnSync(process.execPath, ['--expose-gc', '-e', `
     const assert = require('node:assert/strict');

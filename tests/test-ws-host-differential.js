@@ -22,7 +22,7 @@ const crypto = require('node:crypto');
 const assert = require('node:assert');
 const { installWsBackpressure } = require('./helpers/legacy-ws-backpressure');
 const { installNativeQueue } = require('../src/ws/native-queue');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 let pass = 0, fail = 0;
 function ok(cond, name, detail) {

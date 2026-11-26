@@ -42,7 +42,7 @@ const FORBIDDEN_FIELDS: [&str; 8] = [
 const TASK_SOURCES: [&str; 4] = ["task-board", "commander", "router-tool", "task-shell"];
 const CONTINUATION_SOURCES: [&str; 1] = ["auto_provider_handoff"];
 const LEGACY_TASK_SOURCE_ALIASES: [(&str, &str); 1] = [("commander-route", "commander")];
-const PROVIDER_ROUTE_EVIDENCE_KEYS: [&str; 11] = [
+pub const PROVIDER_ROUTE_EVIDENCE_KEYS: [&str; 11] = [
     "resolved",
     "binding",
     "providerName",

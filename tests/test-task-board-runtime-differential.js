@@ -322,7 +322,7 @@ test('queue result mutation is detected by the baseline', async () => {
 });
 
 test('native queue run-state adapter preserves live reads and exceptions', () => {
-  const run = require('../src/native/runtime').getNative().taskBoardQueueRunState;
+  const run = require('../src/native/binding').getNative().taskBoardQueueRunState;
   const calls = [];
   const classify = value => { calls.push(value); return value; };
   const freeze = value => { calls.push(value); return value; };
@@ -389,7 +389,7 @@ test('native queue run-state adapter preserves live reads and exceptions', () =>
 
 test('native transcript adapters preserve live reads, callbacks and exceptions', () => {
   const crypto = require('node:crypto');
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   // stableTaskId: the sha256 template digest with ToString coercion on both
   // sides, identical to the retired crypto chain.
   const expectId = (source, key) => 'tsk-' + crypto.createHash('sha256')
@@ -500,7 +500,7 @@ test('native transcript adapters preserve live reads, callbacks and exceptions',
 
 test('native legacy-import adapter preserves dedupe, caching and sort order', () => {
   const crypto = require('node:crypto');
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const expectLegacyId = identity => 'legacy:' + crypto.createHash('sha256')
     .update(identity, 'utf8').digest('hex').slice(0, 40);
   const textOf = message => message.content;

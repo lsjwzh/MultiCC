@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { subscriptionFromBody, codexAuthSubscription } = require('../src/native/runtime');
+const { subscriptionFromBody, codexAuthSubscription } = require('../src/native/binding');
 const { mountAccountSubscriptionRoute } = require('./helpers/legacy-account-subscription-route');
 const { registerAccountSubscriptionReader } = require('../src/quota/account-subscription-reader');
 const subscriptions = require('../src/quota/account-subscription-cache');
@@ -271,7 +271,7 @@ test('record 之后落库的外部写入不会被事后指纹吞掉（确定性�
     },
   };
 
-  const runtimePath = require.resolve('../src/native/runtime');
+  const runtimePath = require.resolve('../src/native/binding');
   const cachePath = require.resolve('../src/quota/account-subscription-cache');
   const runtime = require(runtimePath);
   const saved = { getNative: runtime.getNative, runNative: runtime.runNative };
@@ -358,7 +358,7 @@ test('多写者、record 与 project 交错时所有写入最终都可见', asyn
     const nodeRows = a.prepare('SELECT vendor,account_id,subscription_json,last_attempt_at FROM provider_subscriptions ORDER BY vendor,account_id').all();
     let nativeEntries;
     try {
-      nativeEntries = JSON.parse(await require('../src/native/runtime').getNative()
+      nativeEntries = JSON.parse(await require('../src/native/binding').getNative()
         .accountSubscriptionCache(file, JSON.stringify({ operation: 'read' })));
     } catch (error) { nativeEntries = { readError: String(error) }; }
     const stamps = [file, `${file}-wal`, `${file}-shm`].map(name => {

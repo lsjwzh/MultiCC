@@ -1,6 +1,11 @@
 //! 短进程型 CLI 的环境、启动、写租约及运行器归属。
 use super::runner_context::{caught, join, undefined, RunnerContext};
-use crate::{js_iteration::read, route_response::*};
+use crate::{
+    host_methods::{arg, env as napi_env, raw},
+    js_iteration::read,
+    process_spawn_args,
+    route_response::*,
+};
 use napi_derive::napi;
 mod io;
 
@@ -89,22 +94,49 @@ fn proxy(st: RunnerContext<'_>) -> Result<()> {
     }
     Ok(())
 }
+fn spawn_args<'a>(st: RunnerContext<'a>, settings: Option<L<'a>>) -> Result<L<'a>> {
+    let custom = st.ports.get(c"processSpawnArgs")?;
+    if !custom.undefined()? {
+        return match settings {
+            Some(file) => custom.call_plain(&[st.invocation, file]),
+            None => custom.call_plain(&[st.invocation]),
+        };
+    }
+    let settings = settings.unwrap_or(undefined(st.state)?);
+    Ok(raw(
+        st.state,
+        process_spawn_args::process_spawn_args(
+            napi_env(st.state),
+            arg(st.invocation)?,
+            arg(settings)?,
+        )?,
+    ))
+}
 fn invocation<'a>(st: RunnerContext<'a>) -> Result<(L<'a>, L<'a>)> {
     let s = st.state;
     let binding = s.get(c"binding")?;
     let prepared = s.get(c"prepared")?;
-    let relay = st.port(
-        c"resolveCliRelayTarget",
-        &[
-            st.ports.get(c"providers")?,
-            st.record.get(c"cli")?,
-            binding.optional(c"providerId")?,
-        ],
-    )?;
+    let custom = st.ports.get(c"resolveCliRelayTarget")?;
+    let providers = st.ports.get(c"providers")?;
+    let cli = st.record.get(c"cli")?;
+    let id = binding.optional(c"providerId")?;
+    let relay = if custom.undefined()? {
+        raw(
+            s,
+            process_spawn_args::resolve_cli_relay_target(
+                napi_env(s),
+                arg(providers)?,
+                arg(cli)?,
+                arg(id)?,
+            )?,
+        )
+    } else {
+        custom.call_plain(&[providers, cli, id])?
+    };
     let mut args = if relay.truthy()? {
         s.from_value(&V::Array(vec![]))?
     } else {
-        st.port(c"processSpawnArgs", &[st.invocation])?
+        spawn_args(st, None)?
     };
     let env = caught(
         s,
@@ -168,34 +200,44 @@ fn invocation<'a>(st: RunnerContext<'a>) -> Result<(L<'a>, L<'a>)> {
                 &[st.session, env, settings],
             )?;
             if file.truthy()? {
-                args = st.port(c"processSpawnArgs", &[st.invocation, file])?;
+                args = spawn_args(st, Some(file))?;
             }
         }
     }
     let mut cmd = st.invocation.get(c"cmd")?;
     if relay.truthy()? {
-        let target = st.port(
-            c"applyCliRelaySpawn",
-            &[fields(
-                s,
-                &[
-                    ("target", relay),
-                    ("childEnv", env),
-                    ("cwd", st.cs.get(c"cwd")?),
-                    ("persisted", st.record),
-                    ("prepared", prepared),
-                    ("gatewayBin", st.port(c"gatewayPath", &[])?),
-                    (
-                        "rememberActiveCliState",
-                        st.ports.get(c"rememberActiveCliState")?,
-                    ),
-                    (
-                        "savePersistedSessionsBestEffort",
-                        st.ports.get(c"savePersistedSessionsBestEffort")?,
-                    ),
-                ],
-            )?],
+        let custom = st.ports.get(c"applyCliRelaySpawn")?;
+        let options = fields(
+            s,
+            &[
+                ("target", relay),
+                ("childEnv", env),
+                ("cwd", st.cs.get(c"cwd")?),
+                ("persisted", st.record),
+                ("prepared", prepared),
+                ("gatewayBin", st.port(c"gatewayPath", &[])?),
+                (
+                    "rememberActiveCliState",
+                    st.ports.get(c"rememberActiveCliState")?,
+                ),
+                (
+                    "savePersistedSessionsBestEffort",
+                    st.ports.get(c"savePersistedSessionsBestEffort")?,
+                ),
+            ],
         )?;
+        let target = if custom.undefined()? {
+            raw(
+                s,
+                process_spawn_args::apply_prepared_cli_relay(
+                    napi_env(s),
+                    arg(options)?,
+                    arg(st.ports.get(c"assignHostProperty")?)?,
+                )?,
+            )
+        } else {
+            custom.call_plain(&[options])?
+        };
         cmd = read(target, c"spawnCmd")?;
         args = read(target, c"finalSpawnArgs")?;
     } else {

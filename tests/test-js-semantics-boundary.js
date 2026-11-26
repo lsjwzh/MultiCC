@@ -21,8 +21,8 @@ const {
 const {
   messageText, buildHandoffCheckpoint, renderHandoffPrompt,
 } = require('../src/cli-switch');
-const { redactText, clipText } = require('../src/native/runtime').getEventPolicy().envelope;
-const { clipTokens, selectContext } = require('../src/native/runtime').getContextSelection();
+const { redactText, clipText } = require('../src/native/binding').getEventPolicy().envelope;
+const { clipTokens, selectContext } = require('../src/native/binding').getContextSelection();
 
 const LONE = '\ud83d';
 

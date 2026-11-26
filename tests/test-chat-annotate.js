@@ -71,7 +71,7 @@ test('export filename and capture age', () => {
 });
 
 test('agent-side contract describes the same block the editors emit', () => {
-  const { buildHumanAssistPrompt, createHostPrompts } = require('../src/native/runtime').getHostPrompts();
+  const { buildHumanAssistPrompt, createHostPrompts } = require('../src/native/binding').getHostPrompts();
   const text = buildHumanAssistPrompt('/data/assist/').join('\n');
   assert.match(text, /`\/data\/assist\/\$MULTICC_SESSION_ID\/`/);
   for (const token of ['[annotation] src=<path> size=WxH', '[/annotation]', '#n point x,y', '#n box x1,y1-x2,y2', '#n arrow x1,y1->x2,y2', ' — <note>', 'note: <overall instructions>', '[annotation-refresh] src=<path>', 'wait_for_user_answer']) {

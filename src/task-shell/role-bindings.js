@@ -1,5 +1,5 @@
 'use strict';
-const { hash, snapshotHistory, renderSnapshots } = require('../native/runtime').taskShellContext;
+const { hash, snapshotHistory, renderSnapshots } = require('../native/binding').taskShellContext;
 const fail = code => Object.assign(new Error(code), { code, status: 409 });
 
 // 角色版本、校验、快照和幂等事务由 Rust 仓储持有；这里只读取宿主默认角色。

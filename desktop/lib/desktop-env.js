@@ -89,7 +89,7 @@ function resolveDesktopEnv({
 // Every launch path starts the server behind the Rust front door
 // (docs/gateway.md §8): it owns the public port and supervises Node. There is no
 // direct `node server.js` path. It ships next to the native module, so it is
-// looked up exactly where src/native/runtime.js looks for that module.
+// looked up exactly where src/native/binding.js looks for that module.
 function gatewayBinary({ serverDir, env = process.env, platform = process.platform, arch = process.arch }) {
   const name = platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway';
   const dir = env.MULTICC_RUST_ADDON

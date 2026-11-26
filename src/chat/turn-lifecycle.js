@@ -1,6 +1,6 @@
 'use strict';
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 // The host keeps object identity; Rust owns the turn's durable/claim state.
 // Non-primitive values are retained by identity for compatibility with callers

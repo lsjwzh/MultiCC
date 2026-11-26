@@ -16,7 +16,7 @@
 //     core's deferred-probe protocol;
 //   * restores JavaScript result shapes (frozen objects, Set constants, the
 //     candidate object identity `primaryProviderCandidate` returns).
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const {
   CUSTOM_API_KEY_NAME,
   CUSTOM_GATEWAY,
@@ -26,7 +26,7 @@ const {
   JEV_GATEWAYS,
   MAX_ENDPOINT_CHARS,
 } = require('./jev-client');
-const { NATIVE_OPENCODE_ID, NATIVE_OPENCODE_PREFIX } = require('../native/runtime').getNativeOpenCodeCatalog();
+const { NATIVE_OPENCODE_ID, NATIVE_OPENCODE_PREFIX } = require('../native/binding').getNativeOpenCodeCatalog();
 const {
   MODEL_ID: NATIVE_VENDOR_MODEL_ID,
   NATIVE_VENDOR_ID,
@@ -251,27 +251,8 @@ function selectionKey(input) {
   return value == null ? null : value;
 }
 
-function providerSelectionDto(input) {
-  const value = JSON.parse(native.providerSelectionDto(request({ input: encode(input) })));
-  if (!value) return null;
-  return {
-    version: 1,
-    mode: 'auto',
-    protocol: value.protocol,
-    candidates: value.candidates.map(candidate => ({ ...candidate })),
-    maxAttempts: value.maxAttempts,
-    sticky: value.sticky,
-    preferMaxQuota: value.preferMaxQuota !== false,
-    allowCrossTrust: value.allowCrossTrust,
-    ...(value.cliSwitch ? { cliSwitch: value.cliSwitch } : {}),
-    ...(value.routing
-      ? { routing: { ...value.routing, tiers: [...value.routing.tiers] } }
-      : {}),
-    // Cosmetic provenance (which local preset this pool was saved from). Kept on
-    // the wire so every client can label the pill; absent for older records.
-    ...(value.presetId ? { presetId: value.presetId } : {}),
-  };
-}
+function providerSelectionRequest(input) { return request({ input: encode(input) }); }
+function providerSelectionDto(input) { return native.providerSelectionDtoValue(providerSelectionRequest(input)); }
 
 // `cli` scopes a cross-CLI pool to the lane the session is on: the concrete
 // fallback provider must be one that lane can actually run. The core returns
@@ -309,7 +290,7 @@ module.exports = {
   normalizeStoredProviderSelection,
   primaryProviderCandidate,
   protocolOf,
-  providerSelectionDto,
+  providerSelectionDto, providerSelectionRequest,
   selectionClis,
   selectionKey,
   trustDomainOf,

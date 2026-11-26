@@ -5,7 +5,7 @@
 // 经原生模块暴露。这里不再解析 JSON、也不自己拼路径 —— 任何账号读写规则都在 Rust。
 
 const path = require('node:path');
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 const PLUGINS_DIR = path.resolve(__dirname, '..', 'plugins');
 

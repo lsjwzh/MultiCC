@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const legacy = require('./helpers/session-runtime-busy-oracle');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 const candidate = {
   isChatStateBusy: (...args) => getNative().sessionRuntimeIsChatStateBusy(...args),

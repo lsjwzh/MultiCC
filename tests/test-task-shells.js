@@ -7,10 +7,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskShellRuntime } = require('../src/task-shell/runtime');
-const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/native/runtime').taskShellCapacity;
-const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/native/runtime').taskShellContext;
+const { MAX_TASKS_PER_DIRECTORY, directoryTaskCount } = require('../src/native/binding').taskShellCapacity;
+const { renderLazyContextPrompt, snapshotHistory, verifySnapshot, hash } = require('../src/native/binding').taskShellContext;
 const { createTaskShellHost } = require('../src/task-shell/host');
-const { taskDisplayMessages: displayMessages, taskDisplayTask: displayTask } = require('../src/native/runtime').getNative();
+const { taskDisplayMessages: displayMessages, taskDisplayTask: displayTask } = require('../src/native/binding').getNative();
 
 const { fixture } = require('./helpers/task-shell');
 const input = (key, taskId = null, extra = {}) => ({ clientMsgId: key, taskId, intent: 'work', text: key, ...extra });
@@ -188,7 +188,7 @@ test('C01 C02: immutable completed exchanges, provenance and tools; no active or
 });
 
 test('long history supplies only a bounded snapshot to the cold-start seed', t => {
-  const { createChatHistoryService } = require('../src/session/chat-history-service');
+  const { createChatHistoryService } = require('../src/session/chat-history-service/index');
   const f = fixture(t);
   const task = f.runtime.adopt(f.a.id, 'a');
   f.store.set('task', task.id, { ...task, adopted: false });
@@ -781,7 +781,7 @@ test('P1: mounting the host enforces the attribution retention window', async t 
 
 // Frozen from c880608a, with only the taskDomain import path adapted.
 const legacyCapacity = require('./helpers/legacy-task-shell-capacity');
-const nativeCapacity = require('../src/native/runtime').taskShellCapacity;
+const nativeCapacity = require('../src/native/binding').taskShellCapacity;
 
 test('Rust capacity entry preserves 80 frozen fallback projections around the directory limit', () => {
   assert.equal(nativeCapacity.MAX_TASKS_PER_DIRECTORY, legacyCapacity.MAX_TASKS_PER_DIRECTORY);
@@ -901,7 +901,7 @@ test('two-phase snapshot_live ignores discarded old content/tools getters and in
 });
 
 test('cold-cache taskContextSnapshot and handoffCheckpoint read tail from disk without loading V8 cache', t => {
-  const { createChatHistoryService } = require('../src/session/chat-history-service');
+  const { createChatHistoryService } = require('../src/session/chat-history-service/index');
   const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
   const dataDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cold-snap-')));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
@@ -964,7 +964,7 @@ test('contextSnapshots preserves exact hash and counts while skipping unrelated 
     t1.taskId,
     shellRecords(f.runtime.chatScope(f.a.id), id => f.histories.get(id) || []).filter(m => m.taskId === t1.taskId),
   );
-  const { renderSnapshots, estimateTokens } = require('../src/native/runtime').taskShellContext;
+  const { renderSnapshots, estimateTokens } = require('../src/native/binding').taskShellContext;
   const receipt = f.store.get('receipt', t2.receiptId);
   assert.equal(receipt.contextSavings.estimatedTokens, estimateTokens(renderSnapshots([expected])));
   assert.equal(expected.omittedMessages, 40);

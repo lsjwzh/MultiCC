@@ -5,10 +5,10 @@ const fs = require('node:fs'), path = require('node:path');
 const { fixture } = require('./helpers/task-shell');
 const { createFolderMemoryService } = require('../src/memory/folder-service');
 const { readMemoryFolder } = require('../src/memory-store');
-const { estimateTokens } = require('../src/native/runtime').taskShellContext;
-const selectionApi = require('../src/native/runtime').getContextSelection();
+const { estimateTokens } = require('../src/native/binding').taskShellContext;
+const selectionApi = require('../src/native/binding').getContextSelection();
 const { selectContext } = selectionApi;
-const { prepareManagedContext, contextSent, contextCompleted } = require('../src/native/runtime').managedContext;
+const { prepareManagedContext, contextSent, contextCompleted } = require('../src/native/binding').managedContext;
 
 function memoryFor(f) {
   return createFolderMemoryService({ fs, path, memoryStoreRoot: path.join(path.dirname(f.file), 'memory'),
@@ -259,7 +259,7 @@ test('separation injects only the imported exchange but explicit reads reach the
 test('oversized imported history remains parseable, verifiable and expandable with honest truncation', () => {
   const { historySnapshot } = require('../src/task-shell/history-context');
   const { boundedSnapshot } = require('../src/task-shell/context-plan');
-  const { verifySnapshot } = require('../src/native/runtime').taskShellContext;
+  const { verifySnapshot } = require('../src/native/binding').taskShellContext;
   const original = historySnapshot('task', [
     { id: 'u', role: 'user', content: '需求'.repeat(9000), contextMessageId: 's:u' },
     { id: 'a', role: 'assistant', content: '证据'.repeat(9000), partial: true, contextMessageId: 's:a' },
@@ -322,7 +322,7 @@ test('duplicate facts in two memory scopes are not reintroduced on a later turn'
 });
 
 test('ascii terms match whole words and long queries need proportional overlap', () => {
-  const { relevance, minRelevance } = require('../src/native/runtime').getContextSelection();
+  const { relevance, minRelevance } = require('../src/native/binding').getContextSelection();
   assert.equal(relevance('ok', 'token hook'), 0);
   assert.equal(relevance('ok', 'it is ok now'), 1);
   assert.equal(relevance('db-tune', 'run db-tune.'), 1);

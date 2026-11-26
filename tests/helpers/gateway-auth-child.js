@@ -8,7 +8,7 @@ const WebSocket = require('ws');
 const auth = require('../../src/auth-security');
 const { createAuthRuntime } = require('../../src/routes/auth');
 const { isLocalRequest } = require('../../src/request-locality');
-const { createErrorDto } = require('../../src/native/runtime').getApiContract();
+const { createErrorDto } = require('../../src/native/binding').getApiContract();
 const { requestIdMiddleware, safeErrorHandler } = require('../../src/http-errors');
 const security = auth.createAuthSecurity({ secret: 'fixture-token' });
 gateway.connectAuthControl(security);

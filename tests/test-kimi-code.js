@@ -17,7 +17,7 @@ process.env.HOME = fakeHome;
 delete process.env.KIMI_API_KEY;
 delete process.env.KIMI_CODE_HOME;
 
-const providers = require('../src/providers/core');
+const providers = require('../src/providers/host');
 const kimiAuth = require('../src/cli-adapters/kimi-auth');
 const { mountKimiAuthRoutes } = require('../src/routes/kimi-auth');
 
@@ -27,7 +27,7 @@ test('registration chain exposes kimi across every integration point', () => {
   const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
   assert.equal(SUPPORTED_CHAT_CLIS.includes('kimi'), true);
 
-  const { SUPPORTED_CLIS } = require('../src/native/runtime').getSessionDto();
+  const { SUPPORTED_CLIS } = require('../src/native/binding').getSessionDto();
   assert.equal(SUPPORTED_CLIS.has('kimi'), true);
 
   const schema = JSON.parse(fs.readFileSync(

@@ -97,6 +97,9 @@ const NO_TOOLS = 'Command failed: git init\n'
   // note, pops an install dialog and exits non-zero — reported from a fresh
   // install where the user reasonably concluded MultiCC (or Node) was at fault.
   {
+    const combined = new Error('xcrun: error: invalid active developer path: Permission denied');
+    ok(isPermissionDeniedGitError(combined) && isDeveloperToolsMissingGitError(combined),
+      'classify: combined Git failure matches both independent predicates');
     ok(isDeveloperToolsMissingGitError({ stderr: NO_TOOLS }),
       'classify: xcode-select install note → developer tools missing');
     ok(isDeveloperToolsMissingGitError(new Error(

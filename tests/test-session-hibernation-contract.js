@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { toSessionDto } = require('../src/native/runtime').getSessionDto();
+const { toSessionDto } = require('../src/native/binding').getSessionDto();
 
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 
@@ -29,7 +29,7 @@ test('host composition gates every real ingress and keeps view paths passive', (
   const server = read('server.js');
   const engine = read('src/chat/turn-engine-host.js');
   const cron = read('plugins/cron/cron-tasks.js');
-  const board = read('src/routes/task-board.js');
+  const board = read('native/addon/src/task_board_runtime/projection/view.rs');
   assert.match(server, /reconcileStartup\(\).*initWorktrees/s);
   assert.match(engine, /getSessionHibernation/);
   const admission = read('native/addon/src/chat_work_admission.rs');
@@ -44,7 +44,7 @@ test('host composition gates every real ingress and keeps view paths passive', (
     'central cron must not rotate through unbound compatibility chat sessions');
   assert.doesNotMatch(cron, /deps\.runChatTurn\(/);
   assert.match(board, /workspaceState/);
-  const view = board.slice(board.indexOf('async function handleChatSession'), board.indexOf('async function handleCancelRun'));
+  const view = read('native/addon/src/task_board_runtime/lifecycle/binding.rs');
   assert.doesNotMatch(view, /ensureAwake|thaw/i, 'opening a task chat must not thaw it');
 });
 

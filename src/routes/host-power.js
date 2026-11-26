@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { createUnlockPassword } = require('../macos-unlock-password');
 const { createUnlockProbe } = require('../macos-unlock-probe');
 

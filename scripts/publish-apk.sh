@@ -119,7 +119,7 @@ TMP_SHA1="${DEST}.sha1.tmp.$$"
 TMP_SHA256="${DEST}.sha256.tmp.$$"
 TMP_JSON="${DEST}.json.tmp.$$"
 LOCK_FILE="${MULTICC_APK_BUILD_LOCK:-}"
-if [ -z "$LOCK_FILE" ] && command -v node >/dev/null 2>&1 && [ -f "$ROOT/src/paths.js" ]; then
+if [ -z "$LOCK_FILE" ] && command -v node >/dev/null 2>&1 && [ -f "$ROOT/src/paths/index.js" ]; then
   LOCK_FILE="$(cd "$ROOT" && node -e 'const p=require("path"),{createPaths}=require("./src/paths");process.stdout.write(p.join(createPaths({dataDir:process.env.MULTICC_DATA_DIR}).detachedDir,"apk-build.lock"))' 2>/dev/null || true)"
 fi
 LOCK_FILE="${LOCK_FILE:-${HOME:-$ROOT}/.multicc/detached/apk-build.lock}"

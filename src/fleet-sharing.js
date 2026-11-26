@@ -5,7 +5,7 @@
 // durable writes. Imported workspaces and uploads are owned by the gateway;
 // this facade supplies only the source workspace live directory/session ports.
 
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 const SCHEMA_VERSION = 1;
 const TOKEN_RE = /^fleet_share_[A-Za-z0-9_-]{24,96}$/;

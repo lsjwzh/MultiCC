@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createOfficialAccountStore, officialAccountIdFromProvider } = require('../official-accounts');
 const { isOfficialCodexOAuthProvider } = require('./official-relay');
-const native = require('../native/runtime');
+const native = require('../native/binding');
 
 function unavailable(code = 'native_unavailable') {
   return { models: [], fetchedAt: 0, cliVersion: '', stale: true,
@@ -20,7 +20,7 @@ function createCodexAccountModelCatalogRuntime(options = {}) {
   const pending = new Map(); // 仅跟踪原生调用生命周期，供前端判断后台加载状态。
   const getNative = options.getNative || native.getNative;
   const runNative = options.runNative || native.runNative;
-  const providers = () => options.providers || require('../providers/core');
+  const providers = () => options.providers || require('../providers/host');
   let egress;
 
   function resolveProvider(value = 'codex-official') {

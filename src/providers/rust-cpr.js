@@ -4,7 +4,7 @@
 // Rust 持有存储鉴权、凭据读取、候选尝试状态、协议和上游传输。
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 function createRustCprRouter(router, { native, env = process.env } = {}) {
   const unavailable = () => new Error('Rust CPR 模块不可用或版本不匹配，请重新构建 Rust 模块');

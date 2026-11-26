@@ -297,7 +297,7 @@ test('the front door is found where the native module is, and a missing one refu
   assert.equal(desktopEnv.gatewayBinary({ serverDir, env: {}, platform: 'darwin', arch: 'arm64' }), prebuilt);
   assert.equal(desktopEnv.gatewayBinary({ serverDir, env: {}, platform: 'win32', arch: 'x64' }),
     path.join(serverDir, 'native', 'prebuilt', 'win32-x64', 'multicc-gateway.exe'));
-  // Same precedence as src/native/runtime.js: an explicit addon, then a prebuilt dir.
+  // Same precedence as src/native/binding.js: an explicit addon, then a prebuilt dir.
   assert.equal(desktopEnv.gatewayBinary({ serverDir, env: { MULTICC_RUST_ADDON: '/cache/x/darwin-arm64/multicc_core.node' },
     platform: 'darwin', arch: 'arm64' }), path.resolve('/cache/x/darwin-arm64/multicc-gateway'));
   assert.equal(desktopEnv.gatewayBinary({ serverDir, env: { MULTICC_RUST_PREBUILT_DIR: '/ci/prebuilt' },
@@ -706,7 +706,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     '--out', path.join(out, 'app-server'), '--no-install'], { encoding: 'utf8' });
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
   const staged = path.join(out, 'app-server');
-  for (const must of ['server.js', 'src/paths.js', 'public/air.html', 'public/chat.html',
+  for (const must of ['server.js', 'src/paths/index.js', 'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js',
     // The offline fallback the voice panel names when the in-app download keeps
     // failing. Without it in the bundle, on-device ASR is unreachable on every
@@ -751,7 +751,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
 function stubRepoRoot(dir) {
   fs.writeFileSync(path.join(dir, 'package.json'),
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
-  for (const rel of ['server.js', 'src/paths.js', 'public/chat.html', 'public/air.html',
+  for (const rel of ['server.js', 'src/paths/index.js', 'public/chat.html', 'public/air.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'src/voice/asr-model-installer.js', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
     'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
@@ -910,7 +910,7 @@ test('packaged dependency gate checks cross-arch trees and detects transitive lo
   const { stageRustKernels } = require('../scripts/stage-rust-kernels');
   const rustFile = stageRustKernels({ repoRoot: ROOT, out: path.join(resources, 'app-server'), logger: { log() {} } });
   writeBundleFile(resources, 'app-server/src/sqlite/driver.js', fs.readFileSync(path.join(ROOT, 'src/sqlite/driver.js')));
-  writeBundleFile(resources, 'app-server/src/native/runtime.js', fs.readFileSync(path.join(ROOT, 'src/native/runtime.js')));
+  writeBundleFile(resources, 'app-server/src/native/binding.js', fs.readFileSync(path.join(ROOT, 'src/native/binding.js')));
   if (process.platform === 'win32') fs.copyFileSync(process.execPath, runtime);
   else {
     // Homebrew Node relies on dylibs relative to its real executable; copying

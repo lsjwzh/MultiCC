@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const historyFrameApi = require('../src/native/runtime').historyFrame;
+const historyFrameApi = require('../src/native/binding').historyFrame;
 const { fitHistoryFrame } = historyFrameApi;
 const { DEFAULTS, installWsBackpressure } = require('./helpers/legacy-ws-backpressure');
 

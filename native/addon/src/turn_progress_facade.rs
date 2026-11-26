@@ -25,10 +25,15 @@ fn number_option<'a>(obj: L<'a>, key: &CStr, fallback: f64) -> Result<L<'a>> {
         num(obj, read(obj, key)?.explicit_number()?)
     }
 }
-fn new_owner<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
+fn new_owner(opts: L<'_>) -> Result<L<'_>> {
+    use napi::bindgen_prelude::ToNapiValue;
     let interval = number_option(opts, c"intervalMs", DEFAULT_INTERVAL_MS)?;
     let max = number_option(opts, c"maxIdentities", DEFAULT_MAX_IDENTITIES)?;
-    root.get(c"ctor")?.construct(&[interval, max])
+    let record =
+        crate::turn_progress::RustTurnProgress::with_limits(interval.number()?, max.number()?);
+    let handle =
+        unsafe { crate::turn_progress::RustTurnProgress::to_napi_value(opts.env(), record)? };
+    Ok(L::from_raw(opts.env(), handle))
 }
 fn func(value: L<'_>) -> Result<bool> {
     Ok(value.kind()? == sys::ValueType::napi_function)
@@ -79,7 +84,7 @@ fn timeline<'a>(root: L<'a>, owner: L<'a>) -> Result<L<'a>> {
                 let root = s.get(c"root")?;
                 owner = root.get(c"shared")?;
                 if !owner.truthy()? {
-                    owner = new_owner(root, fields(s, &[])?)?;
+                    owner = new_owner(fields(s, &[])?)?;
                     root.set(c"shared", owner)?;
                 }
             }
@@ -100,7 +105,7 @@ fn timeline<'a>(root: L<'a>, owner: L<'a>) -> Result<L<'a>> {
 fn registry_owner(s: L<'_>) -> Result<L<'_>> {
     let mut owner = s.get(c"owner")?;
     if !owner.truthy()? {
-        owner = new_owner(s.get(c"root")?, s.get(c"options")?)?;
+        owner = new_owner(s.get(c"options")?)?;
         s.set(c"owner", owner)?;
     }
     Ok(owner)
@@ -259,7 +264,7 @@ fn timing<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
 }
 
 fn progress<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
-    let owner = new_owner(root, opts)?;
+    let owner = new_owner(opts)?;
     let state = fields(root, &[("root", root), ("owner", owner)])?;
     let out = fields(root, &[("owner", owner)])?;
     for name in ["heartbeat", "timeline", "timing", "deliveryProbe"] {
@@ -289,14 +294,10 @@ fn progress<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
 }
 
 #[napi]
-pub fn turn_progress_api(
-    env: Env,
-    addon: Unknown<'_>,
-    make_class: Unknown<'_>,
-) -> Result<sys::napi_value> {
+pub fn turn_progress_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_value> {
     let addon = L::new(&env, addon);
-    let root = fields(addon, &[("ctor", addon.get(c"RustTurnProgress")?)])?;
-    let ctor = heartbeat::class(root, L::new(&env, make_class))?;
+    let root = fields(addon, &[])?;
+    let ctor = heartbeat::class(root)?;
     root.set(c"heartbeat", ctor)?;
     let out = fields(
         root,

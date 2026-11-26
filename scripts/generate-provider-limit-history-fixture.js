@@ -26,7 +26,7 @@ const { spawnSync } = require('node:child_process');
 const root = path.join(__dirname, '..');
 const target = path.join(root, 'native', 'gateway', 'tests', 'fixtures', 'provider-limit-history.json');
 const ORACLE_PATH = path.join(root, 'tests', 'helpers', 'legacy-provider-limit-history-route.js');
-const RUNTIME_PATH = path.join(root, 'src', 'native', 'runtime.js');
+const RUNTIME_PATH = path.join(root, 'src', 'native', 'binding.js');
 
 const DAY = 24 * 60 * 60 * 1000;
 const RETENTION = 14 * DAY;
@@ -186,7 +186,7 @@ async function mountApp(dataRoot, historyFile, base) {
   process.env.MULTICC_DATA_DIR = dataRoot;
   const express = require('express');
   const ORACLE = require(ORACLE_PATH);
-  const providers = require(path.join(root, 'src', 'providers', 'core.js'));
+  const providers = require(path.join(root, 'src', 'providers', 'host.js'));
   providers.enableUnifiedOfficialProviders();
   const history = ORACLE.createLegacyProviderQuotaHistory({
     file: historyFile,

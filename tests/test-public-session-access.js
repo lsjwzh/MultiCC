@@ -7,8 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
-const { createErrorDto, requestContext } = require('../src/native/runtime').getApiContract();
-const { getNative } = require('../src/native/runtime');
+const { createErrorDto, requestContext } = require('../src/native/binding').getApiContract();
+const { getNative } = require('../src/native/binding');
 const legacyPublicAccess = require('./helpers/legacy-public-session-access');
 const publicAccessApi = () => getNative().sessionPublicAccessApi();
 const isInternalExecutionSlot = record => publicAccessApi().isInternalExecutionSlot(record);
@@ -96,7 +96,7 @@ test('internal execution slot discriminator is narrow and reusable by WS admissi
 
   const frames = [], ws = { close() { frames.push('close'); } };
   const ports = { persistedSessions: new Map(), invalidSessions: new Map(), sendWs: (_, frame) => frames.push(frame) };
-  const open = () => require('../src/native/runtime').getNative().chatOpenSocket(
+  const open = () => require('../src/native/binding').getNative().chatOpenSocket(
     ports, ws, {}, new URL('http://localhost/ws/chat?session=s'));
   assert.equal(open().closed, true);
   const missing = frames.splice(0);

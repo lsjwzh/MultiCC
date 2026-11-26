@@ -4,7 +4,7 @@
 const crypto = require('node:crypto');
 const {
   OrchestrationStoreCorruptError, _initialState: initialState, _validateState: validateState,
-} = require('../../src/orchestration/store');
+} = require('../../src/orchestration/json-store-host');
 const DATABASE_SCHEMA_VERSIONS = new Set([1, 2]);
 const COLLECTIONS = Object.freeze([
   'waits',

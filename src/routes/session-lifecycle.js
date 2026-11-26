@@ -1,7 +1,7 @@
 'use strict';
 
 const { createCodexRolloutGuard } = require('../chat/codex-rollout-guard');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 // Single-session lifecycle routes: DELETE /api/sessions/:id (cascades through
 // the session's worktree, tmux pane and chat process), POST .../relocate

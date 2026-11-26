@@ -10,7 +10,7 @@ const {
   FALLBACK_LIMIT,
   createOpencodeModelLimitResolver,
   resolveOpenCodeModelLimit,
-} = require('../src/native/runtime').openCodeModelLimits;
+} = require('../src/native/binding').openCodeModelLimits;
 
 test('catalog lookup keeps exact ids, individual getter reads and inherited entries', () => {
   for (const context of [0, null, 1, 65536, 1.5, 1e21, '7']) {

@@ -7,7 +7,7 @@
 // create-record 的参数默认值里写，但「字段缺失怎么读」散在 Air 视图模型 / App
 // 的 Session 解析里（`!= false` = 缺键算开），两边必须一致。
 const test = require('node:test'), assert = require('node:assert/strict');
-const createSessionRecordFactory = deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, require('node:path'));
+const createSessionRecordFactory = deps => require('../src/native/binding').getNative().sessionCreateRecordFactory(deps, require('node:path'));
 // src/session 不能 require 车道表（bounded context），所以由组合根注入；这里给真表，
 // 免得桩掉之后 streaming 这类字段在测试里和生产不一致。
 const { isResidentSession } = require('../src/cli/cli-capability');
@@ -123,7 +123,7 @@ test('Air task-shell executions inherit the auto-commit default instead of forci
 
 // 「缺字段怎么读」在每个对外投影里都得是「开」，否则同一条记录在不同入口显示不一样。
 test('every session projection reads a missing autoCommit as ON', () => {
-  const { toSessionDto } = require('../src/native/runtime').getSessionDto();
+  const { toSessionDto } = require('../src/native/binding').getSessionDto();
   {
     assert.equal(toSessionDto({ id: 's', kind: 'chat', cli: 'claude', dirId: 'd' }).autoCommit, true);
     assert.equal(toSessionDto({ id: 's', kind: 'chat', cli: 'claude', dirId: 'd', autoCommit: false }).autoCommit, false);

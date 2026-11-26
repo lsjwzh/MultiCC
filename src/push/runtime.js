@@ -1,9 +1,9 @@
 'use strict';
 
-const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
+const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { isSettledLetter } = require('../classify/vocab');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
-const { notificationCopy } = require('../native/runtime').getPushNotificationCopy();
+const { notificationCopy } = require('../native/binding').getPushNotificationCopy();
 const channelRegistry = require('../plugins/channel-registry');
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;

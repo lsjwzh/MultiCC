@@ -157,3 +157,88 @@ fn call_hook<'a>(
     }
     function.call_plain(args)
 }
+
+#[napi]
+pub fn adapter_completion_api(e: Env, assign: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::{
+        host_methods::{arg, env, function, raw},
+        route_response::{call, fields, flag},
+    };
+    let assign = LiveValue::new(&e, assign);
+    let finalize = function(assign, "finalizeCompletionStream", 2, 2, |assign, a| {
+        let opts = a[1];
+        let ports = fields(
+            assign,
+            &[
+                ("runner", read(opts, c"runner")?),
+                ("finalize", read(opts, c"finalize")?),
+                ("onRejected", read(opts, c"onRejected")?),
+                ("onFinalizeError", read(opts, c"onFinalizeError")?),
+                ("logger", read(opts, c"logger")?),
+                ("assignHostProperty", assign),
+            ],
+        )?;
+        let ready = function(ports, "", 0, 0, |p, _| {
+            Ok(raw(
+                p,
+                cli_settle_completion_stream(
+                    env(p),
+                    arg(p)?,
+                    false,
+                    arg(p.from_value(&JsValue::Undefined)?)?,
+                )?,
+            ))
+        })?;
+        let rejected = function(ports, "", 1, 1, |p, a| {
+            Ok(raw(
+                p,
+                cli_settle_completion_stream(env(p), arg(p)?, true, arg(a[0])?)?,
+            ))
+        })?;
+        let chain = call(a[0], c"then", &[ready, rejected])?;
+        let failed = function(ports, "", 1, 1, |p, a| {
+            Ok(raw(
+                p,
+                cli_fail_completion_stream(env(p), arg(p)?, arg(a[0])?)?,
+            ))
+        })?;
+        call(chain, c"catch", &[failed])
+    })?;
+    Ok(fields(
+        assign,
+        &[
+            (
+                "settleAdapterCompletion",
+                function(assign, "settleAdapterCompletion", 3, 3, |s, a| {
+                    settle(a[0], a[1], a[2], s)
+                })?,
+            ),
+            (
+                "canPersistAdapterCompletion",
+                function(assign, "canPersistAdapterCompletion", 3, 3, |s, a| {
+                    flag(
+                        s,
+                        super::cli_can_persist_completion(
+                            env(s),
+                            arg(a[0])?,
+                            arg(a[1])?,
+                            arg(a[2])?,
+                        )?,
+                    )
+                })?,
+            ),
+            ("finalizeCompletionStream", finalize),
+            (
+                "isProxyFailureCompatibleWithCompletion",
+                function(
+                    assign,
+                    "isProxyFailureCompatibleWithCompletion",
+                    2,
+                    2,
+                    |s, a| flag(s, super::compatible(a[0], a[1])?),
+                )?,
+            ),
+        ],
+    )?
+    .raw())
+}

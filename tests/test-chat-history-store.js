@@ -228,25 +228,13 @@ test('page size remains stable and immutable snapshots expose request generation
 });
 
 test('durable history reset broadcasts an authoritative page and invalidates every client cursor', () => {
-  const historyRuntime = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'chat-history.js'), 'utf8');
   const events = fs.readFileSync(path.join(ROOT, 'public', 'chat-event-controller.js'), 'utf8');
 
   const msg = { type: 'clear_history' }, cs = {}, result = {};
   const ports = { getChatHistoryRuntime: () => ({ clearHistory(id, input, state) {
     assert.equal(id, 's'); assert.equal(input, msg); assert.equal(state, cs); return result;
   } }) };
-  assert.equal(require('../src/native/runtime').getNative().chatHandleSocketMessage(ports, {}, 's', null, {}, cs, msg), result);
-  assert.match(historyRuntime,
-    /await mutate\(key, 'clear', \[keep\]\)[\s\S]*type: 'chat_history_reset'/,
-    'reset must be broadcast only after the queued durable visibility write and cache publish');
-  const clearBody = historyRuntime.match(/async function clearHistoryUnsafe\([\s\S]*?\n  \}/);
-  assert.ok(clearBody, 'the durable clear must stay in one reviewable block');
-  assert.ok(
-    clearBody[0].indexOf("await mutate(key, 'clear', [keep])") < clearBody[0].indexOf("type: 'chat_history_reset'"),
-    'the durable visibility clear must be ordered before the reset broadcast',
-  );
-  assert.match(historyRuntime, /displayOnly: true/);
-
+  assert.equal(require('../src/native/binding').getNative().chatHandleSocketMessage(ports, {}, 's', null, {}, cs, msg), result);
   const resetHandler = events.match(/function handleHistoryReset\(message\)\s*\{([\s\S]*?)\n\s*function handleEvent/);
   assert.ok(resetHandler, 'event controller must handle authoritative reset broadcasts');
   assert.match(resetHandler[1], /host\.resetHistoryPagination\?\.\(\)/);

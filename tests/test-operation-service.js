@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOperationService, OperationConflictError } = require('../src/operation-service');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const Database = require('better-sqlite3');
 const { createLegacyOperationAdmission } = require('./helpers/legacy-operation-admission');
@@ -310,7 +310,7 @@ test('operation admission does not invoke inherited toJSON on the original input
 
 test('native admission byte transport rejects invalid data and snapshots buffer input', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-admit-buffer-'));
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const store = new native.RustOrchestrationStore(path.join(dir, 'state.sqlite'), null, Date.now(), { env: {}, policy: {} });
   t.after(async () => { await store.requestAsync('close', {}); fs.rmSync(dir, { recursive: true, force: true }); });
   const input = { id: 'op_buffer', idValueJson: '"op_buffer"', kind: 'detached',

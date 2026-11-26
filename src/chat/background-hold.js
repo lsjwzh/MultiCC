@@ -23,7 +23,7 @@
 // silently.
 
 const { isMainResult } = require('../cli-adapters/result-completion');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const QUIET_MS = 5000;
 const TICK_MS = 1000;

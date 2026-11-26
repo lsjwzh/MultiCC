@@ -40,7 +40,7 @@ const DEFAULTS = Object.freeze({
   idleRecentMs: 10 * 60_000,
 });
 
-const { getTurnProgress } = require('../native/runtime');
+const { getTurnProgress } = require('../native/binding');
 
 function assertFn(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[liveness] ${name} must be a function`);

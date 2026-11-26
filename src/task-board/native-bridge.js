@@ -1,6 +1,6 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const planning = require('./planning');
 const { taskDomain, replace } = require('../native/task-domain');
 // 原生返回值回填已有对象，保持宿主观察者持有的任务引用。

@@ -9,7 +9,7 @@
 // (src/session/records.js) and the directory facade (src/directory/records.js)
 // both receive this object rather than reaching for each other.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { corruptedStateError, loadDirectories } = require('../directory/records');
 
 function createStateOwner() {

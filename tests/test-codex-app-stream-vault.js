@@ -18,7 +18,7 @@ const { createCodexAppStream } = require('../src/chat/codex-app-stream');
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
 const BRIDGE = 'codex-app-bridge';
-const BRIDGE_CMD = require('../src/native/runtime').gatewayPath();
+const BRIDGE_CMD = require('../src/native/binding').gatewayPath();
 
 function createFixture(name) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `multicc-codex-vault-${name}-`));

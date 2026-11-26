@@ -14,15 +14,15 @@ const path = require('node:path');
 const { fixture: shellFixture } = require('./helpers/task-shell');
 const { createFolderMemoryService } = require('../src/memory/folder-service');
 const { readMemoryFolder } = require('../src/memory-store');
-const { estimateTokens, verifySnapshot } = require('../src/native/runtime').taskShellContext;
+const { estimateTokens, verifySnapshot } = require('../src/native/binding').taskShellContext;
 const { historySnapshot } = require('../src/task-shell/history-context');
 const { boundedSnapshot, boundedHandoff } = require('../src/task-shell/context-plan');
-const { prepareManagedContext } = require('../src/native/runtime').managedContext;
+const { prepareManagedContext } = require('../src/native/binding').managedContext;
 const {
   createHostPrompts,
   buildSubagentProviderHint,
   buildPlanProgressPrompt,
-} = require('../src/native/runtime').getHostPrompts();
+} = require('../src/native/binding').getHostPrompts();
 
 const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'large-context-sanitized.json');
 const DATA = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));

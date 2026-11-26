@@ -11,7 +11,7 @@ const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
 const { createVoiceLaunchRegistry } = require('./launch');
 const { createVoiceRouterProvisioner } = require('./router');
 const { createAsrModelInstaller } = require('./asr-model-installer');
-const { resolveDirectoryCommander } = require('../task-board/core');
+const { resolveDirectoryCommander } = require('../task-board/core/index');
 
 const DEFAULT_MODEL = 'qwen-audio-3.0-realtime-plus';
 const DEFAULT_VOICE = 'longanqian';

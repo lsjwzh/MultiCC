@@ -231,3 +231,53 @@ pub fn chat_acknowledge_delivered_effect(
     )?
     .raw())
 }
+
+mod facade {
+    use crate::{
+        host_methods::{arg, args_default, env, function, raw},
+        route_response::*,
+    };
+    use napi_derive::napi;
+    #[napi]
+    pub fn post_turn_api(e: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
+        use super as post;
+        let h = L::new(&e, anchor);
+        Ok(fields(
+            h,
+            &[
+                (
+                    "routePostTurn",
+                    function(h, "routePostTurn", 0, 1, |s, a| {
+                        Ok(raw(
+                            s,
+                            post::chat_route_post_turn(env(s), args_default(a[0])?)?,
+                        ))
+                    })?,
+                ),
+                (
+                    "createDeliveryProof",
+                    function(h, "createDeliveryProof", 0, 1, |s, a| {
+                        Ok(raw(
+                            s,
+                            post::chat_create_delivery_proof(env(s), args_default(a[0])?)?,
+                        ))
+                    })?,
+                ),
+                (
+                    "acknowledgeDeliveredEffect",
+                    function(h, "acknowledgeDeliveredEffect", 2, 2, |s, a| {
+                        Ok(raw(
+                            s,
+                            post::chat_acknowledge_delivered_effect(
+                                env(s),
+                                arg(a[0])?,
+                                arg(a[1])?,
+                            )?,
+                        ))
+                    })?,
+                ),
+            ],
+        )?
+        .raw())
+    }
+}

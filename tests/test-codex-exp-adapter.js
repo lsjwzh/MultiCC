@@ -7,9 +7,9 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { addUsage, appServerUsage, createCodexExpAdapter, isReconnectProgress, requestUserInputEvent } = require('../src/native/runtime').codexAppAdapter;
+const { addUsage, appServerUsage, createCodexExpAdapter, isReconnectProgress, requestUserInputEvent } = require('../src/native/binding').codexAppAdapter;
 const { appendAdapterAssistantText } = require('../src/chat/turn-engine-host');
-const createSessionRecordFactory = deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, require('node:path'));
+const createSessionRecordFactory = deps => require('../src/native/binding').getNative().sessionCreateRecordFactory(deps, require('node:path'));
 const { isResidentSession } = require('../src/cli/cli-capability');
 const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 
@@ -152,7 +152,7 @@ if(m.method==='thread/resume')process.stdout.write(JSON.stringify({id:m.id,resul
 if(m.method==='turn/start'){process.stdout.write(JSON.stringify({id:m.id,result:{turn:{id:'turn-live'}}})+'\\n');process.stdout.write(JSON.stringify({method:'item/agentMessage/delta',params:{itemId:'a',delta:'OK'}})+'\\n');process.stdout.write(JSON.stringify({method:'turn/completed',params:{turn:{id:'turn-live',status:'completed'}}})+'\\n');}});
 setInterval(()=>{},1000);
 `, { mode: 0o755 });
-    const result = spawnSync(require('../src/native/runtime').gatewayPath(), [
+    const result = spawnSync(require('../src/native/binding').gatewayPath(), [
       'codex-app-bridge',
       '--codex-bin', fakeCodex, '--', 'hello bridge',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile }, encoding: 'utf8', timeout: 10_000 });
@@ -163,7 +163,7 @@ setInterval(()=>{},1000);
     assert.deepEqual(requests.filter(item => item.id).map(item => item.method), ['initialize', 'thread/start', 'turn/start']);
     assert.equal(requests.find(item => item.method === 'turn/start').params.input[0].text, 'hello bridge');
 
-    const resumed = spawnSync(require('../src/native/runtime').gatewayPath(), [
+    const resumed = spawnSync(require('../src/native/binding').gatewayPath(), [
       'codex-app-bridge',
       '--codex-bin', fakeCodex, '--thread-id', 'thread-live', '--', 'hello again',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile }, encoding: 'utf8', timeout: 10_000 });
@@ -173,7 +173,7 @@ setInterval(()=>{},1000);
     assert.equal(resume.params.threadId, 'thread-live');
     assert.equal(resume.params.excludeTurns, true);
 
-    const unsupported = spawnSync(require('../src/native/runtime').gatewayPath(), [
+    const unsupported = spawnSync(require('../src/native/binding').gatewayPath(), [
       'codex-app-bridge',
       '--codex-bin', fakeCodex, '--', 'old version',
     ], { cwd: root, env: { ...process.env, FAKE_CODEX_LOG: logFile, FAKE_CODEX_VERSION: '0.153.9' }, encoding: 'utf8', timeout: 10_000 });
@@ -207,7 +207,7 @@ function frozenCodexAdapter() {
 }
 
 test('Rust Codex exec adapter matches frozen terminal, invocation, usage and shared MCP helpers', () => {
-  const native = require('../src/native/runtime').codexAdapter, oracle = frozenCodexAdapter();
+  const native = require('../src/native/binding').codexAdapter, oracle = frozenCodexAdapter();
   for (const first of [false, true]) for (const effort of [null, 'high']) for (const hints of [false, true]) {
     const run = make => {
       const trace = [];
@@ -231,7 +231,7 @@ test('Rust Codex exec adapter matches frozen terminal, invocation, usage and sha
 });
 
 test('Rust Codex decoder matches every frozen event branch and preserves opaque tool arguments', () => {
-  const native = require('../src/native/runtime').codexAdapter, oracle = frozenCodexAdapter();
+  const native = require('../src/native/binding').codexAdapter, oracle = frozenCodexAdapter();
   const options = { cmd: 'codex', isResponseCompletedDisconnect: text => /response-disconnect/.test(text), isTransportDisconnect: text => /transport-disconnect/.test(text) };
   const current = native.createCodexAdapter(options), legacy = oracle.createCodexAdapter(options);
   const items = [
@@ -263,7 +263,7 @@ test('Rust shared MCP text keeps filter and text getter ordering', () => {
     const output = api.mcpResultText({ result: { content } });
     return { output, trace };
   };
-  assert.deepEqual(run(require('../src/native/runtime').codexAdapter), run(frozenCodexAdapter()));
+  assert.deepEqual(run(require('../src/native/binding').codexAdapter), run(frozenCodexAdapter()));
 });
 
 function frozenCodexAppAdapter() {
@@ -274,14 +274,14 @@ function frozenCodexAppAdapter() {
   const legacy = new Module(filename); legacy.filename = filename;
   legacy.paths = Module._nodeModulePaths(path.dirname(filename));
   const originalRequire = legacy.require.bind(legacy);
-  legacy.require = name => name === '../native/runtime' ? { codexAdapter: frozenCodexAdapter() }
+  legacy.require = name => name === '../native/binding' ? { codexAdapter: frozenCodexAdapter() }
     : name === '../message-composer' ? require('./helpers/legacy-message-composer') : originalRequire(name);
   legacy._compile(source, filename);
   return legacy.exports;
 }
 
 test('Rust app-server 调用与纯函数逐项匹配冻结版本，保留实时依赖和方法接收者', () => {
-  const oracle = frozenCodexAppAdapter(), native = require('../src/native/runtime').codexAppAdapter;
+  const oracle = frozenCodexAppAdapter(), native = require('../src/native/binding').codexAppAdapter;
   for (const first of [false, true]) for (const effort of [null, 'high']) for (const hints of [false, true]) {
     const run = api => {
       const trace = [], deps = { bridge: '/bridge', codexCmd: '/codex', tag: 'live',
@@ -435,7 +435,7 @@ test('Rust 进程桥与冻结 Node 桥的通知原始字节及 RPC 副作用一�
   try {
     const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
     const binary = writeFakeAppServer(root), legacy = legacyBridgeCommand(root);
-    const rust = { cmd: require('../src/native/runtime').gatewayPath(), args: ['codex-app-bridge'] };
+    const rust = { cmd: require('../src/native/binding').gatewayPath(), args: ['codex-app-bridge'] };
     for (const scenario of [
       {}, { prompt: '--help' }, { prompt: '--version' }, { args: ['--thread-id', 'saved'] }, { env: { FAKE_CODEX_REJECT: 'thread/start' } },
       { env: { FAKE_CODEX_VERSION: '0.153.9' } },

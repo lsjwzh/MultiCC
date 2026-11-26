@@ -25,7 +25,7 @@ async function exercise(api, input) {
   let initialized;
   try { await control.initialized; initialized = { ok: true }; }
   catch (error) { initialized = { name: error.name, message: error.message, code: error.code }; }
-  const { CALLBACK_ID } = require('../../src/native/runtime').getMonitorAdmission();
+  const { CALLBACK_ID } = require('../../src/native/binding').getMonitorAdmission();
   const event = { type: input.mode === 5 ? 'other' : 'control_request', request_id: 'hook-42',
     request: { subtype: 'hook_callback', callback_id: input.mode === 4 ? 'other' : CALLBACK_ID,
       input: { source: input.mode === 6 ? 'user' : 'cli', hook_event_name: 'UserPromptSubmit',

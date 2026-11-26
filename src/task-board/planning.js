@@ -1,6 +1,6 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { taskDomain, replace, boardStoreOf } = require('../native/task-domain');
 const TASK_BOARD_SCHEMA_VERSION = 2;
 const TASK_RECORD_TYPES = new Set(['planned', 'observed']);

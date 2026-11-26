@@ -10,7 +10,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { createClassifyStateMachine } = require('../src/classify/state-machine');
+const { createClassifyStateMachine } = require('../src/classify/task-attribution');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
 const { createUnattendedHost } = require('../src/unattended/host');
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
@@ -154,7 +154,7 @@ function fixture({
     chatBroadcast: (_sessionId, event) => observed.broadcasts.push(event),
     workspaceBroadcast() {},
     terminalBroadcast() {},
-    triggerPush: (_sessionId, type, message) => observed.pushes.push([type, message]),
+    triggerPush: (_sessionId, ...args) => observed.pushes.push(args),
     evaluateTurnApiError(args) { observed.evaluated += 1; observed.evaluatedRaw.push(args); },
     turnHasSideEffects: () => false,
     retryNotice: () => '上游 API 请求失败，未自动重试。检查错误详情后决定是否手动重试',
@@ -639,6 +639,7 @@ test('a W settle also holds its waiting push; a B settle never does', () => {
   background.machine.classifyTurnEnd(background.chatState, 's1', { classification: 'succeeded' });
   assert.equal(background.record.taskState.classifyState, 'B');
   assert.equal(background.observed.pushes.length, 1, 'B is owned by its own policy and still pushes');
+  assert.deepEqual(background.observed.pushes[0][2], { classifyState: 'B' });
   assert.equal(settled.length, 0);
 });
 

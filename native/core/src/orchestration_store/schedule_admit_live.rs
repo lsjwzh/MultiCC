@@ -298,6 +298,29 @@ pub(super) fn public_schedule(
     schedule: &JsValue,
     queue: &[JsValue],
 ) -> Result<JsValue> {
+    let active = field(schedule, "active");
+    let mut item = None;
+    if truthy(&active) && !truthy(&field(&active, "startedAt")) {
+        if let JsValue::String(id) =
+            fallback(field(&active, "deliveryId"), field(&active, "entryId"))
+        {
+            if id.is_well_formed() {
+                item = record::get_json(connection, "outbox", &id.to_string_lossy(), &[])?
+                    .as_deref()
+                    .map(record::parse)
+                    .transpose()?;
+            }
+        }
+    }
+    project_schedule(schedule, queue, item.as_ref())
+}
+
+/// Shared public projection for committed rows and transaction-local drafts.
+pub fn project_schedule(
+    schedule: &JsValue,
+    queue: &[JsValue],
+    active_item: Option<&JsValue>,
+) -> Result<JsValue> {
     let priority = field(schedule, "priorityEntryId");
     let mut shown = Vec::new();
     for item in queue.iter().filter(|item| !answer(item)) {
@@ -350,19 +373,11 @@ pub(super) fn public_schedule(
     }
     let mut active = fallback(field(schedule, "active"), JsValue::Null);
     if truthy(&active) && !truthy(&field(&active, "startedAt")) {
-        let id = fallback(field(&active, "deliveryId"), field(&active, "entryId"));
-        if let JsValue::String(value) = id {
-            if value.is_well_formed() {
-                if let Some(raw) =
-                    record::get_json(connection, "outbox", &value.to_string_lossy(), &[])?
-                {
-                    let item = record::parse(&raw)?;
-                    let client = client_id(&item);
-                    if truthy(&client) {
-                        put(&mut active, "clientMsgId", client)?;
-                        put(&mut active, "text", queue_text(&item))?;
-                    }
-                }
+        if let Some(item) = active_item {
+            let client = client_id(item);
+            if truthy(&client) {
+                put(&mut active, "clientMsgId", client)?;
+                put(&mut active, "text", queue_text(item))?;
             }
         }
     }

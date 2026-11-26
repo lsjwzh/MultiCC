@@ -10,7 +10,7 @@ const nodeRouter = require('cli-provider-router');
 const { createProviderRouterRuntime } = require('../src/providers/router-runtime');
 const { createRustCprRouter } = require('../src/providers/rust-cpr');
 const { createClaudeEgressAgentResolver } = require('../src/claude-auth/egress-agent');
-const native = require('../src/native/runtime').getNative();
+const native = require('../src/native/binding').getNative();
 const available = native?.cprProtocolVersion?.() === 1;
 if (process.env.MULTICC_REQUIRE_RUST_TESTS === '1') assert.equal(available, true, '必须构建包含 CPR 的 Rust 模块');
 const rustTest = (name, fn) => test(name, { skip: !available && '尚未构建 Rust CPR', timeout: 15000 }, fn);

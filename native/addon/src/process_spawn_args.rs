@@ -107,9 +107,37 @@ fn push_text_arg<'a>(args: L<'a>, flag: &str, value: impl FnOnce() -> Result<L<'
 
 #[napi]
 pub fn apply_cli_relay_spawn(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
-    use crate::js_iteration::read;
+    apply_relay(L::new(&env, ports))
+}
 
-    let ports = L::new(&env, ports);
+#[napi]
+pub fn apply_prepared_cli_relay(
+    env: Env,
+    options: Unknown<'_>,
+    assign: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    use crate::js_iteration::read;
+    let opts = L::new(&env, options);
+    let ports = crate::js_live::fields(opts, &[])?;
+    for key in [c"target", c"childEnv", c"cwd", c"persisted"] {
+        ports.set(key, read(opts, key)?)?;
+    }
+    let prepared = read(opts, c"prepared")?;
+    for key in [
+        c"gatewayBin",
+        c"rememberActiveCliState",
+        c"savePersistedSessionsBestEffort",
+    ] {
+        ports.set(key, read(opts, key)?)?;
+    }
+    for key in [c"invocation", c"invocationEnvelope"] {
+        ports.set(key, read(prepared, key)?)?;
+    }
+    ports.set(c"assignHostProperty", L::new(&env, assign))?;
+    apply_relay(ports)
+}
+fn apply_relay(ports: L<'_>) -> Result<sys::napi_value> {
+    use crate::js_iteration::read;
     let envelope = ports.get(c"invocationEnvelope")?;
     let options = envelope.optional(c"spawnOpts")?;
     let options = if options.truthy()? {

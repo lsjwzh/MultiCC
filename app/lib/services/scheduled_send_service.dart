@@ -17,7 +17,7 @@ import 'package:http/http.dart' as http;
 import '../i18n.dart';
 import 'settings_service.dart';
 
-/// 服务端的上限（`src/orchestration/runtime.js` 的 `DEFAULTS.maxDelaySec`）。
+/// 服务端的上限（`native/addon/src/orchestration_runtime/waits.rs` 的 `MAX_DELAY`）。
 const int kScheduleMaxDelaySeconds = 7 * 24 * 60 * 60;
 
 /// 单位 → 秒。Web 那份也是这四个，键名不动（跟服务端/网页对齐，不是给人看的）。

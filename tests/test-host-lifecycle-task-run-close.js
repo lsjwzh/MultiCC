@@ -330,7 +330,7 @@ test('shutdown drains the queued history mutations after the partial append land
 // until that durable write lands, which is the behaviour the mocked versions
 // could not observe.
 test('shutdown waits on the real history runtime driver promise', async () => {
-  const { createChatHistoryRuntime } = require('../src/routes/chat-history');
+  const { createChatHistoryRuntime } = require('../src/routes/chat-history/index');
   const records = new Map();
   let release;
   const gate = new Promise(resolve => { release = resolve; });

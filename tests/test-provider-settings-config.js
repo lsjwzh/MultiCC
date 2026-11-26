@@ -12,7 +12,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const legacy = require('./helpers/legacy-settings-config');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 const native = getNative();
 const PORT = '3000';
@@ -184,40 +184,18 @@ test('buildSettingsConfig 在整个语料矩阵上与旧实现逐字节一致', 
   }
 });
 
-test('生产代码的 core.js 入口本身走的就是 Rust（而不是残留的 JS 副本）', () => {
-  const source = require('node:fs').readFileSync(
-    require('node:path').join(__dirname, '../src/providers/core.js'), 'utf8');
-  // 旧实现的标志性字面量必须已经不在生产文件里，否则说明双轨还在。
-  // 旧实现独有的字面量。ZHIPU_FABLE_ALIAS / ALIAS_TIER_KEYS 这两个名字还留在
-  // core.js，但只作为 summarize() 读路径的入口：常量值本身已经改成从 Rust 取，
-  // 档位名表则被另一个特性（ALIAS_TIER_REGEX）消费，都不是本簇的残留双轨。
-  for (const gone of [
-    'RESPONSES_COMPAT_PROXY_MAP',
-    'anthropic_messages',
-    'ANTHROPIC_DEFAULT_FABLE_MODEL_NAME',
-    'auth_mode',
-    "{ model: 'glm-5.3', name: 'GLM5.3' }",
-  ]) {
-    assert.ok(!source.includes(gone), `core.js 仍残留旧实现片段: ${gone}`);
-  }
-  // 接线现状：settingsConfig 的组装已整体下沉到 provider_writes（Rust 内部直接调用
-  // build_settings_config），所以 core.js 不再需要、也不再持有 buildSettingsConfig /
-  // parseModelList / applyAliasMapToEnv / assertApiFormatMatchesAppType 这几个 JS 函数
-  // 及其 addon 入口调用。它仍直接用到的只剩读路径上的几个：
-  for (const wired of [
-    'providerNormalizeApiFormat', 'providerIsZhipuBaseUrl',
-    'providerEnsureZhipuFableAlias', 'providerResponsesCompatTarget',
-    'providerZhipuFableAlias',
-  ]) {
-    assert.ok(source.includes(wired), `core.js 没有接上 ${wired}`);
-  }
-  // 反过来：被下沉的 JS 函数不许复活。
-  for (const gone of [
-    'function buildSettingsConfig', 'function parseModelList',
-    'function applyAliasMapToEnv', 'function assertApiFormatMatchesAppType',
-  ]) {
-    assert.ok(!source.includes(gone), `core.js 复活了已下沉的 ${gone}`);
-  }
+test('供应商宿主把 settingsConfig 的投影与组装交给 Rust', () => {
+  const fs = require('node:fs');
+  const host = fs.readFileSync(require.resolve('../src/providers/host'), 'utf8');
+  assert.match(host, /providerRegistryService/);
+  const registry = fs.readFileSync(require('node:path').join(__dirname,
+    '../native/addon/src/provider_service/registry.rs'), 'utf8');
+  assert.match(registry, /provider_catalog_snapshot::host_summary/);
+  assert.doesNotMatch(host, /function (buildSettingsConfig|parseModelList|applyAliasMapToEnv|assertApiFormatMatchesAppType)/);
+  const root = require('node:path').join(__dirname, '../native/core/src');
+  assert.match(fs.readFileSync(root + '/provider_catalog_snapshot.rs', 'utf8'), /settings::is_zhipu_base_url/);
+  assert.match(fs.readFileSync(root + '/provider_routing/spawn.rs', 'utf8'), /settings::ensure_zhipu_fable_alias/);
+  assert.match(fs.readFileSync(root + '/provider_writes.rs', 'utf8'), /build_settings_config/);
 });
 
 test('对拍规模足够大（防止语料被改空后测试仍然绿）', () => {

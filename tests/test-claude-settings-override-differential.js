@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 // Frozen from 5ec8703f, so the oracle survives commits and removal of the module.
 const source = fs.readFileSync(path.join(__dirname, 'helpers/legacy-claude-settings-override.js'), 'utf8');

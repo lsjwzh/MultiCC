@@ -16,17 +16,17 @@ const EMPTY_BOARD = core.createEmptyBoard();
 
 test('the session runState adapter follows the shared classify display and freeze maps', () => {
   const runStateAdapter = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'session-work', 'host.js'), 'utf8');
-  assert.match(runStateAdapter, /classifyDisplay\(classifyState\)\.cardStatus/);
+    path.join(__dirname, '..', 'native/addon/src/session_work_host/transitions/recovery.rs'), 'utf8');
+  assert.match(runStateAdapter, /c"classifyDisplay"[\s\S]*?c"cardStatus"/);
   // The phantom `classifyState === 'A'` branch is removed — no code ever wrote
   // 'A' (the D/C/W/B/E/P vocabulary never included it), so it was dead.
-  assert.doesNotMatch(runStateAdapter, /classifyState === 'A'/);
+  assert.doesNotMatch(runStateAdapter, /is_string\("A"\)/);
   // Frozen sessions resolve their runState through the explicit reason map, not
   // the old `includes('error')` substring heuristic.
-  assert.match(runStateAdapter, /runStateForFreezeReason\(state\.queueFreezeReason\)/);
-  assert.doesNotMatch(runStateAdapter, /queueFreezeReason \|\| ''\)\.includes\('error'\)/);
-  assert.doesNotMatch(runStateAdapter, /cardStatus === 'completed' \? 'done' : cardStatus/);
-  assert.doesNotMatch(runStateAdapter, /classifyState === 'D' \|\| classifyState === 'C'/);
+  assert.match(runStateAdapter, /freeze_state\(state\.get\(c"queueFreezeReason"\)/);
+  assert.doesNotMatch(runStateAdapter, /contains\("error"\)/);
+  assert.doesNotMatch(runStateAdapter, /"(?:completed|done)"/);
+  assert.doesNotMatch(runStateAdapter, /is_string\("D"\)[^\n]*?is_string\("C"\)/);
   // A task card must follow the session's persisted classify verdict, never a
   // momentary session-busy flag. The `if (sessionBusy(sid)) return 'running'`
   // short-circuit used to make every historical card light up as「进行中」
@@ -580,8 +580,8 @@ test('the scheduler hands claim_released the freeze reason its consumer projects
   // 所以 route 2 的冻结原因必须随事件一起出来 —— 否则卡片会把一次「中途交还、
   // 还在推进」读成「排队」。
   const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'session-work', 'scheduler.js'), 'utf8');
-  assert.match(source, /freezeReason: result\.schedule\.freezeReason,/);
+    path.join(__dirname, '..', 'native/addon/src/session_work_scheduler/events.rs'), 'utf8');
+  assert.match(source, /Release => \{[^}]*?out\.set\(c"freezeReason", schedule\.get\(c"freezeReason"\)/s);
 });
 
 test('a bound-session card stuck 排队 reads its own session, not the stale claim', () => {
@@ -865,21 +865,16 @@ test('taskId boundaries keep intervening events on the current task and open a s
 });
 
 test('streaming classify path creates or merges the task-board card before returning', () => {
-  // recordTaskBoardGoal / applyClassifyResult / scanAndReclassify now live in the
-  // extracted classify state machine.
-  const source = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'classify', 'state-machine.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src',
+    'classify_machine', 'verdict.rs'), 'utf8');
   const taskContextHostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'task-context-host.js'), 'utf8');
-  assert.match(source, /function recordTaskBoardGoal[\s\S]*?getTaskContextHost\(\)\.recordGoal/);
+  assert.match(source, /fn board_goal[\s\S]*?c"getTaskContextHost"[\s\S]*?c"recordGoal"/);
   assert.match(taskContextHostSource, /function recordGoal[\s\S]*?getTaskBoard\(\)\?\.onClassifyGoal/);
-  const start = source.indexOf('function applyClassifyResult(');
-  const end = source.indexOf('\n  function scanAndReclassify()', start);
-  assert.ok(start >= 0 && end > start, 'applyClassifyResult slice anchors must resolve');
-  const body = source.slice(start, end);
-  const streaming = body.indexOf("if (liveness.state !== 'inactive')");
-  const create = body.indexOf('recordTaskBoardGoal(', streaming);
-  const earlyReturn = body.indexOf('\n      return;', streaming);
-  assert.ok(streaming >= 0 && create > streaming && earlyReturn > create);
+  const branch = source.indexOf('if !live.get(c"state")?.is_string("inactive")?');
+  const board = source.indexOf('board_goal(', branch);
+  const broadcast = source.indexOf('running(p,', board);
+  const terminal = source.indexOf('dispatch::dispatch(', branch);
+  assert.ok(branch >= 0 && branch < board && board < broadcast && broadcast < terminal);
 });
 
 test('host task-board dispatch rejects busy targets before durable admission', () => {

@@ -174,3 +174,86 @@ pub fn task_shell_input(
         })?;
     unsafe { crate::js_bridge::write_value(env.raw(), &payload) }
 }
+
+#[napi]
+pub fn task_shell_reference_value(
+    env: Env,
+    op: String,
+    value: Unknown<'_>,
+    id: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    use crate::route_response::{call, fields, string, text};
+    use napi::bindgen_prelude::FromNapiValue;
+    let v = LiveValue::new(&env, value);
+    let input = match op.as_str() {
+        "verify" => fields(v, &[("snapshot", v), ("id", LiveValue::new(&env, id))])?,
+        "estimate" => {
+            if v.nullish()? {
+                text(v, "")?
+            } else {
+                string(v)?
+            }
+        }
+        _ => v,
+    };
+    let json = v.global()?.get(c"JSON")?;
+    let wire = call(json, c"stringify", &[input])?;
+    let wire = unsafe { String::from_napi_value(env.raw(), wire.raw()) }?;
+    let answer = task_shell_reference(op, wire)?;
+    Ok(call(json, c"parse", &[text(v, &answer)?])?.raw())
+}
+
+#[napi]
+pub fn task_shell_context_api(e: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::{
+        host_methods::{arg, default_object, env, function, raw},
+        js_iteration::read,
+        route_response::{fields, null, num, text},
+    };
+    let anchor = LiveValue::new(&e, anchor);
+    let api = fields(anchor, &[])?;
+    for (name, op, count) in [
+        ("hash", "hash", 1),
+        ("estimateTokens", "estimate", 1),
+        ("renderSnapshots", "render", 1),
+        ("renderLazyContextPrompt", "lazy-prompt", 1),
+        ("verifySnapshot", "verify", 2),
+    ] {
+        api.set_key(
+            text(anchor, name)?,
+            function(anchor, name, count, 2, move |s, a| {
+                Ok(raw(
+                    s,
+                    task_shell_reference_value(env(s), op.to_owned(), arg(a[0])?, arg(a[1])?)?,
+                ))
+            })?,
+        )?;
+    }
+    api.set(
+        c"snapshotHistory",
+        function(anchor, "snapshotHistory", 2, 3, |s, a| {
+            let options = default_object(a[2])?;
+            let active = read(options, c"activeTurnId")?;
+            let max = read(options, c"maxBytes")?;
+            Ok(raw(
+                s,
+                task_shell_snapshot(
+                    env(s),
+                    arg(a[0])?,
+                    arg(a[1])?,
+                    arg(if active.undefined()? {
+                        null(s)?
+                    } else {
+                        active
+                    })?,
+                    arg(if max.undefined()? {
+                        num(s, 12000.)?
+                    } else {
+                        max
+                    })?,
+                )?,
+            ))
+        })?,
+    )?;
+    Ok(api.raw())
+}

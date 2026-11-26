@@ -3,7 +3,7 @@
 // Transitional host adapter: Rust owns quota policy, file/config caching and
 // refresh throttling. Node retains access to the existing provider cache,
 // logger and refresh callback until those host lifecycles move to Rust.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const request = (op, input) => getNative().quotaGuardRequestValue(op, input);
 const DEFAULTS = Object.freeze(request('defaults', null));
 const envConfig = (env = process.env) => request('envConfig', env);

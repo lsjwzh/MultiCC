@@ -38,7 +38,7 @@ test('an event the envelope rejects is not buffered and push never throws', () =
 
 test('原生写入和广播保留宿主的帧字节与序列化语义', () => {
   const { hub, host, attach } = createTestChatHub();
-  const { createWsEnvelope } = require('../src/native/runtime').getApiContract();
+  const { createWsEnvelope } = require('../src/native/binding').getApiContract();
   const client = attach();
   hub.join('s', client.id);
   const event = {

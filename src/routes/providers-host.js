@@ -20,9 +20,9 @@
 // 拒绝任何转发自真实远端客户端的请求（docs/gateway.md 的内网端口模型）。
 
 const { isLocalRequest } = require('../request-locality');
-const { safeCode, sanitizePublicText } = require('../native/runtime').getPublicSafety();
+const { safeCode, sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
-const { providerLimitBar } = require('../native/runtime').getQuotaBarView();
+const { providerLimitBar } = require('../native/binding').getQuotaBarView();
 const { detachProviderReferences } = require('../providers/force-detach');
 const { reassignProviderSessions } = require('../provider-reassign');
 
@@ -44,7 +44,7 @@ function importErrorDto(error) {
 }
 
 function sanitizeProbeResult(result) {
-  return require('../native/runtime').getNative().providerSanitizeProbeResult(result);
+  return require('../native/binding').getNative().providerSanitizeProbeResult(result);
 }
 
 function text(value) {

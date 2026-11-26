@@ -50,8 +50,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
-const { DEFAULT_ZCODE_ENGINE, zcodeEngineEnv } = require('../native/runtime').zcodeEngine;
-const { isZcodeSessionId } = require('../native/runtime');
+const { DEFAULT_ZCODE_ENGINE, zcodeEngineEnv } = require('../native/binding').zcodeEngine;
+const { isZcodeSessionId } = require('../native/binding');
 const {
   RUNTIME_PREFERENCES,
   DEFAULT_MODE,

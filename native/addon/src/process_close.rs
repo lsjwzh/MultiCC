@@ -206,9 +206,8 @@ fn wait_step<'a>(s: L<'a>, name: L<'a>, stop: L<'a>, options: L<'a>) -> Result<L
 }
 
 #[napi]
-pub fn process_closer_api(env: Env, wrap_wait: Unknown<'_>) -> Result<sys::napi_value> {
-    let wrap = L::new(&env, wrap_wait);
-    let api = fields(wrap, &[("wrap", wrap)])?;
+pub fn process_closer_api(env: Env, async_wait: Unknown<'_>) -> Result<sys::napi_value> {
+    let api = L::new(&env, async_wait);
     let create = callback(api, "createProcessCloser", 1, 1, |api, a| {
         if a[0].undefined()? {
             return Err(api.type_error(
@@ -230,7 +229,25 @@ pub fn process_closer_api(env: Env, wrap_wait: Unknown<'_>) -> Result<sys::napi_
                 ("closing", api.global()?.get(c"Map")?.construct(&[])?),
             ],
         )?;
-        let invoke = callback(state, "", 3, 3, |s, a| wait_step(s, a[0], a[1], a[2]))?;
+
+        let wait_for_exit = callback(state, "wait", 2, 3, |s, a| {
+            let step = wait_step(s, a[0], a[1], a[2])?;
+            let pending = step.get(c"pending")?;
+            if !pending.truthy()? {
+                return step.get(c"value");
+            }
+            let done = callback(step, "", 0, 0, |s, _| {
+                let value = s.get(c"value")?;
+                s.get(c"finish")?.call_plain(&[])?;
+                Ok(value)
+            })?;
+            let failed = callback(step, "", 1, 1, |s, a| {
+                s.get(c"finish")?.call_plain(&[])?;
+                Err(a[0].throw_error())
+            })?;
+            call(pending, c"then", &[done, failed])
+        })?;
+        let wait = api.call_plain(&[wait_for_exit])?;
         fields(
             api,
             &[
@@ -238,7 +255,7 @@ pub fn process_closer_api(env: Env, wrap_wait: Unknown<'_>) -> Result<sys::napi_
                     "track",
                     callback(state, "track", 2, 2, |s, a| track(s, a[0], a[1]))?,
                 ),
-                ("wait", api.get(c"wrap")?.call_plain(&[invoke])?),
+                ("wait", wait),
                 (
                     "isClosing",
                     callback(state, "isClosing", 1, 1, |s, a| {

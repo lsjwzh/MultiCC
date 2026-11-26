@@ -1115,6 +1115,9 @@ impl<'a> Runtime<'a> {
             }
             Ok(NextOutcome::Done(step)) => Ok(step),
             Err(error) => {
+                if matches!(job.kind, MutationKind::Delete) {
+                    self.release_delete_marker(&cache_key, job.id);
+                }
                 let value = caught(self.anchor, error)?;
                 self.mutation_failed(job.id, value)
             }
@@ -1831,7 +1834,7 @@ impl<'a> Runtime<'a> {
                 self.reinsert_mutation(cache_key, job);
                 self.mutation_completion(effects, false, false, self.undefined()?)
             }
-            _ => self.mutation_completion(effects, true, true, self.undefined()?),
+            _ => self.mutation_completion(effects, true, true, value),
         }
     }
     fn handle_mutation_failure(

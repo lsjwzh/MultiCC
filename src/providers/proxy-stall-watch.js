@@ -3,8 +3,8 @@
 const { proxyRequestKind } = require('./proxy-outcome');
 const { performance } = require('node:perf_hooks');
 
-const { createModelStreamProgress } = require('../native/runtime');
-const { getNative } = require('../native/runtime');
+const { createModelStreamProgress } = require('../native/binding');
+const { getNative } = require('../native/binding');
 
 // 每个已准入的模型请求独占计时器；请求结束即撤销，不计本地工具时间。
 const RESPONSE_STALLED_BEFORE_RESPONSE = 'response_stalled_before_response';

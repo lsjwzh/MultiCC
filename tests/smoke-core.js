@@ -35,7 +35,7 @@ const https = require('https');
 const fs   = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
-const { buildReplayMessages } = require('../src/routes/chat-history');
+const { buildReplayMessages } = require('../src/routes/chat-history/index');
 
 const BASE = process.env.MULTICC_URL || 'http://localhost:3000';
 const SMOKE_DIR = process.env.MULTICC_SMOKE_DIR || '/tmp/multicc-smoke-test';

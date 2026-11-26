@@ -438,7 +438,7 @@ test("provider catalog preserves the normalized limit projection", () => {
 
 test('provider pickers resolve the same server bar as the cards, including reset and freshness', () => {
   const now = 1_700_000_000_000;
-  const { providerLimitBar } = require('../src/native/runtime').getQuotaBarView();
+  const { providerLimitBar } = require('../src/native/binding').getQuotaBarView();
   const { resolveProviderLimit } = require('../public/quota-bar-view');
   const bar = providerLimitBar({ kind: 'claude', stale: true, fetchedAt: now - 60_000,
     summary: { windows: [{ window: '7d', usedPercent: 36, resetMs: now + 86_400_000 }] } }, now);

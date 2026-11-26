@@ -3,7 +3,7 @@
 // Async lifecycle and callback adapter only. Rust owns SQLite, import,
 // transactions and cache mutation policy. Operations run in submission order
 // so callbacks observe committed rows in the same order as their callers.
-const { getNative, runNative } = require('../native/runtime');
+const { getNative, runNative } = require('../native/binding');
 
 function createNativeProviderLimitCache({ file, legacyJsonFile = null, now = Date.now,
   onRecord = null, logger = console } = {}) {

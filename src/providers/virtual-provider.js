@@ -2,7 +2,7 @@
 
 // Host ports for the existing quota recorder, egress plugins and refresh callbacks.
 // Native storage and per-request Rust state own persistence, selection and retries.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const subscriptions = require('../quota/account-subscription-cache');
 let cache = null;
 let guard = null, refreshOne = null, recordDto = null;
@@ -41,16 +41,16 @@ async function runRefreshWork(provider, providers, plan) {
 }
 async function refresh(provider) {
   await subscriptions.ready();
-  const providers = require('./core').listProviders();
+  const providers = require('./host').listProviders();
   return runRefreshWork(provider, providers, status(provider, providers));
 }
 async function refreshAsync(provider) {
   await subscriptions.ready();
-  const providers = require('./core').listProviders();
+  const providers = require('./host').listProviders();
   return runRefreshWork(provider, providers, await statusAsync(provider, providers));
 }
 function resolveWithSnapshot(provider, options, input) {
-  const core = require('./core');
+  const core = require('./host');
   let decision;
   try { decision = options?.request ? JSON.parse(options.request.choose(JSON.stringify(input))) : call('selectVirtualProvider', input); }
   catch (error) { if (error.message !== 'VIRTUAL_NO_AVAILABLE_MEMBER') throw error; decision = {}; }
@@ -59,11 +59,11 @@ function resolveWithSnapshot(provider, options, input) {
   return core.routingProviderView(provider.appType, decision.selectedId);
 }
 function resolve(provider, options) {
-  const core = require('./core');
+  const core = require('./host');
   return resolveWithSnapshot(provider, options, snapshot(provider, core.listProviders().filter(p => !p.virtual), options));
 }
 async function resolveAsync(provider, options) {
-  const core = require('./core');
+  const core = require('./host');
   const input = await snapshotAsync(provider, core.listProviders().filter(p => !p.virtual), options);
   return resolveWithSnapshot(provider, options, input);
 }

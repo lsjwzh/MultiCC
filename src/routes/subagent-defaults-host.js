@@ -13,9 +13,9 @@
 // 拒绝任何转发自真实远端客户端的请求，所以前门的公网端口也拿不到额外能力
 // （docs/gateway.md 的内网端口模型）。Rust 接管会话存储与 provider 默认值后本文件删除。
 
-const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
+const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { isLocalRequest } = require('../request-locality');
-const { getNative, assignHostProperty } = require('../native/runtime');
+const { getNative, assignHostProperty } = require('../native/binding');
 
 const HOST_PATH = '/api/__host/subagent-defaults';
 

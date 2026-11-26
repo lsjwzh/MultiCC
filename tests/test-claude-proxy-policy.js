@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const assertClaudeProxyEnvApplied = (...args) => getNative().assertClaudeProxyEnvApplied(...args);
 const claudeProxyEnvRequired = (...args) => getNative().claudeProxyEnvRequired(...args);
 const legacyPolicy = require('./helpers/legacy-claude-proxy-policy');
@@ -32,7 +32,7 @@ process.env.MULTICC_DATA_DIR = path.join(root, 'data');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 
-const providers = require('../src/providers/core');
+const providers = require('../src/providers/host');
 
 function captured(call) {
   try { return { value: call() }; }
@@ -117,7 +117,7 @@ test('native rules preserve primitive getter receivers', () => {
 
 test('native refusal works when string code generation is disabled', () => {
   const { spawnSync } = require('node:child_process');
-  const { addonPath } = require('../src/native/runtime');
+  const { addonPath } = require('../src/native/binding');
   const code = `const assert = require('node:assert/strict');
     const native = require(process.env.MULTICC_RUST_ADDON);
     assert.throws(() => native.assertClaudeProxyEnvApplied({ required: true, applied: false }),

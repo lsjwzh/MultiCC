@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createHostPrompts } = require('../src/native/runtime').getHostPrompts();
+const { createHostPrompts } = require('../src/native/binding').getHostPrompts();
 const prompt = createHostPrompts({ PORT: '3000' }).multiccImgHint;
 
 test('worktree prompt distinguishes same-session busy from real sync conflicts', () => {
@@ -28,7 +28,7 @@ test('host prompt enforces parallel batching, scoped reads, merged edits and sta
   assert.match(prompt, /Merge edits per file/);
   assert.match(prompt, /read-only\/Explore sub-agents/);
   assert.ok(prompt.length < 7600, `expected slimmed host hint (<7600 chars), got ${prompt.length}`);
-  const { buildSubagentProviderHint, buildPlanProgressPrompt } = require('../src/native/runtime').getHostPrompts();
+  const { buildSubagentProviderHint, buildPlanProgressPrompt } = require('../src/native/binding').getHostPrompts();
   const sub = buildSubagentProviderHint({ providerId: 'p1', model: 'deepseek' });
   assert.match(sub, /fan out independent work in parallel/);
   assert.match(sub, /long serial Read\/Edit\/Bash chains/);
@@ -37,7 +37,7 @@ test('host prompt enforces parallel batching, scoped reads, merged edits and sta
 });
 
 test('宿主提示词逐字匹配冻结版，并且只消费本会话的重置标记', () => {
-  const before = require('./helpers/legacy-host-prompts'), current = require('../src/native/runtime').getHostPrompts();
+  const before = require('./helpers/legacy-host-prompts'), current = require('../src/native/binding').getHostPrompts();
   for (const api of [before, current]) assert.ok(Object.isFrozen(api.USER_INPUT_SIGNAL_PROMPT));
   for (const toggle of [undefined, null, '0', 0, false, '1']) for (const port of [0, 7777, '端口', Symbol('port')]) {
     const env = { CODEX_NO_ASK_TOOL_HINT: toggle, CODEX_STAY_ALIVE_HINT: toggle, PORT: port };

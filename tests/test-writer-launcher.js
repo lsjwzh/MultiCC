@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
-const { getNative, getWriterGroup } = require('../src/native/runtime');
+const { getNative, getWriterGroup } = require('../src/native/binding');
 
 function locateBinary() {
   if (process.env.MULTICC_WRITER_BIN) return process.env.MULTICC_WRITER_BIN;

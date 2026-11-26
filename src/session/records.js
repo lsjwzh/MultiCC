@@ -10,7 +10,7 @@
 // `instanceof Map` still holds: several hosts accept either a Map or a plain
 // object and check for one explicitly.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const owners = new WeakMap();
 
@@ -100,7 +100,7 @@ function resetTaskState(records, id) {
 
 let taskStateDefaults;
 function createTaskStateStore(deps) {
-  const { taskStatePayload } = require('../native/runtime');
+  const { taskStatePayload } = require('../native/binding');
   taskStateDefaults ||= Object.freeze(sessionRecordDefaults());
   return getNative().taskStateStore(deps, sessionRecordsOwner, taskStateDefaults, taskStatePayload,
     bus => (event, ...args) => bus.emit(event, ...args));

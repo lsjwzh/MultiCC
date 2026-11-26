@@ -10,7 +10,7 @@ const { spawnSync } = require('node:child_process');
 const { accountEnv, hasAccount, hasRemoteAccount } = require('../src/agy-accounts');
 const { applyRouterMcpEnv } = require('../src/cli-adapters/router-mcp');
 const { createAgyAdapter } = require('../src/cli-adapters/index');
-const { gatewayPath } = require('../src/native/runtime');
+const { gatewayPath } = require('../src/native/binding');
 
 function mkTempDir(tag) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `multicc-agy-remote-${tag}-`));
@@ -636,7 +636,7 @@ test('parseRelayShareCode accepts appType=agy share codes and rejects invalid pa
   assert.match(ctx.parseRelayShareCode(`mcrelay1.${badType}`).error, /appType/);
 });
 
-const relaySpawn = require('../src/native/runtime');
+const relaySpawn = require('../src/native/binding');
 const frozenRelaySpawn = require('./helpers/legacy-cli-relay-spawn');
 
 test('中继目标选择与冻结实现一致，保留短路、接收者和返回值身份', () => {
@@ -817,7 +817,7 @@ test('isCommandAvailable treats claude/codex as available when a Remote CLI rela
   const work = mkTempDir('cli-relay-avail');
   const prevDataDir = process.env.MULTICC_DATA_DIR;
   const prevPath = process.env.PATH;
-  const providersPath = require.resolve('../src/providers/core');
+  const providersPath = require.resolve('../src/providers/host');
   const commandsPath = require.resolve('../src/cli-adapters/commands');
   try {
     process.env.MULTICC_DATA_DIR = work;

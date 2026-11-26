@@ -24,7 +24,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const prune = require('../src/native/runtime').getTranscriptPruning();
+const prune = require('../src/native/binding').getTranscriptPruning();
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-prune-'));
 const realHome = process.env.HOME;
@@ -555,13 +555,13 @@ test('聊天回合、历史路由和离线工具均可解析原生修剪入口',
       );
     }
   }
-  for (const file of ['src/routes/chat-history.js', 'scripts/compact-transcript.js']) assert.ok(found.has(file), file);
+  for (const file of ['src/routes/chat-history/index.js', 'scripts/compact-transcript.js']) assert.ok(found.has(file), file);
 
   // 聊天宿主把惰性工厂交给 Rust，裁剪时按同一会话取得 cwd 和报告。
   const calls = [];
   const record = { id: 'codex', dirId: 'dir' };
   const report = { contextAffected: false };
-  const service = require('../src/native/runtime').getNative().chatTurnServices({
+  const service = require('../src/native/binding').getNative().chatTurnServices({
     cwdForSession: input => { assert.equal(input, record); return '/project'; },
     getTranscriptPruning: () => ({
       pruneSessionClaude(cwd, input) {

@@ -31,7 +31,7 @@ function readRows(file) {
   }
 }
 
-test('CC-Switch import and MultiCC local mutations leave the source database unchanged', (t) => {
+function verifyReadOnlyImport(t, hasMeta) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-provider-boundary-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
 
@@ -60,6 +60,7 @@ test('CC-Switch import and MultiCC local mutations leave the source database unc
         sort_index INTEGER NOT NULL DEFAULT 0
       )
     `);
+    if (hasMeta) db.exec("ALTER TABLE providers ADD COLUMN meta TEXT DEFAULT '{}'");
     db.prepare(
       'INSERT INTO providers (id, app_type, name, settings_config, sort_index) VALUES (?, ?, ?, ?, ?)',
     ).run('cc-source', 'claude', 'CC Source', settingsConfig, 7);
@@ -69,7 +70,7 @@ test('CC-Switch import and MultiCC local mutations leave the source database unc
 
   const rowsBefore = readRows(ccDb);
   const fileBefore = snapshot(ccDb);
-  const providersPath = path.join(ROOT, 'src', 'providers', 'core.js');
+  const providersPath = path.join(ROOT, 'src', 'providers', 'host.js');
   const childScript = `
     const assert = require('node:assert/strict');
     const fs = require('node:fs');
@@ -116,13 +117,21 @@ test('CC-Switch import and MultiCC local mutations leave the source database unc
   const sqliteMethods = [...new Set(
     [...source.matchAll(/\bsqliteRuntime\.([A-Za-z][A-Za-z0-9_]*)/g)].map(match => match[1]),
   )].sort();
-  assert.deepEqual(sqliteMethods, ['getStatus', 'openReadonly']);
+  assert.deepEqual(sqliteMethods, ['getStatus']);
+  const registry = fs.readFileSync(path.join(ROOT, 'native/addon/src/provider_service/registry.rs'), 'utf8');
+  assert.match(registry, /cc_switch::read_rows/);
+  const reader = fs.readFileSync(path.join(ROOT, 'native/core/src/cc_switch.rs'), 'utf8');
+  assert.match(reader, /OpenFlags::SQLITE_OPEN_READ_ONLY/);
   assert.doesNotMatch(source, /require\(['"]better-sqlite3['"]\)/);
   assert.doesNotMatch(
-    source,
+    reader,
     /\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\s+(?:INTO\s+|FROM\s+|TABLE\s+)?providers\b/i,
   );
-});
+}
+
+for (const hasMeta of [false, true]) {
+  test(`CC-Switch 导入及本地修改保持源数据库只读（含 meta 列：${hasMeta}）`, t => verifyReadOnlyImport(t, hasMeta));
+}
 
 test('provider delete confirmation states the local-only boundary in both languages', () => {
   const air = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');

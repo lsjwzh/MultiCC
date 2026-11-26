@@ -118,37 +118,33 @@ fn accept<'a>(s: L<'a>, event: L<'a>) -> Result<L<'a>> {
         })?;
         undefined(s)
     })?;
-    let pending = s
-        .get(c"hook")?
-        .call_plain(&[read(read(event, c"request")?, c"input")?])?;
+    let pending = crate::monitor_admission::run_hook(s, read(read(event, c"request")?, c"input")?)?;
     call(call(pending, c"then", &[reply])?, c"catch", &[failed])?;
     flag(s, true)
 }
 
 #[napi]
-pub fn monitor_control_api(
-    env: Env,
-    admission: Unknown<'_>,
-    random_uuid: Unknown<'_>,
-) -> Result<sys::napi_value> {
-    let admission = L::new(&env, admission);
+pub fn monitor_control_api(env: Env, random_uuid: Unknown<'_>) -> Result<sys::napi_value> {
+    let uuid = L::new(&env, random_uuid);
     let api = fields(
-        admission,
+        uuid,
         &[
-            ("uuid", L::new(&env, random_uuid)),
-            ("createHook", read(admission, c"createMonitorAdmission")?),
-            ("callbackId", read(admission, c"CALLBACK_ID")?),
+            ("uuid", uuid),
+            (
+                "callbackId",
+                text(uuid, crate::monitor_admission::MONITOR_CALLBACK_ID)?,
+            ),
         ],
     )?;
     let create = callback(api, "createMonitorControl", 3, 3, |api, a| {
         let request_id = api.get(c"uuid")?.call_plain(&[])?;
-        let hook = api.get(c"createHook")?.call_plain(&[a[1], a[2]])?;
         let s = fields(
             api,
             &[
                 ("proc", a[0]),
                 ("requestId", request_id),
-                ("hook", hook),
+                ("deliver", a[1]),
+                ("isOwn", a[2]),
                 ("callbackId", api.get(c"callbackId")?),
                 ("ready", flag(api, false)?),
             ],

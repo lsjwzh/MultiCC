@@ -5,7 +5,7 @@ const { WebSocket } = require('ws');
 const { installNativeQueue } = require('./native-queue');
 const { createWsHost } = require('./ws-host');
 const { startChatBridge } = require('../gateway-child');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const isInternalExecutionSlot = record => getNative().sessionIsInternalExecutionSlot(record);
 
 const WS_PING_INTERVAL_MS = 30_000;

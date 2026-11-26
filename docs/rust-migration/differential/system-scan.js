@@ -36,7 +36,7 @@ globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCE
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
 const app = express(); app.use(express.json());
-const policy = require(path.join(repo, 'src/native/runtime')).getNetworkPolicy().resolveNetworkPolicy({ HOST: '0.0.0.0', PORT: '45123', MULTICC_ALLOW_REMOTE: '1' });
+const policy = require(path.join(repo, 'src/native/binding')).getNetworkPolicy().resolveNetworkPolicy({ HOST: '0.0.0.0', PORT: '45123', MULTICC_ALLOW_REMOTE: '1' });
 require(path.join(repo, 'src/routes/host-read-host')).mountSystemHostRoute(app, {
  fs, path, rootDir: ${JSON.stringify(rootDir)}, networkInterfaces: () => (${JSON.stringify(INTERFACES)}),
  getPort: () => policy.port, getBindHost: () => policy.host, authRequired: () => true,
