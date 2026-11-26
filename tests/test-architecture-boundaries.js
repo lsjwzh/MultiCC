@@ -119,9 +119,9 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
   // The gate is spelled as a reason list — so the outbox skip log and the
   // insert-queued response can say WHICH veto fired — plus a boolean derived
   // from that one list. The obligations below live in the list.
-  const start = source.indexOf('function dispatchTargetBusyReasons(sid, item = null) {');
+  const start = source.indexOf('const dispatchTargetBusyReasons = getNative().createDispatchBusyReasons({');
   assert.ok(start >= 0, 'the single dispatch busy predicate must exist');
-  const predicate = source.slice(start, source.indexOf('\n}', start));
+  const predicate = source.slice(start, source.indexOf('\n});', start));
   // Classify answers "is work in flight"; the repo lease is a resource lock on
   // the session worktree (gitMergeBack rewrites the very path the CLI runs in),
   // which classify structurally cannot see — so it, and only it, is OR'd in.
@@ -143,6 +143,29 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
   assert.match(source, /createDispatchTargeting\([\s\S]*?isTargetBusy: dispatchTargetBusy/);
   assert.match(source, /createGatewayHost\([\s\S]*?isTargetBusy: dispatchTargetBusy/);
   assert.match(source, /createOrchestrationRuntime\([\s\S]*?isBusy: dispatchTargetBusy/);
+});
+
+test('dispatch checks every veto in order and only diagnoses a busy target', () => {
+  const { createDispatchBusyReasons } = require('../src/native/binding').getNative();
+  const seen = [];
+  const probe = (name, result) => id => {
+    seen.push([name, id]);
+    if (result instanceof Error) throw result;
+    return result;
+  };
+  const names = ['occupied', 'runActive', 'leased', 'shellBusy', 'stuckHint'];
+  const check = values => createDispatchBusyReasons(Object.fromEntries(
+    names.map((key, i) => [key, probe(key, values[i])])))('s');
+  const err = Object.assign(new Error('workspace unavailable'), { code: 'missing_workspace' });
+  assert.deepEqual(check([false, false, false, false, true]), []);
+  assert.deepEqual(seen.splice(0), names.slice(0, 4).map(key => [key, 's']));
+  assert.deepEqual(check([err, true, err, err, 'stuck']), [
+    'missing_workspace', 'run_active', 'repo_lease_check_failed', 'task_shell_busy_check_failed', 'stuck',
+  ]);
+  assert.deepEqual(seen.splice(0), names.map(key => [key, 's']));
+  assert.deepEqual(check([new Error(), err, true, true, err]), [
+    'workspace_occupied_check_failed', 'run_active_check_failed', 'repo_lease', 'task_shell_workspace_busy',
+  ]);
 });
 
 test('the classify-derived busy predicate exempts transient assessing work', () => {

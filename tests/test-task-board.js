@@ -890,7 +890,7 @@ test('host task-board dispatch rejects busy targets before durable admission', (
   // derived from that one list, or the two presentations could disagree.
   // The retired pooled TaskRun slot check (isSlotUnavailable) is gone with the
   // run subsystem; the workspace/run/repo-lease vetoes are what remain.
-  assert.match(source, /function dispatchTargetBusyReasons\(sid, item = null\)[\s\S]*?isRunActive\(sid\)[\s\S]*?isLeased\(sid\)/);
+  assert.match(source, /const dispatchTargetBusyReasons = getNative\(\)\.createDispatchBusyReasons\(\{[\s\S]*?isRunActive\(sid\)[\s\S]*?isLeased\(sid\)/);
   assert.match(source, /function dispatchTargetBusy\(sid, item = null\)[\s\S]*?dispatchTargetBusyReasons\(sid, item\)\.length > 0/);
   // Retention also needs the same veto before deleting an old task. It may
   // consume this read-only verdict, but must not create a competing busy rule.

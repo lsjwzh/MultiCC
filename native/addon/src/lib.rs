@@ -142,6 +142,7 @@ pub mod schedule_recovery_live;
 pub mod search_diversity;
 pub mod search_tokens;
 pub mod secret_audit;
+mod dispatch_busy;
 pub mod session_create_record;
 pub mod session_delivery;
 pub mod session_dto;
