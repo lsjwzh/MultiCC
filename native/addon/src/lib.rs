@@ -329,6 +329,7 @@ mod provider_service;
 
 pub mod selection;
 mod provider_binding;
+mod responses_history;
 mod role_token_tracker;
 pub mod usage_observed;
 

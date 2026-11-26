@@ -333,3 +333,170 @@ test('an array-too-long content rejection repairs by stripping every reasoning i
   // A rejection that names no content field leaves reasoning untouched.
   assert.equal(repairRejectedResponsesHistory(body, { message: 'Account is suspended' }), null);
 });
+
+// The checked-in oracle is byte-identical to 30393d6e:src/model-history-converter.js.
+const original = require('./helpers/legacy-model-history-converter');
+const migrated = require('../src/model-history-converter');
+
+function referencesIn(input, result) {
+  const paths = new Map();
+  function visit(value, path) {
+    if (!value || typeof value !== 'object') return;
+    if (paths.has(value)) return paths.get(value);
+    paths.set(value, path);
+    return Object.entries(value).map(([key, child]) => [key, visit(child, path + '.' + key)]);
+  }
+  visit(input, 'input');
+  return visit(result, 'result');
+}
+
+test('all history operations preserve the baseline values, change order and shared object identities', t => {
+  const records = [
+    { type: 'message', id: 'msg_keep', content: [{ text: 'ok' }] },
+    { type: 'message', id: 'foreign', status: 'done', content: [] },
+    { type: 'function_call', id: 'foreign', arguments: { emoji: '😀', key: '\ud800' }, call_id: 'c1' },
+    { type: 'function_call_output', id: 'o1', output: 'text', call_id: 'c1' },
+    { type: 'custom_tool_call', id: 't1', input: 'a();' },
+    { type: 'custom_tool_call_output', id: 't2', output: [{ type: 'image' }] },
+    { type: 'item_reference', id: 'foreign' },
+    { type: 'reasoning', id: 'r', summary: [] },
+    { type: 'reasoning', id: 'r', content: [{ text: 'keep' }], encrypted_content: 'opaque' },
+    { type: 'reasoning', id: 'r', status: 'completed' },
+    { type: 'web_search_call', action: { type: 'search', query: 'a' } },
+    { type: 'web_search_call', action: { type: 'search', queries: [] } },
+    { type: 'future_item', id: 'r', data: { untouched: true } }, null, 2,
+  ];
+  const errors = [
+    {}, { param: 'input[0].id', message: 'Invalid id prefix' },
+    { param: 'input[0].status', message: 'Invalid value', code: 'invalid_value' },
+    { message: "Unsupported parameter: 'input[1].internal_chat_message_metadata_passthrough'" },
+    { message: "Invalid 'input[0].content': array too long" }, { param: 'input[1].content', code: 'ARRAY_ABOVE_MAX_LENGTH' },
+    { message: 'Encrypted content abc could not be verified' }, { message: 'Item with id "r" not found' },
+    { message: "Unknown parameter: 'tools[0].cache_control'" },
+  ];
+  let count = 0;
+  for (let i = 0; i < records.length; i++) {
+    for (let j = 0; j < records.length; j++) {
+      const body = { input: [records[i], records[j], records[(i + j) % records.length]],
+        tools: [{ type: 'function', cache_control: true }], previous_response_id: i % 2 ? 'response' : '' };
+      const calls = [
+        ['preprocessResponsesHistory'], ['stripReasoningContent'], ['stripUnverifiableEncryptedContent'],
+        ['fillWebSearchQueries'], ['stripUnresolvedItemReferences', ['r', '', false]],
+        ['normalizeResponsesHistory'], ['normalizeResponsesHistory', { omitReasoningContent: true }],
+        ...errors.map(error => ['repairRejectedResponsesHistory', error]),
+      ];
+      for (const [operation, ...args] of calls) {
+        const expected = original[operation](body, ...args);
+        const actual = migrated[operation](body, ...args);
+        assert.deepEqual(actual, expected);
+        assert.deepEqual(referencesIn(body, actual), referencesIn(body, expected));
+        count++;
+      }
+    }
+  }
+  t.diagnostic(`${count} history operation comparisons matched`);
+});
+
+test('history conversion salts a colliding ID and preserves sparse inputs and Array species', () => {
+  class Items extends Array {}
+  const first = { type: 'message', id: '外部\udfff', content: [] };
+  const candidate = original.preprocessResponsesHistory({ input: [first] }).body.input[0].id;
+  const input = new Items(first, { type: 'message', id: candidate }, null, { type: 'item_reference', id: first.id });
+  delete input[2];
+  const body = { input };
+  const expected = original.preprocessResponsesHistory(body);
+  const actual = migrated.preprocessResponsesHistory(body);
+  assert.deepEqual(actual, expected);
+  assert.ok(actual.body.input instanceof Items);
+  assert.equal(2 in actual.body.input, false);
+  assert.notEqual(actual.body.input[0].id, candidate);
+  assert.equal(actual.body.input[3].id, actual.body.input[0].id);
+});
+
+test('history conversion preserves getter and proxy order, including failures during shallow copying', t => {
+  const failure = new Error('fixture getter');
+  const cases = [
+    ['preprocessResponsesHistory', { type: 'function_call', id: 'foreign', arguments: { x: 1 } }],
+    ['stripReasoningContent', { type: 'reasoning', content: ['x'] }],
+    ['stripUnverifiableEncryptedContent', { type: 'reasoning', encrypted_content: 'x' }],
+    ['fillWebSearchQueries', { type: 'web_search_call', action: { type: 'search', query: 'x' } }],
+    ['stripUnresolvedItemReferences', { type: 'reasoning', id: 'r', summary: ['s'] }, ['r']],
+    ['normalizeResponsesHistory', { type: 'message', id: 'old', content: [] }],
+    ['repairRejectedResponsesHistory', { type: 'message', status: 's' }, { message: "Unsupported parameter 'input[0].status'" }],
+  ];
+  let count = 0;
+  for (const [op, record, arg] of cases) {
+    function run(api, failAt) {
+      const log = [];
+      function watch(value, label) {
+        if (!value || typeof value !== 'object') return value;
+        const note = (...event) => {
+          log.push([label, ...event]);
+          if (log.length === failAt) throw failure;
+        };
+        return new Proxy(value, {
+          get(target, key, receiver) { note('get', String(key)); return Reflect.get(target, key, receiver); },
+          ownKeys(target) { note('ownKeys'); return Reflect.ownKeys(target); },
+          getOwnPropertyDescriptor(target, key) { note('descriptor', String(key)); return Reflect.getOwnPropertyDescriptor(target, key); },
+        });
+      }
+      const item = { ...record };
+      if (item.action) item.action = watch(item.action, 'action');
+      if (item.arguments) item.arguments = watch(item.arguments, 'arguments');
+      const body = watch({ input: [watch(item, 'item')] }, 'body');
+      const invoke = () => api[op](body, arg);
+      if (failAt) assert.throws(invoke, e => e === failure);
+      else invoke();
+      return log;
+    }
+    const baseline = run(original, 0);
+    assert.deepEqual(run(migrated, 0), baseline);
+    for (let n = 1; n <= baseline.length; n++) {
+      assert.deepEqual(run(migrated, n), run(original, n));
+      count++;
+    }
+  }
+  t.diagnostic(`${count} getter and proxy failure positions matched`);
+});
+
+test('history JSON serialization propagates original toJSON failures and rejects cyclic or BigInt arguments', () => {
+  const failure = Object.freeze({ cause: 'toJSON' });
+  const circular = {}; circular.self = circular;
+  for (const args of [{ toJSON() { throw failure; } }, circular, { n: 2n }]) {
+    const body = { input: [{ type: 'function_call', arguments: args }] };
+    let baseline;
+    assert.throws(() => original.preprocessResponsesHistory(body), e => { baseline = e; return true; });
+    assert.throws(() => migrated.preprocessResponsesHistory(body), e =>
+      baseline === failure ? e === failure : e.constructor === baseline.constructor && e.message === baseline.message);
+  }
+});
+
+test('normalize snapshots diagnostics even when a custom array retains its map callback', () => {
+  for (const api of [original, migrated]) {
+    let replay;
+    class ReplayInput extends Array {
+      map(f) { replay ??= f; return super.map(f); }
+    }
+    const item = { type: 'message', id: 'old', content: [] };
+    const result = api.normalizeResponsesHistory({ input: new ReplayInput(item) });
+    const before = structuredClone(result.changes);
+    replay(item, 0);
+    assert.deepEqual(result.changes, before);
+  }
+});
+
+test('malformed iteration and non-callable copy methods reject with the original TypeError', () => {
+  function sameThrow(invoke) {
+    let expected;
+    assert.throws(() => invoke(original), err => { expected = err; return err instanceof TypeError; });
+    assert.throws(() => invoke(migrated), err => err instanceof TypeError && err.message === expected.message);
+  }
+  for (const iterator of [null, () => 1, () => ({ next: null }), () => ({ next: () => 2 })]) {
+    const input = Object.assign([], { [Symbol.iterator]: iterator });
+    sameThrow(api => api.preprocessResponsesHistory({ input }));
+  }
+  const input = Object.assign([{ type: 'message', status: true }], { slice: null });
+  sameThrow(api => api.repairRejectedResponsesHistory({ input }, { param: 'input[0].status', message: 'Unknown parameter' }));
+  const tools = Object.assign([{ type: 'function', strict: true }], { slice: null });
+  sameThrow(api => api.repairRejectedResponsesHistory({ tools }, { param: 'tools[0].strict', message: 'Unsupported parameter' }));
+});
