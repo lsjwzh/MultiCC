@@ -872,3 +872,36 @@ test('frozen DTO traversal snapshots object entries and preserves sparse array a
     finally { candidate[name].delete(marker); frozenSessionDto[name].delete(marker); }
   }
 });
+
+test('tmux startup awaits each terminal and reads the next session from the live tables', async () => {
+  const { recoverTmuxSessions } = require('../src/native/binding').getNative();
+  const sessions = new Map(), invalidSessions = new Map();
+  const persistedSessions = new Map(['first', 'claimed', 'invalid', 'broken', 'last'].map(id =>
+    [id, { kind: 'terminal', cli: 'codex' }]));
+  const created = [], warnings = [], errors = [];
+  const entered = Promise.withResolvers(), resume = Promise.withResolvers();
+  const originalMessage = {};
+  const failure = { message: originalMessage };
+  const recovery = recoverTmuxSessions({
+    prefix: 'multicc-', list: () => ['foreign', ...Array.from(persistedSessions.keys(), id => 'multicc-' + id)],
+    sessions, persistedSessions, invalidSessions,
+    async createSession(id) {
+      created.push(id);
+      if (id === 'first') { entered.resolve(); await resume.promise; }
+      if (id === 'broken') throw failure;
+    },
+    logger: { log() {}, warn: msg => warnings.push(msg), error: (...args) => errors.push(args) },
+  });
+  await entered.promise;
+  assert.deepEqual(created, ['first']);
+  sessions.set('claimed', {});
+  invalidSessions.set('invalid', 'duplicate path');
+  resume.resolve();
+  assert.equal(await recovery, undefined);
+  assert.deepEqual(created, ['first', 'broken', 'last']);
+  assert.deepEqual(warnings, ['[multicc] skipping recovery of invalid: duplicate path']);
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0][0], '[multicc] Failed to recover session broken:');
+  assert.equal(errors[0][1], originalMessage);
+  assert.equal(await recoverTmuxSessions({ list: () => Promise.reject(failure) }), undefined);
+});
