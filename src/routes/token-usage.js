@@ -1,5 +1,6 @@
 'use strict';
 
+const { normalizedUsageTokenCount, usageTokenComponents } = require('../native/binding').getNative();
 const { projectHistoryUsage } = require('../codex/usage');
 
 const EMPTY_ROLE_SNAPSHOT = Object.freeze({
@@ -57,30 +58,18 @@ function assertDependencies(deps) {
 }
 
 function tokenCount(value, max = Number.MAX_SAFE_INTEGER) {
-  let numeric = value;
-  if (typeof numeric === 'string' && /^\d+$/.test(numeric.trim())) {
-    numeric = Number(numeric.trim());
-  }
-  if (!Number.isSafeInteger(numeric) || numeric < 0 || numeric > max) return 0;
-  return numeric;
+  const count = normalizedUsageTokenCount(value);
+  return count == null || count > max ? 0 : count;
 }
 
 function eventTokenCount(value) {
-  return tokenCount(value, MAX_EVENT_TOKENS);
+  return normalizedUsageTokenCount(value) ?? 0;
 }
 
 function usageComponents(usage) {
   const value = usage || {};
-  const freshInputTokens = eventTokenCount(value.input_tokens);
-  const cacheReadTokens = eventTokenCount(value.cache_read_input_tokens);
-  const cacheWriteTokens = eventTokenCount(value.cache_creation_input_tokens);
-  return {
-    freshInputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    consumedInputTokens: freshInputTokens + cacheReadTokens + cacheWriteTokens,
-    outputTokens: eventTokenCount(value.output_tokens),
-  };
+  return usageTokenComponents(value.input_tokens, value.cache_read_input_tokens,
+    value.cache_creation_input_tokens, value.output_tokens);
 }
 
 function aggregateBucket(value) {

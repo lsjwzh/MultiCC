@@ -170,6 +170,19 @@ fn safe_integer(number: f64) -> bool {
     number.is_finite() && number.fract() == 0.0 && number.abs() <= 9_007_199_254_740_991.0
 }
 
+/// Primitive counts accepted in token events and legacy ledger rows.
+pub fn token_count_number(number: f64) -> Option<f64> {
+    (number >= 0.0 && safe_integer(number)).then_some(number)
+}
+
+pub fn token_count_text(text: &str) -> Option<f64> {
+    let digits = js_trim(text);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    token_count_number(digits.parse().ok()?)
+}
+
 fn optional_positive_integer(
     value: Option<&Value>,
     label: &str,
