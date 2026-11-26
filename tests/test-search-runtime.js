@@ -539,3 +539,70 @@ test('findMessages counts rank failures and returns the original relevance order
     assert.ok(warnings.some(message => message.startsWith('search_index_rerank_failed:')));
   } finally { cleanup(); }
 });
+
+test('slice runner matches the 49fc8188 queue, reentrancy and timer trace', () => {
+  const old = require('./helpers/legacy-slice-runner');
+  function run(factory, sliceMs, duty, front) {
+    let clock = 1;
+    const timers = [], trace = [], sentinel = {};
+    const runner = factory({ sliceMs, duty, now: () => clock++,
+      defer(fn, delay) { trace.push(['timer', delay]); timers.push(fn); } });
+    let first = true;
+    const gen = { next() {
+      if (first) {
+        first = false;
+        runner.enqueue({ next() { throw sentinel; } }, { front, onError(err) {
+          trace.push(['error', this.gen !== gen, err === sentinel, runner.stats()]);
+          throw sentinel;
+        } });
+        return { done: false };
+      }
+      return { done: true, value: 7 };
+    } };
+    const job = runner.enqueue(gen);
+    job.onDone = function (value) { trace.push(['done', this === job, value, runner.stats()]); };
+    for (let i = 0; timers.length; i++) {
+      assert.ok(i < 20);
+      timers.shift()();
+      trace.push(runner.stats());
+    }
+    runner.stop();
+    runner.enqueue(gen);
+    trace.push(runner.pending(), runner.stats());
+    runner.clear();
+    trace.push(runner.stats());
+    return trace;
+  }
+  for (const budget of [0, 1, 2, 8, Infinity, -3, '4', 4n]) {
+    for (const share of [0, 0.001, 0.25, 1, 2, NaN]) {
+      for (const front of [false, true]) {
+        assert.deepEqual(run(createSliceRunner, budget, share, front),
+          run(old.createSliceRunner, budget, share, front));
+      }
+    }
+  }
+});
+
+test('slice runner propagates timer and step accessor errors and removes the current head on reentry', () => {
+  for (const factory of [createSliceRunner, require('./helpers/legacy-slice-runner').createSliceRunner]) {
+    const marker = {};
+    const broken = factory({ defer() { throw marker; } });
+    assert.throws(() => broken.enqueue(null), e => e === marker);
+    assert.deepEqual(broken.stats(), { slices: 0, queued: 1, scheduled: true });
+    let tick;
+    const r = factory({ now: () => 0, defer: f => { tick = f; } });
+    r.enqueue({ next: () => ({ get done() { throw marker; } }) });
+    assert.throws(() => tick(), e => e === marker);
+    assert.deepEqual(r.stats(), { slices: 1, queued: 1, scheduled: false });
+    r.clear();
+    let count = 0;
+    const calls = [];
+    r.enqueue({ next() {
+      if (!count++) r.enqueue({ next() { throw marker; } }, { front: true });
+      return { done: true, value: count };
+    } }, { onDone(n) { calls.push(n); } });
+    tick();
+    assert.deepEqual(calls, [1, 2]);
+    assert.equal(r.pending(), 0);
+  }
+});

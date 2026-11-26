@@ -8,6 +8,8 @@
 //! looked up before its arguments are evaluated, as in a JS call expression.
 //! Error codes are sanitized and 429 rejections normalized by
 //! [`crate::api_error_text`] directly.
+mod observation;
+
 use crate::{
     api_error_text::{normalize_rejection, sanitize},
     cli_completion::{compatible, completed},
