@@ -1,6 +1,6 @@
 'use strict';
 
-const { normalizedUsageTokenCount, usageTokenComponents } = require('../native/binding').getNative();
+const { normalizedUsageTokenCount, usageTokenComponents, advanceUsageBucket } = require('../native/binding').getNative();
 const { projectHistoryUsage } = require('../codex/usage');
 
 const EMPTY_ROLE_SNAPSHOT = Object.freeze({
@@ -94,6 +94,11 @@ function aggregateBucket(value) {
   };
 }
 
+function updatedBucket(value, parts) {
+  const bucket = aggregateBucket(value);
+  return Object.assign(bucket, advanceUsageBucket(bucket, parts));
+}
+
 function normalizeUsageLedger(value) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const normalized = {};
@@ -183,9 +188,7 @@ function createTokenUsageRoutes(rawDeps) {
 
   function accumulateTokenDaily(sessionId, usage, attribution = {}) {
     const parts = usageComponents(usage);
-    const inputTokens = parts.consumedInputTokens;
-    const outputTokens = parts.outputTokens;
-    if (inputTokens + outputTokens === 0) return true;
+    if (parts.consumedInputTokens + parts.outputTokens === 0) return true;
 
     const persisted = deps.persistedSessions.get(sessionId);
     const providerId = attribution.providerId || (persisted && persisted.provider) || '_default_';
@@ -196,15 +199,7 @@ function createTokenUsageRoutes(rawDeps) {
     const day = storedDay && typeof storedDay === 'object' && !Array.isArray(storedDay)
       ? storedDay
       : {};
-    const provider = aggregateBucket(day[providerId]);
-    provider.inputTokens += inputTokens;
-    provider.consumedInputTokens = provider.inputTokens;
-    provider.freshInputTokens += parts.freshInputTokens;
-    provider.cacheReadTokens += parts.cacheReadTokens;
-    provider.cacheWriteTokens += parts.cacheWriteTokens;
-    provider.breakdownKnown = true;
-    provider.outputTokens += outputTokens;
-    provider.turnCount += 1;
+    const provider = updatedBucket(day[providerId], parts);
     day[providerId] = provider;
     daily[dateKey] = day;
 
@@ -222,28 +217,12 @@ function createTokenUsageRoutes(rawDeps) {
     const parts = usageComponents(usage);
     diagnoseLargeEvent(sessionId, parts);
     const data = normalizeUsageLedger(readObject(deps.tokenUsageFile));
-    const current = aggregateBucket(data[sessionId]);
-    current.inputTokens += parts.consumedInputTokens;
-    current.consumedInputTokens = current.inputTokens;
-    current.freshInputTokens += parts.freshInputTokens;
-    current.cacheReadTokens += parts.cacheReadTokens;
-    current.cacheWriteTokens += parts.cacheWriteTokens;
-    current.breakdownKnown = true;
-    current.outputTokens += parts.outputTokens;
-    current.turnCount += 1;
+    const current = updatedBucket(data[sessionId], parts);
     const persisted = deps.persistedSessions.get(sessionId);
     const providerId = attribution.providerId || (persisted && persisted.provider) || '_default_';
     const byProvider = current.byProvider && typeof current.byProvider === 'object'
       && !Array.isArray(current.byProvider) ? current.byProvider : {};
-    const provider = aggregateBucket(byProvider[providerId]);
-    provider.inputTokens += parts.consumedInputTokens;
-    provider.consumedInputTokens = provider.inputTokens;
-    provider.freshInputTokens += parts.freshInputTokens;
-    provider.cacheReadTokens += parts.cacheReadTokens;
-    provider.cacheWriteTokens += parts.cacheWriteTokens;
-    provider.breakdownKnown = true;
-    provider.outputTokens += parts.outputTokens;
-    provider.turnCount += 1;
+    const provider = updatedBucket(byProvider[providerId], parts);
     current.byProvider = { ...byProvider, [providerId]: provider };
     data[sessionId] = current;
     try {
