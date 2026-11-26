@@ -39,6 +39,8 @@
   <link rel="stylesheet" href="air-mobile.css" />
 </head>
 <body>
+  <button id="sidebar-edge" type="button" aria-controls="sidebar" aria-expanded="false"
+          title="打开导航" data-i18n-title="airOpenNav" aria-label="打开导航" data-i18n-aria-label="airOpenNav"></button>
   <aside id="sidebar" aria-label="工作目录与任务导航" data-i18n-aria-label="airSidebarNav">
     <!-- 顶卡就是一行：M 标（回 /air 首页）＋当前目录（名字加路径两行小字，⌄ 开
          侧拉切目录）＋通知与 CLI 更新两颗图标。「这是哪个产品、我在哪个目录」
@@ -138,9 +140,15 @@
                 onclick="event.stopPropagation(); toggleLang()"
                 title="切换语言：中文 / English" data-i18n-title="languageToggle">中/EN</button>
       </div>
-      <button id="side-more" class="nav-row" type="button" data-air-view="settings">
-        <span aria-hidden="true">⚙</span><span data-i18n="airSettingsCenter">设置</span><span aria-hidden="true">›</span>
-      </button>
+      <div class="side-settings-row">
+        <button id="side-more" class="nav-row" type="button" data-air-view="settings">
+          <span aria-hidden="true">⚙</span><span data-i18n="airSettingsCenter">设置</span><span aria-hidden="true">›</span>
+        </button>
+        <button id="sidebar-mode" type="button" aria-controls="sidebar"
+                data-i18n-title="airSidebarAutoHide" data-i18n-aria-label="airSidebarAutoHide">
+          <svg class="sidebar-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M9 4v16"/><path class="sidebar-direction" d="m16 9-3 3 3 3"/></svg>
+        </button>
+      </div>
       <!-- 关闭抽屉后仍可见的运维回执；打开时同步到抽屉内。 -->
       <p id="air-ops-status" class="ops-status" role="status"></p>
       <small data-i18n="airTagline">让每一次对话，都有清晰的目标。</small>
@@ -861,6 +869,7 @@
   <script src="voice-readiness.js"></script>
   <script src="voice-composer.js"></script>
   <script src="air-more.js"></script>
+  <script src="air-sidebar.js"></script>
   <script src="air-navigation.js"></script>
   <script src="air-onboarding.js"></script>
   <script src="air-task-todo.js"></script>
