@@ -13,6 +13,17 @@ const { createSessionDelivery } = require('../src/native/runtime').getSessionDel
 const sdkFixture = require('./helpers/claude-sdk-fixture');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/native/runtime').getMonitorAdmission();
 
+test('stream-json Monitor control matches the frozen handshake, hook and failure behavior', async () => {
+  const api = require('../src/native/runtime').getMonitorControl();
+  const frozen = require('./helpers/frozen-file-batch28/monitor-control');
+  const { exercise } = require('./helpers/monitor-control-fixture');
+  for (let mode = 0; mode < 8; mode++) for (let flag = 0; flag < 6; flag++) {
+    assert.deepEqual(await exercise(api, { mode, flag }), await exercise(frozen, { mode, flag }), `${mode}/${flag}`);
+  }
+  assert.deepEqual([api.createMonitorControl.name, api.createMonitorControl.length],
+    [frozen.createMonitorControl.name, frozen.createMonitorControl.length]);
+});
+
 test('Monitor hook only captures known native notifications and never captures submitted user text', async () => {
   const seen = [];
   const prompt = '<task-notification>\n<task-id>watch</task-id><event>&lt;event&gt; &amp; data</event></task-notification>';

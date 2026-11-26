@@ -89,6 +89,7 @@ pub mod model_default;
 pub mod model_request_policy;
 pub mod model_stream_progress;
 pub mod monitor_admission;
+pub mod monitor_control;
 pub mod native_session_guard;
 pub mod network_policy;
 pub mod node_fs_error;
