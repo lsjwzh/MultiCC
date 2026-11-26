@@ -27,6 +27,24 @@ let autoProviderPolicy;
 function getAutoProviderPolicy() { return autoProviderPolicy ??= getNative().autoProviderPolicyApi(getNative()); }
 let retryPolicy;
 function getRetryPolicy() { return retryPolicy ??= getNative().retryPolicyApi(require('../chat/api-error-policy').policyPorts); }
+// The host adopts append's original thenable and preserves V8 coercion/exception identity.
+function createErrorPersister({ appendChatMessage, now = Date.now, windowMs = 10000, logger = console }) {
+  return getNative().chatErrorPersister({
+    recent: new Map(), append: appendChatMessage, now: () => now(),
+    expired: (at, previous) => at - previous > windowMs,
+    message: payload => String(payload.error ?? ''), key: (sid, text) => `${sid}\n${text}`,
+    id: (key, at) => `err-${require('node:crypto').createHash('sha1').update(`${key}\n${at}`).digest('hex').slice(0, 16)}`,
+    observe(record, failed) {
+      if (record && typeof record.then === 'function') {
+        record.then(saved => { if (saved === false) failed(new Error('append rejected')); }, failed);
+      } else if (record === false) failed(new Error('append rejected'));
+    },
+    warn(sessionId, error) {
+      const message = error && error.message ? error.message : String(error);
+      try { logger?.warn?.('chat_error_persist_failed', { sessionId, message }); } catch (_) {}
+    },
+  });
+}
 let sessionNotices;
 function getSessionNotices() { return sessionNotices ??= getNative().sessionNoticesApi(getNative()); }
 let networkPolicy;
@@ -461,7 +479,7 @@ function orchestrationJsonPorts(factory, ports) {
   return jsonStorePorts.get(factory);
 }
 
-module.exports = { getTurnProgress, getWriterGroup, getVendorLogin, getMonitorControl, getProcessCloser, getAutoProviderPricing, getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, orchestrationJsonPorts, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
+module.exports = { createErrorPersister, getTurnProgress, getWriterGroup, getVendorLogin, getMonitorControl, getProcessCloser, getAutoProviderPricing, getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, orchestrationJsonPorts, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
   getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   artifactReference, getContextSelection, decodeRecoveryEvents, providerInvocation, createAutoProviderHandoff,

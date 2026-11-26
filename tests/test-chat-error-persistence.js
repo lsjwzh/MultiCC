@@ -122,3 +122,29 @@ test('a synchronously thrown write also releases the dedupe claim', () => {
   assert.match(retried.errorClientMsgId, /^err-[0-9a-f]{16}$/);
   assert.equal(attempt, 2, 'the same error is written again instead of deduping onto a missing row');
 });
+
+test('01e931f1 differential: reconnect spellings and stale claim failures cannot erase replacements', () => {
+  const before = require('./helpers/frozen-state-leaves/error-persistence');
+  const after = require('../src/chat/error-persistence');
+  for (const prefix of ['Codex', 'CODEX EXP', 'Codex Exec', 'CODEXx']) for (const ws of ['', '\uFEFF', '\u0085', '\n']) {
+    for (const detail of ['', ' (response.completed)', ' (stream disconnected before completion: x)',
+      ' resumed', 'a\n(x response.completed)', '(x\u2028response.completed)', ' (1)']) {
+      const raw = prefix + ' 出错：Reconnecting...' + ws + '1/20' + detail;
+      assert.equal(after.isRecoverableReconnect(raw), before.isRecoverableReconnect(raw), raw);
+    }
+  }
+  function trace(api) {
+    let time = 0, reject;
+    const writes = [], warnings = [], out = [];
+    const a = api.createErrorPersister({ now: () => time, windowMs: 2,
+      logger: { warn(...args) { warnings.push(args); } },
+      appendChatMessage(id, record) { writes.push([id, record]); return { then(_, no) { reject = no; } }; },
+    });
+    const payload = { type: 'error', code: 'disk', error: 'a'.repeat(3999) + '😀' };
+    function append() { const v = a.annotate('s', payload); out.push([v === payload, v.errorClientMsgId]); }
+    append(); const stale = reject; time = 2; append(); time++; append();
+    stale(Error('late')); append(); reject(Error('current')); append();
+    return { writes, warnings, out };
+  }
+  assert.deepEqual(trace(after), trace(before));
+});

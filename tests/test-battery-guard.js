@@ -175,3 +175,23 @@ test('battery guard start/stop drives the interval', async () => {
   assert.equal(timers.length, 0);
   assert.equal(guard.getStatus().running, false);
 });
+
+test('01e931f1 differential: overlapping checks, snapshots, failed sleep, latch and recovery', async () => {
+  const before = require('./helpers/frozen-state-leaves/battery-guard').createBatteryGuardRuntime;
+  async function trace(factory) {
+    const events = [], states = [];
+    let power = 'battery', percent = 5, rejectSleep = true, release;
+    const guard = factory({ logger: { log() { events.push('log'); }, warn() { events.push('warn'); } }, macosPower: {
+      readBattery() { events.push('battery'); return { source: power, percent }; },
+      getLidSleepPrevention() { events.push('lid'); return { enabled: true }; },
+      sleepNow() { events.push('sleep'); if (rejectSleep) throw Error('busy'); return new Promise(r => { release = r; }); },
+    } });
+    function keep(state) { states.push({ ...state, lastCheckTs: !!state.lastCheckTs }); }
+    keep(await guard.check()); rejectSleep = false;
+    const pending = guard.check(); await Promise.resolve(); await Promise.resolve();
+    keep(await guard.check()); release({ ok: true, method: 'fake' }); keep(await pending);
+    keep(await guard.check()); power = 'ac'; keep(await guard.check()); percent = null; keep(await guard.check());
+    return { events, states };
+  }
+  assert.deepEqual(await trace(createBatteryGuardRuntime), await trace(before));
+});

@@ -166,3 +166,49 @@ test('switching backend waits for the old child the switch is closing', async ()
   router.ensure('s', { cwd: '/tmp', streamBackend: 'app-server' });
   assert.equal(await router.send('s'), 'sent:app');
 });
+
+test('01e931f1 differential: live callback this, parked close barrier, ownership and rejection', async () => {
+  const before = require('./helpers/frozen-state-leaves/workspace-residency');
+  const after = require('../src/chat/workspace-residency');
+  async function trace(factory, mode) {
+    const calls = [], results = [], marker = new Error('host failure');
+    let close;
+    const registry = factory({ status(id) { calls.push(['status', id]); return { backgroundActive: mode === 'background' }; },
+      pending(id) { calls.push(['pending', id]); return false; },
+      closeAndWait(id) { calls.push(['close', id]); return new Promise((resolve, reject) => {
+        close = () => mode === 'reject' ? reject(marker) : resolve({ closed: mode !== 'refuse' });
+      }); },
+    });
+    const snapshotError = e => [e === marker, e.name, e.message, e.code, e.backpressure];
+    registry.track('first', '.', function () { calls.push(['activity', this.workspaceId, this.parked]); });
+    registry.activity('first');
+    const w = { id: 'w', path: '.' };
+    results.push(registry.park('first', w));
+    const barrier = registry.claim('second', w).then(v => v, snapshotError);
+    try { registry.assertSend('first'); } catch (e) { results.push(snapshotError(e)); }
+    if (close) close();
+    results.push(await barrier, registry.forget('first'), registry.forget('first'));
+    return { calls, results };
+  }
+  for (const mode of ['ok', 'refuse', 'reject', 'background']) {
+    assert.deepEqual(await trace(after.createWorkspaceResidency, mode), await trace(before.createWorkspaceResidency, mode));
+  }
+});
+
+test('01e931f1 differential: activity exposes the entry receiver and its strict setters', async () => {
+  const before = require('./helpers/frozen-state-leaves/workspace-residency');
+  const after = require('../src/chat/workspace-residency');
+  async function trace(factory) {
+    const marker = new Error('setter'), events = [];
+    const r = factory({ status: () => null, pending: () => false, closeAndWait: () => ({ closed: true }) });
+    r.track('a', '.', function () {
+      Object.defineProperty(this, 'onActivity', { set(v) { events.push('activity setter'); throw marker; } });
+      Object.defineProperty(this, 'parked', { get() { return false; }, set(v) { events.push(v); throw marker; } });
+    });
+    r.activity('a');
+    try { r.track('a', '.', () => {}); } catch (e) { events.push(e === marker); }
+    try { await r.claim('b', { path: '.' }); } catch (e) { events.push(e === marker); }
+    return events;
+  }
+  assert.deepEqual(await trace(after.createWorkspaceResidency), await trace(before.createWorkspaceResidency));
+});

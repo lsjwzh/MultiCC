@@ -2150,7 +2150,7 @@ const codexUsageHost = createCodexUsageHost({
   logger,
 });
 
-const chatErrors = require('./src/chat/error-persistence').createErrorPersister({ appendChatMessage: appendChatMessage }); // errors reach history, not only the live line
+const chatErrors = require('./src/native/binding').createErrorPersister({ appendChatMessage: appendChatMessage }); // errors reach history, not only the live line
 function chatBroadcast(sessionName, payload) {
   payload = chatErrors.annotate(sessionName, scopeHostProviderEvent(payload));
   // #110: journal every client-visible event (never blocks or throws), then fan out.

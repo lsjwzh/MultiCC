@@ -1,24 +1,5 @@
 'use strict';
 
-// Event log + passive inter-agent notes store.
-// Each directory has an append-only event log (events/<dirId>.jsonl) and a shared
-// pool of notes. A note left for another agent is delivered passively — prepended
-// to that agent's next chat turn.
-//
-// Extracted verbatim from server.js. Behaviour is preserved exactly; host
-// collaboration is injected through deps:
-//   · persistedSessions / directories are boot-loaded Maps and stay live by ref
-//   · workspaceBroadcast fans an event out to the workspace Meta channel; it is
-//     composed AFTER this store in server.js, so the store receives
-//     getWorkspaceBroadcast() and resolves it per call (pre-broadcast appends
-//     simply skip the fan-out, matching the old behaviour where module-level
-//     appends ran before workspace clients could exist)
-//   · the recent-event ring itself is owned by the native workspace socket
-//     owner (getWorkspaceEvents); this module keeps only the JSONL adapter.
-// The `notes` array is module-private mutable state — loadNotes() and
-// purgeNotesForSession() reassign it wholesale — so it is NEVER exposed by
-// reference; consumers go through loadNotes/saveNotes/getNotes/pendingNotesFor.
-
 const fs = require('fs');
 const path = require('path');
 
@@ -60,79 +41,29 @@ function createNotesStore(rawDeps) {
     throw new TypeError('[notes-store] getWorkspaceEvents must be a function');
   }
 
-  const EVENTS_DIR = eventsDir;
-  try { ensurePrivateDir(EVENTS_DIR); } catch (_) {}
-  const NOTES_FILE = notesFile;
-  let notes = [];                // [{ id, dirId, fromSessionId, fromLabel, toSessionId, body, ts, delivered, deliveredAt }]
-
-  function loadNotes() {
-    try {
-      if (fs.existsSync(NOTES_FILE)) notes = JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8'));
-    } catch (e) {
-      console.error('[multicc] load notes.json failed:', e.message);
-      notes = [];
-    }
-  }
-  function saveNotes() {
-    try { atomicWriteJson(NOTES_FILE, notes); }
-    catch (e) { console.error('[multicc] save notes.json failed:', e.message); }
-  }
-
-  // Lazy-load a directory's recent events from disk into the native ring.
-  function recentEvents(dirId) {
-    const owner = getWorkspaceEvents();
-    if (owner.has(dirId)) return owner.recent(dirId);
-    const ring = [];
-    try {
-      const file = path.join(EVENTS_DIR, `${dirId}.jsonl`);
-      if (fs.existsSync(file)) {
-        for (const l of fs.readFileSync(file, 'utf8').trim().split('\n').slice(-200)) {
-          try { ring.push(JSON.parse(l)); } catch (_) {}
-        }
-      }
-    } catch (_) {}
-    owner.hydrate(dirId, ring);
-    return owner.recent(dirId);
-  }
-
-  // Append an event to a directory's log + ring buffer, and broadcast it live.
-  function appendEvent(dirId, type, detail, sessionId) {
-    if (!dirId) return;
-    const session = sessionId ? persistedSessions.get(sessionId) : null;
-    const evt = {
-      ts: Date.now(), type,
-      sessionId: sessionId || null,
-      sessionLabel: session ? (session.label || session.id) : (sessionId || null),
-      detail: detail || null,
-    };
-    recentEvents(dirId);
-    getWorkspaceEvents().append(dirId, evt);
-    try { fs.appendFileSync(path.join(EVENTS_DIR, `${dirId}.jsonl`), JSON.stringify(evt) + '\n', { mode: 0o600 }); }
-    catch (_) {}
-    const broadcast = getWorkspaceBroadcast();
-    if (typeof broadcast === 'function') broadcast(dirId, { type: 'event', event: evt });
-  }
-
-  function pendingNotesFor(sessionId) {
-    return notes.filter(n => n.toSessionId === sessionId && !n.delivered);
-  }
-
-  // Drop all notes referencing a session (called when it is deleted).
-  function purgeNotesForSession(sessionId) {
-    const before = notes.length;
-    notes = notes.filter(n => n.toSessionId !== sessionId && n.fromSessionId !== sessionId);
-    if (notes.length !== before) saveNotes();
-  }
-
-  return {
-    loadNotes,
-    saveNotes,
-    recentEvents,
-    appendEvent,
-    pendingNotesFor,
-    purgeNotesForSession,
-    getNotes: () => notes,
-  };
+  try { ensurePrivateDir(eventsDir); } catch (_) {}
+  const eventFile = dirId => path.join(eventsDir, `${dirId}.jsonl`);
+  return require('./native/binding').getNative().workspaceNotesOwner({
+    load() {
+      try { if (fs.existsSync(notesFile)) return JSON.parse(fs.readFileSync(notesFile, 'utf8')); }
+      catch (e) { console.error('[multicc] load notes.json failed:', e.message); return []; }
+    },
+    save(notes) {
+      try { atomicWriteJson(notesFile, notes); }
+      catch (e) { console.error('[multicc] save notes.json failed:', e.message); }
+    },
+    filter: (notes, predicate) => notes.filter(predicate),
+    events: () => getWorkspaceEvents(), session: id => persistedSessions.get(id),
+    has: (owner, id) => owner.has(id), recent: (owner, id) => owner.recent(id),
+    hydrate: (owner, id, ring) => owner.hydrate(id, ring),
+    lines(id) {
+      const file = eventFile(id);
+      return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n') : [];
+    },
+    parse: line => JSON.parse(line), now: () => Date.now(),
+    append: (id, event) => getWorkspaceEvents().append(id, event),
+    persist: (id, event) => fs.appendFileSync(eventFile(id), JSON.stringify(event) + '\n', { mode: 0o600 }),
+    broadcast: () => getWorkspaceBroadcast(),
+  });
 }
-
 module.exports = { createNotesStore };

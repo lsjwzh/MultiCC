@@ -47,55 +47,23 @@ function createBatteryGuardRuntime(rawDeps) {
   }
 
   let timer = null;
-  let checking = false;
-  let latched = false;
-  let triggerCount = 0;
-  let sleepPrevention = false;
-  let lastCheckTs = 0;
-  let lastBattery = null;
-  let lastSleepResult = null;
-  let error = null;
-
-  function getStatus() {
-    return {
-      running: timer !== null,
-      intervalMs,
-      thresholds: { ...thresholds },
-      sleepPrevention,
-      latched,
-      triggerCount,
-      lastCheckTs,
-      lastBattery: lastBattery ? { ...lastBattery } : null,
-      lastSleepResult: lastSleepResult ? { ...lastSleepResult } : null,
-      error,
-    };
-  }
-
+  const owner = require('./native/binding').getNative().batteryGuardOwner({
+    intervalMs, thresholds, running: () => timer !== null,
+    ge: (a, b) => a >= b, le: (a, b) => a <= b,
+  });
+  const { getStatus } = owner;
   async function check() {
-    if (checking) return getStatus();
-    checking = true;
+    if (!owner.begin()) return getStatus();
     try {
       const [battery, lid] = await Promise.all([
         macosPower.readBattery(),
         macosPower.getLidSleepPrevention(),
       ]);
-      lastCheckTs = Date.now();
-      lastBattery = { source: battery.source, percent: battery.percent };
-      sleepPrevention = !!lid.enabled;
-      error = null;
-
-      const percent = battery.percent;
-      if (percent == null || !battery.source) return getStatus();
-
-      // 闩锁复位：插电或回升到 rearm 以上才允许下一次触发（关盖运行已关也复位）。
-      if (latched && (battery.source === 'ac' || percent >= thresholds.rearm || !sleepPrevention)) {
-        latched = false;
-      }
-
-      if (!latched && sleepPrevention && battery.source === 'battery' && percent <= thresholds.trigger) {
-        lastSleepResult = await macosPower.sleepNow();
-        latched = true;
-        triggerCount += 1;
+      const decision = owner.observe(battery, lid, Date.now());
+      if (decision) {
+        const { percent } = decision;
+        const lastSleepResult = await macosPower.sleepNow();
+        owner.slept(lastSleepResult);
         if (lastSleepResult && lastSleepResult.ok) {
           logger.log(`[multicc/battery-guard] battery ${percent}% <= ${thresholds.trigger}% while sleep prevention is on -> slept via ${lastSleepResult.method}`);
         } else {
@@ -104,11 +72,11 @@ function createBatteryGuardRuntime(rawDeps) {
       }
       return getStatus();
     } catch (caught) {
-      error = caught && caught.message ? caught.message : String(caught);
+      owner.failed(caught && caught.message ? caught.message : String(caught));
       // 电池读数偶发失败不应杀掉轮询；只在连续失败时留状态供 API 观察。
       return getStatus();
     } finally {
-      checking = false;
+      owner.finish();
     }
   }
 

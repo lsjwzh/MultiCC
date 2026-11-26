@@ -566,3 +566,55 @@ test('native event ring hydrates the last 200 lines, appends, caps and fans out'
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('01e931f1 differential: notes ownership, event hydration, partial JSONL and append order', t => {
+  const before = require('./helpers/frozen-state-leaves/notes-store').createNotesStore;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'notes-state-diff-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  function trace(factory, subdir) {
+    const eventsDir = path.join(root, subdir), notesFile = path.join(eventsDir, 'notes.json');
+    const calls = [], ring = new Map();
+    const normalize = e => typeof e?.ts === 'number' ? { ...e, ts: '<clock>' } : e;
+    const api = factory({ eventsDir, notesFile, directories: new Map(), persistedSessions: new Map([['s', { id: 's', label: 'session' }]]),
+      atomicWriteJson(_, notes) { calls.push(['write', notes]); },
+      ensurePrivateDir: dir => fs.mkdirSync(dir, { recursive: true }),
+      getWorkspaceEvents: () => ({
+        has: id => ring.has(id), recent: id => ring.get(id),
+        hydrate(id, rows) { calls.push(['hydrate', id, rows.length]); ring.set(id, rows); },
+        append(id, e) { calls.push(['append', normalize(e)]); ring.get(id).push(e); },
+      }),
+      getWorkspaceBroadcast: () => (id, value) => calls.push(['broadcast', id, normalize(value.event)]),
+    });
+    fs.writeFileSync(path.join(eventsDir, 'd.jsonl'), Array.from({ length: 201 }, (_, i) => JSON.stringify(i)).join('\n') + '\ninvalid\n');
+    fs.writeFileSync(notesFile, JSON.stringify([{ toSessionId: 's', fromSessionId: 'a' }, { toSessionId: 'a', fromSessionId: 's' }, { toSessionId: 'b' }]));
+    api.loadNotes(); const original = api.getNotes(), pending = api.pendingNotesFor('s');
+    api.purgeNotesForSession('s');
+    api.appendEvent('d', 'test', false, 's');
+    const rows = api.recentEvents('d');
+    return { calls, sameNote: pending[0] === original[0], replaced: api.getNotes() !== original, notes: api.getNotes(), first: rows[0], rows: rows.length };
+  }
+  assert.deepEqual(trace(createNotesStore, 'new'), trace(before, 'old'));
+});
+
+test('01e931f1 differential: a reentrant length getter saves the latest notes', () => {
+  const before = require('./helpers/frozen-state-leaves/notes-store').createNotesStore;
+  function trace(factory) {
+    const saves = [], final = [];
+    const api = factory({ eventsDir: '/unused', notesFile: '/unused/notes', persistedSessions: new Map(),
+      directories: new Map(), ensurePrivateDir() {}, getWorkspaceBroadcast() {}, getWorkspaceEvents() {},
+      atomicWriteJson(_, notes) { saves.push(notes === final); },
+    });
+    let reentered = false;
+    const intermediate = {
+      get length() {
+        if (!reentered) { reentered = true; api.purgeNotesForSession('inner'); }
+        return 2;
+      },
+      filter: () => final,
+    };
+    api.getNotes().filter = () => intermediate;
+    api.purgeNotesForSession('outer');
+    return { saves, final: api.getNotes() === final };
+  }
+  assert.deepEqual(trace(createNotesStore), trace(before));
+});
