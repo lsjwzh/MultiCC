@@ -413,6 +413,8 @@ const providerRelayModelCatalogRuntime = createProviderRelayModelCatalogRuntime(
 
 let serviceReady = false;
 const commanderMigrationState = createCommanderMigrationState();
+const commanderStartup = getNative().commanderStartup(commanderMigrationState);
+const { seedDirectory: seedCommanderSession } = commanderStartup;
 let PORT = networkPolicy.port;
 const BIND_HOST = networkPolicy.host;
 const server = http.createServer(app);
@@ -708,12 +710,6 @@ for (const session of persistedSessions.values()) {
 
 // The Rust directory module shares the boot-loaded table with the session owner.
 const { createDirectoryModule } = require('./src/routes/directory-host');
-
-// Directories own tasks; registering one never seeds a role execution/worktree.
-async function seedCommanderSession(dir) {
-  commanderMigrationState.setDirectory(dir.id, { status: 'ready', action: 'task-first' });
-  return { ok: true, skipped: true };
-}
 
 // Session and directory disposal share this history-protected teardown.
 async function destroySessionCascade(s, d, opts = {}) {
@@ -2743,21 +2739,8 @@ const ensureFirstRunDirectory = async () =>
   getNative().ensureFirstRunDirectory(_state, directories, directoryModule, MULTICC_PATHS, logger);
 const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(() => sessionHibernationRuntime.reconcileStartup()).then(ensureFirstRunDirectory).then(initWorktrees)
   .catch(error => console.error('[multicc] async repo startup failed:', error.message))
-  .then(async () => {
-    commanderMigrationState.setPhase('complete');
-    for (const dir of directories.values()) await seedCommanderSession(dir);
-    const migration = await taskShellHost.migrateTaskSessions();
-    if (!migration.ok) logger.warn('task_first_migration_pending', { errors: migration.errors });
-  })
-  .catch(error => {
-    commanderMigrationState.setPhase('complete');
-    for (const dir of directories.values()) {
-      commanderMigrationState.setDirectory(dir.id, {
-        status: 'failed', code: 'commander_migration_startup_failed',
-      });
-    }
-    logger.error('commander_migration_startup_failed', { error: error && error.message });
-  })
+  .then(() => commanderStartup.migrate(directories, taskShellHost, logger))
+  .catch(error => commanderStartup.fail(directories, logger, error))
   .then(() => recoverTmuxSessions())
   .catch(error => console.error('[multicc] async tmux recovery failed:', error.message));
 

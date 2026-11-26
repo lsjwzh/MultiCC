@@ -254,3 +254,55 @@ test('a newly migrated Commander is identified by the task board and binds the t
   assert.match(sends[0].text, /请指挥官分派/);
   assert.equal(sends[0].options.taskStart, true);
 });
+
+test('task-first startup seeds the live directory table before migrating sessions', async () => {
+  const native = require('../src/native/binding').getNative();
+  const dirs = new Map([['a', { id: 'a' }], ['b', { id: 'b' }]]);
+  const state = createCommanderMigrationState();
+  const seen = [];
+  const startup = native.commanderStartup({ ...state, setDirectory(id, status) {
+    seen.push(id);
+    state.setDirectory(id, status);
+    if (id === 'a') queueMicrotask(() => {
+      dirs.delete('b');
+      dirs.set('c', { id: 'c' });
+    });
+  } });
+  const pending = Promise.withResolvers(), entered = Promise.withResolvers();
+  const errors = [];
+  const reason = {};
+  const job = startup.migrate(dirs, { migrateTaskSessions() {
+    entered.resolve(); return pending.promise;
+  } }, { warn: (...args) => errors.push(args) });
+  await entered.promise;
+  assert.deepEqual(seen, ['a', 'c']);
+  assert.equal(state.statusFor('b').code, 'commander_migration_required');
+  assert.equal(state.statusFor('c').ready, true);
+  assert.deepEqual(errors, []);
+  pending.resolve({ ok: false, errors: reason });
+  assert.equal(await job, undefined);
+  assert.deepEqual(errors.map(([event]) => event), ['task_first_migration_pending']);
+  assert.equal(errors[0][1].errors, reason);
+  assert.deepEqual(await startup.seedDirectory({ id: 'new' }), { ok: true, skipped: true });
+  assert.equal(state.statusFor('new').ready, true);
+});
+
+test('startup retains the seed error across iterator close and marks currently registered directories', async () => {
+  const native = require('../src/native/binding').getNative();
+  const state = createCommanderMigrationState(), message = {}, original = { message };
+  const startup = native.commanderStartup({ ...state, setDirectory(id, result) {
+    if (result.status === 'ready') throw original;
+    state.setDirectory(id, result);
+  } });
+  let closed = false;
+  const iterated = { values: function* () {
+    try { yield { id: 'removed' }; } finally { closed = true; throw new Error('close failed'); }
+  } };
+  await assert.rejects(startup.migrate(iterated, {}, {}), error => error === original);
+  assert.equal(closed, true);
+  const logs = [];
+  const dirs = new Map([['added', { id: 'added' }]]);
+  assert.equal(startup.fail(dirs, { error: (...args) => logs.push(args) }, original), undefined);
+  assert.deepEqual(state.snapshot().failures, [{ directoryId: 'added', code: 'commander_migration_startup_failed' }]);
+  assert.equal(logs[0][1].error, message);
+});
