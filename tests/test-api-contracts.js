@@ -13,7 +13,7 @@ const {
   toProviderDto,
   toWaitDto,
   withApiMeta,
-} = require('../src/api-contract');
+} = require('../src/native/runtime').getApiContract();
 const {
   assertBackwardCompatible,
   loadSchemaRegistry,
@@ -851,4 +851,55 @@ test('/api share, machine and workspace routes are owned by the Rust front door;
     /HtmlPage::Share/, 'the gateway renders the share page and its empty 500 locally');
   assert.equal((host.match(/^  '[a-z0-9-]+': \{ method:/gm) || []).length, 20,
     'the other 20 routes use the host port');
+});
+
+// The reference is frozen before batch 20; it must never import the candidate API.
+const frozenContract = require('./helpers/frozen-file-batch20/api-contract');
+const liveContract = require('../src/native/runtime').getApiContract();
+function contractOutcome(api, name, make) {
+  const events = [];
+  const args = make(events);
+  try {
+    const value = api[name](...args);
+    return { value, keys: Reflect.ownKeys(value && typeof value === 'object' ? value : {}), events };
+  } catch (error) { return { thrown: error.constructor.name, message: error.message, events }; }
+}
+function compareContract(name, make) {
+  assert.deepEqual(contractOutcome(liveContract, name, make), contractOutcome(frozenContract, name, make), name);
+}
+
+test('frozen API contracts agree on value boundaries, UTF-16 and date conversion', () => {
+  const values = [undefined, null, false, 0, -0, NaN, Infinity, 1n, '', 'id:ok', 'x\n', '😀', '\ud800', {}, [], Symbol('id')];
+  compareContract('createErrorDto', () => [null]);
+  for (const fallback of [null, 1, {}, Symbol('fallback')]) compareContract('sanitizeErrorMessage', () => ['', fallback]);
+  for (const value of values) {
+    compareContract('safeId', () => [value, { fallback: true }]);
+    compareContract('sanitizeErrorMessage', () => [value]);
+    compareContract('withApiMeta', () => [value, { requestId: value, correlationId: value }]);
+    compareContract('createWsEnvelope', () => [{ type: 'event', value }, { requestId: value, correlationId: value }]);
+    compareContract('toDispatchResultDto', () => [{ ok: value, target: value, chatId: value, note: value }]);
+    compareContract('createErrorDto', () => [{ message: value, code: value, detail: value, httpStatus: value, occurredAt: value }]);
+  }
+  for (const value of ['Bearer abc+/== token=abc /Users/test/file', 'sk-abcdefghijklmnopqrst fleet_share_' + 'x'.repeat(30), 'C:\\Users\\name\\file', 'a'.repeat(239)+'😀', '\ufeff message \u2029']) {
+    compareContract('sanitizeErrorMessage', () => [value]);
+  }
+  for (const date of [undefined, null, 0, -1, '2026-11-26', 'bad date', 8640000000000000, 8640000000000001, Infinity, 1n]) {
+    compareContract('toWaitDto', () => [{ id: 'w1', session: 's1', createdAt: date, checks: -0, maxChecks: '2.9', intervalSec: 1.5 }]);
+    compareContract('createErrorDto', () => [{ occurredAt: date, category: 'route', action: 'retry', scope: 'request', cause: 'test', retryable: false, httpStatus: 503 }]);
+  }
+  compareContract('toProviderDto', () => [{ id: 'p1', name: 'n', appType: 'codex', wireApi: 'responses', model: 'x'.repeat(159)+'😀', modelOptions: ['a', 'a', 1, '\ud800'], compatibleClis: ['codex', 'other', 'claude', 'codex'], hasToken: true }]);
+});
+
+test('frozen API contracts agree on getter order, repeated reads, symbols and abrupt completion', () => {
+  const watch = (events, values) => new Proxy(values, { get(target, key, receiver) { events.push(String(key)); return Reflect.get(target, key, receiver); } });
+  for (const name of ['toProviderDto', 'toWaitDto', 'toDispatchResultDto', 'createErrorDto']) {
+    compareContract(name, events => [watch(events, { id: 'p1', name: 'Name', session: 's1', appType: 'codex', wireApi: 'messages', model: 'model', modelOptions: ['a'], compatibleClis: ['claude'], target: 'target', createdAt: 0, maxChecks: 1, intervalSec: 1, detail: 'detail', occurredAt: '2026-11-26' })]);
+    compareContract(name, events => [new Proxy({}, { get(_, key) { events.push(String(key)); throw new RangeError('sentinel'); } })]);
+  }
+  compareContract('requestContext', events => [watch(events, { id: 'req', correlationId: 'corr' }), watch(events, { locals: watch(events, { requestId: '', correlationId: 'local' }) })]);
+  for (const name of ['withApiMeta', 'createWsEnvelope']) {
+    compareContract(name, events => [watch(events, { type: 'event', requestId: 'old', apiVersion: 'old', [Symbol.for('wire')]: 7 }), watch(events, { requestId: 'req', correlationId: 'corr' })]);
+  }
+  compareContract('toWaitDto', events => [{ id: 'w', sessionId: 's', checks: { valueOf() { events.push('checks'); return 2; } }, createdAt: { valueOf() { events.push('date'); return 0; } } }]);
+  compareContract('toProviderDto', events => [{ id: 'p', name: 'n', modelOptions: new Proxy(['a', , 'b'], { get(target, key, receiver) { events.push(String(key)); return Reflect.get(target, key, receiver); } }) }]);
 });

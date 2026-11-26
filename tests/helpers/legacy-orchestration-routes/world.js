@@ -355,7 +355,7 @@ function createWorld({ dir, controlFile, callsFile = null }) {
     status(id) { record('detached.status', { id }); return id === 'job-1' || id === 'job-2' ? { taskId: id, pid: 4242, done: false } : null; },
   };
 
-  const { createErrorDto, requestContext, toWaitDto, withApiMeta } = require('../../../src/api-contract');
+  const { createErrorDto, requestContext, toWaitDto, withApiMeta } = require('../frozen-file-batch20/api-contract');
   const v1Error = (req, res, status, message, code) => res.status(status).json(createErrorDto({ ...requestContext(req, res), message, code }));
 
   const orchestrationDeps = {

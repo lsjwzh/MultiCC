@@ -1,6 +1,6 @@
 'use strict';
 
-const { createErrorDto, safeId } = require('../api-contract');
+const { createErrorDto, safeId } = require('../native/runtime').getApiContract();
 const { mapError } = require('../http-errors');
 
 function presentationContext(context = {}) {

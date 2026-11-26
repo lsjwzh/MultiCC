@@ -4,7 +4,7 @@
 'use strict';
 
 const path = require('path');
-const { createErrorDto, requestContext, withApiMeta } = require('../../src/api-contract');
+const { createErrorDto, requestContext, withApiMeta } = require('./frozen-file-batch20/api-contract');
 const { createVoiceGatewayService, GATEWAY_PROVIDER } = require('../../src/voice/gateway');
 
 function resultStatus(code) {

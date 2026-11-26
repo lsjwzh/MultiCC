@@ -22,7 +22,7 @@
 // (that stays in domain services). It's a floor, not a ceiling.
 
 const { getNative } = require('./native/runtime');
-const { API_VERSION, createErrorDto } = require('./api-contract');
+const { API_VERSION, createErrorDto } = require('./native/runtime').getApiContract();
 
 const { safeCode, sanitizeCompatibility, sanitizePublicText } = require('./native/runtime').getPublicSafety();
 

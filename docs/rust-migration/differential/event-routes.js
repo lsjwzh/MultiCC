@@ -47,7 +47,7 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-req-1' };
 const T0 = 1700000000000;
@@ -485,6 +485,7 @@ function readWorld() {
 
 const bag = world.buildDeps({ case: 'initial' });
 const app = express();
+app.get('/__health', (_req, res) => res.status(200).type('text/plain').send('ok'));
 app.use('/api', express.json({ limit: '50mb' }));
 app.use((req, res, next) => {
   bag.apply(readWorld());
@@ -569,6 +570,7 @@ const relayReady = new Promise(resolve => {
 
 main({
   name: 'event-routes',
+  ready: waitForFixture,
   seed(dataRoot) {
     // The two annotation config dirs are written per case (the relay port is
     // only known once the server listens); nothing else is seeded on disk.
@@ -594,9 +596,9 @@ main({
 
     // server.js guards these paths before the routers run; the front door has
     // to reproduce the same 404, so the Node side mounts the real guard.
-    const { createErrorDto, requestContext } = require(path.join(repo, 'src/api-contract'));
+    const { createErrorDto, requestContext } = require(path.join(repo, 'tests/helpers/frozen-file-batch20/api-contract'));
     const { mountPublicSessionAccessGuard } =
-      require(path.join(repo, 'src/session/public-session-access'));
+      require(path.join(repo, 'tests/helpers/legacy-public-session-access'));
     mountPublicSessionAccessGuard(app, {
       records: bag.deps.persistedSessions,
       v1NotFound: (req, res) => res.status(404).json(createErrorDto({

@@ -3,7 +3,7 @@
 // Only the require paths differ.
 'use strict';
 
-const { requestContext, withApiMeta } = require('../../src/api-contract');
+const { requestContext, withApiMeta } = require('./frozen-file-batch20/api-contract');
 
 function createQwenAudioRuntimeRoutes({ installer, supervisor, log = console } = {}) {
   if (!installer || typeof installer.status !== 'function' || typeof installer.startInstall !== 'function') {

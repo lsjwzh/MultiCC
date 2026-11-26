@@ -1,7 +1,7 @@
 'use strict';
 
 const { getNative } = require('../native/runtime');
-const { createWsEnvelope } = require('../api-contract');
+const { createWsEnvelope } = require('../native/runtime').getApiContract();
 
 // The retry cadence and the coalescing rule come from the same Rust kernel
 // that owns the shared router's queues, so there is exactly one copy.

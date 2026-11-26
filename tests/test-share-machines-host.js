@@ -31,6 +31,7 @@ const fail = operation => JSON.stringify({ status: 503, data: { code: 'machine_n
 module.exports = {
   workspaceOverview: require(${JSON.stringify(nativeAddon)}).workspaceOverview,
   publicSafetyApi: require(${JSON.stringify(nativeAddon)}).publicSafetyApi,
+  apiContractApi: require(${JSON.stringify(nativeAddon)}).apiContractApi,
   protocolVersion: () => 1,
   buildSearchIndex() {}, computeUsage() {}, cprClaudeQuota() {},
   machineOperation(root, operation, raw) {

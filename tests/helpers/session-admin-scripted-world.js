@@ -14,7 +14,6 @@
 // no network. `apply(world)` swaps the world between corpus cases while the
 // runtime keeps holding the same Maps (both compositions capture `deps` once).
 
-const { createErrorDto, requestContext, withApiMeta } = require('../../src/api-contract');
 
 const SYSTEM_PREFIX = '\u{1F507}';
 
@@ -29,7 +28,8 @@ function isInjectedOrJunkGoal(goal) {
   return g.startsWith(SYSTEM_PREFIX) || g.startsWith('<') || g.startsWith('"<');
 }
 
-function buildDeps(initialWorld = {}) {
+function buildDeps(initialWorld = {}, contract = require('../../src/native/runtime').getApiContract()) {
+  const { createErrorDto, withApiMeta } = contract;
   const records = new Map();
   const directories = new Map();
   const terminalSessions = new Map();

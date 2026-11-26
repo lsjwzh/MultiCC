@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const { createFleetSharing, FleetSharingError } = require('./legacy-workspace-sharing');
-const { createErrorDto, requestContext } = require('../../src/api-contract');
+const { createErrorDto, requestContext } = require('./frozen-file-batch20/api-contract');
 
 const FAILURE_WINDOW_MS = 15 * 60_000;
 const MAX_PASSWORD_FAILURES = 10;
