@@ -1,6 +1,6 @@
 'use strict';
 
-const { assertDtoSafe } = require('../../../src/session-dto');
+const { assertDtoSafe } = require('../frozen-file-batch21/session-dto');
 
 const API_VERSION = 'v1';
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;

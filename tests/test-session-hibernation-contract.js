@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { toSessionDto } = require('../src/session-dto');
+const { toSessionDto } = require('../src/native/runtime').getSessionDto();
 
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 

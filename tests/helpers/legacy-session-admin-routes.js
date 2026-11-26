@@ -12,8 +12,8 @@
 
 'use strict';
 
-const { createSessionQueryService } = require('../../src/session/query-service');
-const { createWorkspaceService } = require('../../src/session/workspace-service');
+const { createSessionQueryService } = require('./frozen-file-batch21/query-service');
+const { createWorkspaceService } = require('./frozen-file-batch21/workspace-service');
 const { isTerminalLetter, isSettledLetter, classifyDisplay, GOAL_STATES } = require('../../src/classify/vocab');
 const { taskShortCode } = require('../../src/native/task-domain');
 const { auxVerdictStaleness } = require('./legacy-aux-verdict-health');

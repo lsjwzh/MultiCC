@@ -32,6 +32,7 @@ module.exports = {
   workspaceOverview: require(${JSON.stringify(nativeAddon)}).workspaceOverview,
   publicSafetyApi: require(${JSON.stringify(nativeAddon)}).publicSafetyApi,
   apiContractApi: require(${JSON.stringify(nativeAddon)}).apiContractApi,
+  sessionDtoApi: require(${JSON.stringify(nativeAddon)}).sessionDtoApi,
   protocolVersion: () => 1,
   buildSearchIndex() {}, computeUsage() {}, cprClaudeQuota() {},
   machineOperation(root, operation, raw) {

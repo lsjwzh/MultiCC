@@ -27,7 +27,7 @@ test('registration chain exposes kimi across every integration point', () => {
   const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
   assert.equal(SUPPORTED_CHAT_CLIS.includes('kimi'), true);
 
-  const { SUPPORTED_CLIS } = require('../src/session-dto');
+  const { SUPPORTED_CLIS } = require('../src/native/runtime').getSessionDto();
   assert.equal(SUPPORTED_CLIS.has('kimi'), true);
 
   const schema = JSON.parse(fs.readFileSync(

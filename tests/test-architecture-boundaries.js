@@ -33,7 +33,7 @@ test('session bounded-context core has no host or cross-context dependencies', (
         || file === path.join('src/session', 'query-service.js'))
         && dependency === '../native/runtime';
       assert.equal(
-        dependency.startsWith('node:') || dependency.startsWith('./') || dependency === '../session-dto'
+        dependency.startsWith('node:') || dependency.startsWith('./')
           || nativeCorePort,
         true,
         `${file} has unapproved dependency ${dependency}`,
