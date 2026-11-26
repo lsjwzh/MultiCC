@@ -2,7 +2,7 @@
 
 module.exports = {
   ...require('./turn-request'),
-  ...require('./retry-policy'),
+  ...require('../native/runtime').getRetryPolicy(),
   ...require('./api-error-policy'),
   ...require('./api-error-host'),
   ...require('../native/runtime').postTurnRouter,

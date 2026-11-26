@@ -6,7 +6,7 @@
 // native/core/src/chat_finalize.rs.
 
 const { completion, isCompleted } = require('../../src/cli-adapters/completion');
-const { decideRetry } = require('../../src/chat/retry-policy');
+const { decideRetry } = require('./frozen-file-batch24/retry-policy');
 const { decideRunnerFinality } = require('../../src/chat/host-coordinator');
 
 const USER_STOP_REASONS = Object.freeze(new Set(['user_cancel', 'new_user_message']));
