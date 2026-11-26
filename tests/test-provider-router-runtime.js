@@ -709,10 +709,7 @@ test('server is a thin runtime consumer and keeps CC-Switch import read-only', (
   );
   assert.equal(/require\(['"]cli-provider-router['"]\)/.test(server), false);
   assert.match(server, /providerRouterRuntime\.mountProtocolProxies/);
-  assert.match(server, /onShadowDiff:\s*recordProviderRouterShadowComparison/);
-  assert.match(server, /multicc_provider_router_shadow_comparisons_total/);
-  assert.match(server, /multicc_provider_router_shadow_differences_total/);
-  assert.match(server, /multicc_provider_router_shadow_errors_total/);
+  assert.match(server, /onShadowDiff: getNative\(\)\.createProviderShadowRecorder\(metrics, logger\)/);
   assert.match(server, /onTransportRotate:\s*event\s*=>/);
   assert.match(server, /multicc_provider_dispatcher_rotations_total/);
   assert.match(server, /codexProxyMounts\.codex\?\.close\?\.\(\)/);
@@ -874,4 +871,47 @@ test('a pinned agy account rides on both spawn paths and never leaks without one
     process.env.HOME = oldHome;
     fs.rmSync(temp, { recursive: true, force: true });
   }
+});
+
+test('shadow recorder preserves metric order, limits paths and selects safe log fields', () => {
+  const counts = [];
+  const events = [];
+  const record = require('../src/native/binding').getNative().createProviderShadowRecorder(
+    { inc: key => counts.push(key) },
+    { info: (...args) => events.push(['info', ...args]), warn: (...args) => events.push(['warn', ...args]) },
+  );
+  const differences = Array.from({ length: 105 }, (_, index) => ({ path: index, value: 'omit-value' }));
+  const binding = { sessionId: 's', providerId: 'p', privateField: 'omit-binding' };
+  record({ operation: 'resolveSpawn', equal: false, differences, binding });
+  record({ equal: true });
+  record({ equal: false, error: { code: 'FAILED', message: 'omit-message' } });
+  assert.deepEqual(counts, [
+    'multicc_provider_router_shadow_comparisons_total', 'multicc_provider_router_shadow_differences_total',
+    'multicc_provider_router_shadow_comparisons_total',
+    'multicc_provider_router_shadow_comparisons_total', 'multicc_provider_router_shadow_errors_total',
+  ]);
+  const expectedPaths = Array.from({ length: 100 }, (_, index) => String(index + 1));
+  assert.deepEqual(events, [
+    ['warn', 'provider_router_shadow_difference', {
+      operation: 'resolveSpawn', equal: false, differenceCount: 104, differencePaths: expectedPaths,
+      binding: { sessionId: 's', cli: undefined, providerId: 'p', roleKind: undefined, agentRole: undefined, routeName: undefined }, error: null,
+    }],
+    ['info', 'provider_router_shadow_comparison', {
+      operation: 'unknown', equal: true, differenceCount: 0, differencePaths: [], binding: null, error: null,
+    }],
+    ['warn', 'provider_router_shadow_error', {
+      operation: 'unknown', equal: false, differenceCount: 0, differencePaths: [], binding: null,
+      error: { code: 'FAILED', message: 'CPR shadow evaluation failed' },
+    }],
+  ]);
+});
+
+test('shadow recorder forwards the original synchronous exception after earlier metrics', () => {
+  const counts = [];
+  const thrown = {};
+  const record = require('../src/native/binding').getNative().createProviderShadowRecorder(
+    { inc: key => counts.push(key) }, { warn: () => assert.fail('unexpected warning') },
+  );
+  assert.throws(() => record({ equal: false, get differences() { throw thrown; } }), error => error === thrown);
+  assert.deepEqual(counts, ['multicc_provider_router_shadow_comparisons_total', 'multicc_provider_router_shadow_differences_total']);
 });

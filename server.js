@@ -302,41 +302,13 @@ const turnProgressHeartbeat = new TurnProgressHeartbeat({
     chatBroadcast(event.sessionId, { ...heartbeatRest, type: 'progress_heartbeat', heartbeatPhase });
   },
 });
-function recordProviderRouterShadowComparison(report) {
-  metrics.inc('multicc_provider_router_shadow_comparisons_total');
-  if (!report || report.error) metrics.inc('multicc_provider_router_shadow_errors_total');
-  if (report && !report.equal && !report.error) metrics.inc('multicc_provider_router_shadow_differences_total');
-  const differences = Array.isArray(report && report.differences)
-    ? report.differences.map(item => String(item && item.path || '')).filter(Boolean)
-    : [];
-  const fields = {
-    operation: String(report && report.operation || 'unknown'),
-    equal: !!(report && report.equal),
-    differenceCount: differences.length,
-    differencePaths: differences.slice(0, 100),
-    binding: report && report.binding ? {
-      sessionId: report.binding.sessionId,
-      cli: report.binding.cli,
-      providerId: report.binding.providerId,
-      roleKind: report.binding.roleKind,
-      agentRole: report.binding.agentRole,
-      routeName: report.binding.routeName,
-    } : null,
-    error: report && report.error ? {
-      code: report.error.code || null,
-      message: 'CPR shadow evaluation failed',
-    } : null,
-  };
-  if (report && report.equal) logger.info('provider_router_shadow_comparison', fields);
-  else logger.warn(report && report.error ? 'provider_router_shadow_error' : 'provider_router_shadow_difference', fields);
-}
 const providerRouterRuntime = createProviderRouterRuntime({
   env: process.env,
   providers,
   keyAccounts: require('./src/cli-key-accounts').sharedCliKeyAccountStore(), // per-session Command Code/OpenCode API-key accounts, layered onto every child env
   dataRoot: MULTICC_PATHS.root,
   codexHomesDir: providers.CODEX_HOMES_DIR,
-  onShadowDiff: recordProviderRouterShadowComparison,
+  onShadowDiff: getNative().createProviderShadowRecorder(metrics, logger),
   logger,
 });
 const agentResources = createAgentResourcesRuntime({
