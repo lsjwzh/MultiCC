@@ -129,3 +129,27 @@ test('renders the Coding Plan session window as the 5h rolling window', () => {
   assert.match(bar.title, /5h: 余量 70% · 已用 30\.4%/);
   assert.ok(!bar.title.includes('会话:'), `tooltip must not label the session window 会话: ${bar.title}`);
 });
+
+test('cb0263ed differential: CLI stream order, quota records, dates and errors', async t => {
+  const { compareLeaf } = require('./helpers/compare-ten-leaves');
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-ark-fixture-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'arkcli');
+  const previous = process.env.ARKCLI_BIN;
+  process.env.ARKCLI_BIN = bin;
+  t.after(() => { if (previous === undefined) delete process.env.ARKCLI_BIN; else process.env.ARKCLI_BIN = previous; });
+  await compareLeaf('routes/ark-quota.js', async api => {
+    const rows = [];
+    for (const [out, err] of [
+      ['missing', '{"ok":false,"error":{"message":"SSO"}} x'],
+      ['prefix {"items":[null,{"tier":0,"subscribed":true,"periods":[{},{"reset_at":"1970-01-01","used":"4"}]}],"viewer":[]} trailer', '{"ok":false}'],
+      ['{bad} {"ok":true}', 'none'], ['{"items":42}', ''], ['{"ok":false,"error":{"message":42}}', ''],
+    ]) {
+      fs.writeFileSync(bin, '#!' + process.execPath + '\nprocess.stdout.write(' + JSON.stringify(out)
+        + ');process.stderr.write(' + JSON.stringify(err) + ');', { mode: 0o700 });
+      rows.push(await api.fetchArkUsage(37));
+    }
+    return rows;
+  });
+});

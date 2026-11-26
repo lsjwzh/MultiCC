@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 const fs = require('node:fs');
 const { createSign } = require('node:crypto');
 
@@ -10,10 +12,11 @@ function createFcmTransport({ credentialsFile = process.env.MULTICC_FCM_CREDENTI
   let credentials;
   try {
     const c = JSON.parse(fs.readFileSync(credentialsFile, 'utf8'));
-    if (c.type === 'service_account' && /^[a-z][a-z0-9-]{4,62}$/.test(c.project_id)
-      && typeof c.client_email === 'string' && typeof c.private_key === 'string') credentials = c;
+    if (getNative().fcmCredentials(c)) credentials = c;
   } catch (_) {}
-  let cached;
+  const cache = credentials && getNative().fcmTokenCache({
+    now: () => now(), fresh: expires => expires > now() + 60000, add: (a, b) => a + b,
+  });
   let pending;
   async function request(url, options) {
     const response = await fetchImpl(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
@@ -21,23 +24,19 @@ function createFcmTransport({ credentialsFile = process.env.MULTICC_FCM_CREDENTI
     return { response, body };
   }
   async function accessToken() {
-    if (cached && cached.expires > now() + 60000) return cached.token;
+    const cached = cache.lookup();
+    if (cached !== undefined) return cached;
     if (pending) return pending;
     pending = (async () => {
       const iat = Math.floor(now() / 1000);
       const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
-      const input = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({
-        iss: credentials.client_email, scope: 'https://www.googleapis.com/auth/firebase.messaging',
-        aud: 'https://oauth2.googleapis.com/token', iat, exp: iat + 3600,
-      })}`;
+      const input = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode(getNative().fcmTokenClaims(credentials.client_email, iat))}`;
       const signature = createSign('RSA-SHA256').update(input).sign(credentials.private_key, 'base64url');
       const { response, body } = await request('https://oauth2.googleapis.com/token', {
         method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${input}.${signature}` }).toString(),
       });
-      if (!response.ok || typeof body.access_token !== 'string') throw new Error('FCM_AUTH_FAILED');
-      cached = { token: body.access_token, expires: now() + Math.min(Number(body.expires_in) || 3600, 3600) * 1000 };
-      return cached.token;
+      return cache.remember(response, body);
     })();
     try { return await pending; } finally { pending = null; }
   }
@@ -49,12 +48,9 @@ function createFcmTransport({ credentialsFile = process.env.MULTICC_FCM_CREDENTI
         method: 'POST', headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' },
         // Native service renders immediately, even without a Flutter engine.
         // Data-only permits local opt-out/binding checks before any display.
-        body: JSON.stringify({ message: { token, data, android: { priority: 'HIGH', ttl: '3600s' } } }),
+        body: JSON.stringify(getNative().fcmMessage(token, data)),
       });
-      if (response.ok && typeof body.name === 'string') return { ok: true, code: 'accepted' };
-      if (response.status === 401) cached = null;
-      const stale = body.error?.details?.some(d => d['@type'] === 'type.googleapis.com/google.firebase.fcm.v1.FcmError' && d.errorCode === 'UNREGISTERED');
-      return { ok: false, code: stale ? 'unregistered' : 'rejected' };
+      return getNative().fcmDelivery(response, body, cache.clear);
     } catch (_) { return { ok: false, code: 'unavailable' }; }
   }
   return { projectId: credentials?.project_id || '', send };

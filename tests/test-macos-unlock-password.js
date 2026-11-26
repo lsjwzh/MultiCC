@@ -96,3 +96,24 @@ test('keychain failures are errors, never absent credentials or successful delet
   await assert.rejects(h.make().hasPassword(), /无法读取/);
   await assert.rejects(h.make().clearPassword(), /未能删除/);
 });
+
+test('cb0263ed differential: UTF-16 length and exact keychain exit code', async () => {
+  const { compareLeaf, outcome } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('macos-unlock-password.js', async ({ createUnlockPassword }) => {
+    const calls = [];
+    let code;
+    const port = createUnlockPassword({ platform: 'darwin', account: 'fixture', agentAppPath: '/stub',
+      execFileFn(file, args, opts, cb) {
+        calls.push([file, args[0], args.includes('-w'), opts.timeout]);
+        cb(code === undefined ? null : { code });
+      } });
+    const results = [];
+    for (const value of [undefined, '', '😀'.repeat(1024), '😀'.repeat(1024) + 'x']) {
+      results.push(await outcome(() => port.setPassword(value)));
+    }
+    for (code of [44, '44', 3, undefined]) {
+      results.push(await outcome(port.hasPassword), await outcome(port.clearPassword));
+    }
+    return { calls, results };
+  });
+});

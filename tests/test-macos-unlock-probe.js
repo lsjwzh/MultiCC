@@ -91,3 +91,21 @@ test('outdated Agent never claims it can enforce the new switch', async () => {
   assert.equal((await harness({}, { ok: false }).make().probe()).state, 'unavailable');
   assert.equal((await harness({}, { ok: true }).make().probe()).state, 'permissions-required');
 });
+
+test('cb0263ed differential: permission precedence, malformed replies and command errors', async () => {
+  const { compareLeaf } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('macos-unlock-probe.js', async ({ createUnlockProbe }) => {
+    const results = [], calls = [];
+    for (const [code, body] of [[null, 'null'], ['EACCES', 'bad'], ['ENOENT', ''],
+      [null, '{"authorized":true,"powerProtocol":1}'], [null, '{"authorized":true}'],
+      [1, '{"reason":"no-password"}'], [null, '{"reason":"waiting-for-user"}'], [null, '{"error":42}']]) {
+      const probe = createUnlockProbe({ platform: 'darwin', agentBin: '/fixture', execFileFn(file, args, opts, cb) {
+        calls.push([args, opts.timeout]);
+        if (args[0] === 'status') cb(null, '{"ok":true,"accessibility":true,"screenRecording":true}');
+        else cb(code && { code }, body);
+      } });
+      results.push(await probe.probe({ allowUI: true }), await probe.runtimeReady());
+    }
+    return { results, calls };
+  });
+});

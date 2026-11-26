@@ -969,3 +969,28 @@ test('manual restart with an explicit non-function never executes the default CL
   })();
   assert.deepEqual(commands, []);
 });
+
+test('cb0263ed differential: launcher polling, missing processes, tail boundary and UTF-16', async () => {
+  const { compareLeaf, outcome } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('tunnel-sakurafrp.js', async api => {
+    const traces = [];
+    for (const mode of ['success', 'stop-timeout', 'start-timeout', 'open-error']) {
+      const calls = []; let opened = false, stopped = false;
+      const result = await outcome(() => api.restartSakuraLauncher('/test.app', {
+        run: async (bin, args) => {
+          calls.push([bin, args]);
+          if (bin.endsWith('/open')) { opened = true; return { ok: mode !== 'open-error' }; }
+          if (bin.endsWith('/pkill')) { stopped = true; return { ok: true }; }
+          const ok = opened ? mode === 'success' : (!stopped || mode === 'stop-timeout');
+          return { ok, code: ok ? 0 : 1 };
+        }, wait: async ms => { calls.push(ms); },
+      }));
+      traces.push([result, calls]);
+    }
+    for (const content of ['2020-01-02 01:02:03.45 隧道😀已删除', '登录失败' + '\n'.repeat(399), '登录失败\n开始登录', '隧道'+'😀'.repeat(7)+'不存在']) {
+      traces.push(api.diagnoseSakurafrp({ logDir: '/fake', now: () => 1,
+        readdirSync: () => ['natfrp-service.20201125.log'], readFileSync: () => content }));
+    }
+    return traces;
+  });
+});

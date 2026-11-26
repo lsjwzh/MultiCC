@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('./native/binding');
+
 // iOS OTA distribution (itms-services), mirroring the Android channel in
 // src/apk-distribution.js: a locally built IPA lives at public/multicc-ios.ipa
 // with a small JSON sidecar (public/multicc-ios.ipa.json) written atomically
@@ -22,21 +24,9 @@
 const IPA_NAME = 'multicc-ios.ipa';
 const SIDECAR_SUFFIX = '.json';
 const MAX_SIDECAR_BYTES = 16 * 1024;
-const VALID_PROTO = new Set(['http', 'https']);
-// host[:port] only — never a path, and no XML/URL metacharacters.
-const HOST_PATTERN = /^[a-z0-9._:-]+$/i;
 const VERSION_PATTERN = /^[0-9A-Za-z][0-9A-Za-z._-]{0,79}$/;
 const BUNDLE_ID_PATTERN = /^[a-z0-9][a-z0-9.-]{1,127}$/i;
-const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-
-function xmlEscape(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
+function xmlEscape(value) { return getNative().iosEscape(String(value)); }
 
 // lstat deliberately rejects symlinks: a public download must never turn a
 // fixed filename into an arbitrary host-file capability (same rule as the APK
@@ -60,28 +50,8 @@ function readLocalIpa(deps) {
       sidecar = JSON.parse(deps.fs.readFileSync(sidecarPath, 'utf8'));
     }
   } catch (_) { sidecar = null; }
-  if (!sidecar || typeof sidecar !== 'object') return result;
-
-  if (typeof sidecar.versionName === 'string' && VERSION_PATTERN.test(sidecar.versionName.trim())) {
-    result.versionName = sidecar.versionName.trim();
-  }
-  if (typeof sidecar.bundleId === 'string' && BUNDLE_ID_PATTERN.test(sidecar.bundleId.trim())) {
-    result.bundleId = sidecar.bundleId.trim();
-  }
-  if (typeof sidecar.versionCode === 'string' && VERSION_PATTERN.test(sidecar.versionCode.trim())) {
-    result.versionCode = sidecar.versionCode.trim();
-  } else if (Number.isSafeInteger(sidecar.versionCode) && sidecar.versionCode > 0) {
-    result.versionCode = String(sidecar.versionCode);
-  }
-  if (typeof sidecar.title === 'string' && sidecar.title.trim()) {
-    result.title = sidecar.title.trim().slice(0, 80);
-  }
-  if (typeof sidecar.sha256 === 'string' && SHA256_PATTERN.test(sidecar.sha256)) {
-    result.sha256 = sidecar.sha256;
-  }
-  if (typeof sidecar.builtAt === 'string' && Number.isFinite(Date.parse(sidecar.builtAt))) {
-    result.builtAt = new Date(sidecar.builtAt).toISOString();
-  }
+  getNative().iosSidecar(result, sidecar, value =>
+    Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null);
   return result;
 }
 
@@ -96,13 +66,11 @@ function firstHeaderValue(value) {
 // than reflecting attacker-controlled text into the plist.
 function absoluteBaseUrl(req) {
   const headers = (req && req.headers) || {};
-  let proto = firstHeaderValue(headers['x-forwarded-proto']).toLowerCase()
+  const proto = firstHeaderValue(headers['x-forwarded-proto']).toLowerCase()
     || String((req && req.protocol) || '').toLowerCase();
-  if (!VALID_PROTO.has(proto)) proto = 'https';
-  let host = firstHeaderValue(headers['x-forwarded-host']).toLowerCase()
+  const host = firstHeaderValue(headers['x-forwarded-host']).toLowerCase()
     || firstHeaderValue(headers.host).toLowerCase();
-  if (!HOST_PATTERN.test(host)) host = '127.0.0.1';
-  return `${proto}://${host}`;
+  return getNative().iosOrigin(proto, host);
 }
 
 function buildManifestXml(meta, baseUrl) {
@@ -113,40 +81,7 @@ function buildManifestXml(meta, baseUrl) {
   // version here makes modern iOS fetch the whole IPA and then silently drop
   // the install — the exact "tap install, nothing happens" failure.
   const bundleVersion = meta.versionCode || meta.versionName;
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    '<plist version="1.0">',
-    '<dict>',
-    '\t<key>items</key>',
-    '\t<array>',
-    '\t\t<dict>',
-    '\t\t\t<key>assets</key>',
-    '\t\t\t<array>',
-    '\t\t\t\t<dict>',
-    '\t\t\t\t\t<key>kind</key>',
-    '\t\t\t\t\t<string>software-package</string>',
-    '\t\t\t\t\t<key>url</key>',
-    `\t\t\t\t\t<string>${xmlEscape(assetUrl)}</string>`,
-    '\t\t\t\t</dict>',
-    '\t\t\t</array>',
-    '\t\t\t<key>metadata</key>',
-    '\t\t\t<dict>',
-    '\t\t\t\t<key>bundle-identifier</key>',
-    `\t\t\t\t<string>${xmlEscape(meta.bundleId)}</string>`,
-    '\t\t\t\t<key>bundle-version</key>',
-    `\t\t\t\t<string>${xmlEscape(bundleVersion)}</string>`,
-    '\t\t\t\t<key>kind</key>',
-    '\t\t\t\t<string>software</string>',
-    '\t\t\t\t<key>title</key>',
-    `\t\t\t\t<string>${xmlEscape(title)}</string>`,
-    '\t\t\t</dict>',
-    '\t\t</dict>',
-    '\t</array>',
-    '</dict>',
-    '</plist>',
-    '',
-  ].join('\n');
+  return getNative().iosManifest(String(assetUrl), String(meta.bundleId), String(bundleVersion), String(title));
 }
 
 function createIosOta(rawDeps) {
@@ -156,15 +91,7 @@ function createIosOta(rawDeps) {
   }
 
   function info() {
-    const local = readLocalIpa(deps);
-    const result = { exists: false, installable: false, installPage: '/ios-ota', downloadUrl: `/${IPA_NAME}` };
-    if (!local.exists) return result;
-    Object.assign(result, { exists: true, size: local.size, mtime: local.mtime });
-    for (const key of ['versionName', 'versionCode', 'bundleId', 'title', 'sha256', 'builtAt']) {
-      if (local[key] != null) result[key] = local[key];
-    }
-    result.installable = !!(local.bundleId && local.versionName);
-    return result;
+    return getNative().iosDistributionInfo(readLocalIpa(deps));
   }
 
   function manifestHandler(req, res) {

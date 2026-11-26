@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 // Orphan worktree reconciliation: cross-checks `git worktree list` against
 // every session's declared (and retired) worktree paths plus the task ledger.
 // Anything on disk under <dir>/.multicc-worktrees that nobody claims is an
@@ -21,14 +23,7 @@ function canon(value) {
 }
 
 function parseWorktreeList(porcelain) {
-  const entries = [];
-  let current = null;
-  for (const line of String(porcelain || '').split('\n')) {
-    if (line.startsWith('worktree ')) { current = { path: line.slice(9).trim(), branch: null, detached: false }; entries.push(current); }
-    else if (current && line.startsWith('branch ')) current.branch = line.slice(7).trim().replace(/^refs\/heads\//, '');
-    else if (current && line.trim() === 'detached') current.detached = true;
-  }
-  return entries;
+  return getNative().parseOrphanWorktrees(String(porcelain || ''));
 }
 
 function createWorktreeOrphanScanner(deps = {}) {
@@ -45,17 +40,7 @@ function createWorktreeOrphanScanner(deps = {}) {
   const timers = [];
 
   function declaredPaths() {
-    const claimed = new Set();
-    for (const record of records.values()) {
-      if (record?.worktreePath) claimed.add(canon(record.worktreePath));
-      for (const retired of record?.retiredWorktrees || []) {
-        if (retired?.worktreePath) claimed.add(canon(retired.worktreePath));
-      }
-    }
-    for (const claimedPath of listTaskWorktreePaths() || []) {
-      if (claimedPath) claimed.add(canon(claimedPath));
-    }
-    return claimed;
+    return getNative().declaredOrphanPaths(records, listTaskWorktreePaths, canon);
   }
 
   async function scanDirectory(dir, claimed) {
@@ -64,8 +49,7 @@ function createWorktreeOrphanScanner(deps = {}) {
       const out = await execGit(dir.path, ['worktree', 'list', '--porcelain']);
       const rows = [];
       for (const entry of parseWorktreeList(out)) {
-        if (!entry.path.startsWith(root + path.sep)) continue;
-        if (claimed.has(canon(entry.path))) continue;
+        if (!getNative().orphanCandidates(entry, root + path.sep, claimed, canon)) continue;
         const ahead = Number(await execGit(entry.path, ['rev-list', '--count', `${dir.baseBranch || 'main'}..HEAD`]).catch(() => '0')) || 0;
         const dirty = !!(await execGit(entry.path, ['status', '--porcelain']).catch(() => ''));
         rows.push({ dirId: dir.id, path: entry.path, branch: entry.branch, ahead, dirty, removed: false });
@@ -86,7 +70,7 @@ function createWorktreeOrphanScanner(deps = {}) {
       }
       if (deleteOrphans) {
         for (const orphan of orphans) {
-          if (orphan.dirty || orphan.ahead > 0) continue;
+          if (!getNative().orphanRemovable(orphan.dirty, orphan.ahead)) continue;
           const dir = directories.get(orphan.dirId);
           if (!dir) continue;
           try {
@@ -98,10 +82,7 @@ function createWorktreeOrphanScanner(deps = {}) {
           } catch (error) { orphan.removeError = error?.code || 'remove_failed'; }
         }
       }
-      lastReport = Object.freeze({
-        at: new Date(now()).toISOString(), deleteOrphans, total: orphans.length,
-        removed: orphans.filter(o => o.removed).length, orphans,
-      });
+      lastReport = getNative().orphanReport(new Date(now()).toISOString(), deleteOrphans, orphans);
       if (orphans.length) {
         logger.warn?.('worktree_orphans_found', { count: orphans.length, removed: lastReport.removed });
       }
