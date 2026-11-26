@@ -328,6 +328,7 @@ mod provider_host_values;
 mod provider_service;
 
 pub mod selection;
+mod provider_binding;
 mod role_token_tracker;
 pub mod usage_observed;
 
