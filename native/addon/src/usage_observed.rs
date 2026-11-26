@@ -25,3 +25,50 @@ pub fn usage_observed_request_value(
         .map_err(napi::Error::from_reason)?;
     unsafe { crate::js_bridge::write_value(raw, &result) }
 }
+
+fn token_count(value: crate::js_live::LiveValue<'_>) -> Result<Option<f64>> {
+    use multicc_core::usage_observed::{token_count_number, token_count_text};
+    if let Some(number) = value.number_value()? {
+        return Ok(token_count_number(number));
+    }
+    Ok(value
+        .string()?
+        .and_then(|text| token_count_text(&text.as_str_lossy())))
+}
+
+#[napi]
+pub fn normalized_usage_token_count(env: Env, value: Unknown<'_>) -> Result<Option<f64>> {
+    token_count(crate::js_live::LiveValue::new(&env, value))
+}
+
+#[napi(object)]
+pub struct UsageTokenComponents {
+    pub fresh_input_tokens: f64,
+    pub cache_read_tokens: f64,
+    pub cache_write_tokens: f64,
+    pub consumed_input_tokens: f64,
+    pub output_tokens: f64,
+}
+
+#[napi]
+pub fn usage_token_components(
+    env: Env,
+    input: Unknown<'_>,
+    read: Unknown<'_>,
+    write: Unknown<'_>,
+    output: Unknown<'_>,
+) -> Result<UsageTokenComponents> {
+    let count = |value| {
+        token_count(crate::js_live::LiveValue::new(&env, value)).map(Option::unwrap_or_default)
+    };
+    let fresh_input_tokens = count(input)?;
+    let cache_read_tokens = count(read)?;
+    let cache_write_tokens = count(write)?;
+    Ok(UsageTokenComponents {
+        fresh_input_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        consumed_input_tokens: fresh_input_tokens + cache_read_tokens + cache_write_tokens,
+        output_tokens: count(output)?,
+    })
+}

@@ -14,6 +14,16 @@ const {
   tokenCount,
 } = require('../src/routes/token-usage');
 
+test('token counts preserve signed zero, decimal syntax and lazy limit conversion', () => {
+  assert.ok(Object.is(tokenCount(-0), -0));
+  assert.equal(tokenCount('\ufeff0099\u3000'), 99);
+  assert.equal(tokenCount('9007199254740993'), 0);
+  const error = new Error('limit coercion');
+  const limit = { valueOf() { throw error; } };
+  assert.equal(tokenCount('0x10', limit), 0);
+  assert.throws(() => tokenCount('0', limit), thrown => thrown === error);
+});
+
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-token-usage-routes-'));
 }
