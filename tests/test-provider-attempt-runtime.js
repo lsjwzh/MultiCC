@@ -11,9 +11,9 @@ const {
   tagProviderAttemptEvent,
 } = require('../src/chat/provider-attempt-runtime');
 const { createUsageObserved } = require('../src/usage-observed');
-const { canPersistAdapterCompletion } = require('../src/native/runtime').adapterCompletion;
-const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/runtime').finalizationPlan;
-const { resolveTurnState } = require('../src/native/runtime').getTurnState();
+const { canPersistAdapterCompletion } = require('../src/native/binding').adapterCompletion;
+const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
+const { resolveTurnState } = require('../src/native/binding').getTurnState();
 const { normalizeProxyOutcome } = require('../src/providers/proxy-outcome');
 
 function harness() {
@@ -183,7 +183,7 @@ test('native attempt generations preserve distinct UTF-16 session identities', (
 });
 
 test('native background producer ledger matches Node accounting, receipt consumption and FIFO eviction', () => {
-  const { RustNonMainProducers } = require('../src/native/runtime').getNative();
+  const { RustNonMainProducers } = require('../src/native/binding').getNative();
   const native = new RustNonMainProducers();
   const active = new Map();
   const ended = new Map();
@@ -227,7 +227,7 @@ test('native background producer ledger matches Node accounting, receipt consump
 });
 
 test('native main producer registry preserves snapshot identity, UTF-16 keys and unbounded ended receipts', () => {
-  const { RustMainProducers } = require('../src/native/runtime').getNative();
+  const { RustMainProducers } = require('../src/native/binding').getNative();
   const native = new RustMainProducers();
   const snapshot = Object.freeze({ routeAttemptId: 'a', turnId: '\ud800' });
   const key = '\ud800\0session';
@@ -256,7 +256,7 @@ test('native main producer registry preserves snapshot identity, UTF-16 keys and
 });
 
 test('current attempt registry preserves identity and separates UTF-16 session keys', () => {
-  const { RustCurrentAttempts } = require('../src/native/runtime').getNative();
+  const { RustCurrentAttempts } = require('../src/native/binding').getNative();
   const registry = new RustCurrentAttempts();
   const old = { id: 'old' };
   const replacement = { id: 'new' };
@@ -317,7 +317,7 @@ test('native producer and current attempt references survive worker environment 
     globalThis.retained = retained;
     if (workerData.terminate) { parentPort.postMessage('ready'); setInterval(() => {}, 1000); }
   `;
-  const runtime = require.resolve('../src/native/runtime');
+  const runtime = require.resolve('../src/native/binding');
   const natural = Array.from({ length: 4 }, () => new Worker(source, { eval: true, workerData: { runtime } }));
   const forced = Array.from({ length: 4 }, () => new Worker(source, { eval: true, workerData: { runtime, terminate: true } }));
   await Promise.all([
@@ -413,7 +413,7 @@ test('an injected clock exception keeps the earlier ambiguous producer increment
 });
 
 test('native identity checks retain JS short circuit and Number conversion', () => {
-  const { RustProviderAttemptLifecycle } = require('../src/native/runtime').getNative();
+  const { RustProviderAttemptLifecycle } = require('../src/native/binding').getNative();
   const identity = { runtimeEpoch: '\ud800', routeAttemptId: 'a', routeGeneration: 1, turnId: 't' };
   const state = new RustProviderAttemptLifecycle('none', false, false, false, null, 0, identity);
   assert.equal(state.matches({ runtimeEpoch: 'old', get routeAttemptId() { throw new Error('must not read'); } }), false);
@@ -423,7 +423,7 @@ test('native identity checks retain JS short circuit and Number conversion', () 
 });
 
 test('native identity conversion calls a replaced Number with the strict-mode receiver', () => {
-  const { RustProviderAttemptLifecycle } = require('../src/native/runtime').getNative();
+  const { RustProviderAttemptLifecycle } = require('../src/native/binding').getNative();
   const identity = { runtimeEpoch: 'epoch', routeAttemptId: 'a', routeGeneration: 1, turnId: 't' };
   const state = new RustProviderAttemptLifecycle('none', false, false, false, null, 0, identity);
   const originalNumber = global.Number;
@@ -1708,7 +1708,7 @@ function fenceForEvent(event, HOST_ERROR_ENVELOPE) {
 })();
 
 test('native replay fence matches legacy protocol events, sparse arrays and host-only authority', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const marker = Symbol('test-only-host-authority');
   const types = ['assistant', 'user', 'reasoning', 'assistant_text', 'tool_start', 'tool_update', 'tool_result', 'part_delta', 'stream_event'];
   const blockTypes = ['text', 'thinking', 'tool_use', 'tool_result', 'reasoning', 'source', 'tool', undefined];
@@ -1736,7 +1736,7 @@ test('native replay fence matches legacy protocol events, sparse arrays and host
 });
 
 test('native replay fence preserves lazy getters, exceptions and array callbacks that outlive evaluation', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const marker = Symbol('authority'), sentinel = new Error('event getter failed');
   const execute = (fn, sample, throwAt) => {
     const reads = [];
@@ -1886,7 +1886,7 @@ return { required, positiveInteger, stallTimeoutBudget, createProviderRevision, 
 })();
 
 test('Rust attempt identity validation preserves coercions, bounds and public error classes', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const { ProviderAttemptError, providerAttemptFields } = require('../src/chat/provider-attempt-runtime');
   const values = [undefined, null, false, true, '', ' ', '\n', '\u0000', '\u007f', ' \ufeffvalid ', '\ud800', '😀'.repeat(128),
     '😀'.repeat(129), 'a'.repeat(257), 0, -0, NaN, Infinity, 1, 1.5, -1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1,
@@ -1939,7 +1939,7 @@ test('Rust provider revision keeps ordered alias hashing and lazy getter/JSON be
 });
 
 test('Rust proxy capabilities match Node base64url and UTF-8 malformed-input behavior', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const cases = ['plain', '', ' pr1.c2Vzc2lvbg.dG9rZW4 ', 'pr1.AA.AA', 'pr1.YWJj.YWJj',
     'pr1.Y😀WJj.YWJj', 'pr1.ＹＷＪｊ.YWJj', 'pr1..YQ', 'pr1.YQ.', 'pr1.YQ.YQ.extra',
     'pr1._-__.+/8=', 'pr1.4KC.4KC', 'pr1.Zm!9v.**YmFy===ignored', 'pr1.ŁA.YWJj'];
@@ -1992,7 +1992,7 @@ function legacyAttemptTransition(previous, previousFence, { turnId, continuation
 }
 
 test('Rust attempt transition preserves replay, finality, continuation and sequence priorities', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
   for (let i = 0; i < 800; i++) {
     const facts = { turnId: 'turn', continuation: i % 2 === 0, providerId: 'provider', model: 'model', protocol: 'protocol', attemptNo: i % 4 + 1 };
@@ -2010,7 +2010,7 @@ test('Rust attempt transition preserves replay, finality, continuation and seque
 });
 
 test('Rust attempt transition keeps lazy previous-record reads and lifecycle reentry', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
   const sentinel = new Error('previous record getter');
   for (const reenter of [false, true]) {
@@ -2204,7 +2204,7 @@ function compareAuthorization(options) {
       return { threw: true, sentinel: error === authorizationSentinel, error: error instanceof Error ? [error.name, error.message] : error, trace };
     }
   }
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   assert.deepEqual(execute(native.providerAuthorizeProxyRequest), execute(legacyAuthorizeProxyRequest), JSON.stringify(options));
 }
 
@@ -2261,7 +2261,7 @@ test('Rust proxy authorization preserves callback exceptions, lazy getters and r
 // Exercise complete traces against the saved Node orchestration, sharing only
 // the already-migrated storage primitives. Compare state after every operation.
 function compareProducerTrace(steps, options = {}) {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const { legacyProducerOperations } = require('./helpers/legacy-provider-producers');
   const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
   const attempt = Object.freeze({ turnId: 'turn', providerId: 'provider-a', routeAttemptId: 'attempt' });
@@ -2405,7 +2405,7 @@ function describeOrdered(value, seen = new Set()) {
 }
 
 function compareOutcomeTrace(steps, options = {}) {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const { legacyOutcomeOperations } = require('./helpers/legacy-provider-outcome');
   const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
   const attempt = Object.freeze({ sessionId: 'session', turnId: 'turn', runtimeEpoch: 'epoch',

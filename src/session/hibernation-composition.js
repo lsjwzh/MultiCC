@@ -5,7 +5,7 @@
 // host stays under its line budget; behavior is unchanged unless noted.
 
 const fs = require('node:fs');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { createSessionHibernationRuntime } = require('./hibernation');
 
 // Non-terminal orchestration rows older than this no longer pin a workspace

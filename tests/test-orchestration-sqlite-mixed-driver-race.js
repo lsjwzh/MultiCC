@@ -41,7 +41,7 @@ test('isolated Rust owner rejects an external writer after a Node SQLite driver 
   const update = `const fs=require('fs'),Database=require('better-sqlite3');const file=fs.readFileSync(0,'utf8');const db=new Database(file);db.prepare("UPDATE orchestration_outbox SET data_json=json_set(data_json,'$.external',7) WHERE id='a'").run();db.close();`;
   const result = isolated(`
     const fs=require('fs'),os=require('os'),path=require('path'),cp=require('child_process'),Database=require('better-sqlite3');
-    const {getNative,addonPath}=require('./src/native/runtime');
+    const {getNative,addonPath}=require('./src/native/binding');
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mixed-sqlite-rust-')),file=path.join(dir,'s.sqlite');
     const bin=process.env.MULTICC_TEST_ORCHESTRATION_OWNER||path.join(path.dirname(addonPath()),process.platform==='win32'?'multicc-gateway.exe':'multicc-gateway');
     const h=new (getNative().RustIsolatedOrchestrationStore)(file,null,1000,{env:{},policy:{}},bin);
@@ -111,7 +111,7 @@ test('experimental owner shares one process for same-database sessions', {
 }, () => {
   const result = isolated(`
     const fs=require('fs'),os=require('os'),path=require('path');
-    const {getNative}=require('./src/native/runtime');
+    const {getNative}=require('./src/native/binding');
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'isolated-owner-pool-'));
     fs.mkdirSync(path.join(dir,'sub'));
     const file=path.join(dir,'s.sqlite'),alias=path.join(dir,'sub')+path.sep+'..'+path.sep+'s.sqlite';
@@ -145,7 +145,7 @@ test('owner death fails all shared sessions and rolls back uncommitted work', {
 }, () => {
   const result = isolated(`
     const fs=require('fs'),os=require('os'),path=require('path');
-    const {getNative}=require('./src/native/runtime');
+    const {getNative}=require('./src/native/binding');
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'isolated-owner-death-'));
     const file=path.join(dir,'s.sqlite'),C=getNative().RustIsolatedOrchestrationStore;
     const bin=process.env.MULTICC_TEST_ORCHESTRATION_OWNER;

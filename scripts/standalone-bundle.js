@@ -68,7 +68,7 @@ const BUNDLE_README = '使用说明.txt';
 // Validate the packaged Rust SQLite with the bundled Node runtime, without
 // accepting a host addon override or the legacy emergency driver.
 const RUNTIME_SMOKE_SCRIPT = "const D=require('./src/sqlite/driver').databaseConstructor();"
-  + "const c=require('./src/native/runtime').getNative();"
+  + "const c=require('./src/native/binding').getNative();"
   + "if(c.cprProtocolVersion?.()!==1||typeof c.cprCreateExchange!=='function')throw Error('Rust CPR module required');"
   + "const db=new D(':memory:');if(db.backend!=='rust')throw Error('Rust SQLite required');"
   + "db.exec('CREATE TABLE t(x); CREATE VIRTUAL TABLE f USING fts5(x)');"

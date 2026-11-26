@@ -49,17 +49,20 @@ pub fn prepare_host_switch_route(
     input: napi::bindgen_prelude::Unknown<'_>,
     home: napi::bindgen_prelude::Unknown<'_>,
 ) -> Result<AsyncTask<PrepareRoute>> {
-    use crate::js_live::{fields, LiveValue as L};
+    Ok(prepare_cli_switch_route(route_input(
+        LiveValue::new(&env, input),
+        LiveValue::new(&env, home),
+    )?))
+}
+fn route_input<'a>(input: LiveValue<'a>, home: LiveValue<'a>) -> Result<String> {
+    use crate::js_live::fields;
     use napi::bindgen_prelude::FromNapiValue;
-    let input = L::new(&env, input);
     let json = input.global()?.get(c"JSON")?;
     let stringify = json.get(c"stringify")?;
-    let args = fields(input, &[("homeDir", L::new(&env, home))])?;
+    let args = fields(input, &[("homeDir", home)])?;
     args.spread_from(input)?;
     let raw = stringify.call(json, &[args])?;
-    Ok(prepare_cli_switch_route(unsafe {
-        String::from_napi_value(env.raw(), raw.raw())
-    }?))
+    unsafe { String::from_napi_value(input.env(), raw.raw()) }
 }
 
 #[napi]
@@ -67,22 +70,22 @@ pub fn codex_profile_route_failure(
     env: Env,
     cause: napi::bindgen_prelude::Unknown<'_>,
 ) -> Result<napi::sys::napi_value> {
-    use crate::js_live::LiveValue as L;
-    use multicc_core::js::JsValue as V;
-    let cause = L::new(&env, cause);
+    Ok(route_failure(LiveValue::new(&env, cause))?.raw())
+}
+fn route_failure(cause: LiveValue<'_>) -> Result<LiveValue<'_>> {
     if !cause.truthy()? {
-        return Ok(cause.raw());
+        return Ok(cause);
     }
     if cause.get(c"code")?.kind()? != napi::sys::ValueType::napi_string {
-        return Ok(cause.raw());
+        return Ok(cause);
     }
     let code = cause.get(c"code")?;
     let Some(code_text) = code.string()? else {
-        return Ok(cause.raw());
+        return Ok(cause);
     };
     let text = code_text.to_string_lossy();
     if !text.starts_with("CODEX_SESSION_") {
-        return Ok(cause.raw());
+        return Ok(cause);
     }
     let message = match text.as_str() {
         "CODEX_SESSION_ROLLOUT_AMBIGUOUS" => {
@@ -100,7 +103,7 @@ pub fn codex_profile_route_failure(
     error.set(c"status", cause.from_value(&V::Number(409.0))?)?;
     error.set(c"safe", cause.from_value(&V::Bool(true))?)?;
     error.set(c"cause", cause)?;
-    Ok(error.raw())
+    Ok(error)
 }
 
 fn read_live_value(value: LiveValue<'_>) -> Result<V> {
@@ -236,4 +239,77 @@ pub fn cli_switch_checkpoint(
         LiveValue::new(&env, max_chars),
     )?
     .raw())
+}
+
+/// N-API wraps core failures in GenericFailure. Keep the original error
+/// identity while restoring the leading machine-readable code when present.
+fn normalized_error(error: LiveValue<'_>) -> Result<LiveValue<'_>> {
+    use crate::route_response::{fallback, string, text};
+    if error.optional(c"code")?.is_string("GenericFailure")? {
+        let message = string(fallback(error.get(c"message")?, "".into())?)?.coerce_string()?;
+        let message = message.to_string_lossy();
+        let code = message.split(':').next().unwrap_or("");
+        if code.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            error.assign(c"code", text(error, code)?)?;
+        }
+    }
+    Ok(error)
+}
+#[napi]
+pub fn normalize_native_error(
+    env: Env,
+    error: napi::bindgen_prelude::Unknown<'_>,
+) -> Result<sys::napi_value> {
+    Ok(normalized_error(LiveValue::new(&env, error))?.raw())
+}
+
+#[napi]
+pub fn switch_route_result(
+    env: Env,
+    route: napi::bindgen_prelude::Unknown<'_>,
+    homedir: napi::bindgen_prelude::Unknown<'_>,
+    codex: bool,
+) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, route_response::*};
+    use napi::bindgen_prelude::ToNapiValue;
+    let input = L::new(&env, route);
+    let start = || -> Result<L<'_>> {
+        let route = if codex {
+            let copy = crate::js_live::spread(input)?;
+            copy.set(c"cli", text(copy, "codex")?)?;
+            copy
+        } else {
+            input
+        };
+        let home = L::new(&env, homedir).call_plain(&[])?;
+        let job = prepare_cli_switch_route(route_input(route, home)?);
+        let promise = L::from_raw(env.raw(), unsafe {
+            AsyncTask::to_napi_value(env.raw(), job)
+        }?);
+        let parse = input.global()?.get(c"JSON")?.get(c"parse")?;
+        call(promise, c"then", &[parse])
+    };
+    let promise = match start() {
+        Ok(v) => v,
+        Err(e) => {
+            let cause = match input.exception_value()? {
+                Some(v) => v,
+                None => input
+                    .global()?
+                    .get(c"Error")?
+                    .construct(&[text(input, &e.reason)?])?,
+            };
+            call(input.global()?.get(c"Promise")?, c"reject", &[cause])?
+        }
+    };
+    if !codex {
+        return Ok(promise.raw());
+    }
+    let failed = method(&env, input, "", 1, 1, |_, a| {
+        let cause = route_failure(normalized_error(a[0])?)?;
+        call(cause.global()?.get(c"Promise")?, c"reject", &[cause])
+    })?;
+    Ok(call(promise, c"catch", &[failed])?.raw())
 }

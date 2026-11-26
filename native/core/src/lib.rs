@@ -20,6 +20,7 @@ pub mod auto_provider_selection_key;
 pub mod aux_jobs;
 pub mod background;
 pub mod background_hold;
+pub mod cc_switch;
 pub mod chat_bridge;
 pub mod chat_connect_replay;
 pub mod chat_context_rotation;
@@ -191,8 +192,10 @@ pub mod provider_defaults_store;
 pub mod provider_limit_history;
 pub mod provider_registry;
 pub mod provider_request;
+pub mod provider_routing;
 pub mod provider_settings_config;
 pub mod provider_store;
+pub mod provider_usage;
 pub mod provider_writes;
 pub mod random_id;
 

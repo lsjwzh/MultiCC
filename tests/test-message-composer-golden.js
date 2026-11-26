@@ -21,9 +21,9 @@
 // does not weaken byte-level regression coverage.
 // ═══════════════════════════════════════════════════════════════════════
 
-const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../src/native/runtime').messageComposer;
+const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../src/native/binding').messageComposer;
 const { buildAutoCommitStatusPrompt } = require('./helpers/legacy-message-composer');
-const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
+const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 
@@ -476,7 +476,7 @@ console.log('── Suite 5: task-context layer (bound-session cold start) ─�
 console.log('── Suite 6: sub-agent provider hint ──');
 
 (function suite6() {
-  const { buildSubagentProviderHint } = require('../src/native/runtime').getHostPrompts();
+  const { buildSubagentProviderHint } = require('../src/native/binding').getHostPrompts();
   const deps = makeDeps({ buildSubagentProviderHint });
   const opts = { isFirstTurn: true, mode: 'per-turn' };
 
@@ -524,7 +524,7 @@ console.log('');
 console.log('── Suite 7: turn-plan layer ──');
 
 (function suite7() {
-  const { buildPlanProgressPrompt } = require('../src/native/runtime').getHostPrompts();
+  const { buildPlanProgressPrompt } = require('../src/native/binding').getHostPrompts();
   const deps = makeDeps({ buildPlanPrompt: buildPlanProgressPrompt });
   const sessionName = 's1';
   delete notesStore[sessionName];
@@ -606,7 +606,7 @@ console.log('── Suite 7: turn-plan layer ──');
   // turn re-carries the full block — the dropped turns may have taken the
   // original full block with them — and the turn after falls back to the
   // reminder.
-  const { markPlanContextReset } = require('../src/native/runtime').getHostPrompts();
+  const { markPlanContextReset } = require('../src/native/binding').getHostPrompts();
   const rs = 's7i-reset';
   markPlanContextReset(rs);
   const reset1 = composeMessage({ text, persisted: basePersisted({ type: null }), sessionName: rs, opts: { isFirstTurn: false }, deps });
@@ -709,7 +709,7 @@ console.log('── Suite 9: opts.voice layer ──');
   const path = require('node:path');
   const engine = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   let delivered;
-  require('../src/native/runtime').getNative().chatHandleSocketMessage({
+  require('../src/native/binding').getNative().chatHandleSocketMessage({
     taskContextHost: { deliverSessionMessage(_session, _text, opts) { delivered = opts; } },
   }, {}, 's', null, {}, {}, { type: 'user_message', text: '看下', inputSource: 'voice', voiceRaw: '  瑞迪斯  ' });
   assert(eq(delivered.voice, { raw: '瑞迪斯' }), '9f WS user_message parses the voice marker');

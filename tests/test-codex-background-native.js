@@ -86,7 +86,7 @@ async function main() {
     'features.multi_agent=true',
   ];
   stream.ensure('real-probe', {
-    cmd: require('../src/native/runtime').gatewayPath(), cwd: root, streamBackend: 'app-server',
+    cmd: require('../src/native/binding').gatewayPath(), cwd: root, streamBackend: 'app-server',
     baseArgs: ['codex-app-bridge', '--codex-bin', 'codex',
       '--resident', ...configs.flatMap(config => ['--config', config])],
     env: { PATH: process.env.PATH, HOME: root, CODEX_HOME: home },

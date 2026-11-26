@@ -12,7 +12,7 @@ const {
 const {
   assertProxyConfigApplied: assertCodexProxyConfigApplied,
   proxyConfigRequired: codexProxyConfigRequired,
-} = require('../src/native/runtime').codexProviderHome;
+} = require('../src/native/binding').codexProviderHome;
 const { createProviderRouterRuntime } = require('../src/providers/router-runtime');
 const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
 
@@ -28,7 +28,7 @@ process.env.MULTICC_DATA_DIR = path.join(root, 'data');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 
-const providers = require('../src/providers/core');
+const providers = require('../src/providers/host');
 
 function restoreEnvironment() {
   for (const [key, value] of Object.entries(original)) {
@@ -55,7 +55,7 @@ function treeText(directory) {
 test.after(restoreEnvironment);
 
 test('official follow-main subagent validates and materializes through the host relay', () => {
-  const { sessionSubagentNormalize: normalizeSubagentInput } = require('../src/native/runtime').getNative();
+  const { sessionSubagentNormalize: normalizeSubagentInput } = require('../src/native/binding').getNative();
   const { resolveSubagent } = require('../public/chat-ai-config');
   const official = providers.createProvider({ appType: 'codex', name: 'Follow main official' });
   const validProviderId = (_cli, id) => ({ ok: !!providers.getProvider('codex', id), value: id });

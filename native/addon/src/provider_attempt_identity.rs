@@ -228,8 +228,13 @@ pub fn provider_attempt_fields(
 
 #[napi]
 pub fn provider_revision(env: Env, input: Unknown<'_>, constructor: Unknown<'_>) -> Result<String> {
-    let input = LiveValue::new(&env, input);
-    let constructor = LiveValue::new(&env, constructor);
+    revision(
+        LiveValue::new(&env, input),
+        LiveValue::new(&env, constructor),
+    )
+}
+
+pub(crate) fn revision(input: LiveValue<'_>, constructor: LiveValue<'_>) -> Result<String> {
     let summary = if input.get(c"summary")?.truthy()?
         && input.get(c"summary")?.kind()? == sys::ValueType::napi_object
     {

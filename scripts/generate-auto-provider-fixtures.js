@@ -51,7 +51,7 @@ const TARGETS = {
 
 const MODULE_PATHS = {
   src: {
-    pricing: '../src/native/runtime',
+    pricing: '../src/native/binding',
     selectionKey: '../src/providers/auto-provider-config',
     routing: '../src/chat/auto-provider-routing',
     runtime: '../src/chat/auto-provider-runtime',

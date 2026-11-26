@@ -8,7 +8,7 @@
 
 const { assertProviderBinding } = require('../providers/binding');
 const { ALIASES, CAPABILITIES, transportOf } = require('../cli/cli-capability');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 // No Node fallback: these kernels are Rust-only.
 const native = getNative();
@@ -16,7 +16,6 @@ const CATALOG = JSON.parse(native.turnRequestCatalog());
 
 const REQUEST_KIND = CATALOG.requestKind;
 const FORBIDDEN_FIELDS = new Set(CATALOG.forbiddenFields);
-const PROVIDER_ROUTE_EVIDENCE_KEYS = new Set(CATALOG.providerRouteEvidenceKeys);
 
 // Transport is a column of the canonical CLI capability table, so the resident
 // set is derived here rather than listed again inside the kernel. Retired ids
@@ -127,47 +126,7 @@ function createDurableMessageProof(request, evidence = {}) {
 }
 
 function createProviderRouteProof(request, evidence = {}) {
-  assertNormalized(request);
-  const unexpected = Object.keys(evidence).filter(key => !PROVIDER_ROUTE_EVIDENCE_KEYS.has(key));
-  if (unexpected.length) {
-    throw new TurnRequestError(
-      'invalid_provider_route',
-      `provider route evidence is too broad: ${unexpected.sort().join(', ')}`,
-    );
-  }
-  let binding;
-  // `assertProviderBinding` is a Symbol-brand check the kernel cannot perform.
-  try { binding = assertProviderBinding(evidence.binding); } catch (_) {
-    throw new TurnRequestError('invalid_provider_route', 'concrete provider route binding is required');
-  }
-  return deepFreeze(call('routeProof', {
-    request: {
-      kind: request.kind,
-      sessionId: request.sessionId,
-      cli: request.cli,
-      transport: request.execution.transport,
-    },
-    evidence: {
-      resolved: evidence.resolved,
-      providerName: evidence.providerName,
-      protocol: evidence.protocol,
-      runtimeEpoch: evidence.runtimeEpoch,
-      turnId: evidence.turnId,
-      decisionId: evidence.decisionId,
-      routeAttemptId: evidence.routeAttemptId,
-      routeGeneration: evidence.routeGeneration,
-      attemptNo: evidence.attemptNo,
-      providerRevision: evidence.providerRevision,
-    },
-    binding: {
-      sessionId: binding.sessionId,
-      cli: binding.cli,
-      providerId: binding.providerId,
-      model: binding.model,
-      roleKind: binding.roleKind,
-      routeName: binding.routeName,
-    },
-  }));
+  return native.providerRouteProof(request, evidence, assertProviderBinding, TurnRequestError);
 }
 
 function evaluateSpawnGuard(request, proofs = {}) {

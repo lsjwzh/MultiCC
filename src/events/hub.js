@@ -9,10 +9,10 @@
 // - Subscribers are isolated: a throwing subscriber never breaks the emitter
 //   or its siblings.
 
-const { deriveTaskEvents, segmentKey, letterOf } = require('../native/runtime').getEventPolicy().transitions;
-const { EVENT_TYPES } = require('../native/runtime').getEventPolicy().catalog;
+const { deriveTaskEvents, segmentKey, letterOf } = require('../native/binding').getEventPolicy().transitions;
+const { EVENT_TYPES } = require('../native/binding').getEventPolicy().catalog;
 const { isTerminalLetter } = require('../classify/vocab');
-const { CONCLUSION_EVENTS, summaryOf } = require('../native/runtime').getEventPolicy().envelope;
+const { CONCLUSION_EVENTS, summaryOf } = require('../native/binding').getEventPolicy().envelope;
 
 const MAX_RECENT = 200;
 

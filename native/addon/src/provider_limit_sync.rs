@@ -109,20 +109,34 @@ pub fn broadcast_provider_limit(
     broadcast: Unknown<'_>,
     matches: Unknown<'_>,
 ) -> Result<()> {
-    let entry = LiveValue::new(&env, entry);
-    let event = snapshot(
-        entry,
+    broadcast_live(
+        LiveValue::new(&env, entry),
         LiveValue::new(&env, now),
         threshold,
         LiveValue::new(&env, subtract),
-    )?;
+        LiveValue::new(&env, sessions),
+        LiveValue::new(&env, providers),
+        LiveValue::new(&env, broadcast),
+        Some(LiveValue::new(&env, matches)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn broadcast_live<'a>(
+    entry: LiveValue<'a>,
+    now: LiveValue<'a>,
+    threshold: f64,
+    subtract: LiveValue<'a>,
+    sessions: LiveValue<'a>,
+    providers: LiveValue<'a>,
+    send: LiveValue<'a>,
+    matches: Option<LiveValue<'a>>,
+) -> Result<()> {
+    let event = snapshot(entry, now, threshold, subtract)?;
     if !event.truthy()? {
         return Ok(());
     }
-    let providers = LiveValue::new(&env, providers);
-    let send = LiveValue::new(&env, broadcast);
-    let matches = LiveValue::new(&env, matches);
-    LiveValue::new(&env, sessions).for_each(|pair| {
+    sessions.for_each(|pair| {
         let (id, record) = pair.iterator_pair()?;
         let mut types = providers.get(c"appTypesForCli")?;
         if !types.nullish()? {
@@ -148,9 +162,19 @@ pub fn broadcast_provider_limit(
                 return Ok(());
             }
             let some = candidates.get(c"some")?;
-            let predicate = matches
-                .get(c"bind")?
-                .call(matches, &[entry.from_value(&JsValue::Undefined)?, entry])?;
+            let env = Env::from_raw(entry.env());
+            let predicate = if let Some(matches) = matches {
+                matches
+                    .get(c"bind")?
+                    .call(matches, &[entry.from_value(&JsValue::Undefined)?, entry])?
+            } else {
+                crate::host_methods::method(&env, entry, "", 1, 1, |e, a| {
+                    crate::route_response::flag(
+                        e,
+                        a[0].get(c"providerId")?.equals(e.get(c"providerId")?)?,
+                    )
+                })?
+            };
             if !some.call(candidates, &[predicate])?.truthy()? {
                 return Ok(());
             }
@@ -163,4 +187,40 @@ pub fn broadcast_provider_limit(
         })?;
         Ok(())
     })
+}
+
+#[napi]
+pub fn subscribe_provider_limits(
+    env: Env,
+    options: Unknown<'_>,
+    threshold: f64,
+    subtract: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, route_response::*};
+    let o = L::new(&env, options);
+    let cache = o.get(c"cache")?;
+    let owner = fields(
+        o,
+        &[
+            ("sessions", o.get(c"persistedSessions")?),
+            ("providers", o.get(c"providers")?),
+            ("send", o.get(c"broadcast")?),
+            ("subtract", L::new(&env, subtract)),
+        ],
+    )?;
+    let listener = method(&env, owner, "", 1, 1, move |s, a| {
+        let now = call(s.global()?.get(c"Date")?, c"now", &[])?;
+        broadcast_live(
+            a[0],
+            now,
+            threshold,
+            s.get(c"subtract")?,
+            s.get(c"sessions")?,
+            s.get(c"providers")?,
+            s.get(c"send")?,
+            None,
+        )?;
+        s.from_value(&V::Undefined)
+    })?;
+    Ok(call(cache, c"subscribe", &[listener])?.raw())
 }

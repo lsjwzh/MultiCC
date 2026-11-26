@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
+const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { sharedMacosAgentProvisioner } = require('../macos-agent-provision');
 const { sharedCdpdProvisioner } = require('../cdpd');
 

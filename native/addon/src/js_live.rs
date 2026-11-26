@@ -377,7 +377,7 @@ impl<'env> LiveValue<'env> {
         })?;
         Ok(self.with_value(value))
     }
-    fn iterator(self) -> Result<(Self, Self)> {
+    pub(crate) fn iterator(self) -> Result<(Self, Self)> {
         let iterator = self
             .get_key(self.global()?.get(c"Symbol")?.get(c"iterator")?)?
             .call(self, &[])?;
@@ -387,7 +387,7 @@ impl<'env> LiveValue<'env> {
         let next = iterator.get(c"next")?;
         Ok((iterator, next))
     }
-    fn iterator_step(self, next: Self) -> Result<Option<Self>> {
+    pub(crate) fn iterator_step(self, next: Self) -> Result<Option<Self>> {
         let step = next.call(self, &[])?;
         if step.primitive()? {
             return Err(self.type_error("Iterator result is not an object"));
@@ -398,7 +398,7 @@ impl<'env> LiveValue<'env> {
             Ok(Some(step.get(c"value")?))
         }
     }
-    fn iterator_close(self) -> Result<()> {
+    pub(crate) fn iterator_close(self) -> Result<()> {
         let close = self.get(c"return")?;
         if !close.nullish()? && close.call(self, &[])?.primitive()? {
             return Err(self.type_error("Iterator result is not an object"));

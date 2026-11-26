@@ -330,6 +330,50 @@ test('invalid or stale planning completion has no cancellation side effect', asy
   assert.equal(queueResolutions, 0);
 });
 
+test('failed status save preserves updates made during queue resolution and releases the task', async () => {
+  const entered = Promise.withResolvers();
+  const queue = Promise.withResolvers();
+  let failWrite = true;
+  const { runtime } = mkRuntime({
+    resolveSessionQueue() { entered.resolve(); return queue.promise; },
+    atomicWriteJson(file, value) {
+      if (failWrite) throw new Error('disk full');
+      fs.writeFileSync(file, JSON.stringify(value));
+    },
+  });
+  const board = runtime.getBoard();
+  const task = core.createPendingTask(board, {
+    taskId: 'concurrent-status', sessionId: 'sess-1', dirId: 'dir-1', now: 1,
+  });
+  task.refs = [{ sessionId: 'sess-1', ts: 1 }];
+  const revision = board.revision;
+  const setStatus = (status, response) => runtime.routePorts.status({
+    taskId: task.id, body: { status },
+  }, response);
+
+  const response = planningResponse();
+  const pending = setStatus('done', response);
+  await entered.promise;
+  const busy = planningResponse();
+  await setStatus('archived', busy);
+  assert.equal(busy.body.error, 'task_busy');
+  task.title = '队列等待期间更新的标题';
+  const expected = JSON.parse(JSON.stringify(task));
+  queue.resolve({ ok: true });
+  await pending;
+
+  assert.equal(response.code, 500);
+  assert.equal(response.body.error, 'persistence_failed');
+  assert.deepEqual(task, expected);
+  assert.equal(board.revision, revision);
+  failWrite = false;
+  const retry = planningResponse();
+  await setStatus('archived', retry);
+  assert.equal(retry.code, 200);
+  assert.equal(retry.body.task.status, 'archived');
+  assert.equal(retry.body.task.title, expected.title);
+});
+
 test('planning persistence failure returns 500 and leaves no phantom mutation', async () => {
   const fixture = mkRuntime({ atomicWriteJson: () => { throw new Error('disk full'); } });
   const routes = planningRoutes(fixture.runtime);

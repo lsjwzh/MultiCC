@@ -1,9 +1,9 @@
 'use strict';
 
 const path = require('node:path');
-const { renderPrompt } = require('../native/runtime').messageComposer;
+const { renderPrompt } = require('../native/binding').messageComposer;
 const { createCompletionTracker } = require('./completion');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { extractUpstreamError } = require('../upstream-error');
 
 const { supportsEffort, effortOf } = require('../cli/cli-capability');

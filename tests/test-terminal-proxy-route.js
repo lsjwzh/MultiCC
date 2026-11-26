@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 // Frozen independently from the deleted production module before this batch.
 const { createTerminalProxyRoutes: legacyTerminalRoutes } = require('./helpers/legacy-terminal-route');
 
@@ -496,7 +496,7 @@ test('terminal token assignment never consults a patched Object.assign', () => {
 
 test('strict token assignment works when JavaScript string code generation is disabled', () => {
   const { spawnSync } = require('node:child_process');
-  const { addonPath } = require('../src/native/runtime');
+  const { addonPath } = require('../src/native/binding');
   const script = `
     'use strict';
     const assert = require('node:assert/strict');
@@ -588,7 +588,7 @@ test('terminal lookup resolves outer and inner Object.freeze before calling eith
 
 test('terminal lookup creates array elements without calling inherited numeric setters', () => {
   const { spawnSync } = require('node:child_process');
-  const { addonPath } = require('../src/native/runtime');
+  const { addonPath } = require('../src/native/binding');
   const script = `
     'use strict';
     const assert = require('node:assert/strict');

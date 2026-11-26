@@ -39,15 +39,8 @@ impl RustCliCompletionTracker {
     }
 }
 
-fn read_evidence(port: LiveValue<'_>) -> Result<LiveValue<'_>> {
-    port.get(c"read")?.call_plain(&[])
-}
-
-fn write_evidence(port: LiveValue<'_>, value: LiveValue<'_>) -> Result<()> {
-    port.get(c"write")?.call_plain(&[value])?;
-    Ok(())
-}
-
+pub(crate) mod tracker;
+use tracker::Evidence;
 fn host_evidence<'a>(
     port: LiveValue<'a>,
     state: &str,
@@ -130,16 +123,9 @@ impl RustCliCompletionTracker {
         } else {
             observe.call_plain(&[LiveValue::new(&env, raw), LiveValue::new(&env, decoded)])?
         };
-        if next.truthy()? && !self.failed() {
-            write_evidence(port, next)?;
-            let failed = next.get(c"state")?.is_string("failed")?
-                || next.get(c"state")?.is_string("cancelled")?;
-            self.state.borrow_mut().failed = failed;
-            if next.get(c"state")?.is_string("completed")? {
-                self.state.borrow_mut().saw_error = false;
-            }
-        }
-        Ok(read_evidence(port)?.raw())
+        Ok(self
+            .commit_observation(Evidence::external(port), next)?
+            .raw())
     }
 
     #[napi]
@@ -149,70 +135,89 @@ impl RustCliCompletionTracker {
         boundary: Unknown<'_>,
         port: Unknown<'_>,
     ) -> Result<sys::napi_value> {
-        let port = LiveValue::new(&env, port);
+        Ok(self
+            .finish_live(
+                LiveValue::new(&env, boundary),
+                Evidence::external(LiveValue::new(&env, port)),
+                None,
+            )?
+            .raw())
+    }
+}
+
+impl RustCliCompletionTracker {
+    fn commit_observation<'a>(
+        &self,
+        evidence: Evidence<'a>,
+        next: LiveValue<'a>,
+    ) -> Result<LiveValue<'a>> {
+        if next.truthy()? && !self.failed() {
+            evidence.write(next)?;
+            let failed = next.get(c"state")?.is_string("failed")?
+                || next.get(c"state")?.is_string("cancelled")?;
+            self.state.borrow_mut().failed = failed;
+            if next.get(c"state")?.is_string("completed")? {
+                self.state.borrow_mut().saw_error = false;
+            }
+        }
+        evidence.read()
+    }
+
+    fn finish_live<'a>(
+        &self,
+        boundary: LiveValue<'a>,
+        evidence: Evidence<'a>,
+        step: Option<&RustStepCompletionTracker>,
+    ) -> Result<LiveValue<'a>> {
+        let port = evidence.port;
         if self.ended() {
-            return Ok(read_evidence(port)?.raw());
+            return evidence.read();
         }
         self.state.borrow_mut().ended = true;
-        let boundary = LiveValue::new(&env, boundary);
         if boundary.get(c"killReason")?.truthy()? {
-            write_evidence(
+            evidence.write(host_evidence(
                 port,
-                host_evidence(port, "cancelled", boundary.get(c"killReason")?)?,
-            )?;
+                "cancelled",
+                boundary.get(c"killReason")?,
+            )?)?;
         } else if self.failed() {
             // Native protocol failure/cancellation cannot be erased by exit 0.
         } else if boundary.get(c"rejected")?.truthy()? {
-            write_evidence(
+            evidence.write(host_evidence(
                 port,
-                host_evidence(
-                    port,
-                    "failed",
-                    port.from_value(&JsValue::string("stream_rejected"))?,
-                )?,
-            )?;
+                "failed",
+                port.from_value(&JsValue::string("stream_rejected"))?,
+            )?)?;
         } else if boundary.get(c"signal")?.truthy()? {
-            write_evidence(
+            evidence.write(host_evidence(
                 port,
-                host_evidence(
-                    port,
-                    "failed",
-                    port.from_value(&JsValue::string("process_signaled"))?,
-                )?,
-            )?;
+                "failed",
+                port.from_value(&JsValue::string("process_signaled"))?,
+            )?)?;
         } else if boundary.get(c"kind")?.is_string("process")?
             && !boundary.get(c"code")?.is_number(0.0)?
         {
-            write_evidence(
+            evidence.write(host_evidence(
                 port,
-                host_evidence(
-                    port,
-                    "failed",
-                    port.from_value(&JsValue::string("nonzero_exit"))?,
-                )?,
-            )?;
+                "failed",
+                port.from_value(&JsValue::string("nonzero_exit"))?,
+            )?)?;
         } else if boundary.get(c"kind")?.is_string("stream")?
             && !boundary.get(c"resolved")?.is_true()?
         {
-            write_evidence(
+            evidence.write(host_evidence(
                 port,
-                host_evidence(
-                    port,
-                    "unknown",
-                    port.from_value(&JsValue::string("missing_stream_settlement"))?,
-                )?,
-            )?;
+                "unknown",
+                port.from_value(&JsValue::string("missing_stream_settlement"))?,
+            )?)?;
         } else {
             let kind = boundary.get(c"kind")?;
             if !kind.is_string("process")? && !kind.is_string("stream")? {
-                write_evidence(
+                evidence.write(host_evidence(
                     port,
-                    host_evidence(
-                        port,
-                        "unknown",
-                        port.from_value(&JsValue::string("missing_execution_boundary"))?,
-                    )?,
-                )?;
+                    "unknown",
+                    port.from_value(&JsValue::string("missing_execution_boundary"))?,
+                )?)?;
             } else if !self.failed() {
                 let has_output = self.has_output();
                 let saw_error = self.saw_error();
@@ -221,15 +226,31 @@ impl RustCliCompletionTracker {
                     ("sawError", saw_error.into()),
                 ]))?;
                 facts.set(c"pendingTools", port.get(c"tools")?.get(c"size")?)?;
-                let close = port.get(c"close")?;
-                if !close.nullish()? {
-                    let next = close.call_plain(&[boundary, read_evidence(port)?, facts])?;
+                if let Some(step) = step {
+                    use crate::host_methods::{arg, env, raw};
+                    let next = raw(
+                        port,
+                        step.close(
+                            env(port),
+                            arg(boundary)?,
+                            arg(evidence.read()?)?,
+                            arg(facts)?,
+                        )?,
+                    );
                     if next.truthy()? {
-                        write_evidence(port, next)?;
+                        evidence.write(next)?;
+                    }
+                } else {
+                    let close = port.get(c"close")?;
+                    if !close.nullish()? {
+                        let next = close.call_plain(&[boundary, evidence.read()?, facts])?;
+                        if next.truthy()? {
+                            evidence.write(next)?;
+                        }
                     }
                 }
                 if port.get(c"fallback")?.truthy()?
-                    && read_evidence(port)?.get(c"state")?.is_string("unknown")?
+                    && evidence.read()?.get(c"state")?.is_string("unknown")?
                     && boundary.get(c"kind")?.is_string("process")?
                     && boundary.get(c"code")?.is_number(0.0)?
                     && self.has_output()
@@ -242,11 +263,11 @@ impl RustCliCompletionTracker {
                         port.from_value(&JsValue::string("clean_exit_with_output"))?,
                         port.from_value(&JsValue::string("exit_fallback"))?,
                     )?;
-                    write_evidence(port, next)?;
+                    evidence.write(next)?;
                 }
             }
         }
-        Ok(port.get(c"settle")?.call_plain(&[])?.raw())
+        evidence.settle()
     }
 }
 
@@ -388,7 +409,7 @@ pub fn cli_is_completed(env: Env, outcome: Unknown<'_>) -> Result<bool> {
     completed(LiveValue::new(&env, outcome))
 }
 
-fn main_result(event: LiveValue<'_>) -> Result<bool> {
+pub(crate) fn main_result(event: LiveValue<'_>) -> Result<bool> {
     Ok(event.optional(c"type")?.is_string("result")?
         && event.get(c"parent_tool_use_id")?.nullish()?
         && !event

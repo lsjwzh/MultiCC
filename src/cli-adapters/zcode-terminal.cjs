@@ -14,7 +14,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { zcodeEngineEnv } = require('../native/runtime').zcodeEngine;
+const { zcodeEngineEnv } = require('../native/binding').zcodeEngine;
 
 const argv = process.argv.slice(2);
 let engine = 'zcode';

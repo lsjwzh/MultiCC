@@ -1,6 +1,6 @@
 'use strict';
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const {
   createExactSecretStreamRedactor, redactProviderRouteCapability, maybeRouteCapability,
 } = require('../observability');

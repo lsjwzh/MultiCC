@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const implementations = [require('./helpers/legacy-session-delivery'), require('../src/native/runtime').getSessionDeliveryApi()];
+const implementations = [require('./helpers/legacy-session-delivery'), require('../src/native/binding').getSessionDeliveryApi()];
 
 test('delivery validates synchronously and preserves coercion and metadata order', async () => {
   for (const implementation of implementations) {
@@ -110,7 +110,7 @@ test('logger failures preserve synchronous and asynchronous failure boundaries',
 });
 
 test('native API is cached and callback cycles can be collected', () => {
-  const runtime=require('../src/native/runtime');
+  const runtime=require('../src/native/binding');
   assert.equal(runtime.getSessionDeliveryApi(),runtime.getSessionDeliveryApi());
   assert.equal(runtime.SESSION_DELIVERY_SYSTEM_PREFIX, runtime.getSessionDeliveryApi().SYSTEM_PREFIX);
   const {spawnSync}=require('node:child_process');

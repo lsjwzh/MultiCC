@@ -21,8 +21,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { DEFAULT_MAX_BYTES, fitHistoryFrame } = require('../src/native/runtime').historyFrame;
-const { createChatHistoryRuntime } = require('../src/routes/chat-history');
+const { DEFAULT_MAX_BYTES, fitHistoryFrame } = require('../src/native/binding').historyFrame;
+const { createChatHistoryRuntime } = require('../src/routes/chat-history/index');
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 
 const PROBE = path.join(__dirname, 'helpers', 'oversize-history-probe.js');

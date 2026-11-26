@@ -15,7 +15,7 @@ const { createAuthRuntime } = require('../src/routes/auth');
 const { createMachineRuntime } = require('../src/machines');
 const { mountWsConnectionRouter } = require('../src/ws/connection-router');
 let addon = null;
-try { addon = require('../src/native/runtime').getNative(); } catch (_) { /* availability is asserted below */ }
+try { addon = require('../src/native/binding').getNative(); } catch (_) { /* availability is asserted below */ }
 const hasNative = typeof addon?.machineEventStream === 'function';
 if (!hasNative && process.env.MULTICC_REQUIRE_RUST_TESTS === '1') throw new Error('machine_native_unavailable');
 

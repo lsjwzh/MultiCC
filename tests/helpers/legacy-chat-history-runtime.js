@@ -3,7 +3,7 @@
 const { createChatHistoryVisibility } = require('./legacy-chat-history-visibility');
 
 const crypto = require('node:crypto');
-const { createChatHistoryService } = require('../../src/session/chat-history-service');
+const { createChatHistoryService } = require('./frozen-history-service-host');
 const { sanitizePublicText } = require('./frozen-file-batch19/public-safety');
 
 const DEFAULT_HISTORY_PAGE_SIZE = 5;

@@ -14,7 +14,7 @@ const { nameOf } = require('../cli/cli-capability');
 // setSessionStatus are likewise resolved per call through getters. The
 
 const bus = require('../bus');
-const { sanitizeVoiceSpeech } = require('../native/runtime').voiceSpeech;
+const { sanitizeVoiceSpeech } = require('../native/binding').voiceSpeech;
 const { recentTasksFor, routingStateFor } = require('./targeting');
 
 function assertFunction(value, name) {

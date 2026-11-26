@@ -6,7 +6,7 @@
 use crate::js_live::LiveValue as L;
 use multicc_core::js::JsValue;
 use multicc_core::transcript_prune as core;
-use napi::bindgen_prelude::{JsValue as _, Unknown};
+use napi::bindgen_prelude::{FromNapiValue, JsValue as _, Unknown};
 use napi::{sys, Env, Result};
 use napi_derive::napi;
 use std::ffi::CStr;
@@ -246,95 +246,127 @@ fn opt_string(v: L<'_>, empty: JsValue) -> Result<L<'_>> {
     }
 }
 
-/// Assemble the public transcript API over the host's current home directory.
-/// Find the file before inspecting pruning options, as the standalone CLI does.
-#[napi]
-pub fn transcript_pruning_api(
-    env: Env,
-    addon: Unknown<'_>,
-    home: Unknown<'_>,
-) -> Result<sys::napi_value> {
-    use crate::{
-        host_methods::{call, method},
-        js_live::fields,
+fn unknown(v: L<'_>) -> Result<Unknown<'_>> {
+    // v is borrowed in the active callback scope and keeps its original V8 value.
+    unsafe { Unknown::from_napi_value(v.env(), v.raw()) }
+}
+fn string_arg(v: L<'_>) -> Result<String> {
+    unsafe { String::from_napi_value(v.env(), v.raw()) }
+}
+fn optional_id(v: L<'_>) -> Result<Option<String>> {
+    let s = opt_string(v, JsValue::Null)?;
+    if s.nullish()? {
+        Ok(None)
+    } else {
+        Ok(Some(string_arg(s)?))
+    }
+}
+fn file_result<'a>(owner: L<'a>, name: &str, file: Option<String>, opts: L<'a>) -> Result<L<'a>> {
+    let env = Env::from_raw(owner.env());
+    let opts = if opts.undefined()? {
+        crate::js_live::fields(owner, &[])?
+    } else {
+        opts
     };
-    let addon = L::new(&env, addon);
-    let owner = fields(addon, &[("addon", addon), ("home", L::new(&env, home))])?;
-    let api = fields(addon, &[])?;
-    for (name, capacity, length, target) in [
-        ("maybePrune", 3, 2, c"transcriptPruneFile"),
-        ("pruneFile", 2, 1, c"transcriptPruneFile"),
-        ("claudeTranscriptTargets", 1, 1, c"transcriptClaudeTargets"),
-        (
-            "findSessionClaudeFile",
-            2,
-            2,
-            c"transcriptFindSessionClaude",
-        ),
-        ("pruneSessionClaude", 3, 2, c"transcriptPruneSessionClaude"),
-        ("measure", 3, 2, c"transcriptMeasureFile"),
-        ("measureFile", 2, 1, c"transcriptMeasureFile"),
-        ("findTranscriptFile", 2, 2, c"transcriptFind"),
-        ("claudeProjectDir", 1, 1, c"transcriptProjectDir"),
-        ("isRealUserTurn", 1, 1, c"transcriptRealUserTurn"),
-        ("isSubstantiveTurn", 1, 1, c"transcriptSubstantiveTurn"),
-        ("userVisibleText", 1, 1, c"transcriptUserVisibleText"),
-        ("triggersFor", 2, 2, c"transcriptTriggersFor"),
-        ("compactCutIndex", 1, 1, c"transcriptCompactCutIndex"),
-    ] {
-        let f = method(&env, owner, name, length, capacity, move |owner, args| {
-            let addon = owner.get(c"addon")?;
-            if matches!(
-                name,
-                "claudeTranscriptTargets"
-                    | "isRealUserTurn"
-                    | "isSubstantiveTurn"
-                    | "userVisibleText"
-                    | "triggersFor"
-                    | "compactCutIndex"
-            ) {
-                return call(addon, target, args);
-            }
-            let home = || owner.get(c"home")?.call_plain(&[]);
-            let default_options = |i: usize| {
-                if args[i].undefined()? {
-                    fields(owner, &[])
-                } else {
-                    Ok(args[i])
-                }
-            };
-            if matches!(name, "measureFile" | "pruneFile") {
-                return call(
-                    addon,
-                    target,
-                    &[opt_string(args[0], JsValue::Null)?, default_options(1)?],
-                );
-            }
-            let cwd = opt_string(args[0], JsValue::from(""))?;
+    let raw = if matches!(name, "pruneFile" | "maybePrune") {
+        transcript_prune_file(env, file, unknown(opts)?)?
+    } else {
+        transcript_measure_file(env, file, unknown(opts)?)?
+    };
+    Ok(L::from_raw(owner.env(), raw))
+}
+fn prune_command<'a>(os: L<'a>, name: &str, args: &[L<'a>]) -> Result<L<'a>> {
+    use crate::{host_methods::call, js_live::fields};
+    let env = Env::from_raw(os.env());
+    let first = args[0];
+    let home = || string_arg(call(os, c"homedir", &[])?);
+    let path = |value: Option<String>| os.from_value(&value.map_or(JsValue::Null, JsValue::from));
+    let raw = match name {
+        "claudeTranscriptTargets" => transcript_claude_targets(env, unknown(first)?)?,
+        "isRealUserTurn" => {
+            return os.from_value(&JsValue::Bool(transcript_real_user_turn(
+                env,
+                unknown(first)?,
+            )?))
+        }
+        "isSubstantiveTurn" => {
+            return os.from_value(&JsValue::Bool(transcript_substantive_turn(
+                env,
+                unknown(first)?,
+            )?))
+        }
+        "userVisibleText" => transcript_user_visible_text(env, unknown(first)?)?,
+        "triggersFor" => transcript_triggers_for(env, unknown(first)?, unknown(args[1])?)?,
+        "compactCutIndex" => transcript_compact_cut_index(env, unknown(first)?)?,
+        "measureFile" | "pruneFile" => return file_result(os, name, optional_id(first)?, args[1]),
+        _ => {
+            let cwd = string_arg(opt_string(first, JsValue::from(""))?)?;
             match name {
-                "claudeProjectDir" => call(addon, target, &[cwd, home()?]),
-                "findSessionClaudeFile" => call(addon, target, &[cwd, args[1], home()?]),
+                "claudeProjectDir" => return path(Some(transcript_project_dir(cwd, home()?))),
+                "findSessionClaudeFile" => {
+                    return path(transcript_find_session_claude(
+                        env,
+                        cwd,
+                        unknown(args[1])?,
+                        home()?,
+                    )?)
+                }
                 "pruneSessionClaude" => {
-                    call(addon, target, &[cwd, args[1], home()?, default_options(2)?])
+                    let home = home()?;
+                    let options = if args[2].undefined()? {
+                        fields(os, &[])?
+                    } else {
+                        args[2]
+                    };
+                    transcript_prune_session_claude(
+                        env,
+                        cwd,
+                        unknown(args[1])?,
+                        home,
+                        unknown(options)?,
+                    )?
                 }
                 _ => {
-                    let session = opt_string(args[1], JsValue::Null)?;
-                    let file = call(addon, c"transcriptFind", &[cwd, session, home()?])?;
+                    let file = transcript_find(cwd, optional_id(args[1])?, home()?);
                     if name == "findTranscriptFile" {
-                        Ok(file)
-                    } else {
-                        call(
-                            addon,
-                            target,
-                            &[opt_string(file, JsValue::Null)?, default_options(2)?],
-                        )
+                        return path(file);
                     }
+                    return file_result(os, name, file, args[2]);
                 }
             }
+        }
+    };
+    Ok(L::from_raw(os.env(), raw))
+}
+/// The facade resolves the current Node home directory on each path operation.
+/// Its methods enter the same Rust routines as direct native API callers.
+#[napi]
+pub fn transcript_pruning_api(env: Env, os: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, js_live::fields};
+    let os = L::new(&env, os);
+    let api = fields(os, &[])?;
+    for (name, capacity, length) in [
+        ("maybePrune", 3, 2),
+        ("pruneFile", 2, 1),
+        ("claudeTranscriptTargets", 1, 1),
+        ("findSessionClaudeFile", 2, 2),
+        ("pruneSessionClaude", 3, 2),
+        ("measure", 3, 2),
+        ("measureFile", 2, 1),
+        ("findTranscriptFile", 2, 2),
+        ("claudeProjectDir", 1, 1),
+        ("isRealUserTurn", 1, 1),
+        ("isSubstantiveTurn", 1, 1),
+        ("userVisibleText", 1, 1),
+        ("triggersFor", 2, 2),
+        ("compactCutIndex", 1, 1),
+    ] {
+        let f = method(&env, os, name, length, capacity, move |os, a| {
+            prune_command(os, name, a)
         })?;
         api.set_key(api.from_value(&name.into())?, f)?;
     }
-    let defaults = call(addon, c"transcriptPruneDefaults", &[])?;
+    let defaults = os.from_value(&core::defaults_value())?;
     for (name, key) in [
         ("DEFAULT_MAX_BYTES", c"maxBytes"),
         ("DEFAULT_TARGET_TOKENS", c"targetTokens"),

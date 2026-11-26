@@ -13,7 +13,7 @@
 
 const { assertProviderBinding } = require('./providers/binding');
 const { normalizeProxyOutcome } = require('./providers/proxy-outcome');
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 const native = getNative();
 const CATALOG = JSON.parse(native.usageObservedCatalog());

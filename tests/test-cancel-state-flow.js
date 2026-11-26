@@ -24,16 +24,15 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
-const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
-const { createClassifyStateMachine } = require('../src/classify/state-machine');
+const { createProductionQuestionHost, createProductionWorkHost, createSessionWorkScheduler } = require('../src/session-work');
+const { createClassifyStateMachine } = require('../src/classify/task-attribution');
 const { createTaskStateStore } = require('../src/session/records');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createOutbox } = require('../src/outbox');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 const { classifyDisplay } = require('../src/classify/vocab');
-const { createSessionPersistence } = require('../src/native/runtime');
+const { createSessionPersistence } = require('../src/native/binding');
 const { recordsOf } = require('./helpers/session-records');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
@@ -750,18 +749,20 @@ test('cancel still requires explicit confirmation', async () => {
 // ── 9. No legacy direct-write path is left behind ──────────────────────────
 
 test('no module outside classify writes a cancel terminal state', () => {
-  const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'session-work', 'host.js'), 'utf8');
+  const base = path.join(__dirname, '..', 'native/addon/src/session_work_host');
+  const hostSource = ['cancel.rs', 'cancel/dispatch.rs', 'cancel/runners.rs']
+    .map(file => fs.readFileSync(path.join(base, file), 'utf8')).join('\n');
   // The host may stop the runner and submit a result; it may not persist one.
-  assert.doesNotMatch(hostSource, /setTaskState\([^)]*cancelledAt/,
+  assert.doesNotMatch(hostSource, /c"setTaskState"/,
     'session-work-host must not write the cancel envelope itself');
-  assert.match(hostSource, /deps\.dispatchStateAction\(/);
+  assert.match(hostSource, /c"dispatchStateAction"/);
 
   const routeSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'orchestration.js'), 'utf8');
   assert.doesNotMatch(routeSource, /action === 'cancel'[\s\S]{0,400}sessionScheduler\.resolve/,
     'the cancel branch must return before reaching resolve()');
 
-  const machineSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'classify', 'state-machine.js'), 'utf8');
-  assert.match(machineSource, /cancelledAt: cancel\.at/,
+  const machineSource = fs.readFileSync(path.join(__dirname, '..', 'native/addon/src/classify_machine/dispatch/settle.rs'), 'utf8');
+  assert.match(machineSource, /c"cancelledAt",\s*or\(self\.cancel\.get\(c"at"/s,
     'classify is the sole writer of cancelledAt');
 
   // The frontend may only claim 「正在取消」; the terminal label comes from the

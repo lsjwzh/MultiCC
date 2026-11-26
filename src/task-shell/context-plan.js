@@ -1,7 +1,7 @@
 'use strict';
-const { hash, estimateTokens, renderSnapshots, verifySnapshot, renderLazyContextPrompt } = require('../native/runtime').taskShellContext;
-const { selectContext, clipTokens } = require('../native/runtime').getContextSelection();
-const { getNative } = require('../native/runtime');
+const { hash, estimateTokens, renderSnapshots, verifySnapshot, renderLazyContextPrompt } = require('../native/binding').taskShellContext;
+const { selectContext, clipTokens } = require('../native/binding').getContextSelection();
+const { getNative } = require('../native/binding');
 const excerptRendering = {
   user: message => message.role === 'user',
   fits: (text, budget) => estimateTokens(text) <= budget,

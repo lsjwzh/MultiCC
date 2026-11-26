@@ -160,7 +160,7 @@ function createOrchestrationHost(deps = {}) {
 function createAuxRunRoutes({ records, getLog } = {}) {
   if (!records || typeof records.get !== 'function') throw new TypeError('aux run records map required');
   if (typeof getLog !== 'function') throw new TypeError('aux run log getter required');
-  const { getNative } = require('../native/runtime');
+  const { getNative } = require('../native/binding');
   function mountRoutes(app) {
     if (!app || typeof app.get !== 'function') throw new TypeError('Express app.get required');
     const handle = detail => (req, res) => getNative().auxRunResponse(records, getLog, detail, req, res);
@@ -178,7 +178,7 @@ function mountUnattendedRoutes(app, deps = {}) {
   if (!records || typeof records.get !== 'function') {
     throw new TypeError('[unattended-routes] records map is required');
   }
-  const { getNative } = require('../native/runtime');
+  const { getNative } = require('../native/binding');
   const { LIMITS } = require('../unattended/kernel');
   const settle = async (res, result) => getNative().unattendedRouteResult(res, await result, LIMITS);
   const ports = { records, deps, limits: LIMITS, settle };

@@ -19,19 +19,19 @@ const {
   NATIVE_OPENCODE_PREFIX,
   nativeOpenCodeId,
   syntheticNativeOpenCodeProvider,
-} = require('../native/runtime').getNativeOpenCodeCatalog();
+} = require('../native/binding').getNativeOpenCodeCatalog();
 const {
   VENDOR_NATIVE_SET,
   syntheticVendorProvider,
 } = require('../providers/native-vendor');
 const { peekOpenCodeModels } = require('../routes/opencode-models');
-const { limitState } = require('../native/runtime').getAutoProviderPolicy();
+const { limitState } = require('../native/binding').getAutoProviderPolicy();
 const { createAutoProviderRouting } = require('./auto-provider-routing');
-const { expandCandidates, modelChoices, priceLadder } = require('../native/runtime').getAutoProviderPricing();
+const { expandCandidates, modelChoices, priceLadder } = require('../native/binding').getAutoProviderPricing();
 const { createRoutingAdmissionPhase } = require('./admission-progress');
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
 const { selectionKey } = require('../providers/auto-provider-config');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 class AutoProviderError extends Error {
   constructor(message, code = 'AUTO_PROVIDER_UNAVAILABLE') {

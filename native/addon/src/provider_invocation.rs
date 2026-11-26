@@ -187,14 +187,28 @@ pub fn provider_invocation_prepare(
     let no = input.from_value(&V::Bool(false))?;
     let empty = text(input, "")?;
     let default = text(input, "_default_")?;
-    let native = !ports
-        .get(c"nativeOpenCodeId")?
-        .call_plain(&[input.get(c"providerId")?])?
-        .nullish()?
-        || !ports
-            .get(c"nativeVendorOf")?
-            .call_plain(&[input.get(c"providerId")?])?
-            .nullish()?;
+    let provider_text = || {
+        let id = input.get(c"providerId")?;
+        if id.nullish()? {
+            Ok(multicc_core::js::JsString::new())
+        } else {
+            input
+                .global()?
+                .get(c"String")?
+                .call_plain(&[id])?
+                .coerce_string()
+        }
+    };
+    let native = multicc_core::provider_registry::native_opencode_id(&provider_text()?).is_some()
+        || {
+            let value = provider_text()?;
+            let value = value.as_str_lossy();
+            value
+                .split_once(multicc_core::provider_registry::NATIVE_VENDOR_SUFFIX)
+                .is_some_and(|(cli, _)| {
+                    multicc_core::provider_registry::VENDOR_NATIVE_CLIS.contains(&cli)
+                })
+        };
     let spawn_provider = if native {
         empty
     } else {
@@ -374,7 +388,12 @@ pub fn provider_invocation_prepare(
             (c"summary", summary),
         ],
     )?;
-    let revision = ports.get(c"revision")?.call_plain(&[revision_input])?;
+    let revision_for = |facts| {
+        let revision =
+            crate::provider_attempt_identity::revision(facts, ports.get(c"ProviderAttemptError")?)?;
+        text(input, &revision)
+    };
+    let revision = revision_for(revision_input)?;
     let attempt_input = object(
         input,
         &[
@@ -412,11 +431,16 @@ pub fn provider_invocation_prepare(
             attempt_input.set(key, value)?;
         }
     }
-    attempt_input.spread_from(
-        ports
-            .get(c"policy")?
-            .call_plain(&[session, input.get(c"env")?])?,
-    )?;
+    let environment = input.get(c"env")?;
+    let environment = if environment.undefined()? {
+        input.global()?.get(c"process")?.get(c"env")?
+    } else {
+        environment
+    };
+    attempt_input.spread_from(crate::model_request_policy::resolve_live(
+        session,
+        environment,
+    )?)?;
     let responses = cli_capability::protocol_family_of(
         &binding
             .get(c"cli")?
@@ -436,7 +460,7 @@ pub fn provider_invocation_prepare(
                 (c"summary", summary),
             ],
         )?;
-        ports.get(c"revision")?.call_plain(&[value])?
+        revision_for(value)?
     } else {
         revision
     };
@@ -468,7 +492,7 @@ pub fn provider_invocation_prepare(
             &[
                 (c"providerId", id),
                 (c"model", model),
-                (c"revision", ports.get(c"revision")?.call_plain(&[facts])?),
+                (c"revision", revision_for(facts)?),
             ],
         )?
     } else {
@@ -526,7 +550,12 @@ pub fn provider_invocation_prepare(
                 (c"providerRevision", revision),
             ],
         )?;
-        let proof = ports.get(c"proof")?.call_plain(&[request, proof])?;
+        let proof = crate::turn_request::route_proof(
+            request,
+            proof,
+            ports.get(c"assertProviderBinding")?,
+            ports.get(c"TurnRequestError")?,
+        )?;
         Ok((proof, method(attempts, c"proxySessionId", &[attempt])?))
     })();
     let (proof, proxy_session) = match prepared {
@@ -591,4 +620,45 @@ pub fn provider_invocation_prepare(
     )?
     .freeze()?
     .raw())
+}
+
+mod facade {
+    use crate::{
+        host_methods::{arg, args_default, env, function, raw},
+        route_response::*,
+    };
+    use napi_derive::napi;
+    #[napi]
+    pub fn create_provider_invocation_factory(
+        e: Env,
+        options: Unknown<'_>,
+        host: Unknown<'_>,
+    ) -> Result<sys::napi_value> {
+        let h = L::new(&e, host);
+        let ports = raw(
+            h,
+            super::provider_invocation_validate(env(h), args_default(L::new(&e, options))?)?,
+        );
+        for key in [
+            c"ProviderAttemptError",
+            c"assertProviderBinding",
+            c"TurnRequestError",
+        ] {
+            ports.set(key, h.get(key)?)?;
+        }
+        Ok(fields(
+            ports,
+            &[(
+                "prepare",
+                function(ports, "prepare", 0, 1, |p, a| {
+                    Ok(raw(
+                        p,
+                        super::provider_invocation_prepare(env(p), args_default(a[0])?, arg(p)?)?,
+                    ))
+                })?,
+            )],
+        )?
+        .freeze()?
+        .raw())
+    }
 }

@@ -24,7 +24,7 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 
 const root = path.join(__dirname, '..');
-const runtimePath = path.join(root, 'src', 'native', 'runtime.js');
+const runtimePath = path.join(root, 'src', 'native', 'binding.js');
 const SANDBOX = '/usr/bin/sandbox-exec';
 // Allow the local fake upstreams (Express on 127.0.0.1) and nothing else.
 const SANDBOX_PROFILE = '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))';

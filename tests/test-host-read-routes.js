@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { createHostReadHost, mountHostReadHostRoute, HOST_PATH } = require('../src/routes/host-read-host');
-const { resolveNotifySettingsUpdates } = require('../src/native/runtime').getNative();
+const { resolveNotifySettingsUpdates } = require('../src/native/binding').getNative();
 
 function createDeps(overrides = {}) {
   return {

@@ -1,7 +1,7 @@
 'use strict';
 
 const { boardRule } = require('./native-bridge');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const taskHistoryRefusal = error => getNative().taskHistoryRefusal(error);
 
 // Purge-stage refusals that describe a permanent state (evidence retention,

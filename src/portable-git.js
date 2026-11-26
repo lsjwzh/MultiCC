@@ -4,7 +4,7 @@
 // install-git.sh (repo root, shipped in every package) unpacks GitHub Desktop's
 // portable git into ~/.multicc/git and writes a wrapper at bin/git. Nothing else
 // is needed for it to work except being found: every git call in the server is
-// a bare `git` resolved through PATH (src/repo-actor.js and friends), and every
+// a bare `git` resolved through PATH (src/repo-actor/ and friends), and every
 // launcher — the launchd plist, the standalone CLI, the desktop app — builds
 // its own PATH. So instead of teaching each launcher, the server adds the
 // directory to its own PATH once at startup and again right after the one-click

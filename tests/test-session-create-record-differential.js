@@ -11,7 +11,7 @@ const frozen = new Module(filename, module);
 frozen.filename = filename;
 frozen.paths = Module._nodeModulePaths(path.dirname(filename));
 frozen._compile(fs.readFileSync(path.join(__dirname, 'helpers/legacy-session-create-record.js'), 'utf8'), filename);
-const candidate = { createSessionRecordFactory: deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, path) };
+const candidate = { createSessionRecordFactory: deps => require('../src/native/binding').getNative().sessionCreateRecordFactory(deps, path) };
 
 function world(implementation, scenario) {
   const events = [];
@@ -214,7 +214,7 @@ test('factory validates its injected resident port synchronously', () => {
 
 test('native callbacks release factory and pending-operation reference cycles', () => {
   const { spawnSync } = require('node:child_process');
-  const addon = require('../src/native/runtime').addonPath();
+  const addon = require('../src/native/binding').addonPath();
   const script = String.raw`
     const addon = require(process.argv[1]);
     const path = require('node:path');

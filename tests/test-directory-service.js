@@ -10,7 +10,7 @@
 //
 // What is left in Node is the process-local world and its effect order:
 //   src/routes/directory-host.js  the op envelope the front door calls
-//   src/native/runtime.js         the host save/log port for the native repository
+//   src/native/binding.js         the host save/log port for the native repository
 // These tests drive every op through in-memory fakes of the ports: no fs, no
 // git subprocess, no server.
 
@@ -19,7 +19,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { createDirectoryHost, HOST_PATH } = require('../src/routes/directory-host');
-const { createFsDirectoryRepository } = require('../src/native/runtime');
+const { createFsDirectoryRepository } = require('../src/native/binding');
 const { createDirectoryTable } = require('../src/directory/records');
 const { createStateOwner } = require('../src/state/owner');
 

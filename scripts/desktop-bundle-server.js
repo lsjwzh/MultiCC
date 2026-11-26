@@ -248,7 +248,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   }
 
   // 4) sanity gate — a silent missing file here becomes "app won't start" there
-  for (const must of ['server.js', 'src/paths.js', 'src/voice/asr-model-installer.js',
+  for (const must of ['server.js', 'src/paths/index.js', 'src/voice/asr-model-installer.js',
     'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'plugins/bridges/wechat-ilink.js', ...MACOS_AGENT_FILES,

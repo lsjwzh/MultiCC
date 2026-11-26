@@ -12,7 +12,7 @@
 // heapUsed：进程内 heapUsed 受 GC 时机影响，阈值判断会间歇红。
 const v8 = require('node:v8');
 
-const { getNative } = require('../../src/native/runtime');
+const { getNative } = require('../../src/native/binding');
 const { createChatHistoryFileRepository } = require('./native-chat-history-repository');
 
 const [dataDir, sessionId, mode, rangeStartArg, rangeEndArg] = process.argv.slice(2);

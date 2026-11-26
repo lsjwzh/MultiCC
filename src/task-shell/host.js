@@ -6,7 +6,7 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const { createTaskShellStore } = require('./store');
 const { createTaskShellRuntime, failure, cleanError } = require('./runtime');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { createArtifactsMemo, collectTaskArtifacts, artifactFileExists } = require('./artifacts');
 const { clearShellHistory, shellHistoryPage, watchShellHistory } = require('./chat-history');
 const { createAttributionSettingsFromEnv } = require('../native/task-domain');
@@ -70,16 +70,16 @@ function createTaskShellHost(deps) {
     return store;
   }
   const snapshotTaskHistory = deps.snapshotTaskHistory || ((sessionId, taskId, activeTurnId = null) =>
-    require('../native/runtime').taskShellContext.snapshotHistory(taskId, deps.loadHistory(sessionId), { activeTurnId }));
+    require('../native/binding').taskShellContext.snapshotHistory(taskId, deps.loadHistory(sessionId), { activeTurnId }));
   function getRuntime() {
     if (runtime) return runtime;
     ensureStore();
-    candidates = require('../native/runtime').createCandidateStore(store);
+    candidates = require('../native/binding').createCandidateStore(store);
     runtime = createTaskShellRuntime({
       store,
       taskShortCode: deps.taskShortCode,
       getDirectory: id => deps.directories?.get(id),
-      taskDirectory: task => require('../task-board/core').taskDirId(deps.getTaskBoard().getBoard(), task),
+      taskDirectory: task => require('../task-board/core/index').taskDirId(deps.getTaskBoard().getBoard(), task),
       validateTaskRuntime: (dirId, config) => deps.createSessionRecord({ ...config, dir: deps.directories.get(dirId), kind: 'chat', validateOnly: true }),
       unifiedAdmission: true,
       taskFirst: true, defaultTaskRuntime: deps.defaultTaskRuntime,
@@ -451,7 +451,7 @@ function createTaskShellHost(deps) {
     guardAdmission: (id, text, options = {}) => {
       const board = deps.getTaskBoard?.()?.getBoard?.();
       for (const taskId of [options.taskId, deps.records.get(id)?.taskBoundTaskId].filter(Boolean)) {
-        const task = board && require('../task-board/core').resolveTask(board, taskId);
+        const task = board && require('../task-board/core/index').resolveTask(board, taskId);
         const code = board?.deletedTaskIds?.includes(taskId) ? 'task_deleted' : task?.deleting ? 'task_deleting'
           : task?.status === 'archived' ? 'task_archived' : deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(taskId) ? 'task_busy' : null;
         if (code) return { ok: false, code };

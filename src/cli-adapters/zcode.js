@@ -13,8 +13,8 @@ const { createStepCompletionTracker } = require('./completion');
 // 续轮通过 `--session <sess_...>` 传给 bridge，bridge 转成引擎的 `--resume`。
 
 const path = require('path');
-const { renderPrompt } = require('../native/runtime').messageComposer;
-const { isZcodeSessionId } = require('../native/runtime');
+const { renderPrompt } = require('../native/binding').messageComposer;
+const { isZcodeSessionId } = require('../native/binding');
 
 const BRIDGE = path.join(__dirname, 'zcode-bridge.cjs');
 const TERMINAL_BRIDGE = path.join(__dirname, 'zcode-terminal.cjs');

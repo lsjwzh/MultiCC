@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
-const { buildReplayMessages, createChatHistoryRuntime } = require('../src/routes/chat-history');
+const { buildReplayMessages, createChatHistoryRuntime } = require('../src/routes/chat-history/index');
 
 test('reconnect promotes a persisted interim into the one live streaming tail', () => {
   const messages = buildReplayMessages([{
@@ -953,7 +953,7 @@ test('context level reports the transcript water level read-only and without lea
   const prevHome = process.env.HOME;
   process.env.HOME = home;
   try {
-    const { claudeProjectDir } = require('../src/native/runtime').getTranscriptPruning();
+    const { claudeProjectDir } = require('../src/native/binding').getTranscriptPruning();
     const dir = claudeProjectDir(cwd);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'stream-sid.jsonl');
@@ -1158,7 +1158,7 @@ test('legacy empty history remains deletable without weakening durable delivery 
   history.write('empty', []);
   assert.deepEqual(history.readStrict('empty', { allowEmpty: true }), []);
   assert.throws(() => history.hasPersistedDelivery('empty', 'receipt'), { code: 'CHAT_HISTORY_CORRUPT' });
-  const { createTaskHistoryRetention } = require('../src/native/runtime').getNative();
+  const { createTaskHistoryRetention } = require('../src/native/binding').getNative();
   const board = { tasks: {} };
   const policy = createTaskHistoryRetention({ getBoard: () => board, getRecord: () => null,
     loadHistory: id => history.readStrict(id, { allowEmpty: true }) });
@@ -1221,6 +1221,7 @@ test('a clear queued behind an in-flight append plans on the landed transcript',
   );
   const reset = fx.events.find(event => event?.payload?.type === 'chat_history_reset').payload;
   assert.deepEqual(reset.messages.map(m => m.id), [], 'the reset page is the post-clear page, not a stale one');
+  assert.equal(reset.displayOnly, true);
   fx.runtime.stop();
 });
 
@@ -1672,4 +1673,55 @@ test('a queued interim is replaced by the newest one instead of writing twice', 
   const stored = fx.history.records.get('s1');
   assert.ok(stored.some(message => message._interim === true), 'the merged interim still lands');
   fx.runtime.stop();
+});
+
+test('rotation never commits a snapshot to a replaced record at the same session ID', async () => {
+  const pending = Promise.withResolvers();
+  const fx = fixture({ deps: { cliSwitchGitSnapshot: () => pending.promise } });
+  const original = fx.persistedSessions.get('s1');
+  const replacement = { ...original, branch: 'replacement' };
+  const rotating = fx.runtime.rotateNativeContext('s1', fx.chatState);
+  fx.persistedSessions.set('s1', replacement);
+  pending.resolve({ branch: 'original' });
+  assert.deepEqual(await rotating, { ok: false, code: 'session_changed' });
+  assert.equal(original.pendingCliHandoff, undefined);
+  assert.equal(replacement.pendingCliHandoff, undefined);
+  assert.equal(fx.chatState.chatTurnCount, 7);
+  assert.deepEqual(eventNames(fx.events), ['broadcast:native_context_rotation_rejected:s1']);
+});
+
+test('custom rotation checkpoint uses history committed during the Git snapshot', async () => {
+  const pending = Promise.withResolvers();
+  const fx = fixture({ deps: { cliSwitchGitSnapshot: () => pending.promise } });
+  const rotating = fx.runtime.rotateNativeContext('s1', fx.chatState);
+  await fx.runtime.appendMessage('s1', { id: 'during', role: 'user', content: 'during snapshot' });
+  pending.resolve({});
+  assert.equal((await rotating).ok, true);
+  const { history } = fx.persistedSessions.get('s1').pendingCliHandoff.checkpoint;
+  assert.deepEqual(history.map(message => message.id), ['during']);
+});
+
+test('a failed timer release allows a fresh delete and settles every caller', async () => {
+  const reason = new Error('cannot release timer');
+  let first = true;
+  const fx = fixture({ initial: { s1: [{ id: 'u1', role: 'user', content: 'user' }] },
+    deps: { clearTimeout(timer) {
+      if (first) { first = false; throw reason; }
+      timer.cleared = true;
+    } },
+  });
+  fx.runtime.scheduleIncrementalSave('s1', { currentAssistantText: 'incomplete response long enough' });
+  await assert.rejects(fx.runtime.removeSession('s1'), error => error === reason);
+  assert.equal(fx.history.records.has('s1'), true);
+  assert.equal(await fx.runtime.removeSession('s1'), true);
+  assert.equal(fx.history.records.has('s1'), false);
+  assert.equal(await fx.runtime.settle(), true);
+});
+
+test('a rejected visibility write keeps its original falsy rejection value', async () => {
+  const fx = fixture({ initial: { s1: [{ id: 'u1', role: 'user', content: 'user' }] } });
+  fx.history.writeVisibilityAsync = () => Promise.reject(0);
+  await fx.runtime.hideMessages('s1', ['u1'], { quiet: true }).then(
+    () => assert.fail('expected the write to fail'), reason => assert.strictEqual(reason, 0));
+  assert.deepEqual(fx.runtime.paginate('s1').messages.map(message => message.id), ['u1']);
 });

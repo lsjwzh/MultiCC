@@ -2,9 +2,9 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createCodexBackgroundEvents, safeText } = require('../src/native/runtime').codexBackground;
+const { createCodexBackgroundEvents, safeText } = require('../src/native/binding').codexBackground;
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
-const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
+const { createCodexExpAdapter } = require('../src/native/binding').codexAppAdapter;
 
 function fixture(overrides = {}, create = createCodexBackgroundEvents) {
   let time = 0;
@@ -220,7 +220,7 @@ test('Rust 后台所有者逐事件、节流、心跳和重启匹配冻结实现
 });
 
 test('Rust 工具摘要与脱敏保留冻结版本及 UTF-16 切片', () => {
-  const current = require('../src/native/runtime').codexBackground, oracle = frozenBackground();
+  const current = require('../src/native/binding').codexBackground, oracle = frozenBackground();
   for (const value of ['', null, 0, 'a\n\t\0b\u007fc', 'a'.repeat(179) + '😀尾', 'token=测试凭据 Bearer fake-test-key', 'proxy-route_test pr1.abc.def', Symbol('标记')]) {
     for (const limit of [0, 1, 80, 180, -1, Infinity, NaN]) assert.equal(current.safeText(value, limit), oracle.safeText(value, limit));
   }

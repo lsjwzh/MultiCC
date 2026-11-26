@@ -2,10 +2,10 @@
 
 const path = require('path');
 const { resolveCliCommands, createCommandResolver } = require('./commands');
-const { createCliProviderRegistry } = require('../native/runtime');
-const { createClaudeAdapter } = require('../native/runtime');
-const { createCodexAdapter } = require('../native/runtime').codexAdapter;
-const { createCodexExpAdapter } = require('../native/runtime').codexAppAdapter;
+const { createCliProviderRegistry } = require('../native/binding');
+const { createClaudeAdapter } = require('../native/binding');
+const { createCodexAdapter } = require('../native/binding').codexAdapter;
+const { createCodexExpAdapter } = require('../native/binding').codexAppAdapter;
 const { createOpencodeAdapter } = require('./opencode');
 const { createZcodeAdapter } = require('./zcode');
 const { createQoderAdapter } = require('./qoder');
@@ -14,7 +14,7 @@ const { createCodebuddyAdapter } = require('./codebuddy');
 const { createDshAdapter } = require('./dsh');
 const { createGeminiAdapter, createGrokAdapter } = require('./acp');
 const { createCommandCodeAdapter } = require('./command-code');
-const { getNative, messageComposer } = require('../native/runtime');
+const { getNative, messageComposer } = require('../native/binding');
 const { createProtocolCompletionTracker } = require('./completion');
 const { displayNameOf, supportsEffort } = require('../cli/cli-capability');
 const { createPiAdapter } = require('./pi');

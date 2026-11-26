@@ -17,7 +17,7 @@ const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/acc
 let addon;
 try {
   addon = process.env.MULTICC_RUST_ADDON ? require(process.env.MULTICC_RUST_ADDON)
-    : require('../src/native/runtime').getNative();
+    : require('../src/native/binding').getNative();
 } catch (_) {}
 const nativeReady = typeof addon?.planClaudeExpiredRefresh === 'function';
 const nativeTest = (name, fn) => test(name, { skip: !nativeReady }, fn);
@@ -391,7 +391,7 @@ for (const mode of ['revoked', 'rejected']) {
 
 nativeTest('续期计划与冻结宿主在过期、停用和预算耗尽时一致', () => {
   const previous = require('./helpers/frozen-file-batch8/expired-refresh-policy').planClaudeExpiredRefresh;
-  const current = require('../src/native/runtime').planClaudeExpiredRefresh;
+  const current = require('../src/native/binding').planClaudeExpiredRefresh;
   for (const now of [0, 90, 100, 101]) for (const probes of [0, 2, 3]) {
     for (const parked of [false, true]) for (const hasRefreshToken of [false, true]) {
       const input = { now, expiresAt: 100, hasRefreshToken, parked, probes };

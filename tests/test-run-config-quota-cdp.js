@@ -2,7 +2,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { withCdpHarness, findChromeBinary } = require('./helpers/cdp-harness');
-const { providerLimitBar } = require('../src/native/runtime').getQuotaBarView();
+const { providerLimitBar } = require('../src/native/binding').getQuotaBarView();
 
 // 运行配置里挑线路时要看得见余量：固定一条的线路下拉、子任务线路下拉、
 // 自动挑选的「添加线路」列表和池子行，都把 /api/providers 带回的 provider.limit

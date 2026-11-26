@@ -464,7 +464,7 @@ function describeMerge(state) {
     ahead: Number.isFinite(ms.ahead) ? ms.ahead : 0,
     note: null,
   };
-  // hibernated 也带 worktreeMissing:true（src/git/service.js），所以它得先判：
+  // hibernated 也带 worktreeMissing:true（src/git/service/），所以它得先判：
   // 休眠是可恢复的，别说成「已回收」。
   if (ms.reason === 'hibernated') said.note = tr('termMergeHibernated', '工作区已休眠');
   else if (ms.worktreeMissing) said.note = tr('termMergeReclaimed', 'worktree 已回收');

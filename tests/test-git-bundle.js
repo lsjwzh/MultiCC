@@ -176,6 +176,6 @@ test('conflicting bundle import aborts to the original clean target without rese
   assert.equal(await fsp.readFile(path.join(target.worktreePath, 'shared.txt'), 'utf8'), 'target change\n');
   assert.equal(await git(dir.path, ['for-each-ref', '--format=%(refname)', 'refs/multicc/import/']), '');
 
-  const sourceText = await fsp.readFile(path.join(__dirname, '..', 'src', 'git', 'service.js'), 'utf8');
+  const sourceText = await fsp.readFile(path.join(__dirname, '..', 'native', 'addon', 'src', 'git_service', 'service_ops', 'bundle.rs'), 'utf8');
   assert.equal(/['"]reset['"][\s\S]{0,40}['"]--hard['"]/.test(sourceText), false);
 });

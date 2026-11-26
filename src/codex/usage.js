@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { getTurnProgress } = require('../native/runtime');
+const { getTurnProgress } = require('../native/binding');
 
 const PRIVATE_USAGE_FIELDS = Object.freeze(['usageCumulative', 'usageEpoch']);
 

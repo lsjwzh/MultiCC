@@ -499,7 +499,7 @@ const world = createWorld({
 const fs = require('node:fs');
 const defaultsFile = path.join(process.env.PROVIDERS_DIFF_WORK, 'native-provider-defaults.json');
 fs.writeFileSync(defaultsFile, ${JSON.stringify(MOUNT_DEFAULTS)});
-const native = require(path.join(REPO, 'src/native/runtime')).getNative();
+const native = require(path.join(REPO, 'src/native/binding')).getNative();
 const defaultsOwner = new native.RustProviderDefaultsStore(defaultsFile);
 world.deps.providerDefaultsOwner = defaultsOwner;
 const { createProviderRoutes } = require(path.join(REPO, 'src/routes/providers'));

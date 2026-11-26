@@ -8,7 +8,7 @@
 // cards to "no trend" instead of failing the providers API.
 
 const fs = require('node:fs');
-const { getNative, runNative } = require('../native/runtime');
+const { getNative, runNative } = require('../native/binding');
 
 const DEFAULT_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 

@@ -58,8 +58,9 @@ pub fn turn_ledger_normalize(
     raw: Unknown<'_>,
     events: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let raw = LiveValue::new(&env, raw);
-    let events = LiveValue::new(&env, events);
+    Ok(normalize(LiveValue::new(&env, raw), LiveValue::new(&env, events))?.raw())
+}
+fn normalize<'a>(raw: LiveValue<'a>, events: LiveValue<'a>) -> Result<LiveValue<'a>> {
     let null = raw.from_value(&JsValue::Null)?;
     if raw.kind()? != sys::ValueType::napi_object
         || !raw.get(c"v")?.is_number(1.0)?
@@ -70,11 +71,11 @@ pub fn turn_ledger_normalize(
             .call(events, &[raw.get(c"event")?])?
             .truthy()?
     {
-        return Ok(null.raw());
+        return Ok(null);
     }
     let ts = raw.get(c"ts")?.explicit_number()?;
     if !ts.is_finite() || ts <= 0.0 {
-        return Ok(null.raw());
+        return Ok(null);
     }
     let out = raw.from_value(&JsValue::Object(vec![]))?;
     out.set(c"eventId", raw.get(c"eventId")?)?;
@@ -117,7 +118,7 @@ pub fn turn_ledger_normalize(
     if let Some(value) = clipped(raw.get(c"promptHead")?, 120)? {
         out.assign(c"promptHead", value)?;
     }
-    Ok(out.raw())
+    Ok(out)
 }
 
 #[napi]
@@ -129,30 +130,92 @@ pub fn turn_ledger_transition_id(
     seq: Unknown<'_>,
     state: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let session = LiveValue::new(&env, session);
-    let turn = LiveValue::new(&env, turn);
+    Ok(transition_id(
+        LiveValue::new(&env, session),
+        LiveValue::new(&env, epoch),
+        LiveValue::new(&env, turn),
+        LiveValue::new(&env, seq),
+        LiveValue::new(&env, state),
+    )?
+    .raw())
+}
+fn transition_id<'a>(
+    session: LiveValue<'a>,
+    epoch: LiveValue<'a>,
+    turn: LiveValue<'a>,
+    seq: LiveValue<'a>,
+    state: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
     let parts = [
         session.coerce_string()?,
-        LiveValue::new(&env, epoch).coerce_string()?,
+        epoch.coerce_string()?,
         if turn.truthy()? {
             turn.coerce_string()?
         } else {
             JsString::from_rust_str("-")
         },
-        LiveValue::new(&env, seq).coerce_string()?,
-        LiveValue::new(&env, state).coerce_string()?,
+        seq.coerce_string()?,
+        state.coerce_string()?,
     ];
     let id = JsString::join(&parts, &JsString::from_rust_str(":"));
-    Ok(session.from_value(&JsValue::String(id))?.raw())
+    session.from_value(&JsValue::String(id))
 }
 
 #[napi]
 pub fn turn_ledger_liveness(env: Env, ownership: Unknown<'_>) -> Result<sys::napi_value> {
-    let ownership = LiveValue::new(&env, ownership);
+    Ok(liveness(LiveValue::new(&env, ownership))?.raw())
+}
+fn liveness(ownership: LiveValue<'_>) -> Result<LiveValue<'_>> {
     let input = ownership.string()?;
     let (state, reason) = contract::liveness(input.as_ref().map(|s| s.as_str_lossy()).as_deref());
     let out = ownership.from_value(&JsValue::Object(vec![]))?;
     out.set(c"state", ownership.from_value(&state.into())?)?;
     out.set(c"reason", ownership.from_value(&reason.into())?)?;
-    Ok(out.raw())
+    Ok(out)
+}
+
+#[napi]
+pub fn turn_ledger_api(env: Env) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, js_live::fields};
+    use napi::bindgen_prelude::ToNapiValue;
+    let anchor = LiveValue::new(&env, ().into_unknown(&env)?);
+    let catalog = anchor.from_value(&multicc_core::js::from_serde(&contract::vocabulary()))?;
+    let set = anchor.global()?.get(c"Set")?;
+    let events = set.construct(&[catalog.get(c"hookEvents")?])?;
+    Ok(fields(
+        catalog,
+        &[
+            ("HOOK_EVENTS", events),
+            ("OWNERSHIP", catalog.get(c"ownership")?.freeze()?),
+            ("E_REASONS", catalog.get(c"errorReasons")?.freeze()?),
+            (
+                "SILENT_E_REASONS",
+                set.construct(&[catalog.get(c"silentErrorReasons")?])?,
+            ),
+            (
+                "normalizeEnvelope",
+                method(&env, events, "normalizeEnvelope", 1, 1, |e, a| {
+                    normalize(a[0], e)
+                })?,
+            ),
+            (
+                "transitionId",
+                method(&env, events, "transitionId", 1, 1, |_, a| {
+                    let v = a[0];
+                    transition_id(
+                        v.get(c"sessionId")?,
+                        v.get(c"epoch")?,
+                        v.get(c"turnId")?,
+                        v.get(c"seq")?,
+                        v.get(c"state")?,
+                    )
+                })?,
+            ),
+            (
+                "projectLiveness",
+                method(&env, events, "projectLiveness", 1, 1, |_, a| liveness(a[0]))?,
+            ),
+        ],
+    )?
+    .raw())
 }

@@ -14,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 
-const { createSessionPersistence } = require('../src/native/runtime');
+const { createSessionPersistence } = require('../src/native/binding');
 const { createTaskStateStore } = require('../src/session/records');
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 const {

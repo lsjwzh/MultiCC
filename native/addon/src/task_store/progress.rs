@@ -134,8 +134,22 @@ pub fn describe_task_store_migration(
     failure: Unknown<'_>,
     steps: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let state = LiveValue::new(&env, state);
-    let now = LiveValue::new(&env, now);
+    Ok(describe(
+        LiveValue::new(&env, state),
+        LiveValue::new(&env, now),
+        LiveValue::new(&env, stat_size),
+        LiveValue::new(&env, failure),
+        LiveValue::new(&env, steps),
+    )?
+    .raw())
+}
+fn describe<'a>(
+    state: LiveValue<'a>,
+    now: LiveValue<'a>,
+    stat_size: LiveValue<'a>,
+    failure: LiveValue<'a>,
+    steps: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
     let started = number_or_zero(state.optional(c"startedAt")?)?;
     let elapsed = if started == 0.0 {
         0.0
@@ -156,7 +170,6 @@ pub fn describe_task_store_migration(
         ),
         ("elapsedMs", JsValue::Number(elapsed)),
     ]))?;
-    let failure = LiveValue::new(&env, failure);
     if failure.truthy()? {
         failed_view(view, state, failure)?;
     } else if state.optional(c"phase")?.is_string("failed")? {
@@ -164,11 +177,11 @@ pub fn describe_task_store_migration(
         failure.set(c"error", state.get(c"error")?)?;
         failed_view(view, state, failure)?;
     } else {
-        let weight = LiveValue::new(&env, steps).get_key(state.optional(c"phase")?)?;
+        let weight = steps.get_key(state.optional(c"phase")?)?;
         if !weight.truthy()? {
-            return Ok(view.raw());
+            return Ok(view);
         }
-        let mut part = fraction(state, LiveValue::new(&env, stat_size))?;
+        let mut part = fraction(state, stat_size)?;
         if state.get(c"phase")?.is_string("vacuum")? {
             let updated = number_or_zero(state.get(c"updatedAt")?)?;
             let since = nonnegative(
@@ -194,5 +207,45 @@ pub fn describe_task_store_migration(
             view.set(c"total", state.get(c"total")?)?;
         }
     }
-    Ok(view.raw())
+    Ok(view)
+}
+
+#[napi]
+pub fn task_store_progress_api(env: Env) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, route_response::*};
+    let steps = L::from_raw(env.raw(), task_store_progress_steps(env)?);
+    let zero = method(&env, steps, "statSize", 0, 0, |s, _| num(s, 0.))?;
+    let owner = fields(steps, &[("steps", steps), ("zero", zero)])?;
+    let describe = method(&env, owner, "describeMigration", 1, 2, |s, a| {
+        let opts = if a[1].undefined()? {
+            fields(s, &[])?
+        } else {
+            a[1]
+        };
+        let now = opts.get(c"now")?;
+        let now = if now.undefined()? {
+            call(s.global()?.get(c"Date")?, c"now", &[])?
+        } else {
+            now
+        };
+        let stat = opts.get(c"statSize")?;
+        let stat = if stat.undefined()? {
+            s.get(c"zero")?
+        } else {
+            stat
+        };
+        let failure = opts.get(c"failure")?;
+        describe(
+            a[0],
+            now,
+            stat,
+            if failure.undefined()? {
+                null(s)?
+            } else {
+                failure
+            },
+            s.get(c"steps")?,
+        )
+    })?;
+    Ok(fields(steps, &[("STEPS", steps), ("describeMigration", describe)])?.raw())
 }

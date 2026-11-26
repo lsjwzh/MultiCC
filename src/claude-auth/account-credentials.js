@@ -22,7 +22,7 @@
 // instead of triggering a rotation, because showing a usage number must not
 // spend the account's one single-use credential.
 
-const { credential } = require('../native/runtime').providerCredentials;
+const { credential } = require('../native/binding').providerCredentials;
 
 const EXPIRY_MARGIN_MS = 5 * 60 * 1000; // 与官方 CLI 一样，提前五分钟检查续期
 // A peek may hand out a token this close to expiry: it is about to be used for

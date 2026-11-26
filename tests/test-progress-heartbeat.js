@@ -5,7 +5,7 @@ const test = require('node:test');
 const {
   DEFAULT_INTERVAL_MS,
   TurnProgressHeartbeat,
-} = require('../src/native/runtime').getTurnProgress();
+} = require('../src/native/binding').getTurnProgress();
 
 function createClock(startedAt = 0) {
   let now = startedAt;

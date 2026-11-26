@@ -78,7 +78,7 @@ module.exports = ({ createProviderAttemptRuntime, legacyCreationRuntime, route }
   });
 
   test('finish resolves its lifecycle receiver and setter before the reentrant clock', () => {
-    const { RustProviderAttemptLifecycle } = require('../../src/native/runtime').getNative();
+    const { RustProviderAttemptLifecycle } = require('../../src/native/binding').getNative();
     const proto = RustProviderAttemptLifecycle.prototype;
     const original = Object.getOwnPropertyDescriptor(proto, 'setFinishedAt');
     const execute = (factory, throwGetter) => {

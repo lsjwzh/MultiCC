@@ -328,8 +328,8 @@ function mountSkillSyncRoutes(app, runtime) {
   for (const key of ['getStatus', 'runNow']) {
     if (!runtime || typeof runtime[key] !== 'function') throw new TypeError(`skill sync runtime missing: ${key}`);
   }
-  const { getNative } = require('../native/runtime');
-  const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
+  const { getNative } = require('../native/binding');
+  const { sanitizePublicText } = require('../native/binding').getPublicSafety();
   const handle = run => (_req, res) => getNative().skillSyncResponse(runtime, res, run, sanitizePublicText);
   app.get('/api/skill-sync/status', handle(false));
   app.post('/api/skill-sync/run', handle(true));

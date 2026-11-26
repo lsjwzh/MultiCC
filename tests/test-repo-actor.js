@@ -129,13 +129,64 @@ test('active check fails closed with operation metadata', async t => {
   assert.equal(actor.status(error.operationId).finishedAt > 0, true);
 });
 
-test('core git/tmux modules contain no synchronous child-process calls', () => {
-  for (const file of ['src/git/service.js', 'src/git/queue.js', 'src/tmux.js']) {
+test('core git/tmux adapters contain no synchronous child-process calls', () => {
+  for (const file of ['src/git/service/index.js', 'src/repo-actor/index.js', 'src/git/queue.js', 'src/tmux.js']) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.equal(/\bexec(?:File)?Sync\b/.test(source), false, `${file} still has a sync child process`);
-    if (file === 'src/git/service.js') {
-      assert.equal(/['"]reset['"][\s\S]{0,40}['"]--hard['"]/.test(source), false,
-        'merge safety must never reset --hard a user worktree');
-    }
   }
+});
+
+test('Rust git worktree operations never hard-reset a user worktree', () => {
+  const root = path.join(__dirname, '..', 'native', 'addon', 'src');
+  const directory = path.join(root, 'git_service');
+  const files = ['git_service.rs', ...fs.readdirSync(directory, { recursive: true })
+    .filter(name => name.endsWith('.rs')).map(name => path.join('git_service', name))];
+  assert.ok(files.includes(path.join('git_service', 'service_safety.rs')));
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    assert.doesNotMatch(source, /"reset"[\s\S]{0,40}"--hard"/, `unsafe hard reset in ${file}`);
+  }
+});
+
+test('overlapping async active checks recheck the lease before starting in another repository', async () => {
+  const actor = new RepoActor();
+  const sessionId = 'shared-session';
+  const checked = Promise.withResolvers();
+  const continueCheck = Promise.withResolvers();
+  const entered = Promise.withResolvers();
+  const releaseOwner = Promise.withResolvers();
+  let firstRan = false;
+  const first = actor.run(null, 'delayed', () => { firstRan = true; }, {
+    sessionId, repoKey: 'repo-a',
+    activeCheck() { checked.resolve(); return continueCheck.promise; },
+  });
+  await checked.promise;
+  const owner = actor.run(null, 'owner', async ({ operationId }) => {
+    entered.resolve(operationId);
+    await releaseOwner.promise;
+  }, { sessionId, repoKey: 'repo-b' });
+  const ownerId = await entered.promise;
+  try {
+    continueCheck.resolve(false);
+    await assert.rejects(first, error => error.code === 'SESSION_LEASED' &&
+      error.operationId !== ownerId && actor.status(error.operationId).status === 'failed');
+    assert.equal(firstRan, false);
+    assert.equal(actor.isLeased(sessionId).operationId, ownerId);
+  } finally {
+    releaseOwner.resolve();
+    await owner;
+  }
+  assert.equal(actor.isLeased(sessionId), null);
+});
+
+test('runGit honors an overridden run and its supplied command executor', async () => {
+  const actor = new RepoActor();
+  actor.run = async (cwd, kind, task) => {
+    assert.equal(kind, 'override');
+    return task({ execGit: async (dir, args) => {
+      assert.equal(dir, cwd);
+      return args.join('|');
+    } });
+  };
+  assert.equal(await actor.runGit('unused', ['status', '--short'], {kind: 'override'}), 'status|--short');
 });

@@ -4,7 +4,7 @@ const { createAcpAdapter } = require('./acp');
 const { createOpencodeLikeAdapter } = require('./opencode-like');
 const { validateOpenCodeModel } = require('../routes/opencode-models');
 const { classifyProviderError } = require('../provider-error');
-const { gatewayPath } = require('../native/runtime');
+const { gatewayPath } = require('../native/binding');
 
 // OpenCode runs over ACP (`opencode acp`) through the Rust ACP bridge: streamed
 // text/thinking, live tool cards, an authoritative stopReason and in-place

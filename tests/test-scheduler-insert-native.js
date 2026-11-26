@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const Database = require('better-sqlite3');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work');
 
 test('immediate insertion persists active-task lineage and keeps the admitted payload unchanged', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-insert-'));

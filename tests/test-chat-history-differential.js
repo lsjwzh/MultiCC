@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const legacy = require('./helpers/legacy-chat-history-service');
-const native = require('../src/session/chat-history-service');
+const native = require('../src/session/chat-history-service/index');
 const clone = value => value === undefined ? undefined : structuredClone(value);
 
 function view(value) {

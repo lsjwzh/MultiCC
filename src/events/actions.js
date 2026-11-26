@@ -5,7 +5,7 @@
 
 const crypto = require('crypto');
 const net = require('net');
-const { renderInjection } = require('../native/runtime').getEventPolicy().envelope;
+const { renderInjection } = require('../native/binding').getEventPolicy().envelope;
 const channelRegistry = require('../plugins/channel-registry');
 
 const WEBHOOK_TIMEOUT_MS = 5000;

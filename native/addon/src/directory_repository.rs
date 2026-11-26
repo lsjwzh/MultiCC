@@ -10,11 +10,7 @@ use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 
 #[napi]
-pub fn directory_repository(
-    env: Env,
-    ports: Unknown<'_>,
-    save: Unknown<'_>,
-) -> Result<sys::napi_value> {
+pub fn directory_repository(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
     let ports = L::new(&env, ports);
     if !ports.get(c"file")?.truthy()? {
         return Err(ports.type_error("[directory] repository needs a file path"));
@@ -64,15 +60,29 @@ pub fn directory_repository(
         })?;
         Ok(result)
     })?;
-    let save = L::new(&env, save);
-    let persist = method(
-        &env,
-        fields(owner, &[("owner", owner), ("save", save)])?,
-        "save",
-        0,
-        0,
-        |p, _| p.get(c"save")?.call_plain(&[p.get(c"owner")?]),
-    )?;
+    let persist = method(&env, owner, "save", 0, 0, |owner, _| {
+        match call(owner, c"saveDirectories", &[]) {
+            Ok(_) => owner.from_value(&V::Undefined),
+            Err(error) => {
+                let reason = match owner.exception_value()? {
+                    Some(cause) => cause,
+                    None => owner
+                        .global()?
+                        .get(c"Error")?
+                        .construct(&[owner.from_value(&error.reason.into())?])?,
+                };
+                call(
+                    owner.global()?.get(c"console")?,
+                    c"error",
+                    &[
+                        owner.from_value(&"[multicc] Failed to save directories.json:".into())?,
+                        read(reason, c"message")?,
+                    ],
+                )?;
+                Err(reason.throw_error())
+            }
+        }
+    })?;
     let table = method(&env, map, "mapRef", 0, 0, |map, _| Ok(map))?;
     Ok(fields(
         map,

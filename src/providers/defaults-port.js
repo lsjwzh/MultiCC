@@ -3,7 +3,7 @@
 // All callers share the same native owner. The proxy holds no defaults data;
 // it only preserves the existing object-shaped read interface during migration.
 const path = require('node:path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const owners = new Map();
 
 function getProviderDefaultsOwner(file) {

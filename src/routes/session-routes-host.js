@@ -39,7 +39,7 @@
 // 拒绝任何转发自真实远端客户端的请求。
 
 const crypto = require('node:crypto');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 function createSessionMetaRuntime(rawDeps) {
   const { persistedSessions, asyncHandler, appendEvent, workspaceBroadcast, saveNotes,

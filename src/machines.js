@@ -2,7 +2,7 @@
 
 // Express/ws SDK adaptation only. Identity, persistence, endpoint validation,
 // credential handling and remote HTTP transport live in native/core/machines.
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 function createMachineRuntime({ root, authSecurity, getWss = () => null }) {
   function native() {

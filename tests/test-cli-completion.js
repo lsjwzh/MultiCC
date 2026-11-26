@@ -3,9 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createAdapterCompletion, isCompleted } = require('../src/cli-adapters/completion');
-const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../src/native/runtime').adapterCompletion;
+const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../src/native/binding').adapterCompletion;
 const { clearErrorFlagsForSucceededTurn, evaluatePostTurn } = require('../src/chat/turn-lifecycle');
-const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/runtime').finalizationPlan;
+const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { observeProxyRequest } = require('../src/providers/proxy-outcome');
 const { createTurnEventJournal } = require('../src/chat/turn-event-journal');
@@ -16,9 +16,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const adapters = [
-  require('../src/native/runtime').createClaudeAdapter({}),
-  require('../src/native/runtime').codexAdapter.createCodexAdapter({}),
-  require('../src/native/runtime').codexAppAdapter.createCodexExpAdapter({}),
+  require('../src/native/binding').createClaudeAdapter({}),
+  require('../src/native/binding').codexAdapter.createCodexAdapter({}),
+  require('../src/native/binding').codexAppAdapter.createCodexExpAdapter({}),
   // Legacy JSON lane; the default ACP lane's completion is covered by test-acp-adapter.js.
   require('../src/cli-adapters/opencode').createOpencodeAdapter({ env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } }),
   require('../src/cli-adapters/zcode').createZcodeAdapter({}),
@@ -197,7 +197,7 @@ test('Rust completion tracker permits host reentry and preserves iterable cleanu
 test('native completion rules match legacy values, UTF-16 truncation and error types', () => {
   const { completion } = require('../src/cli-adapters/completion');
   const { isMainResult, resultCompletion } = require('../src/cli-adapters/result-completion');
-  const { isProxyFailureCompatibleWithCompletion } = require('../src/native/runtime').adapterCompletion;
+  const { isProxyFailureCompatibleWithCompletion } = require('../src/native/binding').adapterCompletion;
   const source = Object.freeze({ marker: Symbol('source') });
   for (const state of ['completed', 'failed', 'cancelled', 'unknown']) {
     for (const reason of [undefined, null, false, 42, 42n, Symbol('reason'), {}, new String('boxed'), '', '\ud800', 'x'.repeat(159) + '😀tail']) {
@@ -298,7 +298,7 @@ function legacyProtocol(protocol, event) {
 }
 
 test('five native CLI protocols preserve legacy values, lazy reads and coercions', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const values = [undefined, null, false, true, '', 'completed', 'interrupted', 'end_turn', 'cancelled', 'aborted',
     'success', 0, NaN, 1, 1n, {}, [], Symbol('reason'), '\ud800', 'x'.repeat(159) + '😀'];
   const protocols = ['codex', 'codex-exp', 'dsh', 'acp', 'commandcode'];
@@ -389,7 +389,7 @@ test('Kimi and Pi native completion states match legacy recovery, errors and too
 });
 
 test('native stateful protocol hooks keep receiver, getter reentry and thrown identity', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   for (const create of [legacyKimiHooks, () => new native.RustKimiCompletionTracker()]) {
     const hooks = create();
     const sentinel = new Error('trim failed');

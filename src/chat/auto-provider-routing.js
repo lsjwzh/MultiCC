@@ -33,7 +33,7 @@
 const { jevTarget, validateProviderSelection } = require('../providers/auto-provider-config');
 const { createJevClient } = require('../providers/jev-client');
 const secretAudit = require('../secret-audit');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const DEFAULTS = JSON.parse(getNative().autoProviderRoutingDefaults());
 const DEFAULT_TTL_MS = DEFAULTS.defaultTtlMs;

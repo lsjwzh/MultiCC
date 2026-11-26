@@ -7,7 +7,7 @@
 // body parsers and live host ports while the HTTP/WS transport migrates.
 // Credentials and shutdown state are read on each request, never snapshotted.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { isGatewayChild } = require('../gateway-child');
 
 function assertFunction(value, name) {

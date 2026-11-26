@@ -127,9 +127,23 @@ impl RustModelDefaults {
         read_history: Unknown<'_>,
         clock: Unknown<'_>,
     ) -> Result<sys::napi_value> {
-        let anchor = LiveValue::new(&env, input);
+        Ok(self
+            .resolve_live(
+                LiveValue::new(&env, input),
+                LiveValue::new(&env, read_history),
+                LiveValue::new(&env, clock),
+            )?
+            .raw())
+    }
+}
+impl RustModelDefaults {
+    fn resolve_live<'a>(
+        &self,
+        anchor: LiveValue<'a>,
+        read_history: LiveValue<'a>,
+        clock: LiveValue<'a>,
+    ) -> Result<LiveValue<'a>> {
         let input = request(anchor)?;
-        let clock = LiveValue::new(&env, clock);
         let caching = self
             .inner
             .lock()
@@ -146,7 +160,7 @@ impl RustModelDefaults {
             .unwrap_or_else(|e| e.into_inner())
             .refresh_token(now);
         if let Some(token) = token {
-            let entries = history(LiveValue::new(&env, read_history).call_plain(&[])?)?;
+            let entries = history(read_history.call_plain(&[])?)?;
             let at = clock.call_plain(&[])?.number()?;
             self.inner
                 .lock()
@@ -158,13 +172,31 @@ impl RustModelDefaults {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .resolve(input);
-        Ok(anchor
-            .from_value(
-                &model
-                    .as_deref()
-                    .map(JsValue::string)
-                    .unwrap_or(JsValue::Null),
-            )?
-            .raw())
+        anchor.from_value(
+            &model
+                .as_deref()
+                .map(JsValue::string)
+                .unwrap_or(JsValue::Null),
+        )
     }
+}
+
+#[napi]
+pub fn create_model_default_resolver(env: Env, options: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, js_iteration::read, js_live::fields};
+    let o = LiveValue::new(&env, options);
+    let ports = fields(
+        o,
+        &[("history", read(o, c"history")?), ("now", read(o, c"now")?)],
+    )?;
+    let ttl = read(o, c"historyTtlMs")?
+        .number_value()?
+        .unwrap_or(f64::NAN);
+    let owner = RustModelDefaults {
+        inner: Mutex::new(Store::new(ttl)),
+    };
+    Ok(method(&env, ports, "", 1, 1, move |p, a| {
+        owner.resolve_live(a[0], p.get(c"history")?, p.get(c"now")?)
+    })?
+    .raw())
 }

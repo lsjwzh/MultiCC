@@ -1,6 +1,6 @@
 'use strict';
 
-const { renderPrompt } = require('../native/runtime').messageComposer;
+const { renderPrompt } = require('../native/binding').messageComposer;
 const { createProtocolCompletionTracker } = require('./completion');
 const { displayNameOf } = require('../cli/cli-capability');
 

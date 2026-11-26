@@ -4,11 +4,11 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
 
-const { matchesPattern, isKnownPattern, EVENT_TYPES } = require('../src/native/runtime').getEventPolicy().catalog;
-const { deriveTaskEvents } = require('../src/native/runtime').getEventPolicy().transitions;
+const { matchesPattern, isKnownPattern, EVENT_TYPES } = require('../src/native/binding').getEventPolicy().catalog;
+const { deriveTaskEvents } = require('../src/native/binding').getEventPolicy().transitions;
 const { createEventHub } = require('../src/events/hub');
 const { createEventRuleEngine } = require('../src/events/engine');
-const { validateEventRule } = require('../src/native/runtime').getEventPolicy().rules;
+const { validateEventRule } = require('../src/native/binding').getEventPolicy().rules;
 const { isPrivateAddress, sign } = require('../src/events/actions');
 const { createSessionTriggers } = require('../src/triggers');
 const { createChatHostRuntime } = require('../src/chat/host-runtime');
@@ -312,12 +312,12 @@ test('session triggers accept type:event and reject bad event rules', () => {
 });
 
 // ── event envelope ──────────────────────────────────────────────────────────
-const envelope = require('../src/native/runtime').getEventPolicy().envelope;
+const envelope = require('../src/native/binding').getEventPolicy().envelope;
 
 test('envelope: conclusion = last non-empty assistant reply, clipped and redacted', () => {
   // The conclusion is computed inside the history runtime, against the cached
   // history, so drive the real service rather than a plain array.
-  const { createChatHistoryService } = require('../src/session/chat-history-service');
+  const { createChatHistoryService } = require('../src/session/chat-history-service/index');
   const conclusionOf = (history) => {
     let n = 0;
     const service = createChatHistoryService({
@@ -920,8 +920,8 @@ test('event host adapters preserve the frozen module contracts on identical inpu
     return record.exports;
   }
   const current = {
-    catalog: require('../src/native/runtime').getEventPolicy().catalog, rules: require('../src/native/runtime').getEventPolicy().rules,
-    envelope: require('../src/native/runtime').getEventPolicy().envelope, transition: require('../src/native/runtime').getEventPolicy().transitions,
+    catalog: require('../src/native/binding').getEventPolicy().catalog, rules: require('../src/native/binding').getEventPolicy().rules,
+    envelope: require('../src/native/binding').getEventPolicy().envelope, transition: require('../src/native/binding').getEventPolicy().transitions,
   };
   const old = { catalog: oracle('catalog'), rules: oracle('rules'), envelope: oracle('envelope'), transition: oracle('task-transitions') };
   function observe(fn) {

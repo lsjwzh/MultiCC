@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const legacy = require('./helpers/legacy-task-display-attribution');
-const addon = require('../src/native/runtime').getNative();
+const addon = require('../src/native/binding').getNative();
 const native = { taskFields: addon.taskDisplayFields, displayTask: addon.taskDisplayTask,
   displayMessages: addon.taskDisplayMessages };
 

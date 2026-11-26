@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
+const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 
 const MEM_GRAPH_MAX_NODES = 600;
 const MEM_TREE_MAX_FILES = 2000;

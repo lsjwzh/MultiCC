@@ -18,7 +18,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const createZip = (entries, opts) => getNative().handoffZipCreate(entries, opts);
 const { createPluginInstaller } = require('../src/plugins/installer');
 const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/routes/plugins');

@@ -29,11 +29,11 @@ process.env.HOME = path.join(tmpRoot, 'home');
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 fs.mkdirSync(process.env.HOME, { recursive: true });
 
-const providers = require('../src/providers/core.js');
+const providers = require('../src/providers/host.js');
 const { createSessionPolicy } = require('../src/cli/session-policy.js');
 const { createSessionProfileRoutes } = require('../src/routes/session-profile.js');
 const { createProviderRoutes } = require('../src/routes/providers.js');
-const { findProviderReferences } = require('../src/native/runtime');
+const { findProviderReferences } = require('../src/native/binding');
 const { reassignProviderSessions } = require('../src/provider-reassign.js');
 
 // ── Pure module: the planner, with no route or session runtime in the way ────

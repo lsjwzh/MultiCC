@@ -101,6 +101,24 @@ function probeAddon(file, node = process.execPath) {
   // The path rides an env var: the script is written to a temp file (see below),
   // so argv[1] is the script itself, not the addon.
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
+    if(['taskBoardCoreApi','taskBoardStateApi','taskBoardProjectionApi','taskBoardLifecycleApi','taskBoardRoutePorts','taskBoardWorktreePorts','repoActorApi','gitServiceApi','tunnelMonitorApi','appPathsApi','sessionWorkHostApi','sessionWorkSchedulerApi','orchestrationRuntimeApi','orchestrationJsonApi','createNativeQueue','createOpencodeLimitResolver','openCodeCatalogApi','eventPolicyApi',
+      'contextSelectionApi','monitorAdmissionApi','createCliProviderRegistry','providerSelectionDtoValue',
+      'commandEnvelope','orchestrationCommandSync','codexMaterializeValue','codexStripOfficialEnv',
+      'normalizeNativeError','turnStateApi','postTurnApi','finalizationApi',
+      'adapterCompletionApi','createProviderInvocationFactory','createClaudeAdapter','createCodexAdapter',
+      'createCodexExpAdapter','createAutoProviderHandoff','taskRelationsApi','taskStoreProgressApi',
+      'turnLedgerApi','createCodexBackgroundEvents','accountSubscriptionValue','providerCredentialValue',
+      'readProviderCliValue','wakeSyncResult','hostPromptsApi','pushNotificationApi','searchRankLive','RustNativeCounters',
+      'voiceSpeechValue','switchRouteResult','taskShellReferenceValue','taskShellContextApi',
+      'openCodeFallbackLimit','createClassifyStateMachine'].some(key=>typeof a[key]!=='function')) process.exit(1);
+    if(['turnProgressApi','monitorControlApi','processCloserApi','autoProviderPricingApi',
+      'autoProviderPolicyApi','retryPolicyApi','sessionNoticesApi','networkPolicyApi',
+      'sessionDtoApi','apiContractApi','subscribeProviderLimits','providerFindReferences',
+      'RustDeliveryClassifier','codexProviderOfficialHome','codexProviderSanitizeHome','codexProxyConfigRequired',
+      'assertCodexProxyConfigApplied','claudeRoutingEnv','claudeSettingsOverride','opencodeProcessError',
+      'applyPreparedCliRelay','processSpawnArgs','isZcodeSessionId','repairZcodeSessionState',
+      'createModelDefaultResolver','claudeQuotaValue','decodeSchedulerRecoveryEvents','providerInvocationProtocol',
+      'providerRetryRouteOptions','codexAdapterCall','codexAppAdapterValue','codexBackgroundText'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(a.protocolVersion?.()!==1 || a.AIR_TODO_IGNORE_LIMIT!==500 || a.cprProtocolVersion?.()!==1 || typeof a.cprClaudeQuota!=='function' || typeof a.cprCreateExchange!=='function'
       || typeof a.voiceReadiness!=='function' || a.VOICE_NOT_READY!=='voice_not_ready' || typeof a.RustDatabase!=='function'
       || typeof a.buildSearchIndex!=='function' || typeof a.computeUsage!=='function'
@@ -118,7 +136,7 @@ function probeAddon(file, node = process.execPath) {
     || ['unattendedTag','unattendedNormalizeConfig','unattendedVerdictPrompt','unattendedParseVerdict','unattendedDecide','unattendedDecideFault','unattendedDecideClear','unattendedDeliveryRetryDecision','unattendedDecideTurnEnd','unattendedSelectQueued','unattendedDeferEvaluation','unattendedFaultInstruction'].some(key=>typeof a[key]!=='function')
     || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest','eventHostRequest','eventPatternString',
       'normalizeHostAttributionMode','planHostAttributionAction','taskCodeMint','taskCodeRestore','taskCodeLookup','taskCodeLabel'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(['pushNotificationTables','pushNotificationKey','pushNotificationCopy','chatFitHistoryFrame','chatTaskStateFrame','auxVerdictStaleness','fanOutAuxVerdictStaleness','providerStore','providerCredential','requestCodexUsage','readProviderCliCredential','accountSubscriptionPlan',
+    if(['pushNotificationTables','pushNotificationKey','pushNotificationCopy','historyFrameApi','taskFramesApi','chatFitHistoryFrame','chatTaskStateFrame','auxVerdictStaleness','fanOutAuxVerdictStaleness','providerStore','providerRegistryService','providerAnthropicRoutingKeys','ccSwitchDatabaseApi','providerCredential','requestCodexUsage','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
@@ -137,7 +155,7 @@ function probeAddon(file, node = process.execPath) {
     { const refs=a.artifactReferenceExtract(['/artifacts/ab_CD-1/a.png?x=1','https://h.test/artifacts/other']);
       if(refs.length!==1 || refs[0].artifactId!=='ab_CD-1' || refs[0].relativePath!=='a.png') process.exit(1); }
     if(['apiErrorFacts','apiErrorSignaturesQuoted','apiErrorPrepare','apiErrorNormalize',
-      'apiErrorDecide','apiErrorRetryNotice','apiErrorMetricToken','apiErrorIsErrorOnlyText',
+      'apiErrorDecide','apiPolicyDecision','apiPolicyNormalized','apiErrorRetryNotice','apiErrorMetricToken','apiErrorIsErrorOnlyText',
       'apiErrorSplitTrailingEnvelope','apiErrorDetectEnvelope','apiErrorClaudeEnvelope',
       'apiErrorEnvelopeSourceFor','apiErrorIsKnownHarmlessStderrLine','apiErrorParseRetryAfter',
       'apiErrorResetAfterFromText'].some(key=>typeof a[key]!=='function')) process.exit(1);
@@ -177,13 +195,13 @@ function probeAddon(file, node = process.execPath) {
     if(new a.RustModelDefaults(0).resolve({appType:'claude',models:['probe']},()=>[],()=>0)!=='probe') process.exit(1);
     if(['transcriptPruningApi', 'boundedContextExcerpt', 'agyTerminal', 'agyHostInvocation', 'homebrewResolveOwner',
       'claudeRefreshDecision', 'orchestrationCommand', 'doctorHttpTarget', 'accountSubscriptionStart',
-      'RustVendorModelCatalog','turnEventReplayApi','taskCandidatePropose','taskCandidateLatest',
+      'RustVendorModelCatalog','turnEventReplayApi','candidateStore','taskCandidatePropose','taskCandidateLatest',
       'wakeSyncRequest','prepareHostSwitchRoute','codexProfileRouteFailure'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnRuntimeStore','resolveTurnStateValue','cliStepTracker','quickCommitMessageValue','directoryRepository',
       'taskBoardRepository','providerRepository','relatedTaskHistory'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['RustPlanPromptState','hostCodexConstraint','hostPromptBundle','hostHumanAssist','hostSubagentHint',
       'residentPoolBlocker','taskRelationKinds','taskRelationList','taskRelationChange','taskRelationPublicTitle'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(['acpLaunchArgs','acpLaunchTerminal','managedContextPrepare','managedContextRole','managedContextAttempt',
+    if(['acpLaunchArgs','acpLaunchTerminal','managedContextOpen','managedContextPrepare','managedContextRole','managedContextAttempt',
       'managedContextSent','managedContextCompleted'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['resolveCliRelayTarget','applyCliRelaySpawn'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.retryPolicyValue!=='function') process.exit(1);

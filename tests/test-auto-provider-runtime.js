@@ -5,7 +5,7 @@ const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
 const { selectionKey } = require('../src/providers/auto-provider-config');
-const { failoverSafety } = require('../src/native/runtime').getAutoProviderPolicy();
+const { failoverSafety } = require('../src/native/binding').getAutoProviderPolicy();
 const { decideApiErrorPolicy: evaluateApiError } = require('../src/chat/api-error-policy');
 
 function fixture({
@@ -212,14 +212,14 @@ test('fresh known exhausted provider is skipped before the physical attempt', ()
 });
 
 test('a fresh terminal cache status is skipped even without a balance summary', () => {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   assert.deepEqual(limitState({ status: 'quota_exhausted', fetchedAt: 990_000 }, {
     now: 1_000_000, staleAfterMs: 60_000,
   }), { state: 'exhausted', reason: 'fresh_limit_exhausted', usedPercent: null });
 });
 
 test('a fresh rejected window summary is exhausted even below 100 percent', () => {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   assert.deepEqual(limitState({
     status: 'ok', fetchedAt: 990_000,
     summary: { kind: 'window', status: 'rejected', usedPercentage: 90 },
@@ -230,7 +230,7 @@ test('a fresh rejected window summary is exhausted even below 100 percent', () =
 });
 
 test('an active provider cooldown is skipped and expiry permits a fresh probe', () => {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   const entry = {
     status: 'ok', fetchedAt: 990_000,
     summary: {
@@ -251,7 +251,7 @@ test('an active provider cooldown is skipped and expiry permits a fresh probe', 
 // the old reading is the only evidence there is, and it is enough to offer the
 // line back — unless a window that is still running is itself nearly spent.
 test('a full window whose reset has passed is offered back and reclaims its place', () => {
-  const { limitState, chooseCandidate } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState, chooseCandidate } = require('../src/native/binding').getAutoProviderPolicy();
   const entry = week => ({
     status: 'ok', fetchedAt: 1_000,
     summary: { windows: [{ usedPercent: 100, resetMs: 10_000_000 }, { usedPercent: week, resetMs: 90_000_000 }] },
@@ -277,7 +277,7 @@ test('a full window whose reset has passed is offered back and reclaims its plac
 // the timestamp, or a clock change would quietly hand Auto back an account the
 // server has already killed.
 test('a revoked credential never returns to the pool on a timer', () => {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   const entry = {
     status: 'ok', fetchedAt: 990_000,
     summary: {
@@ -1648,7 +1648,7 @@ function autoPolicyOutcome(api, method, make) {
 }
 
 test('auto policy facade matches frozen requests and returns the original candidate', () => {
-  const current = require('../src/native/runtime').getAutoProviderPolicy();
+  const current = require('../src/native/binding').getAutoProviderPolicy();
   const { exercise } = require('./helpers/auto-policy-fixture');
   for (const method of ['limit', 'choose', 'failover']) for (const used of [null, 20, 85, 100]) for (const mode of [0, 1, 2]) for (const byQuota of [false, true]) {
     const input = { method, used, mode, byQuota };
@@ -1667,7 +1667,7 @@ test('auto policy facade matches frozen requests and returns the original candid
 });
 
 test('auto policy encoder preserves special values, coercion failures and getter order', () => {
-  const current = require('../src/native/runtime').getAutoProviderPolicy();
+  const current = require('../src/native/binding').getAutoProviderPolicy();
   const compare = (method, make) => assert.deepEqual(autoPolicyOutcome(current, method, make), autoPolicyOutcome(frozenAutoPolicy, method, make), method);
   for (const value of [undefined, null, false, true, 0, -0, NaN, Infinity, -Infinity, 1n, Symbol('value'), '', '\ud800', [], {}]) {
     compare('limitState', () => ({ args: [{ status: value, fetchedAt: value, summary: { kind: 'window', total: value, usedPercentage: value } }, { now: 1000, staleAfterMs: value, model: value }] }));
@@ -1699,7 +1699,7 @@ test('auto policy encoder preserves special values, coercion failures and getter
 });
 
 test('auto policy mapping retains sparse ladders, iterator failures and callback shapes', () => {
-  const current = require('../src/native/runtime').getAutoProviderPolicy();
+  const current = require('../src/native/binding').getAutoProviderPolicy();
   function capture(api) {
     const shapes = [], previous = Array.from;
     Array.from = function (source, callback) { shapes.push([callback.name, callback.length]); return previous.call(this, source, callback); };
@@ -1718,7 +1718,7 @@ test('auto policy mapping retains sparse ladders, iterator failures and callback
 });
 
 test('per-account usage windows feed limitState: fullest live window, reset windows ignored, 100% is exhausted', () => {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   const entry = windows => ({ status: 'ok', fetchedAt: 990_000, summary: { kind: 'claude', status: 'ok', windows } });
   assert.deepEqual(limitState(entry([{ window: '5h', usedPercent: 40, resetMs: 2_000_000 }, { window: '7d', usedPercent: 72, resetMs: 9_000_000 }]),
     { now: 1_000_000, staleAfterMs: 60_000 }), { state: 'available', reason: 'fresh_limit_available', usedPercent: 72 });
@@ -1733,7 +1733,7 @@ test('per-account usage windows feed limitState: fullest live window, reset wind
 });
 
 test('chooseCandidate steers between official accounts by headroom without bouncing a sticky session', () => {
-  const { chooseCandidate } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { chooseCandidate } = require('../src/native/binding').getAutoProviderPolicy();
   const line = (providerId, usedPercent, index, extra = {}) => ({
     providerId, index, priority: 0, enabled: true, trustDomain: 'official', limitState: 'available', usedPercent, ...extra,
   });
@@ -1757,7 +1757,7 @@ test('chooseCandidate steers between official accounts by headroom without bounc
 });
 
 test('preferMaxQuota (byQuota) only intervenes when a line runs low on quota', () => {
-  const { chooseCandidate } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { chooseCandidate } = require('../src/native/binding').getAutoProviderPolicy();
   const line = (providerId, usedPercent, index, extra = {}) => ({
     providerId, index, priority: index, enabled: true, limitState: 'available', usedPercent, ...extra,
   });
@@ -1982,7 +1982,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
     const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
     const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
     const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
-    const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
+    const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
     const attempts = createProviderAttemptRuntime();
     const attempt = attempts.beginAttempt({
       ...openAttempt('codebuddy-native:codebuddy'), sessionId: session.id, turnId: 'wb-turn', cli: session.cli,
@@ -2022,7 +2022,7 @@ test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具
   const { createQoderAdapter } = require('../src/cli-adapters/qoder');
   const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
   const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
-  const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
+  const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
   const adapter = createQoderAdapter({ cmd: 'qoder' });
   const message = '服务暂时繁忙，请稍后重试';
   const cs = { currentAssistantText: message };
@@ -2065,7 +2065,7 @@ test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具
 test('只有状态码时，适配器保留结果正文，不用正文证明自己是纯报错', () => {
   const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
   const { createQoderAdapter } = require('../src/cli-adapters/qoder');
-  const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
+  const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
   const answer = '第一页已完成。';
   for (const [adapter, fields] of [
     [createCodebuddyAdapter({ cmd: 'codebuddy' }), { errors_info: [{ status: 429 }] }],

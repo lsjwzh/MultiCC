@@ -20,7 +20,7 @@ const { isLocalRequest } = require('../request-locality');
 
 const { execFile } = require('node:child_process');
 const { resolveCliCommands } = require('../cli-adapters/commands');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const HOST_PATH = '/api/__host/model-catalogs';
 

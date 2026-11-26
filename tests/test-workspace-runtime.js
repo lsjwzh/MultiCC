@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createWorkspaceRuntime } = require('../src/workspace/runtime');
-const { createWsEnvelope } = require('../src/native/runtime').getApiContract();
+const { createWsEnvelope } = require('../src/native/binding').getApiContract();
 
 // The native owner writes serialized WS frames through `socket.send(data,
 // options, callback)`; the frozen host wrote payload objects through the

@@ -1351,7 +1351,7 @@ test('fleetRuntime and fleetRestart project the one global child or answer for t
 
 test('speech egress matches the frozen policy for markers, paths and private values', () => {
   const reference = require('./helpers/frozen-voice-speech');
-  const actual = require('../src/native/runtime').voiceSpeech;
+  const actual = require('../src/native/binding').voiceSpeech;
   const bytes = require('node:fs').readFileSync(require.resolve('./helpers/frozen-voice-speech'));
   assert.equal(require('node:crypto').createHash('sha1').update('blob ' + bytes.length + '\0')
     .update(bytes).digest('hex'), 'f630eb5ce118b8a379d3e907b2fc96b123e05536');

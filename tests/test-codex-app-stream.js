@@ -16,7 +16,7 @@ const { createCodexAppStream } = require('../src/chat/codex-app-stream');
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
 test('process close retains the frozen timeout, stop, tracking and listener behavior', async () => {
-  const api = require('../src/native/runtime').getProcessCloser();
+  const api = require('../src/native/binding').getProcessCloser();
   const frozen = require('./helpers/frozen-file-batch27/process-close');
   const { exercise } = require('./helpers/process-close-fixture');
   for (let mode = 0; mode < 8; mode++) for (let timeout = 0; timeout < 6; timeout++) {
@@ -34,7 +34,7 @@ test('process close retains the frozen timeout, stop, tracking and listener beha
 });
 
 const BRIDGE = 'codex-app-bridge';
-const BRIDGE_CMD = require('../src/native/runtime').gatewayPath();
+const BRIDGE_CMD = require('../src/native/binding').gatewayPath();
 
 function createFixture(name, env = {}, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `multicc-codex-stream-${name}-`));

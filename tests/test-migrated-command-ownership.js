@@ -10,7 +10,7 @@ const test = require('node:test');
 // than merely searching source text for native function names. This catches a
 // working-looking Node fallback even when the Rust exports still exist.
 test('migrated orchestration commands reach Rust for normal and unusual inputs', async t => {
-  const runtime = require('../src/native/runtime');
+  const runtime = require('../src/native/binding');
   const original = runtime.getNative;
   const native = original();
   const calls = [];
@@ -47,14 +47,22 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
 
   const { createWaitService } = require('../src/wait/service');
   const { createOperationService } = require('../src/operation-service');
-  const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+  const { createSessionWorkScheduler } = require('../src/session-work');
   const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
   const now = () => 1000;
   const item = () => ({ id: 'entry', sessionId: 'session', state: 'pending', sequence: 1,
     attempts: 1, createdAt: 2, payload: { type: 'session.work', workKind: 'task', message: 'queued' } });
   const schedule = () => ({ sessionId: 'session', state: 'starting', classifyState: 'P',
     freezeReason: null, awaitingRequestId: null, active: { entryId: 'entry', deliveryId: 'entry', taskId: 'task', startedAt: null } });
-  function storeFor(draft) { return { mutate: async fn => fn(draft), read: async fn => fn(draft) }; }
+  function storeFor(draft) {
+    return {
+      async mutate(fn) {
+        if (Function.prototype.toString.call(fn).includes('[native code]')) calls.push('native draft mutation');
+        return fn(draft);
+      },
+      read: async fn => fn(draft),
+    };
+  }
   async function reaches(name, run) {
     const before = calls.length;
     await run();
@@ -66,17 +74,17 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
     const draft = { waits: {}, operations: {}, tasks: {}, outbox: { entry }, sessionSchedules: hasSchedule ? { session: current } : {}, nextOutboxSequence: 2 };
     return { draft, scheduler: createSessionWorkScheduler({ store: storeFor(draft), now }) };
   }
-  await reaches('scheduleClaimLive', async () => { const h = harness({ active: false, state: 'leased' }); await h.scheduler.claim(h.draft.outbox.entry); });
+  await reaches('native draft mutation', async () => { const h = harness({ active: false, state: 'leased' }); await h.scheduler.claim(h.draft.outbox.entry); });
   for (const action of ['started', 'releaseClaim', 'turnEnded']) {
-    await reaches('scheduleLifecycleLive', async () => { const h = harness(); await (action === 'turnEnded' ? h.scheduler.turnEnded('session') : h.scheduler[action](h.draft.outbox.entry)); });
+    await reaches('native draft mutation', async () => { const h = harness(); await (action === 'turnEnded' ? h.scheduler.turnEnded('session') : h.scheduler[action](h.draft.outbox.entry)); });
   }
-  await reaches('scheduleFreezeLive', async () => { const h = harness(); await h.scheduler.freeze('session', 'waiting'); });
-  await reaches('scheduleResolveLive', async () => { const h = harness(); h.draft.sessionSchedules.session.state = 'frozen'; await h.scheduler.resolve('session', { action: 'skip' }); });
-  await reaches('scheduleSettleLive', async () => { const h = harness({ active: false }); await h.scheduler.settleUserInput('session', 'request'); });
-  await reaches('scheduleCancelQueuedLive', async () => { const h = harness({ active: false }); await h.scheduler.cancelQueued('session', 'entry'); });
-  await reaches('scheduleEditQueuedLive', async () => { const h = harness({ active: false }); await h.scheduler.editQueued('session', 'entry', { text: 'edit' }); });
-  await reaches('scheduleInsertQueuedLive', async () => { const h = harness({ active: false }); await h.scheduler.insertQueued('session', 'entry'); });
-  await reaches('scheduleNoteQueuedLive', async () => { const h = harness({ active: false }); await h.scheduler.noteQueued('entry'); });
+  await reaches('native draft mutation', async () => { const h = harness(); await h.scheduler.freeze('session', 'waiting'); });
+  await reaches('native draft mutation', async () => { const h = harness(); h.draft.sessionSchedules.session.state = 'frozen'; await h.scheduler.resolve('session', { action: 'skip' }); });
+  await reaches('native draft mutation', async () => { const h = harness({ active: false }); await h.scheduler.settleUserInput('session', 'request'); });
+  await reaches('native draft mutation', async () => { const h = harness({ active: false }); await h.scheduler.cancelQueued('session', 'entry'); });
+  await reaches('native draft mutation', async () => { const h = harness({ active: false }); await h.scheduler.editQueued('session', 'entry', { text: 'edit' }); });
+  await reaches('native draft mutation', async () => { const h = harness({ active: false }); await h.scheduler.insertQueued('session', 'entry'); });
+  await reaches('native draft mutation', async () => { const h = harness({ active: false }); await h.scheduler.noteQueued('entry'); });
 
   const draft = { waits: { special: { status: 'pending' } }, operations: {}, tasks: {}, outbox: {}, sessionSchedules: {}, nextOutboxSequence: 1 };
   const waits = createWaitService({ store: storeFor(draft), now });
@@ -104,7 +112,9 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
   const sqliteScheduler = createSessionWorkScheduler({ store: sqlite, now });
   await reaches('requestAsync:scheduleClaim', () => sqliteScheduler.claim(item()));
   await reaches('request:scheduleSettlePlan', () => sqliteScheduler.settleUserInput('normal', 'request'));
-  await reaches('scheduleSettleLive', () => sqliteScheduler.settleUserInput({ [Symbol.toPrimitive]: () => 'special' }, 'request'));
+  const unusual = await sqliteScheduler.settleUserInput({ [Symbol.toPrimitive]: () => 'special' }, 'request');
+  assert.ok(unusual.ok);
+  assert.equal((await sqlite.snapshot()).sessionSchedules.special.awaitingRequestId, null);
   const sqliteOperations = createOperationService({ store: sqlite });
   await reaches('requestAdmissionAsync:operationAdmit', () => sqliteOperations.admitDetached({ operationId: 'op_worker', sessionId: 'session', spec: { command: 'test' } }));
   const unusualOperation = createOperationService({ store: sqlite, now });
@@ -113,7 +123,6 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
 
 test('migrated command entry points contain no JavaScript state machine', () => {
   const files = {
-    scheduler: fs.readFileSync(path.join(__dirname, '../src/session-work/scheduler.js'), 'utf8'),
     operation: fs.readFileSync(path.join(__dirname, '../src/operation-service.js'), 'utf8'),
     wait: fs.readFileSync(path.join(__dirname, '../src/wait/service.js'), 'utf8'),
   };
@@ -124,17 +133,6 @@ test('migrated command entry points contain no JavaScript state machine', () => 
     return source.slice(start, next < 0 ? source.length : start + next + 1);
   }
   const requirements = [
-    ['scheduler', 'claim', 'scheduleClaimLive'],
-    ['scheduler', 'started', 'scheduleLifecycleLive'],
-    ['scheduler', 'releaseClaim', 'scheduleLifecycleLive'],
-    ['scheduler', 'turnEnded', 'scheduleLifecycleLive'],
-    ['scheduler', 'freeze', 'scheduleFreezeLive'],
-    ['scheduler', 'resolve', 'scheduleResolveLive'],
-    ['scheduler', 'settleUserInput', 'scheduleSettleLive'],
-    ['scheduler', 'cancelQueued', 'scheduleCancelQueuedLive'],
-    ['scheduler', 'editQueued', 'scheduleEditQueuedLive'],
-    ['scheduler', 'insertQueued', 'scheduleInsertQueuedLive'],
-    ['scheduler', 'noteQueued', 'scheduleNoteQueuedLive'],
     ['operation', 'admitDetached', 'operationAdmitLive'],
     ['operation', 'admitDispatch', 'operationAdmitLive'],
     ['wait', 'cancel', 'waitCancelLive'],

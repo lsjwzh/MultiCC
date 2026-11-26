@@ -19,9 +19,9 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { normalizeEnvelope } = require('../native/runtime').getTurnLedgerContract();
+const { normalizeEnvelope } = require('../native/binding').getTurnLedgerContract();
 const { createTurnLedger } = require('./ledger');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { supportsEffort } = require('../cli/cli-capability');
 const { createHookInstaller } = require('./hook-install');
 

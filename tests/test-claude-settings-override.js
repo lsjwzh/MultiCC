@@ -26,7 +26,7 @@ const {
   settingsOverrideFor,
   routingEnvOf,
   OVERRIDE_DIR,
-} = require('../src/native/runtime').claudeSettingsOverride;
+} = require('../src/native/binding').claudeSettingsOverride;
 
 // Mirrors BLANK_WHEN_ABSENT_KEYS: routing/model keys the session does not
 // define, which must be neutralized so the user-level settings cannot supply

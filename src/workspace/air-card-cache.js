@@ -1,5 +1,5 @@
 'use strict';
-const { getNative, runNative } = require('../native/runtime');
+const { getNative, runNative } = require('../native/binding');
 const { boardStoreOf } = require('../native/task-domain');
 
 // 原生 token 的对象镜像与宿主回调适配。缓存判定、过期和验证规则均在 Rust。

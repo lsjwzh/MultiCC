@@ -1,9 +1,9 @@
 'use strict';
 
 const assert = require('assert');
-const { createClaudeAdapter } = require('../src/native/runtime');
-const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
-const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
+const { createClaudeAdapter } = require('../src/native/binding');
+const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
+const { createCodexExpAdapter } = require('../src/native/binding').codexAppAdapter;
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
 const { createQoderAdapter } = require('../src/cli-adapters/qoder');

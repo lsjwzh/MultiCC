@@ -193,7 +193,7 @@ function recordPayload(sample, index) {
 }
 
 async function seedHistory(dir) {
-  const { getNative, runNative } = require(path.join(ROOT, 'src/native/runtime.js'));
+  const { getNative, runNative } = require(path.join(ROOT, 'src/native/binding.js'));
   const file = dataFile(dir, 'provider-quota-history.db');
   for (const suffix of ['', '-wal', '-shm']) removeFile(file + suffix);
   const handle = new (getNative().RustQuotaHistory)(file, 14 * DAY);
@@ -210,7 +210,7 @@ async function ensureDb(side, group) {
   const dir = rootFor(side);
   if (group === 'default' || group === 'relative-data-dir') await seedHistory(dir);
   if (group === 'empty-db') {
-    const { getNative } = require(path.join(ROOT, 'src/native/runtime.js'));
+    const { getNative } = require(path.join(ROOT, 'src/native/binding.js'));
     const file = dataFile(dir, 'provider-quota-history.db');
     for (const suffix of ['', '-wal', '-shm']) removeFile(file + suffix);
     // Open (creates schema) and drop; no samples.
@@ -682,7 +682,7 @@ function specFor(group) {
       // the package root (src/paths.js `path.resolve(PKG_ROOT, raw)`), not cwd.
       process.env.MULTICC_DATA_DIR = group === 'relative-data-dir'
         ? path.relative(ROOT, dataRoot) : dataRoot;
-      const providers = require(path.join(ROOT, 'src/providers/core.js'));
+      const providers = require(path.join(ROOT, 'src/providers/host.js'));
       providers.enableUnifiedOfficialProviders();
       const history = ORACLE.createLegacyProviderQuotaHistory({
         file: path.join(dataRoot, 'provider-quota-history.db'),

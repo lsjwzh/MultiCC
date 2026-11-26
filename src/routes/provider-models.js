@@ -144,7 +144,7 @@ async function fetchProviderModels(fetchImpl, summary, apiKey, timeoutMs, refres
 }
 
 function createProviderModelsRuntime(options = {}) {
-  const providers = options.providers || require('../providers/core');
+  const providers = options.providers || require('../providers/host');
   const fetchImpl = 'fetch' in options ? options.fetch : globalThis.fetch;
   const now = typeof options.now === 'function' ? options.now : Date.now;
   const ttlMs = Number(options.ttlMs) || PROVIDER_MODELS_TTL_MS;

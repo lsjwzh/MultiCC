@@ -33,7 +33,7 @@
 // on each successful archive, throttled to one pass per 6h.
 
 const os = require('node:os');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const DEFAULTS = getNative().nativeSessionGuardDefaults();
 

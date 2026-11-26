@@ -1,10 +1,10 @@
 'use strict';
 
-const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
+const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
 const { VENDOR_NATIVE_CLIS, NATIVE_VENDOR_SUFFIX } = require('../providers/native-vendor');
-const { NATIVE_OPENCODE_PREFIX } = require('../native/runtime').getNativeOpenCodeCatalog();
+const { NATIVE_OPENCODE_PREFIX } = require('../native/binding').getNativeOpenCodeCatalog();
 
 function publicError(error, fallback) {
   return sanitizePublicText(error && error.message, fallback);
@@ -56,7 +56,7 @@ function createProviderRoutes(rawDeps) {
   // 子任务默认线路的归一化只由 Rust 决定。
   const subagentNative = () => typeof deps.getNative === 'function'
     ? deps.getNative()
-    : require('../native/runtime').getNative();
+    : require('../native/binding').getNative();
   if (typeof deps.providers.normalizeOfficialProviderId === 'function') {
     for (const cli of ['claude', 'codex']) defaultsOwner.set(cli, deps.providers.normalizeOfficialProviderId(cli, defaultsOwner.get(cli)));
   }

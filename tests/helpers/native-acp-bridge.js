@@ -1,5 +1,5 @@
 'use strict';
-const { getNative } = require('../../src/native/runtime');
+const { getNative } = require('../../src/native/binding');
 function run(operation, fields) {
   const result = JSON.parse(getNative().acpBridgeKernel(JSON.stringify({ operation, ...fields })));
   if (!result.ok) throw new Error(result.message);

@@ -64,7 +64,7 @@ test('parseUsage keeps a rate-limited window instead of dropping it to null', ()
 });
 
 test('a rate-limited weekly window renders as a red 1wk segment with a tooltip marker', () => {
-  const { renderQuotaBar } = require('../src/native/runtime').getQuotaBarView();
+  const { renderQuotaBar } = require('../src/native/binding').getQuotaBarView();
   const bar = renderQuotaBar('opencode', {
     status: 'ok',
     fetchedAt: 1700000000000,

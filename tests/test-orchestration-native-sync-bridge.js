@@ -11,7 +11,7 @@ const Database = require('better-sqlite3');
 // SQLite/JSON transaction and promise boundary, without accepting callbacks as
 // commands in the exposed API.
 test('fixed native command commits synchronously and never assimilates its result', async t => {
-  const runtime = require('../src/native/runtime');
+  const runtime = require('../src/native/binding');
   const original = runtime.getNative;
   const native = original();
   let behavior;
@@ -21,7 +21,7 @@ test('fixed native command commits synchronously and never assimilates its resul
       return Reflect.get(target, key, receiver);
     },
   });
-  const { createOrchestrationStore } = require('../src/orchestration/store');
+  const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
   const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-native-sync-'));
   const sqlite = path.join(dir, 'state.sqlite');
@@ -70,7 +70,7 @@ test('fixed native command commits synchronously and never assimilates its resul
 
 test('同步命令的白名单和空原型信封与冻结接口一致', () => {
   const previous = require('./helpers/frozen-file-batch8/native-command');
-  const current = require('../src/native/runtime');
+  const current = require('../src/native/binding');
   const value = { get then() { throw new Error('信封不能读取 then'); } };
   for (const api of [previous, current]) {
     const envelope = api.commandEnvelope(value);

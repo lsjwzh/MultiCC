@@ -23,7 +23,7 @@ pub(crate) fn boolean(value: LiveValue<'_>) -> Result<bool> {
 
 /// Throw a TypeError whose message may carry host strings (lone surrogates
 /// included), reported back as the pending exception.
-fn type_error(env: sys::napi_env, units: &[u16]) -> napi::Error {
+pub(crate) fn type_error(env: sys::napi_env, units: &[u16]) -> napi::Error {
     let mut message = ptr::null_mut();
     let mut error = ptr::null_mut();
     unsafe {

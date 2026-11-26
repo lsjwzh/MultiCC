@@ -12,7 +12,7 @@ let next = 0;
 function fixtureDefaultsOwner(deps) {
   const file = path.join(root, `${next++}.json`);
   try { fs.writeFileSync(file, deps.fs.readFileSync(deps.providerDefaultsFile, 'utf8')); } catch (_) { /* missing */ }
-  const native = require('../../src/native/runtime').getNative();
+  const native = require('../../src/native/binding').getNative();
   const owner = new native.RustProviderDefaultsStore(file);
   return {
     snapshot: () => owner.snapshot(),

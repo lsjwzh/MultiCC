@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const createHibernationReclaimer = deps => getNative().sessionHibernationReclaimerCreate(deps);
 

@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const { protocolFamilyOf } = require('../cli/cli-capability');
-const { codexProviderHome } = require('../native/runtime');
+const { codexProviderHome } = require('../native/binding');
 
 // A resident lane keeps ONE child warm across turns, so its managed provider
 // route has to outlive a single turn. Claude's route lives in ANTHROPIC_* and the
@@ -163,7 +163,7 @@ function sharedRoutes() {
   if (!shared) {
     // Lazy so this module can be required before providers/core finishes its own
     // initialization, and so tests can build their own port-injected instance.
-    shared = createCodexResidentRoutes({ providers: require('../providers/core') });
+    shared = createCodexResidentRoutes({ providers: require('../providers/host') });
   }
   return shared;
 }

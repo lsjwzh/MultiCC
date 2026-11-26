@@ -7,7 +7,7 @@ fn optional_method<'a>(deps: L<'a>, key: &std::ffi::CStr, args: &[L<'a>]) -> Res
         callback.call(deps, args)
     }
 }
-pub(super) fn build<'a>(input: L<'a>, ports: L<'a>) -> Result<L<'a>> {
+pub(crate) fn build<'a>(env: &'a Env, input: L<'a>, ports: L<'a>) -> Result<L<'a>> {
     let deps = ports.get(c"deps")?;
     let so = input.get(c"spawnOpts")?;
     let session = object(
@@ -23,7 +23,7 @@ pub(super) fn build<'a>(input: L<'a>, ports: L<'a>) -> Result<L<'a>> {
             (c"effectiveModel", so.get(c"effectiveModel")?),
         ],
     )?;
-    let mut prompt = port(ports, c"renderPrompt", &[input])?;
+    let mut prompt = crate::message_composer::render_prompt(env, input)?;
     if input.get(c"historyHandle")?.get(c"isFirstTurn")?.truthy()? {
         let values = array(input)?;
         for value in [

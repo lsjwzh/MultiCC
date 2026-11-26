@@ -7,7 +7,7 @@ const Module = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createSessionWorkHost } = require('../src/session-work/host');
+const { createSessionWorkHost } = require('../src/session-work');
 const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 
@@ -23,7 +23,7 @@ function frozenHostFactory(mutate = source => source) {
   frozen.paths = Module._nodeModulePaths(path.dirname(filename));
   const originalRequire = frozen.require.bind(frozen);
   frozen.require = name => name === '../session/runtime-busy'
-    ? require('./helpers/session-runtime-busy-oracle') : originalRequire(name);
+    ? require('./helpers/session-runtime-busy-oracle') : name === './scheduler' ? require('../src/session-work') : originalRequire(name);
   frozen._compile(mutate(source), filename);
   return frozen.exports.createSessionWorkHost;
 }
@@ -129,7 +129,7 @@ test('Rust-owned question host keeps creation, replay, classification and moves 
     liveTurn: id => id === 'source' ? activeTurn : null,
     initialState: id => ({ pendingQuestion: states[id]?.pendingUserInput || null,
       activeTurn: id === 'source' ? activeTurn : null, category: { ...states[id] } }) });
-  const { createUserInputOwnedHost } = require('../src/session-work/host');
+  const { createUserInputOwnedHost } = require('../src/session-work');
   const host = createUserInputOwnedHost({ owner, getState: id => states[id],
     setState: (id, patch) => { writes.push({ id, patch }); states[id] = { ...states[id], ...patch }; },
     onResolved: (...args) => notifications.push(args) });
@@ -170,7 +170,7 @@ test('ordered question creation and answer keep their queue positions across fir
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => liveTurn,
     initialState: () => { backfills++; return { pendingQuestion: null, activeTurn: liveTurn, category: null }; } });
   const notifications = [];
-  const { createUserInputOwnedHost } = require('../src/session-work/host');
+  const { createUserInputOwnedHost } = require('../src/session-work');
   const host = createUserInputOwnedHost({ owner, getState: () => ({}), setState: () => {},
     onResolved: (...args) => notifications.push(args) });
   let release, started;
@@ -298,10 +298,10 @@ test('owned host admission backfills an old question and later answers its repla
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: record.taskState.pendingUserInput, activeTurn,
       category: { classifyState: record.taskState.classifyState } }) });
-  const { createUserInputOwnedHost } = require('../src/session-work/host');
+  const { createUserInputOwnedHost } = require('../src/session-work');
   const ownedHost = createUserInputOwnedHost({ owner, getState: () => record.taskState,
     setState: (_id, patch) => { record.taskState = { ...record.taskState, ...patch }; } });
-  const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+  const { createSessionWorkScheduler } = require('../src/session-work');
   const scheduler = createSessionWorkScheduler({ store, now: () => 123, rustQuestionOwner: true });
   const runtime = { sessionScheduler: scheduler, admitSessionWork: input => scheduler.admit(input) };
   const events = [];
@@ -351,9 +351,9 @@ test('host admission rechecks the owned question after initialization and a conc
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: record.taskState.pendingUserInput, activeTurn,
       category: { classifyState: record.taskState.classifyState } }) });
-  const { createUserInputOwnedHost } = require('../src/session-work/host');
+  const { createUserInputOwnedHost } = require('../src/session-work');
   const ownedHost = createUserInputOwnedHost({ owner, getState: () => record.taskState, setState: () => {} });
-  const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+  const { createSessionWorkScheduler } = require('../src/session-work');
   const scheduler = createSessionWorkScheduler({ store, now: () => 123 });
   let release, entered;
   const gate = new Promise(resolve => { release = resolve; });

@@ -12,7 +12,7 @@ const { supportsEffort, displayNameOf } = require('../cli/cli-capability');
 
 const { errorFields } = require('../provider-error');
 const { createProtocolCompletionTracker } = require('./completion');
-const { getNative, gatewayPath, messageComposer: { renderPrompt } } = require('../native/runtime');
+const { getNative, gatewayPath, messageComposer: { renderPrompt } } = require('../native/binding');
 
 const BRIDGE = 'acp-bridge';
 

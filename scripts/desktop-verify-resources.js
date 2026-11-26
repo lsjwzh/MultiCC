@@ -52,7 +52,7 @@ function verifyDesktopResources({ resourcesDir, execute = true, timeoutMs = 60_0
     const script = `const r = require('module').createRequire(${JSON.stringify(path.join(appServerDir, 'server.js'))});
       if (!/^1\\./.test(r('cli-provider-router').API_VERSION || '')) throw new Error('CPR API major 1 required');
       let cpr;
-      try { cpr = r('./src/native/runtime').getNative(); } catch (_) { throw new Error('Rust SQLite / CPR module unavailable'); }
+      try { cpr = r('./src/native/binding').getNative(); } catch (_) { throw new Error('Rust SQLite / CPR module unavailable'); }
       if (cpr.cprProtocolVersion?.() !== 1 || typeof cpr.cprCreateExchange !== 'function') throw new Error('Rust CPR module required');
       if (!cpr.grokProviderModelConfig('smoke', 'https://example.invalid', 'responses').includes('[model.smoke]')) {
         throw new Error('Rust Grok config unavailable');

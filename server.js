@@ -19,7 +19,7 @@ try {
   });
 } catch (_) { /* .env not found, skip */ }
 // Start every child from clean routing env; per-session providers re-apply theirs.
-const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers/core');
+const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers/host');
 for (const k of ANTHROPIC_ROUTING_KEYS) {
   if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
 }
@@ -63,7 +63,7 @@ const crypto = require('crypto');
 const bus = require('./src/bus');
 const state = require('./src/state/container');
 const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
-const providers = require('./src/providers/core');
+const providers = require('./src/providers/host');
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
 const { createRoleTokenTracker } = require('./src/role-token-tracker');
@@ -74,7 +74,7 @@ const {
 } = require('./src/codex/usage');
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { getNative, findProviderReferences, messageComposer, bootstrapState,
-  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence, getSessionNotices } = require('./src/native/runtime');
+  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence, getSessionNotices } = require('./src/native/binding');
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
@@ -106,9 +106,9 @@ const { createStateOwner } = require('./src/state/owner');
 const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');
 const { createDirectoryTable } = require('./src/directory/records');
 const mountPublicSessionAccessGuard = (app, options) =>
-  require('./src/native/runtime').getNative().sessionPublicAccessApi().mountPublicSessionAccessGuard(app, options);
+  require('./src/native/binding').getNative().sessionPublicAccessApi().mountPublicSessionAccessGuard(app, options);
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
-const { createOrchestrationRuntime } = require('./src/orchestration/runtime');
+const { createOrchestrationRuntime } = require('./src/orchestration/host');
 const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
@@ -121,7 +121,7 @@ const { mountSystemHostRoute, mountProviderRelayHostRoute, mountHostReadHostRout
 const { mountPushHostRoute } = require('./src/routes/push-host');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
+const { createTaskBoardRuntime } = require('./src/routes/task-board/index'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
@@ -165,9 +165,9 @@ const {
   getMemoryEntries,
   normalizeManualMemory,
 } = require('./src/memory/runtime');
-const createTaskHistoryRetention = deps => require('./src/native/runtime').getNative().createTaskHistoryRetention(deps);
-const taskHistoryRefusal = error => require('./src/native/runtime').getNative().taskHistoryRefusal(error);
-const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history');
+const createTaskHistoryRetention = deps => require('./src/native/binding').getNative().createTaskHistoryRetention(deps);
+const taskHistoryRefusal = error => require('./src/native/binding').getNative().taskHistoryRefusal(error);
+const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history/index');
 const { createTokenUsageRoutes } = require('./src/routes/token-usage');
 const { createFleetSharing } = require('./src/fleet-sharing');
 const { createSessionAdminRuntime } = require('./src/routes/session-admin');
@@ -183,12 +183,12 @@ const {
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/task-domain');
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
-const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work/host');
-const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/runtime').getHostPrompts();
+const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work');
+const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/binding').getHostPrompts();
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
 const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
-const { createClassifyStateMachine } = require('./src/classify/state-machine');
+const { createClassifyStateMachine } = require('./src/classify/task-attribution');
 const { createAuxRunLog } = require('./src/classify/aux-run-log');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
@@ -199,7 +199,7 @@ const { createProviderLogWatchdog } = require('./src/chat/provider-log-watchdog'
 const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
 const { createPushRuntime } = require('./src/push/runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
-const { TurnProgressHeartbeat, createTurnProgress } = require('./src/native/runtime').getTurnProgress();
+const { TurnProgressHeartbeat, createTurnProgress } = require('./src/native/binding').getTurnProgress();
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost } = require('./src/task-context-host');
@@ -232,7 +232,7 @@ const {
   requestContext,
   toWaitDto,
   withApiMeta,
-} = require('./src/native/runtime').getApiContract();
+} = require('./src/native/binding').getApiContract();
 const {
   createAuthSecurity,
   normalizeRedirect,
@@ -495,7 +495,7 @@ function debugLogClaudeInvoke(session, args) {
   } catch (_) {}
 }
 
-const { terminalLoginCommand } = require('./src/native/runtime').getVendorLogin();
+const { terminalLoginCommand } = require('./src/native/binding').getVendorLogin();
 const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
   isWindows,
   claudeArgs: CLAUDE_ARGS,
@@ -1744,7 +1744,7 @@ tunnel.setFailureReporter((stage, category) => {
 });
 const chatStream = require('./src/chat/chat-stream');
 const waitInjector = require('./src/wait/injector');
-const sessionDelivery = require('./src/native/runtime').getSessionDeliveryApi().createSessionDelivery({
+const sessionDelivery = require('./src/native/binding').getSessionDeliveryApi().createSessionDelivery({
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
   log: message => console.log('[multicc/delivery]', message),
 });

@@ -42,7 +42,7 @@
 // 拒绝任何转发自真实远端客户端的请求。
 
 const { STATUS_CODES } = require('node:http');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 function createApkInfoHandler(deps) {
   return async function apkInfoHandler(req, res, next) {

@@ -4,7 +4,7 @@ use multicc_core::js::JsValue;
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 
-fn freshness(provider: LiveValue<'_>, broadcast: bool) -> Result<LiveValue<'_>> {
+pub(crate) fn freshness(provider: LiveValue<'_>, broadcast: bool) -> Result<LiveValue<'_>> {
     let null = provider.from_value(&JsValue::Null)?;
     let health = if provider.kind()? == sys::ValueType::napi_function {
         provider.catch(|| provider.call_plain(&[]))?.unwrap_or(null)
@@ -50,12 +50,24 @@ pub fn fan_out_aux_verdict_staleness(
     chat_broadcast: Unknown<'_>,
     workspace_broadcast: Unknown<'_>,
 ) -> Result<f64> {
-    let state = LiveValue::new(&env, get_task_state);
-    let chat = LiveValue::new(&env, chat_broadcast);
-    let workspace = LiveValue::new(&env, workspace_broadcast);
-    let payload = freshness(LiveValue::new(&env, provider), true)?;
+    fan_out(
+        LiveValue::new(&env, provider),
+        LiveValue::new(&env, sessions),
+        LiveValue::new(&env, get_task_state),
+        LiveValue::new(&env, chat_broadcast),
+        LiveValue::new(&env, workspace_broadcast),
+    )
+}
+pub(crate) fn fan_out<'a>(
+    provider: LiveValue<'a>,
+    sessions: LiveValue<'a>,
+    state: LiveValue<'a>,
+    chat: LiveValue<'a>,
+    workspace: LiveValue<'a>,
+) -> Result<f64> {
+    let payload = freshness(provider, true)?;
     let mut told = 0.0;
-    LiveValue::new(&env, sessions).for_each(|entry| {
+    sessions.for_each(|entry| {
         let (id, record) = entry.iterator_pair()?;
         if !record.truthy()?
             || record.get(c"type")?.is_string("aux")?

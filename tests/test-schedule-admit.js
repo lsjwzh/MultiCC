@@ -9,7 +9,7 @@ const test = require('node:test');
 const Database = require('better-sqlite3');
 const { normalizeJson } = require('../src/outbox');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work');
 const kinds = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
 
 // Frozen pre-migration preparation, retained only as a differential oracle.

@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
-const { createTurnTimingRecorder } = require('../src/native/runtime').getTurnProgress();
+const { createTurnTimingRecorder } = require('../src/native/binding').getTurnProgress();
 
 function makeRecorder(startTs = 1_700_000_000_000) {
   const lines = [];

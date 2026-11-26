@@ -222,7 +222,7 @@ main({
     return upstreamText;
   },
   // The stub child loads the real auth-control bridge, which loads the native
-  // addon (src/native/runtime) — the same module the front door calls.
+  // addon (src/native/binding) — the same module the front door calls.
   gatewayEnv: () => ({ MULTICC_RUST_ADDON: process.env.MULTICC_RUST_ADDON }),
   corpus,
 });

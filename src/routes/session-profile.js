@@ -3,7 +3,7 @@
 const { nameOf } = require('../cli/cli-capability');
 
 const crypto = require('crypto');
-const { getNative, assignHostProperty, auxVerdictStaleness } = require('../native/runtime');
+const { getNative, assignHostProperty, auxVerdictStaleness } = require('../native/binding');
 const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
 const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
 const forkConfiguration = (record, deps) => getNative().sessionForkConfiguration(record, deps);
@@ -22,7 +22,7 @@ const {
   sharedCliKeyAccountStore,
 } = require('../cli-key-accounts');
 const { nativeVendorName, nativeVendorOf } = require('../providers/native-vendor');
-const { nativeOpenCodeId, nativeOpenCodeName } = require('../native/runtime').getNativeOpenCodeCatalog();
+const { nativeOpenCodeId, nativeOpenCodeName } = require('../native/binding').getNativeOpenCodeCatalog();
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/
 // rolePrompt/memory/auto-flags/provider/subagent/cliAccounts edits) and POST

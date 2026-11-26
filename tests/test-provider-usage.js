@@ -12,7 +12,7 @@ const dataDir = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-pro
 process.env.MULTICC_DATA_DIR = dataDir;
 
 const runtimePaths = createPaths({ dataDir });
-const { getProviderUsageStats, readDailyWindows } = require('../src/providers/core');
+const { getProviderUsageStats, readDailyWindows } = require('../src/providers/host');
 
 function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2));
@@ -117,4 +117,15 @@ test('daily windows ignore malformed dates and non-object day buckets', () => {
   const windows = readDailyWindows();
   assert.deepEqual(Object.keys(windows.all), ['provider-a']);
   assert.equal(windows.today['provider-a'].inputTokens, 5);
+});
+
+test('大账本累计超过单条计数上限时仍按 Number 累计', () => {
+  const count = Number.MAX_SAFE_INTEGER;
+  const rows = Array.from({ length: 2050 }, (_, index) => [String(index), { inputTokens: count }]);
+  writeJson(runtimePaths.tokenUsageFile, Object.fromEntries(rows));
+  writeJson(runtimePaths.tokenDailyFile, {});
+  const expected = rows.reduce((sum, [, row]) => sum + row.inputTokens, 0);
+  const { total, unattributed } = getProviderUsageStats();
+  assert.equal(total.inputTokens, expected);
+  assert.equal(unattributed.inputTokens, expected);
 });

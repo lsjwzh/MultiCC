@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const legacy = require('./helpers/legacy-claude-exp-history');
 
 const SESSION_UUID = '05de20f7-563a-4d09-af34-b748c7b189ca';

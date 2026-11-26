@@ -3,7 +3,7 @@
 // Migration bridge only: bound wire metadata and call Rust. Classification,
 // evidence precedence and recovery live in Rust. Remove this bridge when the
 // provider event host moves there; do not add policy or text matching here.
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 function errorFields(raw, depth = 0, budget = { nodes: 24, chars: 65536 }) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || depth > 6 || budget.nodes-- <= 0) return {};

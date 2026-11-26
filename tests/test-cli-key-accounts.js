@@ -31,7 +31,7 @@ const { mountCliKeyAccountRoutes } = require('../src/routes/account-routes-host'
 const { readCommandcodeLogin, mountCommandcodeAuthRoutes } = require('../src/routes/account-routes-host');
 const { createProviderRouterRuntime } = require('../src/providers/router-runtime');
 const { REQUIRED_CAPABILITIES } = require('../src/providers/router-port');
-const providers = require('../src/providers/core.js');
+const providers = require('../src/providers/host.js');
 const { createSessionPolicy } = require('../src/cli/session-policy.js');
 const { createSessionProfileRoutes } = require('../src/routes/session-profile.js');
 

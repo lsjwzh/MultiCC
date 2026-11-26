@@ -23,9 +23,9 @@
 // durable copy the clients restore from is the provider-limit cache, written
 // per account by limit-cache-recorder.)
 
-const { claudeBar } = require('../native/runtime').getQuotaBarView();
+const { claudeBar } = require('../native/binding').getQuotaBarView();
 const { claudeUsageKey, readClaudeUsage } = require('./claude-usage-queue');
-const { claudeQuota } = require('../native/runtime');
+const { claudeQuota } = require('../native/binding');
 
 const liveByKey = new Map();
 

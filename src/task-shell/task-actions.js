@@ -1,9 +1,9 @@
 'use strict';
 
-const { hash } = require('../native/runtime').taskShellContext;
+const { hash } = require('../native/binding').taskShellContext;
 const { historySnapshot, shellRecords } = require('./history-context');
-const { getNative } = require('../native/runtime');
-const { directoryAtCapacity } = require('../native/runtime').taskShellCapacity;
+const { getNative } = require('../native/binding');
+const { directoryAtCapacity } = require('../native/binding').taskShellCapacity;
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });
 // Air is the only task surface left. A task link is an Air task URL, and the
 // directory rides along so the page can name the task without a second lookup.

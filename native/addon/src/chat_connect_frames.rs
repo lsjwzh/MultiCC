@@ -1,4 +1,7 @@
-use crate::js_live::LiveValue;
+use crate::{
+    host_methods::{call, method},
+    js_live::{fields, LiveValue},
+};
 use multicc_core::{chat_history_frame, js::JsValue};
 use napi::{
     bindgen_prelude::{FromNapiValue, ToNapiValue, Unknown},
@@ -58,11 +61,25 @@ pub fn chat_fit_history_frame(
     max_bytes: Unknown<'_>,
     options: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let list = LiveValue::new(&env, messages);
+    Ok(fit_history(
+        LiveValue::new(&env, messages),
+        LiveValue::new(&env, sizes),
+        has_more,
+        LiveValue::new(&env, max_bytes),
+        LiveValue::new(&env, options),
+    )?
+    .raw())
+}
+fn fit_history<'a>(
+    list: LiveValue<'a>,
+    sizes: LiveValue<'a>,
+    has_more: bool,
+    max: LiveValue<'a>,
+    options: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
     let request = list.from_value(&JsValue::Object(Vec::new()))?;
-    request.set(c"sizes", LiveValue::new(&env, sizes))?;
+    request.set(c"sizes", sizes)?;
     request.set(c"hasMore", list.from_value(&JsValue::Bool(has_more))?)?;
-    let max = LiveValue::new(&env, max_bytes);
     if !max.undefined()? {
         request.set(c"maxBytes", frame_limit(max)?)?;
     }
@@ -78,7 +95,6 @@ pub fn chat_fit_history_frame(
     if plan.clipped {
         let clip = list.from_value(&JsValue::Object(Vec::new()))?;
         clip.set(c"messages", kept)?;
-        let options = LiveValue::new(&env, options);
         if options.truthy()? && !options.get(c"toolStringChars")?.undefined()? {
             clip.set(
                 c"toolStringChars",
@@ -98,7 +114,7 @@ pub fn chat_fit_history_frame(
     result.set(c"hasMore", list.from_value(&JsValue::Bool(plan.has_more))?)?;
     result.set(c"dropped", dropped)?;
     result.set(c"clipped", list.from_value(&JsValue::Bool(plan.clipped))?)?;
-    Ok(result.raw())
+    Ok(result)
 }
 
 /// Whether to build a connect-time `task_state` seed.
@@ -123,7 +139,20 @@ pub fn chat_task_state_frame(
     short_code: Unknown<'_>,
     staleness: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let task = LiveValue::new(&env, task);
+    Ok(task_frame(
+        LiveValue::new(&env, task),
+        seed_only,
+        LiveValue::new(&env, short_code),
+        LiveValue::new(&env, staleness),
+    )?
+    .raw())
+}
+fn task_frame<'a>(
+    task: LiveValue<'a>,
+    seed_only: bool,
+    short_code: LiveValue<'a>,
+    source: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
     let json = task.global()?.get(c"JSON")?;
     let envelope = task.from_value(&JsValue::Object(Vec::new()))?;
     envelope.set(c"task", task)?;
@@ -137,13 +166,19 @@ pub fn chat_task_state_frame(
     // The short code registry can persist a new code. Only consult it once
     // the original task has passed the seed gate.
     if seed_only && !chat_task_state_should_seed(encode(envelope)?)? {
-        return Ok(task.from_value(&JsValue::Null)?.raw());
+        return task.from_value(&JsValue::Null);
     }
 
     let facts = task.from_value(&JsValue::Object(Vec::new()))?;
     let record = if task.truthy()? { task } else { facts };
-    let code = LiveValue::new(&env, short_code).call_plain(&[record.get(c"taskId")?])?;
-    let health = LiveValue::new(&env, staleness).call_plain(&[])?;
+    let code = crate::task_short_code::current_code(short_code, record.get(c"taskId")?)?;
+    // Resolve the current provider after the short-code lookup, which may
+    // re-enter the host. Legacy native callers supply an already projected getter.
+    let health = if source.kind()? == sys::ValueType::napi_object {
+        crate::aux_verdict_health::freshness(source.get(c"provider")?, false)?
+    } else {
+        source.call_plain(&[])?
+    };
     facts.set(
         c"taskShortCode",
         if code.truthy()? {
@@ -165,7 +200,7 @@ pub fn chat_task_state_frame(
     if !frame.get(c"apiError")?.nullish()? {
         frame.set(c"apiError", task.get(c"apiError")?)?;
     }
-    Ok(frame.raw())
+    Ok(frame)
 }
 
 /// The ordered plan for one `/ws/chat` connect: the `chat_history` frame, the
@@ -174,4 +209,114 @@ pub fn chat_task_state_frame(
 #[napi]
 pub fn chat_connect_replay_plan(input: String) -> Result<String> {
     multicc_core::chat_connect_replay::plan_json(&input).map_err(napi::Error::from_reason)
+}
+
+fn message_bytes(message: LiveValue<'_>) -> Result<LiveValue<'_>> {
+    let measured = message.catch(|| {
+        let global = message.global()?;
+        let buffer = global.get(c"Buffer")?;
+        let byte_length = buffer.get(c"byteLength")?;
+        let encoded = call(global.get(c"JSON")?, c"stringify", &[message])?;
+        byte_length.call(buffer, &[encoded])
+    })?;
+    match measured {
+        Some(v) => Ok(v),
+        None => message.from_value(&JsValue::Number(0.)),
+    }
+}
+
+#[napi]
+pub fn history_frame_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_value> {
+    let addon = LiveValue::new(&env, addon);
+    let bytes = method(&env, addon, "messageBytes", 1, 1, |_, a| {
+        message_bytes(a[0])
+    })?;
+    let fit = method(&env, bytes, "fitHistoryFrame", 2, 3, |bytes, a| {
+        let list = if a[0].is_array()? {
+            a[0]
+        } else {
+            a[0].from_value(&JsValue::Array(vec![]))?
+        };
+        let options = if a[2].undefined()? {
+            fields(list, &[])?
+        } else {
+            a[2]
+        };
+        let sizes = call(list, c"map", &[bytes])?;
+        let max = if options.truthy()? && !options.get(c"maxBytes")?.undefined()? {
+            options.get(c"maxBytes")?
+        } else {
+            list.from_value(&JsValue::Undefined)?
+        };
+        fit_history(list, sizes, a[1].truthy()?, max, options)
+    })?;
+    Ok(fields(
+        addon,
+        &[
+            ("DEFAULT_MAX_BYTES", addon.get(c"CHAT_HISTORY_MAX_BYTES")?),
+            (
+                "DEFAULT_TOOL_STRING_CHARS",
+                addon.get(c"CHAT_HISTORY_TOOL_STRING_CHARS")?,
+            ),
+            ("messageBytes", bytes),
+            ("fitHistoryFrame", fit),
+        ],
+    )?
+    .raw())
+}
+
+#[napi]
+pub fn task_frames_api(env: Env, code_registry: Unknown<'_>) -> Result<sys::napi_value> {
+    let registry = LiveValue::new(&env, code_registry);
+    let owner = fields(
+        registry,
+        &[
+            ("shortCodes", registry),
+            ("provider", registry.from_value(&JsValue::Null)?),
+        ],
+    )?;
+    let install = method(&env, owner, "installAuxHealthProvider", 1, 1, |s, a| {
+        let provider = if a[0].kind()? == sys::ValueType::napi_function {
+            a[0]
+        } else {
+            s.from_value(&JsValue::Null)?
+        };
+        s.set(c"provider", provider)?;
+        s.from_value(&JsValue::Undefined)
+    })?;
+    let freshness = method(&env, owner, "auxVerdictStaleness", 0, 0, |s, _| {
+        crate::aux_verdict_health::freshness(s.get(c"provider")?, false)
+    })?;
+    let fanout = method(&env, owner, "fanOutAuxVerdictStaleness", 1, 1, |s, a| {
+        let ports = a[0];
+        let sessions = ports.get(c"sessions")?;
+        let state = ports.get(c"getTaskState")?;
+        let chat = ports.get(c"chatBroadcast")?;
+        let workspace = ports.get(c"workspaceBroadcast")?;
+        let count = crate::aux_verdict_health::fan_out(
+            s.get(c"provider")?,
+            sessions,
+            state,
+            chat,
+            workspace,
+        )?;
+        s.from_value(&JsValue::Number(count))
+    })?;
+    let seed = method(&env, owner, "taskStateSeed", 1, 1, |s, a| {
+        task_frame(a[0], true, s.get(c"shortCodes")?, s)
+    })?;
+    let payload = method(&env, owner, "taskStatePayload", 1, 1, |s, a| {
+        task_frame(a[0], false, s.get(c"shortCodes")?, s)
+    })?;
+    Ok(fields(
+        owner,
+        &[
+            ("installAuxHealthProvider", install),
+            ("auxVerdictStaleness", freshness),
+            ("fanOutAuxVerdictStaleness", fanout),
+            ("taskStateSeed", seed),
+            ("taskStatePayload", payload),
+        ],
+    )?
+    .raw())
 }

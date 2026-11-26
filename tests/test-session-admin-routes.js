@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createErrorDto, requestContext, withApiMeta } = require('../src/native/runtime').getApiContract();
+const { createErrorDto, requestContext, withApiMeta } = require('../src/native/binding').getApiContract();
 const { GOAL_STATES } = require('../src/classify/vocab');
 const {
   assistantText,

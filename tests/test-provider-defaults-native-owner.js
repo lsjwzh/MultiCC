@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 test('native defaults owner preserves snapshots, disk bytes and write-failure ordering', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-defaults-owner-'));

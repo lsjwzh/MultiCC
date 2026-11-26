@@ -127,7 +127,7 @@ test('registry task titles are readable before the shell runtime has started', t
 });
 
 
-// 产物引用识别已迁入 Rust，生产入口是 src/native/runtime.js 的 artifactReference 门面；旧实现
+// 产物引用识别已迁入 Rust，生产入口是 src/native/binding.js 的 artifactReference 门面；旧实现
 // 原样冻结在 tests/helpers/legacy-artifact-reference.js。下面用同一组固定输入逐项核对两个
 // 实现：外部 URL、编码与空白、大小写与前导斜杠、循环与共享对象、getter 的次数与顺序、
 // 深度/节点/引用上限、稳定排序，以及抛出异常的原对象。带结论的断言钉住语料确实走到了对应
@@ -142,14 +142,14 @@ test('artifact references match the frozen implementation on a fixed corpus', ()
     '38c6509083b9f0c89d4db9e7118f4829a252c6e9');
   const mod = { exports: {} };
   compileFunction(source.toString(), ['module', 'require'], { filename: file })(mod, createRequire(file));
-  const frozen = trace(mod.exports), live = trace(require('../src/native/runtime').artifactReference);
+  const frozen = trace(mod.exports), live = trace(require('../src/native/binding').artifactReference);
   assert.deepEqual(live, frozen);
   console.log(`artifact-reference differential: ${frozen.length} rows, sha256 ${createHash('sha256').update(JSON.stringify(frozen)).digest('hex')}`);
 });
 
 test('artifact traversal observes live built-ins and preserves iterator errors', () => {
   const original = require('./helpers/legacy-artifact-reference');
-  const current = require('../src/native/runtime').artifactReference;
+  const current = require('../src/native/binding').artifactReference;
   function observe(api, make) {
     const values = Object.values, has = WeakSet.prototype.has, own = Object.prototype.hasOwnProperty;
     try { return api.extractArtifactReferences(make()); }

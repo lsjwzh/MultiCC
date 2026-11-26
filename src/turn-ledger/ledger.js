@@ -13,11 +13,11 @@
 // - The ledger never invents an E from silence. No evidence for a long time is
 //   surfaced as needsReview, not as an error.
 
-const { resolveTurnState } = require('../native/runtime').getTurnState();
+const { resolveTurnState } = require('../native/binding').getTurnState();
 const { isProcessingLetter, isAbnormalLetter } = require('../classify/vocab');
 const {
   OWNERSHIP, SILENT_E_REASONS, transitionId, projectLiveness,
-} = require('../native/runtime').getTurnLedgerContract();
+} = require('../native/binding').getTurnLedgerContract();
 
 const QUESTION_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input']);
 const WAIT_NOTIFICATIONS = new Set(['permission_prompt', 'elicitation_dialog']);

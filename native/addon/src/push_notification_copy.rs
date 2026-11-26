@@ -110,17 +110,26 @@ pub fn push_notification_copy(
     goal: Unknown<'_>,
     tables: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let tables = LiveValue::new(&env, tables);
-    let key = copy_key(LiveValue::new(&env, spec), tables.get(c"KEY_OF")?)?;
-    let lang = if LiveValue::new(&env, locale).is_string("en")? {
-        "en"
-    } else {
-        "zh"
-    };
+    Ok(notification(
+        LiveValue::new(&env, tables),
+        LiveValue::new(&env, spec),
+        LiveValue::new(&env, locale),
+        LiveValue::new(&env, goal),
+    )?
+    .raw())
+}
+fn notification<'a>(
+    tables: LiveValue<'a>,
+    spec: LiveValue<'a>,
+    locale: LiveValue<'a>,
+    goal: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
+    let key = copy_key(spec, tables.get(c"KEY_OF")?)?;
+    let lang = if locale.is_string("en")? { "en" } else { "zh" };
     let locale = text(tables, lang)?;
     let mut title = tables.from_value(&JsValue::Undefined)?;
     if key.is_string("succeeded")? {
-        let goal = string_or_empty(LiveValue::new(&env, goal))?;
+        let goal = string_or_empty(goal)?;
         let folded = goal.get(c"toLowerCase")?.call(goal, &[])?;
         let sub = tables.get(c"goals")?.get_key(folded)?;
         if sub.truthy()? {
@@ -140,5 +149,32 @@ pub fn push_notification_copy(
     result.set(c"key", key)?;
     result.set(c"locale", locale)?;
     result.set(c"title", title)?;
-    Ok(result.raw())
+    Ok(result)
+}
+
+#[napi]
+pub fn push_notification_api(env: Env) -> Result<sys::napi_value> {
+    use crate::{host_methods::method, js_live::fields};
+    let tables = LiveValue::from_raw(env.raw(), push_notification_tables(env)?);
+    let keys = tables.get(c"KEY_OF")?;
+    Ok(fields(
+        tables,
+        &[
+            ("COPY", tables.get(c"COPY")?),
+            ("KEY_OF", keys),
+            (
+                "copyKeyFor",
+                method(&env, keys, "copyKeyFor", 1, 1, |keys, a| {
+                    copy_key(a[0], keys)
+                })?,
+            ),
+            (
+                "notificationCopy",
+                method(&env, tables, "notificationCopy", 3, 3, |tables, a| {
+                    notification(tables, a[0], a[1], a[2])
+                })?,
+            ),
+        ],
+    )?
+    .raw())
 }

@@ -360,7 +360,7 @@ test('each injected rule break turns the differential red', (t) => {
 });
 
 test('OpenCode catalog matches the frozen provider, coercion order and mutability', () => {
-  const actual = require('../src/native/runtime').getNativeOpenCodeCatalog();
+  const actual = require('../src/native/binding').getNativeOpenCodeCatalog();
   const frozenFile = require.resolve('./helpers/frozen-native-opencode.js');
   const frozen = require(frozenFile);
   const source = require('node:fs').readFileSync(frozenFile);
@@ -401,7 +401,7 @@ test('OpenCode catalog matches the frozen provider, coercion order and mutabilit
 });
 
 test('OpenCode catalog preserves custom model arrays, exceptions and the iteration order', () => {
-  const actual = require('../src/native/runtime').getNativeOpenCodeCatalog();
+  const actual = require('../src/native/binding').getNativeOpenCodeCatalog();
   const old = require('./helpers/frozen-native-opencode');
   function trace(api, fail) {
     const events = [];

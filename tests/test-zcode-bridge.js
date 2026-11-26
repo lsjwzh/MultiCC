@@ -261,7 +261,7 @@ test('bridge preserves unknown and failed native endings instead of inventing st
 });
 
 test('engine env points 0.16.9+ at the desktop bundle builtin provider config', () => {
-  const { zcodeEngineEnv } = require('../src/native/runtime').zcodeEngine;
+  const { zcodeEngineEnv } = require('../src/native/binding').zcodeEngine;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-builtin-'));
   const engine = path.join(root, 'Resources', 'glm', 'zcode.cjs');
   fs.mkdirSync(path.dirname(engine), { recursive: true });
@@ -328,7 +328,7 @@ require('readline').createInterface({ input: process.stdin }).on('line', line =>
 
 // Frozen from 7e57fd99 before the Rust migration; this oracle is test-only.
 const legacyZcodeSession = require('./helpers/legacy-zcode-session');
-const nativeZcodeSession = require('../src/native/runtime');
+const nativeZcodeSession = require('../src/native/binding');
 
 test('Rust ZCode identity predicate matches every UTF-16 suffix and preserves type guards', () => {
   for (let unit = 0; unit <= 0xffff; unit++) {
@@ -422,7 +422,7 @@ test('Rust ZCode repair preserves thrown identities, partial writes and strict a
 
 // Frozen from aef30f9f; no relative imports or production routing dependencies.
 const legacyZcodeEngine = require('./helpers/legacy-zcode-engine');
-const nativeZcodeEngine = require('../src/native/runtime').zcodeEngine;
+const nativeZcodeEngine = require('../src/native/binding').zcodeEngine;
 
 function engineOutcome(run) {
   try { return { value: run() }; }

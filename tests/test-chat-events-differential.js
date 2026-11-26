@@ -13,7 +13,7 @@ const test = require('node:test');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const { applyClaudeChatEventLegacy, boundaryEnvelope: legacyBoundary } = require('./helpers/legacy-claude-chat-event');
 
 const native = getNative();

@@ -18,7 +18,7 @@ legacyModule.filename = legacyPath;
 legacyModule.paths = Module._nodeModulePaths(path.dirname(legacyPath));
 legacyModule._compile(fs.readFileSync(path.join(__dirname, 'helpers/legacy-session-persistence.js'), 'utf8'), legacyPath);
 const legacy = legacyModule.exports;
-const runtime = require('../src/native/runtime');
+const runtime = require('../src/native/binding');
 const { recordsOf } = require('./helpers/session-records');
 const { sessionRecordsOwner } = require('../src/session/records');
 

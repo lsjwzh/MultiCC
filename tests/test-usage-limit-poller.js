@@ -25,7 +25,7 @@ function okJson(obj) {
 }
 
 test('native quota response normalization matches the previous JavaScript rules', () => {
-  const request = require('../src/native/runtime').getNative().limitCacheRecorderRequestValue;
+  const request = require('../src/native/binding').getNative().limitCacheRecorderRequestValue;
   const finite = value => { const n = Number(value); return Number.isFinite(n) ? n : null; };
   const legacyGlm = body => {
     const limits = body && body.data && Array.isArray(body.data.limits) ? body.data.limits : null;
@@ -69,7 +69,7 @@ test('native quota response normalization matches the previous JavaScript rules'
 });
 
 test('native polling admission shares a request, retains null failures and releases aborted work', async () => {
-  const state = new (require('../src/native/runtime').getNative().RustUsageLimitPoller)();
+  const state = new (require('../src/native/binding').getNative().RustUsageLimitPoller)();
   const begin = (now, hasAdapter) => state.request('begin', {
     key: 'provider:hash', strategy: 'glm-monitor', now, ...(hasAdapter === undefined ? {} : { hasAdapter }),
   });
@@ -85,7 +85,7 @@ test('native polling admission shares a request, retains null failures and relea
 });
 
 test('a synchronous provider lookup error does not strand the polling key', async t => {
-  const providers = require('../src/providers/core');
+  const providers = require('../src/providers/host');
   let lookups = 0, attempts = 0;
   t.mock.method(providers, 'getProvider', () => {
     if (++lookups === 1) throw new Error('temporary lookup failure');

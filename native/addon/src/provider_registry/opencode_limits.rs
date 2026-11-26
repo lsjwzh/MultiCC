@@ -116,9 +116,25 @@ pub fn open_code_cached_model_limit(
 ) -> Result<sys::napi_value> {
     let state = L::new(&env, state);
     let mtime = L::new(&env, mtime);
+    Ok(cached(
+        state,
+        mtime,
+        L::new(&env, id),
+        || L::new(&env, read).call_plain(&[L::new(&env, file)]),
+        |id| L::new(&env, plain_fields).call_plain(&[id])?.truthy(),
+    )?
+    .raw())
+}
+fn cached<'a>(
+    state: L<'a>,
+    mtime: L<'a>,
+    id: L<'a>,
+    read: impl FnOnce() -> Result<L<'a>>,
+    plain: impl FnOnce(L<'a>) -> Result<bool>,
+) -> Result<L<'a>> {
     let mut snapshot = state.get(c"snapshot")?;
     if snapshot.undefined()? || !state.get(c"mtime")?.equals(mtime)? {
-        let next = L::new(&env, read).call_plain(&[L::new(&env, file)])?;
+        let next = read()?;
         snapshot = if next.undefined()? {
             state.get(c"snapshot")?
         } else if next.get(c"catalog")?.kind()? != sys::ValueType::napi_object {
@@ -134,15 +150,15 @@ pub fn open_code_cached_model_limit(
     }
     // Model coercion can reset or replace the cache. This lookup still
     // belongs to the file snapshot selected before that coercion.
-    let id = model_key(L::new(&env, id))?;
+    let id = model_key(id)?;
     let catalog = snapshot.optional(c"catalog")?;
     let memo = snapshot.optional(c"memo")?;
-    if memo.nullish()? || !L::new(&env, plain_fields).call_plain(&[id])?.truthy()? {
-        return Ok(resolve(catalog, id)?.raw());
+    if memo.nullish()? || !plain(id)? {
+        return resolve(catalog, id);
     }
     let hit = memo.get(c"get")?.call(memo, &[id])?;
     if !hit.undefined()? {
-        return Ok(hit.raw());
+        return Ok(hit);
     }
     let result = resolve(catalog, id)?;
     // Unknown model names are unbounded. Limit the answers retained by each
@@ -153,5 +169,168 @@ pub fn open_code_cached_model_limit(
         memo.get(c"delete")?.call(memo, &[oldest])?;
     }
     memo.get(c"set")?.call(memo, &[id, result])?;
-    Ok(result.raw())
+    Ok(result)
+}
+
+use crate::{
+    host_methods::{call, method},
+    js_live::{fields, spread},
+    route_response::{num, text},
+};
+use napi::bindgen_prelude::ToNapiValue;
+
+fn plain<'a>(intrinsics: L<'a>, id: L<'a>) -> Result<bool> {
+    let global = intrinsics.global()?;
+    let o = global.get(c"Object")?;
+    let array = global.get(c"Array")?.get(c"prototype")?;
+    let iterator = global.get(c"Symbol")?.get(c"iterator")?;
+    if !o.get(c"values")?.equals(intrinsics.get(c"values")?)?
+        || !array
+            .get_key(iterator)?
+            .equals(intrinsics.get(c"iterator")?)?
+        || !global
+            .get(c"Math")?
+            .get(c"min")?
+            .equals(intrinsics.get(c"min")?)?
+    {
+        return Ok(false);
+    }
+    let reflect = global.get(c"Reflect")?;
+    for name in [c"Object", c"Array", c"String", c"Number", c"Boolean"] {
+        let proto = global.get(name)?.get(c"prototype")?;
+        if (name == c"Object" || name == c"Array")
+            && call(reflect, c"has", &[proto, id])?.truthy()?
+        {
+            return Ok(false);
+        }
+        for key in [c"models", c"limit", c"context", c"output"] {
+            if proto.has(key)? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+fn file_limit<'a>(state: L<'a>, id: L<'a>) -> Result<L<'a>> {
+    let deps = state.get(c"deps")?;
+    let file = if state.get(c"customPath")?.truthy()? {
+        deps.get(c"cachePath")?
+    } else {
+        state.get(c"defaultPath")?.call_plain(&[])?
+    };
+    let fs = state.get(c"fs")?;
+    let stat = state.catch(|| call(fs, c"statSync", &[file]))?;
+    let Some(stat) = stat else {
+        return resolve(state.from_value(&V::Null)?, model_key(id)?);
+    };
+    let intrinsics = state.get(c"intrinsics")?;
+    let read = || {
+        let snapshot = state.catch(|| {
+            let json = state.global()?.get(c"JSON")?;
+            let parse = json.get(c"parse")?;
+            let contents = call(fs, c"readFileSync", &[file, text(state, "utf8")?])?;
+            let catalog = parse.call(json, &[contents])?;
+            let memo = if parse.equals(intrinsics.get(c"parse")?)? {
+                state.global()?.get(c"Map")?.construct(&[])?
+            } else {
+                state.from_value(&V::Null)?
+            };
+            fields(state, &[("catalog", catalog), ("memo", memo)])
+        })?;
+        snapshot
+            .map(Ok)
+            .unwrap_or_else(|| state.from_value(&V::Undefined))
+    };
+    spread(cached(state, stat.get(c"mtimeMs")?, id, read, |id| {
+        plain(intrinsics, id)
+    })?)
+}
+#[napi]
+pub fn create_opencode_limit_resolver(
+    env: Env,
+    deps: Unknown<'_>,
+    fs: Unknown<'_>,
+    default_path: Unknown<'_>,
+    intrinsics: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let deps = L::new(&env, deps);
+    let fs_impl = deps.get(c"fsImpl")?;
+    let state = fields(
+        deps,
+        &[
+            ("deps", deps),
+            (
+                "fs",
+                if fs_impl.truthy()? {
+                    fs_impl
+                } else {
+                    L::new(&env, fs)
+                },
+            ),
+            ("customPath", deps.get(c"cachePath")?),
+            ("defaultPath", L::new(&env, default_path)),
+            ("intrinsics", L::new(&env, intrinsics)),
+            ("snapshot", deps.from_value(&V::Undefined)?),
+            ("mtime", num(deps, -1.)?),
+        ],
+    )?;
+    // resolveLimit is deliberately generic; callers may borrow it and substitute this.resolve.
+    let resolve_limit = env.create_function_from_closure::<Unknown<'_>, sys::napi_value, _>(
+        "resolveLimit",
+        |ctx| {
+            let this = L::new(ctx.env, ctx.this()?);
+            let id = if ctx.length() == 0 {
+                this.from_value(&V::Undefined)?
+            } else {
+                L::new(ctx.env, ctx.get(0)?)
+            };
+            let row = call(this, c"resolve", &[id])?;
+            Ok(fields(
+                this,
+                &[
+                    ("context", row.get(c"context")?),
+                    ("output", row.get(c"output")?),
+                ],
+            )?
+            .freeze()?
+            .raw())
+        },
+    )?;
+    Ok(fields(
+        state,
+        &[
+            (
+                "resolve",
+                method(&env, state, "resolve", 1, 1, |s, a| file_limit(s, a[0]))?,
+            ),
+            (
+                "resolveLimit",
+                L::new(&env, resolve_limit.into_unknown(&env)?),
+            ),
+            (
+                "resetCache",
+                method(&env, state, "resetCache", 0, 0, |s, _| {
+                    s.set(c"snapshot", s.from_value(&V::Undefined)?)?;
+                    s.set(c"mtime", num(s, -1.)?)?;
+                    s.from_value(&V::Undefined)
+                })?,
+            ),
+        ],
+    )?
+    .freeze()?
+    .raw())
+}
+
+#[napi]
+pub fn open_code_fallback_limit(env: Env) -> Result<sys::napi_value> {
+    let anchor = L::new(&env, ().into_unknown(&env)?);
+    Ok(fields(
+        anchor,
+        &[
+            ("context", num(anchor, FALLBACK_CONTEXT as f64)?),
+            ("output", num(anchor, FALLBACK_OUTPUT as f64)?),
+        ],
+    )?
+    .freeze()?
+    .raw())
 }

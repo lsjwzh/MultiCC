@@ -14,6 +14,8 @@ test('session bounded-context core has no host or cross-context dependencies', (
   const files = fs.readdirSync('src/session', { withFileTypes: true })
     .filter(entry => entry.isFile() && entry.name.endsWith('.js'))
     .map(entry => path.join('src/session', entry.name));
+  const historyPort = path.join('src/session', 'chat-history-service', 'index.js');
+  files.push(historyPort);
   assert.ok(files.length >= 5);
   for (const file of files) {
     for (const dependency of requires(file)) {
@@ -28,10 +30,10 @@ test('session bounded-context core has no host or cross-context dependencies', (
       const nativeCorePort = (file === path.join('src/session', 'hibernation-composition.js')
         || file === path.join('src/session', 'records.js')
         || file === path.join('src/session', 'hibernation.js')
-        || file === path.join('src/session', 'chat-history-service.js')
         || file === path.join('src/session', 'workspace-service.js')
         || file === path.join('src/session', 'query-service.js'))
-        && dependency === '../native/runtime';
+        && dependency === '../native/binding'
+        || file === historyPort && dependency === '../../native/binding';
       assert.equal(
         dependency.startsWith('node:') || dependency.startsWith('./')
           || nativeCorePort,
@@ -144,13 +146,13 @@ test('dispatch admission derives busy from classify plus the repo lease, never f
 });
 
 test('the classify-derived busy predicate exempts transient assessing work', () => {
-  const source = fs.readFileSync('src/session-work/host.js', 'utf8');
-  const start = source.indexOf('function isRunActive(sessionId) {');
+  const source = fs.readFileSync('native/addon/src/session_work_host/transitions/recovery.rs', 'utf8');
+  const start = source.indexOf('fn run_active');
   assert.ok(start >= 0);
-  const body = source.slice(start, source.indexOf('\n  }', start));
+  const body = source.slice(start, source.indexOf('\n}', start));
   // Aux attribution is asynchronous bookkeeping. It must not make the runner
   // look busy and block the session's next real request.
-  assert.match(body, /queueState === 'assessing'/);
+  assert.match(body, /c"queueState"[\s\S]*?"assessing"/);
   assert.doesNotMatch(body, /isStreaming|claudeProc|chatStream/);
 });
 
@@ -165,26 +167,27 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
   assert.match(gateway, /active: !!isTargetBusy\(s\.id\)/);
   assert.doesNotMatch(gateway, /activeChat\.isStreaming|clients\.size > 0/);
   for (const file of [
-    'src/task-board/core.js', 'src/task-board/normalize.js',
+    'native/addon/src/task_board_runtime/core.rs', 'src/task-board/core/index.js', 'src/task-board/normalize.js',
     'src/task-board/native-bridge.js', 'src/task-board/routing.js',
     'native/addon/src/task_board_view.rs', 'src/task-board/planning.js',
-    'src/routes/task-board.js',
+    'src/routes/task-board/index.js', 'native/addon/src/task_board_runtime/projection/events.rs',
+    'native/addon/src/task_board_runtime/projection/view.rs',
   ]) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);
   }
 });
 
 test('liveness never becomes a display state and never completes work', () => {
-  const workHost = fs.readFileSync('src/session-work/host.js', 'utf8');
-  const start = workHost.indexOf('function getRunState(sessionId) {');
-  const runState = workHost.slice(start, workHost.indexOf('\n  }', start));
+  const workHost = fs.readFileSync('native/addon/src/session_work_host/transitions/recovery.rs', 'utf8');
+  const start = workHost.indexOf('fn run_state');
+  const runState = workHost.slice(start, workHost.indexOf('\n}', start));
   assert.doesNotMatch(runState, /isStreaming|claudeProc|liveness/);
   // The liveness verdict (working|idle|stalled|unknown) has its own pill and must
   // never leak into the run-state vocabulary the cards and bars render from.
   assert.doesNotMatch(workHost, /'(?:working|stalled)'/);
   // Classify publishes only a turn projection. A D verdict returns succeeded
   // directly and cannot manufacture TaskBoard lifecycle done.
-  assert.match(runState, /return deps\.classifyDisplay\(classifyState\)\.cardStatus/);
+  assert.match(runState, /c"classifyDisplay"[\s\S]*?c"cardStatus"/);
   assert.doesNotMatch(runState, /\bdone\b|completed/);
 });
 

@@ -4,7 +4,7 @@ const { createSessionQueryService } = require('../session/query-service');
 const { createWorkspaceService } = require('../session/workspace-service');
 const { classifyDisplay } = require('../classify/vocab');
 const { taskShortCode } = require('../native/task-domain');
-const { auxVerdictStaleness } = require('../native/runtime');
+const { auxVerdictStaleness } = require('../native/binding');
 const { markTaskAchievedFacts, markTaskAchievedWrite } = require('./task-goal');
 const { mountUnattendedRoutes } = require('./orchestration-host');
 const {

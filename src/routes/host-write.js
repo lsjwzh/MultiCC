@@ -1,6 +1,6 @@
 'use strict';
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { createPowerSettingsHandler, mountPowerWriteRoutes } = require('./host-power');
 
 const LOCAL_ONLY_MESSAGE = '仅可在本机修改';

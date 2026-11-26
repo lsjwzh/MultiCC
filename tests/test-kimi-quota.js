@@ -14,7 +14,7 @@ const {
   balanceHost,
   KIMI_SUBSCRIPTION_URL,
 } = require('../src/routes/kimi-quota');
-const { renderQuotaBar } = require('../src/native/runtime').getQuotaBarView();
+const { renderQuotaBar } = require('../src/native/binding').getQuotaBarView();
 const { resolveQuotaBar, humanizeCountdown } = require('../public/quota-bar-view');
 const { isKimiBaseUrl, quotaBarClick } = require('../public/chat-rate-limit');
 

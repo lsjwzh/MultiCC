@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const { canonicalize } = require('../src/outbox');
 
 test('native canonicalization matches live JavaScript array methods and exception identity', () => {
@@ -76,7 +76,7 @@ test('overridden JSON.stringify results match JavaScript without crashing the pr
   const { spawnSync } = require('node:child_process');
   const script = String.raw`
     const assert = require('node:assert/strict');
-    const { getNative } = require('./src/native/runtime');
+    const { getNative } = require('./src/native/binding');
     const { canonicalize } = require('./src/outbox');
     const native = getNative();
     const original = JSON.stringify;

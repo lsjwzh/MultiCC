@@ -4,7 +4,7 @@ const path = require('path');
 const { createRouterToolRuntime } = require('./router-tool-runtime');
 const { applyRouterMcpEnv } = require('./cli-adapters/router-mcp');
 const secretsVault = require('./secrets-vault');
-const { getWriterGroup } = require('./native/runtime');
+const { getWriterGroup } = require('./native/binding');
 
 function createRouterToolHost({
   express,

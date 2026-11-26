@@ -10,7 +10,7 @@ const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createAcpAdapter, createGeminiAdapter, createGrokAdapter } = require('../src/cli-adapters/acp');
 const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
 const { pickPermissionOption, routerMcpServers } = require('./helpers/native-acp-bridge');
-const { gatewayPath } = require('../src/native/runtime');
+const { gatewayPath } = require('../src/native/binding');
 
 const BRIDGE = 'acp-bridge';
 
@@ -229,7 +229,7 @@ test('auth failures carry the agent login hint', async () => {
 
 test('OpenCode ACP context errors survive the bridge and fail without replaying the prompt', async () => {
   const { createApiErrorPolicyRuntime, retryNotice } = require('../src/chat/api-error-policy');
-  const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/runtime').finalizationPlan;
+  const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
   for (const mode of ['context', 'context-name']) {
     const { code, events, requests } = await runBridge([mode, '--session-id', 'ses_old', '--', 'continue']);
     assert.equal(code, 1);
@@ -348,7 +348,7 @@ test('tool cards announce immediately, update when input arrives, and dedupe rep
 });
 
 test('Rust adapter reducer updates tool_update input in place and synthesizes missing tool_start/thinking ids', () => {
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   const native = getNative();
   const turn = { turnId: 'turn-1' };
   const runner = { turnId: 'turn-1', runnerId: 'r-1' };
@@ -415,7 +415,7 @@ test('non-success stop reasons surface as errors', () => {
 
 
 test('Gemini resolves to its real adapter when registered', () => {
-  const { createCliProviderRegistry } = require('../src/native/runtime');
+  const { createCliProviderRegistry } = require('../src/native/binding');
   const fallback = { name: 'claude', buildInvocation: () => ({ cmd: 'claude' }), decodeEvent: () => [] };
   const gemini = createGeminiAdapter({ cmd: 'gemini' });
   const registry = createCliProviderRegistry([fallback, gemini]);
@@ -427,7 +427,7 @@ test('Gemini resolves to its real adapter when registered', () => {
 
 // Byte-identical oracle from 83c714ba; it imports no production modules.
 const legacyRegistry = require('./helpers/legacy-cli-provider-registry').createCliProviderRegistry;
-const nativeRegistry = require('../src/native/runtime').createCliProviderRegistry;
+const nativeRegistry = require('../src/native/binding').createCliProviderRegistry;
 const registryAdapter = name => ({ name, buildInvocation() { return this; }, decodeEvent() { return []; } });
 
 function registryOutcome(run) {
@@ -542,7 +542,7 @@ test('Rust registry matches the legacy lookup for registered and unregistered la
 });
 
 test('Rust CLI registry closures retain live adapters, release cycles and do not keep a child alive', async () => {
-  const runtime = path.resolve(__dirname, '../src/native/runtime');
+  const runtime = path.resolve(__dirname, '../src/native/binding');
   const source = `
     const assert = require('node:assert/strict');
     const { createCliProviderRegistry: create } = require(${JSON.stringify(runtime)});

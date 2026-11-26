@@ -3,7 +3,7 @@
 const { createChatHostCoordinator } = require('./host-coordinator');
 const { redactProviderRouteCapability } = require('../observability');
 const { protocolFamilyOf } = require('../cli/cli-capability');
-const { getTurnProgress } = require('../native/runtime');
+const { getTurnProgress } = require('../native/binding');
 
 const REQUIRED_PORTS = Object.freeze([
   'appendMessage',

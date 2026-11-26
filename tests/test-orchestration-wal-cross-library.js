@@ -9,7 +9,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const Database = require('better-sqlite3');
-const { getNative, addonPath } = require('../src/native/runtime');
+const { getNative, addonPath } = require('../src/native/binding');
 
 async function stopChild(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;

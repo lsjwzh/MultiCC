@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const { gitRun, gitWorktreeMergeState, gitWorktreeRemove } = require('../git/service');
 const { isOpenRunState } = require('../classify/vocab');
-const { taskDirId } = require('./core');
+const { taskDirId } = require('./core/index');
 
 function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getState,
   getRunState, isSessionBusy = () => false, dropHistoryMessages, canDeleteHistory, deleteHistory,

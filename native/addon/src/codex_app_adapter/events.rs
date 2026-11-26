@@ -119,7 +119,7 @@ pub(super) fn question(params: L<'_>) -> Result<L<'_>> {
     )
 }
 fn label(ports: L<'_>) -> Result<L<'_>> {
-    port(ports, c"displayNameOf", &[text(ports, "codex-exp")?])
+    ports.get(c"displayName")
 }
 fn collab_result(item: L<'_>) -> Result<L<'_>> {
     let constructor = item.global()?.get(c"Object")?;

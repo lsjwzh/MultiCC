@@ -3,7 +3,7 @@
 // Rust owns switching policy, patches and DTOs. This host retains JS object
 // identity, persistence transactions, process handles and asynchronous ports.
 const crypto = require('node:crypto');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { selectionKey } = require('../providers/auto-provider-config');
 const capability = require('./cli-capability');
 const { nativeSessionExists } = require('./native-session-exists');
@@ -69,7 +69,7 @@ function createCliSwitchRuntime(options) {
   }
   const clock = options.clock || Date.now;
   const handoffIdFactory = options.handoffIdFactory || (() => `handoff_${crypto.randomBytes(8).toString('hex')}`);
-  const prepareRoute = options.prepareCliSwitchRoute || require('../native/runtime').prepareCliSwitchRoute;
+  const prepareRoute = options.prepareCliSwitchRoute || require('../native/binding').prepareCliSwitchRoute;
   const preparations = new Map();
   const tools = createCliToolsHost(options);
 

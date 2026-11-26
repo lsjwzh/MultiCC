@@ -1,8 +1,8 @@
 'use strict';
 
 const { extractUpstreamError } = require('../upstream-error');
-const { classifyProviderError } = require('../provider-error');
-const { getNative } = require('../native/runtime');
+const { errorFields } = require('../provider-error');
+const { getNative } = require('../native/binding');
 
 // The policy lives in native/core/src/api_error_policy.rs. This module is the
 // host bridge: it runs the two dependencies that are themselves host services
@@ -46,95 +46,17 @@ function normalizeRejection(value) {
   return native().apiNormalizeRejection(value);
 }
 
-// Everything `normalizeApiError` needs that only the host can compute: the
-// classifier and extractor are host services, so they run here and their
-// results travel to Rust as inputs. `apiErrorPrepare` reads the same
-// `source` / `provider` / rejection chain the policy uses (and throws the same
-// TypeError for a nullish receiver).
-function prepareDeps(raw, context) {
-  const prepared = native().apiErrorPrepare(raw, context);
-  const { source, provider, rejection } = prepared;
-  const trusted = TRUSTED_TEXT_SOURCES.has(source);
-  const failure = trusted
-    ? classifyProviderError({
-      ...raw,
-      ...(context.category ? { category: context.category } : {}),
-      ...(context.code ? { code: context.code } : {}),
-    }, { provider, source })
-    : null;
-  const upstream = trusted ? extractUpstreamError(raw) : {};
-  return {
-    source,
-    provider,
-    failure,
-    upstream,
-    rejection: normalizeRejection(rejection),
-  };
-}
-
-// When the provider's text is the only evidence of an entitlement refusal, the
-// policy synthesizes a rejection object. The Node implementation reused one
-// module-level frozen object for it, so reproduce that: share the first one the
-// policy returns instead of handing out a fresh copy per call. A structured
-// rejection that merely looks the same stays an ordinary value.
-let textEntitlementRejection = null;
-
-// `normalizeRejection` freezes what it returns, but the lossless value bridge
-// copies nested objects, so a policy result loses that freeze. Restore it for
-// the values the policy itself built (`freeze`), and swap in the shared
-// entitlement object when Rust reports the synthesized one. A caller-supplied
-// rejection on the spread path is neither frozen nor replaced: the Node
-// implementation handed that reference back untouched.
-function shareRejection(value, flagged, freeze) {
-  const holder = value.error && typeof value.error === 'object' ? value.error : value;
-  const rejection = holder.rejection;
-  if (!rejection || typeof rejection !== 'object') return value;
-  if (flagged) {
-    if (textEntitlementRejection == null) textEntitlementRejection = Object.freeze(rejection);
-    holder.rejection = textEntitlementRejection;
-  } else if (freeze && !Object.isFrozen(rejection)) {
-    Object.freeze(rejection);
-  }
-  return value;
-}
+// The two projections share one synthesized entitlement object; V8 owns the
+// user clock and metadata extractors, Rust owns normalization and the decision.
+const policyPorts = { categories: CATEGORY_SET, trusted: TRUSTED_TEXT_SOURCES,
+  shared: null, errorFields, extract: extractUpstreamError };
 
 function normalizeApiError(raw = {}, context = {}, deps = {}) {
-  const now = typeof deps.now === 'function' ? Number(deps.now()) : Date.now();
-  const prepared = prepareDeps(raw, context);
-  const { result, textEntitlement } = native().apiErrorNormalize(raw, context, { ...prepared, now });
-  return Object.freeze(shareRejection(result, textEntitlement, true));
+  return native().apiPolicyNormalized(policyPorts, raw, context, deps);
 }
 
 function decideApiErrorPolicy(rawError, context = {}, deps = {}) {
-  const now = typeof deps.now === 'function' ? Number(deps.now()) : Date.now();
-  const random = typeof deps.random === 'function' ? deps.random : Math.random;
-  // `rawError && CATEGORY_SET.has(rawError.category)` short-circuits before the
-  // host classifier runs, exactly as before.
-  const known = !!rawError && CATEGORY_SET.has(rawError.category);
-  const prepared = known
-    ? { source: '', provider: '', failure: null, upstream: {}, rejection: null }
-    : prepareDeps(rawError, context);
-  const { result, textEntitlement } = native().apiErrorDecide(
-    rawError, context, { ...prepared, now, known }, random,
-  );
-  // An already-normalized error keeps carrying the shared rejection; the value
-  // bridge copies it, so restore the identity the spread used to preserve.
-  const carried = !!rawError && textEntitlementRejection != null
-    && rawError.rejection === textEntitlementRejection;
-  // The spread path hands back the caller's own rejection. If that object was
-  // frozen, the copy must be too — otherwise it stays a plain value, exactly as
-  // the caller handed it in.
-  const inputRejection = rawError && typeof rawError === 'object' ? rawError.rejection : undefined;
-  const preserveFrozen = !!inputRejection && typeof inputRejection === 'object'
-    && Object.isFrozen(inputRejection);
-  const shared = shareRejection(result, textEntitlement || carried, !known || preserveFrozen);
-  // The Node implementation froze the error object too (the spread in
-  // `withMaxAttempts` produced a fresh frozen copy); the value bridge copies
-  // it, so restore that.
-  if (shared.error && typeof shared.error === 'object' && !Object.isFrozen(shared.error)) {
-    Object.freeze(shared.error);
-  }
-  return Object.freeze(shared);
+  return native().apiPolicyDecision(policyPorts, rawError, context, deps);
 }
 
 function parseRetryAfter(value, now = Date.now()) {
@@ -271,6 +193,7 @@ function createApiErrorPolicyRuntime(options = {}) {
 }
 
 module.exports = {
+  policyPorts,
   CATEGORIES,
   normalizeApiError,
   decideApiErrorPolicy,

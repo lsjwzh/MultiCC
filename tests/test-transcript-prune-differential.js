@@ -23,7 +23,7 @@ const previousHome = process.env.HOME;
 process.env.HOME = home;
 
 const legacy = require('./helpers/legacy-transcript-prune');
-const current = require('../src/native/runtime').getTranscriptPruning();
+const current = require('../src/native/binding').getTranscriptPruning();
 
 test.after(() => {
   process.env.HOME = previousHome;

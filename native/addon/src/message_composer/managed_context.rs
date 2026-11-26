@@ -1,5 +1,5 @@
-//! A turn retains its prepared plan across attempts. The JS closures keep the
-//! state alive; each native call only borrows it for the duration of the call.
+//! A turn retains its prepared plan across attempts. The native method
+//! owner and its callbacks share one prepared state across attempts.
 use super::{render_prompt, text, Env, Result, Unknown, L, V};
 use crate::js_iteration::read;
 use crate::js_live::{fields, invoke, spread};
@@ -21,7 +21,9 @@ pub fn managed_context_prepare(
     ports: Unknown<'_>,
     assign: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let ports = L::new(&env, ports);
+    Ok(prepare_state(L::new(&env, ports), Some(L::new(&env, assign)))?.raw())
+}
+fn prepare_state<'a>(ports: L<'a>, assign: Option<L<'a>>) -> Result<L<'a>> {
     let host = ports.get(c"host")?;
     let memory = ports.get(c"memory")?;
     let session = ports.get(c"sessionName")?;
@@ -39,11 +41,11 @@ pub fn managed_context_prepare(
         ],
     )?;
     if !input.get(c"receiptId")?.truthy()? || !host.optional(c"prepareTaskContext")?.truthy()? {
-        return Ok(ports.from_value(&V::Null)?.raw());
+        return ports.from_value(&V::Null);
     }
     let plan = prepare(host, session, input)?;
     if !plan.truthy()? {
-        return Ok(ports.from_value(&V::Null)?.raw());
+        return ports.from_value(&V::Null);
     }
     let reference = fields(
         turn,
@@ -53,8 +55,12 @@ pub fn managed_context_prepare(
             ("host", host),
         ],
     )?;
-    L::new(&env, assign).call_plain(&[turn, text(turn, "managedContext")?, reference])?;
-    Ok(fields(
+    if let Some(assign) = assign {
+        assign.call_plain(&[turn, text(turn, "managedContext")?, reference])?;
+    } else {
+        turn.assign(c"managedContext", reference)?;
+    }
+    fields(
         ports,
         &[
             ("seed", plan.get(c"text")?),
@@ -63,8 +69,7 @@ pub fn managed_context_prepare(
             ("host", host),
             ("sessionName", session),
         ],
-    )?
-    .raw())
+    )
 }
 
 #[napi]
@@ -73,16 +78,17 @@ pub fn managed_context_role(
     memory: Unknown<'_>,
     record: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let memory = L::new(&env, memory);
+    Ok(role(L::new(&env, memory), L::new(&env, record))?.raw())
+}
+fn role<'a>(memory: L<'a>, record: L<'a>) -> Result<L<'a>> {
     let resolve = read(memory, c"resolveRolePrompt")?;
     let options = fields(memory, &[("managed", memory.from_value(&V::Bool(true))?)])?;
-    Ok(invoke(
+    invoke(
         memory,
         resolve,
-        &[L::new(&env, record), options],
+        &[record, options],
         "memory.resolveRolePrompt",
-    )?
-    .raw())
+    )
 }
 
 #[napi]
@@ -92,10 +98,17 @@ pub fn managed_context_attempt(
     envelope: Unknown<'_>,
     options: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let state = L::new(&env, state);
-    let options = L::new(&env, options);
+    Ok(attempt(
+        &env,
+        L::new(&env, state),
+        L::new(&env, envelope),
+        L::new(&env, options),
+    )?
+    .raw())
+}
+fn attempt<'a>(env: &'a Env, state: L<'a>, envelope: L<'a>, options: L<'a>) -> Result<L<'a>> {
     if !read(options, c"firstTurn")?.is_true()? {
-        return Ok(options.raw());
+        return Ok(options);
     }
     if !read(state.get(c"plan")?, c"initial")?.truthy()? {
         let host = state.get(c"host")?;
@@ -112,7 +125,6 @@ pub fn managed_context_attempt(
         )?;
         state.set(c"plan", plan)?;
     }
-    let envelope = L::new(&env, envelope);
     let updated = spread(envelope)?;
     let layers = read(envelope, c"contextLayers")?;
     let filter = read(layers, c"filter")?;
@@ -141,7 +153,7 @@ pub fn managed_context_attempt(
     }
     let result = spread(options)?;
     result.define_key(text(result, "bareText")?, render_prompt(&env, updated)?)?;
-    Ok(result.raw())
+    Ok(result)
 }
 
 #[napi]
@@ -208,4 +220,44 @@ pub fn managed_context_completed(
         "ref.host.taskContextComplete",
     )?;
     Ok(())
+}
+
+#[napi]
+pub fn managed_context_open(env: Env, options: Unknown<'_>) -> Result<sys::napi_value> {
+    let opts = L::new(&env, options);
+    let ports = fields(opts, &[])?;
+    for key in [
+        c"host",
+        c"memory",
+        c"sessionName",
+        c"persisted",
+        c"turn",
+        c"opts",
+        c"text",
+        c"isFirstTurn",
+    ] {
+        ports.set(key, read(opts, key)?)?;
+    }
+    let state = prepare_state(ports, None)?;
+    if !state.truthy()? {
+        return Ok(state.raw());
+    }
+    let memory = ports.get(c"memory")?;
+    let role = crate::host_methods::method(&env, memory, "rolePrompt", 1, 1, |memory, a| {
+        role(memory, a[0])
+    })?;
+    let attempt = crate::host_methods::method(&env, state, "attempt", 2, 2, |s, a| {
+        let env = Env::from_raw(s.env());
+        let value = attempt(&env, s, a[0], a[1])?;
+        Ok(L::from_raw(s.env(), value.raw()))
+    })?;
+    Ok(fields(
+        state,
+        &[
+            ("seed", state.get(c"seed")?),
+            ("rolePrompt", role),
+            ("attempt", attempt),
+        ],
+    )?
+    .raw())
 }

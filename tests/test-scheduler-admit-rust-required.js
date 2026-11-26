@@ -7,7 +7,7 @@ const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const test = require('node:test');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work');
 
 // These two tests reproduce the constraints on real SQLite without claiming
 // that a simulated worker delay is a production implementation.
@@ -87,15 +87,10 @@ test('pre-snapshot worker yield can change answer task ownership', async t => {
 });
 
 test('scheduler admission is a synchronous Rust domain command without Node canonicalization', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/session-work/scheduler.js'), 'utf8');
-  const start = source.indexOf('  async function admit(');
-  const end = source.indexOf('  async function claim(', start);
-  assert.ok(start >= 0 && end > start, 'cannot locate scheduler admission');
-  const body = source.slice(start, end);
-  assert.equal(/\b(?:compactJson|admitOutboxItem|stableEntryId)\s*\(|\b(?:schedule|payload|item)(?:\.[\w$]+|\[[^\]]+\])+\s*=(?!=)/.test(body), false,
-    'scheduler.admit still canonicalizes and owns schedule/outbox state in Node; synchronous N-API migration alone would retain unbounded large-payload work');
-  assert.match(body, /(?:getNative\(\)\.scheduleAdmit\w*\(|store\.executeScheduleAdmit\()/,
-    'scheduler.admit must call a Rust domain command');
-  assert.match(body, /(?:store\.mutateSync\(|store\.executeScheduleAdmit\()/,
-    'the admitted schedule and outbox must commit in one synchronous host callback');
+  const bridge = fs.readFileSync(path.join(__dirname, '../src/session-work/index.js'), 'utf8');
+  assert.match(bridge, /native\.sessionWorkSchedulerApi\(/);
+  assert.doesNotMatch(bridge, /draft\.|compactJson|admitOutboxItem|stableEntryId/);
+  assert.equal(fs.existsSync(path.join(__dirname, '../src/session-work/scheduler.js')), false);
+  const command = fs.readFileSync(path.join(__dirname, '../native/addon/src/session_work_scheduler/operations.rs'), 'utf8');
+  assert.match(command, /c"executeScheduleAdmit"/);
 });

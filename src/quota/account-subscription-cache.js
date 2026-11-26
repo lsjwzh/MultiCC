@@ -3,7 +3,7 @@
 // Host bridge only. Rust owns persistence, freshness and public projection;
 // the existing OAuth query ports stay here until credential I/O moves to Rust.
 const fs = require('node:fs');
-const { getNative, runNative } = require('../native/runtime');
+const { getNative, runNative } = require('../native/binding');
 const readers = new Map();
 let file = null, entries = {}, loaded = null, queue = Promise.resolve();
 // The front door now writes this database too (the Rust subscription route),

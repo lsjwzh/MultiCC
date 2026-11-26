@@ -38,7 +38,7 @@
 // children a burst of sessions would otherwise leave behind (each CLI child is a
 // real Node process), and high enough that ordinary parallel work never fights
 // the cap.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const DEFAULT_LIMIT = 8;
 const DEFAULT_SWEEP_MS = 5 * 60 * 1000;

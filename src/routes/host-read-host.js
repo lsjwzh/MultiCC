@@ -26,7 +26,7 @@ const { isLocalRequest } = require('../request-locality');
 const { readPowerSettings } = require('./host-power');
 const { createBatteryReader } = require('../host-battery');
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const AGENT_RESOURCES_PATH = '/api/__host/agent-resources';
 const SCAN_HISTORY_PATH = '/api/__host/scan-history';
 const TOKEN_USAGE_PATH = '/api/__host/token-usage';

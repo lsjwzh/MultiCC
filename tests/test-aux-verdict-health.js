@@ -16,7 +16,7 @@ const {
   auxVerdictStaleness,
   fanOutAuxVerdictStaleness,
   taskStateSeed,
-} = require('../src/native/runtime');
+} = require('../src/native/binding');
 const { workspaceEntry } = require('../src/session/workspace-service');
 const { createWorkspaceRuntime } = require('../src/workspace/runtime');
 

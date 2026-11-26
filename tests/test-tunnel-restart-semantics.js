@@ -952,3 +952,20 @@ test('traffic exhaustion suppresses futile auto-restarts and stays visible', wit
   assert.equal(recovered.healthy, true);
   assert.equal(recovered.diagnosis, null);
 }));
+
+test('manual restart with an explicit non-function never executes the default CLI', async t => {
+  const child = require('node:child_process');
+  const commands = [];
+  t.mock.method(child, 'execFile', (file, args, _opts, cb) => {
+    commands.push([file, args]);
+    cb(null, '', '');
+  });
+  await withFreshTunnel(async tunnel => {
+    for (const restarter of [null, false, 0, '']) {
+      const result = await tunnel.restartNow('tailscale', { restarter });
+      assert.equal(result.ok, false);
+      assert.equal(result.error, 'restart_failed');
+    }
+  })();
+  assert.deepEqual(commands, []);
+});

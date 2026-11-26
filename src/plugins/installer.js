@@ -16,7 +16,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;

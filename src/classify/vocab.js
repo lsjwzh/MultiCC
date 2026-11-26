@@ -10,7 +10,7 @@
 // (retired C collapses to W, the UPPERCASE-phase label fallback, the
 // reference-identity fast path below) are guarded by tests/test-classify-vocab.js.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
 
 const native = getNative();

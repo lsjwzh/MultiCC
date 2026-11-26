@@ -12,7 +12,7 @@ const {
   normalizeRedirect,
   timingSafeEqualText,
 } = require('../src/auth-security');
-const { resolveNetworkPolicy, selectListenPort } = require('../src/native/runtime').getNetworkPolicy();
+const { resolveNetworkPolicy, selectListenPort } = require('../src/native/binding').getNetworkPolicy();
 const {
   createExactSecretStreamRedactor, createLogger, createMetrics, redact, redactProviderRouteCapability,
 } = require('../src/observability');
@@ -59,7 +59,7 @@ test('production keeps the requested port while development may select a fallbac
 });
 
 const frozenNetworkPolicy = require('./helpers/frozen-file-batch22/network-policy');
-const networkPolicyApi = () => require('../src/native/runtime').getNetworkPolicy();
+const networkPolicyApi = () => require('../src/native/binding').getNetworkPolicy();
 function networkOutcome(api, name, make) {
   const events = [];
   const sentinel = new RangeError('network sentinel');
@@ -124,7 +124,7 @@ test('network port selection keeps sync reads, async rejection and thenable iden
 });
 
 test('port finder reads options now and invokes the live native port in a microtask', async () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const original = native.networkPolicyFindAvailablePort;
   async function capture(api) {
     const events = [];

@@ -23,7 +23,7 @@ fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 fs.mkdirSync(process.env.HOME, { recursive: true });
 
 const { createProviderRoutes } = require('../src/routes/providers.js');
-const createSessionRecordFactory = deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, require('node:path'));
+const createSessionRecordFactory = deps => require('../src/native/binding').getNative().sessionCreateRecordFactory(deps, require('node:path'));
 const { isResidentSession } = require('../src/cli/cli-capability');
 
 const NATIVE = 'opencode-native:opencode-go';

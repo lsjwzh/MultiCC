@@ -25,12 +25,11 @@ const test = require('node:test');
 
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
 const { createOutbox, admitOutboxItem } = require('../src/outbox');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
-const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
+const { createSessionWorkScheduler, createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work');
 const { createUnattendedHost } = require('../src/unattended/host');
 const nativeKernel = require('../src/unattended/kernel');
-const { createClassifyStateMachine } = require('../src/classify/state-machine');
-const { createSessionDelivery } = require('../src/native/runtime').getSessionDeliveryApi();
+const { createClassifyStateMachine } = require('../src/classify/task-attribution');
+const { createSessionDelivery } = require('../src/native/binding').getSessionDeliveryApi();
 const waitInjector = require('../src/wait/injector');
 const { createProcessingWatchdog } = require('../src/chat/process-watchdog');
 

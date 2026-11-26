@@ -82,7 +82,7 @@
       "migrationStrategy": "Version the materialized-home layout and add a per-provider copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/core.js",
+          "file": "src/providers/host.js",
           "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');"
         },
         {
@@ -99,7 +99,7 @@
       "migrationStrategy": "Keep the root disposable, permission-restricted and capability-free in its pathname; prune abandoned overlays at startup without copying them forward.",
       "sources": [
         {
-          "file": "src/providers/core.js",
+          "file": "src/providers/host.js",
           "anchor": "const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');"
         }
       ]
@@ -112,7 +112,7 @@
       "migrationStrategy": "Version the canonical layout; copy forward only a uniquely identified native rollout with durable atomic no-overwrite semantics, retain legacy sources for rollback, and fail closed on ambiguity.",
       "sources": [
         {
-          "file": "src/providers/core.js",
+          "file": "src/providers/host.js",
           "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');"
         },
         {
@@ -142,7 +142,7 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/core.js",
+          "file": "src/providers/host.js",
           "anchor": "const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');"
         }
       ]
@@ -155,7 +155,7 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/core.js",
+          "file": "src/providers/host.js",
           "anchor": "const KIMI_HOMES_DIR = path.join(os.homedir(), '.multicc', 'kimi-homes');"
         }
       ]
@@ -168,7 +168,7 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/core.js",
+          "file": "src/providers/host.js",
           "anchor": "const GROK_HOMES_DIR = path.join(os.homedir(), '.multicc', 'grok-homes');"
         }
       ]
@@ -307,8 +307,8 @@
       "migrationStrategy": "Keep production assets below the dedicated voice runtime root, verify every downloaded artifact before activation, and reinstall from the pinned manifest instead of copying binaries when the layout changes.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'runtimes', 'voice')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"voiceRuntimesDir\", &[\"runtimes\", \"voice\"])"
         }
       ]
     },
@@ -320,8 +320,8 @@
       "migrationStrategy": "Keep the probe read-only; the path exists only so an frpc the user dropped there (or one an older MultiCC installed) is preferred over a stale PATH copy. Drop the historical-root probe once no supported install can carry a legacy binary.",
       "sources": [
         {
-          "file": "src/tunnel.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'bin')"
+          "file": "native/addon/src/tunnel/providers/cli.rs",
+          "anchor": "text(s, \".multicc\")?"
         }
       ]
     },
@@ -333,8 +333,8 @@
       "migrationStrategy": "Keep generated files non-overwriting and disposable; a user can remove the registered workspace without risking package source or credentials.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'samples')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"sampleWorkspacesDir\", &[\"samples\"])"
         }
       ]
     },
@@ -346,8 +346,8 @@
       "migrationStrategy": "Preserve the existing workspace and registered path during upgrades; any relocation must copy user files and Git history without overwriting or deleting the original workspace.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'workspaces', 'default')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"defaultWorkspacePath\", &[\"workspaces\", \"default\"])"
         }
       ]
     },
@@ -372,8 +372,8 @@
       "migrationStrategy": "Recreate disposable login working directories beneath the configured data root when the layout changes; retain account credentials in the native CLI's own credential store.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'login-workspaces')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "user_base(ports, root)?, &[\"login-workspaces\"]"
         }
       ]
     },
@@ -385,8 +385,8 @@
       "migrationStrategy": "Keep the root disposable and permission-restricted and enforce the 7-day per-file sweep (empty session directories dropped, symlinks left untouched) instead of copying anything forward; when the data root becomes mandatory, drop the historical-root branch rather than migrating the contents.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'assist')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"assistDir\", &[\"assist\"])"
         }
       ]
     },
@@ -437,8 +437,8 @@
       "migrationStrategy": "Retain repository-local ownership; add retention and explicit user cleanup without moving backups into process-global state.",
       "sources": [
         {
-          "file": "src/git/service.js",
-          "anchor": "const backupDir = path.join(commonDir, 'multicc-backups', operationId);"
+          "file": "native/addon/src/git_service/service_safety.rs",
+          "anchor": ".join(\"multicc-backups\")"
         }
       ]
     },
@@ -497,8 +497,8 @@
           "anchor": "const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');"
         },
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'detached')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"detachedDir\", &[\"detached\"])"
         }
       ]
     },
@@ -551,8 +551,8 @@
       "owner": "Rust task store",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "taskShellDbFile: path.join(root, 'task-shells.sqlite')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"taskShellDbFile\", &[\"task-shells.sqlite\"])"
         },
         {
           "file": "native/core/src/task_store.rs",
@@ -570,7 +570,7 @@
       "migrationStrategy": "Derive the override root from MULTICC_DATA_DIR, copy existing per-session files forward atomically with private permissions, keep the historical root as a read-only fallback for one release, and prune overrides whose session no longer exists.",
       "sources": [
         {
-          "file": "src/native/runtime.js",
+          "file": "src/native/binding.js",
           "anchor": "const settingsOverridesDir = path.join(require('node:os').homedir(), '.multicc', 'claude-settings-overrides');"
         },
         {
@@ -647,8 +647,8 @@
       "migrationStrategy": "Each plugin is a self-contained folder that is reinstalled from the catalog (sha256-verified asset) instead of being copied when the layout changes; plugin settings live in the plugin data directory and survive an uninstall.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'plugins')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"userPluginsDir\", &[\"plugins\"])"
         }
       ]
     },
@@ -660,8 +660,8 @@
       "migrationStrategy": "Disposable: deleting it only means the next refresh downloads the list again; never migrate its contents.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "? path.join(os.homedir(), '.multicc', 'plugins-catalog')"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "(\"pluginCatalogDir\", &[\"plugins-catalog\"])"
         }
       ]
     },
@@ -703,8 +703,8 @@
       "migrationStrategy": "Disposable cache: deleting it only falls back to the bundled cli_efforts.json until the next background refresh; never migrate its contents.",
       "sources": [
         {
-          "file": "src/paths.js",
-          "anchor": "cliEffortCatalogFile: path.join(root === PKG_ROOT ? path.join(os.homedir(), '.multicc') : root, 'catalogs', 'cli-efforts.json'),"
+          "file": "native/addon/src/app_paths.rs",
+          "anchor": "&[\"catalogs\", \"cli-efforts.json\"]"
         }
       ]
     }

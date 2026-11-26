@@ -208,7 +208,7 @@ test('server.js gates session worktree destruction on slot ownership (loaned tas
 });
 
 const { createSessionHibernationRuntime } = require('../src/session/hibernation');
-const { createSessionPersistence } = require('../src/native/runtime');
+const { createSessionPersistence } = require('../src/native/binding');
 const { createTaskLifecycleHost } = require('../src/task-board/lifecycle-host');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const { recordsOf, resetTaskState } = require('./helpers/session-records');

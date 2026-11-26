@@ -5,7 +5,7 @@
 const path = require('node:path');
 const crypto = require('node:crypto');
 const os = require('node:os');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const DEFAULT_THRESHOLD = 0.85;
 function clampThreshold(value) {

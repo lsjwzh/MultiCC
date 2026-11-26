@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const legacy = require('./helpers/session-pending-configuration-oracle');
-const { getNative, assignHostProperty } = require('../src/native/runtime');
+const { getNative, assignHostProperty } = require('../src/native/binding');
 const native = {
   readConfiguration: (...args) => getNative().sessionPendingReadConfiguration(...args),
   desiredSession: session => getNative().sessionPendingDesiredSession(session, assignHostProperty),

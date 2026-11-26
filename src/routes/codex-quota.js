@@ -11,7 +11,7 @@
 //   no_auth           — ~/.codex/auth.json missing / unreadable (not logged in)
 //   unavailable       — API error / unexpected shape
 
-const { getNative, requestCodexUsage, readCodexAuth } = require('../native/runtime');
+const { getNative, requestCodexUsage, readCodexAuth } = require('../native/binding');
 
 const TIMEOUT_MS = 10000;
 

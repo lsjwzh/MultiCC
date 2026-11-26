@@ -1,6 +1,6 @@
 'use strict';
 
-const { hash } = require('../native/runtime').taskShellContext;
+const { hash } = require('../native/binding').taskShellContext;
 const { historySnapshot } = require('./history-context');
 
 const fail = (code, message = code, status = 409) => Object.assign(new Error(message), { code, status });

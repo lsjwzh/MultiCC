@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const legacy = require('./helpers/legacy-message-composer');
-const native = require('../src/native/runtime').messageComposer;
+const native = require('../src/native/binding').messageComposer;
 const OPAQUE = Object.freeze({ model: 'opaque', fn() {} });
 
 const frozen = fs.readFileSync(path.join(__dirname, 'helpers/legacy-message-composer.js'));

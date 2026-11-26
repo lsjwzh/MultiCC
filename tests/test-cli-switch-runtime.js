@@ -16,8 +16,8 @@ const {
   buildHandoffCheckpoint,
 } = require('../src/cli-switch');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('../src/cli/switch-runtime');
-const { synchronizeCodexProfileRoute } = require('../src/native/runtime');
-const { getNative } = require('../src/native/runtime');
+const { synchronizeCodexProfileRoute } = require('../src/native/binding');
+const { getNative } = require('../src/native/binding');
 const { recordsOf } = require('./helpers/session-records');
 
 function createResponse() {
@@ -487,7 +487,7 @@ function codexTask(subagent = null) {
 }
 
 test('手动切换落库失败时不关闭进程、不发布交接，也不清除自动预约', async () => {
-  const { createSessionPersistence } = require('../src/native/runtime');
+  const { createSessionPersistence } = require('../src/native/binding');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', cliSessionId: 'original' };
   const records = recordsOf([['s1', session]]);
   let fail = true, cleared = 0;
@@ -1140,7 +1140,7 @@ test('cli/versions reports a per-cli error entry without failing the whole call'
 
 
 test('applying a pending switch publishes nothing when persistence fails and remains retryable', async () => {
-  const { createSessionPersistence } = require('../src/native/runtime');
+  const { createSessionPersistence } = require('../src/native/binding');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat', cliSessionId: 'original' };
   const records = recordsOf([['s1', session]]); let fail = false;
   const persistence = createSessionPersistence({ records, store: { save() { if (fail) throw Error('disk-full'); } } });
@@ -1190,7 +1190,7 @@ test('待生效自动池只在实际变更时清理线路，保存相同配置�
 
 test('待生效配置持久化失败会恢复自动池当前线路', async () => {
   const { stageConfiguration } = require('./helpers/native-session-pending-configuration');
-  const { createSessionPersistence } = require('../src/native/runtime');
+  const { createSessionPersistence } = require('../src/native/binding');
   const session = { id: 's1', dirId: 'd1', cli: 'claude', kind: 'chat',
     providerSelection: { mode: 'auto', protocol: 'anthropic', candidates: [
       { providerId: 'relay-a' }, { providerId: 'relay-b' },
@@ -1290,7 +1290,7 @@ test('a switch to a lane whose native session vanished is not marked as a reused
 function nativeRouteHarness(t, extra = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-switch-route-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const h = createHarness({
     availability: { claude: { available: true }, codex: { available: true }, 'codex-exp': { available: true } },
     nativeSessionExists: () => { throw new Error('Codex must not use a second host-side history scan'); },
@@ -2495,7 +2495,7 @@ test('an unconfirmed exit of the old CLI process defers the turn instead of fail
 });
 
 test('线路准备与冻结入口保留返回值、输入展开顺序和失败边界', async () => {
-  const current = require('../src/native/runtime');
+  const current = require('../src/native/binding');
   const old = require('./helpers/frozen-file-batch7/switch-preparation');
   for (const method of ['prepareCliSwitchRoute','synchronizeCodexProfileRoute']) {
     async function trace(api) {

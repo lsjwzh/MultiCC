@@ -9,7 +9,7 @@ const { createTaskShellStore } = require('../src/task-shell/store');
 const { createTaskBoardRepository } = require('../src/native/task-domain');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
 const { taskDomain, taskDomainAsync } = require('../src/native/task-domain');
-const { getNative, nativeCode } = require('../src/native/runtime');
+const { getNative, nativeCode } = require('../src/native/binding');
 const { boardRule } = require('../src/task-board/native-bridge');
 const planning = require('../src/task-board/planning');
 const { mkRuntime } = require('./helpers/task-board-runtime');
@@ -341,7 +341,7 @@ test('原生 panic 被捕获为 TASK_DOMAIN_PANIC，且之后进程仍可用', (
   const script = `
     const root = ${JSON.stringify(root)};
     const { taskDomain, taskDomainAsync } = require(root + '/src/native/task-domain');
-    const { getNative, nativeCode } = require(root + '/src/native/runtime');
+    const { getNative, nativeCode } = require(root + '/src/native/binding');
     const planning = require(root + '/src/task-board/planning');
     const codeOf = error => { nativeCode(error); return error.code; };
     (async () => {

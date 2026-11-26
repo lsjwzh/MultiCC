@@ -1,7 +1,7 @@
 'use strict';
 
 const { outboundFetch } = require('./network/outbound');
-const { getNative, requestCodexUsage, readCodexAuth } = require('./native/runtime');
+const { getNative, requestCodexUsage, readCodexAuth } = require('./native/binding');
 
 // Usage-limit poller — the ACTIVE-POLL half of the limit subsystem.
 //
@@ -27,7 +27,7 @@ const { getNative, requestCodexUsage, readCodexAuth } = require('./native/runtim
 
 const crypto = require('crypto');
 const { publicTransportError } = require('./upstream-error');
-const providers = require('./providers/core');
+const providers = require('./providers/host');
 const { checkEgressIpAllowed } = require('./providers/egress-ip-policy');
 
 const POLL_TIMEOUT_MS = 6000;

@@ -7,10 +7,10 @@ const os = require('node:os');
 const test = require('node:test');
 const { pathToFileURL } = require('node:url');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { createClaudeAdapter } = require('../src/native/runtime');
-const { processSpawnArgs } = require('../src/native/runtime');
+const { createClaudeAdapter } = require('../src/native/binding');
+const { processSpawnArgs } = require('../src/native/binding');
 const { createChatTurnEngine } = require('../src/chat/turn-engine-host');
-const hasNativeHistory = (record, options) => require('../src/native/runtime').getNative().claudeExpHasNativeHistory(record, options);
+const hasNativeHistory = (record, options) => require('../src/native/binding').getNative().claudeExpHasNativeHistory(record, options);
 const prepareTurn = require('./helpers/claude-turn');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 const { recordsOf } = require('./helpers/session-records');
@@ -397,7 +397,7 @@ test('Rust Claude adapter matches frozen argv, SDK settings, debug calls and eve
 });
 
 test('Rust startup cleanup matches frozen bytes and completes before the SDK child starts', async t => {
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   const legacyFactory = frozenClaudeAdapter();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-claude-cleanup-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

@@ -116,7 +116,7 @@ fn related(schedule: L<'_>, item: L<'_>) -> Result<bool> {
     Ok(true)
 }
 
-fn task_id<'a>(item: L<'a>) -> Result<L<'a>> {
+pub(crate) fn task_id<'a>(item: L<'a>) -> Result<L<'a>> {
     let transfer = item.optional(c"turnLineage")?.optional(c"taskId")?;
     if transfer.truthy()? {
         return Ok(transfer);

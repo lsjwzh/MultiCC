@@ -1,7 +1,7 @@
 'use strict';
 
-const { toSessionDto } = require('../native/runtime').getSessionDto();
-const { getNative } = require('../native/runtime');
+const { toSessionDto } = require('../native/binding').getSessionDto();
+const { getNative } = require('../native/binding');
 const assertSessionRecordsPort = port => getNative().sessionAssertSessionRecordsPort(port);
 const assertSessionRuntimePort = port => getNative().sessionAssertSessionRuntimePort(port);
 

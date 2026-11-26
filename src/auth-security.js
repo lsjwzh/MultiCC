@@ -2,7 +2,7 @@
 
 // Compatibility exports only. Rust owns crypto, URL policy and the single
 // ticket store; injected host callbacks preserve the existing test seams.
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 const COOKIE_VERSION = 1;
 const DEFAULT_COOKIE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_TICKET_TTL_MS = 30 * 1000;

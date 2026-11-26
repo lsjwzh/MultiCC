@@ -231,7 +231,7 @@ test('vendor login terminal: qoder maps to qoder-login', async () => {
 
 // ── one-shot login terminals ─────────────────────────────────────────────────
 
-const createLoginTerminalDisposer = deps => require('../src/native/runtime').getNative().sessionLoginTerminalDisposer(deps);
+const createLoginTerminalDisposer = deps => require('../src/native/binding').getNative().sessionLoginTerminalDisposer(deps);
 
 test('login disposer kills the flow tmux panes and drops every saved login record', async () => {
   const persistedSessions = new Map([

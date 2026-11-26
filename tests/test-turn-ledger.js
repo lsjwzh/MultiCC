@@ -11,12 +11,12 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const contract = require('../src/native/runtime').getTurnLedgerContract();
+const contract = require('../src/native/binding').getTurnLedgerContract();
 const { normalizeEnvelope, transitionId } = contract;
 const legacyContract = require('./helpers/legacy-turn-ledger-contract');
 const { createTurnLedger } = require('../src/turn-ledger/ledger');
 const legacyEvidence = require('./helpers/legacy-turn-end-evidence');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const confirmTurnEnd = input => getNative().confirmTurnEnd(input);
 const { createHookInstaller, WRAPPER_SOURCE } = require('../src/turn-ledger/hook-install');
 const { createTurnLedgerRuntime } = require('../src/turn-ledger/runtime');
@@ -384,8 +384,8 @@ test('runtime: prepareTerminal injects env/settings and sweep ingests the spool'
 });
 
 test('adapters: terminal commands carry the injected hook flags', () => {
-  const { createClaudeAdapter } = require('../src/native/runtime');
-  const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
+  const { createClaudeAdapter } = require('../src/native/binding');
+  const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
   const claude = createClaudeAdapter({
     cmd: 'claude', resolveSessionWireModel: m => m, claudeDefaultModel: () => null,
     cliEffortLevel: () => null, normalizeEffort: e => (e ? String(e).trim().toLowerCase() : null),

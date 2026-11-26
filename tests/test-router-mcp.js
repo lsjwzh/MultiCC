@@ -272,7 +272,7 @@ test('an incomplete sync stream returns an explicit dispatch_status recovery con
 });
 
 test('host prompt prefers scoped durable wait tools and keeps raw polling privileged', () => {
-  const source = require('../src/native/runtime').getHostPrompts().createHostPrompts({}).multiccImgHint;
+  const source = require('../src/native/binding').getHostPrompts().createHostPrompts({}).multiccImgHint;
   assert.match(source, /it registers a durable wait/);
   assert.match(source, /wait_for_external_result/);
   assert.match(source, /detached_result/);

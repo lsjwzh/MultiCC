@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { databaseConstructor } = require('../sqlite/driver');
-const { indexTokens, matchExpression, tokenize } = require('../native/runtime').searchTokenizer;
+const { indexTokens, matchExpression, tokenize } = require('../native/binding').searchTokenizer;
 
 // Durable full-text index for corpora too large to rank in memory.
 //

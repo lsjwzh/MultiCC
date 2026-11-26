@@ -4,7 +4,7 @@
 // fs watcher so callers can release their own watchFile listener.
 const fs = require('node:fs');
 const path = require('node:path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const native = getNative();
 const catalog = native.cliCatalogViews();
 

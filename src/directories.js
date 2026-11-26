@@ -14,7 +14,7 @@ const { gitIsRepo, gitRun, WORKTREE_SUBDIR, isDeveloperToolsMissingGitError }
 // Shared with src/paths.js — the robust, symlink-ancestor-aware implementations.
 // (Previously duplicated here with a bare fs.realpathSync that threw for
 // not-yet-existing paths and did not collapse ancestor symlinks.)
-const { pathSafety: { isHomeOrAbove, realPathOf } } = require('./native/runtime');
+const { pathSafety: { isHomeOrAbove, realPathOf } } = require('./native/binding');
 
 // Reject directories that are far too large/heavy to be a session workspace.
 // The initial `git add -A` is run synchronously and would otherwise hash the

@@ -2,8 +2,8 @@
 
 const { nameOf } = require('../cli/cli-capability');
 
-const { getNative } = require('../native/runtime');
-const { sanitizePublicText } = require('../native/runtime').getSessionDto();
+const { getNative } = require('../native/binding');
+const { sanitizePublicText } = require('../native/binding').getSessionDto();
 const { labelWithCode } = require('../native/task-domain');
 
 const MAX_ROLE_SUMMARY_CHARS = 320;

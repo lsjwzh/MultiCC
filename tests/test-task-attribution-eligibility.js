@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 
 // The gate is native/core/src/task_routing.rs. The Node bridge module that used to
 // wrap this call had no production consumer and was deleted; this test calls the

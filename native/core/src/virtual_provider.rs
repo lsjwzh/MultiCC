@@ -14,6 +14,10 @@ fn number(v: &Value) -> Option<f64> {
 
 pub fn validate(input: &str) -> Result<String, String> {
     let v: Value = crate::json_lenient::from_str(input).map_err(|_| "Invalid virtual provider")?;
+    Ok(validate_record(&v)?.to_string())
+}
+
+pub fn validate_record(v: &Value) -> Result<Value, String> {
     let kind = text(&v["appType"]);
     if !["claude", "codex"].contains(&kind) {
         return Err("请选择 Claude 或 Codex CLI".into());
@@ -66,7 +70,9 @@ pub fn validate(input: &str) -> Result<String, String> {
     if models.as_ref().is_some_and(Vec::is_empty) {
         return Err("成员没有共同模型，请选择模型兼容的线路".into());
     }
-    Ok(json!({"virtual":{"members":normalized,"strategy":strategy},"models":models.unwrap_or_default()}).to_string())
+    Ok(
+        json!({"virtual":{"members":normalized,"strategy":strategy},"models":models.unwrap_or_default()}),
+    )
 }
 
 fn expired_at(member: &Value, provider: &Value) -> Option<f64> {

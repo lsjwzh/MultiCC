@@ -11,7 +11,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { createWorkspaceRuntime, prepareFrame } = require('../src/workspace/runtime');
-const { createWsEnvelope } = require('../src/native/runtime').getApiContract();
+const { createWsEnvelope } = require('../src/native/binding').getApiContract();
 const { installWsBackpressure, DEFAULTS } = require('./helpers/legacy-ws-backpressure');
 const legacyWorkspace = require('./helpers/legacy-workspace-runtime').createWorkspaceRuntime;
 const { createNotesStore } = require('../src/notes-store');

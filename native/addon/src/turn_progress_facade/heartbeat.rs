@@ -2,7 +2,7 @@
 use super::*;
 use napi::bindgen_prelude::ToNapiValue;
 
-fn init<'a>(root: L<'a>, s: L<'a>, opts: L<'a>) -> Result<L<'a>> {
+fn init<'a>(s: L<'a>, opts: L<'a>) -> Result<L<'a>> {
     if !func(read(opts, c"onHeartbeat")?)? {
         return Err(s.type_error("onHeartbeat is required"));
     }
@@ -36,7 +36,7 @@ fn init<'a>(root: L<'a>, s: L<'a>, opts: L<'a>) -> Result<L<'a>> {
     let owner = if owner.truthy()? {
         owner
     } else {
-        new_owner(root, fields(root, &[("intervalMs", interval)])?)?
+        new_owner(fields(s, &[("intervalMs", interval)])?)?
     };
     s.assign(c"_owner", owner)?;
     s.assign(c"_timer", null(s)?)?;
@@ -219,10 +219,71 @@ fn run<'a>(name: &str, s: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
         _ => unreachable!(),
     }
 }
-pub(super) fn class<'a>(root: L<'a>, make: L<'a>) -> Result<L<'a>> {
-    let init = bound(root, "", 2, 2, |root, a| init(root, a[0], a[1]))?;
-    let ctor = make.call_plain(&[init])?;
+unsafe extern "C" fn construct(
+    env: sys::napi_env,
+    info: sys::napi_callback_info,
+) -> sys::napi_value {
+    use std::ptr;
+    let run = || -> Result<sys::napi_value> {
+        let mut argc = 1usize;
+        let mut arg = ptr::null_mut();
+        let mut this = ptr::null_mut();
+        napi::check_status!(sys::napi_get_cb_info(
+            env,
+            info,
+            &mut argc,
+            &mut arg,
+            &mut this,
+            ptr::null_mut()
+        ))?;
+        let this = L::from_raw(env, this);
+        let mut target = ptr::null_mut();
+        napi::check_status!(sys::napi_get_new_target(env, info, &mut target))?;
+        if target.is_null() {
+            return Err(this.type_error(
+                "Class constructor TurnProgressHeartbeat cannot be invoked without 'new'",
+            ));
+        }
+        let opts = if argc == 0 {
+            fields(this, &[])?
+        } else {
+            options(L::from_raw(env, arg))?
+        };
+        init(this, opts)?;
+        Ok(this.raw())
+    };
+    match run() {
+        Ok(v) => v,
+        Err(e) => {
+            let mut pending = false;
+            sys::napi_is_exception_pending(env, &mut pending);
+            if !pending {
+                napi::JsError::from(e).throw_into(env);
+            }
+            ptr::null_mut()
+        }
+    }
+}
+pub(super) fn class(root: L<'_>) -> Result<L<'_>> {
+    let mut ctor = std::ptr::null_mut();
+    napi::check_status!(unsafe {
+        sys::napi_create_function(
+            root.env(),
+            c"TurnProgressHeartbeat".as_ptr(),
+            c"TurnProgressHeartbeat".to_bytes().len() as isize,
+            Some(construct),
+            std::ptr::null_mut(),
+            &mut ctor,
+        )
+    })?;
+    let ctor = L::from_raw(root.env(), ctor);
     let proto = ctor.get(c"prototype")?;
+    let descriptor = fields(root, &[("writable", flag(root, false)?)])?;
+    call(
+        root.global()?.get(c"Object")?,
+        c"defineProperty",
+        &[ctor, text(root, "prototype")?, descriptor],
+    )?;
     let object = root.global()?.get(c"Object")?;
     let env = Env::from_raw(root.env());
     for (name, length, count) in [

@@ -2,7 +2,7 @@
 
 // The tokenizer is shared with the durable message index (src/search/index-store.js)
 // so that a query means the same thing whichever corpus answers it.
-const { normalizeText, tokenize, boardQueryTerms } = require('../native/runtime').searchTokenizer;
+const { normalizeText, tokenize, boardQueryTerms } = require('../native/binding').searchTokenizer;
 
 // Full-text search over the task board.
 //

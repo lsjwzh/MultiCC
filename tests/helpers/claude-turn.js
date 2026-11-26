@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { createChatTurnEngine } = require('../../src/chat/turn-engine-host');
-const { createClaudeAdapter } = require('../../src/native/runtime');
+const { createClaudeAdapter } = require('../../src/native/binding');
 const { createTestChatHub } = require('./native-chat-hub');
 
 // Drive the real host through admission, context composition, and adapter argv.

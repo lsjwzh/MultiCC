@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const js = require('./helpers/legacy-task-search');
-const native = require('../src/native/runtime');
+const native = require('../src/native/binding');
 const { buildIndex, searchIndex, createTaskSearchBackend } = require('../src/native/task-search');
 const usage = require('./helpers/legacy-token-usage-global-route');
 const { taskBoard, usageFixture } = require('./fixtures/rust-kernel-fixtures');
@@ -15,7 +15,7 @@ const rustTest = (name, fn) => test(name, { skip: !available && '未构建可选
 const stableUsage = ({ generatedAt, ...data }) => data;
 
 test('原生模块缺失时明确失败，没有 Node 实现可回退', () => {
-  const script = `const r=require('./src/native/runtime');try{r.getNative();process.exit(2)}catch(e){if(e.message!=='rust_backend_unavailable')process.exit(3)}`;
+  const script = `const r=require('./src/native/binding');try{r.getNative();process.exit(2)}catch(e){if(e.message!=='rust_backend_unavailable')process.exit(3)}`;
   const result = spawnSync(process.execPath, ['-e', script], { cwd: path.resolve(__dirname, '..'),
     env: { ...process.env, MULTICC_RUST_ADDON: path.join(os.tmpdir(), 'nonexistent-multicc-rust-module.node') }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
@@ -41,6 +41,29 @@ rustTest('搜索差分：中文、Unicode、空查询、过滤、排名、高亮
       }
     }
   }
+});
+rustTest('原生工作队列有两个名额，按入队顺序调度并在拒绝后释放名额', async () => {
+  const started = [];
+  const release = [];
+  const sentinel = new Error('operation refused');
+  const jobs = [0, 1, 2, 3].map(index => native.runNative(() => {
+    started.push(index);
+    if (index === 2) throw sentinel;
+    return new Promise((resolve, reject) => { release[index] = { resolve, reject }; });
+  }));
+  const observed = Promise.allSettled(jobs);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, [0, 1]);
+  release[1].reject(sentinel);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(started, [0, 1, 2, 3]);
+  release[0].resolve('first');
+  release[3].resolve('last');
+  const outcomes = await observed;
+  assert.deepEqual(outcomes.map(row => row.status), ['fulfilled', 'rejected', 'rejected', 'fulfilled']);
+  assert.deepEqual([outcomes[0].value, outcomes[3].value], ['first', 'last']);
+  assert.equal(outcomes[1].reason, sentinel);
+  assert.equal(outcomes[2].reason, sentinel);
 });
 rustTest('随机搜索样本和同分排序保持一致', async () => {
   let seed = 17;

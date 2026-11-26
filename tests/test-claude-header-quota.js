@@ -5,15 +5,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { claudeQuota } = require('../src/native/runtime');
+const { claudeQuota } = require('../src/native/binding');
 const { createProxyBroadcasters } = require('../src/chat/proxy-broadcast');
 const Queue = require('../src/quota/claude-usage-queue');
 const State = require('../src/quota/claude-bar-state');
-const Renderer = require('../src/native/runtime').getQuotaBarView();
+const Renderer = require('../src/native/binding').getQuotaBarView();
 const { resolveQuotaBar } = require('../public/quota-bar-view');
 const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
 const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
-const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
 
 const available = claudeQuota('extract', { headers: {} }) !== undefined;
 if (process.env.MULTICC_REQUIRE_RUST_TESTS === '1') assert.ok(available, 'Build the Claude quota Rust bridge');

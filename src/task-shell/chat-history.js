@@ -1,6 +1,6 @@
 'use strict';
 
-const { buildReplayMessages } = require('../routes/chat-history');
+const { buildReplayMessages } = require('../routes/chat-history/index');
 
 // A shell is a display projection, not another transcript writer. Canonical
 // messages, visibility decisions and native contexts remain owned by executions.

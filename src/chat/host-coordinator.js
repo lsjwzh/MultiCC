@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { getNative, postTurnRouter } = require('../native/runtime');
+const { getNative, postTurnRouter } = require('../native/binding');
 const { routePostTurn, acknowledgeDeliveredEffect } = postTurnRouter;
 const {
   ownsCurrentRunner,

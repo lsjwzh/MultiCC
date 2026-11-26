@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const legacy = require('./helpers/legacy-chat-history-runtime');
-const native = require('../src/routes/chat-history');
+const native = require('../src/routes/chat-history/index');
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 
 const tempDirs = [];

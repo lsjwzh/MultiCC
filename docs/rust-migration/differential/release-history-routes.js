@@ -131,7 +131,7 @@ function historyRepository(repo, dataDir) {
   if (fs.existsSync(path.join(repo, 'src/session/adapters/chat-history-file-repository.js'))) {
     return R('src/session/adapters/chat-history-file-repository').createChatHistoryFileRepository({ dataDir });
   }
-  return R('src/native/runtime').getNative().chatHistoryFileRepositoryCreate({
+  return R('src/native/binding').getNative().chatHistoryFileRepositoryCreate({
     root: R('src/paths').createPaths({ dataDir }).chatHistoryDir,
     reportFailure: R('src/state/store').reportFailure,
   });
@@ -222,7 +222,7 @@ process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
 const world = buildWorld({
   repo, dataRoot: process.env.MULTICC_DATA_DIR, rootDir: ${JSON.stringify(rootDir)}, work: ${JSON.stringify(work)},
   side: 'rust',
-  createChatHistoryRuntime: require(path.join(repo, 'src/routes/chat-history')).createChatHistoryRuntime,
+  createChatHistoryRuntime: require(path.join(repo, 'src/routes/chat-history/index')).createChatHistoryRuntime,
   createIosUdid: require(path.join(repo, 'src/ios-udid')).createIosUdid,
 });
 const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/http-errors'));

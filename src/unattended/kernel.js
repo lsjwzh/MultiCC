@@ -7,7 +7,7 @@
 // There is deliberately no JavaScript fallback — a missing addon must fail loudly
 // the same way classify vocab does.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 // Mirrors MAX_DURATION_* in the Rust kernel; pinned by the route contract test.
 // The old round budget is gone: supervision is bounded by wall clock only.

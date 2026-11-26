@@ -17,10 +17,10 @@ const {
   modelChoices,
   priceLadder,
   priceOf,
-} = require('../src/native/runtime').getAutoProviderPricing();
+} = require('../src/native/binding').getAutoProviderPricing();
 
 test('pricing facade matches the frozen wrapper across price, expansion, choices and ladder inputs', () => {
-  const api = require('../src/native/runtime').getAutoProviderPricing();
+  const api = require('../src/native/binding').getAutoProviderPricing();
   const frozen = require('./helpers/frozen-file-batch26/auto-provider-pricing');
   const { exercise, boundary } = require('./helpers/auto-pricing-fixture');
   for (const method of ['price', 'expand', 'choices', 'ladder']) for (let mode = 0; mode < 6; mode++) {

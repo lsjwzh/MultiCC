@@ -13,7 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { pathSafety } = require('../src/native/runtime');
+const { pathSafety } = require('../src/native/binding');
 const paths = require('../src/paths');
 const directories = require('../src/directories');
 
@@ -128,7 +128,7 @@ try {
   const frozenFile = path.join(__dirname, 'helpers/legacy-path-safety.js');
   const frozenSource = fs.readFileSync(frozenFile, 'utf8');
   const oracle = require(frozenFile);
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   const native = getNative();
 
   function oracleWithPorts(ports) {

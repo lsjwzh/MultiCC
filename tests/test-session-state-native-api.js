@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
-const { getNative } = require('../src/native/runtime');
+const { getNative } = require('../src/native/binding');
 const frozen = require('./helpers/legacy-session-state-binding');
 const makeApi = () => getNative().sessionStateApi();
 
@@ -155,7 +155,7 @@ test('native callback reentry preserves the nested call order and result', () =>
 test('native callback cycles remain collectible and the child exits naturally', () => {
   const result = spawnSync(process.execPath, ['--expose-gc', '-e', `
     const assert = require('node:assert/strict');
-    const api = require(${JSON.stringify(require.resolve('../src/native/runtime'))}).getNative().sessionStateApi();
+    const api = require(${JSON.stringify(require.resolve('../src/native/binding'))}).getNative().sessionStateApi();
     const weak = [];
     for (let i = 0; i < 20; i++) {
       const holder = {};

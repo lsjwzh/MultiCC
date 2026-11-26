@@ -23,7 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { atomicWriteJson } = require('../runtime-security');
 const miner = require('./hotword-miner');
 

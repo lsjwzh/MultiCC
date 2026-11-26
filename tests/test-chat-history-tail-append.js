@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createChatHistoryRuntime } = require('../src/routes/chat-history');
+const { createChatHistoryRuntime } = require('../src/routes/chat-history/index');
 const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
 
 function fixture(t) {

@@ -13,8 +13,8 @@ const { fixture } = require('./helpers/task-shell');
 const { fakeApp, mountHost } = require('./helpers/task-shell-host');
 const { createTaskOperations } = require('../src/task-shell/task-operations');
 const { createClient } = require('../public/task-shell-client');
-const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
-const { createProductionQuestionHost } = require('../src/session-work/host');
+const { createOrchestrationRuntime } = require('../src/orchestration/host');
+const { createProductionQuestionHost } = require('../src/session-work');
 const { createQueuedTurnPreparation } = require('../src/chat/admission-progress');
 
 test('真实发送接口在模型路由和工作区准备期间已经返回，重复请求只执行一次', async t => {

@@ -6,7 +6,7 @@
 // facade factory. Production code calls getNative().chatHistoryFileRepositoryCreate
 // directly.
 const { createPaths } = require('../../src/paths');
-const { getNative } = require('../../src/native/runtime');
+const { getNative } = require('../../src/native/binding');
 const { reportFailure } = require('../../src/state/store');
 
 function createChatHistoryFileRepository({ dataDir, appendEnabled } = {}) {

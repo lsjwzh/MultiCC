@@ -2,7 +2,7 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { channel } = require('node:diagnostics_channel');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 // Node HTTP 与 Undici 的公共诊断事件用于连接计时；不替换全局网络方法。
 // 只有准入模型请求的异步作用域会启动计时器，连接完成后不计首 token 等待。

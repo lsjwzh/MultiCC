@@ -247,7 +247,7 @@ test('provider-cause evidence outranks the proxy generic status at turn close', 
   const boundary = { source: 'codex_event', message: 'quota reached at turn close' };
   const classified = [];
   const stop = new Error('classification observed');
-  const stream = require('../src/native/runtime').getNative().chatStreamFinishApi({
+  const stream = require('../src/native/binding').getNative().chatStreamFinishApi({
     turnTimeline: {}, attemptRuntime: { snapshot: () => ({}), proxyFailure: () => proxyFailure },
     turnHasSideEffects: () => false, meaningfulTurnOutput: () => false,
     evaluateTurnApiError({ raw }) { classified.push(raw); throw stop; },
@@ -853,7 +853,7 @@ test('retry API-error scheduling retains classifier identity and nullable delay 
     const frozen = path.join(__dirname, 'helpers/frozen-file-batch24/retry-policy.js');
     const original = path.join(__dirname, '../src/chat/retry-policy.js');
     const api = candidate && !fs.existsSync(original)
-      ? require('../src/native/runtime').getNative().retryPolicyApi(require('../src/native/runtime').getNative(), classify)
+      ? require('../src/native/binding').getNative().retryPolicyApi(require('../src/native/binding').getNative(), classify)
       : loadPolicy(candidate ? original : frozen, classify);
     const result = api.decideRetry({ event: 'api-error', error: raw, context, attempts: { apiError: '2' } }, deps);
     assert.equal(result.decision, decision);
@@ -1493,7 +1493,7 @@ test('hard turn-control paths terminalize the provider attempt before teardown o
   assert.match(source, /finishProviderAttempt: \(runner, outcome, facts\) =>/,
     'the adapter reducer must close the provider attempt through a host port');
 
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   assert.equal(getNative().chatWsCommand('clear_history', '', false, false, false, false), 'clearHistory');
   const msg = { type: 'clear_history' }, cs = {}, calls = [];
   const ports = { getChatHistoryRuntime: () => ({ clearHistory: (...args) => calls.push(args) }) };
@@ -1578,7 +1578,7 @@ test('a turn refreshes a stale chat cwd before spawning the CLI', () => {
   const sessions = new Map(), clients = new Set(), history = [{ role: 'assistant' }];
   const ports = { chatSessions: sessions, replay: { clientsOf: () => clients },
     taskContextHost: { restore: value => { assert.equal(value, history); return 'task'; } } };
-  const restored = require('../src/native/runtime').getNative().chatRestoreLiveSession(ports, 's', 'codex', '/work', history);
+  const restored = require('../src/native/binding').getNative().chatRestoreLiveSession(ports, 's', 'codex', '/work', history);
   assert.equal(restored, sessions.get('s'));
   assert.equal(restored.clients, clients);
   assert.equal(restored._currentTaskId, 'task');
@@ -1761,7 +1761,7 @@ test('Rust turn mutations keep strict setters, reads, partial writes and reentry
 });
 
 test('已执行或未知的重复投递跳过配置，未启动的持久化投递重新过配置门', async () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const blocked = { blocked: true, code: 'turn_configuration_pending' };
   const delegated = { delegated: 'admitted' };
   function gate(replay, deps, probe) {
@@ -1795,7 +1795,7 @@ test('已执行或未知的重复投递跳过配置，未启动的持久化投�
 });
 
 test('配置等待使用投递背压，其他拒绝保持原有处理', async () => {
-  const driver = require('../src/native/runtime').getNative().chatTurnExecution({ logger: { warn() {} } });
+  const driver = require('../src/native/binding').getNative().chatTurnExecution({ logger: { warn() {} } });
   const run = async (session, _text, opts, gate) => driver.begin(session, opts, gate).result;
   await assert.rejects(run('s', 'text', { deliveryId: 'delivery-1' },
     { blocked: true, code: 'turn_configuration_pending' }),
@@ -1809,7 +1809,7 @@ test('配置等待使用投递背压，其他拒绝保持原有处理', async ()
 
 test('准备失败只对已经激活的回合执行一次取消，并按运行器交接状态归还租约', async () => {
   const calls = [];
-  const driver = require('../src/native/runtime').getNative().chatTurnExecution({
+  const driver = require('../src/native/binding').getNative().chatTurnExecution({
     getSessionWorkHost: () => ({ cancelActiveTurn: (...args) => calls.push(['cancel', ...args]) }),
     logger: { warn() {}, error() {} },
     recordDeliveryProbe: (...args) => calls.push(['probe', ...args]),
@@ -1868,7 +1868,7 @@ test('close facts judge a recovered Codex disconnect only after the durable appe
 });
 
 test('chat WS share gate matches the retired policy and detects unsafe mutations', () => {
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   const reference = (type, permission) => {
     if (type === 'ping') return 'pong';
     if (permission === 'view') return 'ignore';
@@ -1892,7 +1892,7 @@ test('chat WS share gate matches the retired policy and detects unsafe mutations
 });
 
 test('常驻发送使用本轮的运行器、时间线和原生会话；被替换后忽略迟到的结束事件', () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const cs = { cli: 'claude', cwd: '/work', chatTurnCount: 1 };
   const persisted = { cli: 'claude', dirId: 'd' };
   const provider = { name: 'claude' }, turn = { turnId: 't' };
@@ -1937,7 +1937,7 @@ test('常驻发送使用本轮的运行器、时间线和原生会话；被替�
 });
 
 test('子进程启动后若接线异常，保留写租约直到进程组结束，并把原异常交给调用方', async () => {
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const { EventEmitter } = require('node:events');
   const failure = new Error('进程已创建，接线失败');
   const child = Object.assign(new EventEmitter(), { pid: 41 });

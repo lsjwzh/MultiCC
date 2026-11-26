@@ -78,20 +78,26 @@ pub fn task_code_mint(
     save: Unknown<'_>,
     id: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let id = L::new(&env, id).clean_text()?;
+    Ok(mint(
+        L::new(&env, ids),
+        L::new(&env, owners),
+        L::new(&env, custom),
+        L::new(&env, save),
+        L::new(&env, id),
+    )?
+    .raw())
+}
+
+fn mint<'a>(ids: L<'a>, owners: L<'a>, custom: L<'a>, save: L<'a>, id: L<'a>) -> Result<L<'a>> {
+    let id = id.clean_text()?;
     if !id.truthy()? {
-        return Ok(id.raw());
+        return Ok(id);
     }
-    let indexes = Indexes {
-        ids: L::new(&env, ids),
-        owners: L::new(&env, owners),
-    };
+    let indexes = Indexes { ids, owners };
     let cached = indexes.ids.get(c"get")?.call(indexes.ids, &[id])?;
     if cached.truthy()? {
-        return Ok(cached.raw());
+        return Ok(cached);
     }
-    let custom = L::new(&env, custom);
-    let save = L::new(&env, save);
     let default_id = if custom.undefined()? {
         Some(id.coerce_string()?.to_string_lossy())
     } else if custom.kind()? == sys::ValueType::napi_function {
@@ -118,7 +124,7 @@ pub fn task_code_mint(
             if !save.undefined()? {
                 save.call_plain(&[])?;
             }
-            return Ok(code.raw());
+            return Ok(code);
         }
     }
     let size = indexes.owners.get(c"size")?.number()?;
@@ -127,6 +133,22 @@ pub fn task_code_mint(
         JsString::from_rust_str(&format!(
             "exhausted {MAX_ATTEMPTS} mint attempts ({size} codes registered)"
         )),
+    )
+}
+
+/// Hosts and task frames share the active maps. Reinitialization replaces the
+/// pair atomically after recovery, so factories made before startup see it too.
+pub(crate) fn current_code<'a>(source: L<'a>, id: L<'a>) -> Result<L<'a>> {
+    if source.kind()? == sys::ValueType::napi_function {
+        return source.call_plain(&[id]);
+    }
+    let current = source.get(c"current")?;
+    mint(
+        current.get(c"ids")?,
+        current.get(c"owners")?,
+        current.get(c"candidate")?,
+        current.get(c"save")?,
+        id,
     )
 }
 
@@ -153,7 +175,7 @@ pub fn task_code_label(
     mint: Unknown<'_>,
 ) -> Result<sys::napi_value> {
     let body = L::new(&env, text).clean_text()?;
-    let code = L::new(&env, mint).call_plain(&[L::new(&env, id)])?;
+    let code = current_code(L::new(&env, mint), L::new(&env, id))?;
     if !code.truthy()? {
         return Ok(body.raw());
     }

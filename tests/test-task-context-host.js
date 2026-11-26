@@ -305,7 +305,7 @@ test('production wires task board and WebSocket chat to the same session ingress
   // post-restart replay of the same queue record) prepare identically.
   assert.match(turnEngine, /chatHandleSocketMessage\(socketPorts/);
   const sent = [];
-  require('../src/native/runtime').getNative().chatHandleSocketMessage({
+  require('../src/native/binding').getNative().chatHandleSocketMessage({
     taskContextHost: { deliverSessionMessage: (...args) => sent.push(args) },
   }, {}, 's', null, {}, {}, { type: 'user_message', text: 'hi' });
   assert.deepEqual(sent, [['s', 'hi', {}]]);

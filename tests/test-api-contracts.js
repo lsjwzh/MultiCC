@@ -13,7 +13,7 @@ const {
   toProviderDto,
   toWaitDto,
   withApiMeta,
-} = require('../src/native/runtime').getApiContract();
+} = require('../src/native/binding').getApiContract();
 const {
   assertBackwardCompatible,
   loadSchemaRegistry,
@@ -21,7 +21,7 @@ const {
   validateOpenApiDocument,
   validateSchemaDocument,
 } = require('./helpers/contract-validator');
-const { toSessionDto } = require('../src/native/runtime').getSessionDto();
+const { toSessionDto } = require('../src/native/binding').getSessionDto();
 const { gatewayDto } = require('../src/voice/gateway');
 
 const ROOT = path.join(__dirname, '..');
@@ -423,9 +423,10 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // pinned there now — on the kernel and on the frozen corpus rather than on a
   // JavaScript source line, which is what keeps the two producers honest.
   const frameHost = fs.readFileSync(path.join(ROOT, 'native/addon/src/chat_connect_frames.rs'), 'utf8');
-  const runtime = fs.readFileSync(path.join(ROOT, 'src/native/runtime.js'), 'utf8');
-  assert.ok(runtime.includes("require('./task-domain').taskShortCode, auxVerdictStaleness"));
-  assert.ok(runtime.includes('getNative().chatTaskStateFrame(task, seedOnly'));
+  const runtime = fs.readFileSync(path.join(ROOT, 'src/native/binding.js'), 'utf8');
+  assert.ok(runtime.includes("taskFramesApi(require('./task-domain').taskCodeRegistryState)"));
+  assert.ok(frameHost.includes('fn task_frame'));
+  assert.ok(frameHost.includes('aux_verdict_health::freshness(source.get(c"provider")?, false)'));
   assert.ok(frameHost.includes('chat_task_state_payload(encode(envelope)?)'));
   const kernel = fs.readFileSync(
     path.join(ROOT, 'native', 'core', 'src', 'chat_task_state_frame.rs'), 'utf8');
@@ -448,13 +449,13 @@ test('server composition uses canonical adapters and retires legacy dispatch end
     && entry.name === 'cancelledAt=absent cancelReason=string');
   assert.equal(reasonWithoutStamp.expected.payload.cancelReason, null,
     'a cancel reason with no timestamp must be dropped');
-  assert.ok(runtime.includes('taskStateSeed = task => taskStateFrame(task, true)'));
-  assert.ok(runtime.includes('taskStatePayload = task => taskStateFrame(task, false)'));
+  assert.match(frameHost, /"taskStateSeed"[\s\S]{0,110}task_frame\(a\[0\], true/);
+  assert.match(frameHost, /"taskStatePayload"[\s\S]{0,110}task_frame\(a\[0\], false/);
   assert.ok(frameHost.includes('seed_only && !chat_task_state_should_seed'));
   const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine-host.js'), 'utf8');
-  assert.ok(turnEngine.includes("taskStateSeed } = require('../native/runtime')"));
+  assert.ok(turnEngine.includes("taskStateSeed } = require('../native/binding')"));
   assert.ok(turnEngine.includes('chatReplaySocket(socketPorts, ws, connection, replayGate, urlObj)'));
-  const native = require('../src/native/runtime').getNative();
+  const native = require('../src/native/binding').getNative();
   const frames = [];
   const ports = { replay: { size: () => 0 }, persistedSessions: new Map(), getTaskState: () => ({}),
     taskStateSeed: () => ({ type: 'task_state' }), sendWs: (_, frame) => frames.push(frame.type) };
@@ -483,7 +484,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
 });
 
 test('chat worktree guidance treats sync API as manual and permits safe Agent self-sync', () => {
-  const { multiccImgHint } = require('../src/native/runtime').getHostPrompts().createHostPrompts({});
+  const { multiccImgHint } = require('../src/native/binding').getHostPrompts().createHostPrompts({});
   assert.ok(multiccImgHint.includes('The /sync endpoint is mainly for manual sync by the user/UI'));
   assert.ok(multiccImgHint.includes('Self-sync: align with the local base branch directly with Git inside your own worktree'));
   assert.ok(multiccImgHint.includes('it is not the required path for an agent to sync itself'));
@@ -496,7 +497,7 @@ test('chat worktree guidance treats sync API as manual and permits safe Agent se
   assert.doesNotMatch(multiccImgHint, /目标完成后仍须 commit|都只在自己当前 worktree 里改并 commit/);
   // Sub-agent steering is per-session, never part of the global host hint.
   assert.doesNotMatch(multiccImgHint, /Sub-agent provider configured/);
-  const { buildSubagentProviderHint } = require('../src/native/runtime').getHostPrompts();
+  const { buildSubagentProviderHint } = require('../src/native/binding').getHostPrompts();
   assert.strictEqual(buildSubagentProviderHint(null), '');
   assert.match(buildSubagentProviderHint({ providerId: 'p', model: 'm' }), /Sub-agent provider configured.*p \/ m/);
 });
@@ -657,7 +658,7 @@ test('/api task-board, search, task-graph, mark-achieved and task-attribution ro
   for (const file of [
     'task-board', 'task-planning', 'task-search', 'task-goal', 'task-graph',
   ]) {
-    const text = fs.readFileSync(path.join(ROOT, 'src', 'routes', `${file}.js`), 'utf8');
+    const text = fs.readFileSync(require.resolve(path.join(ROOT, 'src', 'routes', file)), 'utf8');
     assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false, `${file}.js must not register routes`);
   }
   const attribution = fs.readFileSync(path.join(ROOT, 'src', 'native', 'task-domain.js'), 'utf8');
@@ -859,7 +860,7 @@ test('/api share, machine and workspace routes are owned by the Rust front door;
 
 // The reference is frozen before batch 20; it must never import the candidate API.
 const frozenContract = require('./helpers/frozen-file-batch20/api-contract');
-const liveContract = require('../src/native/runtime').getApiContract();
+const liveContract = require('../src/native/binding').getApiContract();
 function contractOutcome(api, name, make) {
   const events = [];
   const args = make(events);

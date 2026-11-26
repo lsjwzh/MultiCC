@@ -5,9 +5,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work/host');
-const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
-const { addonPath, getNative } = require('../src/native/runtime');
+const { createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work');
+const { createOrchestrationRuntime } = require('../src/orchestration/host');
+const { addonPath, getNative } = require('../src/native/binding');
 
 test('server uses the production question composition with the Rust scheduler', () => {
   const server = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');

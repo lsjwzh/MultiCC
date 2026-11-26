@@ -4,7 +4,7 @@
 // The host supplies the CLI catalog, home-directory and Node's public CA roots.
 const os = require('node:os');
 const path = require('node:path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { npmPackages } = require('./cli-capability');
 const NPM_PACKAGES = Object.freeze(npmPackages());
 const request = (op, input) => getNative().cliUpstreamVersionRequest(op, input);

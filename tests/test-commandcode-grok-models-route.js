@@ -184,7 +184,7 @@ test('同一 CLI 并发刷新按子进程完成顺序发布，解析失败后仍
   finally { require.cache[hostPath] = cachedHost; }
 
   const gate = Promise.withResolvers();
-  const prototype = require('../src/native/runtime').getNative().RustVendorModelCatalog.prototype;
+  const prototype = require('../src/native/binding').getNative().RustVendorModelCatalog.prototype;
   const parse = prototype.readListing;
   const failure = new Error('worker failed');
   t.mock.method(prototype, 'readListing', async function (text) {

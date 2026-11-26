@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 const LOADING_MERGE_STATE = Object.freeze({
   mergeReady: false,

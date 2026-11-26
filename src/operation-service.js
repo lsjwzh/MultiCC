@@ -14,7 +14,7 @@ const {
   normalizeJson,
   OutboxConflictError,
 } = require('./outbox');
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 const TERMINAL_OPERATION_STATES = new Set([
   'completed', 'failed', 'interrupted', 'cancelled',

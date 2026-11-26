@@ -31,8 +31,10 @@ pub fn resolve_model_request_policy(
     session: Unknown<'_>,
     environment: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let session = L::new(&env, session);
-    let environment = L::new(&env, environment);
+    Ok(resolve_live(L::new(&env, session), L::new(&env, environment))?.raw())
+}
+
+pub(crate) fn resolve_live<'a>(session: L<'a>, environment: L<'a>) -> Result<L<'a>> {
     let effort = session.get(c"effort")?;
     let mode = session.get(c"providerSelection")?.optional(c"mode")?;
     let legacy = if mode.is_string("auto")? {
@@ -53,6 +55,6 @@ pub fn resolve_model_request_policy(
     ] {
         input.set(key, bridge_value(environment.get(name)?)?)?;
     }
-    let result = L::from_raw(env.raw(), resolve_value(env.raw(), input.raw())?);
-    Ok(freeze.call(object, &[result])?.raw())
+    let result = L::from_raw(session.env(), resolve_value(session.env(), input.raw())?);
+    freeze.call(object, &[result])
 }

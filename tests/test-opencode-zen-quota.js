@@ -20,7 +20,7 @@ const {
   normalizeUsage,
   fetchZenGoUsage,
 } = require('../src/quota/opencode-zen');
-const { renderQuotaBar } = require('../src/native/runtime').getQuotaBarView();
+const { renderQuotaBar } = require('../src/native/binding').getQuotaBarView();
 const { resolveQuotaBar } = require('../public/quota-bar-view');
 
 const GO_KEY = 'sk-go-test-key';

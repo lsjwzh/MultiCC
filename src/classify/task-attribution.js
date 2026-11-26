@@ -416,7 +416,16 @@ function buildTaskAttributionConversation(history, reply = '') {
   return `对话记录：\n${parts.join('\n\n')}`;
 }
 
+function createClassifyStateMachine(deps) {
+  return require('../native/binding').getNative().createClassifyStateMachine(deps, {
+    attribution: module.exports,
+    crypto: require('node:crypto'),
+    shortCodes: require('../native/task-domain').taskCodeRegistryState,
+  });
+}
+
 module.exports = {
+  createClassifyStateMachine,
   attributionQueryText,
   buildTaskAttributionConversation,
   buildTaskAttributionSystemPrompt,

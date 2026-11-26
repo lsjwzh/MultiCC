@@ -4,9 +4,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/store');
+const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work');
 
 test('noteQueued creates the schedule and returns the same queue event on JSON and SQLite', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-schedule-note-'));

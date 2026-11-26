@@ -16,7 +16,7 @@ function exportSnapshot({ databaseFile, targetFile, ...options } = {}) {
   if (Object.keys(options).length) {
     throw new TypeError('orchestration export does not support injected JavaScript ports');
   }
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   return getNative().orchestrationStoreExport(databaseFile, targetFile);
 }
 

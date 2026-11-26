@@ -1,7 +1,7 @@
 'use strict';
 
 const search = require('../task-board/search');
-const runtime = require('./runtime');
+const runtime = require('./binding');
 const FIELD_NAMES = Object.keys(search.FIELD_WEIGHTS);
 
 function prepare(board, options = {}) {

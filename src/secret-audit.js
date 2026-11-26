@@ -4,7 +4,7 @@
 // private permissions, locking and durable append. No request text reaches it.
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { createPaths } = require('./paths');
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 const scope = new AsyncLocalStorage();
 
 function record(input) {

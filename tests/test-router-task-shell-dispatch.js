@@ -7,7 +7,7 @@ const { fixture } = require('./helpers/task-shell');
 const { createRouterToolRuntime } = require('../src/router-tool-runtime');
 const { createGatewayHost } = require('../src/dispatch/gateway-host');
 const { createTaskContextHost } = require('../src/task-context-host');
-const { createOrchestrationRuntime } = require('../src/orchestration/runtime');
+const { createOrchestrationRuntime } = require('../src/orchestration/host');
 
 function integrated(t) {
   let gateway;

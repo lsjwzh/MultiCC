@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { resolveQuotaBar, renderQuotaParts } = require('../public/quota-bar-view');
-const Renderer = require('../src/native/runtime').getQuotaBarView();
+const Renderer = require('../src/native/binding').getQuotaBarView();
 const rateLimitApi = require('../public/chat-rate-limit');
 const fixture = require('./fixtures/quota-bar-golden.json');
 const zhCatalog = require('../app/assets/i18n/zh.json');
@@ -611,7 +611,7 @@ test('quota snapshots and subscriptions match the pre-migration host on identica
   }
   const legacyBar = frozenSource('quota-bar-view.js', 'legacy-quota-bar-host.js');
   const legacy = frozenSource('provider-limit-sync.js', 'legacy-provider-limit-sync.js', { './quota-bar-view': legacyBar });
-  const live = require('../src/native/runtime');
+  const live = require('../src/native/binding');
   const now = 1700000000000;
   t.mock.method(Date, 'now', () => now);
   const rows = [];

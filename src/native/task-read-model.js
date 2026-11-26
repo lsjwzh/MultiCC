@@ -1,6 +1,6 @@
 'use strict';
 
-const runtime = require('./runtime');
+const runtime = require('./binding');
 
 // Async transport bridge. The Rust owner
 // validates all commands and opens the source read-only. Node also supplies ICU

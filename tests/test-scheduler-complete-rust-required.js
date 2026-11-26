@@ -8,7 +8,7 @@ const { performance } = require('node:perf_hooks');
 const test = require('node:test');
 const Database = require('better-sqlite3');
 const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createSessionWorkScheduler } = require('../src/session-work/scheduler');
+const { createSessionWorkScheduler } = require('../src/session-work');
 
 test('real SQLite exposes the pending-queue event-loop cost of W completion', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-complete-acceptance-'));
@@ -106,15 +106,10 @@ test('isolated Rust completion handles 1,000 queued records without stalling Nod
 // A worker yield between the pending-user-input callback and commit changes the
 // clock observation; see test-scheduler-complete-order.js for that regression.
 test('scheduler completion is a Rust command with no JavaScript domain mutation', () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/session-work/scheduler.js'), 'utf8');
-  const start = source.indexOf('  async function complete(');
-  const end = source.indexOf('  async function settlePersistedDelivery(', start);
-  assert.ok(start >= 0 && end > start, 'cannot locate scheduler completion');
-  const body = source.slice(start, end);
-  assert.equal(/\b(?:schedule|item)\.[\w$]+\s*=(?!=)|draft\.select\s*\(/.test(body), false,
-    'scheduler.complete still mutates schedule/outbox and scans pending rows in Node; a synchronous Rust port alone would keep the unbounded event-loop stall');
-  assert.match(body, /(?:getNative\(\)\.scheduleComplete\w*\(|store\.executeScheduleComplete\()/,
-    'scheduler.complete must call a Rust domain command');
-  assert.match(body, /(?:store\.mutateSync\(|store\.executeScheduleComplete\()/,
-    'the command must commit within the same synchronous host callback');
+  const bridge = fs.readFileSync(path.join(__dirname, '../src/session-work/index.js'), 'utf8');
+  assert.match(bridge, /native\.sessionWorkSchedulerApi\(/);
+  assert.doesNotMatch(bridge, /draft\.|compactJson|admitOutboxItem|stableEntryId/);
+  assert.equal(fs.existsSync(path.join(__dirname, '../src/session-work/scheduler.js')), false);
+  const command = fs.readFileSync(path.join(__dirname, '../native/addon/src/session_work_scheduler/operations.rs'), 'utf8');
+  assert.match(command, /c"executeScheduleComplete"/);
 });

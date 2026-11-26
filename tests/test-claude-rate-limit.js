@@ -9,7 +9,7 @@ const test = require('node:test');
 // fetches, gates and paints. These tests therefore split into two halves:
 //   • the renderer + token resolver (the logic that used to live in the client);
 //   • the client plumbing that stayed: consume → gate → persist → restore.
-const Renderer = require('../src/native/runtime').getQuotaBarView();
+const Renderer = require('../src/native/binding').getQuotaBarView();
 const { resolveQuotaBar, humanizeCountdown } = require('../public/quota-bar-view');
 const Client = require('../public/chat-rate-limit');
 

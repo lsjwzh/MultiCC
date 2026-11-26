@@ -1,5 +1,5 @@
 'use strict';
-const { getNative, runNative, nativeCode } = require('./runtime');
+const { getNative, runNative, nativeCode } = require('./binding');
 const { createStore } = require('../state/store');
 
 // 生产任务板由 board-store.js 常驻在 Rust：命令里的 board 是它的镜像时只上送
@@ -70,8 +70,7 @@ const taskAttention = {
 };
 // Rust owns validation, minting, recovery-row selection and display labels.
 // V8 Maps retain opaque candidate keys, and StateStore owns the on-disk envelope.
-function createTaskShortCodeRegistry({ file = null, candidate } = {}) {
-  const native = getNative();
+function registryIndexes({ file = null, candidate } = {}) {
   const ids = new Map();
   const owners = new Map();
   const store = file && createStore({ file, kind: 'task-short-codes', schemaVersion: 1, legacyIsArray: false });
@@ -79,25 +78,34 @@ function createTaskShortCodeRegistry({ file = null, candidate } = {}) {
     let loaded;
     try { loaded = store.loadOrRecover(); }
     catch (e) { throw new Error(`[task-short-code] registry state unusable at ${file}: ${e.message}`); }
-    if (loaded.present) native.taskCodeRestore(ids, owners, loaded.data && loaded.data.byTaskId, file);
+    if (loaded.present) getNative().taskCodeRestore(ids, owners, loaded.data && loaded.data.byTaskId, file);
   }
   const save = store ? () => store.save({ byTaskId: Object.fromEntries(ids) }) : undefined;
+  return { ids, owners, candidate, save };
+}
+function registryMethods({ ids, owners, candidate, save }) {
   return {
-    codeFor: id => native.taskCodeMint(ids, owners, candidate, save, id),
+    codeFor: id => getNative().taskCodeMint(ids, owners, candidate, save, id),
     has: id => ids.has(String(id ?? '').trim()),
     ownerOf: code => owners.get(code) || null,
     size: () => ids.size,
   };
 }
 
-let activeRegistry;
-function initTaskShortCodeRegistry(opts) { return activeRegistry = createTaskShortCodeRegistry(opts); }
-function registry() { return activeRegistry ||= createTaskShortCodeRegistry(); }
+function createTaskShortCodeRegistry(opts) { return registryMethods(registryIndexes(opts)); }
+const taskCodeRegistryState = { current: registryIndexes() };
+let activeRegistry = registryMethods(taskCodeRegistryState.current);
+function initTaskShortCodeRegistry(opts) {
+  const indexes = registryIndexes(opts);
+  taskCodeRegistryState.current = indexes;
+  return activeRegistry = registryMethods(indexes);
+}
+function registry() { return activeRegistry; }
 function taskShortCode(id) { return registry().codeFor(id); }
 const taskShortCodes = {
   taskShortCode, createTaskShortCodeRegistry, initTaskShortCodeRegistry,
   taskIdForShortCode: code => getNative().taskCodeLookup(code, registry),
-  labelWithCode: (id, text) => getNative().taskCodeLabel(id, text, taskShortCode),
+  labelWithCode: (id, text) => getNative().taskCodeLabel(id, text, taskCodeRegistryState),
   CODE_LEN: 4, CODE_ALPHABET: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ',
 };
 
@@ -251,7 +259,7 @@ function createTaskBoardRepository(file) {
   return getNative().taskBoardRepository(file, runRepository);
 }
 
-module.exports = { createTaskBoardRepository, taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes,
+module.exports = { get taskCodeRegistryState() { return taskCodeRegistryState; }, createTaskBoardRepository, taskDomain, taskDomainAsync, replace, cloneBoard, forWire, registerBoardStore, boardStoreOf, trackedProxies, taskAttention, getAttributionModePolicy, ...taskShortCodes,
   createAttributionSettings, createAttributionSettingsFromEnv,
   readStoredPinIds, normalizePins, createTaskIdListRuntime, createAirPinRuntime, createAirTodoRuntime,
   createAirTodoIgnoreRuntime, normalizeIgnores,

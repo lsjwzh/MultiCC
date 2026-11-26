@@ -2,7 +2,7 @@
 // Migration bridge only: Rust owns the records, crypto, recovery and writes.
 // Promise sequencing preserves this handle's call order while crypto and I/O
 // execute on native workers. Delete the facade once callers live in Rust.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const TOKEN_PREFIX = 'mcr1';
 const MIN_SECRET_LENGTH = 8;
 const MAX_SECRET_LENGTH = 128;

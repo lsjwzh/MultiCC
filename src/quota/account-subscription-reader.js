@@ -23,7 +23,7 @@
 const path = require('node:path');
 const os = require('node:os');
 const cache = require('../quota/account-subscription-cache');
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 const { policy } = require('../network/outbound');
 async function query(input, { fetch } = {}) {
   const native = getNative();

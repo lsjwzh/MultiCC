@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 
 const {
   createChatHistoryRuntime,
-} = require('../src/routes/chat-history');
+} = require('../src/routes/chat-history/index');
 
 // ── Minimal chat-history runtime fixture (trimmed from the harness in
 // tests/test-chat-history-routes.js — only what assertChatHistoryDeps needs).

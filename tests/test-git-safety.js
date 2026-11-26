@@ -10,8 +10,11 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const {
   gitWorktreeAdd,
+  gitWorktreeValidate,
+  defaultRepoActor,
   gitWorktreeRemove,
   gitRelocateWorktree,
+  gitWorktreeSplitOff,
   gitMergeBack,
   gitSyncFromBase,
   gitRebaseResolve,
@@ -107,13 +110,16 @@ test('a user-provided commit message works without the default message generator
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const dir = await initRepo(root, 'repo');
   await fsp.writeFile(path.join(dir.path, 'app.js'), 'module.exports = 2;\n');
-  const script = `require('./src/git/service').gitWorktreeCommitAll(process.argv[1], '本地提交')
+  const script = `const binding = require('./src/native/binding');
+    delete binding.getNative().quickCommitMessageValue;
+    require('node:assert/strict').throws(() => binding.quickCommitMessage(' M app.js'), /提交说明生成模块不可用/);
+    require('./src/git/service').gitWorktreeCommitAll(process.argv[1], '本地提交')
     .then(ok => process.exit(ok ? 0 : 2), () => process.exit(3));`;
   const result = await execFileAsync(process.execPath, ['-e', script, dir.path], {
     cwd: path.resolve(__dirname, '..'),
-    env: { ...process.env, MULTICC_RUST_ADDON: path.join(os.tmpdir(), 'missing-publication-addon.node') },
   });
   assert.equal(result.stderr, '');
+  assert.equal(await git(dir.path, ['log', '-1', '--format=%s']), '本地提交');
 });
 
 test('Git identity follows explicit environment and command options', async t => {
@@ -282,7 +288,7 @@ test('dirty worktree removal is refused by default and forced removal is recover
   const session = await sessionIn(dir, 'dirty');
   await fsp.writeFile(path.join(session.worktreePath, 'app.js'), 'module.exports = 2;\n');
   await fsp.mkdir(path.join(session.worktreePath, 'notes'), { recursive: true });
-  await fsp.writeFile(path.join(session.worktreePath, 'notes', 'new.txt'), 'recover me\n');
+  await fsp.writeFile(path.join(session.worktreePath, 'notes', ' 草稿.txt'), 'recover me\n');
 
   const refused = await gitWorktreeRemove(dir.path, session.worktreePath, session.branch, {
     sessionId: session.id, baseBranch: dir.baseBranch,
@@ -301,8 +307,8 @@ test('dirty worktree removal is refused by default and forced removal is recover
   assert(forced.backup.ref.startsWith('refs/multicc/backups/dirty/'));
   assert.equal(fs.existsSync(forced.backup.bundle), true);
   assert.equal(await git(dir.path, ['bundle', 'verify', forced.backup.bundle]).then(() => true, () => false), true);
-  assert.equal(fs.existsSync(forced.backup.patch), true);
-  assert.equal(await fsp.readFile(path.join(forced.backup.backupDir, 'untracked', 'notes', 'new.txt'), 'utf8'), 'recover me\n');
+  await git(dir.path, ['apply', '--check', forced.backup.patch]);
+  assert.equal(await fsp.readFile(path.join(forced.backup.backupDir, 'untracked', 'notes', ' 草稿.txt'), 'utf8'), 'recover me\n');
   assert.equal(await git(dir.path, ['rev-parse', '--verify', forced.backup.ref]).then(() => true, () => false), true);
   assert.equal(fs.existsSync(session.worktreePath), false);
 });
@@ -351,6 +357,7 @@ test('relocate creates target first, rolls it back on failure, and preserves sou
   assert.equal(injected.rolledBack, true);
   assert.equal(fs.existsSync(session.worktreePath), true);
   assert.equal(fs.existsSync(targetPath), false);
+  await assert.rejects(git(targetDir.path, ['show-ref', '--verify', 'refs/heads/' + session.branch]));
 
   const moved = await gitRelocateWorktree(oldDir, targetDir, session);
   assert.equal(moved.ok, true);
@@ -550,10 +557,109 @@ test('removal tolerates a worktree dir the re-inited repo no longer tracks', asy
 
 test('默认提交说明与冻结版使用相同的输入转换和输出文本', async () => {
   const before = require('./helpers/frozen-host-ports/git-default-commit-message').quickCommitMessage;
-  const current = require('../src/native/runtime').quickCommitMessage;
+  const current = require('../src/native/binding').quickCommitMessage;
   for (const value of ['', null, false, ' M README.md\n?? 新文件.txt', Symbol('路径'), { toString: () => ' D old.js' }]) {
     assert.equal(await current(value), await before(value));
   }
   const error = Error('转换中止'), value = { toString() { throw error; } };
   for (const fn of [before, current]) assert.throws(() => fn(value), e => e === error);
+});
+
+async function transferFixture(t) {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-transfer-rollback-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  return { root, createRepo: name => initRepo(root, name), checkout: sessionIn };
+}
+
+test('relocate failure preserves a target checkout that predates this attempt', async t => {
+  const { createRepo, checkout } = await transferFixture(t);
+  const [source, target] = await Promise.all([createRepo('source'), createRepo('target')]);
+  const session = await checkout(source, 's');
+  const existing = await checkout(target, 's');
+  const marker = path.join(existing.worktreePath, 'user-only');
+  await fsp.writeFile(marker, 'preserve me');
+  const head = await git(target.path, ['rev-parse', existing.branch]);
+  const result = await gitRelocateWorktree(source, target, session, {
+    beforeRemove() { throw new Error('injected after inspecting existing target'); },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.rolledBack, false);
+  assert.equal(await fsp.readFile(marker, 'utf8'), 'preserve me');
+  assert.equal(await git(target.path, ['rev-parse', existing.branch]), head);
+  assert.equal((await fsp.stat(session.worktreePath)).isDirectory(), true);
+});
+
+test('split with a colliding untracked file retains both existing checkouts and their different bytes', async t => {
+  const { createRepo, checkout } = await transferFixture(t);
+  const dir = await createRepo('repo');
+  const [source, target] = [await checkout(dir, 'source'), await checkout(dir, 'target')];
+  await fsp.writeFile(path.join(source.worktreePath, 'one'), 'source bytes');
+  await fsp.writeFile(path.join(target.worktreePath, 'one'), 'target bytes');
+  const result = await gitWorktreeSplitOff(dir.path, {
+    sessionId: source.id, source, target: { sessionId: target.id },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.sourceRemoved, false);
+  assert.equal(result.rolledBack, false);
+  assert.equal(await fsp.readFile(path.join(source.worktreePath, 'one'), 'utf8'), 'source bytes');
+  assert.equal(await fsp.readFile(path.join(target.worktreePath, 'one'), 'utf8'), 'target bytes');
+});
+
+test('split rollback removes the newly created checkout and keeps a pre-existing target branch', async t => {
+  const { createRepo, checkout } = await transferFixture(t);
+  const dir = await createRepo('repo');
+  const source = await checkout(dir, 'source');
+  const target = await checkout(dir, 'target');
+  const file = 'app.js';
+  await fsp.writeFile(path.join(target.worktreePath, file), 'unique committed target\n');
+  await git(target.worktreePath, ['commit', '-am', 'target-only change']);
+  const head = await git(dir.path, ['rev-parse', target.branch]);
+  await git(dir.path, ['worktree', 'remove', target.worktreePath]);
+  await fsp.writeFile(path.join(source.worktreePath, file), 'incompatible source edit\n');
+  const result = await gitWorktreeSplitOff(dir.path, {
+    sessionId: source.id, source, target: { sessionId: target.id },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'carry_apply_failed');
+  assert.equal(result.rolledBack, true);
+  assert.equal(await git(dir.path, ['rev-parse', target.branch]), head);
+  await assert.rejects(fsp.stat(target.worktreePath), { code: 'ENOENT' });
+  assert.equal(await fsp.readFile(path.join(source.worktreePath, file), 'utf8'), 'incompatible source edit\n');
+});
+
+test('relocate carry refuses an intermediate target symlink before writing outside the checkout', {
+  skip: process.platform === 'win32',
+}, async t => {
+  const { root, createRepo, checkout } = await transferFixture(t);
+  const [source, target] = await Promise.all([createRepo('source'), createRepo('target')]);
+  const session = await checkout(source, 's');
+  const existing = await checkout(target, 's');
+  const outside = path.join(root, 'outside');
+  await fsp.mkdir(outside);
+  await fsp.symlink(outside, path.join(existing.worktreePath, 'folder'));
+  await fsp.mkdir(path.join(session.worktreePath, 'folder'));
+  await fsp.writeFile(path.join(session.worktreePath, 'folder', 'draft'), 'must stay here');
+  const result = await gitRelocateWorktree(source, target, session, { carry: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.rolledBack, false);
+  assert.deepEqual(await fsp.readdir(outside), []);
+  assert.equal(await fsp.readFile(path.join(session.worktreePath, 'folder', 'draft'), 'utf8'), 'must stay here');
+});
+
+test('worktree validation associates a CRLF branch record with its own checkout', async t => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'multicc-worktree-records-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  t.mock.method(defaultRepoActor, 'run', async (cwd, kind, task) => {
+    assert.equal(kind, 'worktree-validate');
+    return task({
+      operationId: 'validation',
+      execGit: async (_dir, args) => args[0] === 'worktree'
+        ? [`worktree ${root}`, 'branch refs/heads/main', '',
+          `worktree ${root}-other`, 'branch refs/heads/session'].join('\r\n')
+        : 'commit',
+    });
+  });
+  const result = await gitWorktreeValidate(root, root, 'session');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'WORKTREE_BRANCH_MISMATCH');
 });

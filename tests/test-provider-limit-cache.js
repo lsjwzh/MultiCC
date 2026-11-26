@@ -30,7 +30,7 @@ const {
 const {
   createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS,
 } = require('../src/quota/limit-cache-recorder');
-const { compactBarText } = require('../src/native/runtime').getQuotaBarView();
+const { compactBarText } = require('../src/native/binding').getQuotaBarView();
 const { writeJsonAtomic } = require('../src/state/store');
 
 let pass = 0, fail = 0;
@@ -292,7 +292,7 @@ function testRecorder() {
 // family. Nothing inside multicc can repair that, so the only correct reaction
 // is to keep the account out of Auto's pool until a human logs in again.
 function testRevokedParkAndRelease() {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   const file = tmpDb('revoked');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file, now: clock.now });
@@ -492,7 +492,7 @@ function testSchemaGuard() {
 // ── a second window and the 429 → quota re-read hand-off ────────────────────
 
 function testWeeklyWindowAndRejectionRefresh() {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   const file = tmpDb('weekly');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file, now: clock.now });
@@ -549,7 +549,7 @@ function testWeeklyWindowAndRejectionRefresh() {
 // ── every source keeps its 5h / week / month cycles ─────────────────────────
 
 function testEverySourceKeepsItsCycles() {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   const { pollCodexUsage } = require('../src/usage-limit-poller');
   const file = tmpDb('cycles');
   const clock = fixedClock(1_700_000_000_000);
@@ -642,7 +642,7 @@ async function withFetch(body, fn) {
 }
 
 function testSharedSnapshots() {
-  const { connectProviderLimitSync } = require('../src/native/runtime');
+  const { connectProviderLimitSync } = require('../src/native/binding');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file: tmpDb('shared'), now: clock.now });
   const sessions = new Map([
@@ -684,7 +684,7 @@ function testSharedSnapshots() {
 // ── structured rejection: the *scope* of a 429 decides what is parked ───────
 
 function testStructuredRejectionPark() {
-  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
+  const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
   const file = tmpDb('rejection');
   const clock = fixedClock(1_700_000_000_000);
   const now = clock.now();
@@ -856,7 +856,7 @@ function testBareRateLimitKeepsStrongerPark() {
 }
 
 function testNativeRejectionBoundaries() {
-  const request = require('../src/native/runtime').getNative().quotaRejectionRequestValue;
+  const request = require('../src/native/binding').getNative().quotaRejectionRequestValue;
   const now = 1_700_000_000_000;
   const park = rejection => request('park', { rejection, now });
   const longModel = 'x'.repeat(119) + '😀';
@@ -877,7 +877,7 @@ function testNativeRejectionBoundaries() {
 // Frozen pre-migration expressions: this is deliberately independent of the
 // Rust implementation so the final migration gate detects behavior drift.
 function testNativeCacheMutationPolicy() {
-  const request = require('../src/native/runtime').getNative().limitCacheRecorderRequestValue;
+  const request = require('../src/native/binding').getNative().limitCacheRecorderRequestValue;
   const prior = {
     appType: 'claude', providerId: 'p', kind: 'window', status: 'ok',
     summary: { label: '中文😀', value: 20 }, summaryText: 'previous', barText: 'bar',
@@ -928,7 +928,7 @@ async function testNativeTransactionalStore() {
   const initial = createProviderLimitCache({ file, now: () => 100 });
   initial.record('claude', 'p', { kind: 'window', summaryText: 'old', fetchedAt: 100 });
   initial.close();
-  const addon = require('../src/native/runtime').getNative();
+  const addon = require('../src/native/binding').getNative();
   const store = new addon.RustProviderLimitStore();
   const call = (op, input = {}) => store.requestAsync(op, input);
   await call('openExisting', { file });

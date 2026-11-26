@@ -31,7 +31,7 @@ test('production quota commits precede auto selection and final proxy admission'
     quotaBarCacheFile: path.join(root, 'bars.json'),
     quotaGuardFile: path.join(root, 'guard.json'),
   };
-  const addon = require('../src/native/runtime').getNative();
+  const addon = require('../src/native/binding').getNative();
   await addon.accountSubscriptionCache(paths.providerLimitDbFile, JSON.stringify({
     operation: 'record', vendor: 'claude', accountId: 'global', attemptAt: 123,
     result: { status: 'unavailable' },

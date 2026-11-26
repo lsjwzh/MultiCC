@@ -108,7 +108,7 @@ function readCodexOfficialCredential(options = {}) {
     try { input.auth = parseObject(options.readFileSync(input.file, 'utf8')); }
     catch (_) { return { ok: false, reason: 'credential_unreadable' }; }
   }
-  return require('../native/runtime').providerCredentials.credential(input);
+  return require('../native/binding').providerCredentials.credential(input);
 }
 
 function normalizeProxyPath(value) {

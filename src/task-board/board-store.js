@@ -10,7 +10,7 @@
 // Proxy 抓不到的写入只有一种：调用方把自建对象挂进板后，又经自己手里的裸引用
 // 修改它。挂入时记为 volatile，落盘前每次上送都整条复核；另有全量校验兜底
 // （测试每次调用后、生产每 10 分钟），分叉以宿主镜像为准重新上送。
-const { getNative, runNative, nativeCode } = require('../native/runtime');
+const { getNative, runNative, nativeCode } = require('../native/binding');
 const domain = require('../native/task-domain');
 const { wireDate } = require('./planning');
 

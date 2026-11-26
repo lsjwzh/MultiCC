@@ -126,7 +126,7 @@ for (const failWrite of [false, true]) test(`an early abort result waits for the
   t.after(() => releaseWrite());
   const f = await laneFixture(t, { streamDeps: {
     createLane: callback => {
-      const lane = new (require('../src/native/runtime').getNative().RustClaudeLane)(callback);
+      const lane = new (require('../src/native/binding').getNative().RustClaudeLane)(callback);
       return new Proxy(lane, { get(target, key) {
         if (key === 'sendUser') return async line => {
           await target.sendUser(line);
@@ -368,7 +368,7 @@ test('stream router forwards task control only to backends that implement it', a
 });
 
 async function nativeProcessFixture(t, scenario) {
-  const { getNative } = require('../src/native/runtime');
+  const { getNative } = require('../src/native/binding');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-native-exit-'));
   const events = [];
   const keepAlive = setInterval(() => {}, 1000);
@@ -451,7 +451,7 @@ test('held injection reserves before async write and cannot acknowledge a failed
   let failNext = true;
   const f = await laneFixture(t, { scenario: 'held-attributed', streamDeps: {
     createLane: callback => {
-      const lane = new (require('../src/native/runtime').getNative().RustClaudeLane)(callback);
+      const lane = new (require('../src/native/binding').getNative().RustClaudeLane)(callback);
       return new Proxy(lane, { get(target, key) {
         if (key === 'sendUser') return line => {
           if (JSON.parse(line).message.content[0].text === 'TYPED' && failNext) {

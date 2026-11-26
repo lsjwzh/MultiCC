@@ -1,9 +1,9 @@
 'use strict';
 
 const { scopeHostProviderEvent } = require('./chat/provider-attempt-runtime');
-const { SESSION_DELIVERY_SYSTEM_PREFIX: SYSTEM_PREFIX } = require('./native/runtime');
+const { SESSION_DELIVERY_SYSTEM_PREFIX: SYSTEM_PREFIX } = require('./native/binding');
 const unattendedKernel = require('./unattended/kernel');
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 
 // "Real user" = a message a human typed. Host-authored deliveries all carry one
 // of the markers below (or the 🔇 system prefix the delivery boundary stamps),

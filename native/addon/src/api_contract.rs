@@ -221,7 +221,7 @@ fn checked<'a>(state: L<'a>, dto: L<'a>, required: Option<(&CStr, &str)>) -> Res
             return Err(state.type_error(message));
         }
     }
-    state.get(c"assertDtoSafe")?.call_plain(&[dto])
+    crate::session_dto::assert_safe(state, dto, text(state, "$")?)
 }
 fn provider<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
     let codex = read(source, c"appType")?.equals(text(state, "codex")?)?;
@@ -397,13 +397,10 @@ fn wait<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
 }
 
 #[napi]
-pub fn api_contract_api(
-    env: Env,
-    anchor: Unknown<'_>,
-    assert_safe: Unknown<'_>,
-) -> Result<sys::napi_value> {
+pub fn api_contract_api(env: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
     let anchor = L::new(&env, anchor);
-    let state = fields(anchor, &[("assertDtoSafe", L::new(&env, assert_safe))])?;
+    let state = fields(anchor, &[])?;
+    crate::session_dto::install_safety(&env, state)?;
     let regexp = anchor.global()?.get(c"RegExp")?;
     for (key, pattern) in [
         (c"idPattern", "^[A-Za-z0-9._:-]{1,128}$"),

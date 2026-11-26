@@ -235,7 +235,7 @@ function createShareMachinesHost(deps = {}) {
 }
 
 function buildOverview(deps) {
-  return require('../native/runtime').getNative().workspaceOverview(deps,
+  return require('../native/binding').getNative().workspaceOverview(deps,
     (a, b) => String(b.at).localeCompare(String(a.at)));
 }
 

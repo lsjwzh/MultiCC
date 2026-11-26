@@ -1,7 +1,7 @@
 'use strict';
 // Request adaptation only. The addon reads borrowed req/socket/header values;
 // native/core/http_gate owns the same policy for Node and the Axum gateway.
-const { getNative } = require('./native/runtime');
+const { getNative } = require('./native/binding');
 const call = (operation, value) => getNative().requestLocality(operation, value);
 const constants = call('constants', null);
 module.exports = {

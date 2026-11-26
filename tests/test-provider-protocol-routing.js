@@ -38,7 +38,7 @@ insert.run(
 );
 db.close();
 
-const providers = require('../src/providers/core');
+const providers = require('../src/providers/host');
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -290,7 +290,7 @@ test('DSH route injects DEEPSEEK_* env only; Grok materializes a private GROK_HO
 
 test('Grok model profiles match the retired TOML writer for literal keys and escaped values', () => {
   const toml = require('node:module').createRequire(require.resolve('cli-provider-router'))('@iarna/toml');
-  const { grokProviderModelConfig } = require('../src/native/runtime').getNative();
+  const { grokProviderModelConfig } = require('../src/native/binding').getNative();
   for (const model of ['grok-4', 'a.b', '含 "引号" 和\\路径', '__proto__']) {
     const base = 'https://example.invalid/api?q="quoted"&text=模型';
     for (const backend of ['messages', 'responses']) {

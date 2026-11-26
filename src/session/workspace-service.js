@@ -1,7 +1,7 @@
 'use strict';
 
-const { assertDtoSafe, sanitizePublicText } = require('../native/runtime').getSessionDto();
-const { getNative } = require('../native/runtime');
+const { assertDtoSafe, sanitizePublicText } = require('../native/binding').getSessionDto();
+const { getNative } = require('../native/binding');
 const assertDirectoryRecordsPort = port => getNative().sessionAssertDirectoryRecordsPort(port);
 const assertWorkspaceFactsPort = port => getNative().sessionAssertWorkspaceFactsPort(port);
 

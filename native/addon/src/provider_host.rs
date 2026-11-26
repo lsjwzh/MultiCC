@@ -158,6 +158,40 @@ pub fn codex_official_error(input: String) -> Result<String> {
     Ok(multicc_cpr::codex_official::public_error(&v).to_string())
 }
 
+/// The embedded store is called on the Rust stack. V8 owns the public JSON
+/// conversion (including toJSON hooks) and the identity of a thrown exception.
+fn repository_access<'a>(p: L<'a>, request: L<'a>) -> Result<L<'a>> {
+    use napi::bindgen_prelude::FromNapiValue;
+    let file = p.get(c"file")?;
+    let injected = p.get(c"access")?;
+    if !injected.undefined()? {
+        return injected.call_plain(&[file, request]);
+    }
+    let access = || -> Result<L<'a>> {
+        let json = p.global()?.get(c"JSON")?;
+        let parse = json.get(c"parse")?;
+        let raw = json.get(c"stringify")?.call(json, &[request])?;
+        let file = unsafe { String::from_napi_value(file.env(), file.raw()) }?;
+        let input = unsafe { String::from_napi_value(raw.env(), raw.raw()) }?;
+        let result = provider_store(file, input)?;
+        parse.call(json, &[text(p, &result)?])
+    };
+    match access() {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => {
+            let exception = match p.exception_value()? {
+                Some(original) => original,
+                None => p
+                    .global()?
+                    .get(c"Error")?
+                    .construct(&[text(p, &error.reason)?])?,
+            };
+            exception.assign(c"code", exception.get(c"message")?)?;
+            Err(exception.throw_error())
+        }
+    }
+}
+
 /// Revision ownership follows the exact array returned by read, including
 /// writes of a replacement array derived from an earlier snapshot.
 #[napi]
@@ -183,7 +217,7 @@ pub fn provider_repository(
     )?;
     let read = method(&env, ports, "read", 0, 0, |p, _| {
         let req = fields(p, &[("operation", p.from_value(&"read".into())?)])?;
-        let snapshot = p.get(c"access")?.call_plain(&[p.get(c"file")?, req])?;
+        let snapshot = repository_access(p, req)?;
         let records = snapshot.get(c"records")?;
         call(
             p.get(c"revisions")?,
@@ -209,7 +243,7 @@ pub fn provider_repository(
                 ("revision", rev),
             ],
         )?;
-        let next = p.get(c"access")?.call_plain(&[p.get(c"file")?, req])?;
+        let next = repository_access(p, req)?;
         call(revisions, c"set", &[records, next.get(c"revision")?])?;
         p.from_value(&V::Undefined)
     })?;

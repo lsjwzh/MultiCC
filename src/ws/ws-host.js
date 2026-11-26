@@ -4,7 +4,7 @@
 // composition root can build it before the connection router is mounted: the
 // chat turn engine's replay hub and the router must share the same host (one
 // connection registry, one send queue per socket, one chat session table).
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../native/binding');
 
 function createWsHost() {
   // 在宿主一次完成对象展开和序列化，协议字段由 Rust 提供。

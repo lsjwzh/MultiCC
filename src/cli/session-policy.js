@@ -4,7 +4,7 @@ const defaultFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { isResidentSession, knownEffort, supportsEffort, effortOf } = require('./cli-capability');
-const { createModelDefaultResolver, getNative } = require('../native/runtime');
+const { createModelDefaultResolver, getNative } = require('../native/binding');
 const { CLAUDE_MODELS_FALLBACK, listClaudeModelsSync } = require('../claude-models');
 
 const CODEX_STREAM_DISCONNECT_CONTINUE_MAX = 2;

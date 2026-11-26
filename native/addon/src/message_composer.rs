@@ -551,7 +551,7 @@ pub fn message_compose(
 
 /// Addition after a string LHS uses the default primitive hint, unlike template
 /// interpolation (string hint). Keep custom valueOf and Date/Symbol behaviour.
-fn default_primitive(value: L<'_>) -> Result<L<'_>> {
+pub(crate) fn default_primitive(value: L<'_>) -> Result<L<'_>> {
     if !matches!(
         value.kind()?,
         sys::ValueType::napi_object | sys::ValueType::napi_function
@@ -592,7 +592,7 @@ pub fn message_render_prompt(env: Env, envelope: Unknown<'_>) -> Result<sys::nap
     Ok(render_prompt(&env, L::new(&env, envelope))?.raw())
 }
 
-fn render_prompt<'a>(env: &'a Env, envelope: L<'a>) -> Result<L<'a>> {
+pub(crate) fn render_prompt<'a>(env: &'a Env, envelope: L<'a>) -> Result<L<'a>> {
     let layers = array(envelope)?;
     let mut index = 0;
     envelope.get(c"contextLayers")?.for_each(|item| {

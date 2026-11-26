@@ -107,7 +107,7 @@ for (const mode of ['--no-node', '--node', 'direct']) {
     seedTree(actual);
     const removed = createAssistSweep({ assistDir: expected, log() {} })();
     if (mode === 'direct') {
-      const { AssistSnapshotRetention } = require('../src/native/runtime').getNative();
+      const { AssistSnapshotRetention } = require('../src/native/binding').getNative();
       assert.throws(() => new AssistSnapshotRetention('relative/dir'), /bounded absolute/);
       const worker = new AssistSnapshotRetention(actual);
       try {

@@ -288,6 +288,18 @@ pub struct RustTurnProgress {
     state: RefCell<State>,
 }
 
+impl RustTurnProgress {
+    pub(crate) fn with_limits(interval: f64, max_identities: f64) -> Self {
+        Self {
+            state: RefCell::new(State {
+                heartbeat: hb::Heartbeat::new(interval),
+                timing: timing::Timing::new(),
+                timelines: timeline::Timelines::new(),
+                probes: probe::Probes::new(max_identities),
+            }),
+        }
+    }
+}
 #[napi]
 impl RustTurnProgress {
     /// Options are validated by the facade (legacy TypeErrors); the owner only
@@ -296,14 +308,7 @@ impl RustTurnProgress {
     pub fn new(env: Env, interval_ms: Unknown<'_>, max_identities: Unknown<'_>) -> Result<Self> {
         let interval = js_to_number(&read(env, interval_ms)?);
         let max_identities = js_to_number(&read(env, max_identities)?);
-        Ok(Self {
-            state: RefCell::new(State {
-                heartbeat: hb::Heartbeat::new(interval),
-                timing: timing::Timing::new(),
-                timelines: timeline::Timelines::new(),
-                probes: probe::Probes::new(max_identities),
-            }),
-        })
+        Ok(Self::with_limits(interval, max_identities))
     }
 
     // ── heartbeat ──────────────────────────────────────────────────────────
