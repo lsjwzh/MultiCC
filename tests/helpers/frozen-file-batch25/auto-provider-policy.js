@@ -11,7 +11,7 @@
 // identity. A field is read only where the rule reads it (a summary's fields
 // only when it is an object, a price's `blended` only when there is a price),
 // so a projection never touches what the rule never did.
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 const native = getNative();
 const FACTS = JSON.parse(native.autoProviderPolicyFacts());

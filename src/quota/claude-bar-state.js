@@ -66,7 +66,7 @@ function rememberClaudeLive(sessionName, normalized) {
 // while no window is running) and the bar reads `5h 44% 已重置` — a stale number
 // next to a word with no time in it. Auto's limit policy already refuses to let
 // a window whose reset has passed bind anything (see usedPercentOf in
-// ../chat/auto-provider-policy.js); the bar is the only place that still showed
+// native/core/src/auto_provider_policy.rs); the bar is the only place that still showed
 // one. Drop it and the scrape's own 5h row answers instead.
 function liveFor(key, nowMs) {
   const live = liveByKey.get(key);

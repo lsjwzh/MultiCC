@@ -5,7 +5,7 @@ const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
 const { selectionKey } = require('../src/providers/auto-provider-config');
-const { failoverSafety } = require('../src/chat/auto-provider-policy');
+const { failoverSafety } = require('../src/native/runtime').getAutoProviderPolicy();
 const { decideApiErrorPolicy: evaluateApiError } = require('../src/chat/api-error-policy');
 
 function fixture({
@@ -212,14 +212,14 @@ test('fresh known exhausted provider is skipped before the physical attempt', ()
 });
 
 test('a fresh terminal cache status is skipped even without a balance summary', () => {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   assert.deepEqual(limitState({ status: 'quota_exhausted', fetchedAt: 990_000 }, {
     now: 1_000_000, staleAfterMs: 60_000,
   }), { state: 'exhausted', reason: 'fresh_limit_exhausted', usedPercent: null });
 });
 
 test('a fresh rejected window summary is exhausted even below 100 percent', () => {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   assert.deepEqual(limitState({
     status: 'ok', fetchedAt: 990_000,
     summary: { kind: 'window', status: 'rejected', usedPercentage: 90 },
@@ -230,7 +230,7 @@ test('a fresh rejected window summary is exhausted even below 100 percent', () =
 });
 
 test('an active provider cooldown is skipped and expiry permits a fresh probe', () => {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   const entry = {
     status: 'ok', fetchedAt: 990_000,
     summary: {
@@ -251,7 +251,7 @@ test('an active provider cooldown is skipped and expiry permits a fresh probe', 
 // the old reading is the only evidence there is, and it is enough to offer the
 // line back — unless a window that is still running is itself nearly spent.
 test('a full window whose reset has passed is offered back and reclaims its place', () => {
-  const { limitState, chooseCandidate } = require('../src/chat/auto-provider-policy');
+  const { limitState, chooseCandidate } = require('../src/native/runtime').getAutoProviderPolicy();
   const entry = week => ({
     status: 'ok', fetchedAt: 1_000,
     summary: { windows: [{ usedPercent: 100, resetMs: 10_000_000 }, { usedPercent: week, resetMs: 90_000_000 }] },
@@ -277,7 +277,7 @@ test('a full window whose reset has passed is offered back and reclaims its plac
 // the timestamp, or a clock change would quietly hand Auto back an account the
 // server has already killed.
 test('a revoked credential never returns to the pool on a timer', () => {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   const entry = {
     status: 'ok', fetchedAt: 990_000,
     summary: {
@@ -1632,8 +1632,93 @@ test('an auto-model line is expanded, and the judged tier picks the model', asyn
 
 // ── Official accounts: one provider per signed-in login, steered by quota ──
 
+const frozenAutoPolicy = require('./helpers/frozen-file-batch25/auto-provider-policy');
+function autoPolicyOutcome(api, method, make) {
+  const events = [], sentinel = new RangeError('policy sentinel');
+  const { args, anchors = [] } = make(events, sentinel);
+  try {
+    const result = api[method](...args);
+    assert.ok(Object.isFrozen(result));
+    if (method === 'chooseCandidate') {
+      assert.ok(Object.isFrozen(result.skipped));
+      return { result: { ...result, candidate: result.candidate == null ? result.candidate : anchors.indexOf(result.candidate) }, events };
+    }
+    return { result, events };
+  } catch (error) { return { name: error.name, message: error.message, identity: error === sentinel, events }; }
+}
+
+test('auto policy facade matches frozen requests and returns the original candidate', () => {
+  const current = require('../src/native/runtime').getAutoProviderPolicy();
+  const { exercise } = require('./helpers/auto-policy-fixture');
+  for (const method of ['limit', 'choose', 'failover']) for (const used of [null, 20, 85, 100]) for (const mode of [0, 1, 2]) for (const byQuota of [false, true]) {
+    const input = { method, used, mode, byQuota };
+    assert.deepEqual(exercise(current, input), exercise(frozenAutoPolicy, input));
+  }
+  assert.deepEqual(Object.keys(current), Object.keys(frozenAutoPolicy));
+  for (const name of ['chooseCandidate', 'failoverSafety', 'limitState']) {
+    assert.equal(current[name].name, frozenAutoPolicy[name].name);
+    assert.equal(current[name].length, frozenAutoPolicy[name].length);
+  }
+  for (const name of ['NON_FAILOVER_CATEGORIES', 'SAFE_PHASES']) {
+    assert.deepEqual([...current[name]], [...frozenAutoPolicy[name]]);
+    current[name].add('fixture'); assert.ok(current[name].has('fixture')); current[name].delete('fixture');
+  }
+  assert.equal(current.NEAR_LIMIT_PERCENT, frozenAutoPolicy.NEAR_LIMIT_PERCENT);
+});
+
+test('auto policy encoder preserves special values, coercion failures and getter order', () => {
+  const current = require('../src/native/runtime').getAutoProviderPolicy();
+  const compare = (method, make) => assert.deepEqual(autoPolicyOutcome(current, method, make), autoPolicyOutcome(frozenAutoPolicy, method, make), method);
+  for (const value of [undefined, null, false, true, 0, -0, NaN, Infinity, -Infinity, 1n, Symbol('value'), '', '\ud800', [], {}]) {
+    compare('limitState', () => ({ args: [{ status: value, fetchedAt: value, summary: { kind: 'window', total: value, usedPercentage: value } }, { now: 1000, staleAfterMs: value, model: value }] }));
+    compare('failoverSafety', () => ({ args: [{ reason: value, error: { category: value, httpStatus: value, phase: value } }, { replayFence: value, sideEffectObserved: value }] }));
+  }
+  compare('limitState', (events, sentinel) => {
+    const value = { [Symbol.toPrimitive](hint) { events.push(hint); if (hint === 'string') throw sentinel; return 500; } };
+    const entry = new Proxy({ fetchedAt: value, status: 'ok', summary: { kind: 'balance', model: value, available: value, total: value } }, {
+      get(target, key) { events.push(String(key)); return target[key]; },
+    });
+    return { args: [entry, { now: value, model: value }] };
+  });
+  compare('chooseCandidate', events => {
+    const watch = (name, value) => new Proxy(value, { get(target, key, receiver) { events.push([name, String(key)]); return Reflect.get(target, key, receiver); } });
+    const candidate = watch('candidate', { providerId: 'a', model: 'm', enabled: true, limitState: 'available', price: watch('price', { blended: 1 }) });
+    const candidates = [candidate];
+    const ladder = []; ladder.length = 2; ladder[1] = 'a';
+    return { args: [watch('options', { candidates, attempted: new Set(), pinned: { providerId: 'a' }, ladder, byPrice: true })], anchors: candidates };
+  });
+  compare('limitState', events => {
+    let reads = 0;
+    return { args: [{ status: 'ok', fetchedAt: 1, summary: { get windows() { events.push('windows'); return ++reads === 1 ? [] : null; } } }, { now: 1 }] };
+  });
+  compare('chooseCandidate', (events, sentinel) => ({ args: [{ candidates: [{ enabled: true, get providerId() { events.push('id'); throw sentinel; } }] }] }));
+  for (const value of [null, false, 0, 1n, Symbol('options')]) {
+    compare('limitState', () => ({ args: [null, value] }));
+    compare('chooseCandidate', () => ({ args: [value] }));
+  }
+});
+
+test('auto policy mapping retains sparse ladders, iterator failures and callback shapes', () => {
+  const current = require('../src/native/runtime').getAutoProviderPolicy();
+  function capture(api) {
+    const shapes = [], previous = Array.from;
+    Array.from = function (source, callback) { shapes.push([callback.name, callback.length]); return previous.call(this, source, callback); };
+    try {
+      const candidates = [{ providerId: 'a', enabled: true, limitState: 'available', priority: 0 }];
+      const ladder = new Array(2); ladder[1] = 'a';
+      const result = api.chooseCandidate({ candidates, attempted: new Set(), ladder });
+      assert.equal(result.candidate, candidates[0]);
+      api.limitState({ status: 'ok', summary: { windows: [{ usedPercent: 20 }] } }, { now: 1 });
+      return shapes;
+    } finally { Array.from = previous; }
+  }
+  assert.deepEqual(capture(current), capture(frozenAutoPolicy));
+  const make = (events, sentinel) => ({ args: [{ candidates: [], attempted: { [Symbol.iterator]() { events.push('iterator'); throw sentinel; } } }] });
+  assert.deepEqual(autoPolicyOutcome(current, 'chooseCandidate', make), autoPolicyOutcome(frozenAutoPolicy, 'chooseCandidate', make));
+});
+
 test('per-account usage windows feed limitState: fullest live window, reset windows ignored, 100% is exhausted', () => {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   const entry = windows => ({ status: 'ok', fetchedAt: 990_000, summary: { kind: 'claude', status: 'ok', windows } });
   assert.deepEqual(limitState(entry([{ window: '5h', usedPercent: 40, resetMs: 2_000_000 }, { window: '7d', usedPercent: 72, resetMs: 9_000_000 }]),
     { now: 1_000_000, staleAfterMs: 60_000 }), { state: 'available', reason: 'fresh_limit_available', usedPercent: 72 });
@@ -1648,7 +1733,7 @@ test('per-account usage windows feed limitState: fullest live window, reset wind
 });
 
 test('chooseCandidate steers between official accounts by headroom without bouncing a sticky session', () => {
-  const { chooseCandidate } = require('../src/chat/auto-provider-policy');
+  const { chooseCandidate } = require('../src/native/runtime').getAutoProviderPolicy();
   const line = (providerId, usedPercent, index, extra = {}) => ({
     providerId, index, priority: 0, enabled: true, trustDomain: 'official', limitState: 'available', usedPercent, ...extra,
   });
@@ -1672,7 +1757,7 @@ test('chooseCandidate steers between official accounts by headroom without bounc
 });
 
 test('preferMaxQuota (byQuota) only intervenes when a line runs low on quota', () => {
-  const { chooseCandidate } = require('../src/chat/auto-provider-policy');
+  const { chooseCandidate } = require('../src/native/runtime').getAutoProviderPolicy();
   const line = (providerId, usedPercent, index, extra = {}) => ({
     providerId, index, priority: index, enabled: true, limitState: 'available', usedPercent, ...extra,
   });

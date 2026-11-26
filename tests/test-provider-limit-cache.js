@@ -292,7 +292,7 @@ function testRecorder() {
 // family. Nothing inside multicc can repair that, so the only correct reaction
 // is to keep the account out of Auto's pool until a human logs in again.
 function testRevokedParkAndRelease() {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   const file = tmpDb('revoked');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file, now: clock.now });
@@ -492,7 +492,7 @@ function testSchemaGuard() {
 // ── a second window and the 429 → quota re-read hand-off ────────────────────
 
 function testWeeklyWindowAndRejectionRefresh() {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   const file = tmpDb('weekly');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file, now: clock.now });
@@ -549,7 +549,7 @@ function testWeeklyWindowAndRejectionRefresh() {
 // ── every source keeps its 5h / week / month cycles ─────────────────────────
 
 function testEverySourceKeepsItsCycles() {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   const { pollCodexUsage } = require('../src/usage-limit-poller');
   const file = tmpDb('cycles');
   const clock = fixedClock(1_700_000_000_000);
@@ -684,7 +684,7 @@ function testSharedSnapshots() {
 // ── structured rejection: the *scope* of a 429 decides what is parked ───────
 
 function testStructuredRejectionPark() {
-  const { limitState } = require('../src/chat/auto-provider-policy');
+  const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
   const file = tmpDb('rejection');
   const clock = fixedClock(1_700_000_000_000);
   const now = clock.now();

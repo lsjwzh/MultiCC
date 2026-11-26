@@ -13,7 +13,7 @@ const Renderer = require('../src/native/runtime').getQuotaBarView();
 const { resolveQuotaBar } = require('../public/quota-bar-view');
 const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
 const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
-const { limitState } = require('../src/chat/auto-provider-policy');
+const { limitState } = require('../src/native/runtime').getAutoProviderPolicy();
 
 const available = claudeQuota('extract', { headers: {} }) !== undefined;
 if (process.env.MULTICC_REQUIRE_RUST_TESTS === '1') assert.ok(available, 'Build the Claude quota Rust bridge');

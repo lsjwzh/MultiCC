@@ -30,7 +30,7 @@ const {
   chooseCandidate,
   failoverSafety,
   limitState,
-} = require('../../src/chat/auto-provider-policy');
+} = require('./frozen-file-batch25/auto-provider-policy');
 const { createAutoProviderRouting } = require('./legacy-auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('./legacy-auto-provider-pricing');
 const { createRoutingAdmissionPhase } = require('../../src/chat/admission-progress');
