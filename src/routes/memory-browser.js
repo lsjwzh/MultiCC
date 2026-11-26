@@ -1,6 +1,8 @@
 'use strict';
 
-const { sanitizePublicText } = require('../native/binding').getPublicSafety();
+const { getNative, getPublicSafety } = require('../native/binding');
+const { sanitizePublicText } = getPublicSafety();
+const { estimateTextTokens } = getNative();
 
 const MEM_GRAPH_MAX_NODES = 600;
 const MEM_TREE_MAX_FILES = 2000;
@@ -57,11 +59,7 @@ function publicFailure(prefix, error) {
 }
 
 function estimateMemTokens(value) {
-  const text = String(value == null ? '' : value);
-  if (!text.length) return 0;
-  const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g) || []).length;
-  const other = text.length - cjk;
-  return Math.max(1, Math.round(cjk * 1.5 + other / 4));
+  return estimateTextTokens(String(value == null ? '' : value));
 }
 
 function parseMemoryMarkdown(raw, slug) {

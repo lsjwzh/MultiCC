@@ -29,6 +29,21 @@ const {
 } = require('../src/routes/memory-browser');
 const { createDocsMemoryHost } = require('../src/routes/docs-memory-host');
 
+test('token estimates preserve UTF-16 units and JavaScript string conversion', () => {
+  assert.equal(estimateMemTokens(null), 0);
+  assert.equal(estimateMemTokens('中😀\ud800\u0000'), 3);
+  const error = new Error('conversion failed');
+  let calls = 0;
+  const value = { [Symbol.toPrimitive](hint) {
+    assert.equal(hint, 'string');
+    if (++calls === 1) return '中文';
+    throw error;
+  } };
+  assert.equal(estimateMemTokens(value), 3);
+  assert.throws(() => estimateMemTokens(value), thrown => thrown === error);
+  assert.equal(calls, 2);
+});
+
 function tempStore() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-memory-browser-'));
 }

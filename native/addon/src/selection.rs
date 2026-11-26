@@ -6,6 +6,14 @@ use napi::{
 };
 use napi_derive::napi;
 
+#[napi]
+pub fn estimate_text_tokens(env: Env, text: Unknown<'_>) -> Result<f64> {
+    let text = L::new(&env, text)
+        .string()?
+        .ok_or_else(|| napi::Error::from_reason("expected a string"))?;
+    Ok(multicc_core::token_estimate::estimate(text.as_units().iter().copied()) as f64)
+}
+
 // Project only the top-level arguments. JSON.stringify must still run inside
 // V8 so application-owned getters, toJSON and exceptions keep their semantics.
 fn json_number(value: L<'_>, spell_nan: bool) -> Result<L<'_>> {

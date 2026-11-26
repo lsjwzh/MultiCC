@@ -45,18 +45,6 @@ fn is_cjk_unit(unit: u16) -> bool {
     (0x3400..=0x9FFF).contains(&unit)
 }
 
-fn is_cjk_token_unit(unit: u16) -> bool {
-    matches!(
-        unit,
-        0x3400..=0x4DBF
-            | 0x4E00..=0x9FFF
-            | 0xF900..=0xFAFF
-            | 0x3040..=0x309F
-            | 0x30A0..=0x30FF
-            | 0xAC00..=0xD7AF
-    )
-}
-
 fn push_unique(result: &mut Vec<String>, seen: &mut HashSet<String>, term: String) {
     if seen.insert(term.clone()) {
         result.push(term);
@@ -182,16 +170,7 @@ pub fn min_relevance(query: &JsValue) -> f64 {
 }
 
 fn estimate_units(text: &JsString) -> f64 {
-    if text.is_empty() {
-        return 0.0;
-    }
-    let units = text.as_units();
-    let cjk = units
-        .iter()
-        .filter(|unit| is_cjk_token_unit(**unit))
-        .count();
-    let raw = cjk as f64 * 1.5 + (units.len() - cjk) as f64 / 4.0;
-    (raw + 0.5).floor().max(1.0)
+    crate::token_estimate::estimate(text.as_units().iter().copied()) as f64
 }
 
 /// `estimateTokens(value)` from `src/task-shell/context.js`, kept on the JS
