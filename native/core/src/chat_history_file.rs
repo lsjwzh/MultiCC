@@ -2,7 +2,9 @@
 //!
 //! 网关和 addon 使用相同的 BOM、行终止与截断恢复规则。扫描回调负责将
 //! 记录交给相应的宿主，文件索引、可见性和缓存不由扫描器修改。
-use crate::js::{is_js_whitespace_char, json_parse, json_stringify_or_undefined, JsValue};
+use crate::js::{
+    is_js_whitespace_char, json_parse, json_project_object, json_stringify_or_undefined, JsValue,
+};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -82,6 +84,256 @@ pub fn visit_transcript(path: &Path, mut visit: impl FnMut(JsValue)) -> io::Resu
         })?;
     }
     Ok(())
+}
+
+/// 轻量 JSONL 行元数据及其字节区间，用于先配对再按需读取正文。
+pub struct JsonlRecordOffset {
+    pub index: usize,
+    pub start: u64,
+    pub end: u64,
+    pub value: JsValue,
+}
+
+/// 流式扫描 JSONL 文件，仅投影出 `fields` 指定的标量字段并记录每行字节范围。
+/// 若文件是旧版 JSON 数组格式则返回 `Ok(None)`，由调用方退回流式全数组扫描。
+pub fn scan_jsonl_projected_offsets(
+    path: &Path,
+    fields: &[&str],
+) -> io::Result<Option<Vec<JsonlRecordOffset>>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Some(Vec::new())),
+        Err(error) => return Err(error),
+    };
+    let mut reader = BufReader::new(file);
+    if starts_with_array(&mut reader)? {
+        return Ok(None);
+    }
+    let limit = crate::chat_history_index::MAX_INDEX_RECORD_BYTES;
+    let mut bytes = Vec::new();
+    let mut out = Vec::new();
+    let mut offset = 0_u64;
+    let mut line = 0_usize;
+    let mut accepted = false;
+    loop {
+        bytes.clear();
+        let start = offset;
+        let count = (&mut reader)
+            .take(limit.saturating_add(1))
+            .read_until(b'\n', &mut bytes)?;
+        if count == 0 {
+            break;
+        }
+        if count as u64 > limit {
+            return Err(invalid_data("history record exceeds the read budget"));
+        }
+        offset = offset
+            .checked_add(count as u64)
+            .ok_or_else(|| invalid_data("history offset overflow"))?;
+        let end = offset;
+        line += 1;
+        let complete = bytes.last() == Some(&b'\n');
+        if complete {
+            bytes.pop();
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let text = if line == 1 {
+            text.strip_prefix('\u{feff}').unwrap_or(&text)
+        } else {
+            &text
+        };
+        if text.chars().all(is_js_whitespace_char) {
+            continue;
+        }
+        match json_project_object(text, fields) {
+            Ok(value @ JsValue::Object(_)) => {
+                accepted = true;
+                let index = out.len();
+                out.push(JsonlRecordOffset {
+                    index,
+                    start,
+                    end,
+                    value,
+                });
+            }
+            _ if !complete && accepted => break,
+            Ok(_) => {
+                return Err(invalid_data(&format!(
+                    "chat history line {line} is not a message object"
+                )))
+            }
+            Err(_) => {
+                return Err(invalid_data(&format!(
+                    "chat history line {line} is not valid JSON"
+                )))
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
+fn read_jsonl_record_raw(file: &mut File, start: u64, end: u64) -> io::Result<String> {
+    let len = end
+        .checked_sub(start)
+        .ok_or_else(|| invalid_data("invalid record byte range"))?;
+    if len > crate::chat_history_index::MAX_INDEX_RECORD_BYTES {
+        return Err(invalid_data("history record exceeds the read budget"));
+    }
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0_u8; len as usize];
+    file.read_exact(&mut bytes)?;
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let trimmed = if start == 0 {
+        text.strip_prefix('\u{feff}').unwrap_or(&text)
+    } else {
+        &text
+    };
+    Ok(trimmed.to_owned())
+}
+
+/// 按精确字节区间 `pread` 单条 JSONL 记录，并只解析 `fields` 指定的字段。
+pub fn read_jsonl_record_projected(
+    file: &mut File,
+    start: u64,
+    end: u64,
+    fields: &[&str],
+) -> io::Result<JsValue> {
+    let raw = read_jsonl_record_raw(file, start, end)?;
+    json_project_object(&raw, fields).map_err(|error| invalid_data(&error.to_string()))
+}
+
+/// 按精确字节区间 `pread` 单条完整 JSONL 记录（用于计算 legacy_message_id）。
+pub fn read_jsonl_record_full(file: &mut File, start: u64, end: u64) -> io::Result<JsValue> {
+    let raw = read_jsonl_record_raw(file, start, end)?;
+    json_parse(&raw).map_err(|error| invalid_data(&error.to_string()))
+}
+
+/// 从 JSONL 文件尾部按 64 KiB 分块倒序读取并只解析 `fields` 指定字段。
+/// 当 `on_row` 返回 `false` 时立即停止读取；遇到旧版数组或异常格式时返回 `Ok(false)`
+/// 以交由严格前向扫描处理或报错。
+pub fn visit_jsonl_tail_reverse_projected(
+    path: &Path,
+    fields: &[&str],
+    mut on_row: impl FnMut(JsValue) -> bool,
+) -> io::Result<bool> {
+    const CHUNK_BYTES: u64 = 64 * 1024;
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error),
+    };
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        return Ok(true);
+    }
+    if starts_with_array(&mut file)? {
+        return Ok(false);
+    }
+
+    let limit = crate::chat_history_index::MAX_INDEX_RECORD_BYTES;
+    let mut pos = file_len;
+    let mut rev_line: Vec<u8> = Vec::new();
+    let mut at_file_end = true;
+    let mut accepted_any = false;
+    let mut trailing_invalid = false;
+    let mut stopped = false;
+
+    enum LineOutcome {
+        Continue,
+        Stop,
+        Fallback,
+    }
+
+    let mut handle_line = |slice: &[u8], is_first_line: bool, is_last_line: bool| -> LineOutcome {
+        if slice.len() as u64 > limit {
+            return LineOutcome::Fallback;
+        }
+        let text = String::from_utf8_lossy(slice);
+        let text = if is_first_line {
+            text.strip_prefix('\u{feff}').unwrap_or(&text)
+        } else {
+            &text
+        };
+        if text.chars().all(is_js_whitespace_char) {
+            return LineOutcome::Continue;
+        }
+        match json_project_object(text, fields) {
+            Ok(value @ JsValue::Object(_)) => {
+                accepted_any = true;
+                if on_row(value) {
+                    LineOutcome::Continue
+                } else {
+                    LineOutcome::Stop
+                }
+            }
+            _ if is_last_line => {
+                // 仅当存在至少一条更早的有效记录时，才宽容文件末尾未写完的半行。
+                trailing_invalid = true;
+                LineOutcome::Continue
+            }
+            _ => LineOutcome::Fallback,
+        }
+    };
+
+    while pos > 0 && !stopped {
+        let read_start = pos.saturating_sub(CHUNK_BYTES);
+        let read_len = (pos - read_start) as usize;
+        file.seek(SeekFrom::Start(read_start))?;
+        let mut chunk = vec![0_u8; read_len];
+        file.read_exact(&mut chunk)?;
+        pos = read_start;
+
+        let mut end = chunk.len();
+        loop {
+            if let Some(nl) = memchr::memrchr(b'\n', &chunk[..end]) {
+                let tail = &chunk[nl + 1..end];
+                if (tail.len() as u64).saturating_add(rev_line.len() as u64) > limit {
+                    return Ok(false);
+                }
+                let outcome = if rev_line.is_empty() {
+                    handle_line(tail, false, at_file_end)
+                } else {
+                    rev_line.extend(tail.iter().rev());
+                    rev_line.reverse();
+                    let outcome = handle_line(&rev_line, false, at_file_end);
+                    rev_line.clear();
+                    outcome
+                };
+                at_file_end = false;
+                match outcome {
+                    LineOutcome::Continue => {}
+                    LineOutcome::Stop => {
+                        stopped = true;
+                        break;
+                    }
+                    LineOutcome::Fallback => return Ok(false),
+                }
+                end = nl;
+            } else {
+                if (end as u64).saturating_add(rev_line.len() as u64) > limit {
+                    return Ok(false);
+                }
+                rev_line.extend(chunk[..end].iter().rev());
+                break;
+            }
+        }
+    }
+
+    if !stopped {
+        rev_line.reverse();
+        match handle_line(&rev_line, true, at_file_end) {
+            LineOutcome::Continue | LineOutcome::Stop => {}
+            LineOutcome::Fallback => return Ok(false),
+        }
+    }
+
+    if trailing_invalid && !accepted_any {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 pub fn read_hidden_ids(path: &Path) -> io::Result<std::collections::HashSet<crate::js::JsString>> {
@@ -398,5 +650,50 @@ mod tests {
             }),
             Err(LegacyError::Invalid)
         ));
+    }
+
+    #[test]
+    fn reverse_tail_and_projected_offsets_handle_multichunk_bom_and_torn_tail() {
+        let dir = std::env::temp_dir().join(format!(
+            "multicc-history-file-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sess.json");
+        let big_tools = "x".repeat(90_000);
+        let body = format!(
+            "\u{feff}{{\"id\":\"m1\",\"role\":\"user\",\"content\":\"first\",\"tools\":\"{big_tools}\"}}\n\
+             {{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"second\",\"tools\":\"{big_tools}\"}}\n\
+             {{\"id\":\"m3\",\"role\":\"user\",\"content\":\"third\"}}\n\
+             {{\"torn"
+        );
+        fs::write(&path, body).unwrap();
+
+        let offsets = scan_jsonl_projected_offsets(&path, &["id", "role"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(offsets.len(), 3);
+        assert_eq!(offsets[0].value.get("id"), Some(&JsValue::from("m1")));
+        assert!(offsets[0].value.get("tools").is_none());
+
+        let mut file = File::open(&path).unwrap();
+        let full = read_jsonl_record_projected(&mut file, offsets[1].start, offsets[1].end, &["id", "content"]).unwrap();
+        assert_eq!(full.get("content"), Some(&JsValue::from("second")));
+
+        let mut seen = Vec::new();
+        let handled = visit_jsonl_tail_reverse_projected(&path, &["id", "content"], |row| {
+            seen.push(row.get("id").cloned().unwrap());
+            seen.len() < 2
+        })
+        .unwrap();
+        assert!(handled);
+        assert_eq!(seen, vec![JsValue::from("m3"), JsValue::from("m2")]);
+
+        let legacy_path = dir.join("legacy.json");
+        fs::write(&legacy_path, "[{\"role\":\"user\",\"content\":\"old\"}]").unwrap();
+        assert!(scan_jsonl_projected_offsets(&legacy_path, &["id"]).unwrap().is_none());
+        assert!(!visit_jsonl_tail_reverse_projected(&legacy_path, &["role"], |_| true).unwrap());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

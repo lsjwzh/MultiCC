@@ -1,6 +1,9 @@
-use multicc_core::cli_switch;
-use napi::Result;
-use napi::{bindgen_prelude::AsyncTask, Env, Task};
+use crate::js_live::LiveValue;
+use multicc_core::{
+    cli_switch,
+    js::{coerce, JsValue as V},
+};
+use napi::{bindgen_prelude::AsyncTask, sys, Env, Result, Task};
 use napi_derive::napi;
 
 pub struct PrepareRoute {
@@ -98,4 +101,139 @@ pub fn codex_profile_route_failure(
     error.set(c"safe", cause.from_value(&V::Bool(true))?)?;
     error.set(c"cause", cause)?;
     Ok(error.raw())
+}
+
+fn read_live_value(value: LiveValue<'_>) -> Result<V> {
+    unsafe { crate::js_bridge::read_value(value.env(), value.raw(), 0, &mut Vec::new()) }
+}
+
+pub(crate) struct CheckpointArgs {
+    pub session: Option<V>,
+    pub exclude_turn: Option<V>,
+    pub max_messages: f64,
+    pub max_chars: f64,
+}
+
+pub(crate) fn read_checkpoint_args(
+    session: LiveValue<'_>,
+    exclude_turn_id: LiveValue<'_>,
+    max_messages: LiveValue<'_>,
+    max_chars: LiveValue<'_>,
+) -> Result<CheckpointArgs> {
+    let session_val = if session.truthy()?
+        && !session.is_array()?
+        && session.kind()? == sys::ValueType::napi_object
+    {
+        let mut fields = Vec::new();
+        for (name, c_name) in [("taskState", c"taskState"), ("summary", c"summary")] {
+            let field = session.get(c_name)?;
+            if !field.undefined()? {
+                fields.push((name, read_live_value(field)?));
+            }
+        }
+        Some(V::object(fields))
+    } else {
+        None
+    };
+    let exclude_turn = if exclude_turn_id.undefined()? || !exclude_turn_id.truthy()? {
+        None
+    } else {
+        Some(read_live_value(exclude_turn_id)?)
+    };
+    let max_messages = if max_messages.undefined()? {
+        cli_switch::DEFAULT_CHECKPOINT_MAX_MESSAGES
+    } else {
+        coerce::js_to_number(&read_live_value(max_messages)?)
+    };
+    let max_chars = if max_chars.undefined()? {
+        cli_switch::DEFAULT_CHECKPOINT_MAX_CHARS
+    } else {
+        coerce::js_to_number(&read_live_value(max_chars)?)
+    };
+    Ok(CheckpointArgs {
+        session: session_val,
+        exclude_turn,
+        max_messages,
+        max_chars,
+    })
+}
+
+pub(crate) fn checkpoint_live<'a>(
+    session: LiveValue<'a>,
+    history: LiveValue<'a>,
+    exclude_turn_id: LiveValue<'a>,
+    max_messages: LiveValue<'a>,
+    max_chars: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
+    let args = read_checkpoint_args(session, exclude_turn_id, max_messages, max_chars)?;
+    let mut newest_first = Vec::new();
+    if history.is_array()? {
+        let len = history.get(c"length")?.number()? as u32;
+        let limit = cli_switch::keep_limit(args.max_messages);
+        let env = history.env();
+        for index in (0..len).rev() {
+            // 倒序直读尾部候选，仅在需要的那几条上读取 content/ts，不碰 tools 等无关大字段。
+            let mut scope = std::ptr::null_mut();
+            napi::check_status!(unsafe { sys::napi_open_handle_scope(env, &mut scope) })?;
+            let result = (|| -> Result<bool> {
+                let row = history.element(index)?;
+                if !row.truthy()? {
+                    return Ok(false);
+                }
+                let role = read_live_value(row.get(c"role")?)?;
+                if !matches!(&role, V::String(r) if r == "user" || r == "assistant") {
+                    return Ok(false);
+                }
+                if row.get(c"cliSwitch")?.truthy()? {
+                    return Ok(false);
+                }
+                if let Some(excluded) = args.exclude_turn.as_ref() {
+                    let turn_id = read_live_value(row.get(c"turnId")?)?;
+                    if &turn_id == excluded {
+                        return Ok(false);
+                    }
+                }
+                let mut fields = vec![("role", role)];
+                let content = row.get(c"content")?;
+                if !content.undefined()? {
+                    fields.push(("content", read_live_value(content)?));
+                }
+                let ts = row.get(c"ts")?;
+                if !ts.undefined()? {
+                    fields.push(("ts", read_live_value(ts)?));
+                }
+                newest_first.push(V::object(fields));
+                Ok(limit.is_some_and(|max| newest_first.len() >= max))
+            })();
+            napi::check_status!(unsafe { sys::napi_close_handle_scope(env, scope) })?;
+            if result? {
+                break;
+            }
+        }
+    }
+    let built = cli_switch::checkpoint_from_newest_first(
+        args.session.as_ref(),
+        newest_first,
+        args.max_chars,
+    );
+    history.from_value(&built)
+}
+
+#[napi]
+pub fn cli_switch_checkpoint(
+    env: Env,
+    session: napi::bindgen_prelude::Unknown<'_>,
+    history: napi::bindgen_prelude::Unknown<'_>,
+    exclude_turn_id: napi::bindgen_prelude::Unknown<'_>,
+    max_messages: napi::bindgen_prelude::Unknown<'_>,
+    max_chars: napi::bindgen_prelude::Unknown<'_>,
+) -> Result<napi::sys::napi_value> {
+    Ok(checkpoint_live(
+        LiveValue::new(&env, session),
+        LiveValue::new(&env, history),
+        LiveValue::new(&env, exclude_turn_id),
+        LiveValue::new(&env, max_messages),
+        LiveValue::new(&env, max_chars),
+    )?
+    .raw())
 }

@@ -199,15 +199,16 @@ function messageText(message) {
   return call('messageText', { message });
 }
 
-function buildHandoffCheckpoint({ session, fromCli, toCli, history, git, now = Date.now(), maxMessages = 16, maxChars = 12000 }) {
-  const built = call('checkpoint', {
-    session: session
-      ? { taskState: session.taskState, summary: session.summary }
-      : session,
+function buildHandoffCheckpoint({
+  session, fromCli, toCli, history, git, now = Date.now(), maxMessages = 16, maxChars = 12000, excludeTurnId = null,
+}) {
+  const built = native.cliSwitchCheckpoint(
+    session ? { taskState: session.taskState, summary: session.summary } : session,
     history,
+    excludeTurnId,
     maxMessages,
     maxChars,
-  });
+  );
   return {
     version: 1,
     // `new Date(now).toISOString()` (and its RangeError contract) stays here.

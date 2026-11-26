@@ -2213,12 +2213,22 @@ function createChatTurnEngine(deps) {
         // checkpoint used by deliberate context rotation. Exclude this turn's
         // already-durable user row because invocation.payload carries it once.
         try {
-          const history = loadChatHistory(sessionName).filter(message => (
-            !turn.turnId || message?.turnId !== turn.turnId
-          ));
-          const checkpoint = buildHandoffCheckpoint({
-            session: persisted, fromCli: 'claude', toCli: 'claude', history, git: null,
-          });
+          const historyService = typeof getChatHistoryService === 'function' ? getChatHistoryService() : null;
+          const built = typeof historyService?.handoffCheckpoint === 'function'
+            ? historyService.handoffCheckpoint(sessionName, {
+              session: persisted ? { taskState: persisted.taskState, summary: persisted.summary } : persisted,
+              excludeTurnId: turn.turnId || null,
+            })
+            : null;
+          const checkpoint = built
+            ? {
+              version: 1, createdAt: new Date().toISOString(), fromCli: 'claude', toCli: 'claude',
+              task: built.task, git: null, transcript: built.transcript,
+            }
+            : buildHandoffCheckpoint({
+              session: persisted, fromCli: 'claude', toCli: 'claude',
+              history: viewChatHistory(sessionName), git: null, excludeTurnId: turn.turnId || null,
+            });
           checkpoint.reason = 'auto_native_resume_recovery';
           const checkpointText = renderHandoffPrompt({
             id: `resume_recovery_${turn.turnId || 'unknown'}`,

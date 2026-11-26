@@ -162,11 +162,48 @@ function createTaskShellRuntime(ports) {
       taskShortCode: /^[0-9A-Z]{4}$/.test(code) ? code : '' };
   }
   function contextSnapshots(s, excludedTaskId = null) {
+    const tasks = linkedTasks(s).filter(value => value.id !== excludedTaskId).reverse();
+    if (!tasks.length) return [];
+    const buckets = new Map(tasks.map(task => [task.id, { total: 0, items: [] }]));
+    const decorate = (m, sourceSessionId) => ({
+      ...m, sourceSessionId, sourceMessageId: m.id, contextMessageId: `${sourceSessionId}:${m.id}`,
+    });
+    for (const sourceSessionId of chatScope(s.id).sessionIds) {
+      const records = getHistory(sourceSessionId);
+      const activeStart = ports.getLiveState?.(sourceSessionId)?.isStreaming
+        ? records.findLastIndex(m => m.role === 'user') : -1;
+      const limit = activeStart >= 0 ? activeStart : records.length;
+      const perSession = new Map();
+      for (let index = limit - 1; index >= 0; index--) {
+        const message = records[index];
+        const bucket = message && buckets.get(message.taskId);
+        if (!bucket) continue;
+        bucket.total += 1;
+        let state = perSession.get(message.taskId);
+        if (!state) {
+          state = { tail: [], needUser: true };
+          perSession.set(message.taskId, state);
+        }
+        if (state.tail.length < 10) {
+          state.tail.push(decorate(message, sourceSessionId));
+          if (message.role === 'user') state.needUser = false;
+        } else if (state.needUser && message.role === 'user') {
+          state.tail.push(decorate(message, sourceSessionId));
+          state.needUser = false;
+        }
+      }
+      for (const [taskId, state] of perSession) {
+        const bucket = buckets.get(taskId);
+        for (let i = state.tail.length - 1; i >= 0; i--) bucket.items.push(state.tail[i]);
+      }
+    }
     const snapshots = [];
     let bytes = 0;
-    const records = shellRecords(chatScope(s.id), getHistory, ports.getLiveState).filter(m => !m.inProgress);
-    for (const task of linkedTasks(s).filter(value => value.id !== excludedTaskId).reverse()) {
-      const snapshot = historySnapshot(task.id, records.filter(m => m.taskId === task.id));
+    for (const task of tasks) {
+      const bucket = buckets.get(task.id);
+      if (!bucket.items.length) continue;
+      if (bucket.items.length > 1) bucket.items.sort((a, b) => (Number(a.ts) || 0) - (Number(b.ts) || 0));
+      const snapshot = historySnapshot(task.id, bucket.items, bucket.total);
       if (!snapshot.messages.length) continue;
       const size = Buffer.byteLength(JSON.stringify(snapshot));
       if (bytes + size > 60000) continue;

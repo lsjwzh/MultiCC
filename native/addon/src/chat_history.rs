@@ -15,6 +15,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     ffi::CStr,
+    path::PathBuf,
 };
 
 fn object<'a>(a: L<'a>, fields: &[(&CStr, L<'a>)]) -> Result<L<'a>> {
@@ -1140,6 +1141,27 @@ impl<'a> History<'a> {
         )?
         .freeze()
     }
+    fn disk_path_if_uncached(&self, session: L<'a>) -> Result<Option<(String, PathBuf)>> {
+        let session_str = string(session)?;
+        let cache_key = key(session_str)?;
+        if self.owner.cache.borrow().contains_key(&cache_key) {
+            return Ok(None);
+        }
+        let history = self.ports.get(c"history")?;
+        let file_for = history.get(c"fileFor")?;
+        if file_for.kind()? != sys::ValueType::napi_function {
+            return Ok(None);
+        }
+        let path_val = file_for.call(history, &[session_str])?;
+        let Some(path_js) = path_val.string()? else {
+            return Ok(None);
+        };
+        let path = PathBuf::from(path_js.to_string_lossy());
+        if !path.is_file() {
+            return Ok(None);
+        }
+        Ok(Some((cache_key.to_string_lossy(), path)))
+    }
     fn run(&self, action: &str, args: L<'a>) -> Result<L<'a>> {
         let session = args.element(0)?;
         let value = args.element(1)?;
@@ -1147,12 +1169,75 @@ impl<'a> History<'a> {
         match action {
             "read" => clone_json(self.current(session)?),
             "view" => self.current(session),
-            "taskContextSnapshot" => crate::task_store::snapshot_live(
-                value,
-                self.current(session)?,
-                args.element(2)?,
-                multicc_core::task_shell::reference::SNAPSHOT_BYTES,
-            ),
+            "taskContextSnapshot" => {
+                let active_turn = args.element(2)?;
+                if let Some((session_str, path)) = self.disk_path_if_uncached(session)? {
+                    let task_v = unsafe {
+                        crate::js_bridge::read_value(value.env(), value.raw(), 0, &mut Vec::new())?
+                    };
+                    let active_v = unsafe {
+                        crate::js_bridge::read_value(
+                            active_turn.env(),
+                            active_turn.raw(),
+                            0,
+                            &mut Vec::new(),
+                        )?
+                    };
+                    if let Ok(Some(snapshot)) =
+                        multicc_core::task_shell::reference::snapshot_from_transcript(
+                            &path,
+                            &session_str,
+                            &task_v,
+                            Some(&active_v),
+                            multicc_core::task_shell::reference::SNAPSHOT_BYTES,
+                            false,
+                        )
+                    {
+                        return self.anchor.from_value(&snapshot);
+                    }
+                }
+                crate::task_store::snapshot_live(
+                    value,
+                    self.current(session)?,
+                    active_turn,
+                    multicc_core::task_shell::reference::SNAPSHOT_BYTES,
+                )
+            }
+            "handoffCheckpoint" => {
+                let options = if value.undefined()? {
+                    object(self.anchor, &[])?
+                } else {
+                    value
+                };
+                let session_opt = options.get(c"session")?;
+                let exclude_turn = options.get(c"excludeTurnId")?;
+                let max_messages = options.get(c"maxMessages")?;
+                let max_chars = options.get(c"maxChars")?;
+                if let Some((_, path)) = self.disk_path_if_uncached(session)? {
+                    let parsed = crate::cli_switch::read_checkpoint_args(
+                        session_opt,
+                        exclude_turn,
+                        max_messages,
+                        max_chars,
+                    )?;
+                    if let Ok(built) = multicc_core::cli_switch::checkpoint_from_transcript(
+                        &path,
+                        parsed.session.as_ref(),
+                        parsed.exclude_turn.as_ref(),
+                        parsed.max_messages,
+                        parsed.max_chars,
+                    ) {
+                        return self.anchor.from_value(&built);
+                    }
+                }
+                crate::cli_switch::checkpoint_live(
+                    session_opt,
+                    self.current(session)?,
+                    exclude_turn,
+                    max_messages,
+                    max_chars,
+                )
+            }
             "invalidate" => {
                 let cache_key = key(session)?;
                 self.owner.cache.borrow_mut().remove(&cache_key);

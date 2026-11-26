@@ -3,7 +3,7 @@ use crate::guard::guard;
 use crate::js_live::LiveValue;
 use multicc_core::{
     js::{self, JsValue as V},
-    task_shell::reference::{SnapshotBuilder, SNAPSHOT_FIELDS},
+    task_shell::reference::{SnapshotPairTracker, SNAPSHOT_BYTES, SNAPSHOT_FIELDS},
     task_store::TaskStore,
 };
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
@@ -84,14 +84,15 @@ pub(crate) fn snapshot_live<'a>(
             "task reference history must be an array",
         ));
     }
-    let mut snapshot = SnapshotBuilder::new(
+    let len = history.get(c"length")?.number()? as u32;
+    let mut tracker = SnapshotPairTracker::new(
         snapshot_value(task)?,
         Some(snapshot_value(active_turn)?),
         budget,
     );
     let env = history.env();
-    for index in 0..history.get(c"length")?.number()? as u32 {
-        // Do not pin discarded values or projected bodies in the outer N-API scope.
+    for index in 0..len {
+        // 阶段 1 仅读标量元信息，不碰 content / tools，防止大历史正文跨 N-API 拷贝。
         let mut scope = std::ptr::null_mut();
         napi::check_status!(unsafe { sys::napi_open_handle_scope(env, &mut scope) })?;
         let result = (|| -> Result<()> {
@@ -106,21 +107,31 @@ pub(crate) fn snapshot_live<'a>(
                 || row.get(c"partial")?.truthy()?
                 || row.get(c"cancelled")?.truthy()?
                 || row.get(c"error")?.truthy()?;
-            snapshot.push_projected(&task, &role, &turn, unfinished, || {
-                let mut fields = Vec::new();
-                for key in SNAPSHOT_FIELDS {
-                    let value = row.get_key(row.from_value(&V::from(key))?)?;
-                    if !value.undefined()? {
-                        fields.push((key, snapshot_value(value)?));
-                    }
-                }
-                Ok(V::object(fields))
-            })
+            tracker.push_meta(index as usize, &task, &role, &turn, unfinished);
+            Ok(())
         })();
         napi::check_status!(unsafe { sys::napi_close_handle_scope(env, scope) })?;
         result?;
     }
-    history.from_value(&snapshot.finish())
+    let output = tracker.finish_from_pairs(|index| -> Result<V> {
+        // 阶段 2 仅从尾部配对倒序按需读取能装进预算的那几条记录的正文。
+        let mut scope = std::ptr::null_mut();
+        napi::check_status!(unsafe { sys::napi_open_handle_scope(env, &mut scope) })?;
+        let result = (|| -> Result<V> {
+            let row = history.element(index as u32)?;
+            let mut fields = Vec::new();
+            for key in SNAPSHOT_FIELDS {
+                let value = row.get_key(row.from_value(&V::from(key))?)?;
+                if !value.undefined()? {
+                    fields.push((key, snapshot_value(value)?));
+                }
+            }
+            Ok(V::object(fields))
+        })();
+        napi::check_status!(unsafe { sys::napi_close_handle_scope(env, scope) })?;
+        result
+    })?;
+    history.from_value(&output)
 }
 
 #[napi]
@@ -131,7 +142,12 @@ pub fn task_shell_snapshot(
     active_turn: Unknown<'_>,
     max_bytes: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let budget = js::js_to_number(&snapshot_value(LiveValue::new(&env, max_bytes))?) as usize;
+    let raw_budget = js::js_to_number(&snapshot_value(LiveValue::new(&env, max_bytes))?);
+    let budget = if raw_budget.is_finite() && raw_budget >= 0.0 {
+        raw_budget.min(usize::MAX as f64) as usize
+    } else {
+        SNAPSHOT_BYTES
+    };
     Ok(snapshot_live(
         LiveValue::new(&env, task),
         LiveValue::new(&env, history),

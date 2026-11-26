@@ -11,10 +11,7 @@ use multicc_core::{
     quota_guard, random_id,
     session_records::{self, SessionDirectory},
     state_file,
-    task_shell::{
-        chat::Rejection,
-        reference::{SnapshotBuilder, SNAPSHOT_BYTES},
-    },
+    task_shell::{chat::Rejection, reference::SNAPSHOT_BYTES},
     task_store::TaskStore,
 };
 use sha2::{Digest, Sha256};
@@ -134,17 +131,16 @@ pub(super) fn session_snapshot(
 ) -> Result<V, String> {
     transcript_stem(session)?;
     let path = chat_history_file::transcript_path(&root.join("chat_history"), session);
-    let mut snapshot = SnapshotBuilder::new(V::from(task), active_turn.cloned(), SNAPSHOT_BYTES);
-    let mut index = 0;
-    chat_history_file::visit_transcript(&path, |mut row| {
-        if matches!(row, V::Object(_)) {
-            legacy_message_id(&mut row, session, index);
-            index += 1;
-            snapshot.push(&row);
-        }
-    })
-    .map_err(|error| format!("cannot read chat history: {error}"))?;
-    Ok(snapshot.finish())
+    multicc_core::task_shell::reference::snapshot_from_transcript(
+        &path,
+        session,
+        &V::from(task),
+        active_turn,
+        SNAPSHOT_BYTES,
+        true,
+    )
+    .map_err(|error| format!("cannot read chat history: {error}"))?
+    .ok_or_else(|| "cannot read chat history: missing snapshot".to_string())
 }
 
 pub fn shell_history(

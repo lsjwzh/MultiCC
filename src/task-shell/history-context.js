@@ -26,7 +26,7 @@ function excerpt(message, maxChars) {
     nextOffset: maxChars, totalChars: text.length };
 }
 
-function historySnapshot(taskId, records) {
+function historySnapshot(taskId, records, totalCount = records.length) {
   const selected = records.slice(-10);
   if (selected.length && !selected.some(m => m.role === 'user')) {
     const request = records.findLast(m => m.role === 'user');
@@ -34,7 +34,7 @@ function historySnapshot(taskId, records) {
   }
   const maxChars = Math.floor(12000 / Math.max(1, selected.length));
   const value = { version: 2, taskId, messages: selected.map(m => excerpt(m, maxChars)),
-    omittedMessages: records.length - selected.length };
+    omittedMessages: totalCount - selected.length };
   return { ...value, hash: hash(value) };
 }
 

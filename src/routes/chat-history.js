@@ -12,6 +12,7 @@ const crypto = require('node:crypto');
 const { createChatHistoryServiceWithOwner } = require('../session/chat-history-service');
 const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 const { getNative } = require('../native/runtime');
+const { buildHandoffCheckpoint: defaultBuildHandoffCheckpoint } = require('../cli-switch');
 
 const DEFAULT_HISTORY_PAGE_SIZE = 5;
 const DEFAULT_HISTORY_LIMIT = 10000;
@@ -669,7 +670,8 @@ function createChatHistoryRuntime(rawDeps) {
     }
 
     const persisted = deps.persistedSessions.get(key);
-    const history = load(key);
+    const useFastCheckpoint = deps.buildHandoffCheckpoint === defaultBuildHandoffCheckpoint;
+    const history = useFastCheckpoint ? null : load(key);
     const gitSnapshot = await deps.cliSwitchGitSnapshot(persisted);
     // 快照期间可能开始新一轮、冒出别的手递或删掉会话：按同一套事实重判。
     // 快照本身只在首判通过后才发起；若重判被拒，不会装配 checkpoint、不会
@@ -689,13 +691,28 @@ function createChatHistoryRuntime(rawDeps) {
       });
     }
     const cli = (chatState && chatState.cli) || persisted.cli;
-    const checkpoint = deps.buildHandoffCheckpoint({
-      session: persisted,
-      fromCli: cli,
-      toCli: cli,
-      history,
-      git: gitSnapshot,
-    });
+    const checkpoint = useFastCheckpoint
+      ? (() => {
+        const built = service.handoffCheckpoint(key, {
+          session: persisted ? { taskState: persisted.taskState, summary: persisted.summary } : persisted,
+        });
+        return {
+          version: 1,
+          createdAt: new Date(now()).toISOString(),
+          fromCli: cli,
+          toCli: cli,
+          task: built.task,
+          git: gitSnapshot || null,
+          transcript: built.transcript,
+        };
+      })()
+      : deps.buildHandoffCheckpoint({
+        session: persisted,
+        fromCli: cli,
+        toCli: cli,
+        history,
+        git: gitSnapshot,
+      });
     const committed = rotationRequest('commit', {
       ...after,
       cli: cli == null ? '' : String(cli),

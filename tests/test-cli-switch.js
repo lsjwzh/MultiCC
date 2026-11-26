@@ -488,6 +488,45 @@ test('switching to Pi preserves its native context and strips stale provider bin
   assert.strictEqual(session.streaming, false);
 });
 
+test('buildHandoffCheckpoint reads from tail without full JSON.stringify or touching old tools', () => {
+  let oldContentReads = 0;
+  const oldRow = { role: 'assistant', ts: 1 };
+  Object.defineProperty(oldRow, 'content', { enumerable: true, get() { oldContentReads++; return 'old'; } });
+  const tailToolsReads = [];
+  const tailRow = { role: 'assistant', content: 'recent reply', ts: 99 };
+  Object.defineProperty(tailRow, 'tools', { enumerable: true, get() { tailToolsReads.push(1); return []; } });
+  const history = [
+    oldRow,
+    ...Array.from({ length: 20 }, (_, i) => ({ role: 'user', content: `m${i}`, ts: i + 2 })),
+    tailRow,
+    { role: 'user', turnId: 'cur-turn', content: 'exclude me', ts: 100 },
+  ];
+  const origStringify = JSON.stringify;
+  JSON.stringify = (value, ...args) => {
+    if (Array.isArray(value) || Array.isArray(value?.history)) {
+      throw new Error('unexpected full history JSON.stringify');
+    }
+    return origStringify(value, ...args);
+  };
+  try {
+    const cp = buildHandoffCheckpoint({
+      session: { taskState: { goal: 'ship' } },
+      fromCli: 'claude',
+      toCli: 'codex',
+      history,
+      excludeTurnId: 'cur-turn',
+      maxMessages: 2,
+      now: 1000,
+    });
+    assert.strictEqual(oldContentReads, 0);
+    assert.strictEqual(tailToolsReads.length, 0);
+    assert.deepStrictEqual(cp.transcript.map(m => m.text), ['m19', 'recent reply']);
+    assert.strictEqual(cp.task.goal, 'ship');
+  } finally {
+    JSON.stringify = origStringify;
+  }
+});
+
 console.log(`\n${passed} passed`);
 
 

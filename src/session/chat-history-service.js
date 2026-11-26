@@ -72,7 +72,7 @@ function buildChatHistoryService(options = {}) {
     referencingTasks, withLazyMessages } };
   const owner = new (getNative().RustChatHistory)(anchor);
   const methods = ['append', 'assertCanDeleteSession', 'commitAppend', 'containsDelivery',
-    'deleteSession', 'discardAppend', 'ensurePersistedIds', 'hasPersistedDelivery',
+    'deleteSession', 'discardAppend', 'ensurePersistedIds', 'handoffCheckpoint', 'hasPersistedDelivery',
     'invalidate', 'latestAssistantAt', 'latestAssistantConclusion', 'paginate', 'prepareAppend', 'read', 'remove',
     'replace', 'taskContextSnapshot', 'upsertInterim', 'view'];
   const entries = methods.map(method => [method, (...args) => owner.run(anchor, method, args)]);

@@ -877,3 +877,95 @@ test('Rust capacity retains changing rule getters and JSON serialization failure
     }
   }
 });
+
+test('two-phase snapshot_live ignores discarded old content/tools getters and invalid maxBytes', () => {
+  let oldReads = 0;
+  const oldAssistant = { id: 'a_old', turnId: 'old', role: 'assistant' };
+  Object.defineProperty(oldAssistant, 'content', { enumerable: true, get() { oldReads++; return 'old'; } });
+  Object.defineProperty(oldAssistant, 'tools', { enumerable: true, get() { oldReads++; return [{ big: 'x' }]; } });
+  const history = [
+    { id: 'u_old', turnId: 'old', role: 'user', content: 'old-u' },
+    oldAssistant,
+    { id: 'u_big', turnId: 'big', role: 'user', content: 'u' },
+    { id: 'a_big', turnId: 'big', role: 'assistant', content: '测'.repeat(12_000) },
+    { id: 'u_new', turnId: 'new', role: 'user', content: 'latest' },
+    { id: 'a_new', turnId: 'new', role: 'assistant', content: 'reply' },
+  ];
+  const snap = snapshotHistory('tsk_1', history);
+  assert.equal(oldReads, 0, 'older discarded pairs must not materialize content/tools');
+  assert.deepEqual(snap.messages.map(m => m.id), ['u_new', 'a_new']);
+  assert.equal(snap.omittedExchanges, 2);
+  for (const fallbackBudget of [undefined, NaN, -5]) {
+    assert.deepEqual(snapshotHistory('tsk_1', history, { maxBytes: fallbackBudget }), snap);
+  }
+});
+
+test('cold-cache taskContextSnapshot and handoffCheckpoint read tail from disk without loading V8 cache', t => {
+  const { createChatHistoryService } = require('../src/session/chat-history-service');
+  const { createChatHistoryFileRepository } = require('./helpers/native-chat-history-repository');
+  const dataDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cold-snap-')));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const repository = createChatHistoryFileRepository({ dataDir });
+  const sessionId = 'cold-session';
+  const file = repository.fileFor(sessionId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const rows = [];
+  for (let i = 0; i < 40; i++) {
+    rows.push({ id: `u${i}`, turnId: `t${i}`, role: 'user', content: `ask-${i}`, ts: i * 2 });
+    rows.push({
+      id: `a${i}`, turnId: `t${i}`, role: 'assistant', content: `ans-${i}`, ts: i * 2 + 1,
+      tools: [{ output: 'big-tool-payload-'.repeat(400) }],
+    });
+  }
+  fs.writeFileSync(file, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+  let fullReads = 0;
+  const wrappedRepo = {
+    ...repository,
+    readOwned(id) { fullReads++; return repository.readOwned(id); },
+    read(id) { fullReads++; return repository.read(id); },
+  };
+  const service = createChatHistoryService({ history: wrappedRepo, idFactory: () => 'unused' });
+  const snap = service.taskContextSnapshot(sessionId, 'tsk_1', 't39');
+  const cp = service.handoffCheckpoint(sessionId, {
+    session: { taskState: { goal: 'g' }, summary: 's' },
+    excludeTurnId: 't39',
+    maxMessages: 4,
+  });
+  assert.equal(fullReads, 0, 'cold cache disk paths must not load full transcript into V8');
+  assert.equal(verifySnapshot(snap, snap.hash), true);
+  assert.equal(snap.messages.at(-1).id, 'a38');
+  assert.deepEqual(cp.transcript.map(m => m.text), ['ask-37', 'ans-37', 'ask-38', 'ans-38']);
+  // Warm the cache via view() and confirm disk and live outputs match identically.
+  service.view(sessionId);
+  assert.equal(fullReads, 1);
+  assert.deepEqual(service.taskContextSnapshot(sessionId, 'tsk_1', 't39'), snap);
+  assert.deepEqual(service.handoffCheckpoint(sessionId, {
+    session: { taskState: { goal: 'g' }, summary: 's' },
+    excludeTurnId: 't39',
+    maxMessages: 4,
+  }), cp);
+});
+
+test('contextSnapshots preserves exact hash and counts while skipping unrelated records', async t => {
+  const { shellRecords, historySnapshot } = require('../src/task-shell/history-context');
+  const f = fixture(t);
+  const t1 = await f.runtime.send(f.a.id, input('c1', null, { newTask: true }));
+  const hist = [];
+  for (let i = 0; i < 25; i++) {
+    hist.push({ id: `m${i * 2}`, role: 'user', taskId: t1.taskId, ts: i * 2 + 1, content: `q${i}` });
+    hist.push({ id: `m${i * 2 + 1}`, role: 'assistant', taskId: t1.taskId, ts: i * 2 + 2, content: `a${i}` });
+  }
+  hist.push({ id: 'unrelated', role: 'user', taskId: 'tsk_unrelated', ts: 999, content: 'skip' });
+  f.histories.set(f.a.id, []);
+  f.histories.set(t1.sessionId, hist);
+  const t2 = await f.runtime.send(f.a.id, input('c2', null, { newTask: true }));
+  const expected = historySnapshot(
+    t1.taskId,
+    shellRecords(f.runtime.chatScope(f.a.id), id => f.histories.get(id) || []).filter(m => m.taskId === t1.taskId),
+  );
+  const { renderSnapshots, estimateTokens } = require('../src/native/runtime').taskShellContext;
+  const receipt = f.store.get('receipt', t2.receiptId);
+  assert.equal(receipt.contextSavings.estimatedTokens, estimateTokens(renderSnapshots([expected])));
+  assert.equal(expected.omittedMessages, 40);
+});

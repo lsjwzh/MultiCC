@@ -19,9 +19,11 @@
 //!
 //! JS semantics preserved: `String()` coercion, JS `trim()` whitespace, UTF-16
 //! code-unit lengths and slices, truthiness, `||` fallbacks and `Array.isArray`.
+use crate::chat_history_file;
 use crate::js::{coerce, js_trim, json_parse, json_stringify, JsString, JsValue};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 
 pub const SUPPORTED_CHAT_CLIS: [&str; 15] = [
     "claude",
@@ -46,6 +48,8 @@ const TRUNCATE_MARKER: &str = "\n...(message truncated)";
 const MID_MESSAGE_MARKER: &str = "...(checkpoint starts mid-message)\n";
 const MAX_GIT_CHANGES: usize = 100;
 const TOOL_RESULT_LIMIT: usize = 400;
+pub const DEFAULT_CHECKPOINT_MAX_MESSAGES: f64 = 16.0;
+pub const DEFAULT_CHECKPOINT_MAX_CHARS: f64 = 12_000.0;
 
 // ── JS value semantics ──────────────────────────────────────────────────────
 
@@ -718,49 +722,36 @@ fn task_context(session: Option<&JsValue>) -> JsValue {
     JsValue::Object(out)
 }
 
-/// `buildHandoffCheckpoint` minus the bridge-owned `createdAt`/`fromCli`/`toCli`
-/// and the pass-through `git` reference.
-pub fn checkpoint(input: &JsValue) -> Result<JsValue, String> {
-    let history: &[JsValue] = match js_field(Some(input), "history") {
-        Some(JsValue::Array(items)) => items,
-        _ => &[],
-    };
-    let max_messages = js_number_arg(input, "maxMessages");
-    let max_chars = js_number_arg(input, "maxChars");
-
-    let filtered: Vec<&JsValue> = history
-        .iter()
-        .filter(|message| {
-            coerce::truthy(message)
-                && matches!(
-                    js_field(Some(message), "role"),
-                    Some(JsValue::String(role)) if role == "user" || role == "assistant"
-                )
-                && !coerce::truthy_opt(js_field(Some(message), "cliSwitch"))
-        })
-        .collect();
+/// 计算 `max_messages` 实际最多保留的消息条数；`None` 表示不限制。
+pub fn keep_limit(max_messages: f64) -> Option<usize> {
     // `Math.max(1, maxMessages)` keeps NaN as NaN (unlike f64::max).
     let keep = if max_messages.is_nan() {
         f64::NAN
     } else {
         max_messages.max(1.0)
     };
-    let start = if keep.is_nan() || keep == f64::INFINITY || keep <= 0.0 {
-        0
+    if keep.is_nan() || keep == f64::INFINITY || keep <= 0.0 {
+        None
     } else {
         let count = keep.trunc();
-        if count >= filtered.len() as f64 {
-            0
+        if count >= usize::MAX as f64 {
+            None
         } else {
-            filtered.len() - count as usize
+            Some(count as usize)
         }
-    };
-    let candidates = &filtered[start..];
+    }
+}
 
+/// 由从新到旧（newest-first）排列的已筛选消息构建 handoff checkpoint 的 `task` 与 `transcript`。
+pub fn checkpoint_from_newest_first(
+    session: Option<&JsValue>,
+    newest_first: impl IntoIterator<Item = JsValue>,
+    max_chars: f64,
+) -> JsValue {
     let mut transcript: Vec<JsValue> = Vec::new();
     let mut used = 0.0_f64;
-    for message in candidates.iter().rev() {
-        let mut text = message_text(Some(message)).trim();
+    for message in newest_first {
+        let mut text = message_text(Some(&message)).trim();
         if text.is_empty() {
             continue;
         }
@@ -785,10 +776,10 @@ pub fn checkpoint(input: &JsValue) -> Result<JsValue, String> {
             };
         }
         let text_len = text.len() as f64;
-        let role = js_field(Some(message), "role")
+        let role = js_field(Some(&message), "role")
             .cloned()
             .unwrap_or(JsValue::Undefined);
-        let ts = js_value_or_null(js_field(Some(message), "ts"));
+        let ts = js_value_or_null(js_field(Some(&message), "ts"));
         transcript.push(JsValue::object(vec![
             (JsString::from_rust_str("role"), role),
             (JsString::from_rust_str("text"), JsValue::String(text)),
@@ -798,16 +789,110 @@ pub fn checkpoint(input: &JsValue) -> Result<JsValue, String> {
     }
     transcript.reverse();
 
-    Ok(JsValue::object(vec![
-        (
-            JsString::from_rust_str("task"),
-            task_context(js_field(Some(input), "session")),
-        ),
+    JsValue::object(vec![
+        (JsString::from_rust_str("task"), task_context(session)),
         (
             JsString::from_rust_str("transcript"),
             JsValue::Array(transcript),
         ),
-    ]))
+    ])
+}
+
+fn is_checkpoint_message(message: &JsValue, exclude_turn_id: Option<&JsValue>) -> bool {
+    if !coerce::truthy(message) {
+        return false;
+    }
+    if !matches!(
+        js_field(Some(message), "role"),
+        Some(JsValue::String(role)) if role == "user" || role == "assistant"
+    ) {
+        return false;
+    }
+    if coerce::truthy_opt(js_field(Some(message), "cliSwitch")) {
+        return false;
+    }
+    if let Some(excluded) = exclude_turn_id.filter(|value| coerce::truthy(value)) {
+        if js_field(Some(message), "turnId") == Some(excluded) {
+            return false;
+        }
+    }
+    true
+}
+
+/// 纯 Rust 从磁盘会话文件尾部倒序读取最多 `max_messages` 条消息构建 checkpoint，
+/// 避免将整份历史读入内存或经 JS 序列化。
+pub fn checkpoint_from_transcript(
+    path: &Path,
+    session: Option<&JsValue>,
+    exclude_turn_id: Option<&JsValue>,
+    max_messages: f64,
+    max_chars: f64,
+) -> Result<JsValue, String> {
+    const FIELDS: [&str; 5] = ["role", "content", "ts", "cliSwitch", "turnId"];
+    let limit = keep_limit(max_messages);
+    let mut newest_first = Vec::new();
+    let handled = chat_history_file::visit_jsonl_tail_reverse_projected(path, &FIELDS, |row| {
+        if is_checkpoint_message(&row, exclude_turn_id) {
+            newest_first.push(row);
+            if limit.is_some_and(|max| newest_first.len() >= max) {
+                return false;
+            }
+        }
+        true
+    })
+    .map_err(|error| format!("cannot read chat history: {error}"))?;
+
+    if handled {
+        return Ok(checkpoint_from_newest_first(
+            session,
+            newest_first,
+            max_chars,
+        ));
+    }
+
+    let mut ring: VecDeque<JsValue> = VecDeque::new();
+    chat_history_file::visit_transcript(path, |row| {
+        if is_checkpoint_message(&row, exclude_turn_id) {
+            if let Some(max) = limit {
+                if ring.len() == max {
+                    ring.pop_front();
+                }
+            }
+            ring.push_back(row);
+        }
+    })
+    .map_err(|error| format!("cannot read chat history: {error}"))?;
+
+    Ok(checkpoint_from_newest_first(
+        session,
+        ring.into_iter().rev(),
+        max_chars,
+    ))
+}
+
+/// `buildHandoffCheckpoint` minus the bridge-owned `createdAt`/`fromCli`/`toCli`
+/// and the pass-through `git` reference.
+pub fn checkpoint(input: &JsValue) -> Result<JsValue, String> {
+    let history: &[JsValue] = match js_field(Some(input), "history") {
+        Some(JsValue::Array(items)) => items,
+        _ => &[],
+    };
+    let max_messages = js_number_arg(input, "maxMessages");
+    let max_chars = js_number_arg(input, "maxChars");
+
+    let filtered: Vec<&JsValue> = history
+        .iter()
+        .filter(|message| is_checkpoint_message(message, None))
+        .collect();
+    let start = match keep_limit(max_messages) {
+        None => 0,
+        Some(count) => filtered.len().saturating_sub(count),
+    };
+    Ok(checkpoint_from_newest_first(
+        js_field(Some(input), "session"),
+        filtered[start..].iter().rev().map(|row| (*row).clone()),
+        max_chars,
+    ))
 }
 
 // ── prompt rendering ───────────────────────────────────────────────────────
@@ -1404,5 +1489,43 @@ mod tests {
         let catalog: Value = serde_json::from_str(&catalog().unwrap()).unwrap();
         assert_eq!(catalog["supportedChatClis"].as_array().unwrap().len(), 15);
         assert_eq!(catalog["supportedChatClis"][14], "pi");
+    }
+
+    #[test]
+    fn checkpoint_from_transcript_matches_in_memory_and_skips_excluded_turn() {
+        let dir = std::env::temp_dir().join(format!(
+            "multicc-cli-switch-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        let big_tools = "x".repeat(80_000);
+        let mut lines = Vec::new();
+        for i in 0..20 {
+            lines.push(
+                json!({"role":"user","turnId":format!("t{i}"),"content":format!("u{i}"),"ts":i,"tools":big_tools})
+                    .to_string(),
+            );
+        }
+        lines.push(json!({"role":"user","turnId":"skip","content":"excluded","ts":99}).to_string());
+        std::fs::write(&path, lines.join("\n") + "\n{\"torn").unwrap();
+
+        let from_disk = checkpoint_from_transcript(
+            &path,
+            Some(&js(json!({"taskState":{"goal":"g"},"summary":"s"}))),
+            Some(&JsValue::from("skip")),
+            3.0,
+            12_000.0,
+        )
+        .unwrap();
+        let out = to_serde(&from_disk);
+        let transcript = out["transcript"].as_array().unwrap();
+        assert_eq!(transcript.len(), 3);
+        assert_eq!(transcript[0]["text"], "u17");
+        assert_eq!(transcript[1]["text"], "u18");
+        assert_eq!(transcript[2]["text"], "u19");
+        assert_eq!(out["task"]["goal"], "g");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
