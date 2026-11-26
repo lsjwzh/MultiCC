@@ -186,6 +186,7 @@ pub mod task_short_code;
 mod task_state_store;
 pub mod task_store;
 pub mod terminal_target;
+mod tmux_recovery;
 pub mod transcript_prune;
 pub mod turn_chat_socket;
 pub mod turn_end_evidence;

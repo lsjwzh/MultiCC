@@ -541,8 +541,6 @@ function providerFor(session) {
 }
 
 // ── tmux helpers (extracted to src/tmux.js) ──
-// Pure primitives, destructured so existing call sites are unchanged. The
-// stateful recoverTmuxSessions() (below) stays — it rebuilds core session state.
 const {
   TMUX_PREFIX, tmuxSessionName, tmuxListSessions, tmuxHasSession, tmuxCreateSession, tmuxResize,
   applyMaxClientSize, tmuxKillSession, tmuxCaptureSnapshot, tmuxPaneTty, tmuxPaneActivity,
@@ -551,31 +549,10 @@ const {
 
 // Recover existing tmux sessions on startup (survives server restart)
 async function recoverTmuxSessions() {
-  try {
-    const names = await tmuxListSessions();
-    for (const name of names) {
-      if (!name || !name.startsWith(TMUX_PREFIX)) continue;
-      const id = name.slice(TMUX_PREFIX.length);
-      if (sessions.has(id)) continue;
-      // Only recover sessions we know about (post-migration). Orphan tmux sessions
-      // are left alone — user can kill them via `tmux kill-session` if unwanted.
-      const persisted = persistedSessions.get(id);
-      if (!persisted || persisted.kind !== 'terminal') continue;
-      // Sessions whose directory is invalid ($HOME / duplicate path) are not recovered.
-      if (invalidSessions.has(id)) {
-        console.warn(`[multicc] skipping recovery of ${id}: ${invalidSessions.get(id)}`);
-        continue;
-      }
-      console.log(`[multicc] Recovering tmux session: ${id} (${persisted.cli})`);
-      try {
-        await createSession(id);
-      } catch (err) {
-        console.error(`[multicc] Failed to recover session ${id}:`, err.message);
-      }
-    }
-  } catch (_) {
-    // tmux server not running — nothing to recover
-  }
+  return getNative().recoverTmuxSessions({
+    list: tmuxListSessions, prefix: TMUX_PREFIX, sessions, persistedSessions, invalidSessions,
+    createSession, logger: console,
+  });
 }
 
 // ── git worktree helpers ──
