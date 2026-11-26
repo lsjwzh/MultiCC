@@ -32,6 +32,24 @@ fn required_string(value: V<'_>) -> Result<JsString> {
         .string()?
         .ok_or_else(|| value.type_error("HTTP request field must be a string"))
 }
+/// Node supplies a Latin-1 header; keep UTF-16 and property assignment semantics
+/// for direct host callers as well (including duplicate and inherited keys).
+#[napi]
+pub fn http_parse_cookies(env: Env, header: Unknown<'_>) -> Result<sys::napi_value> {
+    let header = V::new(&env, header);
+    let cookies = header.from_value(&JsValue::Object(Vec::new()))?;
+    if header.truthy()? {
+        let raw = required_string(header)?;
+        for (name, value) in multicc_core::http_gate::cookie_pairs(raw.as_units()) {
+            let key = header.from_value(&JsValue::String(JsString::from_units(name.to_vec())))?;
+            let value =
+                header.from_value(&JsValue::String(JsString::from_units(value.to_vec())))?;
+            cookies.set_key(key, value)?;
+        }
+    }
+    Ok(cookies.raw())
+}
+
 fn audit_query(request: V<'_>, port: V<'_>, name: &str) -> Result<()> {
     let event = port.from_value(&JsValue::Object(Vec::new()))?;
     event.set(c"requestId", request.get(c"id")?)?;

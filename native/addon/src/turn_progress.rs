@@ -1,6 +1,6 @@
 //! napi owner of the four turn-progress modules with private state.
 //!
-//! `src/chat/turn-progress.js` only forwards arguments, validates constructor
+//! `native/addon/src/turn_progress_facade.rs` only forwards arguments, validates constructor
 //! options and the heartbeat id/cadence contract, owns the single unref'd timer
 //! and freezes returned objects. Every decision — heartbeat cadence, timing
 //! records and the two log lines, the per-turn model timeline and the
@@ -973,14 +973,12 @@ impl RustTurnProgress {
 
 #[napi]
 pub fn turn_progress_sanitize_phase(env: Env, value: Unknown<'_>) -> Result<sys::napi_value> {
-    let value = read(env, value)?;
-    write(env, &string(hb::sanitize_phase_value(Some(&value))))
+    write(env, &phase(L::new(&env, value))?)
 }
 
 #[napi]
 pub fn turn_progress_sanitize_tool_kind(env: Env, value: Unknown<'_>) -> Result<sys::napi_value> {
-    let value = read(env, value)?;
-    write(env, &opt_string(hb::sanitize_tool_kind_value(Some(&value))))
+    write(env, &tool_kind(L::new(&env, value))?)
 }
 
 #[napi]
@@ -990,8 +988,23 @@ pub fn turn_progress_should_reexecute(
     duplicate_persisted: Unknown<'_>,
     probe: Unknown<'_>,
 ) -> Result<bool> {
-    let seen = read(env, duplicate_seen)?;
-    let persisted = read(env, duplicate_persisted)?;
-    let probe = read(env, probe)?;
+    reexecute(
+        L::new(&env, duplicate_seen),
+        L::new(&env, duplicate_persisted),
+        L::new(&env, probe),
+    )
+}
+pub(crate) fn phase(value: L<'_>) -> Result<V> {
+    Ok(string(hb::sanitize_phase_value(Some(&read_live(value)?))))
+}
+pub(crate) fn tool_kind(value: L<'_>) -> Result<V> {
+    Ok(opt_string(hb::sanitize_tool_kind_value(Some(&read_live(
+        value,
+    )?))))
+}
+pub(crate) fn reexecute(seen: L<'_>, persisted: L<'_>, probe: L<'_>) -> Result<bool> {
+    let seen = read_live(seen)?;
+    let persisted = read_live(persisted)?;
+    let probe = read_live(probe)?;
     Ok(probe::should_reexecute(&seen, &persisted, Some(&probe)))
 }

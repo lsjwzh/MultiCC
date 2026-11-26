@@ -7,7 +7,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const tl = require('../src/chat/turn-progress');
+const tl = require('../src/native/runtime').getTurnProgress();
 
 const ROOT = path.join(__dirname, '..');
 const se = (event, extra = {}) => ({ type: 'stream_event', event, parent_tool_use_id: null, ...extra });
@@ -88,11 +88,12 @@ test('forget drops the per-session timeline (chat-session delete hook)', () => {
 
 test('every persist and result path carries the timeline (source guard)', () => {
   const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
-  const engine = read('src/chat/turn-engine.js');
+  const engine = read('src/chat/turn-engine-host.js');
   // One Rust owner: the old per-cs timeline module is gone from production.
   assert.doesNotMatch(engine, /require\(['"]\.\/turn-timeline['"]\)/);
   assert.doesNotMatch(engine, /turnTimeline\.startTurn\(cs\)/);
-  assert.match(engine, /turnTimeline\.startTurn\(sessionName, cs\)/);
+  assert.match(read('native/addon/src/turn_engine/task_start/preparation.rs'),
+    /self\.service\(c"turnTimeline", c"startTurn", &\[self\.session, cs\]\)/);
   // The observers are wired through the native reducer's port table, and the
   // reducer passes the session name it already owns as the trailing argument.
   assert.match(engine, /observeClaude: \(cs, event, session\) => turnTimeline\.observeClaude\(session, cs, event\)/);

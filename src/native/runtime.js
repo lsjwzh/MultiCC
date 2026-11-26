@@ -1,6 +1,17 @@
 'use strict';
 
 const path = require('node:path');
+let turnProgress;
+function getTurnProgress() {
+  const addon = getNative();
+  return turnProgress ??= addon.turnProgressApi(addon, init => class TurnProgressHeartbeat {
+    constructor(options = {}) { init(this, options); }
+  });
+}
+let writerGroup;
+function getWriterGroup() { return writerGroup ??= getNative().writerGroupApi(); }
+let vendorLogin;
+function getVendorLogin() { return vendorLogin ??= getNative().vendorLoginApi(); }
 let monitorControl;
 function getMonitorControl() { return monitorControl ??= getNative().monitorControlApi(getMonitorAdmission(), require('node:crypto').randomUUID); }
 let processCloser;
@@ -13,7 +24,7 @@ function getProcessCloser() {
     });
 }
 let autoProviderPricing;
-function getAutoProviderPricing() { return autoProviderPricing ??= getNative().autoProviderPricingApi(getNative()); }
+function getAutoProviderPricing() { return autoProviderPricing ??= getNative().autoProviderPricingApi(); }
 let autoProviderPolicy;
 function getAutoProviderPolicy() { return autoProviderPolicy ??= getNative().autoProviderPolicyApi(getNative()); }
 let retryPolicy;
@@ -889,7 +900,7 @@ function commandEnvelope(value) {
   return Object.defineProperty(Object.create(null), 'value', { value, enumerable: true });
 }
 
-module.exports = { getMonitorControl, getProcessCloser, getAutoProviderPricing, getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
+module.exports = { getTurnProgress, getWriterGroup, getVendorLogin, getMonitorControl, getProcessCloser, getAutoProviderPricing, getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
   getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,

@@ -181,14 +181,26 @@ pub fn chat_seed_live_session(
     cwd: Unknown<'_>,
     task: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let cli = LiveValue::new(&env, cli);
-    let state = cli.from_value(&chat_runtime::live_session_defaults(
+    Ok(seed_live(
         assistant_turns as usize,
-    ))?;
+        LiveValue::new(&env, cli),
+        LiveValue::new(&env, cwd),
+        LiveValue::new(&env, task),
+    )?
+    .raw())
+}
+
+pub(crate) fn seed_live<'a>(
+    assistant_turns: usize,
+    cli: LiveValue<'a>,
+    cwd: LiveValue<'a>,
+    task: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
+    let state = cli.from_value(&chat_runtime::live_session_defaults(assistant_turns))?;
     if cli.truthy()? {
         state.set(c"cli", cli)?;
     }
-    state.set(c"cwd", LiveValue::new(&env, cwd))?;
-    state.set(c"_currentTaskId", LiveValue::new(&env, task))?;
-    Ok(state.raw())
+    state.set(c"cwd", cwd)?;
+    state.set(c"_currentTaskId", task)?;
+    Ok(state)
 }

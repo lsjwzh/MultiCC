@@ -100,23 +100,47 @@ pub use crate::auth_security::{
     COOKIE_VERSION,
 };
 
-/// The local `parseCookies` in server.js: split on `;`, first `=` separates,
-/// both sides trimmed, later duplicates win, a pair with an empty name skipped.
-pub fn parse_cookies(header: Option<&str>) -> HashMap<String, String> {
-    let mut cookies = HashMap::new();
-    let Some(header) = header.filter(|text| !text.is_empty()) else {
-        return cookies;
-    };
-    for pair in header.split(';') {
-        let mut pieces = js_trim(pair).split('=');
-        let key = pieces.next().unwrap_or("");
-        if key.is_empty() {
-            continue;
+/// Cookie fields in wire order. Both the gateway and the compatibility host
+/// accept bare names, preserve embedded equals signs and use JavaScript trim.
+pub fn cookie_pairs(header: &[u16]) -> impl Iterator<Item = (&[u16], &[u16])> {
+    fn trim(mut units: &[u16]) -> &[u16] {
+        use crate::js::string::is_js_whitespace;
+        while let [first, rest @ ..] = units {
+            if !is_js_whitespace(*first) {
+                break;
+            }
+            units = rest;
         }
-        let value = pieces.collect::<Vec<_>>().join("=");
-        cookies.insert(js_trim(key).to_string(), js_trim(&value).to_string());
+        while let [rest @ .., last] = units {
+            if !is_js_whitespace(*last) {
+                break;
+            }
+            units = rest;
+        }
+        units
     }
-    cookies
+    header
+        .split(|&unit| unit == u16::from(b';'))
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, |&unit| unit == u16::from(b'='));
+            let name = trim(parts.next().unwrap_or_default());
+            (!name.is_empty()).then(|| (name, trim(parts.next().unwrap_or_default())))
+        })
+}
+
+pub fn parse_cookies(header: Option<&str>) -> HashMap<String, String> {
+    let Some(header) = header else {
+        return HashMap::new();
+    };
+    let units: Vec<_> = header.encode_utf16().collect();
+    cookie_pairs(&units)
+        .map(|(key, value)| {
+            (
+                String::from_utf16_lossy(key),
+                String::from_utf16_lossy(value),
+            )
+        })
+        .collect()
 }
 
 // ── request-locality.js ────────────────────────────────────────────────────

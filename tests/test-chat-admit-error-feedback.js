@@ -13,7 +13,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createChatTurnEngine, deliverAfterPendingMemory } = require('../src/chat/turn-engine');
+const { createChatTurnEngine, deliverAfterPendingMemory } = require('../src/chat/turn-engine-host');
 const { createSessionNotices } = require('../src/native/runtime').getSessionNotices();
 const { createQueuedTurnPreparation } = require('../src/chat/admission-progress');
 const { createTestChatHub } = require('./helpers/native-chat-hub');

@@ -15,7 +15,7 @@ const candidate = { createSessionRecordFactory: deps => require('../src/native/r
 
 function world(implementation, scenario) {
   const events = [];
-  const records = new Map(scenario.preexisting ? [['s1', { id: 's1', marker: 'existing' }]] : []);
+  const records = scenario.records || new Map(scenario.preexisting ? [['s1', { id: 's1', marker: 'existing' }]] : []);
   const note = name => (...args) => { events.push([name, ...args]); };
   const deps = {
     isResidentSession: () => true,
@@ -38,12 +38,60 @@ function world(implementation, scenario) {
     savePersistedSessionsBestEffort: note('save'), appendEvent: note('event'),
     cliForLoginFlow: () => null, loginWorkspacePath: () => '/login/s1',
   };
+  if (scenario.productionPorts) {
+    delete deps.allocateSessionId;
+    delete deps.sharedWorkspace;
+    delete deps.cliForLoginFlow;
+    deps.existsSync = fs.existsSync;
+  }
   return { run: implementation.createSessionRecordFactory(deps), events, records };
 }
 function normalize(value) {
   return JSON.parse(JSON.stringify(value, (key, v) => key === 'createdAt' || key === 'lastWorkAt' ? '<time>' : v));
 }
 const dir = { id: 'd1', path: '/repo', baseBranch: 'main' };
+test('正式创建入口从原生记录表分配 ID，保留旧序号并处理跨目录重名', async () => {
+  const { createSessionRecords } = require('../src/session/records');
+  const { createStateOwner } = require('../src/state/owner');
+  const records = createSessionRecords(null, createStateOwner());
+  const item = world(candidate, { productionPorts: true, records });
+  const create = (directory, cli = 'claude', kind = 'chat', extra = {}) =>
+    item.run({ dir: directory, cli, kind, ...extra });
+  const stem = 're-po-codex-term';
+  const directory = { ...dir, name: '  Ｒé pō  ' };
+  for (const [suffix, dirId] of [['0003', dir.id], ['04', 'other'], ['99x', dir.id], ['100', 'other']]) {
+    const id = stem + '-' + suffix;
+    records.set(id, { id, dirId });
+  }
+  assert.equal((await create(directory, 'codex', 'terminal')).id, stem + '-05');
+  assert.equal((await create(directory, 'codex', 'terminal')).id, stem + '-06');
+  assert.equal((await create({ ...dir, path: path.join('parent', 'abc') + path.sep })).id, 'abc-claude-chat-01');
+  assert.equal((await create({ ...dir, name: '中文' })).id, 'dir-claude-chat-01');
+  assert.equal((await create({ ...dir, name: 'a'.repeat(31) + ' XYZ' })).id, 'a'.repeat(31) + '-claude-chat-01');
+  const huge = 'overflow-claude-chat-' + '9'.repeat(50);
+  records.set(huge, { id: huge, dirId: dir.id });
+  assert.match((await create({ ...dir, name: 'overflow' })).id, /^overflow-claude-chat-[a-z0-9]{8}$/);
+  for (let n = 1; n < 1000; n++) {
+    const id = 'full-claude-chat-' + String(n).padStart(2, '0');
+    records.set(id, { id, dirId: 'other' });
+  }
+  assert.match((await create({ ...dir, name: 'full' })).id, /^full-claude-chat-[a-z0-9]{8}$/);
+  assert.equal((await create(dir, 'codex', 'terminal', { id: stem + '-05' })).reused, true);
+});
+
+test('正式共享工作区入口复用所有者并拒绝缺失或休眠的工作区', async () => {
+  const root = { id: 'root', dirId: dir.id, branch: 'main', worktreePath: __dirname };
+  const records = new Map([[root.id, root]]);
+  const item = world(candidate, { productionPorts: true, records });
+  const create = () => item.run({ dir, cli: 'claude', kind: 'chat', workspaceOwnerSessionId: root.id });
+  assert.equal((await create()).session.worktreePath, root.worktreePath);
+  for (const change of [{ dirId: 'other' }, { workspaceState: 'hibernated' }, { workspaceOwnerSessionId: 'ancestor' },
+    { worktreePath: path.join(__dirname, 'absent-worktree') }, { branch: '' }]) {
+    records.set(root.id, { ...root, ...change });
+    assert.equal((await create()).error, 'worktree 创建失败: shell_workspace_unavailable');
+  }
+});
+
 test('创建会话支持强度和两个独立布尔开关', async () => {
   for (const [input, expected] of [
     [{ effort: 'medium', claudeWorkflow: true, preferSubtasks: false }, ['medium', true, false]],

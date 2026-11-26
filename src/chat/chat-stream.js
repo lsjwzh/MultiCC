@@ -38,7 +38,7 @@ const { envDigest } = require('../secrets-vault');
 //     --session-id and respawn with --resume <same id>.
 
 const { spawn } = require('child_process');
-const writerGroup = require('../workspace/writer-group');
+const { getWriterGroup } = require('../native/runtime');
 
 // session name -> state
 //   { proc, sessionId, cwd, cmd, baseArgs,
@@ -122,7 +122,7 @@ function spawnProc(name, cfg) {
       // Group leader on POSIX: the lease is released only once the whole
       // group is gone, so background children the CLI spawns itself stay
       // registered without the host ever learning their pids.
-      ...writerGroup.detachedSpawn(),
+      ...getWriterGroup().detachedSpawn(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch (error) {
@@ -141,7 +141,7 @@ function spawnProc(name, cfg) {
     const token = proc.writerLeaseToken;
     proc.writerLeaseToken = null;
     if (!token) return;
-    writerGroup.whenGroupEmpty(proc.pid, () => { try { s.releaseWriter?.(token); } catch (_) {} });
+    getWriterGroup().whenGroupEmpty(proc.pid, () => { try { s.releaseWriter?.(token); } catch (_) {} });
   });
   s.lastSpawnWasResume = resuming;
   // Record the routing fingerprint this process was actually spawned with, so a
@@ -615,7 +615,7 @@ function ensure(name, cfg) {
  * Send a user message and resolve when that turn completes (`result` event).
  * onEvent receives every stream-json event for live forwarding to the UI.
  * opts.onTiming?.('spawned'|'sent') reports process-readiness and stdin-write
- * instants for turn-timing instrumentation (see src/chat/turn-progress.js).
+ * instants for turn-timing instrumentation (see native/addon/src/turn_progress_facade.rs).
  * Turns are serialized per session: a send while a turn is in flight queues.
  */
 function send(name, text, onEvent, opts = {}) {

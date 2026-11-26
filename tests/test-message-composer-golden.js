@@ -623,11 +623,12 @@ console.log('── Suite 7: turn-plan layer ──');
   const path = require('node:path');
   const root = path.join(__dirname, '..');
   const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  const engine = fs.readFileSync(path.join(root, 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const engine = fs.readFileSync(path.join(root, 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   assert(server.includes('buildPlanPrompt: buildPlanProgressPrompt'), '7g server.js injects the builder');
   assert(/buildPlanPrompt,/.test(engine), '7g turn-engine forwards it into the composer deps');
   assert(server.includes('markPlanContextReset,'), '7g server.js injects the reset marker');
-  assert(/markPlanContextReset\?\.\(sessionName\)/.test(engine), '7g turn-engine consumes the reset marker at the prune site');
+  const services = fs.readFileSync(path.join(root, 'native/addon/src/turn_engine/services.rs'), 'utf8');
+  assert(/let reset = p.get\(c"markPlanContextReset"\)\?;[\s\S]{0,100}reset.call_plain\(&\[s\]\)/.test(services), '7g turn-engine consumes the reset marker at the prune site');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -706,9 +707,14 @@ console.log('── Suite 9: opts.voice layer ──');
 
   const fs = require('node:fs');
   const path = require('node:path');
-  const engine = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert(/turnOpts\.voice = normalizeVoiceInput\(msg\)/.test(engine), '9f WS user_message parses the voice marker');
-  assert(/voice: opts\.voice/.test(engine), '9f turn-engine forwards opts.voice into composeMessage');
+  const engine = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
+  let delivered;
+  require('../src/native/runtime').getNative().chatHandleSocketMessage({
+    taskContextHost: { deliverSessionMessage(_session, _text, opts) { delivered = opts; } },
+  }, {}, 's', null, {}, {}, { type: 'user_message', text: '看下', inputSource: 'voice', voiceRaw: '  瑞迪斯  ' });
+  assert(eq(delivered.voice, { raw: '瑞迪斯' }), '9f WS user_message parses the voice marker');
+  const invocation = fs.readFileSync(path.join(__dirname, '..', 'native/addon/src/turn_engine/invocation.rs'), 'utf8');
+  assert(/\("voice", read\(opts, c"voice"\)\?\)/.test(invocation), '9f turn-engine forwards opts.voice into composeMessage');
 })();
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -341,7 +341,8 @@ function loadFixture(file, filename, overrides = {}) {
 const frozenPlanner = loadFixture(require.resolve('./helpers/frozen-finalize-plan'),
   require('node:path').resolve(__dirname, '../src/chat/finalize-plan.js'));
 const executorFile = require.resolve('./helpers/legacy-chat-finalize-host');
-const legacyExecutor = loadFixture(executorFile, executorFile, { '../../src/chat/finalize-plan': frozenPlanner });
+const legacyExecutor = loadFixture(executorFile, executorFile, { '../../src/chat/finalize-plan': frozenPlanner,
+  '../../src/chat/turn-progress': require('../src/native/runtime').getTurnProgress() });
 const nativeExecutor = require('../src/chat/finalize-host');
 
 async function executionHarness(owner, input, options = {}) {
@@ -525,7 +526,9 @@ test('收尾门面与冻结实现保持相同计划、端口访问顺序和执�
     const file = path.resolve(__dirname, '../src/chat', name + '.js');
     assert.equal(createHash('sha1').update('blob ' + body.length + '\0').update(body).digest('hex'), blob);
     const mod = { exports: {} };
-    compileFunction(body.toString(), ['module', 'require'], { filename: file })(mod, createRequire(file));
+    const load = createRequire(file);
+    compileFunction(body.toString(), ['module', 'require'], { filename: file })(mod,
+      spec => spec === './turn-progress' ? require('../src/native/runtime').getTurnProgress() : load(spec));
     return mod.exports;
   }
   const priorPlan = frozen('finalize-plan', '610b4936428b1b9c3ac8f354ae93bce2b85475b6');

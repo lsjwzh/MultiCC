@@ -103,9 +103,12 @@ pub fn message_auto_commit_prompt(env: Env, persisted: Unknown<'_>) -> Result<sy
 
 #[napi]
 pub fn message_normalize_voice(env: Env, source: Unknown<'_>) -> Result<sys::napi_value> {
-    let source = L::new(&env, source);
+    Ok(normalize_voice(L::new(&env, source))?.raw())
+}
+
+pub(crate) fn normalize_voice(source: L<'_>) -> Result<L<'_>> {
     if !source.truthy()? || !source.get(c"inputSource")?.is_string("voice")? {
-        return Ok(source.from_value(&V::Null)?.raw());
+        return source.from_value(&V::Null);
     }
     let raw = if string(source.get(c"voiceRaw")?)? {
         let trimmed = method(source.get(c"voiceRaw")?, c"trim", &[])?;
@@ -120,7 +123,7 @@ pub fn message_normalize_voice(env: Env, source: Unknown<'_>) -> Result<sys::nap
     } else {
         text(source, "")?
     };
-    Ok(object(source, &[(c"raw", raw)])?.raw())
+    object(source, &[(c"raw", raw)])
 }
 
 fn voice_prompt<'a>(voice: L<'a>, user_text: L<'a>) -> Result<L<'a>> {

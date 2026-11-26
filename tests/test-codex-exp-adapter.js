@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { addUsage, appServerUsage, createCodexExpAdapter, isReconnectProgress, requestUserInputEvent } = require('../src/native/runtime').codexAppAdapter;
-const { appendAdapterAssistantText } = require('../src/chat/turn-engine');
+const { appendAdapterAssistantText } = require('../src/chat/turn-engine-host');
 const createSessionRecordFactory = deps => require('../src/native/runtime').getNative().sessionCreateRecordFactory(deps, require('node:path'));
 const { isResidentSession } = require('../src/cli/cli-capability');
 const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');

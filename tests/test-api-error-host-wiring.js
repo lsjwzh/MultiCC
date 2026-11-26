@@ -7,10 +7,10 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 // The chat turn engine (runChatTurn / runChatTurnStreaming / finalizeStreamingTurn)
-// now lives in src/chat/turn-engine.js; assertions that scan for those shapes read
+// now uses src/chat/turn-engine-host.js for its Node ports; assertions that scan for those shapes read
 // the concatenated host + engine source.
 const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8')
-  + '\n' + fs.readFileSync(path.join(root, 'src', 'chat', 'turn-engine.js'), 'utf8');
+  + '\n' + fs.readFileSync(path.join(root, 'src', 'chat', 'turn-engine-host.js'), 'utf8');
 // Adapter-neutral native-session capture and the resume-mismatch kill live in
 // the native chat-event reducer.
 const nativeChatEvents = fs.readFileSync(
@@ -32,65 +32,55 @@ test('Classify no longer owns an uncapped API retry or error-text pruning channe
 });
 
 test('process and stream retries reuse the owned turn without appending a second user message', () => {
-  const processStart = server.indexOf('const spawnChat = (prepared, isRetry, apiRetryAttempt = 0)');
-  const processEnd = server.indexOf('cs.claudeProc = spawnChat(initialInvocation, false)', processStart);
-  const processBody = server.slice(processStart, processEnd);
-  assert.ok(processStart >= 0 && processEnd > processStart);
-  assert.equal(processBody.includes('evaluateTurnApiError({'), true);
-  const processGuard = processBody.indexOf('const guardedHandoffResumeFailure = isGuardedHandoffFailure({');
-  const processPolicy = processBody.indexOf('const apiErrorDecision = shouldClassifyApiError');
-  assert.ok(processGuard >= 0 && processPolicy > processGuard,
-    'process reused-target guard must run before generic API policy');
-  assert.match(processBody,
-    /const shouldClassifyApiError = \(!guardedHandoffResumeFailure \|\| errorOnlyBoundary\) && !!\(/,
-    'process guard yields only to a host-proved, replay-safe provider error envelope');
-  assert.match(processBody,
-    /retryBlockedByAdapterError: !!cs\._adapterError \|\| !!runner\.adapterError/,
-    'process guard must preserve both close-time and runner-owned adapter vetoes');
-  assert.equal(processBody.includes('scheduleOwnedRetry({'), true);
-  assert.match(processBody,
-    /const currentRouteOptions = \(\) => providerRetryRouteOptions\(runner\.providerAttempt\)/,
-    'all process retries must decode the physical default-model sentinel before rebuilding');
-  assert.match(processBody,
-    /retryInvocation = prepareInvocation\(autoFailover\?\.invocationOptions\s*\|\| \{ reasonCode: 'same_provider_retry', \.\.\.currentRouteOptions\(\) \}\)/,
-    'each physical retry must resolve a fresh concrete provider attempt, optionally on the Auto fallback');
-  assert.match(processBody,
-    /reasonCode: 'codex_transport_continuation', \.\.\.currentRouteOptions\(\)/,
-    'native continuation must remain pinned to the current physical Auto route');
-  assert.equal(processBody.includes('spawnChat(retryInvocation, true, finalizePlan.retry.attempt)'), true);
-  assert.equal((server.match(/planRetryBlockedFinalization\(/g) || []).length, 2,
-    'process and stream retry failures share the terminal blocked-retry planner');
-  assert.equal(server.includes('const blockedPlan = planTurnFinalization('), false,
-    'a retry failure must never re-enter the ordinary retry planner directly');
-  assert.equal(processBody.includes('appendChatMessage(sessionName'), false,
-    'retry runner reuses the already durable canonical user event');
+  const native = require('../src/native/runtime').getNative();
+  const processPlan = fs.readFileSync(path.join(root, 'native/addon/src/turn_process_close.rs'), 'utf8');
+  const processEffects = fs.readFileSync(path.join(root, 'native/addon/src/turn_process_close/execute.rs'), 'utf8');
+  assert.ok(processPlan.indexOf('let guarded =') >= 0 && processPlan.indexOf('let classify =') > processPlan.indexOf('let guarded ='));
+  assert.match(processPlan, /\(!guarded \|\| error_only\)/);
+  assert.match(processPlan, /cs.get\(c"_adapterError"\)\?\.truthy\(\)\?\s*\|\| run.get\(c"adapterError"/);
+  assert.match(processEffects, /"retryBlocked"/);
+  assert.doesNotMatch(processEffects, /c"appendChatMessage"/);
+  const invoked = [], scheduled = [];
+  const ctx = { cs: { cli: 'codex' }, turn: { turnId: 't' }, persisted: {}, sessionName: 's',
+    runner: { providerAttempt: { providerId: 'owned', model: '_default_' } } };
+  const ports = {
+    finishProviderAttempt() {}, scheduleOwnedRetry: value => scheduled.push(value),
+    prepareInvocation: opts => { invoked.push(opts); return opts; }, spawnChat: (...args) => args,
+  };
+  for (const auto of [null, { invocationOptions: { providerId: 'next', model: 'm' } }]) {
+    native.chatExecuteProcessClose(ports, ctx, { finalizePlan: { action: 'retry-api', retry: { attempt: 3 } },
+      apiErrorDecision: {}, autoFailover: auto });
+    const [invocation, retry, attempt] = scheduled.at(-1).start();
+    assert.equal(invocation, invoked.at(-1));
+    assert.equal(invocation.providerId, auto ? 'next' : 'owned');
+    assert.equal(invocation.model, auto ? 'm' : null);
+    assert.equal(retry, true);
+    assert.equal(attempt, 3);
+  }
 
-  const streamStart = server.indexOf('function runChatTurnStreaming(');
-  const streamEnd = server.indexOf('// ── Chat mode:', streamStart);
-  const streamBody = server.slice(streamStart, streamEnd);
-  assert.ok(streamStart >= 0 && streamEnd > streamStart);
-  assert.equal(streamBody.includes('evaluateTurnApiError({'), true);
-  assert.equal(streamBody.includes('scheduleOwnedRetry({'), true);
-  assert.match(streamBody,
-    /reasonCode: 'same_provider_retry',\s*\.\.\.providerRetryRouteOptions\(runner\.providerAttempt\)/,
-    'stream retries must decode the physical default-model sentinel before rebuilding');
-  assert.match(streamBody,
-    /runChatTurnStreaming\(\s*sessionName,\s*cs,\s*persisted,\s*retryInvocation,\s*provider,\s*turn,\s*prepareInvocation,\s*autoTurn,\s*plan\.retry\.attempt,?\s*\)/);
-  assert.equal(streamBody.includes('runChatTurn(sessionName'), false,
-    'stream retry must not create a second canonical user message');
+  const finish = path.join(root, 'native/addon/src/turn_engine/stream_finish');
+  const streamPlan = fs.readFileSync(finish + '.rs', 'utf8');
+  const streamExecution = fs.readFileSync(path.join(finish, 'execution.rs'), 'utf8');
+  assert.match(streamPlan, /c"evaluateTurnApiError"/);
+  assert.match(streamExecution, /c"scheduleOwnedRetry"/);
+  assert.match(streamExecution, /"same_provider_retry"[\s\S]{0,240}provider_retry_route_options\(/);
+  assert.match(streamExecution, /c"runChatTurnStreaming"[\s\S]{0,480}prop\(prop\(plan, c"retry"\)\?, c"attempt"\)/);
+  assert.match(streamExecution, /"retryBlocked"/);
+  assert.doesNotMatch(streamExecution, /c"runChatTurn"/);
+
 });
 
 test('a fresh Codex fallback owns and replaces its newly allocated native thread', () => {
-  assert.match(server,
-    /runner\.freshNativeSession = prepared\.invocationEnvelope\.historyHandle\.isFirstTurn === true/);
+  const launch = fs.readFileSync(path.join(root, 'native/addon/src/turn_engine/process_runner.rs'), 'utf8');
+  assert.match(launch, /c"freshNativeSession",[\s\S]{0,280}c"invocationEnvelope"[\s\S]{0,100}c"historyHandle"[\s\S]{0,80}c"isFirstTurn"[\s\S]{0,60}is_true/);
   assert.match(nativeChatEvents,
     /chat_events::capture_session_id\(previous\.as_ref\(\), incoming\.as_ref\(\), may_replace\)/,
     'native session capture must still gate a changed resume on the fresh-thread flag');
   assert.match(nativeChatEvents,
     /assign_kill_reason\(\s*runner,\s*text\(anchor, "native_resume_mismatch"\)/,
     'a resume that starts an unexpected native thread must be killed, not silently ignored');
-  assert.match(server,
-    /logicalSessionId: sessionName, nativeSessionId: persisted\.cliSessionId/,
+  assert.match(launch,
+    /\("logicalSessionId", st\.session\),\s*\("nativeSessionId", rec\.get\(c"cliSessionId"\)/,
     'every physical Codex attempt must bind its canonical session root before spawn');
 });
 
@@ -101,15 +91,18 @@ test('host persistence and broadcast expose only stable policy fields', () => {
     'ephemeral attempt correlation must be stripped from durable task state');
   assert.equal(apiErrorHost.includes('...safe,'), true,
     'the live policy event keeps exact attempt correlation for client fencing');
-  assert.equal(server.includes("logger.warn('chat_provider_stderr'"), true);
+  const io = fs.readFileSync(path.join(root, 'native/addon/src/turn_engine/process_runner/io.rs'), 'utf8');
+  assert.match(io, /st\.log\(\s*c"warn",\s*"chat_provider_stderr"/);
   assert.equal(server.includes('[multicc/chat] stderr:'), false);
 });
 
 test('typed continuations clear stale API error ownership before launching', () => {
-  assert.match(server, /const directUserInput = opts\.directUserInput === true/);
-  assert.match(server, /if \(!originContinue \|\| directUserInput\) \{\s*apiErrorHost\.cancelRetry/);
-  assert.match(server,
-    /originContinue: originContinue && !directUserInput,\s*turnId/);
+  const execution = fs.readFileSync(path.join(root, 'native/addon/src/turn_engine/execution.rs'), 'utf8');
+  assert.match(execution, /opts\.get\(c"directUserInput"\)\?\.is_true\(\)/);
+  const prepare = fs.readFileSync(path.join(root, 'native/addon/src/turn_engine/task_start/preparation.rs'), 'utf8');
+  assert.match(prepare, /!self\.ctx\.get\(c"originContinue"\)[\s\S]{0,70}\|\| self\.ctx\.get\(c"directUserInput"\)/);
+  assert.match(prepare, /if self\.fresh\(\)\? \{\s*self\.service\(c"apiErrorHost", c"cancelRetry"/);
+  assert.match(prepare, /"originContinue", flag\(s, !self\.fresh\(\)\?\)/);
 });
 
 test('API error handling installs no cross-request recovery or admission gate', () => {

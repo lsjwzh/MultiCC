@@ -917,7 +917,7 @@ test('empty and _default_ attribution facts are dropped, and an empty set writes
 test('the live result frame carries the attribution the durable stamp writes', async () => {
   // The constructed result frame is native now; the engine only supplies the
   // same cs/turn/runner computation as a port, and the native frame spreads it.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   assert.match(source, /modelAttribution: \(cs, turn, runner\) => modelAttributionField\(cs, turn, runner\)/,
     'the frame port spreads the same cs/turn/runner computation the history stamp used');
   const nativeSource = fs.readFileSync(

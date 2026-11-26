@@ -146,12 +146,12 @@ test('deriveOpenTasks is robust to repeats, orphans, and empty input', () => {
 });
 
 test('turn-engine replays journal open tasks on reconnect only when the live set is empty', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.match(source, /deriveOpenTasks\(turnEventJournal\.readAll\(sessionName\)\)/,
-    'reconnect path derives open tasks from the journal');
-  assert.match(source, /activeTasks\.length === 0 && turnEventJournal/,
-    'replay only when the in-memory runtime knows nothing (post-restart)');
-  assert.match(source, /RECONNECT_REPLAY_WINDOW_MS/, 'replay is time-bounded');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
+  assert.match(source, /chatReplaySocket\(socketPorts, ws, connection, replayGate, urlObj\)/);
+  const owner = fs.readFileSync(path.join(__dirname, '..', 'native/addon/src/turn_chat_socket/connection.rs'), 'utf8');
+  assert.match(owner, /if !active.get\(c"length"\)\?\.is_number\(0.0\)\?/);
+  assert.match(owner, /c"deriveOpenTasks",[\s\S]{0,100}c"readAll"/);
+  assert.match(owner, /n.is_finite\(\) && n >= cutoff/);
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.match(serverSource, /sendWs,\s*\n\s*turnEventJournal,/, 'server wires the journal into the turn engine');
 });

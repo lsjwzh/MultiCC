@@ -3,6 +3,68 @@
 //! JavaScript values are coerced at the addon boundary, preserving the legacy
 //! regular expression's character and end-of-input semantics.
 
+use unicode_normalization::UnicodeNormalization;
+
+/// Directory labels are persisted in session ids, including their historical
+/// NFKD (accent-as-separator) and 32 ASCII character truncation rules.
+pub fn session_id_stem(label: &str, cli: &str, chat: bool) -> String {
+    let mut prefix = String::new();
+    let mut separator = false;
+    for ch in label.nfkd().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            if separator && !prefix.is_empty() {
+                prefix.push('-');
+            }
+            prefix.push(ch);
+            if prefix.len() >= 32 {
+                break;
+            }
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    prefix.truncate(32);
+    let prefix = prefix.trim_end_matches('-');
+    let prefix = if prefix.is_empty() { "dir" } else { prefix };
+    let kind = if chat { "chat" } else { "term" };
+    format!("{prefix}-{cli}-{kind}")
+}
+
+pub fn session_id_sequence(id: &str, stem: &str) -> u64 {
+    let Some(digits) = id
+        .strip_prefix(stem)
+        .and_then(|tail| tail.strip_prefix('-'))
+    else {
+        return 0;
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return 0;
+    }
+    digits.parse().unwrap_or(u64::MAX)
+}
+
+pub fn numbered_ids(stem: &str, max: u64) -> impl Iterator<Item = String> + '_ {
+    // Outside the JS safe-integer range incrementing a colliding id can stall.
+    (1..1000).map_while(move |offset| {
+        let seq = max.checked_add(offset)?;
+        (seq <= 1 << 53).then(|| format!("{stem}-{seq:02}"))
+    })
+}
+
+pub fn random_session_id(stem: &str) -> Result<String, getrandom::Error> {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut bytes = [0; 8];
+    getrandom::fill(&mut bytes)?;
+    let mut value = u64::from_le_bytes(bytes);
+    let mut id = format!("{stem}-");
+    for _ in 0..8 {
+        id.push(DIGITS[(value % 36) as usize] as char);
+        value /= 36;
+    }
+    Ok(id)
+}
+
 /// The model identifier regexp is `/^[A-Za-z0-9._:\/\[\]-]{1,100}$/`.
 pub fn valid_model(value: &str) -> bool {
     !value.is_empty()

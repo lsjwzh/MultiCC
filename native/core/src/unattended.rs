@@ -1261,8 +1261,13 @@ pub fn select_queued(input: &str) -> Result<String, String> {
     // W keeps waiting on its human question; a dead P/C letter (admitted by the
     // gate above) has no live turn to wait for and pushes immediately.
     let settled_at = int_value(field(&state, "lastSettleAt")).unwrap_or(0);
-    let fault_orphan =
-        cls == "E" && settled_at > 0 && now.saturating_sub(settled_at) >= FAULT_FIFO_GRACE_MS;
+    // A durable retry owns recovery through backoff and asynchronous admission.
+    // Only a fault without that owner can age into the ordinary FIFO.
+    let pending_retry = int_value(field(&state, "retryAt")).unwrap_or(0) > 0;
+    let fault_orphan = cls == "E"
+        && !pending_retry
+        && settled_at > 0
+        && now.saturating_sub(settled_at) >= FAULT_FIFO_GRACE_MS;
     let waiting = match cls.as_str() {
         "D" => false,
         "E" => !fault_orphan,

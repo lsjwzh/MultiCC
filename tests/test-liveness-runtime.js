@@ -350,7 +350,7 @@ test('explicit cs.heartbeatSilentMs still wins over the live heartbeat', () => {
 
 test('working verdict carries the model stage only while a turn is in flight', () => {
   const now = clockFrom(10_000);
-  const turnTimeline = require('../src/chat/turn-progress');
+  const turnTimeline = require('../src/native/runtime').getTurnProgress();
   const cs = { cli: 'codex', isStreaming: true, turnStartedAt: 9_000, lastStreamAt: 9_500 };
   turnTimeline.startTurn('s', cs, 9_000);
   const rt = make({ now, sessions: { s: { cli: 'codex' } }, chat: { s: cs } });

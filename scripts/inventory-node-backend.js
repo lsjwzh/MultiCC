@@ -114,7 +114,7 @@ const note = [
   '当前 src 中有 ' + lanes.js + ' 个 .js、' + lanes.cjs + ' 个 .cjs、' + lanes.mjs + ' 个 .mjs。根包有 ' + dependencies.length + ' 个直接运行依赖。', '',
   '## 根包运行依赖', '',
   '兼容宿主打包路径与根 npm 包独立。下表只统计根包 dependencies。开发依赖与桌面包中的宿主仍应分别审计。', '',
-  '兼容宿主的 Claude 引擎由 `@anthropic-ai/claude-agent-sdk` 的平台可选包提供二进制，解析入口为 `src/cli/claude-bundled-binary.js`。CPR 的传递依赖（包括 `@iarna/toml`）保留在 package-lock.json 中。', '',
+  '兼容宿主的 Claude 引擎由 `@anthropic-ai/claude-agent-sdk` 的平台可选包提供二进制，解析入口为 `native/core/src/claude_models.rs`。CPR 的传递依赖（包括 `@iarna/toml`）保留在 package-lock.json 中。', '',
   '| 包 | 声明版本 | 直接引用（server.js、src、启动入口、生产插件） |', '|---|---|---|',
   ...dependencies.map(([name, version]) => '| ' + listing([name]) + ' | ' + listing([version]) + ' | ' +
     listing(runtimeFiles.filter(file => visited.get(file).packages.has(name))) + ' |'),

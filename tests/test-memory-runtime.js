@@ -338,7 +338,7 @@ test('pending gate wraps rejection and an older completion cannot erase a newer 
 test('host composition resolves history and rebound workspace broadcasting lazily', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const turnEngine = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'),
+    path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'),
     'utf8',
   );
   // The queue-wait protocol lives in ./admission-progress; turn-engine only

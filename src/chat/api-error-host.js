@@ -1,7 +1,7 @@
 'use strict';
 
 const { isErrorOnlyText, normalizeRejection, retryNotice } = require('./api-error-policy');
-const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
+const { vendorLoginForCli } = require('../native/runtime').getVendorLogin();
 const { looksLikeRevokedOAuth } = require('../claude-auth/oauth-refresh');
 const { systemProxyHijackHint } = require('../network/global-proxy');
 

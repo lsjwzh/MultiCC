@@ -10,7 +10,7 @@ const test = require('node:test');
 const {
   createDeliveryProbeRegistry,
   shouldReexecutePersistedDelivery,
-} = require('../src/chat/turn-engine');
+} = require('../src/chat/turn-engine-host');
 
 test('lookup reports unknown before any turn, then the recorded handoff facts', () => {
   const registry = createDeliveryProbeRegistry({ now: () => 42 });

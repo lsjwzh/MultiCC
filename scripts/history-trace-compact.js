@@ -4,7 +4,7 @@
 // still embedded in chat history messages to the summary shape the runtime
 // writes today.
 //
-// Why this exists. `contextTraceFor` (src/chat/turn-engine.js) asks for
+// Why this exists. `contextTraceFor` (native/addon/src/turn_engine/services.rs) asks for
 // `{ summary: true }`, and the summary branch in src/task-shell/runtime.js
 // returns only { version, traceId, currentTask, managedOnly, summary, count,
 // budget, contextStatus } -- about 304 bytes on real data. Messages written

@@ -5,7 +5,7 @@
  * `claude --resume` reloads ~/.claude/projects/<sanitised-cwd>/<sessionId>.jsonl,
  * so a transcript that outgrows the context window makes every resume fail with
  * "Prompt is too long". multicc trims transcripts automatically on the way into a
- * turn (src/chat/turn-engine.js → getTranscriptPruning()); this script is the
+ * turn (native/addon/src/turn_engine/services.rs → getTranscriptPruning()); this script is the
  * operator's door to the same logic — for looking at a session before touching it,
  * or for fixing one that is already wedged.
  *

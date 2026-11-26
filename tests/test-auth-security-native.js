@@ -368,3 +368,13 @@ test('Rust authentication: real HTTP login, cookie exchange and ticket endpoints
   }
   t.diagnostic(`compared ${checked} complete HTTP responses`);
 });
+
+test('宿主 Cookie 保留原始顺序、重复键、裸键和 UTF-16 内容', () => {
+  const { httpParseCookies } = require('../src/native/runtime').getNative();
+  for (const absent of [undefined, null, '']) assert.deepEqual(httpParseCookies(absent), {});
+  const parsed = httpParseCookies(' b=a=b ; a=1; b=2; lone; __proto__=x; =skip; constructor=v; \uFEFFx=\uD800 ');
+  assert.deepEqual(Object.keys(parsed), ['b', 'a', 'lone', 'constructor', 'x']);
+  assert.deepEqual(parsed, { b: '2', a: '1', lone: '', constructor: 'v', x: '\uD800' });
+  assert.equal(Object.getPrototypeOf(parsed), Object.prototype);
+  assert.equal(httpParseCookies('multicc_auth=a=b==').multicc_auth, 'a=b==');
+});

@@ -8,9 +8,8 @@ const { envDigest } = require('../secrets-vault');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../native/runtime').getMonitorAdmission();
 const { createBackgroundHold, processStale } = require('./background-hold');
 const { decideMissingResume } = require('./missing-resume-recovery');
-const { bundledClaudeCodeBinary } = require('../cli/claude-bundled-binary');
-const { getNative } = require('../native/runtime');
-const writerGroup = require('../workspace/writer-group');
+const { bundledClaudeCodeBinary } = require('../cli/cli-capability');
+const { getWriterGroup, getNative } = require('../native/runtime');
 
 // Native lane events are pushed from a ThreadsafeFunction callback, i.e. on the
 // JS thread but outside the consume-loop microtask; the queue keeps the old
@@ -431,7 +430,7 @@ function createSdkStream({ binary, binaryArgs = [], createLane = callback => new
         const token = run.writerLeaseToken;
         run.writerLeaseToken = null;
         if (!token) return;
-        writerGroup.whenGroupEmpty(run.lane?.pid, () => { try { cfg.releaseWriter?.(token); } catch (_) {} });
+        getWriterGroup().whenGroupEmpty(run.lane?.pid, () => { try { cfg.releaseWriter?.(token); } catch (_) {} });
       });
       // napi delivers the ThreadsafeFunction tuple as one JS argument.
       run.lane = createLane(payload => dispatchLaneEvent(s, run, ...payload));

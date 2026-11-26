@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const turnProgress = require('../chat/turn-progress');
+const { getTurnProgress } = require('../native/runtime');
 
 const PRIVATE_USAGE_FIELDS = Object.freeze(['usageCumulative', 'usageEpoch']);
 
@@ -233,7 +233,7 @@ function createCodexUsageHost(deps = {}) {
   }
   const logger = deps.logger || console;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
-  const timelineField = typeof deps.timelineField === 'function' ? deps.timelineField : turnProgress.field;
+  const timelineField = typeof deps.timelineField === 'function' ? deps.timelineField : getTurnProgress().field;
 
   async function complete({ evt, cs, persisted, sessionName, turn, runner, forward, contextTrace = null }) {
     if (typeof forward !== 'function') throw new TypeError('Codex usage host missing: forward');

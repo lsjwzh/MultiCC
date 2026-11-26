@@ -27,15 +27,17 @@ test('public session DTO exposes only safe hibernation lifecycle fields', () => 
 
 test('host composition gates every real ingress and keeps view paths passive', () => {
   const server = read('server.js');
-  const engine = read('src/chat/turn-engine.js');
+  const engine = read('src/chat/turn-engine-host.js');
   const cron = read('plugins/cron/cron-tasks.js');
   const board = read('src/routes/task-board.js');
   assert.match(server, /reconcileStartup\(\).*initWorktrees/s);
   assert.match(engine, /getSessionHibernation/);
-  assert.match(engine, /sessionHibernation\.admit/);
-  assert.match(engine, /assertAwake/);
+  const admission = read('native/addon/src/chat_work_admission.rs');
+  assert.match(admission, /c"getSessionHibernation"/);
+  assert.match(admission, /c"admit"/);
+  assert.match(read('native/addon/src/turn_engine/preflight.rs'), /c"assertAwake"/);
   assert.match(server, /workspaceAdmission.beforeDeliver/);
-  assert.match(engine, /assertPermit/);
+  assert.match(read('native/addon/src/turn_engine/execution.rs'), /c"assertPermit"/);
   assert.match(cron, /sendTaskMessage/);
   assert.match(cron, /taskShellReceiptId|receipt protocol/);
   assert.doesNotMatch(cron, /createSessionRecord/,

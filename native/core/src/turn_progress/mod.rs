@@ -7,8 +7,8 @@
 //! The kernels here are pure state machines. Host I/O (the clock, the
 //! heartbeat callback, the timing log sink) is supplied by the addon owner
 //! `native/addon/src/turn_progress.rs` on every call; no host function is
-//! retained. The JavaScript facade `src/chat/turn-progress.js` only forwards
-//! arguments and owns the single unref'd timer.
+//! retained. The addon facade in `turn_progress_facade.rs` forwards arguments
+//! and owns the single unref'd host timer.
 //!
 //! Timeline state is keyed by session name (not hung on the live `cs` object)
 //! and is cleared by `Timelines::forget` from the chat-session delete path.

@@ -94,10 +94,17 @@ test('internal execution slot discriminator is narrow and reusable by WS admissi
   assert.equal(isInternalExecutionSlot({ taskExecutionSlot: false }), false);
   assert.equal(isInternalExecutionSlot({ taskExecutionSlot: true }), true);
 
-  const turnEngine = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.match(turnEngine, /isInternalExecutionSlot\(persisted\)/,
-    'WS chat admission must use the same internal-slot discriminator');
+  const frames = [], ws = { close() { frames.push('close'); } };
+  const ports = { persistedSessions: new Map(), invalidSessions: new Map(), sendWs: (_, frame) => frames.push(frame) };
+  const open = () => require('../src/native/runtime').getNative().chatOpenSocket(
+    ports, ws, {}, new URL('http://localhost/ws/chat?session=s'));
+  assert.equal(open().closed, true);
+  const missing = frames.splice(0);
+  ports.persistedSessions.set('s', { kind: 'chat', taskExecutionSlot: true });
+  assert.equal(open().closed, true);
+  assert.deepEqual(frames, missing);
+  assert.equal(frames[0].code, 'session_not_found');
+  assert.equal(frames[1], 'close');
 });
 
 function wsRouterHarness(url, { peerAllowed = true, ticket = null } = {}) {

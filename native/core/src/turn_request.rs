@@ -392,47 +392,77 @@ fn request_text(request: &Value, key: &str) -> Value {
 }
 
 /// `planTurnAdmission(request, facts)`.
+/// 兼容宿主与 JSON 协议共用同一组准入优先级。
+#[derive(Clone, Copy, PartialEq)]
+pub enum Admission {
+    Duplicate(bool),
+    Shutdown,
+    Missing,
+    Busy,
+    Background,
+    Prepare,
+}
+
+#[derive(Default)]
+pub struct AdmissionFacts {
+    pub duplicate_seen: bool,
+    pub duplicate_persisted: bool,
+    pub shutting_down: bool,
+    pub session_missing: bool,
+    pub running: bool,
+    pub background: bool,
+}
+
+impl AdmissionFacts {
+    pub fn decide(self) -> Admission {
+        if self.duplicate_seen {
+            Admission::Duplicate(self.duplicate_persisted)
+        } else if self.shutting_down {
+            Admission::Shutdown
+        } else if self.session_missing {
+            Admission::Missing
+        } else if self.running {
+            Admission::Busy
+        } else if self.background {
+            Admission::Background
+        } else {
+            Admission::Prepare
+        }
+    }
+}
+
 pub fn plan_admission(request: &Value, facts: &Value) -> Result<Value, Failure> {
     assert_normalized(request)?;
-    let mut trace = vec![json!("duplicate-check")];
     let flag = |key: &str| matches!(field(facts, key), Some(Value::Bool(true)));
-    if flag("duplicateSeen") {
-        let mut out = Map::new();
-        out.insert("decision".to_string(), json!("duplicate"));
-        out.insert(
-            "accepted".to_string(),
-            Value::Bool(flag("duplicatePersisted")),
-        );
-        out.insert("trace".to_string(), Value::Array(trace));
-        out.insert("effects".to_string(), json!([]));
-        return Ok(Value::Object(out));
+    let decision = AdmissionFacts {
+        duplicate_seen: flag("duplicateSeen"),
+        duplicate_persisted: flag("duplicatePersisted"),
+        shutting_down: flag("shuttingDown"),
+        session_missing: matches!(field(facts, "sessionExists"), Some(Value::Bool(false))),
+        running: flag("runningTurn"),
+        background: flag("backgroundWorkActive"),
     }
-    trace.push(json!("shutdown-check"));
-    trace.push(json!("session-check"));
-    let rejection = |reason: &str, trace: Vec<Value>| -> Value {
-        let mut out = Map::new();
-        out.insert("decision".to_string(), json!("reject"));
-        out.insert("reason".to_string(), json!(reason));
-        out.insert("trace".to_string(), Value::Array(trace));
-        out.insert("effects".to_string(), json!([]));
-        Value::Object(out)
+    .decide();
+    let mut trace = vec![json!("duplicate-check")];
+    if let Admission::Duplicate(accepted) = decision {
+        return Ok(json!({"decision":"duplicate","accepted":accepted,"trace":trace,"effects":[]}));
+    }
+    trace.extend([json!("shutdown-check"), json!("session-check")]);
+    let reason = match decision {
+        Admission::Shutdown => Some("shutdown"),
+        Admission::Missing => Some("session-missing"),
+        Admission::Busy => {
+            trace.push(json!("busy-check"));
+            Some("session-busy")
+        }
+        Admission::Background => {
+            trace.extend([json!("busy-check"), json!("background-check")]);
+            Some("background-work-active")
+        }
+        _ => None,
     };
-    if flag("shuttingDown") {
-        return Ok(rejection("shutdown", trace));
-    }
-    if matches!(field(facts, "sessionExists"), Some(Value::Bool(false))) {
-        return Ok(rejection("session-missing", trace));
-    }
-    if flag("runningTurn") {
-        let mut busy = trace.clone();
-        busy.push(json!("busy-check"));
-        return Ok(rejection("session-busy", busy));
-    }
-    if flag("backgroundWorkActive") {
-        let mut busy = trace.clone();
-        busy.push(json!("busy-check"));
-        busy.push(json!("background-check"));
-        return Ok(rejection("background-work-active", busy));
+    if let Some(reason) = reason {
+        return Ok(json!({"decision":"reject","reason":reason,"trace":trace,"effects":[]}));
     }
     let mut effect = Map::new();
     effect.insert("type".to_string(), json!("persist-user-message"));

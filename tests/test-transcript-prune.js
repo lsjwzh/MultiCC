@@ -555,7 +555,24 @@ test('聊天回合、历史路由和离线工具均可解析原生修剪入口',
       );
     }
   }
-  for (const file of ['src/chat/turn-engine.js', 'src/routes/chat-history.js', 'scripts/compact-transcript.js']) assert.ok(found.has(file), file);
+  for (const file of ['src/routes/chat-history.js', 'scripts/compact-transcript.js']) assert.ok(found.has(file), file);
+
+  // 聊天宿主把惰性工厂交给 Rust，裁剪时按同一会话取得 cwd 和报告。
+  const calls = [];
+  const record = { id: 'codex', dirId: 'dir' };
+  const report = { contextAffected: false };
+  const service = require('../src/native/runtime').getNative().chatTurnServices({
+    cwdForSession: input => { assert.equal(input, record); return '/project'; },
+    getTranscriptPruning: () => ({
+      pruneSessionClaude(cwd, input) {
+        calls.push([cwd, input]);
+        return { errors: [], pruned: [{ cliSessionId: 'remembered', report }], activeClaude: false };
+      },
+    }),
+    logger: { info() {} }, appendEvent() {},
+  });
+  assert.equal(service.pruneTranscript('codex', record), report);
+  assert.deepEqual(calls, [['/project', record]]);
 });
 
 // ── 15. session-level Claude pruning covers dormant cliStates without cross-session fallback ──

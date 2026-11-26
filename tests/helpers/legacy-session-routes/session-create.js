@@ -5,7 +5,7 @@
 // by tests/helpers/legacy-session-routes.js over the scripted world in
 // tests/helpers/session-routes-scripted-world.js.
 
-const { vendorLoginForCli } = require('../../../src/cli-adapters/vendor-login');
+const { vendorLoginForCli } = require('./vendor-login');
 
 function assertDependencies(deps) {
   if (!deps || typeof deps !== 'object') throw new TypeError('[session-create] dependencies are required');

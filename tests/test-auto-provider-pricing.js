@@ -99,6 +99,21 @@ test('modelChoices lists the default, the visible list and the alias targets onc
 
 // ── expandCandidates ─────────────────────────────────────────────────────────
 
+test('查价回调可以修改候选项，展开时读取更新后的值', () => {
+  const candidates = [{ model: 'a' }, { model: 'b' }];
+  const lookedUp = [];
+  const priceTable = {
+    lookup(model) {
+      lookedUp.push(model);
+      if (model === 'a') candidates[0].model = 'b';
+      return { blended: model === 'b' ? 2 : 1 };
+    },
+  };
+  const expanded = expandCandidates(candidates, { priceTable });
+  assert.deepEqual(lookedUp, ['a', 'b']);
+  assert.deepEqual(expanded.map(row => [row.model, row.price.blended]), [['b', 2], ['b', 2]]);
+});
+
 test('a line that does not pick its model is priced exactly as it stands', () => {
   const expanded = expandCandidates([
     { providerId: 'a', model: 'm-a', priority: 1 },

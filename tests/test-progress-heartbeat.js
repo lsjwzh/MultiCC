@@ -5,7 +5,7 @@ const test = require('node:test');
 const {
   DEFAULT_INTERVAL_MS,
   TurnProgressHeartbeat,
-} = require('../src/chat/turn-progress');
+} = require('../src/native/runtime').getTurnProgress();
 
 function createClock(startedAt = 0) {
   let now = startedAt;
@@ -181,7 +181,7 @@ test('stop and stopAll clear timers and suppress stale callbacks', () => {
   manager.start('s1', 't1');
   manager.start('s2', 't2');
   // One process-wide timer is armed for the earliest deadline (the Rust owner
-  // schedules every entry; see the single-timer note in src/chat/turn-progress.js).
+  // schedules every entry; see the single-timer note in native/addon/src/turn_progress_facade.rs).
   assert.equal(clock.activeTimers, 1);
   assert.equal(manager.stop('s1', 't1'), true);
   assert.equal(manager.stop('s1', 't1'), false);

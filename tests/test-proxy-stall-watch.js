@@ -728,13 +728,23 @@ test('native stream progress handles split UTF-8, mixed chunks and oversized fra
 test('Rust connection deadlines fire once and cancellation prevents delivery', async () => {
   const { RustRequestTimer } = require('../src/native/runtime').getNative();
   let calls = 0;
-  const expired = new RustRequestTimer(10, () => { calls++; });
+  let signalExpiry;
+  const delivered = new Promise(resolve => { signalExpiry = resolve; });
+  const expired = new RustRequestTimer(10, () => { calls++; signalExpiry(); });
   const cancelled = new RustRequestTimer(10, () => { calls += 100; });
   cancelled.cancel();
   cancelled.cancel();
-  await new Promise(resolve => setTimeout(resolve, 80));
-  expired.cancel();
-  assert.equal(calls, 1);
+  let deadline;
+  try {
+    await Promise.race([delivered, new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(new Error('未收到 Rust 计时器的到期回调')), 3000);
+    })]);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(calls, 1);
+  } finally {
+    clearTimeout(deadline);
+    expired.cancel();
+  }
 });
 
 test('the native scheduler normalizes delay and cancels callbacks already queued for JS', async () => {

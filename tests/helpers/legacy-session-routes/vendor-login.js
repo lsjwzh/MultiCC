@@ -5,7 +5,7 @@
 // with the vendor's "authentication required" text, the UI offers to open one
 // of these whitelisted login terminal sessions (same pattern as codex-login /
 // claude-auth-login in src/session/create-record.js).
-const { displayNameOf } = require('../cli/cli-capability');
+const { displayNameOf } = require('../legacy-cli-capability');
 
 const VENDOR_LOGIN = Object.freeze({
   commandcode: Object.freeze({

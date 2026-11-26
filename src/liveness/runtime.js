@@ -40,7 +40,7 @@ const DEFAULTS = Object.freeze({
   idleRecentMs: 10 * 60_000,
 });
 
-const turnProgress = require('../chat/turn-progress');
+const { getTurnProgress } = require('../native/runtime');
 
 function assertFn(value, name) {
   if (typeof value !== 'function') throw new TypeError(`[liveness] ${name} must be a function`);
@@ -54,7 +54,7 @@ function createLivenessRuntime(deps = {}) {
     chatStreamStatus = () => null,
     probeSession = null,
     turnHeartbeatStatus = null,
-    timelineCurrentStage = turnProgress.currentStage,
+    timelineCurrentStage = getTurnProgress().currentStage,
     thresholds = {},
   } = deps;
 

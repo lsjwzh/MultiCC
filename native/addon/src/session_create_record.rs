@@ -164,6 +164,7 @@ impl Drop for Capture {
 const DEPS: &[&str] = &[
     "isResidentSession",
     "sharedWorkspace",
+    "existsSync",
     "SUPPORTED_CHAT_CLIS",
     "validateExperimentalSession",
     "tuiChatMirrorEnabled",
@@ -248,6 +249,111 @@ fn inputs<'a>(value: L<'a>) -> Result<L<'a>> {
     Ok(out)
 }
 
+/// Session creation and legacy workspace migration share the same owner check.
+/// The path probe stays with the host to support every fs.existsSync path type.
+fn shared_workspace<'a>(
+    records: L<'a>,
+    owner_id: L<'a>,
+    dir_id: L<'a>,
+    exists: L<'a>,
+) -> Result<L<'a>> {
+    let owner = call(records, c"get", &[owner_id])?;
+    if owner.truthy()?
+        && owner.get(c"dirId")?.equals(dir_id)?
+        && !owner.get(c"workspaceOwnerSessionId")?.truthy()?
+        && owner.get(c"worktreePath")?.truthy()?
+        && owner.get(c"branch")?.truthy()?
+        && exists
+            .call_plain(&[owner.get(c"worktreePath")?])?
+            .truthy()?
+    {
+        let state = owner.get(c"workspaceState")?;
+        if !state.truthy()? || state.is_string("awake")? {
+            let workspace = obj(owner)?;
+            workspace.set(c"worktreePath", owner.get(c"worktreePath")?)?;
+            workspace.set(c"branch", owner.get(c"branch")?)?;
+            return Ok(workspace);
+        }
+    }
+    let code = text(records, "shell_workspace_unavailable")?;
+    let error = records.global()?.get(c"Error")?.construct(&[code])?;
+    error.set(c"code", code)?;
+    error.set(c"status", records.from_value(&J::Number(409.0))?)?;
+    Err(error.throw_error())
+}
+
+#[napi]
+pub fn session_shared_workspace(
+    env: Env,
+    records: Unknown<'_>,
+    owner: Unknown<'_>,
+    directory: Unknown<'_>,
+    exists: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    shared_workspace(
+        L::new(&env, records),
+        L::new(&env, owner),
+        L::new(&env, directory),
+        L::new(&env, exists),
+    )
+    .map(|workspace| workspace.raw())
+}
+
+fn allocate_session_id<'a>(
+    deps: L<'a>,
+    path: L<'a>,
+    dir: L<'a>,
+    cli: L<'a>,
+    chat: bool,
+) -> Result<L<'a>> {
+    let name = dir.get(c"name")?;
+    let label = if name.truthy()? {
+        name
+    } else {
+        let dir_path = dir.get(c"path")?;
+        let arg = if dir_path.truthy()? {
+            dir_path
+        } else {
+            text(dir, "")?
+        };
+        call(path, c"basename", &[arg])?
+    };
+    let stem = core::session_id_stem(
+        &call(label, c"toString", &[])?
+            .coerce_string()?
+            .to_string_lossy(),
+        &cli.coerce_string()?.to_string_lossy(),
+        chat,
+    );
+    let records = deps.get(c"persistedSessions")?;
+    let dir_id = dir.get(c"id")?;
+    let mut max = 0;
+    call(records, c"values", &[])?.for_each(|record| {
+        if record.get(c"dirId")?.equals(dir_id)? {
+            let id = record.get(c"id")?;
+            if id.truthy()? {
+                let value = string(dir, id)?.coerce_string()?.to_string_lossy();
+                max = max.max(core::session_id_sequence(&value, &stem));
+            }
+        }
+        Ok(())
+    })?;
+    for candidate in core::numbered_ids(&stem, max) {
+        let id = text(dir, &candidate)?;
+        if !call(records, c"has", &[id])?.truthy()? {
+            return Ok(id);
+        }
+    }
+    loop {
+        let candidate =
+            core::random_session_id(&stem).map_err(|e| Error::from_reason(e.to_string()))?;
+        let id = text(dir, &candidate)?;
+        if !call(records, c"has", &[id])?.truthy()? {
+            return Ok(id);
+        }
+    }
+}
+
 // Prepare through the first suspension point. Returning an object with `done`
 // distinguishes early validation results from a live operation state.
 fn prepare<'a>(env: &'a Env, deps: L<'a>, input: L<'a>, path: L<'a>) -> Result<L<'a>> {
@@ -296,6 +402,8 @@ fn prepare<'a>(env: &'a Env, deps: L<'a>, input: L<'a>, path: L<'a>) -> Result<L
         text(input, "codex")?
     } else if login.is_string("claude-auth-login")? {
         text(input, "claude")?
+    } else if deps.get(c"cliForLoginFlow")?.undefined()? {
+        crate::vendor_login::login_cli(login)?
     } else {
         port(deps, "cliForLoginFlow", &[login])?
     };
@@ -518,6 +626,8 @@ fn prepare<'a>(env: &'a Env, deps: L<'a>, input: L<'a>, path: L<'a>) -> Result<L
     let id = i.get(c"id")?;
     let sid = if id.truthy()? {
         id
+    } else if deps.get(c"allocateSessionId")?.undefined()? {
+        allocate_session_id(deps, path, dir, cli, chat)?
     } else {
         port(deps, "allocateSessionId", &[dir, cli, kind])?
     };
@@ -754,11 +864,14 @@ fn after_ready<'a>(
     }
     let owner = i.get(c"workspaceOwnerSessionId")?;
     if owner.truthy()? {
-        let result = port(
-            d,
-            "sharedWorkspace",
-            &[d.get(c"persistedSessions")?, owner, dir.get(c"id")?],
-        );
+        let records = d.get(c"persistedSessions")?;
+        let dir_id = dir.get(c"id")?;
+        let override_fn = d.get(c"sharedWorkspace")?;
+        let result = if override_fn.undefined()? {
+            shared_workspace(records, owner, dir_id, d.get(c"existsSync")?)
+        } else {
+            override_fn.call_plain(&[records, owner, dir_id])
+        };
         return match result {
             Ok(v) => after_added(env, state_ref, state, v),
             Err(e) => {

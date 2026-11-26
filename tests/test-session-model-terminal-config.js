@@ -57,7 +57,7 @@ const { createClaudeAdapter } = require('../src/native/runtime');
 const { createCodexAdapter } = require('../src/native/runtime').codexAdapter;
 const { createCodexExpAdapter } = require('../src/native/runtime').codexAppAdapter;
 const { settingsOverrideFor } = require('../src/native/runtime').claudeSettingsOverride;
-const { claudeSettingsExtra } = require('../src/chat/turn-engine');
+const { claudeSettingsExtra } = require('../src/chat/turn-engine-host');
 const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/claude-models');
 
 _resetCacheForTest();

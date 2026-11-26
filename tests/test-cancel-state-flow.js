@@ -973,10 +973,8 @@ test('turn start persists activeTurnId in the same P write — one save, not two
   assert.equal(newWrites[0].patch.classifyState, 'P');
   assert.equal(newWrites[0].patch.activeTurnId, 'turn-b');
 
-  // No second, identity-only write survives anywhere in the turn engine.
-  const engine = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.doesNotMatch(engine, /setTaskState\(sessionName,\s*\{\s*activeTurnId:\s*turn\.turnId/,
-    'activeTurnId must not get its own full save at turn start');
-  assert.match(engine, /ensureCurrentTask\(cs, sessionName, text, taskBoundaryChanged, \{[\s\S]{0,400}?turnId,/,
-    'the turn engine passes its turnId into the same P write');
+  // 轮次 ID 随首次 P 写入传给任务所有者。
+  const owner = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/task_start.rs'), 'utf8');
+  assert.match(owner, /\("turnId", turn_id\)[\s\S]{0,230}c"ensureCurrentTask"[\s\S]{0,70}\[cs, session, message, boundary, options\]/);
+  assert.doesNotMatch(owner, /c"setTaskState"/, 'task identity must not get a second save at turn start');
 });
