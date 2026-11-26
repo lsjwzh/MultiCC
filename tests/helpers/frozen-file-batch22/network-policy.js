@@ -4,7 +4,7 @@
 // native/core/src/network_policy.rs (shared with the Rust front door); this
 // module is a thin bridge that keeps the JS export surface, the error types
 // and the error texts exactly as they were.
-const { getNative } = require('./native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 function envEnabled(value) {
   return getNative().networkPolicyEnvEnabled(String(value || ''));

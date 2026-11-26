@@ -2,7 +2,7 @@
 
 const net = require('node:net');
 const os = require('node:os');
-const { isLoopbackHost } = require('./network-policy');
+const { isLoopbackHost } = require('./native/runtime').getNetworkPolicy();
 
 const SERVICE_TYPE = 'multicc';
 const SERVICE_PROTOCOL = 'tcp';

@@ -74,7 +74,7 @@ const {
 } = require('./src/codex/usage');
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { getNative, findProviderReferences, messageComposer, bootstrapState,
-  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness } = require('./src/native/runtime');
+  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence } = require('./src/native/runtime');
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
@@ -101,7 +101,6 @@ const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlia
 // MULTICC_DATA_DIR owns state; stores use atomic writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
-const { createSessionPersistence } = require('./src/native/runtime');
 const { createSessionRecords, createTaskStateStore } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');
 const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');
@@ -239,7 +238,7 @@ const {
   normalizeRedirect,
   escapeHtmlAttribute,
 } = require('./src/auth-security');
-const { envEnabled, resolveNetworkPolicy, selectListenPort } = require('./src/network-policy');
+const { envEnabled, resolveNetworkPolicy, selectListenPort } = getNetworkPolicy();
 const { isLocalRequest, isPrivateRequestPeer } = require('./src/request-locality');
 const { createObservability, installConsoleRedaction } = require('./src/observability');
 const { mountWsConnectionRouter } = require('./src/ws/connection-router');

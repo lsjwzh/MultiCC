@@ -12,7 +12,7 @@ const {
   normalizeRedirect,
   timingSafeEqualText,
 } = require('../src/auth-security');
-const { resolveNetworkPolicy, selectListenPort } = require('../src/network-policy');
+const { resolveNetworkPolicy, selectListenPort } = require('../src/native/runtime').getNetworkPolicy();
 const {
   createExactSecretStreamRedactor, createLogger, createMetrics, redact, redactProviderRouteCapability,
 } = require('../src/observability');
@@ -56,6 +56,117 @@ test('production keeps the requested port while development may select a fallbac
   assert.equal(calls, 0);
   assert.equal(await selectListenPort({ port: 3000, host: '127.0.0.1', development: true }, finder), 3001);
   assert.equal(calls, 1);
+});
+
+const frozenNetworkPolicy = require('./helpers/frozen-file-batch22/network-policy');
+const networkPolicyApi = () => require('../src/native/runtime').getNetworkPolicy();
+function networkOutcome(api, name, make) {
+  const events = [];
+  const sentinel = new RangeError('network sentinel');
+  try { return { value: api[name](...make(events, sentinel)), events }; }
+  catch (error) { return { error: error.name, message: error.message, identity: error === sentinel, events }; }
+}
+
+test('network policy frozen boundary preserves coercion and JSON getter failures', () => {
+  const current = networkPolicyApi();
+  assert.deepStrictEqual(Object.keys(current), Object.keys(frozenNetworkPolicy));
+  for (const key of Object.keys(current)) {
+    assert.equal(current[key].name, frozenNetworkPolicy[key].name);
+    assert.equal(current[key].length, frozenNetworkPolicy[key].length);
+  }
+  for (const name of ['envEnabled', 'isLoopbackHost']) {
+    for (const value of [undefined, null, false, true, 0, -0, NaN, Infinity, 1n, Symbol('x'), '', 'TRUE', '::1', '\ud800', [], {}]) {
+      const make = () => [value];
+      assert.deepStrictEqual(networkOutcome(current, name, make), networkOutcome(frozenNetworkPolicy, name, make));
+    }
+    for (const make of [
+      events => [{ toString() { events.push('toString'); return 'localhost'; } }],
+      (events, sentinel) => [{ [Symbol.toPrimitive](hint) { events.push(hint); throw sentinel; } }],
+    ]) assert.deepStrictEqual(networkOutcome(current, name, make), networkOutcome(frozenNetworkPolicy, name, make));
+  }
+  for (const make of [
+    () => [{}], () => [null], () => [[]], () => [1n], () => [() => {}],
+    () => [{ PORT: '4312', NODE_ENV: 'development', HOST: '::1' }],
+    events => [{ get PORT() { events.push('port'); return '5001'; }, get HOST() { events.push('host'); return '127.0.0.1'; } }],
+    events => [{ toJSON(key) { events.push(['toJSON', key]); return { HOST: 'localhost' }; } }],
+    (events, sentinel) => [{ get PORT() { events.push('port'); throw sentinel; } }],
+    () => { const value = {}; value.self = value; return [value]; },
+  ]) assert.deepStrictEqual(networkOutcome(current, 'resolveNetworkPolicy', make), networkOutcome(frozenNetworkPolicy, 'resolveNetworkPolicy', make));
+  const previous = process.env;
+  try {
+    process.env = { ...previous, HOST: 'localhost', PORT: '4399', NODE_ENV: 'development', ACCESS_TOKEN: '', MULTICC_ALLOW_REMOTE: '' };
+    assert.deepStrictEqual(current.resolveNetworkPolicy(), frozenNetworkPolicy.resolveNetworkPolicy());
+  } finally { process.env = previous; }
+});
+
+test('network port selection keeps sync reads, async rejection and thenable identity', async () => {
+  async function capture(api, mode) {
+    const events = [];
+    const sentinel = new RangeError('finder sentinel');
+    const result = { answer: 'same identity' };
+    const policy = new Proxy({ port: 4321, host: 'localhost', development: mode !== 'production' }, {
+      get(target, key) { events.push(String(key)); if (mode === 'getter' && key === 'development') throw sentinel; return target[key]; },
+    });
+    const finder = mode === 'noncallable' ? null : function (port, host) {
+      events.push(['find', port, host, this === undefined]);
+      if (mode === 'throw') throw sentinel;
+      return mode === 'thenable' ? { get then() { events.push('then'); return resolve => { events.push('resolve'); resolve(result); }; } } : result;
+    };
+    const promise = api.selectListenPort(mode === 'null' ? null : policy, finder);
+    assert.ok(promise instanceof Promise);
+    events.push('returned');
+    try { const value = await promise; return { value, identity: value === result, events }; }
+    catch (error) { return { error: error.name, message: error.message, identity: error === sentinel, events }; }
+  }
+  for (const mode of ['production', 'development', 'getter', 'throw', 'thenable', 'noncallable', 'null']) {
+    assert.deepStrictEqual(await capture(networkPolicyApi(), mode), await capture(frozenNetworkPolicy, mode), mode);
+  }
+});
+
+test('port finder reads options now and invokes the live native port in a microtask', async () => {
+  const native = require('../src/native/runtime').getNative();
+  const original = native.networkPolicyFindAvailablePort;
+  async function capture(api) {
+    const events = [];
+    const start = {}, host = {}, tries = {};
+    native.networkPolicyFindAvailablePort = () => { throw new Error('stale port'); };
+    const promise = api.findAvailablePort(start, host, { get maxTries() { events.push('maxTries'); return tries; } });
+    events.push('returned');
+    native.networkPolicyFindAvailablePort = function (a, b, c) {
+      events.push(['probe', a === start, b === host, c === tries, this === native]); return 48123;
+    };
+    const value = await promise;
+    return { value, events };
+  }
+  try {
+    assert.deepStrictEqual(await capture(networkPolicyApi()), await capture(frozenNetworkPolicy));
+    for (const api of [networkPolicyApi(), frozenNetworkPolicy]) {
+      assert.throws(() => api.findAvailablePort(1, 'localhost', null), TypeError);
+      const sentinel = new RangeError('option sentinel');
+      assert.throws(() => api.findAvailablePort(1, 'localhost', { get maxTries() { throw sentinel; } }), error => error === sentinel);
+      native.networkPolicyFindAvailablePort = (_start, _host, tries) => tries;
+      assert.equal(await api.findAvailablePort(1, 'localhost'), 100);
+      assert.equal(await api.findAvailablePort(1, 'localhost', { maxTries: null }), null);
+      native.networkPolicyFindAvailablePort = () => { throw sentinel; };
+      await assert.rejects(api.selectListenPort({ development: true, port: 1, host: 'localhost' }), error => error === sentinel);
+    }
+  } finally { native.networkPolicyFindAvailablePort = original; }
+});
+
+test('real port binding failure remains a rejection and an ephemeral probe releases its socket', async () => {
+  const net = require('node:net');
+  const server = net.createServer();
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  try {
+    for (const api of [networkPolicyApi(), frozenNetworkPolicy]) {
+      const port = server.address().port;
+      const pending = api.findAvailablePort(port, '127.0.0.1', { maxTries: 1 });
+      assert.ok(pending instanceof Promise);
+      await assert.rejects(pending, { message: `No available port from ${port} on 127.0.0.1` });
+      assert.equal(await api.findAvailablePort(0, '127.0.0.1', { maxTries: 1 }), 0);
+      await assert.rejects(api.findAvailablePort(Symbol('port'), '127.0.0.1'), /f64/);
+    }
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
 test('auth cookie is timing-safe, versioned, and expires server-side', () => {

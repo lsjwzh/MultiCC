@@ -76,7 +76,7 @@ function runAtBoot(env = process.env) {
   const file = require('../paths').createPaths({ dataDir: env.MULTICC_DATA_DIR }).taskShellDbFile;
   return runTaskStoreMigrationGate({ file, addon, openPage: () => {
     try {
-      const { port, host } = require('../network-policy').resolveNetworkPolicy(env);
+      const { port, host } = require('../native/runtime').getNetworkPolicy().resolveNetworkPolicy(env);
       const gatewayChild = require('../gateway-child');
       if (gatewayChild.isGatewayChild(env)) {
         // Behind the front door the public port is owned by Rust; the page must

@@ -1,6 +1,6 @@
 //! Bind address / port policy — the single implementation behind both the
-//! Rust front door (`multicc-gateway`) and `src/network-policy.js`, which is
-//! now only a bridge onto these functions.
+//! Rust front door (`multicc-gateway`) and the native host facade in
+//! `native/addon/src/network_policy.rs`.
 //!
 //! The JavaScript original read `process.env` and relied on JS coercions:
 //! `String(value || '')`, `Number.parseInt(...)`, truthiness, `===`. Those
