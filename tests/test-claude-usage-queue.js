@@ -156,3 +156,29 @@ test('with no fetcher wired the queue reports the cache instead of hanging', asy
     assert.equal(await Queue.enqueueClaudeUsage(Queue.DEFAULT_KEY), null);
   } finally { Queue.resetClaudeUsageQueue(); }
 });
+
+test('01e931f1 differential: per-key promise identity, retries, mutable entry and 51-key eviction', async () => {
+  const before = require('./helpers/frozen-state-leaves/claude-usage-queue');
+  async function trace(q) {
+    q.resetClaudeUsageQueue();
+    const calls = [], result = [];
+    let time = 0, complete, fail = false;
+    q.configureClaudeUsageQueue({ now: () => time,
+      fetchUsage(args) { calls.push(args); if (fail) throw Error('offline'); return new Promise(resolve => { complete = resolve; }); },
+    });
+    const first = q.enqueueClaudeUsage('claude:A');
+    result.push(q.enqueueClaudeUsage('claude:A') === first);
+    complete({ status: 'ok' });
+    const entry = await first;
+    result.push(entry === q.readClaudeUsage('claude:A'));
+    time = 59999; result.push(entry === await q.enqueueClaudeUsage('claude:A'));
+    time++; fail = true;
+    result.push(await q.enqueueClaudeUsage('claude:A'));
+    for (let i = 0; i < 51; i++) await q.enqueueClaudeUsage('claude:' + i);
+    result.push(q.readClaudeUsage('claude:0'), q.readClaudeUsage('claude:1'), q.readClaudeUsage('claude:A'));
+    try { q.enqueueClaudeUsage(99); } catch (e) { result.push([e.name, e.message]); }
+    q.resetClaudeUsageQueue();
+    return { calls, result };
+  }
+  assert.deepEqual(await trace(Queue), await trace(before));
+});

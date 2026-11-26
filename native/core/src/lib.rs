@@ -238,3 +238,6 @@ pub mod usage_limit_poll;
 pub mod workspace_queues;
 pub mod workspace_sockets;
 pub mod workspace_state;
+
+pub mod memory_distill;
+pub mod chat_error_history;

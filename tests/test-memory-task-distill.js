@@ -205,3 +205,30 @@ test('evidence published hook fires with the correlated task binding', async t =
   assert.equal(events[0].operationId, 'op_1');
   assert.equal(events[0].baseRef, 'refs/heads/main');
 });
+
+test('01e931f1 differential: UTF-16 cleaning, bigram similarity, markdown boundaries and coercions', () => {
+  const before = require('./helpers/frozen-state-leaves/task-distill');
+  const after = require('../src/memory/task-distill');
+  for (const raw of [undefined, null, false, '无', '- · • * 消息记录已更新成功', '同词【 标签 】 测试',
+    '候选内容包含：\n换行\ufeff文本', 'a'.repeat(238) + '😀很多内容', 'x\udfff😀'.repeat(92), '\u0085任务的持久记忆文本']) {
+    assert.equal(after.cleanMemoryCandidate(raw), before.cleanMemoryCandidate(raw));
+  }
+  const rows = ['', ' 前言  ', '## 自动蒸馏\n- apple pie\n- orange', ' # 任务记忆\n\n## 自动蒸馏\n\n- 旧内容\n\n## 后续\n 人工内容 ',
+    '## 自动蒸馏\n## 自动蒸馏\n- abcdef\n###\u00a0tail\n- 甲'];
+  for (const content of rows) for (const maxAutoLines of [2, 0, -1, 1.5, NaN, Infinity, '2']) {
+    for (const candidate of ['apple pies', '🍒\ud800', 'abcdef', '完全独立的条目']) {
+      assert.deepEqual(after.mergeAutoSection(content, candidate, { maxAutoLines }),
+        before.mergeAutoSection(content, candidate, { maxAutoLines }));
+    }
+  }
+  for (const a of ['😀', 'ababa', '', '\u0085abc', '候选内容包含多个汉字']) {
+    for (const b of ['\ud83d', 'babab', 'abc', '候选内容包含多个文字']) assert.equal(after.similar(a, b), before.similar(a, b));
+  }
+  function conversions(api) {
+    const calls = [];
+    const candidate = { toString() { calls.push('text'); return 'item' + calls.length; } };
+    const maxAutoLines = { valueOf() { calls.push('limit'); return 1; } };
+    return [api.mergeAutoSection('## 自动蒸馏\n- a\n- b', candidate, { maxAutoLines }), calls];
+  }
+  assert.deepEqual(conversions(after), conversions(before));
+});
