@@ -145,6 +145,7 @@ pub mod task_shell;
 pub mod task_short_code;
 pub mod task_store;
 pub mod terminal_target;
+pub mod token_estimate;
 pub mod transcript_prune;
 pub mod turn_end_evidence;
 pub mod turn_event_replay;

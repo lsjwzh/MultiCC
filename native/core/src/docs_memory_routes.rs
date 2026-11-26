@@ -39,7 +39,7 @@
 use serde_json::{Map, Value};
 
 use crate::js::serde::{js_string, js_to_number, truthy, value_or_empty};
-use crate::js::string::{js_trim, utf16_len, utf16_prefix};
+use crate::js::string::{js_trim, utf16_prefix};
 
 /// `MAX_ENTRIES` in `src/docs-registry.js`.
 pub const MAX_ENTRIES: usize = 500;
@@ -580,26 +580,7 @@ pub fn iso_time(now_ms: i64) -> String {
 
 /// `estimateMemTokens` in `src/routes/memory-browser.js`.
 pub fn estimate_mem_tokens(text: &str) -> i64 {
-    if text.is_empty() {
-        return 0;
-    }
-    let mut cjk = 0i64;
-    for ch in text.chars() {
-        let code = ch as u32;
-        if (0x3400..=0x4DBF).contains(&code)
-            || (0x4E00..=0x9FFF).contains(&code)
-            || (0xF900..=0xFAFF).contains(&code)
-            || (0x3040..=0x309F).contains(&code)
-            || (0x30A0..=0x30FF).contains(&code)
-            || (0xAC00..=0xD7AF).contains(&code)
-        {
-            cjk += 1;
-        }
-    }
-    let total = utf16_len(text) as i64;
-    let other = total - cjk;
-    let value = (cjk as f64) * 1.5 + (other as f64) / 4.0;
-    (value.round() as i64).max(1)
+    crate::token_estimate::estimate(text.encode_utf16()) as i64
 }
 
 /// `resolveMemoryFilePath`'s lexical half: the shape `rel` must have before any

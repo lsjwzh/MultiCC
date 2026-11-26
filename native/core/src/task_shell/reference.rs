@@ -360,19 +360,7 @@ pub fn render(snapshots: &V) -> String {
 }
 
 pub fn estimate(text: &JsString) -> u64 {
-    let cjk = text
-        .as_units()
-        .iter()
-        .filter(|&&unit| {
-            matches!(unit, 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff |
-            0x3040..=0x309f | 0x30a0..=0x30ff | 0xac00..=0xd7af)
-        })
-        .count();
-    if text.is_empty() {
-        0
-    } else {
-        ((cjk as f64 * 1.5 + (text.len() - cjk) as f64 / 4.0).round() as u64).max(1)
-    }
+    crate::token_estimate::estimate(text.as_units().iter().copied())
 }
 
 pub fn request(op: &str, raw: &str) -> Result<String, String> {
