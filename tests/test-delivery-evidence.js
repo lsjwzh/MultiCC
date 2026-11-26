@@ -305,3 +305,136 @@ test('a separation barrier still records when the turn-end observation never pro
   assert.equal(barrier.writersStopped, true);
 });
 
+
+const legacyDeliveryView = require('./helpers/legacy-delivery-view').deliveryView;
+
+test('delivery projection matches the frozen ec1dcd19 view across evidence and separation states', async t => {
+  const r = { id: 'turn', taskId: 'task', outcome: 'succeeded', receiptId: 'receipt',
+    startCodeRevision: 'a', endCodeRevision: 'b', pendingInput: false };
+  const b = { id: 'barrier', turnId: 'turn', writersStopped: true, codeRevision: 'b' };
+  const s = { id: 'sep', state: 'separated', taskId: 'target', result: { moved: true } };
+  const app = { id: 'applied', separationId: 'sep', targetTaskId: 'target' };
+  const candidate = { state: 'stale', detail: { source: 'legacy' } };
+  let count = 0;
+  for (const run of [null, r, { ...r, pendingInput: true }, { ...r, outcome: 'failed' },
+    { ...r, endCodeRevision: 'a', id: 0 }, { ...r, startCodeRevision: null }, { ...r, endCodeRevision: '' }]) {
+    for (const barrier of [undefined, b, { ...b, writersStopped: 1 }, { ...b, codeRevision: 'a' }, { ...b, turnId: 'old' }]) {
+      for (const integration of [null, { id: 'merge' }]) {
+        for (const effectValid of [false, true, 1]) {
+          for (const separation of [null, s, { ...s, state: 'kept' }, { ...s, state: 'pending' },
+            { ...s, deliveryKind: 'workspace_snapshot' }, { ...s, lastError: { code: 'source_writer_barrier_required' } }]) {
+            for (const application of [null, app]) {
+              for (const c of [undefined, candidate]) {
+                const params = { sessionId: 's', taskId: 'task', candidate: c, separation, cwd: '.',
+                  admission: { deliveryEvidence: () => ({ run, barrier, integration, application }), verifyBaseline: () => ({ effectValid }) } };
+                const expected = await legacyDeliveryView(params);
+                const actual = await deliveryView(params);
+                assert.deepEqual(actual, expected);
+                if (c) {
+                  assert.equal(actual.candidate.blockers, actual.blockers);
+                  assert.equal(actual.candidate.detail, c.detail);
+                }
+                if (separation) assert.equal(actual.separation.result, separation.result);
+                count++;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  t.diagnostic(`${count} delivery projections matched`);
+});
+
+test('view preserves evidence getter order, shallow spread traps and rejection identity', async t => {
+  const failure = Object.freeze({ getter: 'failed' });
+  async function observe(view, mask, failAt) {
+    const trace = [];
+    function event(label) {
+      trace.push(label);
+      if (trace.length === failAt) throw failure;
+    }
+    function watch(name, value) {
+      return new Proxy(value, {
+        get(target, key) { event(name + '.' + String(key)); return target[key]; },
+        ownKeys(target) { event(name + ':keys'); return Reflect.ownKeys(target); },
+        getOwnPropertyDescriptor(target, key) {
+          event(name + ':descriptor:' + String(key)); return Reflect.getOwnPropertyDescriptor(target, key);
+        },
+      });
+    }
+    const evidence = watch('evidence', {
+      run: watch('run', { id: 'r', taskId: 't', outcome: 'succeeded', startCodeRevision: 'a', endCodeRevision: 'a' }),
+      barrier: watch('barrier', { turnId: 'r', writersStopped: true, codeRevision: 'a' }),
+      application: watch('application', { id: 'app', separationId: 'sep', targetTaskId: 'target' }),
+      integration: watch('integration', { id: 'integration' }),
+    });
+    const candidate = mask & 1 ? watch('candidate', { state: 'stale', extra: true, [Symbol.for('extra')]: 3 }) : null;
+    const separation = mask & 2 ? watch('separation', { id: 'sep', state: 'separated', taskId: 'target',
+      deliveryKind: mask & 4 ? 'workspace_snapshot' : 'delivery', lastError: watch('lastError', { code: 'expired' }) }) : null;
+    const admission = { deliveryEvidence: () => evidence, verifyBaseline: () => watch('baseline', { effectValid: true }) };
+    let error;
+    try { await view({ sessionId: 's', taskId: 't', cwd: '.', admission, candidate, separation }); }
+    catch (err) { error = err; }
+    // Promise assimilation reads .then inside the baseline verification try/catch.
+    const propagated = failAt && trace[failAt - 1] !== 'baseline.then';
+    assert.equal(error, propagated ? failure : undefined);
+    return trace;
+  }
+  let count = 0;
+  for (const mask of [0, 1, 2, 7]) {
+    const baseline = await observe(legacyDeliveryView, mask, 0);
+    assert.deepEqual(await observe(deliveryView, mask, 0), baseline);
+    for (let i = 1; i <= baseline.length; i++) {
+      assert.deepEqual(await observe(deliveryView, mask, i), await observe(legacyDeliveryView, mask, i));
+      count++;
+    }
+  }
+  t.diagnostic(`${count} getter/trap failure positions matched`);
+});
+
+test('delivery baseline verification keeps its await boundary and failure scope', async () => {
+  const failure = new Error('baseline unavailable');
+  async function timeline(view, verify) {
+    const trace = [];
+    const run = { outcome: 'failed', endCodeRevision: 'x' };
+    const integration = {};
+    const admission = {
+      deliveryEvidence(sessionId, turnId) { trace.push(['evidence', sessionId, turnId]); return { run, integration }; },
+      verifyBaseline(record, cwd) { assert.equal(record, integration); trace.push(['verify', cwd]); return verify(run); },
+    };
+    const promise = view({ sessionId: 's', candidate: { turnId: 'candidate' }, separation: { sessionId: 'sep', turnId: 'turn' }, admission, cwd: '.' });
+    trace.push('returned'); queueMicrotask(() => trace.push('microtask'));
+    const result = await promise.then(r => { trace.push('resolved'); return r; });
+    return { trace, result };
+  }
+  for (const verify of [() => { throw failure; }, () => Promise.reject(failure), () => null,
+    run => ({ then(resolve) { run.outcome = 'succeeded'; resolve({ effectValid: true }); } })]) {
+    assert.deepEqual(await timeline(deliveryView, verify), await timeline(legacyDeliveryView, verify));
+  }
+  for (const view of [deliveryView, legacyDeliveryView]) {
+    await assert.rejects(view({ admission: { deliveryEvidence() { throw failure; } } }), err => err === failure);
+    let calls = 0;
+    await view({ admission: { deliveryEvidence: () => ({ integration: null }), verifyBaseline() { calls++; } }, cwd: '.' });
+    await view({ admission: { deliveryEvidence: () => ({ integration: {} }), verifyBaseline() { calls++; } }, cwd: '' });
+    assert.equal(calls, 0);
+  }
+});
+
+test('delivery view keeps falsey evidence IDs, live error values and UTF-16 truncation', async () => {
+  const summary = { code: { toString() { return 'x'.repeat(99) + '😀'; } } };
+  for (const view of [deliveryView, legacyDeliveryView]) {
+    let stateReads = 0;
+    const separation = { id: 'sep', taskId: 't', get state() { return ++stateReads === 1 ? 'separated' : 'kept'; }, lastError: summary };
+    const result = await view({ separation, admission: { deliveryEvidence: () => ({
+      run: { id: 0, outcome: 'succeeded', startCodeRevision: 'a', endCodeRevision: 'a' },
+      application: { separationId: 'sep', targetTaskId: 't' },
+    }) } });
+    assert.equal(result.mode, 'kept');
+    assert.equal(result.steps[1].evidenceId, 0);
+    assert.equal(result.steps[3].status, 'done');
+    assert.ok(result.application);
+    assert.equal(result.blockers.at(-1), summary.code);
+    assert.equal(result.separation.lastError.code, 'x'.repeat(99) + '\ud83d');
+  }
+});
