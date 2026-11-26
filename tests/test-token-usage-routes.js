@@ -194,6 +194,24 @@ test('frozen attempt attribution wins over a changed session provider in both le
   }
 });
 
+test('ledger bucket updates preserve unknown session and provider fields', () => {
+  const root = tempDir();
+  const harness = createHarness(root);
+  try {
+    fs.writeFileSync(harness.tokenUsageFile, JSON.stringify({ s: {
+      extra: ['legacy'], inputTokens: '3', byProvider: { p: { label: 'existing', outputTokens: '5' } },
+    } }));
+    assert.equal(harness.runtime.accumulateTokenUsage('s', { input_tokens: 2, output_tokens: 1 }, { providerId: 'p' }), true);
+    const row = readJson(harness.tokenUsageFile).s;
+    assert.deepEqual(row.extra, ['legacy']);
+    assert.equal(row.inputTokens, 5);
+    assert.equal(row.byProvider.p.outputTokens, 6);
+    assert.equal(row.byProvider.p.label, 'existing');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('numeric boundaries convert safe digit strings and reject corrupt or implausible counts', () => {
   const root = tempDir();
   try {

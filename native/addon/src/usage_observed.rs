@@ -112,3 +112,33 @@ pub fn codex_cumulative_usage(env: Env, value: Unknown<'_>) -> Result<CodexCumul
         reasoning: count(c"reasoning_output_tokens")?,
     })
 }
+
+/// Normalized numeric columns shared by session, provider and daily ledgers.
+/// Callers keep unknown columns and the commit sequence at the storage edge.
+#[napi(object)]
+pub struct UsageLedgerBucket {
+    pub input_tokens: f64,
+    pub consumed_input_tokens: f64,
+    pub fresh_input_tokens: f64,
+    pub cache_read_tokens: f64,
+    pub cache_write_tokens: f64,
+    pub breakdown_known: bool,
+    pub output_tokens: f64,
+    pub turn_count: f64,
+}
+
+#[napi]
+pub fn advance_usage_bucket(
+    mut bucket: UsageLedgerBucket,
+    parts: UsageTokenComponents,
+) -> UsageLedgerBucket {
+    bucket.input_tokens += parts.consumed_input_tokens;
+    bucket.consumed_input_tokens = bucket.input_tokens;
+    bucket.fresh_input_tokens += parts.fresh_input_tokens;
+    bucket.cache_read_tokens += parts.cache_read_tokens;
+    bucket.cache_write_tokens += parts.cache_write_tokens;
+    bucket.breakdown_known = true;
+    bucket.output_tokens += parts.output_tokens;
+    bucket.turn_count += 1.0;
+    bucket
+}
