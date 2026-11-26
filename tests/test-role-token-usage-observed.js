@@ -72,3 +72,51 @@ test('main usage keeps its legacy total and an additive exact provider split', (
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a failed role ledger write preserves the snapshot and passes the original error to the host', () => {
+  const error = new Error('disk full');
+  const errors = [];
+  const tracker = createRoleTokenTracker({
+    filePath: 'ledger.json',
+    fsImpl: {
+      readFileSync: () => '{}', mkdirSync() {}, unlinkSync() {},
+      writeFileSync() { throw error; },
+    },
+    onError: err => errors.push(err),
+  });
+  assert.equal(tracker.accumulateObserved(observed()), true);
+  assert.deepEqual(tracker.snapshot('s1').sub, { inputTokens: 10, outputTokens: 4, cacheWrite: 2, cacheRead: 3 });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0], error);
+  tracker.reset('s1');
+  assert.equal(tracker.snapshot('s1'), null);
+  assert.equal(tracker.accumulateObserved(observed()), false);
+});
+
+test('an error callback that throws leaves the event eligible for retry', () => {
+  const error = new Error('write failed');
+  let failing = true;
+  const tracker = createRoleTokenTracker({
+    filePath: 'ledger.json',
+    fsImpl: { readFileSync: () => '{}', mkdirSync() {}, unlinkSync() {}, renameSync() {},
+      writeFileSync() { if (failing) throw error; } },
+    onError: err => { throw err; },
+  });
+  assert.throws(() => tracker.accumulateObserved(observed()), err => err === error);
+  failing = false;
+  assert.equal(tracker.accumulateObserved(observed()), true);
+  assert.equal(tracker.snapshot('s1').sub.inputTokens, 20);
+  assert.equal(tracker.accumulateObserved(observed()), false);
+});
+
+test('role tracker keeps the newest 50000 distinct event IDs in insertion order', () => {
+  const { RustRoleTokenTracker } = require('../src/native/binding').getNative();
+  const anchor = {};
+  const owner = new RustRoleTokenTracker(anchor);
+  for (let i = 0; i < 50_000; i++) owner.remember(String(i));
+  owner.remember('0');
+  owner.remember('50000');
+  assert.equal(owner.seen('0'), false);
+  assert.equal(owner.seen('1'), true);
+  assert.equal(owner.seen('50000'), true);
+});

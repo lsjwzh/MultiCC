@@ -3,24 +3,16 @@
 const fs = require('fs');
 const path = require('path');
 const stateStore = require('./state/store');
+const {
+  RustRoleTokenTracker, roleLedgerUpdate, emptyRoleTokenBucket: emptyBucket,
+  roleBucketHasUsage, accumulateRoleBucket,
+} = require('./native/binding').getNative();
 const { validateUsageObserved } = require('./usage-observed');
 
-function emptyBucket() {
-  return { inputTokens: 0, outputTokens: 0, cacheWrite: 0, cacheRead: 0 };
-}
-
-function hasUsage(bucket) {
-  return !!bucket && (
-    bucket.inputTokens || bucket.outputTokens || bucket.cacheWrite || bucket.cacheRead
-  ) > 0;
-}
-
-function addUsage(bucket, usage) {
-  bucket.inputTokens += usage.inputTokens || 0;
-  bucket.outputTokens += usage.outputTokens || 0;
-  bucket.cacheWrite += usage.cacheWrite || 0;
-  bucket.cacheRead += usage.cacheRead || 0;
-}
+// Use V8's '+' coercion for legacy strings and caller-owned objects.
+const jsAdd = (left, right) => left + right;
+function hasUsage(bucket) { return roleBucketHasUsage(bucket); }
+function addUsage(bucket, usage) { accumulateRoleBucket(bucket, usage, jsAdd); }
 
 function readLedger(filePath, fsImpl = fs) {
   try {
@@ -77,115 +69,36 @@ function createRoleTokenTracker({
   onError = (error) => console.error(`[multicc] role token tracker: ${error.message}`),
 } = {}) {
   if (!filePath) throw new Error('role token tracker requires filePath');
-  const runtime = new Map();
-  const observedEventIds = new Set();
+  // The native owner retains the counters. The anchor keeps host references
+  // GC-visible, including object-valued keys and legacy JS addition.
+  const anchor = { add: jsAdd, persist };
+  const owner = new RustRoleTokenTracker(anchor);
+  Object.defineProperty(owner, Symbol('role token host values'), { value: anchor });
 
-  function accumulate(info) {
-    if (!info || !info.sessionId || !info.usage || !hasUsage(info.usage)) return false;
-    const role = info.role === 'sub' ? 'sub' : (info.role === 'aux' ? 'aux' : 'main');
-    const usage = info.usage;
-
-    // Runtime snapshots drive a chat session's 主/辅 display. Aux has no chat
-    // turn and belongs only in the persistent ledger.
-    if (role !== 'aux') {
-      let turn = runtime.get(info.sessionId);
-      if (!turn) {
-        turn = {
-          main: emptyBucket(), sub: emptyBucket(),
-          byProviderMain: {}, byProviderSub: {},
-        };
-        runtime.set(info.sessionId, turn);
-      }
-      addUsage(turn[role], usage);
-      if (role === 'main' || role === 'sub') {
-        const providerId = info.providerId || '_unknown_';
-        const buckets = role === 'main' ? turn.byProviderMain : turn.byProviderSub;
-        const provider = buckets[providerId] || (buckets[providerId] = {
-          name: info.providerName || providerId,
-          model: info.model || '',
-          ...emptyBucket(),
-        });
-        addUsage(provider, usage);
-        if (info.providerName) provider.name = info.providerName;
-        if (info.model) provider.model = info.model;
-      }
-    }
-
+  function persist(info, role, usage) {
     try {
       const ledger = readLedger(filePath, fsImpl);
-      const dayKey = localDayKey(now());
-      const day = ledger[dayKey] || (ledger[dayKey] = {});
-      const roleLedger = day[role] || (day[role] = {});
-      const providerId = info.providerId || '_default_';
-      const provider = roleLedger[providerId] || (roleLedger[providerId] = {
-        name: info.providerName || info.providerId || '',
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheWrite: 0,
-        cacheRead: 0,
-        turns: 0,
-      });
-      addUsage(provider, usage);
-      provider.turns += 1;
-      if (info.providerName) provider.name = info.providerName;
+      roleLedgerUpdate(ledger, localDayKey(now()), role, info, usage, anchor.add);
       writeLedger(filePath, ledger, fsImpl);
     } catch (error) {
       onError(error);
     }
-    return true;
-  }
-
-  function snapshot(sessionId) {
-    const turn = runtime.get(sessionId);
-    if (!turn) return null;
-    const sub = hasUsage(turn.sub) ? { ...turn.sub } : null;
-    return {
-      main: { ...turn.main },
-      mainByProvider: Object.entries(turn.byProviderMain || {}).map(([providerId, bucket]) => ({
-        providerId,
-        name: bucket.name,
-        model: bucket.model,
-        inputTokens: bucket.inputTokens,
-        outputTokens: bucket.outputTokens,
-        cacheWrite: bucket.cacheWrite,
-        cacheRead: bucket.cacheRead,
-      })),
-      sub,
-      subByProvider: sub
-        ? Object.entries(turn.byProviderSub).map(([providerId, bucket]) => ({
-          providerId,
-          name: bucket.name,
-          model: bucket.model,
-          inputTokens: bucket.inputTokens,
-          outputTokens: bucket.outputTokens,
-          cacheWrite: bucket.cacheWrite,
-          cacheRead: bucket.cacheRead,
-        }))
-        : [],
-    };
   }
 
   function accumulateObserved(value) {
     const event = validateUsageObserved(value);
-    if (observedEventIds.has(event.eventId)) return false;
+    if (owner.seen(event.eventId)) return false;
     const info = usageObservedToRoleTokenInfo(event);
-    if (!info || !accumulate(info)) return false;
-    observedEventIds.add(event.eventId);
-    if (observedEventIds.size > 50_000) {
-      observedEventIds.delete(observedEventIds.values().next().value);
-    }
+    if (!info || !owner.accumulate(info)) return false;
+    owner.remember(event.eventId);
     return true;
   }
 
-  function reset(sessionId) {
-    runtime.delete(sessionId);
-  }
-
   return {
-    accumulate,
+    accumulate: info => owner.accumulate(info),
     accumulateObserved,
-    snapshot,
-    reset,
+    snapshot: sessionId => owner.snapshot(sessionId),
+    reset: sessionId => owner.reset(sessionId),
     readLedger: () => readLedger(filePath, fsImpl),
   };
 }
