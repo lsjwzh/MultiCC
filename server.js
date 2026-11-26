@@ -1914,7 +1914,6 @@ function terminalBroadcast(sessionId, payload) {
   broadcastTo(session.clients, payload);
 }
 
-// ── AuxQueue + Goal precheck ────────────────────────────────────────────────
 // Queue, provider/model configuration and goal-quality routes share one
 // lifecycle. The host supplies ports; this subsystem owns its mutable config.
 const {
@@ -2098,7 +2097,6 @@ const skillSyncRuntime = createSkillSyncRuntime({
 });
 // /api/skill-sync/* 已由 Rust 前门独占；运行时在这里交给 host-ops 宿主端口。
 
-// ── Per-session providers (backed by cc-switch) ──────────────────────────────
 const providerRoutes = createProviderRoutes({
   fs,
   providerDefaultsFile: MULTICC_PATHS.providerDefaultsFile,
@@ -2231,7 +2229,6 @@ function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId);
 function snapshotTaskHistory(sessionId, taskId, activeTurnId = null) {
   return chatHistoryService.taskContextSnapshot(sessionId, taskId, activeTurnId);
 }
-// Read-only history view.
 function viewChatHistory(sessionId) { return chatHistoryRuntime.viewHistory(sessionId); }
 function chatLastActivity(sessionId, activeChat) {
   return chatHistoryRuntime.lastActivity(sessionId, activeChat);
