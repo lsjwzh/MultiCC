@@ -115,6 +115,9 @@ pub fn peek_claude_token(home: &Path, id: &str, now_ms: i64) -> Option<String> {
     usable["token"].as_str().map(str::to_string)
 }
 
+pub const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+pub const CODEX_USAGE_ORIGINATOR: &str = "codex_cli_rs";
+
 /// A peek is allowed to hand out a token this close to expiry.
 pub const PEEK_MARGIN_MS: i64 = 60_000;
 
@@ -149,9 +152,9 @@ pub fn plan(vendor: &str, auth_file: &Path, token: &str) -> Result<Value, String
                 return Ok(json!({"result":{"status":"no_auth"}}));
             }
             headers["ChatGPT-Account-Id"] = auth["accountId"].clone();
-            headers["originator"] = json!("codex_cli_rs");
+            headers["originator"] = json!(CODEX_USAGE_ORIGINATOR);
             (
-                "https://chatgpt.com/backend-api/wham/usage",
+                CODEX_USAGE_URL,
                 auth["accessToken"].as_str().unwrap_or("").to_string(),
                 auth["subscription"].clone(),
             )

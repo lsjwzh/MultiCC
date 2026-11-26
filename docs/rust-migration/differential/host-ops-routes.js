@@ -252,7 +252,8 @@ function mountOracle(app, { repo, work }) {
 
   const { createWorld, mountFrozen, FROZEN_NOW } = require(path.join(repo, 'tests/helpers/legacy-host-ops-routes/world'));
   const frozen = require(path.join(repo, 'tests/helpers/legacy-host-ops-routes'));
-  world = createWorld({ rootDir });
+  const { DomainError } = require(path.join(repo, 'tests/helpers/frozen-file-batch14/domain-error'));
+  world = createWorld({ rootDir, DomainError });
 
   // The locality fact the front door computes on the real client address and
   // passes to the host port. macos-privacy reads the socket directly, so the
@@ -305,7 +306,8 @@ const { createWorld, FROZEN_NOW } = require(path.join(REPO, 'tests/helpers/legac
 Date.now = () => FROZEN_NOW;
 
 const express = require(require.resolve('express', { paths: [REPO] }));
-const world = createWorld({ rootDir: process.env.HOST_OPS_ROOT });
+const { DomainError } = require(path.join(REPO, 'src/http-errors'));
+const world = createWorld({ rootDir: process.env.HOST_OPS_ROOT, DomainError });
 
 // Both detached launchers are fakes; the log is written so this process can
 // prove it scheduled each of them exactly once without starting anything.

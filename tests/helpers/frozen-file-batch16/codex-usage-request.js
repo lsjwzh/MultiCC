@@ -2,7 +2,7 @@
 
 const os = require('node:os');
 const path = require('node:path');
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../../../src/network/outbound');
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 
@@ -29,7 +29,7 @@ function requestCodexUsage(auth, { fetch = outboundFetch, signal } = {}) {
 // is picked up automatically. Returns null on any problem → the poll shows
 // nothing rather than fabricating.
 function readCodexAuth(authFile = path.join(os.homedir(), '.codex', 'auth.json')) {
-  return require('../native/runtime').providerCredentials.credential({ operation: 'codexAuth',
+  return require('../../../src/native/runtime').providerCredentials.credential({ operation: 'codexAuth',
     file: authFile || path.join(os.homedir(), '.codex', 'auth.json') });
 }
 

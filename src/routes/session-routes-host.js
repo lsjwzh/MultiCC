@@ -14,7 +14,7 @@
 //   POST                 /api/agy/accounts/:id/login-terminal     (agy-accounts.js)
 //   PUT                  /api/directories/:id/role-workers/:presetId
 //   POST                 /api/directories/:id/sessions
-//   POST                 /api/sessions/:id/notes      (session-meta.js)
+//   POST                 /api/sessions/:id/notes
 //   GET|HEAD             /api/sessions/:id/liveness
 //   GET|HEAD             /api/sessions/:id/notes
 //   PATCH                /api/sessions/:id            (session-profile.js)
@@ -37,6 +37,30 @@
 //
 // 这不是一条公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest`
 // 拒绝任何转发自真实远端客户端的请求。
+
+const crypto = require('node:crypto');
+const { getNative } = require('../native/runtime');
+
+function createSessionMetaRuntime(rawDeps) {
+  const { persistedSessions, asyncHandler, appendEvent, workspaceBroadcast, saveNotes,
+    pendingNotesFor, getNotes, getLivenessRuntime } = rawDeps || {};
+  const ports = { persistedSessions, asyncHandler, appendEvent, workspaceBroadcast, saveNotes,
+    pendingNotesFor, getNotes, getLivenessRuntime, crypto };
+  const native = getNative();
+  native.sessionMetaValidate(ports);
+  return {
+    mountRoutes(app) {
+      app.post('/api/sessions/:id/notes', (req, res) => native.sessionMetaPostNote(ports, req, res));
+      app.get('/api/sessions/:id/liveness', asyncHandler(async (req, res) => {
+        const result = native.sessionMetaAssessment(ports, req, res);
+        if (!result.found) return result.value;
+        const verdict = await result.value;
+        res.json(verdict);
+      }));
+      app.get('/api/sessions/:id/notes', (req, res) => native.sessionMetaListNotes(ports, req, res));
+    },
+  };
+}
 
 const HOST_PATH = '/api/__host/session-routes';
 
@@ -205,4 +229,4 @@ function createSessionRoutesHost() {
   return { app, mountRoute };
 }
 
-module.exports = { HOST_PATH, OPS, createSessionRoutesHost };
+module.exports = { HOST_PATH, OPS, createSessionRoutesHost, createSessionMetaRuntime };

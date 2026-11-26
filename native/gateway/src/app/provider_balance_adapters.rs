@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use multicc_core::account_subscription::{CODEX_USAGE_ORIGINATOR, CODEX_USAGE_URL};
 use multicc_core::js::serde::{js_string, js_to_number, truthy};
 use multicc_core::public_safety::sanitize_public_text;
 use reqwest::{Method, Url};
@@ -204,18 +205,10 @@ pub async fn poll(
                 let mut headers = bearer(text(&auth, "accessToken"));
                 headers.extend([
                     ("ChatGPT-Account-Id".into(), text(&auth, "accountId").into()),
-                    ("originator".into(), "codex_cli_rs".into()),
+                    ("originator".into(), CODEX_USAGE_ORIGINATOR.into()),
                     ("Accept".into(), "application/json".into()),
                 ]);
-                match read_json(
-                    app,
-                    "https://chatgpt.com/backend-api/wham/usage",
-                    Method::GET,
-                    headers,
-                    TIMEOUT_MS,
-                )
-                .await
-                {
+                match read_json(app, CODEX_USAGE_URL, Method::GET, headers, TIMEOUT_MS).await {
                     Ok(body) => return Ok(codex_dto(&body, now_ms)),
                     Err(error) => {
                         if attempt != 0 || !matches!(error.status, Some(401 | 403)) {

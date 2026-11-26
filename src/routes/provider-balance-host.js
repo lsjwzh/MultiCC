@@ -11,7 +11,7 @@ const mounts = new WeakMap();
 
 async function credentials(target) {
   if (target.strategy === 'codex-oauth-usage') {
-    return require('../quota/codex-usage-request').readCodexAuth(target.authFile);
+    return require('../native/runtime').readCodexAuth(target.authFile);
   }
   if (target.strategy !== 'claude-oauth-usage') return null;
   if (target.officialAccountId) {

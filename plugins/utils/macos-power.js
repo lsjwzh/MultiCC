@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createPowerd } = require('../../src/powerd');
-const { DomainError } = require('../../src/http/domain-error');
+const { DomainError } = require('../../src/http-errors');
 const powerError = (code, message) => new DomainError('conflict', message, { code });
 
 const ELEVATE_TIMEOUT_MS = 120000;

@@ -5988,6 +5988,15 @@
       ]
     },
     {
+      "path": "tests/test-session-meta-routes.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-session-model-terminal-config.js",
       "tier": "core",
       "lane": "deterministic",

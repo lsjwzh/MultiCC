@@ -1,4 +1,12 @@
-use napi::Result;
+use crate::{
+    js_iteration::read,
+    route_response::{fallback, fields, text, L, V},
+};
+use multicc_core::{
+    account_subscription::{CODEX_USAGE_ORIGINATOR, CODEX_USAGE_URL},
+    js::JsString,
+};
+use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 #[napi]
 pub fn provider_store(file: String, input: String) -> Result<String> {
@@ -13,6 +21,47 @@ pub fn provider_credential(input: String) -> Result<String> {
         .map(|v| v.to_string())
         .map_err(napi::Error::from_reason)
 }
+
+/// Build the quota request without serializing the live signal or the fetch result.
+#[napi]
+pub fn request_codex_usage(
+    env: Env,
+    auth: Unknown<'_>,
+    fetch: Unknown<'_>,
+    signal: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let auth = L::new(&env, auth);
+    let token = read(auth, c"accessToken")?.coerce_string()?;
+    let bearer = JsString::concat(&[&JsString::from("Bearer "), &token]);
+    let headers = fields(
+        auth,
+        &[
+            ("Authorization", auth.from_value(&V::String(bearer))?),
+            (
+                "ChatGPT-Account-Id",
+                fallback(read(auth, c"accountId")?, "".into())?,
+            ),
+            ("originator", text(auth, CODEX_USAGE_ORIGINATOR)?),
+            ("Accept", text(auth, "application/json")?),
+        ],
+    )?;
+    let init = fields(
+        auth,
+        &[
+            ("method", text(auth, "GET")?),
+            ("headers", headers),
+            ("signal", L::new(&env, signal)),
+        ],
+    )?;
+    let fetch = L::new(&env, fetch);
+    if fetch.kind()? != sys::ValueType::napi_function {
+        return Err(fetch.type_error("fetch is not a function"));
+    }
+    Ok(fetch
+        .call_plain(&[text(auth, CODEX_USAGE_URL)?, init])?
+        .raw())
+}
+
 #[napi]
 pub async fn read_provider_cli_credential(input: String) -> Result<String> {
     multicc_cpr::provider_host::read_cli(&input)

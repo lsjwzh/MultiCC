@@ -318,6 +318,7 @@ pub mod schedule_insert_queued_live;
 pub mod schedule_lifecycle_live;
 pub mod schedule_note_queued_live;
 pub mod schedule_settle_live;
+mod session_meta_routes;
 mod session_records;
 mod session_state;
 mod session_state_service;

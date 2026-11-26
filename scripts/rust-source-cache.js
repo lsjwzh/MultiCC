@@ -118,7 +118,7 @@ function probeAddon(file, node = process.execPath) {
     || ['unattendedTag','unattendedNormalizeConfig','unattendedVerdictPrompt','unattendedParseVerdict','unattendedDecide','unattendedDecideFault','unattendedDecideClear','unattendedDeliveryRetryDecision','unattendedDecideTurnEnd','unattendedSelectQueued','unattendedDeferEvaluation','unattendedFaultInstruction'].some(key=>typeof a[key]!=='function')
     || ['turnStateCatalog','resolveTurnState','taskRoutingCatalog','taskRoutingRequest','eventsCatalog','eventsRequest','eventHostRequest','eventPatternString',
       'normalizeHostAttributionMode','planHostAttributionAction','taskCodeMint','taskCodeRestore','taskCodeLookup','taskCodeLabel'].some(key=>typeof a[key]!=='function')) process.exit(1);
-    if(['pushNotificationTables','pushNotificationKey','pushNotificationCopy','chatFitHistoryFrame','chatTaskStateFrame','auxVerdictStaleness','fanOutAuxVerdictStaleness','providerStore','providerCredential','readProviderCliCredential','accountSubscriptionPlan',
+    if(['pushNotificationTables','pushNotificationKey','pushNotificationCopy','chatFitHistoryFrame','chatTaskStateFrame','auxVerdictStaleness','fanOutAuxVerdictStaleness','providerStore','providerCredential','requestCodexUsage','readProviderCliCredential','accountSubscriptionPlan',
       'accountSubscriptionResult','queryAccountSubscription','RustProviderRequest','authorizeProviderRequest',
       'codexOfficialError','codexFindSessionIdJson','recordSecretAudit'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnLedgerVocabulary', 'turnLedgerNormalize', 'turnLedgerTransitionId', 'turnLedgerLiveness',
@@ -483,6 +483,7 @@ function probeAddon(file, node = process.execPath) {
       'apiSanitizeMessage','apiNormalizeRejection','redactionRedactText','redactionRouteCapability',
       'redactionSecretKey','redactionAnchors','redactionExactFragments',
       'RustAuthSecurity','authTimingSafeEqualText','authNormalizeRedirect','authNormalizeWsPath','authEscapeHtmlAttribute','httpAuthRoute','httpEntryGate','httpEntryAuthenticated','httpEntryCookie','httpEntryMakeRequestId','httpEntryCleanId','httpEntryRequestIds',
+      'domainErrorKinds','domainErrorMessage','domainErrorInitialize','infrastructureErrorInitialize',
       'httpErrorTrustedStatus','httpErrorMessage','httpErrorInitialize','httpErrorDefinitions','httpErrorMap','providerScrubSemanticStructure','providerScrubSemanticJson','redactionRouteCapabilityValue'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['createCookie','verifyCookie','verifyAccessToken','issueWsTicket','consumeWsTicket','pruneTickets','ticketCount','accessToken','setAccessToken','shuttingDown','setShuttingDown','connectGateway']
       .some(key=>typeof a.RustAuthSecurity.prototype[key]!=='function')) process.exit(1);
@@ -548,7 +549,8 @@ function probeAddon(file, node = process.execPath) {
     if(JSON.parse(a.cliSwitchRuntimeRequest('currentAllowed',JSON.stringify({reservation:true})))!==false) process.exit(1);
     const cliTools=new a.RustCliToolsRuntime({specs:{},supported:[],catalog:[],npmPackages:{}});
     if(cliTools.request('force',{query:{refresh:'1'}})!==true) process.exit(1);
-    if(['memoFilePort','memoController','directoryModule','directoryLayoutStore','directoryEnsureSample',
+    if(['sessionMetaValidate','sessionMetaPostNote','sessionMetaListNotes','sessionMetaAssessment',
+      'memoFilePort','memoController','directoryModule','directoryLayoutStore','directoryEnsureSample',
       'systemHostFacts','systemHostOperation','relayHostOperation','commandcodeLoginStatus','codexLoginStatus',
       'loginTerminalDirectory','agyLoginEnvironment','loginTerminalRecord','loginTerminalResult','cliAccountResponse',
       'unattendedRouteResult','unattendedRouteRequest','workspaceOverview','agentResourceOperation','tokenUsageOperation','scanHistoryResponse','turnLedgerOperation','turnLedgerTrust',

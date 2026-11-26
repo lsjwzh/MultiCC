@@ -24,8 +24,31 @@
 const { getNative } = require('./native/runtime');
 const { API_VERSION, createErrorDto } = require('./api-contract');
 
-const { isDomainError, isInfrastructureError } = require('./http/domain-error');
 const { safeCode, sanitizeCompatibility, sanitizePublicText } = require('./http/public-safety');
+
+const DOMAIN_ERROR = Symbol('MultiCC.DomainError');
+const INFRASTRUCTURE_ERROR = Symbol('MultiCC.InfrastructureError');
+function isDomainError(value) { return !!(value && value[DOMAIN_ERROR] === true); }
+function isInfrastructureError(value) { return !!(value && value[INFRASTRUCTURE_ERROR] === true); }
+
+// V8 captures the stack at super() and owns the private brand on each instance.
+class DomainError extends Error {
+  constructor(kind, message, { code, publicMessage, compatibility, cause } = {}) {
+    const native = getNative();
+    super(native.domainErrorMessage(message, false));
+    native.domainErrorInitialize(this, kind, code, publicMessage, compatibility, cause);
+    Object.defineProperty(this, DOMAIN_ERROR, { value: true });
+  }
+}
+
+class InfrastructureError extends Error {
+  constructor(message, { code, compatibility, cause } = {}) {
+    const native = getNative();
+    super(native.domainErrorMessage(message, true));
+    native.infrastructureErrorInitialize(this, code, compatibility, cause);
+    Object.defineProperty(this, INFRASTRUCTURE_ERROR, { value: true });
+  }
+}
 
 const HTTP_ERROR = Symbol('MultiCC.HttpError');
 function trustedStatus(value) { return getNative().httpErrorTrustedStatus(value); }
@@ -44,6 +67,7 @@ class HttpError extends Error {
 }
 const errorPorts = { HttpError, isHttpError, isDomainError, isInfrastructureError,
   safeCode, sanitizeCompatibility, sanitizePublicText };
+let domainKinds;
 let definitions;
 function domainErrorMap() { return definitions ??= getNative().httpErrorDefinitions(errorPorts); }
 function mapError(error) { return getNative().httpErrorMap(error, errorPorts, domainErrorMap()); }
@@ -163,6 +187,8 @@ function safeError(status, message, code) {
 
 module.exports = {
   HttpError, isHttpError, trustedStatus, mapError,
+  DomainError, InfrastructureError, isDomainError, isInfrastructureError,
+  get DOMAIN_KINDS() { return domainKinds ??= getNative().domainErrorKinds(errorPorts); },
   get DOMAIN_ERROR_MAP() { return domainErrorMap(); },
   requestIdMiddleware,
   safeErrorHandler,

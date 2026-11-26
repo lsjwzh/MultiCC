@@ -48,7 +48,7 @@
 // native/gateway/tests/quota_routes.rs and docs/gateway.md §9.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, send, TOKEN } = require('./lib');
 
 const L = { Host: 'localhost', 'X-Request-Id': 'diff-req-1' };
 const T0 = 1700000000000;
@@ -380,6 +380,8 @@ function corpus() {
   // ── /api/codex/quota ───────────────────────────────────────────────────
   add('GET codex quota ok', () => get('/api/codex/quota'),
     tag => worldFor(tag, { codex: { value: clone(CODEX_OK) } }));
+  add('GET codex quota builds the official usage request', () => get('/api/codex/quota?account=fixture-account'),
+    tag => worldFor(tag, {}, { codexWire: true }));
   add('GET codex quota no auth', () => get('/api/codex/quota'),
     tag => worldFor(tag, { codex: { value: { status: 'no_auth', error: '未找到 ~/.codex/auth.json，请先登录 codex' } } }));
   add('GET codex quota unavailable', () => get('/api/codex/quota'),
@@ -669,7 +671,8 @@ function readWorld() {
   try { return JSON.parse(fs.readFileSync(worldPath, 'utf8')); } catch (_) { return { case: null }; }
 }
 
-const bag = world.buildDeps({ case: 'initial' }, { dataRoot: process.env.MULTICC_DATA_DIR });
+const bag = world.buildDeps({ case: 'initial' }, { dataRoot: process.env.MULTICC_DATA_DIR,
+  codexUsage: require(path.join(REPO, 'src/routes/codex-quota')).fetchCodexUsage });
 const runtime = createQuotaRuntime(bag.deps);
 const app = express();
 app.use('/api', express.json({ limit: '50mb' }));
@@ -742,7 +745,8 @@ main({
     fs.writeFileSync(effectsPath, '');
     fs.writeFileSync(worldPath, JSON.stringify(baseWorld('initial')));
     const helper = require(path.join(repo, 'tests/helpers/quota-scripted-world'));
-    bag = helper.buildDeps(baseWorld('initial'), { dataRoot });
+    bag = helper.buildDeps(baseWorld('initial'), { dataRoot,
+      codexUsage: require(path.join(repo, 'tests/helpers/frozen-file-batch16/codex-quota')).fetchCodexUsage });
     legacy = require(path.join(repo, 'tests/helpers/legacy-quota-routes'));
     // server.js mounts pricing with the shared asyncHandler, so a rejected
     // refresh reaches safeErrorHandler exactly as it did in production. The
@@ -763,6 +767,17 @@ main({
     STUB_WORLD: worldPath,
     STUB_EFFECTS: effectsPath,
   }),
+  async ready(port) {
+    // The front door listens before the quota host. Wait for a read through both.
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const res = await send(port, { method: 'GET', url: '/api/pricing/status',
+        headers: { ...L, Authorization: 'Bearer ' + TOKEN } });
+      if (res.status === 200) return;
+      if (res.status !== 503) throw new Error('quota readiness returned HTTP ' + res.status);
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error('quota host did not become ready');
+  },
   corpus,
   finalize({ work, views }) {
     fs.writeFileSync(path.join(work, 'views.json'), JSON.stringify(views, null, 2));
@@ -792,6 +807,7 @@ main({
     const pins = [
       ['GET opencode quota ok', 200, '"text"'],
       ['GET qoder quota ok', 200, '"quota"'],
+      ['GET codex quota builds the official usage request', 200, '"fixture-plan"'],
       ['GET codex quota ok', 200, '"windows"'],
       ['GET ark quota ok', 200, '"items"'],
       ['GET kimi quota ok', 200, '"available"'],
@@ -834,6 +850,11 @@ main({
       if (!entry.case) continue;
       if (!rustEffects.has(entry.case)) rustEffects.set(entry.case, []);
       rustEffects.get(entry.case).push(...entry.calls);
+    }
+    const wireCase = [...caseNames].find(([, name]) => name === 'GET codex quota builds the official usage request');
+    for (const [side, effects] of [['node', nodeEffects], ['rust', rustEffects]]) {
+      const calls = (effects.get(wireCase?.[0]) || []).filter(entry => entry.op === 'codexWireFetch');
+      if (calls.length !== 1 || !calls[0].valid) problems.push(side + ': expected one matching Codex usage request');
     }
     const mismatches = [];
     for (const [tag, calls] of nodeEffects) {

@@ -193,3 +193,41 @@ test('余量和账户请求不能重新绕过统一网络入口', () => {
       `${file} 不得复制 Codex 余量请求实现`);
   }
 });
+
+test('Codex usage preserves the signal, header order, JS coercion and fetch result', () => {
+  const frozen = require('./helpers/frozen-file-batch16/codex-usage-request');
+  const current = require('../src/native/runtime');
+  const signal = new AbortController().signal;
+  const result = Promise.resolve('fixture');
+  const account = Object.freeze({ id: 'opaque' });
+  function observe(api, token, accountId) {
+    const trace = [];
+    const auth = {
+      get accessToken() { trace.push('token'); return token; },
+      get accountId() { trace.push('account'); return accountId; },
+    };
+    const returned = api.requestCodexUsage(auth, { signal, fetch(url, init) {
+      trace.push('fetch');
+      assert.equal(init.signal, signal);
+      assert.equal(init.headers['ChatGPT-Account-Id'], accountId || '');
+      return Object.assign(result, { wire: [url, Object.keys(init), Object.entries(init.headers)] });
+    } });
+    assert.equal(returned, result);
+    return { trace, wire: returned.wire };
+  }
+  for (const token of ['opaque', '', '\ud800', null, undefined, 7n]) {
+    for (const id of [account, '', false]) {
+      assert.deepEqual(observe(current, token, id), observe(frozen, token, id));
+    }
+  }
+  const sentinel = new Error('coercion failed');
+  for (const api of [frozen, current]) {
+    const auth = {
+      get accessToken() { return { [Symbol.toPrimitive](hint) { assert.equal(hint, 'string'); throw sentinel; } }; },
+      get accountId() { assert.fail('read account after failed token coercion'); },
+    };
+    assert.throws(() => api.requestCodexUsage(auth, { fetch() { assert.fail('called transport'); } }), err => err === sentinel);
+    assert.throws(() => api.requestCodexUsage({ accessToken: Symbol() }, { fetch() { assert.fail('called transport'); } }), TypeError);
+    assert.throws(() => api.requestCodexUsage({}, { fetch() { throw sentinel; } }), err => err === sentinel);
+  }
+});

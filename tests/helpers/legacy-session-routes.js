@@ -50,14 +50,13 @@ function mountSessionRoutesLegacy(app, bag) {
  */
 function mountLiveComposition(expressApp, bag, options = {}) {
   const repo = path.resolve(__dirname, '..', '..');
-  const { createSessionRoutesHost } = require(path.join(repo, 'src/routes/session-routes-host'));
+  const { createSessionRoutesHost, createSessionMetaRuntime } = require(path.join(repo, 'src/routes/session-routes-host'));
   const live = {
     create: require(path.join(repo, 'src/routes/session-create')),
     profile: require(path.join(repo, 'src/routes/session-profile')),
     memory: require(path.join(repo, 'src/routes/session-memory')),
     bundle: require(path.join(repo, 'src/routes/session-bundle')),
     lifecycle: require(path.join(repo, 'src/routes/session-lifecycle')),
-    meta: require(path.join(repo, 'src/routes/session-meta')),
   };
   const deps = bag.deps;
   const host = createSessionRoutesHost();
@@ -67,7 +66,7 @@ function mountLiveComposition(expressApp, bag, options = {}) {
   const bundleRuntime = live.bundle.createSessionBundleRoutes(deps.bundle);
   bundleRuntime.mountRoutes(host.app);
   live.lifecycle.createSessionLifecycleRuntime(deps.lifecycle).mountRoutes(host.app);
-  live.meta.createSessionMetaRuntime(deps.meta).mountRoutes(host.app);
+  createSessionMetaRuntime(deps.meta).mountRoutes(host.app);
   host.mountRoute(expressApp, options);
   // The zip transports remain public Node routes.
   bundleRuntime.mountRoutes(expressApp);

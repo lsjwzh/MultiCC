@@ -3,9 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { DOMAIN_KINDS, DomainError, InfrastructureError } = require('../src/http/domain-error');
+const current = require('../src/http-errors');
+const { DOMAIN_KINDS, DomainError, InfrastructureError, HttpError, mapError, safeErrorHandler } = current;
 const { presentError } = require('../src/http/error-presenter');
-const { HttpError, mapError, safeErrorHandler } = require('../src/http-errors');
 
 const REQUEST_CONTEXT = Object.freeze({
   requestId: 'req_http_boundary_1',
@@ -187,10 +187,10 @@ test('mapped errors remain compatible with the existing safeErrorHandler', () =>
 
 
 const frozen = {
+  ...require('./helpers/frozen-file-batch14/domain-error'),
   ...require('./helpers/frozen-file-batch13/http-error'),
   ...require('./helpers/frozen-file-batch13/error-map'),
 };
-const current = require('../src/http-errors');
 
 function describeError(error, api, cause) {
   assert.ok(error instanceof api.HttpError && error instanceof Error);
@@ -229,15 +229,15 @@ test('frozen mapper agrees on branding, getter order, identity and thrown values
   for (const make of [
     () => undefined, () => null, () => 0, () => Symbol('unknown'),
     () => ({ get status() { throw sentinel; } }),
-    () => new InfrastructureError('private', { compatibility: { blocked: true } }),
+    api => new api.InfrastructureError('private', { compatibility: { blocked: true } }),
     ...[...Object.values(DOMAIN_KINDS), 'unknown', 'constructor', '__proto__']
-      .map(kind => () => new DomainError(kind, 'busy', { code: 'bad code' })),
-    () => Object.defineProperty(new DomainError('conflict', 'busy'), 'publicMessage', {
+      .map(kind => api => new api.DomainError(kind, 'busy', { code: 'bad code' })),
+    api => Object.defineProperty(new api.DomainError('conflict', 'busy'), 'publicMessage', {
       get() { throw sentinel; },
     }),
   ]) {
     function run(api) {
-      const target = make();
+      const target = make(api);
       const reads = [];
       const error = target && typeof target === 'object' ? new Proxy(target, {
         get(obj, key, receiver) {
@@ -252,5 +252,62 @@ test('frozen mapper agrees on branding, getter order, identity and thrown values
       }
     }
     assert.deepEqual(run(current), run(frozen));
+  }
+});
+
+test('domain constructors preserve field descriptors, brands and JS value identity', () => {
+  const cause = new Error('cause');
+  const code = Symbol('code');
+  const compatibility = { blocked: true };
+  const options = { cause, code, compatibility };
+  function describe(api, kind, message, publicMessage, infrastructure) {
+    const reads = [];
+    const params = new Proxy({ ...options, publicMessage }, {
+      get(target, key) { reads.push(key); return target[key]; },
+    });
+    const error = infrastructure ? new api.InfrastructureError(message, params)
+      : new api.DomainError(kind, message, params);
+    assert.ok(error instanceof Error);
+    assert.equal(error.code, code);
+    assert.equal(error.compatibility, compatibility);
+    assert.equal(error.cause, cause);
+    assert.equal(api.isDomainError(error), !infrastructure);
+    assert.equal(api.isInfrastructureError(error), infrastructure);
+    const [brand] = Object.getOwnPropertySymbols(error);
+    return {
+      reads, brand: brand.description, descriptor: Object.getOwnPropertyDescriptor(error, brand),
+      keys: Object.keys(error), fields: { ...error }, message: error.message,
+      frozen: Object.isFrozen(error),
+    };
+  }
+  assert.deepEqual(current.DOMAIN_KINDS, frozen.DOMAIN_KINDS);
+  assert.ok(Object.isFrozen(current.DOMAIN_KINDS));
+  for (const kind of [null, 0, false, NaN, 7n, Symbol('kind'), 'conflict', '\ud800']) {
+    for (const message of ['', '\udc00', null, false, Object('boxed')]) {
+      for (const publicMessage of [undefined, null, false, cause]) {
+        for (const infrastructure of [false, true]) {
+          const args = [kind, message, publicMessage, infrastructure];
+          assert.deepEqual(describe(current, ...args), describe(frozen, ...args));
+        }
+      }
+    }
+  }
+});
+
+test('domain constructors preserve setter order, coercion errors and optional cause', () => {
+  for (const api of [current, frozen]) {
+    const trace = [];
+    const sentinel = new Error('coercion');
+    const kind = { [Symbol.toPrimitive](hint) { trace.push(hint); throw sentinel; } };
+    class Observed extends api.DomainError {
+      set name(value) { trace.push(value); }
+    }
+    const opts = new Proxy({}, { get(_, key) { trace.push(key); } });
+    assert.throws(() => new Observed(kind, null, opts), error => error === sentinel);
+    assert.deepEqual(trace, ['code', 'publicMessage', 'compatibility', 'cause', 'DomainError', 'string']);
+    for (const error of [new api.DomainError(), new api.InfrastructureError()]) {
+      assert.equal(Object.hasOwn(error, 'cause'), false);
+    }
+    assert.throws(() => new api.DomainError('conflict', '', null), TypeError);
   }
 });
