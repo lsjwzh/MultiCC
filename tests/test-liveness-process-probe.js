@@ -107,3 +107,38 @@ test('createProcessProbe validates its deps', () => {
   assert.throws(() => createProcessProbe({}), /execFile is required/);
   assert.throws(() => createProcessProbe({ execFile: () => {} }), /statMtimeMs is required/);
 });
+
+test('8a259312 differential: port boundaries, promise identity, clock expiry and stat failures', async () => {
+  const before = require('./helpers/frozen-host-leaves/process-probe').createProcessProbe;
+  async function trace(factory, line) {
+    const calls = [];
+    let time = 5, mtime = 1;
+    const api = factory({ now: () => time, outboundTtlMs: 4, rolloutWindowMs: 4,
+      execFile(cmd, args, options, done) { calls.push([cmd, args, options]); done(Error(), line); },
+      statMtimeMs(key) { calls.push(key); if (mtime === null) throw Error(); return mtime; },
+    });
+    const first = api.outboundHttps(42);
+    const result = [first === api.outboundHttps(42), await first, api.rolloutGrew('x')];
+    time = 9; result.push(first === api.outboundHttps(42));
+    time = 10; result.push(first === api.outboundHttps(42));
+    mtime = 2; result.push(await api.probe(43, 'x'));
+    mtime = null; result.push(await api.probe(null, 'missing'));
+    return { result, calls };
+  }
+  for (const line of ['', 'ESTABLISHED ->host:80', 'ESTABLISHED ->host:443_',
+    'ESTABLISHED ->host:443中', 'ESTABLISHED ->x\r:443', 'ESTABLISHED\r->x:80',
+    '->x:80\nESTABLISHED', 'ESTABLISHED ->x:8080 ->y:443.', '->\u2028x:443 ESTABLISHED']) {
+    assert.deepEqual(await trace(createProcessProbe, line), await trace(before, line), line);
+  }
+});
+
+test('8a259312 differential: an invalid clock throws synchronously on outbound and rejects probe', async () => {
+  async function errors(factory) {
+    const p = factory({ now: 1, statMtimeMs: () => null, execFile() {} });
+    let sync;
+    try { p.outboundHttps(1); } catch (e) { sync = [e.name, e.message]; }
+    try { await p.probe(1, ''); } catch (e) { return [sync, e.name, e.message]; }
+  }
+  const before = require('./helpers/frozen-host-leaves/process-probe').createProcessProbe;
+  assert.deepEqual(await errors(createProcessProbe), await errors(before));
+});

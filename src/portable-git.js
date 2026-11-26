@@ -27,27 +27,19 @@ function installScriptPath() {
   return path.join(PKG_ROOT, 'install-git.sh');
 }
 
+const ports = {
+  get platform() { return process.platform; }, bin: portableGitBin,
+  access: env => fs.accessSync(path.join(portableGitBin(env), 'git'), fs.constants.X_OK),
+  parts: env => String(env.PATH || '').split(path.delimiter).filter(Boolean),
+  set(env, dirs) { env.PATH = dirs.join(path.delimiter); },
+};
+
 function isInstalled(env = process.env) {
-  try {
-    fs.accessSync(path.join(portableGitBin(env), 'git'), fs.constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
+  return require('./native/binding').getNative().portableGitInstalled(ports, env);
 }
 
-// Inserted right before /usr/bin rather than at the front: a git the user put
-// in Homebrew or /usr/local stays the one used, and the portable git only
-// shadows the Command Line Tools shim it exists to replace. Idempotent.
 function addToPath(env = process.env) {
-  if (process.platform === 'win32' || !isInstalled(env)) return false;
-  const bin = portableGitBin(env);
-  const dirs = String(env.PATH || '').split(path.delimiter).filter(Boolean);
-  if (dirs.includes(bin)) return false;
-  const at = dirs.indexOf('/usr/bin');
-  dirs.splice(at < 0 ? 0 : at, 0, bin);
-  env.PATH = dirs.join(path.delimiter);
-  return true;
+  return require('./native/binding').getNative().portableGitAddToPath(ports, env);
 }
 
 module.exports = { portableGitDir, portableGitBin, installScriptPath, isInstalled, addToPath };

@@ -179,3 +179,26 @@ test('turning off releases saved intent even when another app keeps system sleep
       { available: true, enabled: false, systemSleepDisabled: true });
   }
 });
+
+test('8a259312 differential: access order, status fallbacks and write error identity', () => {
+  const before = require('./helpers/frozen-host-leaves/powerd').createPowerd;
+  function trace(factory, platform, failAt) {
+    const calls = [], err = new Error('injected');
+    const hit = (kind, name, value) => {
+      calls.push([kind, name, value]);
+      if (calls.length === failAt) throw err;
+    };
+    const svc = factory({ platform, dataDir: '/power', plistPath: '/plist', fsImpl: {
+      accessSync: (p, mode) => hit('access', p, mode),
+      readFileSync(p, enc) { hit('read', p, enc); return p.endsWith('.json') ? '[1]' : ' off\n'; },
+      writeFileSync: (p, word) => hit('write', p, word),
+    } });
+    const result = [svc.status(), svc.readIntent(), svc.readStatus()];
+    try { result.push(svc.setIntent(true), svc.setIntent(0)); }
+    catch (error) { result.push(error === err); }
+    return { calls, result, keys: Object.keys(svc) };
+  }
+  for (const os of ['darwin', 'linux']) for (let i = 0; i <= 14; i++) {
+    assert.deepEqual(trace(createPowerd, os, i), trace(before, os, i));
+  }
+});

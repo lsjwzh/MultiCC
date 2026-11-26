@@ -105,3 +105,28 @@ test('install-git.sh installs a working wrapper, idempotently and atomically', {
   assert.equal(forced.status, 0, forced.stderr);
   assert.match(execFileSync(wrapper, [], { encoding: 'utf8' }), /5\.0\.0/);
 });
+
+test('8a259312 differential: PATH spelling, mutation, failed access and setter errors', t => {
+  const before = require('./helpers/frozen-host-leaves/portable-git');
+  const dir = tmp(t);
+  fakeInstall(dir);
+  function trace(api, value, fail) {
+    const seen = [], marker = new Error('setter');
+    const env = {
+      get MULTICC_PORTABLE_GIT_DIR() { seen.push('dir'); return dir; },
+      get PATH() { seen.push('read'); return value; },
+      set PATH(v) { seen.push(v); if (fail) throw marker; value = v; },
+    };
+    let result;
+    try { result = [api.addToPath(env), api.addToPath(env)]; }
+    catch (error) { result = [error === marker, error.name, error.message]; }
+    return { seen, result };
+  }
+  for (const value of [undefined, '', '::', '/bin', '/usr/bin:/bin:/usr/bin',
+    'A::/usr/bin::B', 'x\ud800:/usr/bin', path.join(dir, 'bin'), 42]) {
+    for (const fail of [false, true]) assert.deepEqual(trace(portableGit, value, fail), trace(before, value, fail));
+  }
+  for (const env of [null, {}, { MULTICC_PORTABLE_GIT_DIR: {} }]) {
+    assert.equal(portableGit.isInstalled(env), before.isInstalled(env));
+  }
+});

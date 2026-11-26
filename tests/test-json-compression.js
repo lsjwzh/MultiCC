@@ -106,3 +106,53 @@ test('error bodies are compressed too; HEAD is never compressed', async t => {
   assert.equal(head.headers['content-encoding'], undefined);
   assert.equal(head.body.length, 0);
 });
+
+test('8a259312 differential: header access order, word boundaries, Vary and end arguments', async () => {
+  const before = require('./helpers/frozen-host-leaves/json-compression').createJsonCompression;
+  async function trace(factory, { accept, type, vary, status, sent, body }) {
+    const calls = [];
+    let resolve;
+    const complete = new Promise(done => { resolve = done; });
+    const callback = () => {};
+    const headers = { 'Content-Type': type, Vary: vary };
+    const res = {
+      get headersSent() { calls.push('sent'); return sent; },
+      get statusCode() { calls.push('status'); return status; },
+      getHeader(k) { calls.push(['get', k]); return headers[k]; },
+      setHeader(k, v) { calls.push(['set', k, v]); headers[k] = v; },
+      end(...args) {
+        calls.push(['end', this === res, args.map(a => a === callback ? 'cb' : Buffer.isBuffer(a) ? [...a] : a)]);
+        resolve();
+        return this;
+      },
+    };
+    const original = res.end;
+    factory({ minBytes: 1 })({ method: 'GET', path: '/api/x', headers: { 'accept-encoding': accept } }, res,
+      () => { calls.push('next'); });
+    const value = res.end(body, 'utf8', callback);
+    await complete;
+    return { calls, originalRestored: res.end === original, returned: value === res };
+  }
+  const defaults = { accept: 'gzip', type: 'application/json', status: 200, body: 'hello' };
+  for (const opts of [{}, { accept: 'xgzip' }, { accept: 'gzip;q=0' }, { accept: 'gzip_' },
+    { type: 'application/jsonx' }, { type: 'APPLICATION/JSON中' }, { status: 204 }, { status: '204' },
+    { vary: 'origin,\ufeffAccept-Encoding\u00a0' }, { vary: 'Origin,*' }, { vary: '末\ud800' },
+    { body: null }, { body: Buffer.from('abc') }, { sent: true }]) {
+    const input = { ...defaults, ...opts };
+    assert.deepEqual(await trace(createJsonCompression, input), await trace(before, input));
+  }
+});
+
+test('8a259312 differential: malformed response methods and original header exceptions', () => {
+  const before = require('./helpers/frozen-host-leaves/json-compression').createJsonCompression;
+  function failure(factory, mode) {
+    const marker = new Error('getter');
+    const res = { end() {}, getHeader: mode === 'missing' ? null : () => 'application/json' };
+    if (mode === 'throws') Object.defineProperty(res, 'getHeader', { get() { throw marker; } });
+    factory()({ method: 'GET', path: '/api/x', headers: {} }, res, () => {});
+    try { res.end('body'); } catch (e) { return [e === marker, e.name, e.message]; }
+  }
+  for (const mode of ['missing', 'throws', 'setter']) {
+    assert.deepEqual(failure(createJsonCompression, mode), failure(before, mode));
+  }
+});

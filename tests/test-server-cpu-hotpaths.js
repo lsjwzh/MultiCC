@@ -478,3 +478,53 @@ test('bulk merge-state refreshes are bounded, Fleet-fair, and prioritize interac
   assert.ok(started.slice(2, 4).includes('session-7'),
     'interactive merge status moves queued work ahead of the background sweep');
 });
+
+test('8a259312 differential: rollout DFS, failing directories, miss TTL, invalidation and forget', () => {
+  const before = require('./helpers/frozen-host-leaves/rollout-path').createRolloutPathResolver;
+  function trace(factory) {
+    let time = 0, ready = false, broken = false;
+    const calls = [];
+    const record = { cli: 'codex-exp', cliSessionId: 'abc' };
+    const dirent = (name, dir) => ({ name, isDirectory: () => dir, isFile: () => !dir });
+    const api = factory({ path, now: () => time, missTtlMs: 4, sessionsDirFor() {
+      calls.push('locate'); if (broken) throw Error(); return '/tree';
+    }, fs: {
+      existsSync(p) { calls.push(['exists', p]); return p === '/tree' || ready; },
+      readdirSync(p, opts) {
+        calls.push(['read', p, opts]);
+        if (p === '/tree') return [dirent('a', true), dirent('b', true)];
+        if (p.endsWith('b')) throw Error();
+        return ready ? [dirent('id-abc.jsonl', false), dirent('later-abc.jsonl', false)] : [];
+      },
+    } });
+    const result = [api.resolve(null), api.resolve(record)];
+    ready = true;
+    for (time of [4, 5, 6]) result.push(api.resolve(record));
+    result.push(api.forget(record), api.resolve(record));
+    ready = false;
+    result.push(api.resolve(record));
+    broken = true;
+    result.push(api.resolve(record), api.forget(record));
+    return { result, calls };
+  }
+  assert.deepEqual(trace(createRolloutPathResolver), trace(before));
+});
+
+test('8a259312 differential: rollout key conversion, property access and iterator closing order', () => {
+  const before = require('./helpers/frozen-host-leaves/rollout-path').createRolloutPathResolver;
+  function trace(factory) {
+    const calls = [];
+    const dir = { toString() { calls.push('dir string'); return 'root'; } };
+    const record = { cli: 'codex', get cliSessionId() { calls.push('id'); return 'abc'; } };
+    const file = { get name() { calls.push('name'); return 'abc.jsonl'; }, isDirectory: () => false, isFile: () => true };
+    const api = factory({
+      sessionsDirFor: () => dir,
+      path: { get join() { calls.push('join getter'); return (d, n) => n; } },
+      fs: { existsSync: () => true, *readdirSync() { try { yield file; } finally { calls.push('closed'); } } },
+    });
+    const result = api.resolve(record);
+    api.forget(record);
+    return { result, calls };
+  }
+  assert.deepEqual(trace(createRolloutPathResolver), trace(before));
+});
