@@ -450,17 +450,18 @@ function shareAgySshAccount(accountId, accountLabel) {
   overlay.querySelector('[data-act="close"]').onclick = () => close();
   copyBtn.onclick = async () => { _relayCopyResult(st, await _relayCopyText(codeEl.value, codeEl)); };
 
-  el('egress').innerHTML = '对方要能直接连到这台机器的 SSH 端口：同一局域网填内网地址即可；跨公网请前往 <a href="/air?view=tunnel#air-tunnel-ssh" style="color:#58a6ff">外网穿透 → 一键映射 SSH（22 端口）</a> 配置 TCP 映射（支持 SakuraFrp / cpolar / Tailscale / 自定义）。';
+  el('egress').innerHTML = '对方要能直接连到这台机器的 SSH 端口：同一局域网填内网地址即可；跨公网请前往 <a href="/air?view=tunnel#air-tunnel-ssh" style="color:#58a6ff">外网穿透 → SSH（22 端口）出口配置</a> 填入公网映射地址。';
   providerApi.json('/api/tunnel/ssh').then((d) => {
-    const ep = d && d.snapshot && d.snapshot.suggested;
+    const snap = d && d.snapshot;
+    const ep = snap && snap.suggested;
     if (!ep || !ep.sshTarget) return;
     const targetIn = el('sshTarget');
     const portIn = el('sshPort');
     if (targetIn && !targetIn.value.trim()) targetIn.value = ep.sshTarget;
     if (portIn && ep.sshPort) portIn.value = String(ep.sshPort);
-    const label = escapeHtml(ep.providerLabel || ep.source || 'SSH 映射');
-    const statusText = ep.active ? '已就绪' : '检测到可用通道';
-    el('egress').innerHTML = `<span style="color:#3fb950">已检测到 ${label}（${statusText}），已自动填入上方 SSH 目标与端口。</span> <a href="/air?view=tunnel#air-tunnel-ssh" style="color:#58a6ff">前往外网穿透调整</a>`;
+    const label = escapeHtml(ep.note || 'SSH 22 出口');
+    const statusText = snap.remoteReachable ? '已验证可达' : '已保存';
+    el('egress').innerHTML = `<span style="color:#3fb950">已带入 ${label}（${statusText}），上方 SSH 目标与端口已自动填入。</span> <a href="/air?view=tunnel#air-tunnel-ssh" style="color:#58a6ff">前往外网穿透调整</a>`;
   }).catch(() => {});
 
   const renderPreflight = (d) => {
