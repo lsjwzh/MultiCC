@@ -351,6 +351,25 @@ test('多写者、record 与 project 交错时所有写入最终都可见', asyn
     const snapshot = subscriptions.snapshot();
     missing = [...expected].filter(key => !(key in snapshot));
   }
+  if (missing.length) {
+    // Observe the failing state before fixture cleanup. Keep the original
+    // assertion and its captured missing rows unchanged by the diagnostic read.
+    const cacheAtFailure = subscriptions.snapshot();
+    const nodeRows = a.prepare('SELECT vendor,account_id,subscription_json,last_attempt_at FROM provider_subscriptions ORDER BY vendor,account_id').all();
+    let nativeEntries;
+    try {
+      nativeEntries = JSON.parse(await require('../src/native/runtime').getNative()
+        .accountSubscriptionCache(file, JSON.stringify({ operation: 'read' })));
+    } catch (error) { nativeEntries = { readError: String(error) }; }
+    const stamps = [file, `${file}-wal`, `${file}-shm`].map(name => {
+      try { const stat = fs.statSync(name); return { name, mtimeMs: stat.mtimeMs, size: stat.size }; }
+      catch (error) { return { name, error: error.code }; }
+    });
+    console.error('SUBSCRIPTION_VISIBILITY_DIAGNOSTIC', JSON.stringify({
+      file, missing, nodeRows, nativeEntries, cacheAtFailure,
+      cacheAfterProbe: subscriptions.snapshot(), stamps,
+    }));
+  }
   assert.deepEqual(missing, [], 'every concurrent write must become visible within a finite number of project() calls');
 });
 

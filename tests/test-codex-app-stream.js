@@ -15,6 +15,24 @@ const test = require('node:test');
 const { createCodexAppStream } = require('../src/chat/codex-app-stream');
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 
+test('process close retains the frozen timeout, stop, tracking and listener behavior', async () => {
+  const api = require('../src/native/runtime').getProcessCloser();
+  const frozen = require('./helpers/frozen-file-batch27/process-close');
+  const { exercise } = require('./helpers/process-close-fixture');
+  for (let mode = 0; mode < 8; mode++) for (let timeout = 0; timeout < 6; timeout++) {
+    assert.deepEqual(await exercise(api, { mode, timeout }), await exercise(frozen, { mode, timeout }), `${mode}/${timeout}`);
+  }
+  for (const implementation of [api, frozen]) {
+    const closer = implementation.createProcessCloser({ timeoutMs: 10, code: 'SHAPE' });
+    assert.deepEqual(Object.keys(closer), ['track', 'wait', 'isClosing', 'drained']);
+    assert.deepEqual(Object.entries(closer).map(([key, value]) => [key, value.name, value.length]),
+      [['track', 'track', 2], ['wait', 'wait', 2], ['isClosing', 'isClosing', 1], ['drained', 'drained', 1]]);
+    assert.equal(Object.prototype.toString.call(closer.wait), '[object AsyncFunction]');
+    const sentinel = new Error('number refused');
+    await assert.rejects(closer.wait('none', () => assert.fail('stop called'), { timeoutMs: { valueOf() { throw sentinel; } } }), error => error === sentinel);
+  }
+});
+
 const BRIDGE = 'codex-app-bridge';
 const BRIDGE_CMD = require('../src/native/runtime').gatewayPath();
 
