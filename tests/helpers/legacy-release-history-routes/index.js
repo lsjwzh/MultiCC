@@ -53,6 +53,9 @@ function load(name) {
         if (path.basename(rel) === 'ios-udid') {
           return `require(${JSON.stringify(path.join(FROZEN, 'ios-udid.js'))})`;
         }
+        if (rel === '../frozen-file-batch8/transcript-prune') {
+          return `require(${JSON.stringify(require.resolve('../frozen-file-batch8/transcript-prune'))})`;
+        }
         return `require(${JSON.stringify(path.resolve(base, rel))})`;
       },
     )

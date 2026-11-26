@@ -22,7 +22,7 @@ const {
   createIosOtaInfoHandler,
   mountSystemHostRoutes,
   mountApkDownload,
-} = require('../src/routes/system');
+} = require('../src/routes/release-history-host');
 const { mountSystemHostRoute, SYSTEM_PATH: HOST_PATH } = require('../src/routes/host-read-host');
 const { createApkDistribution } = require('../src/apk-distribution');
 
@@ -451,7 +451,6 @@ test('every release-asset route mounts on the release-history host port, none on
   const serverEntry = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.doesNotMatch(serverEntry, /mountApkDownload/);
   const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'release-history-host.js'), 'utf8');
-  assert.match(hostSource, /system\.mountApkDownload\(app, \{ apkDistribution, iosOta \}\)/);
   assert.match(hostSource, /'apk-download': \{ method: 'GET', path: '\/multicc\.apk', params: \[\] \}/);
 
   // 捕获应用（release-history 宿主端口）：其余三条 + ios-udid 的三条。
@@ -474,9 +473,8 @@ test('every release-asset route mounts on the release-history host port, none on
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.doesNotMatch(serverSource, /mountSystemHostRoutes\(app/);
   assert.doesNotMatch(serverSource, /mountApkDownload\(app/);
-  const systemSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'system.js'), 'utf8');
   const hostOpsSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'host-ops-host.js'), 'utf8');
-  assert.doesNotMatch(systemSource, /createDeveloperToolsRoutes|createMacosPrivacyRoutes|createOpsTerminalRoutes/);
+  assert.doesNotMatch(hostSource, /createDeveloperToolsRoutes|createMacosPrivacyRoutes|createOpsTerminalRoutes/);
   for (const factory of ['createDeveloperToolsRoutes', 'createMacosPrivacyRoutes', 'createOpsTerminalRoutes']) {
     assert.match(hostOpsSource, new RegExp(factory));
   }
@@ -491,4 +489,74 @@ test('every release-asset route mounts on the release-history host port, none on
   const iosResponse = { json(value) { this.body = value; } };
   createIosOtaInfoHandler({ iosOta })({}, iosResponse, error => { throw error; });
   assert.deepEqual(iosResponse.body, { exists: false, installable: false, installPage: '/ios-ota' });
+});
+
+const frozenSystem = require('./helpers/frozen-file-batch17/system');
+
+test('release asset mounts preserve dependency getters, validation and callback identities', () => {
+  function run(api, download, fail) {
+    const trace = [];
+    const handler = () => {};
+    const apk = { info: handler, downloadHandler: handler };
+    const ota = { info: handler, manifestHandler: handler };
+    const deps = new Proxy({ apkDistribution: apk, iosOta: ota, iosUdid: {
+      mountHostRoutes(app) { trace.push(['udid', app === recorder]); },
+    } }, { get(target, key) { trace.push(key); return target[key]; } });
+    const recorder = {
+      get(path, fn) {
+        if (path === '/multicc.apk' || path === '/ios-ota/manifest.plist') assert.equal(fn, handler);
+        trace.push([path, typeof fn]);
+      },
+      post() {},
+    };
+    if (fail === 'apk') apk.info = null;
+    if (fail === 'ota') ota.manifestHandler = null;
+    try {
+      const result = download ? api.mountApkDownload(recorder, deps) : api.mountSystemHostRoutes(recorder, deps);
+      assert.equal(result, undefined);
+      return trace;
+    } catch (error) { return { trace, name: error.name, message: error.message }; }
+  }
+  const current = { mountSystemHostRoutes, mountApkDownload };
+  for (const download of [false, true]) {
+    for (const fail of [null, 'apk', 'ota']) {
+      assert.deepEqual(run(current, download, fail), run(frozenSystem, download, fail));
+    }
+  }
+  for (const api of [current, frozenSystem]) {
+    assert.throws(() => api.mountSystemHostRoutes(null, null),
+      { name: 'TypeError', message: 'Express app.get and app.post are required' });
+    assert.throws(() => api.mountApkDownload({ get() {} }, null),
+      { name: 'TypeError', message: 'system route dependencies are required' });
+  }
+});
+
+test('release asset info handlers retain getter order, cause identity and per-request state', async () => {
+  async function run(api, ios, throwing) {
+    const trace = [];
+    const cause = new Error('fixture failure');
+    const payload = { exists: true };
+    let seen;
+    const service = {
+      info() { trace.push('info'); assert.equal(this, service); if (throwing) throw cause; return payload; },
+    };
+    const deps = new Proxy({ apkDistribution: service, iosOta: service }, {
+      get(target, key) { trace.push(key); return target[key]; },
+    });
+    const res = {
+      get json() { trace.push('json'); return function(value) { trace.push('send'); assert.equal(this, res); assert.equal(value, payload); }; },
+    };
+    const make = ios ? api.createIosOtaInfoHandler : api.createApkInfoHandler;
+    const handler = make(deps);
+    const result = handler({}, res, error => { trace.push('next'); seen = error; });
+    assert.equal(ios ? result : await result, undefined);
+    assert.equal(seen, throwing ? cause : undefined);
+    return trace;
+  }
+  const current = { createApkInfoHandler, createIosOtaInfoHandler };
+  for (const ios of [false, true]) {
+    for (const throwing of [false, true]) {
+      assert.deepEqual(await run(current, ios, throwing), await run(frozenSystem, ios, throwing));
+    }
+  }
 });

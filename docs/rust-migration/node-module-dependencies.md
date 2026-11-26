@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 433 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 432 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -307,7 +307,7 @@
 | `src/routes/push-host.js` | server.js | `src/push/bark-devices.js`, `src/push/business.js`, `src/push/channel-subscriptions.js`, `src/request-locality.js` | — | — | — | — |
 | `src/routes/qoder-quota.js` | server.js | `src/chrome-cdp.js`, `src/network/outbound.js`, `src/quota-managed-browser.js` | — | `fs`, `os`, `path` | — | — |
 | `src/routes/quota-host.js` | server.js | `src/pricing/price-table.js`, `src/quota-managed-browser.js`, `src/quota/claude-bar-state.js`, `src/quota/claude-usage-queue.js`, `src/request-locality.js`, `src/routes/aliyun-quota.js`, `src/routes/ark-quota.js`, `src/routes/claude-usage-quota.js`, `src/routes/codex-quota.js`, `src/routes/kimi-quota.js`, `src/routes/opencode-quota.js`, `src/routes/qoder-quota.js` | — | `child_process` | — | — |
-| `src/routes/release-history-host.js` | server.js | `src/request-locality.js`, `src/routes/system.js` | — | `http` | — | — |
+| `src/routes/release-history-host.js` | server.js | `src/ios-udid.js`, `src/native/runtime.js`, `src/request-locality.js` | — | `http` | — | — |
 | `src/routes/secrets-vault-host.js` | server.js | `src/request-locality.js` | — | — | — | — |
 | `src/routes/server-core-host.js` | server.js | `src/chat/sessions.js`, `src/request-locality.js` | — | — | — | — |
 | `src/routes/server-restart-route.js` | server.js | `src/server-restart.js` | — | — | — | — |
@@ -324,7 +324,6 @@
 | `src/routes/share-machines-host.js` | server.js | `src/native/runtime.js`, `src/request-locality.js`, `src/routes/share.js` | — | — | — | — |
 | `src/routes/share.js` | server.js | `src/http/public-safety.js` | — | — | — | — |
 | `src/routes/subagent-defaults-host.js` | server.js | `src/http/public-safety.js`, `src/native/runtime.js`, `src/request-locality.js` | — | — | — | — |
-| `src/routes/system.js` | server.js | `src/ios-udid.js` | — | — | — | — |
 | `src/routes/task-board.js` | server.js | `src/classify/vocab.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/routes/task-planning.js`, `src/session-work/scheduler.js`, `src/task-board/board-store.js`, `src/task-board/core.js`, `src/task-board/lifecycle.js`, `src/task-board/native-bridge.js`, `src/task-board/planning.js`, `src/task-board/relocate.js`, `src/task-board/retention.js`, `src/task-worktree.js`, `src/voice/router.js` | — | `crypto`, `fs` | — | — |
 | `src/routes/task-goal.js` | server.js | `src/classify/vocab.js` | — | — | — | — |
 | `src/routes/task-graph.js` | server.js | `src/http/public-safety.js`, `src/task-board/core.js` | — | — | — | — |
@@ -332,7 +331,7 @@
 | `src/routes/task-routes-host.js` | server.js | `src/request-locality.js`, `src/routes/task-planning.js` | — | — | — | — |
 | `src/routes/task-search.js` | server.js | `src/native/task-search.js` | — | — | — | — |
 | `src/routes/token-usage.js` | server.js | `src/codex/usage.js` | — | — | — | — |
-| `src/routes/update-route.js` | server.js | `src/routes/system.js`, `src/update-runner.js` | — | — | — | — |
+| `src/routes/update-route.js` | server.js | `src/routes/release-history-host.js`, `src/update-runner.js` | — | — | — | — |
 | `src/routes/voice-gateway-host.js` | server.js | `src/request-locality.js`, `src/voice/gateway.js` | `src/voice/multicc-acp-agent.mjs` | `path` | — | — |
 | `src/routes/voice-gateway-proxy.js` | server.js | — | — | `http` | — | — |
 | `src/routes/voice-host.js` | server.js | `src/request-locality.js` | — | — | — | — |
