@@ -118,7 +118,7 @@ impl TaskStore {
         task_id: &str,
         first: bool,
         fallback: &str,
-        history: &[crate::js::JsValue],
+        own_snapshot: impl FnOnce() -> Result<crate::js::JsValue>,
     ) -> Result<String> {
         use crate::{js, task_shell::reference};
         let task = self.get("task", task_id)?;
@@ -133,7 +133,7 @@ impl TaskStore {
                     .ok_or_else(|| super::rules::conflict("snapshot_unverified"))?;
                 snapshots.push(snapshot);
             }
-            let own = reference::snapshot(&js::JsValue::from(task_id), history, None, 12_000);
+            let own = own_snapshot()?;
             if matches!(own.get("messages"), Some(js::JsValue::Array(rows)) if !rows.is_empty()) {
                 snapshots.push(own);
             }

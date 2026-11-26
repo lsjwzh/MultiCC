@@ -78,7 +78,9 @@ function createTaskShellRuntime(ports) {
       return null;
     } catch (error) { return { text: '', sources: [], diagnostics: [{ reason: error.message }] }; }
   }
-  const contextPlanner = require('./context-plan').createContextPlanner({ store, getRecord, getHistory, getTask, graphContextOf });
+  const snapshotTaskHistory = ports.snapshotTaskHistory || ((sessionId, taskId, activeTurnId = null) =>
+    snapshotHistory(taskId, getHistory(sessionId), { activeTurnId }));
+  const contextPlanner = require('./context-plan').createContextPlanner({ store, getRecord, snapshotTaskHistory, getTask, graphContextOf });
   function shell(id) {
     const value = store.get('shell', identifier(id, 'shellId'));
     if (!value) throw failure('shell_not_found', 'shell_not_found', 404);
@@ -376,7 +378,7 @@ function createTaskShellRuntime(ports) {
       const source = taskFor(s, id);
       const sourceState = await getExecution(source.sessionId);
       if (payload.dependsOn.includes(id) && (sourceState.busy !== false || !sourceState.completed)) throw failure('dependency_not_ready');
-      contexts.set(id, snapshotHistory(id, getHistory(source.sessionId), { activeTurnId: sourceState.turnId && sourceState.busy ? sourceState.turnId : null }));
+      contexts.set(id, snapshotTaskHistory(source.sessionId, id, sourceState.busy ? sourceState.turnId : null));
     }
     if (!target && payload.intent === 'work' && !store.get('receipt', receiptId) && directoryAtCapacity(store, s.dirId)) {
       const currentShell = shell(s.id);

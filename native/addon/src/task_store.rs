@@ -1,7 +1,11 @@
 mod progress;
 use crate::guard::guard;
 use crate::js_live::LiveValue;
-use multicc_core::task_store::TaskStore;
+use multicc_core::{
+    js::{self, JsValue as V},
+    task_shell::reference::{SnapshotBuilder, SNAPSHOT_FIELDS},
+    task_store::TaskStore,
+};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 use std::sync::{Mutex, MutexGuard};
@@ -63,6 +67,78 @@ pub fn migrate_task_store(file: String) -> Result<String> {
 #[napi]
 pub fn task_shell_reference(op: String, raw: String) -> Result<String> {
     multicc_core::task_shell::reference::request(&op, &raw).map_err(napi::Error::from_reason)
+}
+
+fn snapshot_value(value: LiveValue<'_>) -> Result<V> {
+    unsafe { crate::js_bridge::read_value(value.env(), value.raw(), 0, &mut Vec::new()) }
+}
+
+pub(crate) fn snapshot_live<'a>(
+    task: LiveValue<'a>,
+    history: LiveValue<'a>,
+    active_turn: LiveValue<'a>,
+    budget: usize,
+) -> Result<LiveValue<'a>> {
+    if !history.is_array()? {
+        return Err(napi::Error::from_reason(
+            "task reference history must be an array",
+        ));
+    }
+    let mut snapshot = SnapshotBuilder::new(
+        snapshot_value(task)?,
+        Some(snapshot_value(active_turn)?),
+        budget,
+    );
+    let env = history.env();
+    for index in 0..history.get(c"length")?.number()? as u32 {
+        // Do not pin discarded values or projected bodies in the outer N-API scope.
+        let mut scope = std::ptr::null_mut();
+        napi::check_status!(unsafe { sys::napi_open_handle_scope(env, &mut scope) })?;
+        let result = (|| -> Result<()> {
+            let row = history.element(index)?;
+            if !row.truthy()? {
+                return Ok(());
+            }
+            let task = snapshot_value(row.get(c"taskId")?)?;
+            let role = snapshot_value(row.get(c"role")?)?;
+            let turn = snapshot_value(row.get(c"turnId")?)?;
+            let unfinished = row.get(c"_interim")?.truthy()?
+                || row.get(c"partial")?.truthy()?
+                || row.get(c"cancelled")?.truthy()?
+                || row.get(c"error")?.truthy()?;
+            snapshot.push_projected(&task, &role, &turn, unfinished, || {
+                let mut fields = Vec::new();
+                for key in SNAPSHOT_FIELDS {
+                    let value = row.get_key(row.from_value(&V::from(key))?)?;
+                    if !value.undefined()? {
+                        fields.push((key, snapshot_value(value)?));
+                    }
+                }
+                Ok(V::object(fields))
+            })
+        })();
+        napi::check_status!(unsafe { sys::napi_close_handle_scope(env, scope) })?;
+        result?;
+    }
+    history.from_value(&snapshot.finish())
+}
+
+#[napi]
+pub fn task_shell_snapshot(
+    env: Env,
+    task: Unknown<'_>,
+    history: Unknown<'_>,
+    active_turn: Unknown<'_>,
+    max_bytes: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let budget = js::js_to_number(&snapshot_value(LiveValue::new(&env, max_bytes))?) as usize;
+    Ok(snapshot_live(
+        LiveValue::new(&env, task),
+        LiveValue::new(&env, history),
+        LiveValue::new(&env, active_turn),
+        budget,
+    )?
+    .raw())
 }
 
 #[napi]

@@ -574,9 +574,10 @@ impl Delivery {
         let (root, task, session) = (self.root.clone(), self.task.clone(), self.id.clone());
         let receipt_id = self.receipt.clone();
         blocking(move || {
-            let history = store::session_messages(&root, &session)?;
             let mut tasks = task_store(&root)?;
-            let seed = tasks.shell_context_seed(&task, true, "", &history)?;
+            let seed = tasks.shell_context_seed(&task, true, "", || {
+                store::session_snapshot(&root, &session, &task, None)
+            })?;
             let record = tasks.delivery_record("task", &task)?;
             let mut receipt = tasks.delivery_record("receipt", &receipt_id)?;
             receipt["contextSeedSnapshotIds"] =

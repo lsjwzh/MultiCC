@@ -66,7 +66,9 @@ async function prepareRoleContext(store, descriptor, deps) {
     const closed = await deps.closePersistent(descriptor.sessionId);
     if (closed?.closed !== true) throw fail('role_native_close_unverified');
     if (deps.hasBackground(descriptor.sessionId)) throw fail('role_writer_busy');
-    const checkpoint = snapshotHistory(task.id, deps.loadHistory?.(descriptor.sessionId) || []);
+    const checkpoint = deps.snapshotTaskHistory
+      ? deps.snapshotTaskHistory(descriptor.sessionId, task.id)
+      : snapshotHistory(task.id, deps.loadHistory?.(descriptor.sessionId) || []);
     const archiveId = hash([descriptor.sessionId, record.taskRoleEpoch || null, snapshot.id]);
     if (!store.get('task-role:native-archive', archiveId)) store.set('task-role:native-archive', archiveId, {
       sessionId: record.id, fromEpoch: record.taskRoleEpoch || null, toEpoch: snapshot.id,

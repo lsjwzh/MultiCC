@@ -1147,6 +1147,12 @@ impl<'a> History<'a> {
         match action {
             "read" => clone_json(self.current(session)?),
             "view" => self.current(session),
+            "taskContextSnapshot" => crate::task_store::snapshot_live(
+                value,
+                self.current(session)?,
+                args.element(2)?,
+                multicc_core::task_shell::reference::SNAPSHOT_BYTES,
+            ),
             "invalidate" => {
                 let cache_key = key(session)?;
                 self.owner.cache.borrow_mut().remove(&cache_key);

@@ -69,6 +69,8 @@ function createTaskShellHost(deps) {
     if (!store) store = createTaskShellStore(deps.file);
     return store;
   }
+  const snapshotTaskHistory = deps.snapshotTaskHistory || ((sessionId, taskId, activeTurnId = null) =>
+    require('../native/runtime').taskShellContext.snapshotHistory(taskId, deps.loadHistory(sessionId), { activeTurnId }));
   function getRuntime() {
     if (runtime) return runtime;
     ensureStore();
@@ -89,7 +91,7 @@ function createTaskShellHost(deps) {
       // Deleting a shell also drops the re-attribution journal rows it owns;
       // task-operations owns the overlay keys, so it does that half.
       purgeShellAttribution: shellId => taskOperations().purgeShell(shellId),
-      getHistory: deps.loadHistory,
+      getHistory: deps.loadHistory, snapshotTaskHistory,
       // Read-only view of manual re-attribution. Missing overlay ports (tests,
       // older hosts) simply keep the canonical annotation.
       applyAttributionOverlay: messages => {
@@ -216,8 +218,8 @@ function createTaskShellHost(deps) {
     const task = owns(sessionId);
     if (!task) return fallback;
     if (task.unavailable) throw failure('task_shell_state_unavailable');
-    const history = isFirstTurn && !task.adopted ? deps.loadHistory(sessionId) : [];
-    return store.shellContextSeed(task.id, Boolean(isFirstTurn), fallback || '', history);
+    const snapshot = isFirstTurn && !task.adopted ? snapshotTaskHistory(sessionId, task.id) : null;
+    return store.shellContextSeed(task.id, Boolean(isFirstTurn), fallback || '', snapshot);
   }
   function owns(id) { return getRuntime().owns(id) || (candidate(id) ? { unavailable: true } : null); }
   function accepts(id) {

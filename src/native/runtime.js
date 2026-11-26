@@ -643,7 +643,7 @@ const taskShellContext = {
   renderLazyContextPrompt: taskId => reference('lazy-prompt', taskId),
   verifySnapshot: (snapshot, id) => reference('verify', { snapshot, id }),
   snapshotHistory: (taskId, history, { activeTurnId = null, maxBytes = 12000 } = {}) =>
-    reference('snapshot', { taskId, history, activeTurnId, maxBytes }),
+    getNative().taskShellSnapshot(taskId, history, activeTurnId, maxBytes),
 };
 // Compatibility closures keep the existing CLI/SDK callbacks alive. Rust owns
 // preparation and all routing decisions; no Provider policy is reimplemented here.

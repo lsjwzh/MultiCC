@@ -5,7 +5,7 @@ use multicc_core::{
     durable_state,
     js::{self, JsValue as V},
     quota_guard,
-    task_shell::{chat, reference},
+    task_shell::chat,
 };
 use serde_json::{json, Value};
 use std::{path::Path, sync::Arc};
@@ -141,12 +141,7 @@ fn reserve(
         {
             return Err(refusal("dependency_not_ready", 409));
         }
-        let snapshot = reference::snapshot(
-            &V::from(id),
-            &store::session_messages(root, session_id)?,
-            active,
-            12_000,
-        );
+        let snapshot = store::session_snapshot(root, session_id, id, active)?;
         snapshots.push(js::json_stringify_or_undefined(&snapshot));
     }
     drop(tasks);

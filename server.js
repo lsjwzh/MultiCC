@@ -2055,7 +2055,7 @@ const taskShellHost = require('./src/task-shell/host').createTaskShellHost({
   onAttributionChanged: (id, detail) => chatBroadcast(id, {
     ...(detail && typeof detail === 'object' ? detail : {}), type: 'task_attribution_updated' }),
   file: MULTICC_PATHS.taskShellDbFile, records: persistedSessions, directories, createSessionRecord,
-  loadHistory: viewChatHistory, getTaskBoard: () => taskBoardRuntime, appendHistory: (id, m) => chatHistoryRuntime.appendMessage(id, m), hideHistory: (...args) => chatHistoryRuntime.hideMessages(...args),
+  snapshotTaskHistory, loadHistory: viewChatHistory, getTaskBoard: () => taskBoardRuntime, appendHistory: (id, m) => chatHistoryRuntime.appendMessage(id, m), hideHistory: (...args) => chatHistoryRuntime.hideMessages(...args),
   displayHistory: (id, hidden) => chatHistoryRuntime.projectedMessages(id, hidden), getChatState: id => chatSessions.get(id),
   subscribeChat: listener => { bus.on('chat:stream-progress', listener); return () => bus.off('chat:stream-progress', listener); },
   getWorkHost: () => sessionWorkHost, getScheduler: () => orchestrationRuntime?.sessionScheduler,
@@ -2228,6 +2228,9 @@ require('./src/routes/host-ops-host').createHostOpsHost({
 }).mountRoute(app);
 
 function loadChatHistory(sessionId) { return chatHistoryRuntime.load(sessionId); }
+function snapshotTaskHistory(sessionId, taskId, activeTurnId = null) {
+  return chatHistoryService.taskContextSnapshot(sessionId, taskId, activeTurnId);
+}
 // Read-only history view.
 function viewChatHistory(sessionId) { return chatHistoryRuntime.viewHistory(sessionId); }
 function chatLastActivity(sessionId, activeChat) {
@@ -2503,7 +2506,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   reapBackground: (id, opts) => backgroundTaskRuntime.reapSessionShadows(id, opts),
   backgroundSilence: id => backgroundTaskRuntime.backgroundSilenceMs(id),
   updateCwd: (id, cwd) => { const state = chatSessions.get(id); if (state) state.cwd = cwd; },
-  pendingInput: id => userInputSignalHost.pending(id), pendingInputAsync: id => userInputSignalHost.pendingAsync(id), loadHistory: id => viewChatHistory(id),
+  pendingInput: id => userInputSignalHost.pending(id), pendingInputAsync: id => userInputSignalHost.pendingAsync(id), snapshotTaskHistory,
   budgets: { executionLimit: Number(process.env.MULTICC_WORKSPACE_RUN_LIMIT || 8), residentLimit: Number(process.env.MULTICC_WORKSPACE_RESIDENT_LIMIT || 128), restoreLimit: Number(process.env.MULTICC_WORKSPACE_RESTORE_LIMIT || 2), staleUncertainMs: Number(process.env.MULTICC_WORKSPACE_STALE_UNCERTAIN_MS || 300000), stuckBlockedMs: Number(process.env.MULTICC_WORKSPACE_STUCK_BLOCKED_MS || 1800000), stuckSilenceMs: Number(process.env.MULTICC_WORKSPACE_STUCK_SILENCE_MS || 600000) },
   log: (event, data) => logger.warn(event, data),
   // P4 交付蒸馏：merge 回执 published 后把交付记录写进任务级记忆。

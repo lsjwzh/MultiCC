@@ -74,7 +74,7 @@ function buildChatHistoryService(options = {}) {
   const methods = ['append', 'assertCanDeleteSession', 'commitAppend', 'containsDelivery',
     'deleteSession', 'discardAppend', 'ensurePersistedIds', 'hasPersistedDelivery',
     'invalidate', 'latestAssistantAt', 'latestAssistantConclusion', 'paginate', 'prepareAppend', 'read', 'remove',
-    'replace', 'upsertInterim', 'view'];
+    'replace', 'taskContextSnapshot', 'upsertInterim', 'view'];
   const entries = methods.map(method => [method, (...args) => owner.run(anchor, method, args)]);
   if (typeof history.hasPersistedDeliveryAsync === 'function') {
     const index = entries.findIndex(([method]) => method === 'hasPersistedDelivery');

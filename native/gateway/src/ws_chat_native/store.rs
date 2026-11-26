@@ -11,7 +11,10 @@ use multicc_core::{
     quota_guard, random_id,
     session_records::{self, SessionDirectory},
     state_file,
-    task_shell::chat::Rejection,
+    task_shell::{
+        chat::Rejection,
+        reference::{SnapshotBuilder, SNAPSHOT_BYTES},
+    },
     task_store::TaskStore,
 };
 use sha2::{Digest, Sha256};
@@ -76,20 +79,24 @@ fn read_messages(path: &Path, session: &str) -> Result<Vec<V>, String> {
         .map_err(|error| format!("cannot read chat history: {error}"))?;
     messages.retain(|message| matches!(message, V::Object(_)));
     for (index, message) in messages.iter_mut().enumerate() {
-        if js::truthy_opt(message.get("role")) && !js::truthy_opt(message.get("id")) {
-            // Legacy rows need a stable ID even on a read-only reconnect.
-            let mut hash = Sha256::new();
-            hash.update(session.as_bytes());
-            hash.update((index as u64).to_be_bytes());
-            hash.update(js::json_stringify_or_undefined(message).as_bytes());
-            quota_guard::set(
-                message,
-                "id",
-                V::from(format!("m_legacy_{:x}", hash.finalize())),
-            );
-        }
+        legacy_message_id(message, session, index);
     }
     Ok(messages)
+}
+
+fn legacy_message_id(message: &mut V, session: &str, index: usize) {
+    if js::truthy_opt(message.get("role")) && !js::truthy_opt(message.get("id")) {
+        // Legacy rows need a stable ID even on a read-only reconnect.
+        let mut hash = Sha256::new();
+        hash.update(session.as_bytes());
+        hash.update((index as u64).to_be_bytes());
+        hash.update(js::json_stringify_or_undefined(message).as_bytes());
+        quota_guard::set(
+            message,
+            "id",
+            V::from(format!("m_legacy_{:x}", hash.finalize())),
+        );
+    }
 }
 
 pub(super) fn last_task_message(
@@ -119,12 +126,25 @@ pub(super) fn last_task_message(
     Ok(last)
 }
 
-pub(super) fn session_messages(root: &Path, id: &str) -> Result<Vec<V>, String> {
-    transcript_stem(id)?;
-    read_messages(
-        &chat_history_file::transcript_path(&root.join("chat_history"), id),
-        id,
-    )
+pub(super) fn session_snapshot(
+    root: &Path,
+    session: &str,
+    task: &str,
+    active_turn: Option<&V>,
+) -> Result<V, String> {
+    transcript_stem(session)?;
+    let path = chat_history_file::transcript_path(&root.join("chat_history"), session);
+    let mut snapshot = SnapshotBuilder::new(V::from(task), active_turn.cloned(), SNAPSHOT_BYTES);
+    let mut index = 0;
+    chat_history_file::visit_transcript(&path, |mut row| {
+        if matches!(row, V::Object(_)) {
+            legacy_message_id(&mut row, session, index);
+            index += 1;
+            snapshot.push(&row);
+        }
+    })
+    .map_err(|error| format!("cannot read chat history: {error}"))?;
+    Ok(snapshot.finish())
 }
 
 pub fn shell_history(
