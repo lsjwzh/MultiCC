@@ -468,3 +468,58 @@ test('an upstream 429 carries its structured rejection to the attempt outcome', 
   assert.equal('rejection' in cleanOutcomes[0], false);
   assert.equal('rejection' in clean.proxyFailure(next), false);
 });
+
+const currentOutcome = require('../src/providers/proxy-outcome');
+const legacyOutcome = require('./helpers/legacy-proxy-outcome');
+
+test('proxy request classification and normalization match 49fc8188, including repeated getters', () => {
+  for (const protocol of ['claude', 'codex', null]) {
+    for (const method of ['HEAD', 'post', 'POST', 'GET', null]) {
+      for (const url of ['/v1/messages/', '/responses?x', '/v1/messages\n', '/responses///?', null]) {
+        const req = { method, url, originalUrl: '/v1/messages' };
+        assert.equal(currentOutcome.proxyRequestKind(protocol, req), legacyOutcome.proxyRequestKind(protocol, req));
+      }
+    }
+  }
+  function normalize(api, input, failAt) {
+    const reads = [], marker = {};
+    const value = new Proxy(input, { get(obj, key) {
+      reads.push(key);
+      if (reads.length === failAt) throw marker;
+      return obj[key];
+    } });
+    try {
+      const out = api.normalizeProxyOutcome(value);
+      return [reads, out, Object.keys(out), Object.isFrozen(out)];
+    } catch (err) { return [reads, err === marker, err.name, err.message]; }
+  }
+  for (const requestId of ['x-1', 'a'.repeat(80), 'a'.repeat(81), 'bad\n', 1]) {
+    for (const termination of ['upstream_http_error', 'upstream_failure', 'bogus']) {
+      for (const httpStatus of [undefined, 399, 400, 500.1, 599, 600, '502']) {
+        const input = { version: 1, requestId, requestKind: 'inference', termination, httpStatus };
+        for (const failAt of [0, 3, 7, 9]) {
+          assert.deepEqual(normalize(currentOutcome, input, failAt), normalize(legacyOutcome, input, failAt));
+        }
+      }
+    }
+  }
+});
+
+test('proxy termination preserves reentrant close, thrown identity and once-only terminal delivery', () => {
+  function run(api, claimClose) {
+    const req = new EventEmitter(), res = new EventEmitter();
+    const seen = [], sentinel = {};
+    let observation;
+    observation = api.observeProxyRequest('codex', req, res, (out, event) => {
+      seen.push([out.termination, event.errorCode, Object.isFrozen(out)]);
+      observation.settle({ statusCode: 429 });
+      throw sentinel;
+    }, () => claimClose);
+    const out = observation.settle({ get status() { req.emit('aborted'); return 'ERROR'; } });
+    assert.throws(() => observation.settle({ get statusCode() { throw sentinel; } }), e => e === sentinel);
+    const next = observation.settle({ statusCode: '599', get status() { throw sentinel; } });
+    assert.equal(next.requestId, out.requestId);
+    return [seen, out.termination, next.termination, next.httpStatus];
+  }
+  for (const claim of [true, 1, false]) assert.deepEqual(run(currentOutcome, claim), run(legacyOutcome, claim));
+});

@@ -73,3 +73,48 @@ const DESKTOP = `Now drawing from 'AC Power'\n`;
   assert.strictEqual(nodes['air-battery'].hidden, true);
   console.log('host battery: ok');
 })().catch(error => { console.error(error); process.exit(1); });
+
+const test = require('node:test');
+const legacyBattery = require('./helpers/legacy-host-battery');
+const battery = require('../src/host-battery');
+
+test('pmset readings match the 49fc8188 parser and preserve the shared unavailable value', () => {
+  for (const percent of ['0', '100', '101', '-1', '1000', '1.5', '５', '']) {
+    for (const space of ['', '\uFEFF', '\u0085', '\t', '\u2028']) {
+      for (const state of ['charging', ' Finishing Charge ', 'full', '', 'discharging']) {
+        const source = "AC Power\nInternalBattery " + percent + space + '%; ' + state
+          + '; 123:75 remaining\nInternalBattery 62%; full;\n';
+        const actual = battery.parsePmset(source);
+        const expected = legacyBattery.parsePmset(source);
+        assert.deepStrictEqual(actual, expected);
+        assert.strictEqual(actual === battery.UNAVAILABLE, expected === legacyBattery.UNAVAILABLE);
+      }
+    }
+  }
+  const sentinel = {};
+  assert.throws(() => battery.parsePmset({ toString() { throw sentinel; } }), e => e === sentinel);
+});
+
+test('Linux probes match the 49fc8188 read order, failures and cache expiry', async () => {
+  async function run(api, capacity, status) {
+    const paths = [];
+    let clock = 0;
+    const read = api.createBatteryReader({ platform: 'linux', now: () => clock, readFile: async file => {
+      paths.push(file);
+      if (file.endsWith('capacity')) return file.includes('/BAT1/') ? '87' : capacity;
+      if (status === null) throw new Error('missing status');
+      return status;
+    } });
+    const [a, b] = await Promise.all([read(), read()]);
+    clock = 4999;
+    const cached = await read();
+    clock = 5000;
+    const next = await read();
+    return [paths, a, next, a === b, a === cached, a === next];
+  }
+  for (const cap of ['', 'NaN', '-0', -4, 101, '0x10', ' 7.5 ']) {
+    for (const state of [null, 'FULL', 'charging', 'discharging']) {
+      assert.deepStrictEqual(await run(battery, cap, state), await run(legacyBattery, cap, state));
+    }
+  }
+});
