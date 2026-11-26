@@ -12,7 +12,7 @@ const test = require('node:test');
 
 const { createClassifyStateMachine } = require('../src/classify/task-attribution');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
-const { createUnattendedHost } = require('../src/unattended/host');
+const { createUnattendedHost } = require('../src/unattended/native-host');
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 
 const FAIL_FAST = Object.freeze({

@@ -2,7 +2,7 @@
 
 const { scopeHostProviderEvent } = require('./chat/provider-attempt-runtime');
 const { SESSION_DELIVERY_SYSTEM_PREFIX: SYSTEM_PREFIX } = require('./native/binding');
-const unattendedKernel = require('./unattended/kernel');
+const unattended = require('./unattended/native-host');
 const { getNative } = require('./native/binding');
 
 // "Real user" = a message a human typed. Host-authored deliveries all carry one
@@ -14,7 +14,7 @@ function isRealUserMessage(text, options = {}) {
   const value = typeof text === 'string' ? text : '';
   if (value.trimStart().startsWith(SYSTEM_PREFIX)) return false;
   let marker = '';
-  try { marker = unattendedKernel.tag(); } catch (_) { marker = ''; }
+  try { marker = unattended.kernel.tag(); } catch (_) { marker = ''; }
   if (marker && value.includes(marker)) return false;
   return true;
 }

@@ -198,6 +198,7 @@ pub mod turn_request;
 pub mod turn_runtime_store;
 pub mod turn_state;
 pub mod unattended;
+mod unattended_host;
 mod unattended_routes;
 pub mod vendor_login;
 pub mod vendor_model_catalog;

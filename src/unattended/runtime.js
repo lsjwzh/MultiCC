@@ -4,8 +4,7 @@
 // startup file only names ports; the persistence rule lives here with the host.
 // Contract: docs/unattended-mode.md.
 
-const { createUnattendedHost } = require('./host');
-const kernel = require('./kernel');
+const unattended = require('./native-host');
 
 const DURATION_DEFAULT = 120;
 const MS_PER_MINUTE = 60_000;
@@ -60,7 +59,7 @@ function createUnattendedRuntime({
   // 120-minute window starting now; non-active records get a null-safe
   // startedAt/deadlineAt so the schema and DTO never see null.
   const clampMinutes = value => {
-    const out = kernel.clampDuration({ maxDurationMinutes: value });
+    const out = unattended.kernel.clampDuration({ maxDurationMinutes: value });
     return Number(out && out.maxDurationMinutes) || DURATION_DEFAULT;
   };
   const positive = value => {
@@ -149,7 +148,7 @@ function createUnattendedRuntime({
     try { saveSessions('unattended.boot'); } catch (_) { /* best effort at boot */ }
   }
 
-  const host = createUnattendedHost({
+  const host = unattended.createUnattendedHost({
     getRecord,
     persistState,
     getHistory: id => loadHistory(id),

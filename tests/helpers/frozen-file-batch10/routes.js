@@ -10,7 +10,7 @@
 // budget. The supervisor host is late-bound (`deps.getUnattended`): it is
 // composed after this module is required, like the other runtime hosts.
 
-const { LIMITS } = require('../../../src/unattended/kernel');
+const { LIMITS } = require('../frozen-unattended/kernel');
 
 function mountUnattendedRoutes(app, deps = {}) {
   if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {

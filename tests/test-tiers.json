@@ -7036,6 +7036,15 @@
       ]
     },
     {
+      "path": "tests/test-unattended-native-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-unattended-routes.js",
       "tier": "core",
       "lane": "deterministic",

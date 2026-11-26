@@ -11,7 +11,7 @@ const {
   isOutcomeLetter,
 } = require('../../src/classify/vocab');
 const { isUserTypedWork } = require('./legacy-session-work-user-input');
-const unattendedKernel = require('../../src/unattended/kernel');
+const unattendedKernel = require('./frozen-unattended/kernel');
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'assessing', 'frozen']);
 const CONTROL_KINDS = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
