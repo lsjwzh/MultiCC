@@ -575,7 +575,7 @@ test('every CLI the server accepts has a display entry', () => {
   // A lane added on the server without a row here would render as its own raw id
   // on every surface (that is the fallback, on purpose) — this turns "someone
   // forgot the display table" into a red test instead of a mystery on screen.
-  const { SUPPORTED_CLIS } = require('../src/session-dto');
+  const { SUPPORTED_CLIS } = require('../src/native/runtime').getSessionDto();
   const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
   const schema = JSON.parse(read('contracts/v1/schemas/session.schema.json'));
   const sets = [

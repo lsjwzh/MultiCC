@@ -3,7 +3,7 @@
 const { nameOf } = require('../cli/cli-capability');
 
 const { getNative } = require('../native/runtime');
-const { sanitizePublicText } = require('../session-dto');
+const { sanitizePublicText } = require('../native/runtime').getSessionDto();
 const { labelWithCode } = require('../native/task-domain');
 
 const MAX_ROLE_SUMMARY_CHARS = 320;

@@ -786,7 +786,7 @@ test('held query identities preserve identical adjacent answers across history r
 });
 
 test('public session text redacts before truncating in UTF-16 units', () => {
-  const { sanitizePublicText } = require('../src/session-dto');
+  const { sanitizePublicText } = require('../src/native/runtime').getSessionDto();
   assert.equal(sanitizePublicText('Bearer demo sk-abcdefgh token=x C:\\home\\a.txt /demo/path'), 'Bearer [redacted] [redacted] token=[redacted] [path] [path]');
   assert.equal(sanitizePublicText('😀x', 1), '\ud83d');
   assert.equal(sanitizePublicText('\udfff/one/two!', -1), '\udfff[path]');
@@ -799,7 +799,7 @@ test('public session text redacts before truncating in UTF-16 units', () => {
 });
 
 test('public DTO traversal follows live arrays, property deletion and passthrough identity', () => {
-  const { assertDtoSafe, toSessionDto, unattendedDto, SUPPORTED_CLIS } = require('../src/session-dto');
+  const { assertDtoSafe, toSessionDto, unattendedDto, SUPPORTED_CLIS } = require('../src/native/runtime').getSessionDto();
   const injected = [];
   injected.forEach = visit => visit({ cwd: 'fixture' }, 'tag');
   assert.throws(() => assertDtoSafe(injected), { message: 'sensitive DTO key at $[tag].cwd' });
@@ -819,4 +819,56 @@ test('public DTO traversal follows live arrays, property deletion and passthroug
   const criteria = ['before'];
   criteria.slice = () => ['after'];
   assert.deepEqual(unattendedDto({ criteria }).criteria, ['after']);
+});
+
+const frozenSessionDto = require('./helpers/frozen-file-batch21/session-dto');
+function sessionDtoOutcome(api, name, make) {
+  const events = [];
+  const args = make(events);
+  try {
+    const value = api[name](...args);
+    if (name === 'assertDtoSafe') { assert.equal(value, args[0]); return { value: 'input identity', events }; }
+    return { value, events };
+  }
+  catch (error) { return { thrown: error.name, message: error.message, events }; }
+}
+function compareSessionDto(name, make) {
+  const candidate = require('../src/native/runtime').getSessionDto();
+  assert.deepEqual(sessionDtoOutcome(candidate, name, make), sessionDtoOutcome(frozenSessionDto, name, make), name);
+}
+
+test('frozen session DTO preserves public projections, primitive bounds and UTF-16', () => {
+  for (const value of [undefined, null, false, true, 0, -0, NaN, Infinity, 1n, '', '😀\ud800', {}, [], Symbol('fixture')]) {
+    compareSessionDto('sanitizePublicText', () => [value, 3]);
+    compareSessionDto('unattendedDto', () => [value]);
+    compareSessionDto('toSessionDto', () => [{ id: 's', label: value, clients: value, createdAt: value, mergeState: value, subagent: value, unattended: value }]);
+  }
+  for (const status of ['active','achieved','needs_human','exhausted','stopped','error','other']) {
+    compareSessionDto('unattendedDto', () => [{ status, goal: 'g', criteria: ['a', null, 'b'], history: [null, { verdict: 'achieved', reason: 'done', at: 1 }], lastVerdict: { verdict: 'continue', reason: 'r', nextInstruction: 'next', humanReason: 'h', at: -1 }, stall: { sameInstruction: 2.9, auxFailures: -1, consecutiveFaults: '3' }, maxDurationMinutes: 5000, pausedBy: 'input', retryAt: 5, retryCategory: 'fault', evaluating: true }]);
+  }
+  compareSessionDto('toSessionDto', () => [{ id: 's', cli: 'codex', kind: 'chat', subagent: { providerId: 'p', model: 'm', effectiveModel: 'e', inherited: true }, mergeState: { ahead: '2', behind: -1, dirty: true, mergeReady: false, rebaseInProgress: true }, claudeWorkflow: false, preferSubtasks: true, workspaceState: 'thawing', autoCommit: false, providerSelection: { version: 1, mode: 'auto', protocol: 'openai_responses', candidates: [{ providerId: 'official', model: null, priority: 1, enabled: true }], maxAttempts: 2, sticky: true, allowCrossTrust: true } }]);
+});
+
+test('frozen session DTO agrees on live getters, array overrides and abrupt completion', () => {
+  const watch = (events, value) => new Proxy(value, { get(target, key, receiver) { events.push(String(key)); return Reflect.get(target, key, receiver); } });
+  compareSessionDto('toSessionDto', events => [watch(events, { id: 's', cli: 'codex', kind: 'chat', claudeWorkflow: true, preferSubtasks: false, subagent: watch(events, { providerId: 'p', model: 'm', inherited: true }), mergeState: watch(events, { ahead: 1, behind: 2 }), createdAt: new Date(0), lastActivity: 0, unattended: watch(events, { status: 'active', criteria: ['x'], history: [{ verdict: 'continue' }], lastVerdict: { verdict: 'achieved' }, stall: {}, pausedBy: 'user', retryCategory: 'capacity' }) })]);
+  for (const name of ['toSessionDto', 'unattendedDto', 'assertDtoSafe']) compareSessionDto(name, events => [new Proxy({}, { get(_, key) { events.push(String(key)); throw new RangeError('sentinel'); }, ownKeys() { events.push('keys'); throw new RangeError('sentinel'); } })]);
+  compareSessionDto('unattendedDto', events => [{ criteria: { get slice() { events.push('unused'); throw new Error('unused'); } }, history: [null, false, 0, { get at() { events.push('at'); return { valueOf() { events.push('number'); return 3; } }; } }] }]);
+  compareSessionDto('assertDtoSafe', events => {
+    const values = []; values.forEach = fn => { events.push('visit'); fn({ get value() { events.push('child'); return 1; } }, 'custom'); };
+    return [values, { toString() { events.push('location'); return 'root'; } }];
+  });
+});
+
+test('frozen DTO traversal snapshots object entries and preserves sparse array access', () => {
+  compareSessionDto('assertDtoSafe', events => [{ get first() { events.push('first'); delete this.cwd; return { safe: true }; }, cwd: '/fixture' }]);
+  compareSessionDto('assertDtoSafe', () => [{ nested: [{ password: 'fixture' }] }]);
+  compareSessionDto('assertDtoSafe', events => { const values = [1, , 3]; Object.defineProperty(values, 0, { get() { events.push('zero'); values[1] = { ok: true }; return 1; } }); return [values]; });
+  const candidate = require('../src/native/runtime').getSessionDto();
+  for (const name of ['SUPPORTED_CLIS','SUPPORTED_KINDS']) {
+    assert.deepEqual([...candidate[name]], [...frozenSessionDto[name]]);
+    const marker = {}; candidate[name].add(marker); frozenSessionDto[name].add(marker);
+    try { compareSessionDto('toSessionDto', () => [{ id: 's', cli: marker, kind: marker }]); }
+    finally { candidate[name].delete(marker); frozenSessionDto[name].delete(marker); }
+  }
 });

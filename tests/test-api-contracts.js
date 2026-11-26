@@ -21,7 +21,7 @@ const {
   validateOpenApiDocument,
   validateSchemaDocument,
 } = require('./helpers/contract-validator');
-const { toSessionDto } = require('../src/session-dto');
+const { toSessionDto } = require('../src/native/runtime').getSessionDto();
 const { gatewayDto } = require('../src/voice/gateway');
 
 const ROOT = path.join(__dirname, '..');

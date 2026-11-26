@@ -123,13 +123,13 @@ test('Air task-shell executions inherit the auto-commit default instead of forci
 
 // 「缺字段怎么读」在每个对外投影里都得是「开」，否则同一条记录在不同入口显示不一样。
 test('every session projection reads a missing autoCommit as ON', () => {
-  const { toSessionDto } = require('../src/session-dto');
+  const { toSessionDto } = require('../src/native/runtime').getSessionDto();
   {
     assert.equal(toSessionDto({ id: 's', kind: 'chat', cli: 'claude', dirId: 'd' }).autoCommit, true);
     assert.equal(toSessionDto({ id: 's', kind: 'chat', cli: 'claude', dirId: 'd', autoCommit: false }).autoCommit, false);
   }
   const fs = require('node:fs'), path = require('node:path');
-  for (const file of ['src/session-dto.js', 'src/routes/session-admin.js', 'src/workspace/air-routes.js', 'src/workspace/air-routes-host.js', 'public/chat.js']) {
+  for (const file of ['native/addon/src/session_dto.rs', 'src/routes/session-admin.js', 'src/workspace/air-routes.js', 'src/workspace/air-routes-host.js', 'public/chat.js']) {
     const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.equal(/!!\s*[\w.]*\.autoCommit\b/.test(text), false, `${file} 不许用 !! 读 autoCommit（缺键会读成关）`);
   }
