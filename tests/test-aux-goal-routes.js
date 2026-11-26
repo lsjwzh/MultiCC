@@ -887,3 +887,28 @@ test('GET /api/aux/config attaches the persisted limit summary + freshness from 
     for (const p of group) assert.equal(p.limit, null);
   }
 });
+
+test('Goal precheck preserves the frozen prompt for every dimension mask and arbitrary task text', () => {
+  const legacy = require('./helpers/legacy-orchestration-routes').auxGoal();
+  const live = require('../src/routes/aux-goal');
+  const keys = Object.keys(legacy.GOAL_DIMENSIONS);
+  assert.deepEqual(Object.entries(live.GOAL_DIMENSIONS), Object.entries(legacy.GOAL_DIMENSIONS));
+  const task = '中\ud800\n<<< ${list} ${task} >>>';
+  for (let mask = 0; mask < 2 ** keys.length; mask++) {
+    const dimensions = Object.fromEntries(keys.map((key, index) => [key, !!(mask & (1 << index))]));
+    assert.equal(live.buildGoalPrecheckPrompt(task, dimensions), legacy.buildGoalPrecheckPrompt(task, dimensions));
+  }
+});
+
+test('Goal precheck rereads the public labels after an all-disabled getter and propagates synchronous errors', () => {
+  const { buildGoalPrecheckPrompt, GOAL_DIMENSIONS } = require('../src/routes/aux-goal');
+  try {
+    const dimensions = { get objective() { GOAL_DIMENSIONS.extra = 'extra criterion'; return false; } };
+    assert.match(buildGoalPrecheckPrompt('task', dimensions), /5\. extra criterion\n/);
+    const original = {};
+    assert.throws(() => buildGoalPrecheckPrompt('task', { get objective() { throw original; } }), err => err === original);
+    assert.throws(() => buildGoalPrecheckPrompt({ [Symbol.toPrimitive]() { throw original; } }, {}), err => err === original);
+  } finally {
+    delete GOAL_DIMENSIONS.extra;
+  }
+});

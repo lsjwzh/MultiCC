@@ -1,13 +1,22 @@
 //! Goal prechecks are interactive consumers of the same durable Aux queue.
 use super::App;
 use multicc_core::{
-    js::serde::js_string, orchestration_routes::Route, provider_store, session_git::parse_int10,
+    goal_precheck,
+    js::{serde::js_string, JsString},
+    orchestration_routes::Route,
+    provider_store,
+    session_git::parse_int10,
 };
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 
 fn labels() -> Value {
-    json!({"objective":"目标明确：清楚要达成什么结果，而非含糊方向。","criteria":"完成标准明确：有可判断「做完了」的验收标准或可观察的产出。","scope":"范围清晰：边界明确，不至于无限发散。","executable":"可独立执行：代理无需再追问关键信息即可开工，或缺失信息能用合理默认补足。"})
+    Value::Object(
+        goal_precheck::DIMENSIONS
+            .into_iter()
+            .map(|(key, label)| (key.to_owned(), Value::from(label)))
+            .collect(),
+    )
 }
 fn score(v: &Value, default: i64) -> i64 {
     parse_int10(&js_string(v)).unwrap_or(default).clamp(0, 100)
@@ -103,15 +112,11 @@ pub(super) async fn handle(
     if enabled.is_empty() {
         enabled.extend(labels.as_object().unwrap().values());
     }
-    let list = enabled
-        .iter()
-        .enumerate()
-        .map(|(i, v)| format!("{}. {}", i + 1, v.as_str().unwrap_or("")))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let prompt = GOAL_PROMPT
-        .replacen("${list}", &list, 1)
-        .replacen("${task}", task, 1);
+    let criteria = enabled
+        .into_iter()
+        .map(|label| JsString::from(label.as_str().unwrap_or("")))
+        .collect::<Vec<_>>();
+    let prompt = goal_precheck::build_prompt(&criteria, &JsString::from(task)).to_string_lossy();
     let job = json!({"type":"goal_check","prompt":prompt,"meta":{"taskLen":task.encode_utf16().count(),"timeout":timeout}});
     let min = score(&body["minScore"], cfg["minScore"].as_i64().unwrap_or(60));
     let result = tokio::time::timeout(
@@ -149,25 +154,3 @@ pub(super) async fn handle(
     };
     Ok((200, response))
 }
-
-const GOAL_PROMPT: &str = r#"你是「任务质量审查助手」。下面是用户想交给一个自主 AI 编程代理、以「无人值守」模式（目标驱动、自主规划并执行到完成、最后由辅助模型自检验证）执行的任务。
-
-请只依据以下启用的标准判断它是否满足要求：
-${list}
-
-只输出一个 JSON 对象，不要任何额外文字、不要 markdown 代码块，字段如下：
-{
-  "verdict": "ok" | "needs_work",
-  "score": 0,
-  "issues": ["不满足之处，没有则空数组"],
-  "questions": ["仍需向用户澄清的问题，没有则空数组"],
-  "criteria": ["建议的完成/验收标准"],
-  "revised": "改写后可直接执行的任务描述，含目标与完成标准；若原任务已经很好可与原文基本一致"
-}
-
-score 为 0-100 的整数符合度评分，只针对上面启用的标准评分。所有文本字段用与用户任务相同的语言填写。
-
-用户任务：
-<<<
-${task}
->>>"#;

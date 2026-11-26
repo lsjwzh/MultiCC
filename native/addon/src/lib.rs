@@ -211,6 +211,7 @@ pub mod voice_readiness;
 pub mod windows_tools;
 mod workspace_overview;
 mod git_service;
+mod goal_precheck;
 mod repo_actor;
 pub mod worktree_sync;
 
