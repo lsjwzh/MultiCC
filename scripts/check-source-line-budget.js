@@ -836,8 +836,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 中英各 8 行 = +16 行；重跑生成器实测 10796/703320。
     // +29 bilingual keys (airTunnelSsh*): SSH（22 端口）一键映射面板与状态提示文案。
     // 中英各 29 行 = +58 行；重跑生成器 countLines 口径实测 10854/706873。
-    maxLines: 10854,
-    maxBytes: 706873,
+    // +2 双语键：桌面侧边栏的自动隐藏与固定操作。
+    maxLines: 10858,
+    maxBytes: 707047,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

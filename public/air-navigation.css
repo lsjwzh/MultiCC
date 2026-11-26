@@ -231,3 +231,36 @@
 .power-setting-wrap details summary { list-style: none; color: var(--muted); cursor: pointer; padding: 8px; }
 .power-setting-wrap details small { position: absolute; z-index: 2; right: 0; top: 100%; width: min(300px, 100%); padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: var(--shadow-2); }
 #settings-host-controls .ops-actions button, #settings-host-controls .ops-actions a { font-size: 13px; padding: 8px 10px; }
+
+#sidebar-edge, #sidebar-mode { display: none; }
+.side-settings-row { display: flex; align-items: center; }
+
+@media (min-width: 761px) {
+  #sidebar-mode {
+    display: grid; place-items: center; flex: 0 0 32px; min-height: 32px; padding: 0;
+    color: #748195; background: transparent; border: 0; border-radius: 8px;
+  }
+  #sidebar-mode:hover { background: #e9edf2; color: #34435b; }
+  .sidebar-auto-hide .sidebar-direction { transform: translateX(29px) scaleX(-1); }
+  .sidebar-auto-hide #sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 36;
+    transform: translateX(-100%); transition: transform 160ms ease-out;
+  }
+  .sidebar-auto-hide.sidebar-revealed #sidebar {
+    transform: translateX(0); box-shadow: 6px 0 24px #263f5d24;
+  }
+  .sidebar-auto-hide #chat-layer.is-expanded { left: 0; }
+  .sidebar-auto-hide #sidebar-edge {
+    position: fixed; inset: 0 auto 0 0; z-index: 35; display: grid; place-items: center;
+    width: 10px; padding: 0; border: 0; border-radius: 0; background: transparent;
+  }
+  #sidebar-edge::after {
+    content: ''; width: 4px; height: 48px; border-radius: 4px; background: #8b99aa;
+  }
+  #sidebar-edge:focus-visible { outline: 0; background: #eaf1fc; }
+  #sidebar-edge:focus-visible::after { background: #3478e5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-auto-hide #sidebar { transition: none; }
+}

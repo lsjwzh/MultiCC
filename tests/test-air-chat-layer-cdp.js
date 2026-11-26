@@ -257,6 +257,15 @@ test('Air opens a conversation as an overlay over the directory page, and expand
     assert.equal(expanded.titleText, '任务 A');
     await page.screenshot('02-chat-layer-expanded');
 
+    await page.evaluate('document.getElementById("sidebar-mode").click()');
+    const full = await page.evaluate(layerRect);
+    assert.equal(full.x, 0);
+    assert.equal(full.w, expanded.viewport.w);
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 320 });
+    assert.ok(await page.waitFor('document.getElementById("sidebar").getBoundingClientRect().left === 0'));
+    assert.equal((await page.evaluate(geometry)).sidebarHit.inSidebar, true);
+    await page.evaluate('document.getElementById("sidebar-mode").click()');
+
     // ── 收起：回到默认态 ────────────────────────────────────────────────────
     await page.evaluate(`document.getElementById('chat-expand').click()`);
     assert.ok(await page.waitFor(`!document.getElementById('chat-layer').classList.contains('is-expanded')`), '要退回默认态');

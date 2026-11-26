@@ -2736,6 +2736,8 @@
   "airSetupTitle": "Two things to set up before you start",
   "airShareTask": "Share this task",
   "airShareTaskTitle": "Share this task externally",
+  "airSidebarAutoHide": "Auto-hide sidebar",
+  "airSidebarPin": "Pin sidebar",
   "airSidebarNav": "Workspace and task navigation",
   "airSidebarNoTasks": "No task opened yet. Tasks in this workspace will show up here.",
   "airSidebarPlanned": "Planned · {stage}",

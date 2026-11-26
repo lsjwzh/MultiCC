@@ -217,3 +217,73 @@ test('手机底部导航三项：控制台（含不截条数的清单）/ 定时
     }
   });
 });
+
+test('Air desktop sidebar floats from the edge and remembers its mode across mobile and reload', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  await withCdpHarness({ routes: fixture().routes }, async page => {
+    const resize = width => page.send('Emulation.setDeviceMetricsOverride', {
+      width, height: 900, deviceScaleFactor: 1, mobile: false,
+    });
+    const move = (x, y) => page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    const wait = async condition => assert.ok(await page.waitFor(condition), condition);
+    const reload = async () => {
+      const origin = await page.evaluate('performance.timeOrigin');
+      await page.send('Page.reload');
+      await wait('performance.timeOrigin !== ' + origin + ' && document.readyState === "complete"');
+    };
+    const sidebar = 'document.querySelector("#sidebar")';
+    const mainLeft = 'document.querySelector("main").getBoundingClientRect().left';
+    await resize(1280);
+    await page.navigate('/air');
+    await wait(mainLeft + ' === 276');
+    await page.evaluate('document.querySelector("#sidebar-mode").click()');
+    await wait(sidebar + '.inert && ' + mainLeft + ' === 0');
+    await move(1, 320);
+    await wait(sidebar + '.getBoundingClientRect().left === 0 && !' + sidebar + '.inert');
+    assert.equal(await page.evaluate(mainLeft), 0);
+
+    // A popup anchored to the sidebar can extend past its right edge.
+    await page.evaluate('document.querySelector("#library").click()');
+    await move(330, 120);
+    await new Promise(resolve => setTimeout(resolve, 350));
+    assert.equal(await page.evaluate(sidebar + '.inert || document.querySelector("#directory-flyout").hidden'), false);
+    await page.evaluate('document.querySelector("#library").click()');
+    await wait(sidebar + '.inert');
+    await reload();
+    await wait(sidebar + '?.inert');
+
+    await page.evaluate('document.querySelector("#sidebar-edge").focus()');
+    const press = async (key, code) => {
+      for (const type of ['keyDown', 'keyUp']) {
+        await page.send('Input.dispatchKeyEvent', {
+          type, key, code: key, windowsVirtualKeyCode: code,
+          text: type === 'keyDown' && key === 'Enter' ? '\r' : '',
+        });
+      }
+    };
+    assert.equal(await page.evaluate('document.activeElement.id'), 'sidebar-edge');
+    await press('Enter', 13);
+    await wait('document.activeElement.id === "library" && !' + sidebar + '.inert');
+    await press('Escape', 27);
+    await wait('document.activeElement.id === "sidebar-edge" && ' + sidebar + '.inert');
+
+    await resize(390);
+    await wait('!' + sidebar + '.inert && !document.querySelector("#sidebar-edge").getClientRects().length');
+    await page.evaluate('document.querySelector("#mobile-nav").click()');
+    await wait('document.body.classList.contains("nav-open") && ' + sidebar + '.getBoundingClientRect().left === 0');
+    await page.evaluate('document.querySelector("#nav-scrim").click()');
+    await resize(960);
+    await wait(sidebar + '.inert');
+    await move(1, 320);
+    await move(100, 320);
+    await wait('!' + sidebar + '.inert && ' + sidebar + '.getBoundingClientRect().left === 0');
+    await move(600, 320);
+    await wait(sidebar + '.inert');
+    await move(1, 320);
+    await wait('!' + sidebar + '.inert');
+    await page.evaluate('document.querySelector("#sidebar-mode").click()');
+    await wait(mainLeft + ' === 240');
+    await reload();
+    await wait(mainLeft + ' === 240 && !' + sidebar + '.inert');
+  });
+});
