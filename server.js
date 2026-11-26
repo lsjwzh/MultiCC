@@ -267,6 +267,14 @@ let chatHistoryService = null;
 // and per-process runners keep their existing lifecycle after spawn is accepted.
 const chatTurnPreparationRuntime = createTurnRuntimeStore({ owner: stateOwner });
 let orchestrationRuntime = null; let sessionWorkHost = null; let sessionHibernationRuntime = null; let workspaceAdmission = null; let worktreeOrphanScanner = null;
+// Resolve the live owners on each probe, including during startup.
+const dispatchTargetBusyReasons = getNative().createDispatchBusyReasons({
+  occupied: sid => workspaceAdmission?.occupied(sid),
+  runActive: sid => sessionWorkHost?.isRunActive(sid),
+  leased: sid => defaultRepoActor.isLeased(sid),
+  shellBusy: sid => taskShellHost.isWorkspaceBusy(sid),
+  stuckHint: sid => workspaceAdmission?.stuckHint(sid),
+});
 const observability = createObservability({ service: 'multicc' });
 const { logger, metrics } = observability; const messageSearchRuntime = () => getSharedSearchRuntime({ dataDir: MULTICC_PATHS.root, logger }); // 消息全文索引（src/search/runtime.js）：进程内单例、按数据目录记忆化，首个 message-search 请求或启动时那次 .start() 才真正建库开扫
 const apiErrorPolicy = createApiErrorPolicyRuntime({ logger, metrics });
@@ -1914,28 +1922,6 @@ const {
   maybeSchedulePeriodicMemoryReview,
   trackPendingDistill: _trackPendingMemoryDistill,
 } = memoryRuntime;
-// Same gate as dispatchTargetBusy, decomposed into reason codes so the outbox
-// skip log and the insert-queued response can say WHY a delivery was vetoed;
-// every check fails closed, but a probe that cannot identify the workspace
-// names its own code — "occupied" would hide a wedge with no release path.
-function dispatchTargetBusyReasons(sid, item = null) {
-  const reasons = [];
-  try { if (workspaceAdmission?.occupied(sid)) reasons.push('workspace_occupied'); }
-  catch (err) { reasons.push(err?.code || 'workspace_occupied_check_failed'); }
-  try { if (sessionWorkHost?.isRunActive(sid)) reasons.push('run_active'); }
-  catch (_) { reasons.push('run_active_check_failed'); }
-  try { if (defaultRepoActor.isLeased(sid)) reasons.push('repo_lease'); }
-  catch (_) { reasons.push('repo_lease_check_failed'); }
-  try { if (taskShellHost.isWorkspaceBusy(sid)) reasons.push('task_shell_workspace_busy'); }
-  catch (_) { reasons.push('task_shell_busy_check_failed'); }
-  // Occupancy outliving its delivery is annotated, never reclaimed: `reasons`
-  // is already non-empty here, so a diagnostic can never create a busy verdict.
-  if (reasons.length) {
-    try { const stuck = workspaceAdmission?.stuckHint(sid); if (stuck) reasons.push(stuck); }
-    catch (_) { /* diagnostics never change the decision */ }
-  }
-  return reasons;
-}
 function dispatchTargetBusy(sid, item = null) {
   return dispatchTargetBusyReasons(sid, item).length > 0;
 }
