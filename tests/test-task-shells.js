@@ -338,7 +338,7 @@ test('a supervisor answer keeps its trusted origin through the durable shell rec
   assert.equal(opts.unattendedSystem, true);
   assert.equal(opts.unattendedRecovery, true);
   assert.equal(opts.system, true);
-  const policy = require('../src/unattended/kernel').decideTurnEnd({
+  const policy = require('../src/unattended/native-host').kernel.decideTurnEnd({
     state: { status: 'active' }, kind: 'user_input', source: 'task-shell', options: opts,
   });
   assert.notEqual(policy.queueInput, true, 'automatic answer must not become ordinary queued work');

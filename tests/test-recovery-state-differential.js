@@ -22,7 +22,7 @@ function frozenHostFactory(mutate = source => source) {
   frozen.filename = filename;
   frozen.paths = Module._nodeModulePaths(path.dirname(filename));
   const originalRequire = frozen.require.bind(frozen);
-  frozen.require = name => name === '../session/runtime-busy'
+  frozen.require = name => name === '../unattended/kernel' ? require('./helpers/frozen-unattended/kernel') : name === '../session/runtime-busy'
     ? require('./helpers/session-runtime-busy-oracle') : name === './scheduler' ? require('../src/session-work') : originalRequire(name);
   frozen._compile(mutate(source), filename);
   return frozen.exports.createSessionWorkHost;

@@ -226,7 +226,7 @@ nothing here is a suggestion — these are the exact wire shapes (`src/`, `serve
 
 One fixed literal, defined once in `native/core/src/unattended.rs`
 (`UNATTENDED_TAG`), exposed as `unattendedTag()` on the addon and as
-`TAG` from `src/unattended/kernel.js`:
+`TAG` from the `kernel` export of `src/unattended/native-host.js`:
 
 ```
 [无人值守 Unattended]
@@ -278,7 +278,7 @@ There is no `maxRounds` anywhere on the wire.
   maxDurationMinutesMin: 5, maxDurationMinutesMax: 1440 }`. The Rust kernel owns the pure
   math: `unattendedClampDuration` (`clamp_duration`), `unattendedArmDeadline`
   (`arm_deadline`), `unattendedDeadlineExpired` (`deadline_expired`), mirrored in
-  `src/unattended/kernel.js` as `clampDuration` / `armDeadline` / `deadlineExpired`.
+  the native kernel facade as `clampDuration` / `armDeadline` / `deadlineExpired`.
 - `start`/`resume` arm `startedAt = now`, `deadlineAt = now + maxDurationMinutes*60000`.
   `update` shifts only `maxDurationMinutes`: the deadline is recomputed from the ORIGINAL
   `startedAt`; if that deadline is already past it is clamped to `now + 1 minute` and a
@@ -315,7 +315,7 @@ There is no `maxRounds` anywhere on the wire.
 
 Each decision appends one chat-history message. It is **not** model context: `role` is
 `system`, every model-facing replay/evidence path filters `role === 'user' | 'assistant'`,
-and the supervisor's own verdict evidence (`historyMessages` in `src/unattended/host.js`)
+and the supervisor's own verdict evidence (`transcript` in `native/addon/src/unattended_host/evaluation.rs`)
 does the same.
 
 ```json
@@ -461,7 +461,7 @@ recovery message and the `unattendedRecovery` marker before any FIFO item.
 
 ### Every turn end has exactly one supervisor result
 
-One entry (`onTurnEnd(sessionId, facts)` in `src/unattended/host.js`) receives **every** way
+One entry (`onTurnEnd(sessionId, facts)` in `native/addon/src/unattended_host/turns.rs`) receives **every** way
 a turn can end. The host passes facts only; `decide_turn_end` in
 `native/core/src/unattended.rs` owns the policy and returns exactly one action. When a turn
 ends with no supervisor notice of its own, the held classic classify push is released, so a

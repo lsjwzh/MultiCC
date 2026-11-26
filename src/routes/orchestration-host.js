@@ -179,7 +179,7 @@ function mountUnattendedRoutes(app, deps = {}) {
     throw new TypeError('[unattended-routes] records map is required');
   }
   const { getNative } = require('../native/binding');
-  const { LIMITS } = require('../unattended/kernel');
+  const { LIMITS } = require('../unattended/native-host').kernel;
   const settle = async (res, result) => getNative().unattendedRouteResult(res, await result, LIMITS);
   const ports = { records, deps, limits: LIMITS, settle };
   app.get('/api/sessions/:id/unattended', (req, res) =>

@@ -1,11 +1,11 @@
 'use strict';
 
-// Unattended supervisor glue (src/unattended/host.js): evidence gathering, one
+// Unattended supervisor glue (src/unattended/native-host.js): evidence gathering, one
 // aux call per settle, persistence, pause/takeover, held-push fallbacks, trace
 // lines, fault continuation, per-turn dedupe and boot reconciliation.
 //
 // The policy itself is Rust (native/core/src/unattended.rs) and these tests run
-// the REAL native kernel through src/unattended/kernel.js. Only external ports
+// the REAL native kernel through the Rust policy facade. Only external ports
 // (aux queue, delivery, injector, clock, persistence) are faked. Queue ordering
 // against the REAL scheduler is covered in tests/test-unattended-fifo-order.js;
 // the classify-side double-observer race is in test-classify-api-error-state.js.
@@ -13,8 +13,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const nativeKernel = require('../src/unattended/kernel');
-const { createUnattendedHost, STATUS } = require('../src/unattended/host');
+const nativeKernel = require('../src/unattended/native-host').kernel;
+const { createUnattendedHost, STATUS } = require('../src/unattended/native-host');
 
 const TAG = '[无人值守 Unattended]';
 const CONTINUE = '{"verdict":"continue","reason":"next","nextInstruction":"do X"}';
