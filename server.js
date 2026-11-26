@@ -2739,18 +2739,8 @@ require('./src/routes/events-host').createEventsRuntime({
 }).mount(app);
 const teardownTriggers = triggerRuntime.teardownSession;
 
-const ensureFirstRunDirectory = async () => {
-  if (!_state.needsDefaultDirectory || directories.size > 0) return;
-  const result = await directoryModule.host.registerDefaultDirectory({
-    name: '我的工作区',
-    path: MULTICC_PATHS.defaultWorkspacePath,
-  });
-  if (!result.ok) {
-    logger.warn('default_directory_create_failed', { reason: result.message });
-    return;
-  }
-  logger.info('default_directory_created', { id: result.data.id, path: result.data.path });
-};
+const ensureFirstRunDirectory = async () =>
+  getNative().ensureFirstRunDirectory(_state, directories, directoryModule, MULTICC_PATHS, logger);
 const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(() => sessionHibernationRuntime.reconcileStartup()).then(ensureFirstRunDirectory).then(initWorktrees)
   .catch(error => console.error('[multicc] async repo startup failed:', error.message))
   .then(async () => {

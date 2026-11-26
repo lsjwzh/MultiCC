@@ -225,11 +225,7 @@ test('production composition delegates state loading and removes legacy host hel
   assert.doesNotMatch(source, /function\s+loadPersistedState\s*\(/);
   assert.doesNotMatch(source, /function\s+ensureUltracodeWorkers\s*\(/);
   assert.match(source, /const ensureFirstRunDirectory\s*=\s*async/);
-  // 首次运行注册默认工作区。曾经的 `create: true` 参数在目录逻辑搬进
-  // src/routes/directory-host.js 后变成隐含行为（registerDefaultDirectory 自己
-  // mkdirp），所以这里钉的是「调用点给出 name + path」加「host 真的会建目录」，
-  // 而不是那个已经不存在的入参 —— 只钉入参会让这条守卫在搬迁后变成死断言。
-  assert.match(source, /name:\s*'我的工作区'[\s\S]{0,120}path:\s*MULTICC_PATHS\.defaultWorkspacePath/);
+  assert.match(source, /getNative\(\)\.ensureFirstRunDirectory\(_state, directories, directoryModule, MULTICC_PATHS, logger\)/);
   const directoryHost = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'directory-host.js'), 'utf8');
   assert.match(directoryHost, /async function registerDefaultDirectory\(\{\s*name,\s*path:\s*rawPath\s*\}\)/);
   assert.match(directoryHost, /if \(!fsPort\.exists\(resolved\)\) fsPort\.mkdirp\(resolved\)/,
@@ -383,4 +379,36 @@ test('boot validation errors are unchanged and do not touch storage', () => {
     };
     assert.deepEqual(outcome(nativeBootstrap), outcome(legacyBootstrap));
   }
+});
+
+test('first-run workspace registration preserves rejection and reason identity across startup', async () => {
+  const { ensureFirstRunDirectory } = require('../src/native/binding').getNative();
+  const state = { needsDefaultDirectory: true }, directories = new Map();
+  const paths = { defaultWorkspacePath: '/data/工作区' };
+  const info = [], warnings = [];
+  const logger = { info: (...args) => info.push(args), warn: (...args) => warnings.push(args) };
+  let register;
+  const module = { host: { registerDefaultDirectory(options) {
+    assert.deepEqual(options, { name: '我的工作区', path: paths.defaultWorkspacePath });
+    return register();
+  } } };
+  const boot = async () => ensureFirstRunDirectory(state, directories, module, paths, logger);
+  const pending = Promise.withResolvers();
+  register = () => pending.promise;
+  const job = boot();
+  assert.deepEqual(info, []);
+  pending.resolve({ ok: true, data: { id: 'first', path: paths.defaultWorkspacePath } });
+  assert.equal(await job, undefined);
+  assert.deepEqual(info, [['default_directory_created', { id: 'first', path: paths.defaultWorkspacePath }]]);
+  const cause = {};
+  register = () => ({ ok: false, message: cause });
+  assert.equal(await boot(), undefined);
+  assert.equal(warnings[0][0], 'default_directory_create_failed');
+  assert.equal(warnings[0][1].reason, cause);
+  register = () => Promise.reject(cause);
+  await assert.rejects(boot(), err => err === cause);
+  register = () => { throw cause; };
+  await assert.rejects(boot(), err => err === cause);
+  directories.set('existing', {});
+  assert.equal(await boot(), undefined);
 });
