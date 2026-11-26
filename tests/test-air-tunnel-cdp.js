@@ -80,31 +80,38 @@ test('Air renders and operates the regional tunnel page without the legacy manag
     return json({ ok: true, message: update.on ? 'Funnel 已开启' : 'Funnel 已关闭', status: '' });
   };
   routes['/api/tunnel/ipv6'] = () => json({ directReady: true, host: { hasGlobalV6: true, addresses: [] }, tailscale: { ipv6: true } });
-  let sshEnabled = false;
+  let sshState = { enabled: false, remoteHost: '', remotePort: 22, localPort: 22, username: '', note: '' };
   const sshSnapshot = () => ({
     ok: true,
-    message: sshEnabled ? '已启动 cpolar TCP 22 映射：3.tcp.cpolar.top:12345' : '已关闭 SSH 映射',
+    message: sshState.enabled ? `已保存并验证通过：${sshState.remoteHost}:${sshState.remotePort}（已检测到 SSH 服务）` : '已停用 SSH 映射配置',
     snapshot: {
       canEdit: true,
       localUser: 'me',
-      localPort: 22,
+      localPort: sshState.localPort,
       sshdListening: true,
-      active: sshEnabled,
-      pidAlive: sshEnabled,
-      config: { enabled: sshEnabled, provider: 'cpolar', localPort: 22, remoteHost: sshEnabled ? '3.tcp.cpolar.top' : '', remotePort: sshEnabled ? 12345 : 22, username: '' },
-      candidates: {
-        cpolar: { available: true, alive: sshEnabled, remoteHost: sshEnabled ? '3.tcp.cpolar.top' : null, remotePort: sshEnabled ? 12345 : null },
-        sakurafrp: { hasToken: false, tunnel: null, error: null },
-        tailscale: { available: true, host: 'mac.example.ts.net', note: '仅限同一 Tailnet 内设备直连' },
-      },
-      suggested: sshEnabled
-        ? { source: 'cpolar', providerLabel: 'cpolar TCP', sshTarget: 'me@3.tcp.cpolar.top', sshPort: 12345, command: 'ssh -p 12345 me@3.tcp.cpolar.top', active: true }
-        : { source: 'tailscale', providerLabel: 'Tailscale 内网直连', sshTarget: 'me@mac.example.ts.net', sshPort: 22, command: 'ssh me@mac.example.ts.net', active: false },
+      remoteReachable: sshState.enabled ? true : null,
+      remoteSshBanner: sshState.enabled ? true : null,
+      active: sshState.enabled,
+      config: { ...sshState },
+      suggested: sshState.enabled
+        ? { sshTarget: `${sshState.username || 'me'}@${sshState.remoteHost}`, sshPort: sshState.remotePort, command: `ssh -p ${sshState.remotePort} ${sshState.username || 'me'}@${sshState.remoteHost}`, active: true, note: sshState.note }
+        : null,
     },
   });
   routes['/api/tunnel/ssh'] = () => json(sshSnapshot());
-  routes['POST /api/tunnel/ssh'] = () => { sshEnabled = true; return json(sshSnapshot()); };
-  routes['POST /api/tunnel/ssh/stop'] = () => { sshEnabled = false; return json(sshSnapshot()); };
+  routes['POST /api/tunnel/ssh'] = ({ body }) => {
+    const req = JSON.parse(body.toString('utf8'));
+    sshState = {
+      enabled: true,
+      remoteHost: req.remoteHost || '3.tcp.cpolar.top',
+      remotePort: req.remotePort || 12345,
+      localPort: req.localPort || 22,
+      username: req.username || '',
+      note: req.note || 'cpolar',
+    };
+    return json(sshSnapshot());
+  };
+  routes['POST /api/tunnel/ssh/stop'] = () => { sshState.enabled = false; return json(sshSnapshot()); };
   for (const provider of ['sakurafrp', 'tailscale', 'phddns', 'natapp', 'cpolar']) {
     routes[`POST /api/tunnel/restart/${provider}`] = () => json({ ok: true, message: `${provider} 已重启` });
   }
@@ -126,9 +133,13 @@ test('Air renders and operates the regional tunnel page without the legacy manag
     assert.equal(await page.evaluate(`document.getElementById('air-sf-recheck') !== null`), true, 'step 2 must keep a re-check action');
     assert.equal(await page.evaluate(`document.getElementById('air-access-status').textContent`), '已保护');
     assert.match(await page.evaluate(`document.getElementById('air-ts-ipv6').textContent`), /直连已就绪/);
-    assert.ok(await page.waitFor(`document.getElementById('air-ssh-target-text').textContent.includes('me@mac.example.ts.net')`));
-    await page.evaluate(`document.getElementById('air-ssh-oneclick').click()`);
-    assert.ok(await page.waitFor(`document.getElementById('air-ssh-target-text').textContent.includes('3.tcp.cpolar.top:12345')`), 'one-click SSH mapping must render mapped target');
+    await page.evaluate(`document.querySelector('[data-ssh-guide="cpolar"]').click()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-ssh-guide-cmd').textContent`), 'cpolar tcp 22');
+    await page.evaluate(`(() => { const el = document.getElementById('air-ssh-paste'); el.value = 'tcp://3.tcp.cpolar.top:12345'; el.dispatchEvent(new Event('input')); })()`);
+    assert.equal(await page.evaluate(`document.getElementById('air-ssh-remote-host').value`), '3.tcp.cpolar.top');
+    assert.equal(await page.evaluate(`document.getElementById('air-ssh-remote-port').value`), '12345');
+    await page.evaluate(`document.getElementById('air-ssh-save').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-ssh-target-text').textContent.includes('me@3.tcp.cpolar.top:12345')`), 'saved SSH endpoint must render mapped target');
     assert.equal(page.requests.filter(item => item.method === 'POST' && item.path === '/api/tunnel/ssh').length, 1);
     const desktop = await page.screenshot('air-tunnel-desktop');
     t.diagnostic('desktop: ' + desktop);

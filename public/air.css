@@ -1488,12 +1488,19 @@ button.admin-stat:hover { transform: translateY(-1px); }
 .air-tunnel-ssh { display: grid; gap: 12px; padding: 16px 18px; }
 .air-tunnel-ssh-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .air-tunnel-ssh-head h3 { margin: 2px 0; color: #254562; font-size: 15px; }
-.air-tunnel-ssh-head p { color: #71859a; font-size: 10px; line-height: 1.5; max-width: 68ch; }
-.air-tunnel-ssh-controls { display: grid; grid-template-columns: minmax(170px, 1.3fr) minmax(110px, .7fr) auto; align-items: end; gap: 8px; }
-.air-tunnel-ssh-controls label, .air-tunnel-ssh-custom label { min-width: 0; color: #6f8398; font-size: 9.5px; }
-.air-tunnel-ssh-controls label > span, .air-tunnel-ssh-custom label > span { display: block; margin-bottom: 4px; }
-.air-tunnel-ssh-controls select, .air-tunnel-ssh-controls input, .air-tunnel-ssh-custom input { width: 100%; min-height: 35px; padding: 7px 9px; font-size: 11px; }
-.air-tunnel-ssh-custom { display: grid; grid-template-columns: minmax(160px, 1.5fr) minmax(100px, .7fr) auto; align-items: end; gap: 8px; }
+.air-tunnel-ssh-head p { color: #71859a; font-size: 10px; line-height: 1.5; max-width: 72ch; }
+.air-tunnel-ssh-guide { display: grid; gap: 8px; padding: 11px 13px; border: 1px solid #dfe9f3; border-radius: 12px; background: #f8fbfe; }
+.air-tunnel-ssh-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.air-tunnel-ssh-tab { min-height: 28px; padding: 4px 10px; border: 1px solid #d2e1ef; border-radius: 999px; background: #fff; color: #4c6680; font-size: 10px; cursor: pointer; }
+.air-tunnel-ssh-tab.active { border-color: #2d7fbd; background: #edf6ff; color: #176ec4; font-weight: 600; }
+.air-tunnel-ssh-cmd-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.air-tunnel-ssh-cmd-row code { padding: 5px 9px; border: 1px solid #d5e3f0; border-radius: 8px; background: #fff; color: #1d4160; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.air-tunnel-ssh-paste { display: grid; gap: 4px; color: #5b7288; font-size: 9.5px; }
+.air-tunnel-ssh-paste input { width: 100%; min-height: 36px; padding: 7px 10px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.air-tunnel-ssh-form { display: grid; grid-template-columns: minmax(150px, 1.5fr) minmax(85px, .6fr) minmax(85px, .6fr) minmax(110px, .9fr); align-items: end; gap: 8px; }
+.air-tunnel-ssh-form label { min-width: 0; color: #6f8398; font-size: 9.5px; }
+.air-tunnel-ssh-form label > span { display: block; margin-bottom: 4px; }
+.air-tunnel-ssh-form input { width: 100%; min-height: 35px; padding: 7px 9px; font-size: 11px; }
 .air-tunnel-ssh-result { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 10px 12px; border: 1px solid #d5e5f4; border-radius: 11px; background: #f6faff; }
 .air-tunnel-ssh-target { font: 600 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: #1d4160; word-break: break-all; }
 .air-tunnel-ssh-note { color: #798b9d; font-size: 9.5px; line-height: 1.5; }
@@ -2094,7 +2101,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   .air-tunnel-domain { grid-template-columns: 1fr; }
   .air-tunnel-domain button { justify-self: start; }
   .air-tunnel-ssh { padding: 13px; }
-  .air-tunnel-ssh-controls, .air-tunnel-ssh-custom { grid-template-columns: 1fr; }
+  .air-tunnel-ssh-form { grid-template-columns: 1fr; }
   #schedule-center { padding: 22px 15px 36px; }
   #directory-grid { grid-template-columns: 1fr; }
   dialog { padding: 20px; }

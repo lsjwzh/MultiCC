@@ -210,32 +210,37 @@
           <div class="air-tunnel-facts">
             <div><span>${t('airTunnelSshSshdLabel')}</span><strong id="air-ssh-sshd">${t('airTunnelReadingEllipsis')}</strong></div>
             <div><span>${t('airTunnelSshLocalUser')}</span><strong id="air-ssh-user">${t('airTunnelReadingEllipsis')}</strong></div>
-            <div class="wide"><span>${t('airTunnelSshChannelsLabel')}</span><strong id="air-ssh-channels">${t('airTunnelReadingEllipsis')}</strong></div>
+            <div class="wide"><span>${t('airTunnelSshProbeLabel')}</span><strong id="air-ssh-probe">—</strong></div>
           </div>
-          <div class="air-tunnel-ssh-controls">
-            <label><span>${t('airTunnelSshProviderLabel')}</span>
-              <select id="air-ssh-provider">
-                <option value="auto">${t('airTunnelSshProviderAuto')}</option>
-                <option value="cpolar">${t('airTunnelSshProviderCpolar')}</option>
-                <option value="sakurafrp">${t('airTunnelSshProviderSakura')}</option>
-                <option value="tailscale">${t('airTunnelSshProviderTailscale')}</option>
-                <option value="custom">${t('airTunnelSshProviderCustom')}</option>
-              </select>
-            </label>
-            <label><span>${t('airTunnelSshLocalPortLabel')}</span><input id="air-ssh-local-port" type="number" min="1" max="65535" value="22"></label>
-            <div class="air-tunnel-actions">
-              <button id="air-ssh-oneclick" class="primary" type="button">${t('airTunnelSshOneClickBtn')}</button>
-              <button id="air-ssh-stop" class="danger" type="button" hidden>${t('airTunnelSshStopBtn')}</button>
-              <button id="air-ssh-recheck" type="button">${t('airTunnelRecheckClient')}</button>
+          <div class="air-tunnel-ssh-guide">
+            <div class="air-tunnel-ssh-note"><strong>${t('airTunnelSshGuideTitle')}</strong></div>
+            <div class="air-tunnel-ssh-tabs" role="tablist">
+              <button type="button" class="air-tunnel-ssh-tab active" data-ssh-guide="sakura">${t('airTunnelSshGuideSakura')}</button>
+              <button type="button" class="air-tunnel-ssh-tab" data-ssh-guide="cpolar">${t('airTunnelSshGuideCpolar')}</button>
+              <button type="button" class="air-tunnel-ssh-tab" data-ssh-guide="tailscale">${t('airTunnelSshGuideTailscale')}</button>
+              <button type="button" class="air-tunnel-ssh-tab" data-ssh-guide="generic">${t('airTunnelSshGuideGeneric')}</button>
+            </div>
+            <p id="air-ssh-guide-desc" class="air-tunnel-ssh-note">${t('airTunnelSshGuideSakuraDesc')}</p>
+            <div id="air-ssh-guide-action" class="air-tunnel-ssh-cmd-row">
+              <a id="air-ssh-guide-link" class="air-tunnel-button" href="https://www.natfrp.com/tunnel/" target="_blank" rel="noopener noreferrer">${t('airTunnelSshSakuraCreateLink')}</a>
+              <code id="air-ssh-guide-cmd" hidden></code>
+              <button id="air-ssh-guide-copy" type="button" hidden>${t('airTunnelSshCopyGuideCmd')}</button>
             </div>
           </div>
-          <div id="air-ssh-custom-wrap" class="air-tunnel-ssh-custom" hidden>
+          <label class="air-tunnel-ssh-paste">
+            <span>${t('airTunnelSshPasteLabel')}</span>
+            <input id="air-ssh-paste" type="text" autocomplete="off" placeholder="${t('airTunnelSshPastePlaceholder')}">
+          </label>
+          <div class="air-tunnel-ssh-form">
             <label><span>${t('airTunnelSshCustomHostLabel')}</span><input id="air-ssh-remote-host" type="text" placeholder="3.tcp.cpolar.top"></label>
             <label><span>${t('airTunnelSshCustomPortLabel')}</span><input id="air-ssh-remote-port" type="number" min="1" max="65535" value="22"></label>
-            <button id="air-ssh-save-custom" type="button">${t('airTunnelSshSaveCustomBtn')}</button>
+            <label><span>${t('airTunnelSshLocalPortLabel')}</span><input id="air-ssh-local-port" type="number" min="1" max="65535" value="22"></label>
+            <label><span>${t('airTunnelSshUserLabel')}</span><input id="air-ssh-username" type="text" placeholder="auto"></label>
           </div>
-          <div id="air-ssh-sakura-hint" class="air-tunnel-ssh-note" hidden>
-            <a href="https://www.natfrp.com/tunnel/" target="_blank" rel="noopener noreferrer">${t('airTunnelSshSakuraCreateLink')}</a>
+          <div class="air-tunnel-actions">
+            <button id="air-ssh-save" class="primary" type="button">${t('airTunnelSshSaveAndTest')}</button>
+            <button id="air-ssh-recheck" type="button">${t('airTunnelRecheckClient')}</button>
+            <button id="air-ssh-stop" class="danger" type="button" hidden>${t('airTunnelSshStopBtn')}</button>
           </div>
           <div id="air-ssh-result" class="air-tunnel-ssh-result" hidden>
             <div>
@@ -457,18 +462,97 @@
     }
   }
 
-  function updateSshProviderVisibility() {
-    const provider = byId('air-ssh-provider')?.value || 'auto';
-    const customWrap = byId('air-ssh-custom-wrap');
-    if (customWrap) customWrap.hidden = provider !== 'custom';
-    const sshSnap = snapshot?.ssh?.snapshot || {};
-    const sakuraCand = sshSnap.candidates?.sakurafrp || {};
-    const sakuraHint = byId('air-ssh-sakura-hint');
-    if (sakuraHint) sakuraHint.hidden = !(provider === 'sakurafrp' && !sakuraCand.tunnel);
-    const oneClick = byId('air-ssh-oneclick');
-    if (oneClick) {
-      oneClick.textContent = provider === 'auto' ? t('airTunnelSshOneClickBtn') : t('airTunnelSshApplyBtn');
+  const SSH_GUIDES = Object.freeze({
+    sakura: { descKey: 'airTunnelSshGuideSakuraDesc', link: 'https://www.natfrp.com/tunnel/', linkKey: 'airTunnelSshSakuraCreateLink', cmd: '', note: 'SakuraFrp' },
+    cpolar: { descKey: 'airTunnelSshGuideCpolarDesc', link: '', cmd: 'cpolar tcp 22', note: 'cpolar' },
+    tailscale: { descKey: 'airTunnelSshGuideTailscaleDesc', link: '', cmd: 'tailscale status', note: 'Tailscale' },
+    generic: { descKey: 'airTunnelSshGuideGenericDesc', link: '', cmd: '', note: '' },
+  });
+  let activeSshGuide = 'sakura';
+
+  function selectSshGuide(key) {
+    activeSshGuide = SSH_GUIDES[key] ? key : 'sakura';
+    const guide = SSH_GUIDES[activeSshGuide];
+    host.querySelectorAll('[data-ssh-guide]').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.sshGuide === activeSshGuide);
+    });
+    setText('air-ssh-guide-desc', t(guide.descKey));
+    const linkEl = byId('air-ssh-guide-link');
+    const cmdEl = byId('air-ssh-guide-cmd');
+    const copyEl = byId('air-ssh-guide-copy');
+    const actionWrap = byId('air-ssh-guide-action');
+    if (linkEl) {
+      linkEl.hidden = !guide.link;
+      if (guide.link) {
+        linkEl.href = guide.link;
+        linkEl.textContent = t(guide.linkKey);
+      }
     }
+    if (cmdEl) {
+      cmdEl.hidden = !guide.cmd;
+      cmdEl.textContent = guide.cmd || '';
+    }
+    if (copyEl) copyEl.hidden = !guide.cmd;
+    if (actionWrap) actionWrap.hidden = !guide.link && !guide.cmd;
+  }
+
+  function parseSshEndpointClient(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return null;
+    let port = null;
+    let target = text;
+    if (/^ssh\s+/i.test(text)) {
+      const tokens = text.split(/\s+/).slice(1);
+      target = '';
+      for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i];
+        if (tok === '-p' && tokens[i + 1]) {
+          port = Number.parseInt(tokens[++i], 10);
+        } else if (/^-p\d+$/.test(tok)) {
+          port = Number.parseInt(tok.slice(2), 10);
+        } else if (['-i', '-l', '-o', '-J', '-F', '-b', '-c', '-L', '-R', '-D'].includes(tok)) {
+          i++;
+        } else if (!tok.startsWith('-') && !target) {
+          target = tok;
+        }
+      }
+    }
+    if (!target) return null;
+    const stripped = target.replace(/^(tcp|ssh):\/\//i, '').split('/')[0].trim();
+    let user = '';
+    let hostPort = stripped;
+    const atIdx = stripped.indexOf('@');
+    if (atIdx !== -1) {
+      user = stripped.slice(0, atIdx).trim();
+      hostPort = stripped.slice(atIdx + 1).trim();
+    }
+    let hostName = hostPort;
+    if ((hostPort.match(/:/g) || []).length === 1) {
+      const [h, p] = hostPort.split(':');
+      const n = Number.parseInt(p, 10);
+      if (Number.isInteger(n) && n >= 1 && n <= 65535) {
+        hostName = h.trim();
+        if (!port) port = n;
+      }
+    }
+    if (!hostName || hostName.startsWith('-') || /\s/.test(hostName)) return null;
+    return {
+      host: hostName,
+      port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null,
+      user,
+    };
+  }
+
+  function handleSshPasteInput() {
+    const parsed = parseSshEndpointClient(byId('air-ssh-paste')?.value || '');
+    if (!parsed) return;
+    const hostIn = byId('air-ssh-remote-host');
+    const portIn = byId('air-ssh-remote-port');
+    const userIn = byId('air-ssh-username');
+    if (hostIn) hostIn.value = parsed.host;
+    if (portIn && parsed.port) portIn.value = String(parsed.port);
+    if (userIn && parsed.user) userIn.value = parsed.user;
+    setMessage('air-ssh-message', t('airTunnelSshPasteParsed', { host: parsed.host, port: parsed.port || (portIn?.value || 22) }), 'info');
   }
 
   function paintSsh() {
@@ -477,11 +561,19 @@
     if (!raw.ok || !s) {
       setChip('air-ssh-status', t('airTunnelReadFailed'), 'danger');
       setText('air-ssh-sshd', raw.message || t('airTunnelApiUnavailable'));
+      const resultBox = byId('air-ssh-result');
+      if (resultBox) resultBox.hidden = true;
+      for (const id of ['air-ssh-save', 'air-ssh-stop']) {
+        const btn = byId(id);
+        if (btn) btn.disabled = true;
+      }
       return;
     }
     const localPort = s.localPort || 22;
     const config = s.config || {};
-    if (s.active) setChip('air-ssh-status', t('airTunnelSshStatusActive'), 'success');
+    if (s.active && s.remoteReachable) setChip('air-ssh-status', t('airTunnelSshStatusActive'), 'success');
+    else if (s.active && s.remoteReachable === false) setChip('air-ssh-status', t('airTunnelSshStatusUnreachable'), 'warning');
+    else if (s.active) setChip('air-ssh-status', t('airTunnelSshStatusConfigured'), 'info');
     else if (!s.sshdListening) setChip('air-ssh-status', t('airTunnelSshStatusNoSshd'), 'warning');
     else setChip('air-ssh-status', t('airTunnelSshStatusIdle'), 'neutral');
 
@@ -490,32 +582,18 @@
       : t('airTunnelSshSshdOff', { port: localPort }));
     setText('air-ssh-user', s.localUser || '—');
 
-    const cands = s.candidates || {};
-    const channelParts = [];
-    if (cands.sakurafrp?.tunnel) {
-      const sf = cands.sakurafrp.tunnel;
-      channelParts.push(`SakuraFrp TCP (${sf.remoteHost}:${sf.remotePort}${sf.online ? ' · ' + t('airTunnelOnline') : ' · ' + t('airTunnelOffline')})`);
-    }
-    if (cands.cpolar?.available) {
-      channelParts.push(cands.cpolar.alive && cands.cpolar.remoteHost
-        ? `cpolar (${cands.cpolar.remoteHost}:${cands.cpolar.remotePort})`
-        : 'cpolar CLI');
-    }
-    if (cands.tailscale?.host) channelParts.push(`Tailscale (${cands.tailscale.host})`);
-    setText('air-ssh-channels', channelParts.length ? channelParts.join(' / ') : '—');
+    if (!s.active) setText('air-ssh-probe', '—');
+    else if (s.remoteReachable && s.remoteSshBanner) setText('air-ssh-probe', t('airTunnelSshProbeSshOk'));
+    else if (s.remoteReachable) setText('air-ssh-probe', t('airTunnelSshProbeTcpOnly'));
+    else setText('air-ssh-probe', t('airTunnelSshProbeFail'));
 
-    const providerSelect = byId('air-ssh-provider');
-    if (providerSelect && document.activeElement !== providerSelect && config.enabled && config.provider) {
-      providerSelect.value = config.provider;
-    }
+    setValue('air-ssh-remote-host', config.remoteHost || '');
+    setValue('air-ssh-remote-port', config.remotePort || 22);
     setValue('air-ssh-local-port', localPort);
-    if (config.provider === 'custom') {
-      setValue('air-ssh-remote-host', config.remoteHost || '');
-      setValue('air-ssh-remote-port', config.remotePort || 22);
-    }
+    setValue('air-ssh-username', config.username || '');
 
     const canEdit = s.canEdit !== false;
-    for (const id of ['air-ssh-oneclick', 'air-ssh-save-custom', 'air-ssh-stop']) {
+    for (const id of ['air-ssh-save', 'air-ssh-stop']) {
       const btn = byId(id);
       if (btn) btn.disabled = !canEdit;
     }
@@ -527,14 +605,14 @@
     if (resultBox) {
       if (ep && ep.sshTarget) {
         resultBox.hidden = false;
-        setText('air-ssh-result-meta', `${ep.providerLabel || ep.source || 'SSH'} · ${t('airTunnelSshTargetLabel')}${ep.active ? ' (' + t('airTunnelSshStatusActive') + ')' : ''}`);
+        const noteTag = ep.note ? `${ep.note} · ` : '';
+        setText('air-ssh-result-meta', `${noteTag}${t('airTunnelSshTargetLabel')}`);
         setText('air-ssh-target-text', `${ep.sshTarget}:${ep.sshPort || 22}  (${ep.command || ''})`);
       } else {
         resultBox.hidden = true;
       }
     }
     if (!canEdit) setMessage('air-ssh-message', t('airTunnelSshLocalOnlyHint'), 'warning');
-    updateSshProviderVisibility();
   }
 
   function paint() {
@@ -683,19 +761,29 @@
     await load();
   }
 
-  async function applySshTunnel(overrideProvider) {
-    const provider = overrideProvider || byId('air-ssh-provider')?.value || 'auto';
+  async function saveSshTunnel() {
+    const pasted = byId('air-ssh-paste')?.value.trim() || '';
+    const remoteHost = byId('air-ssh-remote-host')?.value.trim() || '';
+    const remotePort = Number.parseInt(byId('air-ssh-remote-port')?.value || '22', 10);
     const localPort = Number.parseInt(byId('air-ssh-local-port')?.value || '22', 10);
-    const body = { provider, localPort: Number.isInteger(localPort) ? localPort : 22 };
-    if (provider === 'custom') {
-      body.remoteHost = byId('air-ssh-remote-host')?.value.trim() || '';
-      const rp = Number.parseInt(byId('air-ssh-remote-port')?.value || '22', 10);
-      body.remotePort = Number.isInteger(rp) ? rp : 22;
+    const username = byId('air-ssh-username')?.value.trim() || '';
+    const body = {
+      localPort: Number.isInteger(localPort) ? localPort : 22,
+      username,
+      note: SSH_GUIDES[activeSshGuide]?.note || '',
+    };
+    if (remoteHost) {
+      body.remoteHost = remoteHost;
+      body.remotePort = Number.isInteger(remotePort) ? remotePort : 22;
+    } else if (pasted) {
+      body.endpoint = pasted;
     }
     const result = await context.api('/api/tunnel/ssh', body, 'POST');
+    if (byId('air-ssh-paste')) byId('air-ssh-paste').value = '';
     if (snapshot) snapshot.ssh = result;
     paintSsh();
-    setMessage('air-ssh-message', result.message || t('airTunnelSshStatusActive'), 'success');
+    const tone = result.snapshot?.remoteReachable ? 'success' : 'warning';
+    setMessage('air-ssh-message', result.message || t('airTunnelSshStatusConfigured'), tone);
   }
 
   async function stopSshTunnel() {
@@ -705,10 +793,7 @@
     setMessage('air-ssh-message', result.message || t('airTunnelSshStopped'), 'success');
   }
 
-  async function copySshText(kind) {
-    const ep = snapshot?.ssh?.snapshot?.suggested;
-    if (!ep) return;
-    const text = kind === 'cmd' ? (ep.command || '') : (ep.sshTarget || '');
+  async function copyRawSshText(text) {
     if (!text) return;
     try {
       if (root.navigator?.clipboard?.writeText) {
@@ -718,6 +803,12 @@
       }
     } catch (_) { /* fall back */ }
     setMessage('air-ssh-message', text, 'info');
+  }
+
+  async function copySshText(kind) {
+    const ep = snapshot?.ssh?.snapshot?.suggested;
+    if (!ep) return;
+    await copyRawSshText(kind === 'cmd' ? (ep.command || '') : (ep.sshTarget || ''));
   }
 
   function runAction(button, busyLabel, messageId, action) {
@@ -741,13 +832,17 @@
     byId('air-ts-toggle').onclick = event => runAction(event.currentTarget, t('airTunnelApplying'), 'air-ts-message', toggleFunnel);
     byId('air-ts-restart').onclick = event => runAction(event.currentTarget, t('airTunnelReconnecting'), 'air-ts-message', () => restartProvider('tailscale', 'air-ts-message'));
     byId('air-ts-ipv6-check').onclick = event => runAction(event.currentTarget, t('airTunnelDetecting'), 'air-ts-message', load);
-    byId('air-ssh-provider').onchange = updateSshProviderVisibility;
-    byId('air-ssh-oneclick').onclick = event => runAction(event.currentTarget, t('airTunnelApplying'), 'air-ssh-message', () => applySshTunnel());
-    byId('air-ssh-save-custom').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-ssh-message', () => applySshTunnel('custom'));
+    host.querySelectorAll('[data-ssh-guide]').forEach(btn => {
+      btn.onclick = () => selectSshGuide(btn.dataset.sshGuide);
+    });
+    byId('air-ssh-guide-copy').onclick = () => copyRawSshText(SSH_GUIDES[activeSshGuide]?.cmd || '');
+    byId('air-ssh-paste').oninput = handleSshPasteInput;
+    byId('air-ssh-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-ssh-message', saveSshTunnel);
     byId('air-ssh-stop').onclick = event => runAction(event.currentTarget, t('airTunnelSshStopping'), 'air-ssh-message', stopSshTunnel);
     byId('air-ssh-recheck').onclick = event => runAction(event.currentTarget, t('airTunnelDetecting'), 'air-ssh-message', load);
     byId('air-ssh-copy-target').onclick = () => copySshText('target');
     byId('air-ssh-copy-cmd').onclick = () => copySshText('cmd');
+    selectSshGuide(activeSshGuide);
     byId('air-tunnel-policy-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-tunnel-policy-message', savePolicy);
     host.querySelectorAll('[data-save-provider]').forEach(button => {
       button.onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), `air-${button.dataset.saveProvider}-message`, () => saveCompatibility(button.dataset.saveProvider));

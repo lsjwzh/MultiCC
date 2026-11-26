@@ -1,25 +1,20 @@
-//! `/api/tunnel/ssh` — One-click SSH (port 22) TCP tunnel preset & discovery.
+//! `/api/tunnel/ssh` — Unified SSH (port 22) TCP endpoint configuration & probe.
 //!
-//! Completely independent from MultiCC's primary HTTP (port 3000) tunnel config
-//! (`tunnel-config.json`), persisting its own state in `ssh-tunnel.json`.
+//! Vendor-agnostic: stores one independent `user@host:port` mapping in
+//! `ssh-tunnel.json` (never touching port-3000 `tunnel-config.json`), parses
+//! common pasted formats (`tcp://...`, `ssh -p ...`, `host:port`), and verifies
+//! connectivity with a standard TCP + SSH banner probe.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Method, Response};
 use multicc_core::http_gate;
 use multicc_core::ssh_tunnel::{
-    build_suggested_endpoint, cpolar_log_path, current_username, find_binary, is_pid_alive,
-    load_config, now_epoch_ms, parse_cpolar_tcp_endpoint, parse_tailscale_ssh_host, probe_tcp,
-    read_sakura_token, save_config, select_sakura_ssh_tunnel, start_cpolar_ssh, state_dir,
-    stop_cpolar_ssh, validate_host, validate_port, validate_username, CandidatesSnapshot,
-    CpolarCandidate, SakuraCandidateSummary, SshTunnelConfig, SshTunnelProvider, SshTunnelSnapshot,
-    TailscaleCandidate, CPOLAR_BIN_CANDIDATES, DEFAULT_SSH_PORT, TAILSCALE_BIN_CANDIDATES,
-    TAILSCALE_SSH_NOTE,
+    gather_snapshot_blocking, load_config, now_epoch_ms, parse_ssh_endpoint, save_config,
+    state_dir, validate_host, validate_note, validate_port, validate_username, SshTunnelConfig,
+    SshTunnelSnapshot, DEFAULT_SSH_PORT,
 };
 use serde_json::{json, Value};
 
@@ -61,18 +56,6 @@ static LAYERS: &[Layer] = &[
 fn write_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-fn http_client() -> Option<&'static reqwest::Client> {
-    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(4))
-                .build()
-                .ok()
-        })
-        .as_ref()
 }
 
 fn segments(path: &str) -> Option<Vec<&str>> {
@@ -135,223 +118,6 @@ pub fn options_share(path: &str) -> Option<String> {
     matched.then(|| methods.join(","))
 }
 
-async fn query_cpolar_api_endpoint() -> Option<(String, u16)> {
-    let client = http_client()?;
-    let res = client
-        .get("http://127.0.0.1:4040/api/tunnels")
-        .timeout(Duration::from_millis(800))
-        .send()
-        .await
-        .ok()?;
-    if !res.status().is_success() {
-        return None;
-    }
-    let text = res.text().await.ok()?;
-    parse_cpolar_tcp_endpoint(&text)
-}
-
-async fn query_sakura_candidate(
-    data_root: &Path,
-    home: &Path,
-    local_port: u16,
-    preferred_id: Option<&str>,
-) -> SakuraCandidateSummary {
-    let Some(token) = read_sakura_token(data_root, home) else {
-        return SakuraCandidateSummary {
-            has_token: false,
-            tunnel: None,
-            error: None,
-        };
-    };
-    let Some(client) = http_client() else {
-        return SakuraCandidateSummary {
-            has_token: true,
-            tunnel: None,
-            error: Some("HTTP 客户端初始化失败".to_string()),
-        };
-    };
-    let auth = format!("Bearer {token}");
-    let (tunnels_res, nodes_res) = tokio::join!(
-        client
-            .get("https://api.natfrp.com/v4/tunnels")
-            .header("Authorization", &auth)
-            .header("User-Agent", "multicc")
-            .send(),
-        client
-            .get("https://api.natfrp.com/v4/nodes")
-            .header("Authorization", &auth)
-            .header("User-Agent", "multicc")
-            .send(),
-    );
-    let tunnels: Value = match tunnels_res {
-        Ok(res) if res.status().is_success() => match res.text().await {
-            Ok(text) => match serde_json::from_str::<Value>(&text) {
-                Ok(v) => v,
-                Err(_) => {
-                    return SakuraCandidateSummary {
-                        has_token: true,
-                        tunnel: None,
-                        error: Some("SakuraFrp 隧道列表解析失败".to_string()),
-                    };
-                }
-            },
-            Err(_) => {
-                return SakuraCandidateSummary {
-                    has_token: true,
-                    tunnel: None,
-                    error: Some("SakuraFrp 隧道列表解析失败".to_string()),
-                };
-            }
-        },
-        Ok(res) => {
-            return SakuraCandidateSummary {
-                has_token: true,
-                tunnel: None,
-                error: Some(format!("SakuraFrp /tunnels 响应 {}", res.status())),
-            };
-        }
-        Err(_) => {
-            return SakuraCandidateSummary {
-                has_token: true,
-                tunnel: None,
-                error: Some("SakuraFrp API 不可达".to_string()),
-            };
-        }
-    };
-    let nodes: Value = match nodes_res {
-        Ok(res) if res.status().is_success() => res
-            .text()
-            .await
-            .ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .unwrap_or_else(|| json!({})),
-        _ => json!({}),
-    };
-    let tunnel = select_sakura_ssh_tunnel(&tunnels, &nodes, local_port, preferred_id);
-    SakuraCandidateSummary {
-        has_token: true,
-        tunnel,
-        error: None,
-    }
-}
-
-fn probe_tailscale_host() -> TailscaleCandidate {
-    let Some(bin) = find_binary(TAILSCALE_BIN_CANDIDATES, "tailscale") else {
-        return TailscaleCandidate {
-            available: false,
-            host: None,
-            note: TAILSCALE_SSH_NOTE.to_string(),
-        };
-    };
-    let host = Command::new(bin)
-        .args(["status", "--json"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .and_then(|out| serde_json::from_slice::<Value>(&out.stdout).ok())
-        .and_then(|val| parse_tailscale_ssh_host(&val));
-    TailscaleCandidate {
-        available: true,
-        host,
-        note: TAILSCALE_SSH_NOTE.to_string(),
-    }
-}
-
-async fn gather_snapshot(
-    s_dir: PathBuf,
-    d_root: PathBuf,
-    home: PathBuf,
-    can_edit: bool,
-) -> SshTunnelSnapshot {
-    let config = load_config(&s_dir);
-    let local_port = if config.local_port == 0 {
-        DEFAULT_SSH_PORT
-    } else {
-        config.local_port
-    };
-    let config_pid = config.pid;
-    let sakura_pref = config.sakura_tunnel_id.clone();
-
-    let blocking_handle = tokio::task::spawn_blocking(move || {
-        let local_user = current_username();
-        let sshd_listening = probe_tcp("127.0.0.1", local_port, 250);
-        let cpolar_bin = find_binary(CPOLAR_BIN_CANDIDATES, "cpolar");
-        let pid_alive = config_pid.is_some_and(is_pid_alive);
-        let log_ep = fs::read_to_string(cpolar_log_path(&s_dir))
-            .ok()
-            .and_then(|text| parse_cpolar_tcp_endpoint(&text));
-        let tailscale = probe_tailscale_host();
-        (
-            local_user,
-            sshd_listening,
-            cpolar_bin,
-            pid_alive,
-            log_ep,
-            tailscale,
-        )
-    });
-
-    let (blocking_res, sakura, api_ep) = tokio::join!(
-        blocking_handle,
-        query_sakura_candidate(&d_root, &home, local_port, sakura_pref.as_deref()),
-        query_cpolar_api_endpoint(),
-    );
-
-    let (local_user, sshd_listening, cpolar_bin, pid_alive, log_ep, tailscale) = blocking_res
-        .unwrap_or_else(|_| {
-            (
-                current_username(),
-                false,
-                None,
-                false,
-                None,
-                TailscaleCandidate {
-                    available: false,
-                    host: None,
-                    note: TAILSCALE_SSH_NOTE.to_string(),
-                },
-            )
-        });
-
-    let cpolar_ep = api_ep.or(log_ep);
-    let cpolar_alive = pid_alive || cpolar_ep.is_some();
-    let cpolar = CpolarCandidate {
-        available: cpolar_bin.is_some(),
-        bin_path: cpolar_bin.map(|p| p.display().to_string()),
-        running_pid: config_pid.filter(|pid| is_pid_alive(*pid)),
-        alive: cpolar_alive,
-        remote_host: cpolar_ep.as_ref().map(|(h, _)| h.clone()),
-        remote_port: cpolar_ep.as_ref().map(|(_, p)| *p),
-    };
-
-    let active = config.enabled
-        && match config.provider.as_str() {
-            "cpolar" => cpolar.alive,
-            "sakurafrp" => {
-                sakura.tunnel.as_ref().is_some_and(|t| t.online) || !config.remote_host.is_empty()
-            }
-            "tailscale" => tailscale.host.is_some() || !config.remote_host.is_empty(),
-            _ => !config.remote_host.is_empty() && config.remote_port > 0,
-        };
-
-    let suggested = build_suggested_endpoint(&config, &local_user, &cpolar, &sakura, &tailscale);
-    SshTunnelSnapshot {
-        can_edit,
-        local_user,
-        local_port,
-        sshd_listening,
-        config,
-        active,
-        pid_alive,
-        candidates: CandidatesSnapshot {
-            cpolar,
-            sakurafrp: sakura,
-            tailscale,
-        },
-        suggested,
-    }
-}
-
 fn parse_port_field(body: &Value, key: &str, default_val: u16) -> Result<u16, String> {
     let Some(val) = body.get(key) else {
         return Ok(default_val);
@@ -369,251 +135,121 @@ fn parse_port_field(body: &Value, key: &str, default_val: u16) -> Result<u16, St
 
 async fn apply_post(
     s_dir: PathBuf,
-    d_root: PathBuf,
-    home: PathBuf,
     body: &Value,
 ) -> Result<(SshTunnelSnapshot, String), (u16, String)> {
-    let requested = body
-        .get("provider")
-        .and_then(Value::as_str)
-        .unwrap_or("auto");
-    let provider = SshTunnelProvider::parse(requested).map_err(|e| (400, e))?;
-    let mut config = load_config(&s_dir);
-
+    let existing = load_config(&s_dir);
     let local_port = parse_port_field(
         body,
         "localPort",
-        if config.local_port == 0 {
+        if existing.local_port == 0 {
             DEFAULT_SSH_PORT
         } else {
-            config.local_port
+            existing.local_port
         },
     )
     .map_err(|e| (400, e))?;
-    let username = match body.get("username").and_then(Value::as_str) {
-        Some(raw) => validate_username(raw).map_err(|e| (400, e))?,
-        None => config.username.clone(),
-    };
-    let start_now = body
-        .get("startNow")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let tunnel_id_req = body
-        .get("tunnelId")
+
+    let parsed = match body
+        .get("endpoint")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string);
-
-    let resolved = match provider {
-        SshTunnelProvider::Auto => {
-            let sakura =
-                query_sakura_candidate(&d_root, &home, local_port, tunnel_id_req.as_deref()).await;
-            if sakura.tunnel.as_ref().is_some_and(|t| t.online) {
-                SshTunnelProvider::Sakurafrp
-            } else if find_binary(CPOLAR_BIN_CANDIDATES, "cpolar").is_some() {
-                SshTunnelProvider::Cpolar
-            } else if probe_tailscale_host().host.is_some() {
-                SshTunnelProvider::Tailscale
-            } else {
-                return Err((
-                    400,
-                    "未检测到可用的自动 SSH 映射通道：请先安装 cpolar，或在 SakuraFrp 控制台创建指向本机 22 端口的 TCP 隧道，或选择「自定义映射」填写地址".to_string(),
-                ));
-            }
-        }
-        other => other,
+    {
+        Some(raw) => Some(parse_ssh_endpoint(raw).map_err(|e| (400, e))?),
+        None => None,
     };
 
-    let message = match resolved {
-        SshTunnelProvider::Custom => {
+    let remote_host = match parsed.as_ref() {
+        Some(ep) => ep.remote_host.clone(),
+        None => {
             let host_raw = body
                 .get("remoteHost")
                 .and_then(Value::as_str)
-                .unwrap_or(&config.remote_host);
-            let remote_host = validate_host(host_raw).map_err(|e| (400, e))?;
-            let remote_port =
-                parse_port_field(body, "remotePort", config.remote_port).map_err(|e| (400, e))?;
-            if let Some(pid) = config.pid.take() {
-                let _ = stop_cpolar_ssh(pid);
-            }
-            config = SshTunnelConfig {
-                enabled: true,
-                provider: "custom".to_string(),
-                local_port,
-                remote_host: remote_host.clone(),
-                remote_port,
-                username,
-                sakura_tunnel_id: None,
-                pid: None,
-                updated_at: now_epoch_ms(),
-            };
-            format!("已保存自定义 SSH 映射：{remote_host}:{remote_port} → 127.0.0.1:{local_port}")
+                .unwrap_or(&existing.remote_host);
+            validate_host(host_raw).map_err(|e| (400, e))?
         }
-        SshTunnelProvider::Sakurafrp => {
-            let pref = tunnel_id_req.or(config.sakura_tunnel_id.clone());
-            let sakura = query_sakura_candidate(&d_root, &home, local_port, pref.as_deref()).await;
-            let Some(cand) = sakura.tunnel else {
-                let reason = sakura.error.unwrap_or_else(|| {
-                    if sakura.has_token {
-                        format!("未在 SakuraFrp 找到指向本机 {local_port} 端口的 TCP 隧道，请先在官网控制台创建 TCP 隧道")
-                    } else {
-                        "尚未绑定 SakuraFrp 访问密钥，请先在上方中国大陆方案绑定密钥并创建 TCP 22 隧道".to_string()
-                    }
-                });
-                return Err((400, reason));
-            };
-            if let Some(pid) = config.pid.take() {
-                let _ = stop_cpolar_ssh(pid);
-            }
-            config = SshTunnelConfig {
-                enabled: true,
-                provider: "sakurafrp".to_string(),
-                local_port,
-                remote_host: cand.remote_host.clone(),
-                remote_port: cand.remote_port,
-                username,
-                sakura_tunnel_id: Some(cand.tunnel_id.clone()),
-                pid: None,
-                updated_at: now_epoch_ms(),
-            };
-            if cand.online {
-                format!(
-                    "已绑定 SakuraFrp TCP 隧道：{} ({}:{})",
-                    if cand.name.is_empty() {
-                        &cand.tunnel_id
-                    } else {
-                        &cand.name
-                    },
-                    cand.remote_host,
-                    cand.remote_port
-                )
-            } else {
-                format!(
-                    "已绑定 SakuraFrp TCP 隧道（当前离线，请在上方启动 SakuraFrp 后刷新）：{}:{}",
-                    cand.remote_host, cand.remote_port
-                )
-            }
-        }
-        SshTunnelProvider::Tailscale => {
-            let ts = tokio::task::spawn_blocking(probe_tailscale_host)
-                .await
-                .map_err(|_| (500, "探测 Tailscale 状态失败".to_string()))?;
-            let Some(host) = ts.host else {
-                return Err((
-                    400,
-                    "未检测到已登录的 Tailscale 节点，请先启动并登录 Tailscale".to_string(),
-                ));
-            };
-            if let Some(pid) = config.pid.take() {
-                let _ = stop_cpolar_ssh(pid);
-            }
-            config = SshTunnelConfig {
-                enabled: true,
-                provider: "tailscale".to_string(),
-                local_port,
-                remote_host: host.clone(),
-                remote_port: local_port,
-                username,
-                sakura_tunnel_id: None,
-                pid: None,
-                updated_at: now_epoch_ms(),
-            };
-            format!("已启用 Tailscale 内网 SSH：{host}:{local_port}（仅限同一 Tailnet 设备直连）")
-        }
-        SshTunnelProvider::Cpolar => {
-            let prev_pid = config.pid;
-            let (remote_host, remote_port, pid) = if start_now {
-                let s_dir_spawn = s_dir.clone();
-                let d_root_spawn = d_root.clone();
-                let home_spawn = home.clone();
-                let spawned_pid = tokio::task::spawn_blocking(move || {
-                    start_cpolar_ssh(
-                        &s_dir_spawn,
-                        &d_root_spawn,
-                        &home_spawn,
-                        local_port,
-                        prev_pid,
-                    )
-                })
-                .await
-                .map_err(|_| (500, "启动 cpolar 线程异常".to_string()))?
-                .map_err(|e| (400, e))?;
+    };
 
-                let mut endpoint = None;
-                for _ in 0..10 {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    if let Some(ep) = query_cpolar_api_endpoint().await {
-                        endpoint = Some(ep);
-                        break;
-                    }
-                    if let Ok(text) = fs::read_to_string(cpolar_log_path(&s_dir)) {
-                        if let Some(ep) = parse_cpolar_tcp_endpoint(&text) {
-                            endpoint = Some(ep);
-                            break;
-                        }
-                    }
-                    if !is_pid_alive(spawned_pid) {
-                        break;
-                    }
+    let default_remote_port =
+        parsed
+            .as_ref()
+            .and_then(|ep| ep.remote_port)
+            .unwrap_or(if existing.remote_port == 0 {
+                DEFAULT_SSH_PORT
+            } else {
+                existing.remote_port
+            });
+    let remote_port = if parsed.as_ref().and_then(|ep| ep.remote_port).is_some()
+        && body.get("remotePort").is_none()
+    {
+        default_remote_port
+    } else {
+        parse_port_field(body, "remotePort", default_remote_port).map_err(|e| (400, e))?
+    };
+
+    let username = match body
+        .get("username")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => validate_username(raw).map_err(|e| (400, e))?,
+        None => parsed
+            .as_ref()
+            .and_then(|ep| ep.username.clone())
+            .unwrap_or_else(|| {
+                if body.get("username").is_some() {
+                    String::new()
+                } else {
+                    existing.username.clone()
                 }
-                let (h, p) = endpoint.unwrap_or_else(|| (String::new(), local_port));
-                (h, p, Some(spawned_pid))
-            } else {
-                let alive = prev_pid.filter(|p| is_pid_alive(*p));
-                (config.remote_host.clone(), config.remote_port, alive)
-            };
-            config = SshTunnelConfig {
-                enabled: true,
-                provider: "cpolar".to_string(),
-                local_port,
-                remote_host: remote_host.clone(),
-                remote_port,
-                username,
-                sakura_tunnel_id: None,
-                pid,
-                updated_at: now_epoch_ms(),
-            };
-            if !remote_host.is_empty() {
-                format!("已启动 cpolar TCP {local_port} 映射：{remote_host}:{remote_port}")
-            } else {
-                format!(
-                    "已后台启动 cpolar tcp {local_port}，正在等待公网地址就绪（请稍候点「重新检测」，或检查 ~/.cpolar/cpolar.yml 鉴权配置）"
-                )
-            }
-        }
-        SshTunnelProvider::Auto => unreachable!(),
+            }),
+    };
+
+    let note = match body.get("note").and_then(Value::as_str) {
+        Some(raw) => validate_note(raw).map_err(|e| (400, e))?,
+        None => existing.note.clone(),
+    };
+
+    let config = SshTunnelConfig {
+        enabled: true,
+        local_port,
+        remote_host: remote_host.clone(),
+        remote_port,
+        username,
+        note,
+        updated_at: now_epoch_ms(),
     };
 
     save_config(&s_dir, &config).map_err(|e| (500, format!("保存 SSH 映射配置失败: {e}")))?;
-    let snapshot = gather_snapshot(s_dir, d_root, home, true).await;
+
+    let snapshot = tokio::task::spawn_blocking(move || gather_snapshot_blocking(&s_dir, true))
+        .await
+        .map_err(|_| (500, "检测 SSH 映射连通性失败".to_string()))?;
+
+    let message = match (snapshot.remote_reachable, snapshot.remote_ssh_banner) {
+        (Some(true), Some(true)) => {
+            format!("已保存并验证通过：{remote_host}:{remote_port}（已检测到 SSH 服务）")
+        }
+        (Some(true), _) => {
+            format!("已保存：{remote_host}:{remote_port} TCP 端口可达（未读到 SSH 协议头，请确认已指向本机 {local_port}）")
+        }
+        _ => {
+            format!("已保存 {remote_host}:{remote_port}，当前尚未探测通（请确认本机穿透客户端与 SSH 22 均已启动）")
+        }
+    };
     Ok((snapshot, message))
 }
 
-async fn stop_post(
-    s_dir: PathBuf,
-    d_root: PathBuf,
-    home: PathBuf,
-) -> Result<(SshTunnelSnapshot, String), (u16, String)> {
+async fn stop_post(s_dir: PathBuf) -> Result<(SshTunnelSnapshot, String), (u16, String)> {
     let mut config = load_config(&s_dir);
-    let mut stopped_pid = false;
-    if let Some(pid) = config.pid.take() {
-        let stop_res = tokio::task::spawn_blocking(move || stop_cpolar_ssh(pid))
-            .await
-            .map_err(|_| (500, "停止 cpolar 进程异常".to_string()))?
-            .map_err(|e| (500, e))?;
-        stopped_pid = stop_res;
-    }
     config.enabled = false;
     config.updated_at = now_epoch_ms();
     save_config(&s_dir, &config).map_err(|e| (500, format!("保存 SSH 映射配置失败: {e}")))?;
-    let snapshot = gather_snapshot(s_dir, d_root, home, true).await;
-    let message = if stopped_pid {
-        "已停止托管的 cpolar TCP 映射并关闭 SSH 映射 preset".to_string()
-    } else {
-        "已关闭 SSH 映射 preset".to_string()
-    };
-    Ok((snapshot, message))
+    let snapshot = tokio::task::spawn_blocking(move || gather_snapshot_blocking(&s_dir, true))
+        .await
+        .map_err(|_| (500, "刷新 SSH 映射状态失败".to_string()))?;
+    Ok((snapshot, "已停用 SSH 映射配置".to_string()))
 }
 
 pub async fn handle(
@@ -636,12 +272,24 @@ pub async fn handle(
 
     let can_edit = http_gate::is_local_request(peer, &ctx.headers);
     let s_dir = state_dir(&app.data_root, &app.package_root, &app.home_dir);
-    let d_root = app.data_root.clone();
-    let home = app.home_dir.clone();
 
     match route {
         Route::StatusGet => {
-            let snapshot = gather_snapshot(s_dir, d_root, home, can_edit).await;
+            let snapshot = match tokio::task::spawn_blocking(move || {
+                gather_snapshot_blocking(&s_dir, can_edit)
+            })
+            .await
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    return express::json(
+                        ctx,
+                        500,
+                        &json!({ "ok": false, "error": "读取 SSH 映射状态失败" }),
+                        &[],
+                    );
+                }
+            };
             express::json(
                 ctx,
                 200,
@@ -659,7 +307,7 @@ pub async fn handle(
                 );
             }
             let _guard = write_lock().lock().await;
-            match apply_post(s_dir, d_root, home, body).await {
+            match apply_post(s_dir, body).await {
                 Ok((snapshot, message)) => express::json(
                     ctx,
                     200,
@@ -681,7 +329,7 @@ pub async fn handle(
                 );
             }
             let _guard = write_lock().lock().await;
-            match stop_post(s_dir, d_root, home).await {
+            match stop_post(s_dir).await {
                 Ok((snapshot, message)) => express::json(
                     ctx,
                     200,
@@ -700,6 +348,7 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn temp_root(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -748,37 +397,45 @@ mod tests {
     }
 
     #[test]
-    fn custom_post_and_stop_roundtrip_and_non_local_rejected() {
+    fn endpoint_paste_save_and_stop_roundtrip() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let dir = temp_root("roundtrip");
-            let (snapshot, msg) = apply_post(
-                dir.clone(),
-                dir.clone(),
+            // Smart-paste tcp:// format
+            let (snap, msg) = apply_post(
                 dir.clone(),
                 &json!({
-                    "provider": "custom",
-                    "localPort": 22,
-                    "remoteHost": "ssh.example.com",
-                    "remotePort": 2222,
-                    "username": "alice"
+                    "endpoint": "tcp://3.tcp.cpolar.top:12345",
+                    "username": "alice",
+                    "note": "cpolar"
                 }),
             )
             .await
             .unwrap();
-            assert!(msg.contains("ssh.example.com:2222"));
-            assert!(snapshot.active);
-            let ep = snapshot.suggested.unwrap();
-            assert_eq!(ep.ssh_target, "alice@ssh.example.com");
-            assert_eq!(ep.ssh_port, 2222);
+            assert!(msg.contains("3.tcp.cpolar.top:12345"));
+            assert!(snap.active);
+            let ep = snap.suggested.unwrap();
+            assert_eq!(ep.ssh_target, "alice@3.tcp.cpolar.top");
+            assert_eq!(ep.ssh_port, 12345);
+            assert_eq!(ep.note, "cpolar");
 
-            let (stopped, _) = stop_post(dir.clone(), dir.clone(), dir.clone())
-                .await
-                .unwrap();
+            // Smart-paste ssh -p format
+            let (snap2, _) = apply_post(
+                dir.clone(),
+                &json!({ "endpoint": "ssh -p 2222 bob@ssh.example.com" }),
+            )
+            .await
+            .unwrap();
+            let ep2 = snap2.suggested.unwrap();
+            assert_eq!(ep2.ssh_target, "bob@ssh.example.com");
+            assert_eq!(ep2.ssh_port, 2222);
+
+            // Stop clears active & suggested
+            let (stopped, _) = stop_post(dir.clone()).await.unwrap();
             assert!(!stopped.active);
-            assert!(!stopped.config.enabled);
+            assert!(stopped.suggested.is_none());
 
-            // Locality gate denies forwarded/non-loopback peers and accepts local host
+            // Locality gate check
             let local_headers = multicc_core::http_gate::NodeHeaders::from_raw([(
                 "host",
                 b"127.0.0.1:3000" as &[u8],

@@ -131,21 +131,63 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
     );
   }
 
-  Future<void> _applySshAuto() async {
+  Future<void> _configureSshEndpoint() async {
+    final snap = _sshTunnel?['snapshot'] as Map?;
+    final cfg = (snap?['config'] as Map?) ?? {};
+    final existingHost = (cfg['remoteHost'] ?? '') as String;
+    final existingPort = cfg['remotePort'] ?? 22;
+    final initial = existingHost.isNotEmpty
+        ? '$existingHost:$existingPort'
+        : '';
+    final ctrl = TextEditingController(text: initial);
+    final raw = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('配置 SSH（22 端口）出口'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '在命令行或穿透网页控制台映射本机 22 端口后，直接粘贴地址（支持 tcp://...、域名:端口、ssh -p 端口 用户@地址）：',
+              style: TextStyle(fontSize: 12, color: AppColors.muted),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              decoration: const InputDecoration(
+                hintText: 'tcp://3.tcp.cpolar.top:12345',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('保存并检测'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (raw == null || raw.isEmpty || !mounted) return;
     setState(() => _sshBusy = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final res = await _manage.applySshTunnelPreset(const {
-        'provider': 'auto',
-        'localPort': 22,
-      });
+      final res = await _manage.applySshTunnelPreset({'endpoint': raw});
       if (!mounted) return;
       setState(() => _sshTunnel = res);
-      final msg = (res['message'] ?? '已开启 SSH 映射').toString();
+      final msg = (res['message'] ?? '已保存 SSH 映射配置').toString();
       messenger.showSnackBar(SnackBar(content: Text('✓ $msg')));
     } catch (e) {
       if (!mounted) return;
-      final text = e is LocalOnlyException ? '仅可在本机操作 SSH 映射' : '映射失败：$e';
+      final text = e is LocalOnlyException ? '仅可在本机修改 SSH 映射配置' : '保存失败：$e';
       messenger.showSnackBar(SnackBar(content: Text(text)));
     } finally {
       if (mounted) setState(() => _sshBusy = false);
@@ -159,11 +201,11 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
       final res = await _manage.stopSshTunnel();
       if (!mounted) return;
       setState(() => _sshTunnel = res);
-      final msg = (res['message'] ?? '已停止 SSH 映射').toString();
+      final msg = (res['message'] ?? '已停用 SSH 映射配置').toString();
       messenger.showSnackBar(SnackBar(content: Text('✓ $msg')));
     } catch (e) {
       if (!mounted) return;
-      final text = e is LocalOnlyException ? '仅可在本机停止 SSH 映射' : '停止失败：$e';
+      final text = e is LocalOnlyException ? '仅可在本机停用 SSH 映射配置' : '停用失败：$e';
       messenger.showSnackBar(SnackBar(content: Text(text)));
     } finally {
       if (mounted) setState(() => _sshBusy = false);
@@ -175,17 +217,24 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
     final snap = raw['snapshot'] as Map?;
     final active = snap?['active'] == true;
     final sshdListening = snap?['sshdListening'] == true;
+    final remoteReachable = snap?['remoteReachable'] as bool?;
+    final remoteBanner = snap?['remoteSshBanner'] == true;
     final canEdit = snap?['canEdit'] == true;
     final config = (snap?['config'] as Map?) ?? {};
     final suggested = snap?['suggested'] as Map?;
     final sshTarget = (suggested?['sshTarget'] ?? '') as String;
     final sshPort = suggested?['sshPort'];
-    final providerLabel = (suggested?['providerLabel'] ?? '') as String;
 
-    final badgeColor = active
+    final badgeColor = active && remoteReachable == true
         ? AppColors.accent
-        : (sshdListening ? AppColors.muted : AppColors.amber);
-    final badgeText = active ? '已映射' : (sshdListening ? '未映射' : '22 未监听');
+        : (active && remoteReachable == false
+              ? AppColors.amber
+              : (sshdListening ? AppColors.muted : AppColors.amber));
+    final badgeText = active && remoteReachable == true
+        ? 'SSH 可达'
+        : (active && remoteReachable == false
+              ? '暂未连通'
+              : (active ? '已保存' : (sshdListening ? '未配置' : '22 未监听')));
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -202,7 +251,7 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
               const Icon(Icons.terminal, size: 18, color: AppColors.blue),
               const SizedBox(width: 8),
               const Text(
-                'SSH（22 端口）映射',
+                'SSH（22 端口）出口配置',
                 style: TextStyle(
                   color: AppColors.textBright,
                   fontSize: 14,
@@ -231,8 +280,14 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
             )
           else ...[
             _row('本机 22 端口', sshdListening ? '正在监听' : '未在监听'),
+            if (active)
+              _row(
+                '远端探测',
+                remoteReachable == true
+                    ? (remoteBanner ? 'TCP 可达 · 已识别 SSH' : 'TCP 可达')
+                    : '暂未连通',
+              ),
             if (sshTarget.isNotEmpty) ...[
-              _row('通道', providerLabel.isNotEmpty ? providerLabel : 'SSH'),
               _row('SSH 目标', '$sshTarget:${sshPort ?? 22}'),
               Align(
                 alignment: Alignment.centerRight,
@@ -251,7 +306,7 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
             const SizedBox(height: 6),
             if (!canEdit)
               const Text(
-                '仅可在本机操作一键映射或停止（当前为远程访问）。',
+                '仅可在本机修改或停用 SSH 映射（当前为远程访问）。',
                 style: TextStyle(color: AppColors.muted, fontSize: 11),
               )
             else
@@ -259,16 +314,16 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
                 children: [
                   Expanded(
                     child: FilledButton.icon(
-                      onPressed: _sshBusy ? null : _applySshAuto,
-                      icon: const Icon(Icons.bolt, size: 18),
-                      label: const Text('一键映射 SSH（22）'),
+                      onPressed: _sshBusy ? null : _configureSshEndpoint,
+                      icon: const Icon(Icons.edit_outlined, size: 18),
+                      label: Text(active ? '修改 / 粘贴地址' : '粘贴并配置 SSH 出口'),
                     ),
                   ),
                   if (config['enabled'] == true) ...[
                     const SizedBox(width: 8),
                     OutlinedButton(
                       onPressed: _sshBusy ? null : _stopSsh,
-                      child: const Text('停止'),
+                      child: const Text('停用'),
                     ),
                   ],
                 ],
