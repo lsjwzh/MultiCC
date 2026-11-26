@@ -312,6 +312,7 @@ pub mod outbox_claim_live;
 pub mod provider_balance_target;
 pub mod provider_limit_store;
 pub mod provider_limit_sync;
+mod public_safety;
 pub mod push_notification_copy;
 pub mod quota_bar_view;
 pub mod request_locality;

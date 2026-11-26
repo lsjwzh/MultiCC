@@ -7,7 +7,7 @@
 // memory graph.
 
 const { taskDirId } = require('../task-board/core');
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 
 const TASK_GRAPH_MAX_NODES = 800;
 const TASK_GRAPH_MAX_EDGES = 2400;

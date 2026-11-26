@@ -6,7 +6,7 @@ const {
   isInfrastructureError,
 } = require('../frozen-file-batch14/domain-error');
 const { HttpError, isHttpError } = require('./http-error');
-const { safeCode, sanitizePublicText } = require('../../../src/http/public-safety');
+const { safeCode, sanitizePublicText } = require('../frozen-file-batch19/public-safety');
 
 const DOMAIN_ERROR_MAP = Object.freeze({
   [DOMAIN_KINDS.BAD_REQUEST]: Object.freeze({ status: 400, code: 'invalid_request', error: 'request_error' }),

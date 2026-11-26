@@ -97,6 +97,26 @@ fn contains_sensitive_view(view: &str) -> bool {
         .any(|pattern| pattern.is_match(view))
 }
 
+pub fn contains_sensitive_js_text(value: &JsString) -> bool {
+    contains_sensitive_view(&to_unit_view(value))
+}
+
+pub fn safe_relative_js_path(value: &JsString) -> Option<JsString> {
+    let view = to_unit_view(value).replace('\\', "/");
+    let normalized = js_trim(&view);
+    if normalized.is_empty()
+        || normalized.chars().count() > MAX_PUBLIC_TEXT
+        || normalized.starts_with('/')
+        || starts_with_drive(normalized)
+        || normalized.split('/').any(|segment| segment == "..")
+        || control_pattern().is_match(normalized)
+        || contains_sensitive_view(normalized)
+    {
+        return None;
+    }
+    Some(from_unit_view(normalized))
+}
+
 /// `containsSensitiveText(value)` for [`String(value || '')`](value_or_empty).
 pub fn contains_sensitive_text(value: &str) -> bool {
     contains_sensitive_view(&to_unit_view(&JsString::from_rust_str(value)))
@@ -151,7 +171,23 @@ pub fn sanitize_public_text(value: Option<&str>, fallback: &str) -> String {
 
 /// Like `sanitize_public_text`, but keeps JavaScript's exact UTF-16 units.
 pub fn sanitize_public_js_text(value: Option<&JsString>, fallback: &str) -> JsString {
-    let fallback = JsString::from_rust_str(&fallback_text(fallback));
+    sanitize_js_with_fallback(value, JsString::from_rust_str(&fallback_text(fallback)))
+}
+
+/// Live host calls preserve even a lone surrogate in the fallback.
+pub fn sanitize_public_live_text(
+    value: Option<&JsString>,
+    fallback: Option<&JsString>,
+) -> JsString {
+    let fallback = fallback
+        .map(JsString::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.slice_units(0, MAX_PUBLIC_TEXT))
+        .unwrap_or_else(|| JsString::from("request_error"));
+    sanitize_js_with_fallback(value, fallback)
+}
+
+fn sanitize_js_with_fallback(value: Option<&JsString>, fallback: JsString) -> JsString {
     let Some(value) = value else { return fallback };
     let view = to_unit_view(value);
     if js_trim(&view).is_empty() {

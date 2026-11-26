@@ -27,6 +27,7 @@ function load(name) {
   const rewritten = source.replace(
     /require\((['"])(\.{1,2}\/[^'"]+)\1\)/g,
     (_, __, rel) => {
+        if (rel.endsWith('/http/public-safety')) return `require(${JSON.stringify(require.resolve('../frozen-file-batch19/public-safety'))})`;
       if (rel === '../host-power-services') return `require(${JSON.stringify(require.resolve('../frozen-file-batch18/host-power-services'))})`;
       if (rel === './system') return `require(${JSON.stringify(require.resolve('../frozen-file-batch17/system'))})`;
       if (rel === '../http/error-map') return `require(${JSON.stringify(require.resolve('../frozen-file-batch13/error-map'))})`;

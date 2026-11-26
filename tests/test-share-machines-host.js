@@ -30,6 +30,7 @@ globalThis.__shareMachineCalls = calls;
 const fail = operation => JSON.stringify({ status: 503, data: { code: 'machine_native_unavailable', error: '多电脑组件尚未就绪，请更新后手动重启服务' } });
 module.exports = {
   workspaceOverview: require(${JSON.stringify(nativeAddon)}).workspaceOverview,
+  publicSafetyApi: require(${JSON.stringify(nativeAddon)}).publicSafetyApi,
   protocolVersion: () => 1,
   buildSearchIndex() {}, computeUsage() {}, cprClaudeQuota() {},
   machineOperation(root, operation, raw) {

@@ -4,7 +4,7 @@ const { createChatHistoryVisibility } = require('./legacy-chat-history-visibilit
 
 const crypto = require('node:crypto');
 const { createChatHistoryService } = require('../../src/session/chat-history-service');
-const { sanitizePublicText } = require('../../src/http/public-safety');
+const { sanitizePublicText } = require('./frozen-file-batch19/public-safety');
 
 const DEFAULT_HISTORY_PAGE_SIZE = 5;
 const DEFAULT_HISTORY_LIMIT = 10000;

@@ -39,6 +39,7 @@ function load(name) {
   const rewritten = source.replace(
     /require\((['"])(\.{1,2}\/[^'"]+)\1\)/g,
     (_, __, rel) => {
+        if (rel.endsWith('/http/public-safety')) return `require(${JSON.stringify(require.resolve('../frozen-file-batch19/public-safety'))})`;
       const target = path.resolve(base, rel);
       const dependency = target === path.join(SRC, 'quota', 'provider-limit-cache')
         ? path.join(FROZEN, '..', 'legacy-provider-limit-cache-entry') : target;

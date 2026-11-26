@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
 const { VENDOR_NATIVE_CLIS, NATIVE_VENDOR_SUFFIX } = require('../providers/native-vendor');

@@ -23,7 +23,7 @@
 // the business push service, the channel registry): those data planes did not
 // move and must not be forked here.
 
-const { sanitizePublicText } = require('../../../src/http/public-safety');
+const { sanitizePublicText } = require('../frozen-file-batch19/public-safety');
 const { BusinessPushRequestError } = require('../../../src/push/business');
 const { BarkDeviceError } = require('../../../src/push/bark-devices');
 const { ChannelSubscriptionError } = require('../../../src/push/channel-subscriptions');

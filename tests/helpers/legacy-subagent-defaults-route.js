@@ -12,7 +12,7 @@
 // 是否官方）并通过现有端口执行：默认值走 providers.js 的原子配置文件写入，会话逐个走
 // session-profile.js 的 applySessionPatch / previewSessionPatch（与单会话 AI 配置同一个
 // 校验、暂存与广播路径）。Rust 接管会话存储与 provider 默认值后本模块即可删除。
-const { sanitizePublicText } = require('../../src/http/public-safety');
+const { sanitizePublicText } = require('./frozen-file-batch19/public-safety');
 const { desiredSession } = require('./session-pending-configuration-oracle');
 
 // 响应是 UI 负载，不是导出：400 个会话的机队不能把一个弹窗变成多兆的帧。

@@ -4,7 +4,7 @@
 // differential suite compares the retired handlers against native/gateway.
 'use strict';
 
-const { sanitizePublicText } = require('../../src/http/public-safety');
+const { sanitizePublicText } = require('./frozen-file-batch19/public-safety');
 const SPEEDTEST_DEADLINE_MS = 15000;
 const SPEEDTEST_MAX_RESPONSE_BYTES = 64 * 1024;
 const publicText = (value, fallback) => sanitizePublicText(typeof value === 'string' ? value : '', fallback);
@@ -120,7 +120,7 @@ function runSpeedtestRequest(options) {
 // ── Auto Provider · 难度路由「测试一下」 ─────────────────────────────────────
 const { createJevClient } = require('../../src/providers/jev-client');
 const { jevTarget, validateRoutingTarget } = require('../../src/providers/auto-provider-config');
-const { safeCode } = require('../../src/http/public-safety');
+const { safeCode } = require('./frozen-file-batch19/public-safety');
 
 const MAX_TEXT_LENGTH = 2000;
 const TEST_TIMEOUT_MS = 8000;

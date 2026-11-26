@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 const { isSettledLetter } = require('../classify/vocab');
 const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
 const { notificationCopy } = require('../native/runtime').getPushNotificationCopy();

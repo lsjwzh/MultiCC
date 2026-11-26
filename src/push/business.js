@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 const { atomicWriteJson } = require('../runtime-security');
 
 const RECEIPT_VERSION = 1;

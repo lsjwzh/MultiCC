@@ -549,7 +549,7 @@ function probeAddon(file, node = process.execPath) {
     if(JSON.parse(a.cliSwitchRuntimeRequest('currentAllowed',JSON.stringify({reservation:true})))!==false) process.exit(1);
     const cliTools=new a.RustCliToolsRuntime({specs:{},supported:[],catalog:[],npmPackages:{}});
     if(cliTools.request('force',{query:{refresh:'1'}})!==true) process.exit(1);
-    if(['hostPowerPreferences','hostPowerSettingsStart','hostPowerSettingsResume',
+    if(['publicSafetyApi','hostPowerPreferences','hostPowerSettingsStart','hostPowerSettingsResume',
       'releaseAssetMount','releaseAssetApkInfo','releaseAssetIosHandler',
       'sessionMetaValidate','sessionMetaPostNote','sessionMetaListNotes','sessionMetaAssessment',
       'memoFilePort','memoController','directoryModule','directoryLayoutStore','directoryEnsureSample',

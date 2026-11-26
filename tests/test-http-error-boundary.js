@@ -311,3 +311,74 @@ test('domain constructors preserve setter order, coercion errors and optional ca
     assert.throws(() => new api.DomainError('conflict', '', null), TypeError);
   }
 });
+
+const frozenPublicSafety = require('./helpers/frozen-file-batch19/public-safety');
+const currentPublicSafety = require('../src/native/runtime').getPublicSafety();
+
+test('public error cleaning matches frozen UTF-16, whitespace and pattern boundaries', () => {
+  const values = [undefined, null, false, 0, NaN, Infinity, 12n, Symbol('safe'), {},
+    '', 'okay', 'okay\n', 'okay\r\n', 'okay\u2028', '\ufeff safe \ufeff', '\u0085safe\u0085',
+    '\ud800', '\udc00', 'x'.repeat(239) + '😀', 'x'.repeat(241), 'line\u0000\t break',
+    'Bearer credential', 'token is private', 'upstream error', '/Users/fixture/private/file',
+    'C:\\Users\\fixture\\file', 'sk-abcdefghijk', 'src/file.js'];
+  const fallback = { identity: true };
+  assert.deepEqual(Object.keys(currentPublicSafety), Object.keys(frozenPublicSafety));
+  assert.equal(String(currentPublicSafety.CODE_PATTERN), String(frozenPublicSafety.CODE_PATTERN));
+  assert.equal(String(currentPublicSafety.ID_PATTERN), String(frozenPublicSafety.ID_PATTERN));
+  for (const value of values) {
+    for (const method of ['validCode', 'validId', 'containsSensitiveText']) {
+      assert.deepEqual(currentPublicSafety[method](value), frozenPublicSafety[method](value));
+    }
+    assert.equal(currentPublicSafety.safeCode(value, fallback), frozenPublicSafety.safeCode(value, fallback));
+    for (const other of [undefined, null, '', '\ufeff ', '\ud800', 'x'.repeat(239) + '😀']) {
+      assert.equal(currentPublicSafety.sanitizePublicText(value, other), frozenPublicSafety.sanitizePublicText(value, other));
+    }
+  }
+});
+
+test('compatibility cleaning preserves lazy reads, field order and frozen projections', () => {
+  const sentinel = new Error('getter');
+  function observe(api, throwing) {
+    const reads = [];
+    const raw = {
+      blocked: true,
+      reasons: ['busy', 'busy', 'not valid', 'okay\n'],
+      conflicts: ['src/file.js', 'src\\file.js', '../outside', '\ud800.md', 'token=fixture'],
+      operationId: 'operation:1', field: 'field', currentStatus: 'ready',
+      queueDepth: -0, retryAfter: NaN, retryAfterSec: Infinity, retryAfterMs: 4,
+      sessions: ['session_1', 'session_1', 'invalid space'], sessionIds: ['session_2'],
+    };
+    const input = new Proxy(raw, {
+      get(target, key) {
+        reads.push(key);
+        if (throwing && key === 'conflicts') throw sentinel;
+        return target[key];
+      },
+    });
+    try {
+      const value = api.sanitizeCompatibility(input);
+      assert.ok(Object.isFrozen(value));
+      for (const field of ['reasons', 'conflicts', 'sessions', 'sessionIds']) assert.ok(Object.isFrozen(value[field]));
+      assert.ok(Object.is(value.queueDepth, -0));
+      return { reads, keys: Object.keys(value), value };
+    } catch (error) {
+      assert.equal(error, sentinel);
+      return { reads, threw: true };
+    }
+  }
+  for (const throwing of [false, true]) assert.deepEqual(observe(currentPublicSafety, throwing), observe(frozenPublicSafety, throwing));
+  for (const value of [null, false, 1, [], () => {}, Symbol()]) {
+    assert.deepEqual(currentPublicSafety.sanitizeCompatibility(value), frozenPublicSafety.sanitizeCompatibility(value));
+  }
+});
+
+test('public code checks retain the exported regex and coercion exceptions', () => {
+  const sentinel = new Error('conversion');
+  for (const api of [currentPublicSafety, frozenPublicSafety]) {
+    const value = { [Symbol.toPrimitive](hint) { assert.equal(hint, 'string'); throw sentinel; } };
+    assert.throws(() => api.containsSensitiveText(value), error => error === sentinel);
+    api.CODE_PATTERN.exec = () => null;
+    try { assert.equal(api.validCode('okay'), false); }
+    finally { delete api.CODE_PATTERN.exec; }
+  }
+});
