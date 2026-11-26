@@ -56,6 +56,7 @@ pub mod event_routes;
 pub mod events;
 pub mod exact_secret;
 pub mod git_history;
+pub mod goal_precheck;
 pub mod handoff_zip;
 pub mod host_exec;
 pub mod host_ops_routes;
