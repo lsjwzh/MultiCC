@@ -2,7 +2,7 @@
 
 // Freeze the output of the production Node envelope function for JSON wire
 // values. The Rust kernel intentionally does not claim arbitrary VM objects.
-const { createWsEnvelope } = require('../../../src/api-contract');
+const { createWsEnvelope } = require('../../../tests/helpers/frozen-file-batch20/api-contract');
 const pairs = [
   ['{"type":"pong"}', '{}'],
   ['{"type":"event","text":"hello"}', '{}'],

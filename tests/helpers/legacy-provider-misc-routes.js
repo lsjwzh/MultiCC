@@ -345,7 +345,7 @@ function mountSpeedtestRoute(app, deps) {
 
 // ── server.js `GET /api/v1/providers`, frozen ──────────────────────────────
 function mountV1ProvidersRoute(app, deps) {
-  const { toProviderDto, withApiMeta, requestContext } = require('../../src/api-contract');
+  const { toProviderDto, withApiMeta, requestContext } = require('./frozen-file-batch20/api-contract');
   app.get('/api/v1/providers', (req, res) => {
     const appType = String(req.query.appType || '').trim();
     const list = deps.providers

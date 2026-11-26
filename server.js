@@ -98,7 +98,7 @@ const {
   renderHandoffPrompt,
 } = require('./src/cli-switch');
 const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
-// MULTICC_DATA_DIR centralizes state; stores provide atomic recovery-safe writes.
+// MULTICC_DATA_DIR owns state; stores use atomic writes.
 const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
 const { createSessionPersistence } = require('./src/native/runtime');
@@ -233,7 +233,7 @@ const {
   requestContext,
   toWaitDto,
   withApiMeta,
-} = require('./src/api-contract');
+} = require('./src/native/runtime').getApiContract();
 const {
   createAuthSecurity,
   normalizeRedirect,

@@ -1,7 +1,7 @@
 'use strict';
 
 // The WebSocket envelope has two implementations: the production JavaScript in
-// src/api-contract.js, which every live frame goes through, and
+// the native API contract, which every live frame goes through, and
 // multicc_core::api_contract::ws_envelope, which the Rust front door uses.
 // `docs/rust-migration/differential/ws-envelope-golden.json` is what keeps
 // them equal — the Rust kernel's own test compares itself against that file.
@@ -25,7 +25,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createWsEnvelope } = require('../src/api-contract');
+const { createWsEnvelope } = require('../src/native/runtime').getApiContract();
 const golden = require('../docs/rust-migration/differential/ws-envelope-golden.json');
 
 test('the frozen envelope golden still matches the live JavaScript', () => {

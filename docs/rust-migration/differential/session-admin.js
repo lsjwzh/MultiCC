@@ -813,10 +813,10 @@ main({
     fs.writeFileSync(worldPath, JSON.stringify(baseWorld('initial')));
     legacy = require(path.join(repo, 'tests/helpers/legacy-session-admin-routes'));
     const world = require(path.join(repo, 'tests/helpers/session-admin-scripted-world'));
-    bag = world.buildDeps(baseWorld('initial'));
+    bag = world.buildDeps(baseWorld('initial'), require(path.join(repo, 'tests/helpers/frozen-file-batch20/api-contract')));
     // server.js guards these paths before the routers run; the front door has
     // to reproduce both 404 shapes, so the Node side mounts the real guard.
-    const { createErrorDto, requestContext } = require(path.join(repo, 'src/api-contract'));
+    const { createErrorDto, requestContext } = require(path.join(repo, 'tests/helpers/frozen-file-batch20/api-contract'));
     const { mountPublicSessionAccessGuard } =
       require(path.join(repo, 'tests/helpers/legacy-public-session-access'));
     mountPublicSessionAccessGuard(app, {

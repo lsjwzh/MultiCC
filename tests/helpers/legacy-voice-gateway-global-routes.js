@@ -15,7 +15,7 @@
 // compatibility window (see routes/voice-gateway.js). They keep editing the old
 // per-Fleet records, but the *runtime* they project is this single global child.
 
-const { createErrorDto, requestContext, withApiMeta } = require('../../src/api-contract');
+const { createErrorDto, requestContext, withApiMeta } = require('./frozen-file-batch20/api-contract');
 const { publicBaseUrl } = require('../../src/routes/voice-gateway-host');
 const { PROXY_PREFIX } = require('../../src/routes/voice-gateway-proxy');
 

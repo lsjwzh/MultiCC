@@ -42,7 +42,7 @@ const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 let scenarioFile = '';
 let rustTraceFile = '';
@@ -164,6 +164,10 @@ const traceFile = process.env.PROVIDER_MISC_RUST_TRACE;
 const readScenario = () => { try { return JSON.parse(fs.readFileSync(scenarioFile, 'utf8')); } catch (_) { return {}; } };
 const append = record => fs.appendFileSync(traceFile, JSON.stringify(record) + '\\n');
 
+const native = require(path.join(REPO, 'src/native/runtime')).getNative();
+const defaultsFile = path.join(process.env.MULTICC_DATA_DIR, 'provider-defaults.json');
+fs.writeFileSync(defaultsFile, '{}');
+const defaultsOwner = new native.RustProviderDefaultsStore(defaultsFile);
 function stubProviders() {
   const current = () => readScenario();
   return {
@@ -173,6 +177,7 @@ function stubProviders() {
     saveProviderDefaults() {},
     validProviderId: (_cli, value) => ({ ok: true, value }),
     providerDefaults: {},
+    defaultsOwner,
     claudeCmd: '/usr/local/bin/claude',
     providerRelayShares: {
       create() {}, list() { return []; }, getCredential() { return null; },
@@ -232,6 +237,7 @@ mountSecretsVaultHostRoute(app, {
   },
 });
 app.use((req, res) => {
+  if (req.path === '/__health') return res.status(200).type('text/plain').send('ok');
   if (/^\\/(?:claude|codex)-proxy\\//.test(req.path) && req.method === 'POST') {
     const scenario = readScenario();
     append({
@@ -363,6 +369,7 @@ function compareGroups(label, a, b, details) {
 
 main({
   name: 'provider-misc',
+  ready: waitForFixture,
   mount(app, { repo, work }) {
     scriptFile = path.join(work, 'scenario.json');
     scenarioFile = scriptFile;

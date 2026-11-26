@@ -9,6 +9,7 @@ pub mod agy_stream;
 pub mod air_storage_notice;
 pub mod air_task_list;
 pub mod air_todo_ignore;
+mod api_contract;
 pub mod api_error_policy;
 pub mod api_error_text;
 pub mod artifact_reference;

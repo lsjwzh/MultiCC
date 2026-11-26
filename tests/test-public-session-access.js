@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
-const { createErrorDto, requestContext } = require('../src/api-contract');
+const { createErrorDto, requestContext } = require('../src/native/runtime').getApiContract();
 const { getNative } = require('../src/native/runtime');
 const legacyPublicAccess = require('./helpers/legacy-public-session-access');
 const publicAccessApi = () => getNative().sessionPublicAccessApi();
