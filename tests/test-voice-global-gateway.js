@@ -872,3 +872,45 @@ test('plain microphone dictation is untouched by the realtime voice gateway', ()
     assert.equal(readRepoFile('app/lib/services/voice_launch_service.dart').includes(microphone), false);
   }
 });
+
+test('8a259312 differential: atomic collision, record identity and late host failures', t => {
+  const before = require('./helpers/frozen-host-leaves/router').createVoiceRouterProvisioner;
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-provision-'));
+  t.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
+  function trace(factory, mode) {
+    const records = new Map(), calls = [], id = VOICE_ROUTER_ID;
+    const marker = new Error('injected');
+    const collision = { id, kind: 'chat', type: mode === 'valid' ? 'gateway' : 'worker' };
+    const api = factory({ records, runtimeRoot, cli: null,
+      now() { calls.push('now'); if (mode === 'clock') throw marker; return 12; },
+      mutate(reason, apply) {
+        calls.push(reason);
+        if (mode === 'throw') throw marker;
+        if (mode === 'invalid' || mode === 'valid') records.set(id, collision);
+        if (mode !== 'skip') apply(records);
+      },
+    });
+    const output = [Object.isFrozen(api), Object.keys(api), api.get()];
+    try {
+      const first = api.ensure(), next = api.ensure();
+      output.push(first, next, api.get(), first.record === records.get(id), api.get() === first.record);
+    } catch (error) { output.push(error === marker); }
+    return { calls, output };
+  }
+  for (const mode of ['new', 'valid', 'invalid', 'skip', 'throw', 'clock']) {
+    assert.deepEqual(trace(createVoiceRouterProvisioner, mode), trace(before, mode));
+  }
+});
+
+test('8a259312 differential: malformed injected clock and transaction objects', t => {
+  const before = require('./helpers/frozen-host-leaves/router').createVoiceRouterProvisioner;
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-error-'));
+  t.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
+  function failure(factory, now, draft) {
+    const api = factory({ records: new Map(), runtimeRoot, now, mutate: (_, cb) => cb(draft) });
+    try { api.ensure(); } catch (e) { return [e.name, e.message]; }
+  }
+  for (const [now, draft] of [[1, new Map()], [Date.now, {}], [Date.now, null], [Date.now, { get() {} }]]) {
+    assert.deepEqual(failure(createVoiceRouterProvisioner, now, draft), failure(before, now, draft));
+  }
+});
