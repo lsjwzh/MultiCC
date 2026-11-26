@@ -136,6 +136,14 @@ impl SnapshotBuilder {
     }
 }
 
+pub fn snapshot(task_id: &V, history: &[V], active_turn: Option<&V>, max_bytes: usize) -> V {
+    let mut snapshot = SnapshotBuilder::new(task_id.clone(), active_turn.cloned(), max_bytes);
+    for row in history {
+        snapshot.push(row);
+    }
+    snapshot.finish()
+}
+
 pub fn verify(snapshot: &V, id: &V) -> bool {
     let V::Object(mut fields) = snapshot.clone() else {
         return false;
