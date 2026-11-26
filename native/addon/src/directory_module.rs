@@ -1,5 +1,11 @@
 //! Compose the directory repository, layout store and host over the same live tables.
-use crate::{directory_layout::layout_store, host_methods::method, route_response::*};
+use crate::{
+    directory_layout::layout_store,
+    host_methods::{function, method},
+    js_iteration::read,
+    js_live::invoke,
+    route_response::*,
+};
 use napi_derive::napi;
 
 #[napi]
@@ -74,6 +80,82 @@ pub fn directory_module(
     )?;
     let host = p.get(c"createDirectoryHost")?.call_plain(&[host_deps])?;
     Ok(fields(d, &[("repo", repo), ("host", host)])?.raw())
+}
+
+// The host owns the directory Map and registration transaction. Only the logger
+// is needed when the registration promise settles; a rejection flows to startup.
+#[napi]
+pub fn ensure_first_run_directory(
+    env: Env,
+    state: Unknown<'_>,
+    directories: Unknown<'_>,
+    directory_module: Unknown<'_>,
+    paths: Unknown<'_>,
+    logger: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let state = L::new(&env, state);
+    if !read(state, c"needsDefaultDirectory")?.truthy()?
+        || read(L::new(&env, directories), c"size")?.positive()?
+    {
+        return Ok(state.from_value(&V::Undefined)?.raw());
+    }
+
+    let host = read(L::new(&env, directory_module), c"host")?;
+    let register = read(host, c"registerDefaultDirectory")?;
+    let options = fields(
+        state,
+        &[
+            ("name", text(state, "我的工作区")?),
+            ("path", read(L::new(&env, paths), c"defaultWorkspacePath")?),
+        ],
+    )?;
+    let registration = invoke(
+        host,
+        register,
+        &[options],
+        "directoryModule.host.registerDefaultDirectory",
+    )?;
+    let pending = call(
+        state.global()?.get(c"Promise")?,
+        c"resolve",
+        &[registration],
+    )?;
+    let report = function(
+        L::new(&env, logger),
+        "reportDefaultDirectory",
+        1,
+        1,
+        |logger, args| {
+            let result = args[0];
+            if read(result, c"ok")?.truthy()? {
+                let info = read(logger, c"info")?;
+                let details = fields(
+                    logger,
+                    &[
+                        ("id", read(read(result, c"data")?, c"id")?),
+                        ("path", read(read(result, c"data")?, c"path")?),
+                    ],
+                )?;
+                invoke(
+                    logger,
+                    info,
+                    &[text(logger, "default_directory_created")?, details],
+                    "logger.info",
+                )?;
+            } else {
+                let warn = read(logger, c"warn")?;
+                let details = fields(logger, &[("reason", read(result, c"message")?)])?;
+                invoke(
+                    logger,
+                    warn,
+                    &[text(logger, "default_directory_create_failed")?, details],
+                    "logger.warn",
+                )?;
+            }
+            logger.from_value(&V::Undefined)
+        },
+    )?;
+    Ok(call(pending, c"then", &[report])?.raw())
 }
 
 const SAMPLE_FILES: &[(&str, &str)] = &[
