@@ -23,7 +23,7 @@
 // 拒绝任何转发自真实远端客户端的请求（docs/gateway.md 的内网端口模型）。
 
 const { isLocalRequest } = require('../request-locality');
-const { readPowerSettings } = require('../host-power-services');
+const { readPowerSettings } = require('./host-power');
 const { createBatteryReader } = require('../host-battery');
 
 const { getNative } = require('../native/runtime');

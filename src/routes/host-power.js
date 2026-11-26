@@ -1,6 +1,31 @@
 'use strict';
 
-const { getUnlockPassword, getUnlockProbe, getPowerPreferences, readPowerSettings } = require('../host-power-services');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { getNative } = require('../native/runtime');
+const { createUnlockPassword } = require('../macos-unlock-password');
+const { createUnlockProbe } = require('../macos-unlock-probe');
+
+function createPowerPreferences({ dir = process.env.MULTICC_AGENT_DIR || path.join(os.homedir(), '.multicc', 'agent') } = {}) {
+  return getNative().hostPowerPreferences(fs, path, dir, process.pid);
+}
+let unlockPassword, unlockProbe, powerPreferences;
+const getUnlockPassword = () => unlockPassword || (unlockPassword = createUnlockPassword());
+const getUnlockProbe = () => unlockProbe || (unlockProbe = createUnlockProbe());
+const getPowerPreferences = () => powerPreferences || (powerPreferences = createPowerPreferences());
+const powerServices = { getUnlockPassword, getUnlockProbe, getPowerPreferences };
+async function readPowerSettings(deps, req) {
+  const native = getNative();
+  let state = native.hostPowerSettingsStart(deps, req, powerServices);
+  while (state.pending) {
+    let success = true, value;
+    try { value = await state.value; }
+    catch (cause) { success = false; value = cause; }
+    state = native.hostPowerSettingsResume(state, success, value);
+  }
+  return state.value;
+}
 const { MAX_PASSWORD_LENGTH } = require('../macos-unlock-password');
 const { mapError } = require('../http-errors');
 
@@ -107,4 +132,5 @@ function createPowerSettingsHandler(deps) {
   };
 }
 
-module.exports = { createPowerSettingsHandler, mountPowerWriteRoutes };
+module.exports = { createPowerSettingsHandler, mountPowerWriteRoutes, createPowerPreferences,
+  getPowerPreferences, getUnlockPassword, getUnlockProbe, readPowerSettings };

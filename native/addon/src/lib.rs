@@ -70,6 +70,7 @@ pub mod exact_secret;
 pub mod guard;
 pub mod handoff_zip;
 mod host_methods;
+mod host_power_services;
 pub mod host_prompts;
 mod host_read_operations;
 mod host_system_relay;

@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
-const { createPowerPreferences } = require('../src/host-power-services');
+const { createPowerPreferences } = require('../src/routes/host-power');
 
 test('Agent keeps power intent and unlock consent independent', { skip: process.platform !== 'darwin' }, t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-lid-test-'));
@@ -56,4 +56,37 @@ test('consent survives restart and off/on, legacy migration is explicit, corrupt
   assert.equal(fs.statSync(path.join(dir, 'power-settings.json')).mode & 0o777, 0o600);
   fs.writeFileSync(path.join(dir, 'power-settings.json'), '{}');
   assert.throws(() => preferences.read(true));
+});
+
+test('power preference persistence matches the frozen implementation on legacy and failed writes', () => {
+  const frozen = require('./helpers/frozen-file-batch18/host-power-services');
+  const current = { createPowerPreferences };
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'power-preferences-diff-'));
+  try {
+    for (const [name, api] of Object.entries({ frozen, current })) {
+      const dir = path.join(root, name);
+      const file = path.join(dir, 'power-settings.json');
+      const store = api.createPowerPreferences({ dir });
+      const legacy = { consent: true };
+      assert.equal(store.read(legacy), legacy);
+      store.write(false);
+      assert.equal(fs.readFileSync(file, 'utf8'), '{"autoUnlock":false}\n');
+      assert.equal(store.read(true), false);
+      store.write(true);
+      assert.equal(store.read(false), true);
+      if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+      const circular = {}; circular.self = circular;
+      assert.throws(() => store.write(circular), TypeError);
+      assert.deepEqual(fs.readdirSync(dir), ['power-settings.json']);
+      assert.equal(store.read(), true);
+      fs.writeFileSync(file, '{"autoUnlock":"yes"}');
+      assert.throws(() => store.read(), { name: 'Error', message: 'invalid power preferences' });
+      fs.writeFileSync(file, '{');
+      assert.throws(() => store.read(), SyntaxError);
+      fs.unlinkSync(file);
+      fs.mkdirSync(file);
+      assert.throws(() => store.write(false));
+      assert.deepEqual(fs.readdirSync(dir), ['power-settings.json']);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

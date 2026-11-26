@@ -269,8 +269,12 @@
       "migrationStrategy": "Keep the write private (0700 directory, 0600 file) and idempotent; if the agent root ever moves, copy power-settings.json forward together with the agent's other config and keep a read-only fallback for one release rather than relocating this file alone.",
       "sources": [
         {
-          "file": "src/host-power-services.js",
+          "file": "src/routes/host-power.js",
           "anchor": "function createPowerPreferences({ dir = process.env.MULTICC_AGENT_DIR || path.join(os.homedir(), '.multicc', 'agent') } = {}) {"
+        },
+        {
+          "file": "native/addon/src/host_power_services.rs",
+          "anchor": "pub fn host_power_preferences("
         }
       ]
     },
