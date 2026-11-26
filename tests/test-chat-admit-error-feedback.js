@@ -14,13 +14,100 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createChatTurnEngine, deliverAfterPendingMemory } = require('../src/chat/turn-engine');
-const { createSessionNotices } = require('../src/chat/session-notices');
+const { createSessionNotices } = require('../src/native/runtime').getSessionNotices();
 const { createQueuedTurnPreparation } = require('../src/chat/admission-progress');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
+const frozenNoticeApi = require('./helpers/frozen-file-batch23/session-notices');
+
+test('notice facade preserves captured ports, durable ordering and sync versus async failures', async () => {
+  async function capture(api, mode) {
+    const events = [];
+    const sentinel = new RangeError('notice sentinel');
+    let thenReads = 0;
+    const ports = {
+      appendChatMessage(id, message) {
+        events.push(['append', id, message]);
+        if (mode === 'throw') throw sentinel;
+        if (mode === 'reject') return Promise.reject(sentinel);
+        if (mode === 'resolve') return Promise.resolve(true);
+        if (mode === 'resolve-empty') return Promise.resolve(false);
+        if (mode === 'thenable') return { get then() { events.push(['then', ++thenReads]); return resolve => { events.push('settle'); resolve(true); }; } };
+        if (mode === 'then-getter') return { get then() { events.push('then'); throw sentinel; } };
+        if (mode === 'empty') return false;
+        return true;
+      },
+      chatBroadcast(id, frame) { events.push(['broadcast', id, frame]); if (mode === 'broadcast-throw') throw sentinel; },
+      now() { events.push('now'); return 123; },
+      logger: { warn(...args) { events.push(['warn', ...args]); if (mode === 'warn-throw') throw sentinel; } },
+    };
+    if (mode === 'no-append') ports.appendChatMessage = null;
+    if (mode === 'bad-now') ports.now = null;
+    if (mode === 'bad-broadcast') ports.chatBroadcast = 1;
+    if (mode === 'warn-throw') ports.appendChatMessage = () => { throw sentinel; };
+    const watched = new Proxy(ports, { get(target, key) { events.push(['port', key]); return target[key]; } });
+    const notices = api.createSessionNotices(watched);
+    watched.now = () => 999;
+    let result;
+    try { result = notices.notifyLostMessage({ sessionId: mode === 'empty-id' ? '' : 's1', error: { code: 'failed', detail: 'remedy\nnext' } }); }
+    catch (error) { return { stage: 'sync', identity: error === sentinel, name: error.name, message: error.message, events }; }
+    events.push('returned');
+    const promise = result instanceof Promise;
+    try { return { value: await result, promise, events }; }
+    catch (error) { return { stage: 'async', identity: error === sentinel, name: error.name, message: error.message, events }; }
+  }
+  for (const mode of ['saved', 'empty', 'throw', 'reject', 'resolve', 'resolve-empty', 'thenable', 'then-getter', 'broadcast-throw', 'warn-throw', 'no-append', 'bad-now', 'bad-broadcast', 'empty-id']) {
+    assert.deepEqual(await capture(require('../src/native/runtime').getSessionNotices(), mode), await capture(frozenNoticeApi, mode), mode);
+  }
+});
+
+test('notice facade retains parameter errors, clock defaults and public function shapes', () => {
+  const current = require('../src/native/runtime').getSessionNotices();
+  function observe(run) { try { return { value: run() }; } catch (error) { return { name: error.name, message: error.message }; } }
+  assert.deepEqual(Object.keys(current), Object.keys(frozenNoticeApi));
+  for (const name of Object.keys(current)) {
+    assert.equal(current[name].name, frozenNoticeApi[name].name);
+    assert.equal(current[name].length, frozenNoticeApi[name].length);
+  }
+  for (const value of [undefined, null, false, 0, 1n, Symbol('port'), '']) {
+    assert.deepEqual(observe(() => current.createSessionNotices(value) && 'created'), observe(() => frozenNoticeApi.createSessionNotices(value) && 'created'));
+    for (const name of ['stuckDeliveryText', 'heldBackgroundText', 'heldCapText']) assert.deepEqual(observe(() => current[name](value)), observe(() => frozenNoticeApi[name](value)));
+    for (const name of ['notifyLostMessage', 'notifyStuckDelivery', 'notifyHoldCap']) {
+      assert.deepEqual(observe(() => current.createSessionNotices({})[name](value)), observe(() => frozenNoticeApi.createSessionNotices({})[name](value)));
+    }
+  }
+  const original = Date.now;
+  try {
+    for (const api of [current, frozenNoticeApi]) {
+      const appended = [];
+      Date.now = () => 51;
+      const notices = api.createSessionNotices({ appendChatMessage: (_id, message) => { appended.push(message); return true; } });
+      Date.now = () => 99;
+      assert.equal(notices.notifyHoldCap({ sessionId: 's1', minutes: 1 }), true);
+      assert.equal(appended[0].ts, 51);
+    }
+  } finally { Date.now = original; }
+});
+
+test('notice warning getters keep their original exception boundary', async () => {
+  async function capture(api, async) {
+    const sentinel = new Error('warning getter');
+    const failure = { get message() { throw sentinel; } };
+    const notices = api.createSessionNotices({
+      appendChatMessage: () => async ? Promise.reject(failure) : (() => { throw failure; })(),
+      logger: { warn() { throw new Error('must not reach logger'); } },
+    });
+    let pending;
+    try { pending = notices.notifyHoldCap({ sessionId: 's', minutes: 1 }); }
+    catch (error) { assert.equal(error, sentinel); return 'sync'; }
+    await assert.rejects(pending, error => error === sentinel);
+    return 'async';
+  }
+  for (const async of [false, true]) assert.equal(await capture(require('../src/native/runtime').getSessionNotices(), async), await capture(frozenNoticeApi, async));
+});
 
 test('session notice text matches the frozen host for coercions, UTF-16 and minute boundaries', () => {
   const previous = require('./helpers/frozen-session-notices');
-  const current = require('../src/chat/session-notices');
+  const current = require('../src/native/runtime').getSessionNotices();
   function observe(api, method, makeInput) {
     const trace = [];
     const sentinel = new Error('notice getter');

@@ -28,7 +28,7 @@ const { createProductionQuestionHost } = require('../src/session-work/host');
 const {
   createHeldTurnInjection, spawnContractFacts, spawnContractOf, isDirectUserTyped,
 } = require('../src/chat/held-turn-injection');
-const { heldBackgroundText, heldCapText, createSessionNotices } = require('../src/chat/session-notices');
+const { heldBackgroundText, heldCapText, createSessionNotices } = require('../src/native/runtime').getSessionNotices();
 
 const RECORD = {
   cli: 'claude', provider: 'official', providerSelection: { mode: 'auto' },

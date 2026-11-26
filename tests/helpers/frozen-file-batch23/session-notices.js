@@ -1,5 +1,5 @@
 'use strict';
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 function lostMessageText(error) {
   return getNative().chatLostNotice(error);

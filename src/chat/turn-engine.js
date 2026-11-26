@@ -11,7 +11,7 @@ const crypto = require('crypto');
 const { createTurnTimingRecorder, createDeliveryProbeRegistry, createTurnTimelinePort,
   shouldReexecutePersistedDelivery } = require('./turn-progress');
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
-const { createSessionNotices } = require('./session-notices');
+const { createSessionNotices } = require('../native/runtime').getSessionNotices();
 const { createAdapterCompletion, isCompleted } = require('../cli-adapters/completion');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../native/runtime').adapterCompletion;
 const { getNative, gatewayPath, deliveryClassForItem, historyFrame: { fitHistoryFrame } } = require('../native/runtime');
