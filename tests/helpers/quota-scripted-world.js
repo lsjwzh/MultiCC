@@ -50,6 +50,7 @@ function buildDeps(initialWorld = {}, options = {}) {
   const state = { world: initialWorld || {}, case: undefined };
   const effects = { calls: [] };
   const dataRoot = options.dataRoot || process.cwd();
+  const codexAuthFile = path.join(dataRoot, 'quota-fixture-auth.json');
   let cache = null;
   let cacheFile = '';
 
@@ -107,7 +108,28 @@ function buildDeps(initialWorld = {}, options = {}) {
     return fetchValue('qoder');
   }
 
+  function codexWireFetch(url, init) {
+    const headers = init.headers;
+    record({
+      op: 'codexWireFetch',
+      valid: url === 'https://chatgpt.com/backend-api/wham/usage' && init.method === 'GET'
+        && JSON.stringify(Object.keys(headers)) === JSON.stringify(['Authorization', 'ChatGPT-Account-Id', 'originator', 'Accept'])
+        && headers.Authorization === 'Bearer quota-fixture-token' && headers['ChatGPT-Account-Id'] === 'fixture-account'
+        && headers.originator === 'codex_cli_rs' && headers.Accept === 'application/json'
+        && init.signal instanceof AbortSignal && !init.signal.aborted,
+    });
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({
+      plan_type: 'fixture-plan', rate_limit: { primary_window: { used_percent: 17, limit_window_seconds: 604800, reset_at: 1800000000 } },
+    }) });
+  }
+
   async function fetchCodexUsage(nowMs, usageOptions) {
+    if (world().codexWire) {
+      if (usageOptions?.authFile !== codexAuthFile || usageOptions.fetch !== codexWireFetch) {
+        throw new Error('expected the fixture account and transport');
+      }
+      return options.codexUsage(clock(), usageOptions);
+    }
     record({
       op: 'fetch',
       kind: 'codex',
@@ -184,6 +206,7 @@ function buildDeps(initialWorld = {}, options = {}) {
 
   function resolveAccountAuthFile(id) {
     record({ op: 'accountAuthFile', id });
+    if (world().codexWire && id === 'fixture-account') return codexAuthFile;
     const files = (world().accounts || {}).files || {};
     return files[id] === undefined ? null : files[id];
   }
@@ -330,6 +353,12 @@ function buildDeps(initialWorld = {}, options = {}) {
     // case must not wipe the state the first call just built.
     if (!changed) return;
     effects.calls.length = 0;
+    deps.codexFetch = scenario.codexWire ? codexWireFetch : undefined;
+    if (scenario.codexWire) {
+      fs.writeFileSync(codexAuthFile, JSON.stringify({ tokens: {
+        access_token: 'quota-fixture-token', account_id: 'fixture-account',
+      } }), { mode: 0o600 });
+    }
     if (scenario.resetState !== false) {
       usageQueue.resetClaudeUsageQueue();
       barState.resetClaudeBarState();

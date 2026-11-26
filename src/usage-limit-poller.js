@@ -1,8 +1,7 @@
 'use strict';
 
 const { outboundFetch } = require('./network/outbound');
-const { getNative } = require('./native/runtime');
-const { requestCodexUsage, readCodexAuth } = require('./quota/codex-usage-request');
+const { getNative, requestCodexUsage, readCodexAuth } = require('./native/runtime');
 
 // Usage-limit poller — the ACTIVE-POLL half of the limit subsystem.
 //

@@ -484,6 +484,13 @@ async function readCli(input) {
   return JSON.parse(await getNative().readProviderCliCredential(JSON.stringify(input)));
 }
 const providerCredentials = { credential, readCli };
+function readCodexAuth(file) {
+  return providerCredentials.credential({ operation: 'codexAuth',
+    file: file || path.join(require('node:os').homedir(), '.codex', 'auth.json') });
+}
+function requestCodexUsage(auth, { fetch = require('../network/outbound').outboundFetch, signal } = {}) {
+  return getNative().requestCodexUsage(auth, fetch, signal);
+}
 const taskShellCapacity = {
   get MAX_TASKS_PER_DIRECTORY() { return getNative().taskDirectoryCapacityLimit(); },
   directoryTaskCount: (store, dirId) => getNative().taskDirectoryCapacity(store, dirId, false, require('./task-domain').taskDomain),
@@ -853,7 +860,7 @@ module.exports = { getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeC
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
   createClaudeAdapter, codexAdapter, codexAppAdapter, codexBackground, codexProviderHome,
   claudeSettingsOverride, opencodeProcessError, processSpawnArgs, resolveCliRelayTarget, applyCliRelaySpawn, isZcodeSessionId, repairZcodeSessionState,
-  pathSafety, stateBootstrap, bootstrapState, messageComposer, managedContext, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
+  pathSafety, stateBootstrap, bootstrapState, messageComposer, managedContext, resolveModelRequestPolicy, createModelStreamProgress, zcodeEngine, createCliProviderRegistry, taskShellCapacity, providerCredentials, readCodexAuth, requestCodexUsage, createModelDefaultResolver, claudeQuota, subscriptionFromBody, codexAuthSubscription, createSessionPersistence, jsonClone };
 // The stable PersistenceError class is created natively once per environment.
 Object.defineProperty(module.exports, 'PersistenceError', {
   enumerable: true,
