@@ -36,9 +36,10 @@ globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCE
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
 const app = express(); app.use(express.json());
+const policy = require(path.join(repo, 'src/native/runtime')).getNetworkPolicy().resolveNetworkPolicy({ HOST: '0.0.0.0', PORT: '45123', MULTICC_ALLOW_REMOTE: '1' });
 require(path.join(repo, 'src/routes/host-read-host')).mountSystemHostRoute(app, {
  fs, path, rootDir: ${JSON.stringify(rootDir)}, networkInterfaces: () => (${JSON.stringify(INTERFACES)}),
- getPort: () => 45123, getBindHost: () => '0.0.0.0', authRequired: () => true,
+ getPort: () => policy.port, getBindHost: () => policy.host, authRequired: () => true,
  uptimeSeconds: () => 8100, now: () => ${NOW}, gitRun: async () => ${JSON.stringify(TAGS)},
 });
 require(path.join(repo, 'src/routes/host-read-host')).mountScanHistoryHostRoute(app, {
@@ -73,8 +74,9 @@ async function main() {
         fs.writeFileSync(path.join(rootDir, '.multicc_channel'), '# channel: release\n');
         const legacy = require(path.join(repo, 'tests/helpers/legacy-system-scan-routes'));
         const scan = require(path.join(repo, 'tests/helpers/legacy-scan-route'));
+        const policy = require(path.join(repo, 'tests/helpers/frozen-file-batch22/network-policy')).resolveNetworkPolicy({ HOST: '0.0.0.0', PORT: '45123', MULTICC_ALLOW_REMOTE: '1' });
         const deps = { fs, path, https: mockHttps(), rootDir, networkInterfaces: () => INTERFACES,
-          getPort: () => 45123, getBindHost: () => '0.0.0.0', authRequired: () => true,
+          getPort: () => policy.port, getBindHost: () => policy.host, authRequired: () => true,
           uptimeSeconds: () => 8100, now: () => NOW, gitRun: async () => TAGS };
         app.get('/api/server-info', legacy.createServerInfoHandler(deps));
         app.get('/api/version-check', legacy.createVersionCheckHandler(deps));
