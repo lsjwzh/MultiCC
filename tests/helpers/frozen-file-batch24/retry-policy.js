@@ -1,7 +1,7 @@
 'use strict';
 
-const { decideApiErrorPolicy } = require('./api-error-policy');
-const { getNative } = require('../native/runtime');
+const { decideApiErrorPolicy } = require('../../../src/chat/api-error-policy');
+const { getNative } = require('../../../src/native/runtime');
 
 const DEFAULT_LIMITS = Object.freeze({
   freshStart: 1,

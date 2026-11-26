@@ -752,6 +752,104 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
     'a proxy materialization failure must terminalize its physical attempt before retry exits');
 });
 
+const frozenRetryPolicy = require('./helpers/frozen-file-batch24/retry-policy');
+function retryOutcome(api, make) {
+  const events = [], sentinel = new RangeError('retry sentinel');
+  try {
+    const result = api.decideRetry(...make(events, sentinel));
+    assert.ok(Object.isFrozen(result));
+    return { result, events };
+  } catch (error) { return { name: error.name, message: error.message, identity: error === sentinel, events }; }
+}
+
+test('retry facade agrees with frozen policy across classifications, caps and scheduling', () => {
+  const current = require('../src/chat');
+  const { exercise } = require('./helpers/retry-policy-fixture');
+  for (const event of ['completed', 'api-error', 'interrupted', 'codex-stream-disconnect', 'empty-exit', 'provider-route-failed', 'handoff-resume-failed']) for (const cli of ['claude', 'codex', 'CoDeX']) for (const attempt of [0, 1, 10]) for (const blocked of [false, true]) {
+    const input = { event, cli, attempt, blocked };
+    assert.deepEqual(exercise(current, input), exercise(frozenRetryPolicy, input));
+  }
+  for (const name of ['DEFAULT_LIMITS', 'DEFAULT_DELAYS']) {
+    assert.ok(Object.isFrozen(current[name]));
+    assert.deepEqual(current[name], frozenRetryPolicy[name]);
+  }
+  assert.equal(current.decideRetry.name, frozenRetryPolicy.decideRetry.name);
+  assert.equal(current.decideRetry.length, frozenRetryPolicy.decideRetry.length);
+});
+
+test('retry facade preserves live getters, spreads, numeric conversion and clock failures', () => {
+  const current = require('../src/chat');
+  const compare = make => assert.deepEqual(retryOutcome(current, make), retryOutcome(frozenRetryPolicy, make));
+  for (const value of [undefined, null, false, true, 0, 1n, Symbol('input'), '']) {
+    compare(() => [value]);
+    compare(() => [undefined, value]);
+  }
+  for (const event of ['completed', 'interrupted', 'api-error']) compare(events => {
+    const watch = (name, value) => new Proxy(value, {
+      get(target, key, receiver) { events.push([name, String(key)]); return Reflect.get(target, key, receiver); },
+      ownKeys(target) { events.push([name, 'keys']); return Reflect.ownKeys(target); },
+      getOwnPropertyDescriptor(target, key) { events.push([name, 'descriptor', String(key)]); return Reflect.getOwnPropertyDescriptor(target, key); },
+    });
+    const limits = { interruptedResume: 10, apiError: 2, get [Symbol('limit')]() { events.push('symbol limit'); return 3; } };
+    const deps = watch('deps', { limits: watch('limits', limits), delays: watch('delays', { interruptedResume: 40 }), jitterMs: 20,
+      now() { events.push(['clock', this === deps]); return 1000; }, random() { events.push(['sample', this === undefined]); return 0.75; } });
+    return [watch('input', { event, cli: 'codex', attempts: watch('attempts', { interruptedResume: 1, apiError: 0 }),
+      error: { httpStatus: 503, source: 'claude_result', provider: 'claude' }, context: watch('context', { source: 'claude_result', provider: 'claude', phase: 'before_first_token' }) }), deps];
+  });
+  for (const value of [null, 0, -1, 0.75, NaN, Infinity, 1n, Symbol('number')]) compare(events => [{ event: 'interrupted' }, {
+    now: () => 1000, random: () => value, jitterMs: 20,
+    delays: { interruptedResume: { valueOf() { events.push('delay'); return 40; } } },
+  }]);
+  for (const port of ['now', 'random']) compare((events, sentinel) => [{ event: 'interrupted' }, {
+    jitterMs: 20, now: () => 1, random: () => 0.5,
+    [port]() { events.push(port); throw sentinel; },
+  }]);
+  compare(events => {
+    let reads = 0;
+    return [{ event: 'interrupted' }, { get now() { events.push('now'); return ++reads === 1 ? () => 1 : null; } }];
+  });
+  const previous = Date.now;
+  try {
+    for (const value of ['epoch', undefined, 0, 1n, new Date(0)]) {
+      Date.now = () => value;
+      compare(() => [{ event: 'interrupted' }, { delays: { interruptedResume: 40 }, jitterMs: 20, random: () => 0.75 }]);
+    }
+  } finally { Date.now = previous; }
+});
+
+test('retry API-error scheduling retains classifier identity and nullable delay overrides', () => {
+  function loadPolicy(file, classify) {
+    const Module = require('node:module');
+    const loaded = new Module(file, module);
+    loaded.filename = file;
+    const actual = Module.createRequire(file);
+    loaded.require = id => id.endsWith('/api-error-policy') ? { decideApiErrorPolicy: classify } : actual(id);
+    loaded._compile(fs.readFileSync(file, 'utf8'), file);
+    return loaded.exports;
+  }
+  function capture(candidate, action, delay) {
+    const events = [];
+    const raw = {}, context = { source: 'fixture' };
+    const decision = { get action() { events.push('action'); return action; }, get reason() { events.push('reason'); return 'refusal'; },
+      get attempt() { events.push('attempt'); return 5; }, get delayMs() { events.push('delay'); return delay; },
+      get error() { events.push('error'); return { maxAttempts: 3 }; } };
+    const deps = { limits: { apiError: 7 }, delays: { apiError: 40 }, jitterMs: 80,
+      now() { events.push(['clock', this === deps]); return 1000; }, random() { throw new Error('API retry schedule must suppress jitter'); } };
+    const classify = function (error, value, ports) { events.push(['classify', error === raw, value.attempt, value.maxAttempts, ports === deps, this === undefined]); return decision; };
+    const frozen = path.join(__dirname, 'helpers/frozen-file-batch24/retry-policy.js');
+    const original = path.join(__dirname, '../src/chat/retry-policy.js');
+    const api = candidate && !fs.existsSync(original)
+      ? require('../src/native/runtime').getNative().retryPolicyApi(require('../src/native/runtime').getNative(), classify)
+      : loadPolicy(candidate ? original : frozen, classify);
+    const result = api.decideRetry({ event: 'api-error', error: raw, context, attempts: { apiError: '2' } }, deps);
+    assert.equal(result.decision, decision);
+    assert.ok(Object.isFrozen(result));
+    const snapshot = { ...result }; delete snapshot.decision;
+    return { snapshot, events };
+  }
+  for (const action of ['retry', 'stop']) for (const delay of [undefined, null, 0, 25]) assert.deepEqual(capture(true, action, delay), capture(false, action, delay));
+});
+
 test('retry policy bounds API failures and keeps deterministic scheduling', () => {
   const deps = { now: () => 1_000, random: () => 0 };
   const api = decideRetry({
@@ -1343,13 +1441,13 @@ test('chat core modules import no runtime I/O dependencies', () => {
   }
   for (const file of [
     'native/addon/src/post_turn_router.rs', 'native/addon/src/turn_runtime_store.rs',
-    'native/core/src/chat_runtime.rs',
+    'native/core/src/chat_runtime.rs', 'native/addon/src/retry_policy.rs',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.doesNotMatch(source, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/, file);
   }
   for (const file of [
-    'src/chat/turn-request.js', 'src/chat/retry-policy.js', 'src/state/owner.js',
+    'src/chat/turn-request.js', 'src/state/owner.js',
     'src/chat/turn-lifecycle.js', 'src/chat/finalize-host.js',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
