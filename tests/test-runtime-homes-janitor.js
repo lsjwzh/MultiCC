@@ -94,3 +94,27 @@ test('missing root/collections are a no-op, unbounded roots refused, ttl<=0 disa
   assert.ok(HOME_DIR_NAMES.includes('codex-session-homes'));
   assert.ok(!HOME_DIR_NAMES.includes('assist'));
 });
+
+test('cb0263ed differential: cleanup cutoff, lookup failures and collection enumeration', async () => {
+  const { compareLeaf, outcome } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('runtime-homes-janitor.js', async ({ createRuntimeHomesJanitor }) => {
+    const results = [], removed = [];
+    for (const entryTime of [9, 10, NaN, 11, 'gone', 'collection error']) {
+      const fsImpl = {
+        lstatSync(p) {
+          if (!p.includes('/codex-homes')) throw new Error('absent');
+          if (entryTime === 'gone' && p.endsWith('/log')) throw new Error('gone');
+          return { mtimeMs: p.endsWith('/log') ? entryTime : 0, isDirectory: () => true, isSymbolicLink: () => false };
+        },
+        readdirSync(p) {
+          if (p.endsWith('/codex-homes') && entryTime === 'collection error') throw new Error('enumeration');
+          return p.endsWith('/codex-homes') ? ['home'] : ['log'];
+        },
+        rmSync(p, options) { removed.push([p, options]); },
+      };
+      results.push(await outcome(createRuntimeHomesJanitor({ homesRoot: '/fake', ttlDays: 1,
+        now: () => 86400010, fsImpl, log() {} })));
+    }
+    return { results, removed };
+  });
+});

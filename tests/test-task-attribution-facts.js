@@ -74,3 +74,30 @@ test('stale candidate cannot be silently revived', t => {
   repo.recordEvaluation('p1',{expectedVersion:1,evaluation:evaluation('stale'),eventId:'e1'});
   assert.throws(()=>repo.recordEvaluation('p1',{expectedVersion:2,evaluation:evaluation('ready'),eventId:'e2'}),{code:'proposal_terminal'});
 });
+
+test('cb0263ed differential: transaction order, identity of replays, errors and pending delivery', async () => {
+  const { compareLeaf, outcome } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('task-routing/facts.js', async api => {
+    const db = new Map(), trace = [];
+    const repo = api.createTaskFactsRepository({
+      transaction(fn) { trace.push('begin'); return fn(); },
+      get(k, id) { trace.push(['get', k, id]); return db.get(k + id); },
+      set(k, id, v) { trace.push(['set', k, id]); db.set(k + id, v); },
+      list(k) { return [...db].filter(([key]) => key.startsWith(k)).map(([, v]) => v); },
+    });
+    const fact = { id: 'f', value: 'ok' };
+    const first = repo.appendFact('integration', fact);
+    const proposal = repo.createProposal(definition());
+    const request = { expectedVersion: 1, eventId: 'evt', evaluation: evaluation('ready') };
+    const result = repo.recordEvaluation('p1', request);
+    const replay = repo.recordEvaluation('p1', request);
+    const pending = repo.pendingEvents();
+    const errors = [];
+    for (const f of [() => repo.pendingEvents(0), () => repo.getFact('other', ''),
+      () => repo.createProposal({ id: '*', runId: 'ok' }), () => repo.appendFact('integration', { id: 'x', n: NaN }),
+      () => repo.recordEvaluation('p1', { ...request, expectedVersion: 2 }),
+      () => repo.acknowledge('never')]) errors.push(await outcome(f));
+    return [first === repo.appendFact('integration', fact), proposal === repo.getProposal('p1'),
+      result === replay, errors, pending, repo.acknowledge('evt'), repo.pendingEvents(), trace];
+  });
+});

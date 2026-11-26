@@ -1,11 +1,12 @@
 'use strict';
 
+const { getNative } = require('./native/binding');
+
 // Voice uploads only. Chat attachments (multipart parsing, limits, the temp-file
 // quota and the on-disk write) live in the Rust front door (multicc-gateway);
 // Node keeps this suite for the in-process ASR/voice routes, which still pass
 // buffers straight to the voice host.
 
-const path = require('path');
 const multer = require('multer');
 
 const MIB = 1024 * 1024;
@@ -32,19 +33,12 @@ class UploadPolicyError extends Error {
   }
 }
 
-function normalizedMime(value) {
-  return String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
-}
-
 function voiceMimeAllowed(value) {
-  const mime = normalizedMime(value);
-  return mime.startsWith('audio/') || mime === 'video/webm' || mime === 'application/ogg';
+  return getNative().voiceUploadMime(String(value || 'application/octet-stream'));
 }
 
 function safeOriginalName(value) {
-  const portable = String(value || 'upload.bin').replace(/\\/g, '/');
-  const name = path.posix.basename(portable).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 255);
-  return name || 'upload.bin';
+  return getNative().voiceUploadName(String(value || 'upload.bin'));
 }
 
 function createFileFilter(allowed) {
@@ -64,20 +58,7 @@ function mapUploadError(error) {
   if (error instanceof UploadPolicyError) {
     return { status: error.status, code: error.code, error: error.message };
   }
-  const code = error && error.code;
-  if (code === 'LIMIT_FILE_SIZE') {
-    return { status: 413, code: 'UPLOAD_FILE_TOO_LARGE', error: 'upload exceeds 25 MiB limit' };
-  }
-  if (code === 'LIMIT_FILE_COUNT' || code === 'LIMIT_PART_COUNT' || code === 'LIMIT_FIELD_COUNT') {
-    return { status: 400, code: 'UPLOAD_TOO_MANY_PARTS', error: 'exactly one file and no fields are allowed' };
-  }
-  if (code === 'LIMIT_UNEXPECTED_FILE') {
-    return { status: 400, code: 'UPLOAD_UNEXPECTED_FIELD', error: 'expected one file field named file' };
-  }
-  if (code === 'LIMIT_FIELD_KEY' || code === 'LIMIT_FIELD_VALUE') {
-    return { status: 400, code: 'UPLOAD_FIELD_INVALID', error: 'multipart field exceeds limits' };
-  }
-  return { status: 500, code: 'UPLOAD_FAILED', error: 'upload failed' };
+  return getNative().voiceUploadError(error && error.code);
 }
 
 function sendUploadError(res, error) {
@@ -86,20 +67,14 @@ function sendUploadError(res, error) {
 }
 
 function createAdmissionGate(maxActive) {
-  let active = 0;
+  const admit = getNative().voiceUploadGate(active => active >= maxActive);
   return function wrap(parser) {
     return (req, res, next) => {
-      if (active >= maxActive) {
+      const release = admit();
+      if (!release) {
         res.setHeader('Connection', 'close');
         return sendUploadError(res, new UploadPolicyError('too many concurrent uploads', 'UPLOAD_BUSY', 429));
       }
-      active += 1;
-      let released = false;
-      const release = () => {
-        if (released) return;
-        released = true;
-        active -= 1;
-      };
       res.once('finish', release);
       res.once('close', release);
       parser(req, res, error => {

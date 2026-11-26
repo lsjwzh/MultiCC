@@ -1,7 +1,7 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { createTaskFactsRepository } = require('./facts');
+const { createTaskFactsRepository } = require('../native/binding');
 const { observeCodeRevision, captureCodeRevision } = require('./code-revision');
 const { defaultRepoActor } = require('../repo-actor');
 const fail = code => Object.assign(new Error(code), { code });

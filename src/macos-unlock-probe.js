@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('./native/binding');
+
 // Bounded Agent readiness check, without returning credentials. Ordinary
 // switch changes never prompt. Saving a password or explicitly checking access
 // may allow the system sheet while the screen is unlocked.
@@ -27,13 +29,6 @@ function defaultAgentBin() {
 // 「程序装了但跑不起来」，混成一句「请确认 Agent 正在运行」会让用户在一个永远点不好的
 // 「检查授权」上打转（后者正是安装脚本复制预编译二进制时丢了 0755 的现场）。修法是
 // 重启 MultiCC —— 启动时的自动安装会把执行位补回来。
-function spawnDetail(error) {
-  if (!error) return 'bad-reply';
-  if (error.code === 'EACCES') return 'agent-not-executable';
-  if (error.code === 'ENOENT') return 'agent-not-installed';
-  return 'agent-error';
-}
-
 function createUnlockProbe({
   platform = process.platform,
   execFileFn = execFile,
@@ -50,12 +45,7 @@ function createUnlockProbe({
       execFileFn(agentBin, ['status'], { timeout: 3000 }, (error, stdout) => {
         let obj;
         try { obj = JSON.parse(String(stdout)); } catch { /* fail closed */ }
-        if (error || obj?.ok !== true) return resolve({ state: 'unavailable', detail: spawnDetail(error) });
-        const permissions = { accessibility: obj.accessibility === true, screenRecording: obj.screenRecording === true };
-        resolve(permissions.accessibility && permissions.screenRecording
-          ? { state: 'authorized' }
-          : { state: 'permissions-required', permissions,
-            message: '请先在这台 Mac 的系统设置中，为 MultiCC Agent 开启辅助功能和屏幕录制权限；这两项是自动解锁的前置条件。' });
+        resolve(getNative().unlockDesktopReply(obj, error));
       });
     });
   }
@@ -71,14 +61,7 @@ function createUnlockProbe({
     });
     let obj = null;
     try { obj = JSON.parse(reply.stdout.trim()); } catch { obj = null; }
-    if (!obj || typeof obj !== 'object') {
-      return { state: 'unavailable', detail: spawnDetail(reply.error) };
-    }
-    if (obj.authorized === true) return obj.powerProtocol === 1
-      ? { state: 'authorized' } : { state: 'unavailable', detail: 'agent-update-required' };
-    if (obj.reason === 'no-password') return { state: 'no-password' };
-    if (obj.reason === 'waiting-for-user') return { state: 'waiting-for-user' };
-    return { state: 'unavailable', detail: String(obj.reason || obj.error || 'agent-error') };
+    return getNative().unlockProbeReply(obj, reply.error);
   }
 
   async function runtimeReady() {

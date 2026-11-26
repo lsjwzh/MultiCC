@@ -344,3 +344,21 @@ test('UDID：结果页面对设备内容进行 HTML 转义', () => {
   assert.ok(html.includes('&lt;img'));
   assert.ok(!resultPage().includes(DEVICE_ID));
 });
+
+test('cb0263ed differential: IPA metadata boundaries and byte-exact request-specific plist', async () => {
+  const { compareLeaf } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('ios-ota.js', api => {
+    const rows = [];
+    for (const versionCode of [7, 0, 'abc', '\uFEFF2', 2 ** 54]) {
+      const meta = { title: 'x'.repeat(79) + '😀', versionName: ' 1 ', bundleId: 'a.b', versionCode,
+        builtAt: '2021-09-09', sha256: 'a'.repeat(64) };
+      const io = { lstatSync: () => ({ isFile: () => true, size: 16, mtime: new Date(0) }),
+        readFileSync: () => JSON.stringify(meta) };
+      const deps = { rootDir: '/example', path, fs: io };
+      const data = api.readLocalIpa(deps);
+      const base = api.absoluteBaseUrl({ headers: { 'x-forwarded-proto': ['HtTp, https'], host: 'LOCALHOST:73' } });
+      rows.push([data, api.createIosOta(deps).info(), api.buildManifestXml(data, base), api.xmlEscape("a<&\"'\ud800")]);
+    }
+    return rows;
+  });
+});

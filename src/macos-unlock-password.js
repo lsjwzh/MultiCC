@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('./native/binding');
+
 // 锁屏密码存取：自动解锁用的登录密码只写进本机登录钥匙串（login keychain），
 // 不进 MultiCC 的 vault、不经过 LLM。写路径在服务端（Air 全局设置里的密码框），
 // 读路径在 MultiCC Agent（解锁时用 Security framework 读同一个条目）。
@@ -45,31 +47,25 @@ function createUnlockPassword({
     });
   }
 
+  function command(operation, tail = []) {
+    return run([...getNative().unlockKeychainPrefix(operation), account, ...tail]);
+  }
+  function check(operation, result) {
+    const error = getNative().unlockKeychainError(operation, result.ok, result.code === 44);
+    if (error) throw new Error(error);
+    return result.ok;
+  }
   async function hasPassword() {
     if (!isAvailable()) return false;
-    // 只探测存在性：绝不带 -w，find 输出的是条目属性而不是密码本身。
-    const r = await run(['find-generic-password', '-s', SERVICE, '-a', account]);
-    if (!r.ok && r.code !== 44) throw new Error('暂时无法读取已保存的密码状态，请重试。');
-    return r.ok;
+    return check('find', await command('find'));
   }
-
   async function setPassword(password) {
-    if (!isAvailable()) throw new Error('This setting is only available on macOS');
-    if (typeof password !== 'string' || password.length === 0) throw new Error('unlock password is required');
-    if (password.length > MAX_PASSWORD_LENGTH) throw new Error('unlock password is too long');
-    const r = await run([
-      'add-generic-password', '-U', '-s', SERVICE, '-a', account,
-      '-T', agentAppPath, '-w', password,
-    ]);
-    if (!r.ok) {
-      throw new Error('密码未能保存到本机钥匙串，请在这台 Mac 上重试。');
-    }
+    const error = getNative().unlockPasswordError(isAvailable(), typeof password === 'string' ? password.length : 0);
+    if (error) throw new Error(error);
+    check('set', await command('set', ['-T', agentAppPath, '-w', password]));
   }
-
   async function clearPassword() {
-    if (!isAvailable()) return;
-    const result = await run(['delete-generic-password', '-s', SERVICE, '-a', account]);
-    if (!result.ok && result.code !== 44) throw new Error('未能删除已保存的密码，请重试。');
+    if (isAvailable()) check('clear', await command('clear'));
   }
 
   return { isAvailable, hasPassword, setPassword, clearPassword };

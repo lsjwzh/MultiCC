@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 // GET  /api/ark/quota        — fetch Volcano Ark (火山方舟) subscription quota by
 //                                shelling out to the official `arkcli` CLI
 //                                (`arkcli usage plan --format json`).
@@ -27,8 +29,6 @@ const { execFile } = require('child_process');
 const TIMEOUT_MS = 45000;
 const INSTALL_TIMEOUT_MS = 240000;
 const ARKCLI_PACKAGE = '@volcengine/ark-cli';
-const AUTH_RE = /not configured|auth login|volc-sso|\bsso\b|refresh_token|\.arkcli|logged_in|unauthoriz|credential/i;
-
 let cachedBin = null;
 
 function findOnPath(name) {
@@ -97,117 +97,13 @@ function installArkcli() {
   });
 }
 
-function finite(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-function normalizePeriod(p) {
-  if (!p || typeof p !== 'object') return null;
-  let resetAt = null;
-  if (typeof p.reset_at === 'string') {
-    const ms = Date.parse(p.reset_at);
-    resetAt = Number.isFinite(ms) ? ms : null;
-  } else {
-    resetAt = finite(p.reset_at);
-  }
-  return {
-    label: String(p.label || ''),
-    used: finite(p.used),
-    total: finite(p.total),
-    percent: finite(p.percent),
-    resetAt,
-  };
-}
-
-function normalizeItem(item) {
-  if (!item || typeof item !== 'object') return null;
-  return {
-    product: String(item.product || ''),
-    edition: String(item.edition || ''),
-    tier: item.tier ? String(item.tier) : null,
-    seatId: item.seat_id ? String(item.seat_id) : null,
-    subscribed: item.subscribed === true,
-    error: item.error ? String(item.error) : null,
-    periods: Array.isArray(item.periods) ? item.periods.map(normalizePeriod).filter(Boolean) : [],
-  };
-}
-
-// arkcli appends non-JSON chatter to the stream after its payload — e.g. the
-// "arkcli X.Y available" upgrade notice on stderr — so JSON.parse(wholeStream)
-// fails precisely on the error path, and a missing login was being misreported
-// as a bare `unavailable` instead of the actionable `needs_auth`. Extract the
-// first balanced {...} object instead (string-aware, so braces inside JSON
-// strings don't end the scan early).
 function parseArkcliJsonStream(stream) {
-  const s = String(stream || '');
-  const start = s.indexOf('{');
-  if (start === -1) return null;
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = start; i < s.length; i++) {
-    const c = s[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (c === '\\') esc = true;
-      else if (c === '"') inStr = false;
-      continue;
-    }
-    if (c === '"') inStr = true;
-    else if (c === '{') depth += 1;
-    else if (c === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        try {
-          return JSON.parse(s.slice(start, i + 1));
-        } catch (_) {
-          return null;
-        }
-      }
-    }
-  }
-  return null;
+  return getNative().arkcliJson(String(stream || ''));
 }
 
 async function fetchArkUsage(nowMs = Date.now()) {
-  const { err, stdout, stderr } = await runArkcli(['usage', 'plan', '--format', 'json']);
-
-  let parsed = null;
-  for (const stream of [stdout, stderr]) {
-    if (!stream.trim()) continue;
-    const candidate = parseArkcliJsonStream(stream);
-    if (candidate && typeof candidate === 'object') {
-      parsed = candidate;
-      break;
-    }
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
-    if (err && err.code === 'ENOENT') {
-      return { status: 'needs_install', error: 'arkcli not found on PATH' };
-    }
-    return { status: 'unavailable', error: (stderr || (err && err.message) || 'no output').slice(0, 300) };
-  }
-
-  if (parsed.ok === false) {
-    const msg = (parsed.error && parsed.error.message) || 'unknown error';
-    if (AUTH_RE.test(msg) || AUTH_RE.test(stderr)) {
-      // Say what the user must do — a bare "unavailable" hides that this is
-      // just a missing login, fixable with one command / the login button.
-      return { status: 'needs_auth', error: `需要先运行 arkcli auth login 登录火山账号后再查询（${msg}）` };
-    }
-    return { status: 'unavailable', error: msg };
-  }
-
-  if (!Array.isArray(parsed.items)) return { status: 'unavailable', error: 'items missing' };
-
-  return {
-    status: 'ok',
-    fetchedAt: nowMs,
-    viewer: parsed.viewer && typeof parsed.viewer === 'object' ? parsed.viewer : null,
-    items: parsed.items.map(normalizeItem).filter(Boolean),
-  };
+  const result = await runArkcli(['usage', 'plan', '--format', 'json']);
+  return getNative().arkQuotaResult(result, nowMs);
 }
 
 module.exports = { fetchArkUsage, resolveArkcliBin, installArkcli, parseArkcliJsonStream };

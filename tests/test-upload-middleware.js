@@ -125,3 +125,28 @@ test('voice mime allowlist and upload limits stay pinned', () => {
   assert.equal(UPLOAD_LIMITS.files, 1);
   assert.equal(UPLOAD_LIMITS.maxActive, 4);
 });
+
+test('cb0263ed differential: upload names, error class and idempotent admission release', async () => {
+  const { compareLeaf } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('upload-middleware.js', api => {
+    let filter;
+    const multerImpl = options => { filter = options.fileFilter; return { single: () => () => {} }; };
+    multerImpl.memoryStorage = () => ({});
+    api.createUploadSuite({ multerImpl });
+    const results = [];
+    for (const [fieldname, originalname, mimetype] of [
+      ['file', 'foo\\a\u0000.wav/', ' AUDIO/WAV;rate=5'], ['file', 'x'.repeat(254) + '😀', 'video/webm'],
+      ['file', '', 'text/plain'], ['other', '/x', 'audio/wav'],
+    ]) {
+      const file = { fieldname, originalname, mimetype };
+      filter({}, file, (err, ok) => results.push([err && api.mapUploadError(err), ok, file.originalname]));
+    }
+    const handlers = {};
+    const res = { once(k, fn) { handlers[k] = fn; }, setHeader() {}, status(s) { results.push(s); return this; }, json(body) { results.push(body); } };
+    const receive = api.createAdmissionGate(1)((req, response, done) => done());
+    const next = () => results.push('next');
+    receive({}, res, next); receive({}, res, next);
+    handlers.close(); handlers.finish(); receive({}, res, next);
+    return results;
+  });
+});

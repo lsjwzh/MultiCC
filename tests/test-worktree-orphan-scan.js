@@ -93,3 +93,20 @@ test('task ledger paths are claimed', async t => {
   const report = await scanner.scan();
   assert.equal(report.total, 0);
 });
+
+test('cb0263ed differential: porcelain preserves UTF-16 and a failed repo leaves later dirs visible', async () => {
+  const { compareLeaf } = require('./helpers/compare-ten-leaves');
+  await compareLeaf('workspace/orphan-scan.js', async api => {
+    const input = 'branch prior\nworktree /fake/.multicc-worktrees/t\ud800  \nbranch refs/heads/topic\n detached \nworktree /other\nHEAD abc';
+    const calls = [];
+    const repoActor = { run(dir, tag, op) {
+      if (dir === '/bad') throw Object.assign(new Error(), { code: 'NO_DIR' });
+      return op({ execGit: async (cwd, args) => { calls.push([cwd, args]); return args[0] === 'worktree' ? input : '2'; } });
+    } };
+    const scan = api.createWorktreeOrphanScanner({ records: new Map(), directories: new Map([
+      ['b', { id: 'b', path: '/bad' }], ['g', { id: 'g', path: '/fake' }]]),
+      logger: { warn: (...args) => calls.push(args) }, repoActor, now: () => 0, deleteOrphans: true });
+    const result = await scan.scan();
+    return [api.parseWorktreeList(input), calls, result, result === scan.report(), Object.isFrozen(result)];
+  });
+});

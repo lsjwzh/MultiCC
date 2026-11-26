@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('./native/binding');
+
 // Retention for per-session CLI home sandboxes (CODEX_HOME / ZCODE_HOME):
 // <~/.multicc>/<name>/<home> such as codex-session-homes/<task>-<fingerprint>.
 // Spawn paths create one directory per logical session and, before this
@@ -25,20 +27,6 @@ const HOME_DIR_NAMES = Object.freeze(['codex-session-homes', 'codex-homes', 'cod
 // Directory mtime only moves when top-level entries are added or removed; a
 // home that merely rewrites existing files would look stale by dir mtime
 // alone. The newest top-level entry mtime is the activity signal.
-function newestEntryMs(fsImpl, dir) {
-  let newest = 0;
-  try {
-    newest = fsImpl.lstatSync(dir).mtimeMs;
-    for (const name of fsImpl.readdirSync(dir)) {
-      try {
-        const mtime = fsImpl.lstatSync(path.join(dir, name)).mtimeMs;
-        if (mtime > newest) newest = mtime;
-      } catch (_) { /* vanished mid-sweep */ }
-    }
-  } catch (_) { /* unreadable home */ }
-  return newest;
-}
-
 function createRuntimeHomesJanitor({ homesRoot, fsImpl = fs, now = Date.now, ttlDays = DEFAULT_TTL_DAYS, log = console.log } = {}) {
   const rawRoot = String(homesRoot || path.join(os.homedir(), '.multicc'));
   if (!path.isAbsolute(rawRoot)) {
@@ -48,31 +36,15 @@ function createRuntimeHomesJanitor({ homesRoot, fsImpl = fs, now = Date.now, ttl
   if (root === path.parse(root).root) {
     throw new TypeError('runtime homes janitor requires a bounded absolute root');
   }
-  const ttlDaysNumber = Number(ttlDays);
-  const ttlMs = (Number.isFinite(ttlDaysNumber) && ttlDaysNumber > 0)
-    ? ttlDaysNumber * 24 * 3600 * 1000
-    : 0;
+  const ttlMs = getNative().runtimeHomeTtl(Number(ttlDays));
+  const ports = {
+    stat: p => fsImpl.lstatSync(p), list: p => fsImpl.readdirSync(p),
+    join: path.join, newer: (a, b) => a > b, recent: (a, b) => a >= b,
+    remove: p => fsImpl.rmSync(p, { recursive: true, force: true }),
+  };
   return function sweep() {
-    if (ttlMs <= 0) return 0; // disabled via ttlDays <= 0
-    const cutoff = Number(now()) - ttlMs;
-    let removed = 0;
-    for (const name of HOME_DIR_NAMES) {
-      const dir = path.join(root, name);
-      try {
-        const stat = fsImpl.lstatSync(dir);
-        if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
-      } catch (_) { continue; /* no such sandbox collection yet */ }
-      for (const entry of fsImpl.readdirSync(dir)) {
-        const home = path.join(dir, entry);
-        try {
-          const stat = fsImpl.lstatSync(home);
-          if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
-          if (newestEntryMs(fsImpl, home) >= cutoff) continue;
-          fsImpl.rmSync(home, { recursive: true, force: true });
-          removed += 1;
-        } catch (_) { /* skip homes that disappear or refuse removal */ }
-      }
-    }
+    if (ttlMs <= 0) return 0;
+    const removed = getNative().sweepRuntimeHomes(ports, root, HOME_DIR_NAMES, Number(now()) - ttlMs);
     if (removed) log(`[multicc/runtime-homes] cleaned up ${removed} stale CLI session home(s) under ${root}`);
     return removed;
   };

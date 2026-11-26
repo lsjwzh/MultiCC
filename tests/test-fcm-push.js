@@ -150,3 +150,31 @@ test('fcm host ops expose no tokens and targeted tests report acceptance or fail
   await host.call({ op: 'fcm-remove', body: device() });
   assert.equal(devices.status().devices, 0);
 });
+
+test('cb0263ed differential: token reuse, 401 invalidation, stale token classification and signed claims', async t => {
+  const { compareLeaf } = require('./helpers/compare-ten-leaves');
+  const crypto = require('node:crypto');
+  const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-fcm-frozen-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const credentialsFile = path.join(dir, 'fixture.json');
+  fs.writeFileSync(credentialsFile, JSON.stringify({ type: 'service_account', project_id: 'fixture-1',
+    client_email: 'fixture@example.invalid', private_key: privateKey.export({ format: 'pem', type: 'pkcs8' }) }), { mode: 0o600 });
+  await compareLeaf('push/fcm-transport.js', async api => {
+    const calls = [], results = []; let status = 200;
+    const client = api.createFcmTransport({ credentialsFile, now: () => 123456789,
+      fetchImpl: async (url, options) => {
+        if (url.includes('oauth2')) {
+          const assertion = new URLSearchParams(options.body).get('assertion');
+          calls.push(JSON.parse(Buffer.from(assertion.split('.')[1], 'base64url')));
+          return { ok: true, json: async () => ({ access_token: 'fixture', expires_in: 3600 }) };
+        }
+        calls.push([url, JSON.parse(options.body)]);
+        const body = status === 200 ? { name: 'm' } : { error: { details: [
+          { '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError', errorCode: 'UNREGISTERED' }] } };
+        return { ok: status === 200, status, json: async () => body };
+      } });
+    for (status of [200, 401, 200]) results.push(await client.send('test', { title: 't' }));
+    return [client.projectId, calls, results];
+  });
+});
