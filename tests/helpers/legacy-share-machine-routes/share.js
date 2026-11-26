@@ -25,7 +25,7 @@
 // therefore get one renderer to keep current instead of a second, thinner
 // conversation UI that drifts from the real one.
 
-const { sanitizePublicText } = require('../../../src/http/public-safety');
+const { sanitizePublicText } = require('../frozen-file-batch19/public-safety');
 
 const SHARE_COOKIE_MAX_AGE_SECONDS = 7 * 86400;
 const CREATE_ERRORS = new Set([

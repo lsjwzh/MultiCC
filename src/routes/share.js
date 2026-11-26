@@ -14,7 +14,7 @@
 // therefore get one renderer to keep current instead of a second, thinner
 // conversation UI that drifts from the real one.
 
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 
 const SHARE_COOKIE_MAX_AGE_SECONDS = 7 * 86400;
 const CREATE_ERRORS = new Set([

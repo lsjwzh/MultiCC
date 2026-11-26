@@ -48,6 +48,7 @@ function load(name) {
     .replace(
       /require\((['"])(\.{1,2}\/[^'"]+)\1\)/g,
       (_, __, rel) => {
+        if (rel.endsWith('/http/public-safety')) return `require(${JSON.stringify(require.resolve('../frozen-file-batch19/public-safety'))})`;
         // Keep the oracle self-contained: the retired system.js reached for
         // ios-udid, and the frozen copy must reach for the frozen ios-udid.
         if (path.basename(rel) === 'ios-udid') {

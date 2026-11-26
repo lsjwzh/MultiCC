@@ -4,7 +4,7 @@ const {
   safeCode,
   sanitizeCompatibility,
   sanitizePublicText,
-} = require('../../../src/http/public-safety');
+} = require('../frozen-file-batch19/public-safety');
 
 const HTTP_ERROR = Symbol('MultiCC.HttpError');
 

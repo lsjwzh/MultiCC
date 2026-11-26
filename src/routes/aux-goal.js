@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
 
 const AUX_SESSION_ID = '__aux__';

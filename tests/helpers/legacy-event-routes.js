@@ -57,7 +57,7 @@ function mountEventRoutes(app, { hub, engine }) {
 
 'use strict';
 
-const { sanitizePublicText } = require('../../src/http/public-safety');
+const { sanitizePublicText } = require('./frozen-file-batch19/public-safety');
 const { validateEventRule, channelProblem } = require('../../src/native/runtime').getEventPolicy().rules;
 const channelRegistry = require('../../src/plugins/channel-registry');
 

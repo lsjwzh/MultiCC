@@ -10,7 +10,7 @@
 // memory graph.
 
 const { taskDirId } = require('../../../src/task-board/core');
-const { sanitizePublicText } = require('../../../src/http/public-safety');
+const { sanitizePublicText } = require('../frozen-file-batch19/public-safety');
 
 const TASK_GRAPH_MAX_NODES = 800;
 const TASK_GRAPH_MAX_EDGES = 2400;

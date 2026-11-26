@@ -1,7 +1,7 @@
 // Frozen from src/routes/providers.js before the Rust front-door migration of the providers cluster.
 'use strict';
 
-const { safeCode, sanitizePublicText } = require('../../src/http/public-safety');
+const { safeCode, sanitizePublicText } = require('./frozen-file-batch19/public-safety');
 const { STALE_MS_DEFAULT } = require('./legacy-provider-limit-cache-entry');
 const { providerLimitBar } = require('../../src/native/runtime').getQuotaBarView();
 

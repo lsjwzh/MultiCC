@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('./http/public-safety');
+const { sanitizePublicText } = require('./native/runtime').getPublicSafety();
 
 // Batch provider reassignment — `POST /api/providers/:appType/:id/reassign-sessions`
 // (Air/App: 「批量迁移会话…」).

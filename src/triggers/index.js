@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 const { validateEventRule, channelProblem } = require('../native/runtime').getEventPolicy().rules;
 const channelRegistry = require('../plugins/channel-registry');
 

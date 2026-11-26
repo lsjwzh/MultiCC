@@ -24,7 +24,7 @@
 const { getNative } = require('./native/runtime');
 const { API_VERSION, createErrorDto } = require('./api-contract');
 
-const { safeCode, sanitizeCompatibility, sanitizePublicText } = require('./http/public-safety');
+const { safeCode, sanitizeCompatibility, sanitizePublicText } = require('./native/runtime').getPublicSafety();
 
 const DOMAIN_ERROR = Symbol('MultiCC.DomainError');
 const INFRASTRUCTURE_ERROR = Symbol('MultiCC.InfrastructureError');

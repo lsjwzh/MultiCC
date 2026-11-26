@@ -10,7 +10,7 @@
 
 const crypto = require('node:crypto');
 const { createChatHistoryServiceWithOwner } = require('../session/chat-history-service');
-const { sanitizePublicText } = require('../http/public-safety');
+const { sanitizePublicText } = require('../native/runtime').getPublicSafety();
 const { getNative } = require('../native/runtime');
 
 const DEFAULT_HISTORY_PAGE_SIZE = 5;

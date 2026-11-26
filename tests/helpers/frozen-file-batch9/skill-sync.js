@@ -1,6 +1,6 @@
 'use strict';
 
-const { sanitizePublicText } = require('../../../src/http/public-safety');
+const { sanitizePublicText } = require('../frozen-file-batch19/public-safety');
 
 function assertRouteDependencies(app, runtime) {
   if (!app || typeof app.get !== 'function' || typeof app.post !== 'function') {
