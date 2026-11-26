@@ -74,7 +74,7 @@ const {
 } = require('./src/codex/usage');
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { getNative, findProviderReferences, messageComposer, bootstrapState,
-  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence } = require('./src/native/runtime');
+  synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence, getSessionNotices } = require('./src/native/runtime');
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
@@ -2673,7 +2673,7 @@ orchestrationRuntime = createOrchestrationRuntime({
   heldForBackground: id => { try { return chatStream.heldTurn(id)?.held === true; } catch (_) { return false; } },
   runnerDeliveryProbe: (sessionId, identity) => chatTurnEngine.runnerDeliveryHandoff(sessionId, identity),
   // Surface lost or stalled deliveries.
-  deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...require('./src/chat/session-notices').createSessionNotices({ appendChatMessage: appendChatMessage, chatBroadcast }),
+  deliverOutbox: chatTurnEngine.deliverOrchestrationOutbox, ...getSessionNotices().createSessionNotices({ appendChatMessage, chatBroadcast }),
   probe: chatTurnEngine.probeExplicitWait,
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,
