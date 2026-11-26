@@ -125,6 +125,7 @@ pub mod provider_producers;
 pub mod provider_registry;
 pub mod provider_scrub;
 pub mod provider_settings_config;
+mod provider_shadow_recorder;
 pub mod provider_terminal_routes;
 pub mod provider_writes;
 pub mod public_session_access;
