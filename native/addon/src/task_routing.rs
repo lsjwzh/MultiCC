@@ -1,3 +1,5 @@
+mod delivery_view;
+
 use crate::js_live::LiveValue;
 use multicc_core::{
     js::{serde::from_serde, JsValue},

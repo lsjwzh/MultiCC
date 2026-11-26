@@ -15,6 +15,8 @@
 //! `undefined` (distinct from `null`), `=== true/false/0` accept only that
 //! exact JSON value, `text()` is a non-empty string, `version()` is a
 //! non-negative safe integer, and blockers dedupe in first-seen order.
+pub mod delivery_view;
+
 use serde_json::{json, Value};
 
 /// Candidate keys bind the original receipt and turn, without creating a task.
