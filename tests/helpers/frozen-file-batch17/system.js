@@ -69,7 +69,7 @@ function mountSystemHostRoutes(app, rawDeps) {
   // inside is rendered per request so the same IPA installs over loopback, LAN
   // or Tailscale Funnel HTTPS.
   app.get('/ios-ota/manifest.plist', deps.iosOta.manifestHandler);
-  (deps.iosUdid || require('../ios-udid').createIosUdid()).mountHostRoutes(app);
+  (deps.iosUdid || require('../../../src/ios-udid').createIosUdid()).mountHostRoutes(app);
 }
 
 // 唯一仍在真实 app 上的发布资产路由：有本地文件时它 `next()` 落到 express.static

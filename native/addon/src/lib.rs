@@ -117,6 +117,7 @@ pub mod publication;
 pub mod quota_guard;
 pub mod quota_history;
 pub mod quota_rejection;
+mod release_asset_routes;
 pub mod request_timer;
 pub mod request_watch;
 pub mod resident_pool;

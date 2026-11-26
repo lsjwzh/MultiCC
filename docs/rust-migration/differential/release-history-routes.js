@@ -213,7 +213,7 @@ const repo = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [repo] }));
 const { buildWorld } = require(${JSON.stringify(__filename)});
 const { createReleaseHistoryHost } = require(path.join(repo, 'src/routes/release-history-host'));
-const { mountApkDownload } = require(path.join(repo, 'src/routes/system'));
+const { mountApkDownload } = require(path.join(repo, 'src/routes/release-history-host'));
 const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
 const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
@@ -883,7 +883,7 @@ function main() {
       fs.mkdirSync(history.visibilityFileFor('bad'), { recursive: true });
       const proj = projectDir(work);
       fs.mkdirSync(proj, { recursive: true });
-      const { claudeProjectDir } = require(path.join(repo, 'src/chat/transcript-prune'));
+      const { claudeProjectDir } = require(path.join(repo, 'tests/helpers/frozen-file-batch8/transcript-prune'));
       const transcriptDir = claudeProjectDir(proj);
       fs.mkdirSync(transcriptDir, { recursive: true });
       const lines = Array.from({ length: 6 }, (_, index) => JSON.stringify(index % 2 === 0
@@ -900,13 +900,13 @@ function main() {
       ensureRoot(gwRoot);
       const R = rel => require(path.join(repoPath, rel));
       const legacy = R('tests/helpers/legacy-release-history-routes');
-      const system = legacy.system();
+      const system = R('tests/helpers/frozen-file-batch17/system');
       const world = buildWorld({
         repo: repoPath, dataRoot, rootDir: nodeRoot, work, side: 'node',
         createChatHistoryRuntime: legacy.chatHistory().createChatHistoryRuntime,
         createIosUdid: legacy.iosUdid().createIosUdid,
       });
-      const { createPublicSessionAccessGuard } = R('src/session/public-session-access');
+      const { createPublicSessionAccessGuard } = R('tests/helpers/legacy-public-session-access');
       // server.js mounts the public-session guard long before express.json.
       app.use('/api/sessions/:id', createPublicSessionAccessGuard({ records: world.persistedSessions }));
       // The frozen mountSystemRoutes builds its own createIosUdid() (the real

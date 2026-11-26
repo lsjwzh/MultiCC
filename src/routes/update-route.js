@@ -12,7 +12,7 @@
 // child's first write — `_updateScheduled` covers exactly that window, and
 // expires so a child that died before writing anything cannot 409 forever.
 const { startDetachedUpdate, readUpdateStatus, detectStandaloneUpdate } = require('../update-runner');
-const { resolveVersionInfo } = require('./system');
+const { resolveVersionInfo } = require('./release-history-host');
 
 const UPDATE_FLAG_TTL_MS = 20000;
 

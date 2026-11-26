@@ -175,9 +175,21 @@ test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, rou
   assert.ok(nativeStatic.includes('has_binary_suffix'));
   assert.equal(fs.existsSync(path.join(__dirname, '..', 'src', 'routes', 'static-assets.js')), false);
 
-  const systemSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'system.js'), 'utf8');
-  assert.ok(systemSource.includes("app.get('/api/ios-ota-info'"));
-  assert.ok(systemSource.includes("app.get('/ios-ota/manifest.plist'"));
+  const { mountSystemHostRoutes } = require('../src/routes/release-history-host');
+  const calls = [];
+  const manifest = () => {};
+  const app = {
+    get: (path, handler) => calls.push([path, handler]),
+    post() {},
+  };
+  mountSystemHostRoutes(app, {
+    apkDistribution: { info() {}, downloadHandler() {} },
+    iosOta: { info() {}, manifestHandler: manifest },
+    iosUdid: { mountHostRoutes(target) { assert.equal(target, app); calls.push(['udid']); } },
+  });
+  assert.deepEqual(calls.map(([path]) => path),
+    ['/api/apk-info', '/api/ios-ota-info', '/ios-ota/manifest.plist', 'udid']);
+  assert.equal(calls[2][1], manifest);
 
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   assert.ok(serverSource.includes("require('./src/ios-ota').createIosOta"));

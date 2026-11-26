@@ -42,6 +42,19 @@
 // 拒绝任何转发自真实远端客户端的请求。
 
 const { STATUS_CODES } = require('node:http');
+const { getNative } = require('../native/runtime');
+
+function createApkInfoHandler(deps) {
+  return async function apkInfoHandler(req, res, next) {
+    try { res.json(await getNative().releaseAssetApkInfo(deps)); }
+    catch (error) { next(error); }
+  };
+}
+function createIosOtaInfoHandler(deps) { return getNative().releaseAssetIosHandler(deps); }
+const assetPorts = { createApkInfoHandler, createIosOtaInfoHandler,
+  createIosUdid: () => require('../ios-udid').createIosUdid() };
+function mountSystemHostRoutes(app, deps) { getNative().releaseAssetMount(app, deps, assetPorts, false); }
+function mountApkDownload(app, deps) { getNative().releaseAssetMount(app, deps, assetPorts, true); }
 
 const HOST_PATH = '/api/__host/release-history';
 
@@ -298,15 +311,14 @@ function createReleaseHistoryHost(deps = {}) {
   const app = createCaptureApp(handlers);
   // 原挂载顺序（server.js）：system（含它挂的 UDID 三条）在前，chat-history 在后。
   // 顺序只影响 Express 的 Allow 并集，这里同样保留。
-  const system = require('./system');
-  system.mountSystemHostRoutes(app, {
+  mountSystemHostRoutes(app, {
     apkDistribution,
     iosOta,
     iosUdid: deps.iosUdid,
   });
   // 退休时它挂在真实 app 上（server.js），在 express.static 之前；那个 static
   // 挂载迁入前门后，这条路由只剩"本地文件 / 302 / 404"的判定，捕获在这里。
-  system.mountApkDownload(app, { apkDistribution, iosOta });
+  mountApkDownload(app, { apkDistribution, iosOta });
   chatHistory.mountRoutes(app);
 
   function mountRoute(expressApp, options = {}) {
@@ -337,6 +349,7 @@ function createReleaseHistoryHost(deps = {}) {
 }
 
 module.exports = {
+  createApkInfoHandler, createIosOtaInfoHandler, mountSystemHostRoutes, mountApkDownload,
   HOST_PATH,
   OPS,
   createReleaseHistoryHost,
