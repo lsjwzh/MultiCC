@@ -72,3 +72,43 @@ pub fn usage_token_components(
         output_tokens: count(output)?,
     })
 }
+
+#[napi(object)]
+pub struct CodexCumulativeUsage {
+    pub fresh: f64,
+    pub cached: f64,
+    pub cache_write: f64,
+    pub output: f64,
+    pub reasoning: f64,
+}
+
+#[napi]
+pub fn codex_cumulative_usage(env: Env, value: Unknown<'_>) -> Result<CodexCumulativeUsage> {
+    let usage = crate::js_live::LiveValue::new(&env, value);
+    let count = |key| token_count(usage.get(key)?).map(Option::unwrap_or_default);
+    let cache_read = c"cache_read_input_tokens";
+    let cached = count(if usage.get(cache_read)?.nullish()? {
+        c"cached_input_tokens"
+    } else {
+        cache_read
+    })?;
+    let input = count(c"input_tokens")?;
+    // Legacy input includes cached reads. Re-read the live field after input
+    // so accessor order and errors match the original host projection.
+    let fresh = if usage.get(cache_read)?.nullish()? {
+        if input > cached {
+            input - cached
+        } else {
+            0.0
+        }
+    } else {
+        input
+    };
+    Ok(CodexCumulativeUsage {
+        fresh,
+        cached,
+        cache_write: count(c"cache_creation_input_tokens")?,
+        output: count(c"output_tokens")?,
+        reasoning: count(c"reasoning_output_tokens")?,
+    })
+}

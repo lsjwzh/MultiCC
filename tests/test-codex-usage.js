@@ -5,11 +5,28 @@ const test = require('node:test');
 
 const {
   createCodexUsageHost,
+  normalizeCodexCumulative,
   normalizeCodexTurnUsage,
   projectHistoryUsage,
   summarizeHistoryUsage,
   usageEpochForSessionId,
 } = require('../src/codex/usage');
+
+test('Codex reads cached counts live and preserves getter errors', () => {
+  const reads = [];
+  const values = [2, '7', null];
+  const source = { input_tokens: 9, get cache_read_input_tokens() {
+    reads.push('read');
+    return values.shift();
+  } };
+  const vector = normalizeCodexCumulative(source);
+  assert.deepEqual(vector, { fresh: 2, cached: 7, cacheWrite: 0, output: 0, reasoning: 0 });
+  assert.ok(Object.isFrozen(vector));
+  assert.deepEqual(reads, ['read', 'read', 'read']);
+  const error = new Error('unavailable counter');
+  assert.throws(() => normalizeCodexCumulative({ get output_tokens() { throw error; } }),
+    thrown => thrown === error);
+});
 
 function cumulative(input, cached, output, reasoning = 0) {
   return {

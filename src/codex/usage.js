@@ -1,15 +1,11 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { getTurnProgress } = require('../native/binding');
+const { getNative, getTurnProgress } = require('../native/binding');
 
 const PRIVATE_USAGE_FIELDS = Object.freeze(['usageCumulative', 'usageEpoch']);
 
-function tokenCount(value) {
-  let numeric = value;
-  if (typeof numeric === 'string' && /^\d+$/.test(numeric.trim())) numeric = Number(numeric.trim());
-  return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : 0;
-}
+let usageNative;
 
 function looksLikeCodexUsage(value) {
   return !!value && typeof value === 'object' && (
@@ -23,18 +19,8 @@ function looksLikeCodexUsage(value) {
 // which case Codex's native input_tokens still includes the cached subset.
 function normalizeCodexCumulative(value) {
   if (!value || typeof value !== 'object') return null;
-  const cached = tokenCount(value.cache_read_input_tokens == null
-    ? value.cached_input_tokens
-    : value.cache_read_input_tokens);
-  const input = tokenCount(value.input_tokens);
-  const fresh = value.cache_read_input_tokens == null ? Math.max(0, input - cached) : input;
-  return Object.freeze({
-    fresh,
-    cached,
-    cacheWrite: tokenCount(value.cache_creation_input_tokens),
-    output: tokenCount(value.output_tokens),
-    reasoning: tokenCount(value.reasoning_output_tokens),
-  });
+  usageNative ??= getNative();
+  return Object.freeze(usageNative.codexCumulativeUsage(value));
 }
 
 function usageEpochForSessionId(cliSessionId) {
@@ -206,17 +192,15 @@ function summarizeHistoryUsage(messages) {
   for (const message of projected) {
     const usage = message && message.role === 'assistant' && message.usage;
     if (!usage || typeof usage !== 'object') continue;
-    const fresh = tokenCount(usage.input_tokens);
-    const read = tokenCount(usage.cache_read_input_tokens == null
-      ? usage.cached_input_tokens
-      : usage.cache_read_input_tokens);
-    const write = tokenCount(usage.cache_creation_input_tokens);
-    const output = tokenCount(usage.output_tokens);
-    if (fresh + read + write + output === 0) continue;
-    total.freshInputTokens += fresh;
-    total.cacheReadTokens += read;
-    total.cacheWriteTokens += write;
-    total.outputTokens += output;
+    usageNative ??= getNative();
+    const parts = usageNative.usageTokenComponents(usage.input_tokens,
+      usage.cache_read_input_tokens == null ? usage.cached_input_tokens : usage.cache_read_input_tokens,
+      usage.cache_creation_input_tokens, usage.output_tokens);
+    if (parts.consumedInputTokens + parts.outputTokens === 0) continue;
+    total.freshInputTokens += parts.freshInputTokens;
+    total.cacheReadTokens += parts.cacheReadTokens;
+    total.cacheWriteTokens += parts.cacheWriteTokens;
+    total.outputTokens += parts.outputTokens;
     total.turnCount += 1;
   }
   total.inputTokens = total.freshInputTokens + total.cacheReadTokens + total.cacheWriteTokens;
