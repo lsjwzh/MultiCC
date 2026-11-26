@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 432 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 431 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -158,7 +158,6 @@
 | `src/host-battery.js` | server.js | — | — | `child_process`, `fs/promises` | — | — |
 | `src/host-env.js` | server.js | `src/runtime-security.js` | — | `fs`, `path` | — | — |
 | `src/host-lifecycle.js` | server.js | `src/shutdown.js` | — | — | — | — |
-| `src/host-power-services.js` | server.js | `src/macos-unlock-password.js`, `src/macos-unlock-probe.js` | — | `fs`, `os`, `path` | — | — |
 | `src/http-errors.js` | server.js | `src/api-contract.js`, `src/http/public-safety.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/http/error-presenter.js` | 未从已知入口静态到达 | `src/api-contract.js`, `src/http-errors.js` | — | — | — | — |
 | `src/http/json-compression.js` | server.js | — | — | `zlib` | — | — |
@@ -285,8 +284,8 @@
 | `src/routes/events-host.js` | server.js | `src/annotation-live.js`, `src/plugins/channel-registry.js`, `src/request-locality.js` | — | `crypto` | — | — |
 | `src/routes/file-transfer-host.js` | server.js | `src/request-locality.js` | — | — | — | — |
 | `src/routes/host-ops-host.js` | server.js | `src/http/public-safety.js`, `src/native/runtime.js`, `src/request-locality.js`, `src/routes/developer-tools.js`, `src/routes/host-write.js`, `src/routes/macos-privacy.js`, `src/routes/ops-terminal.js` | — | — | — | — |
-| `src/routes/host-power.js` | server.js | `src/host-power-services.js`, `src/http-errors.js`, `src/macos-unlock-password.js` | — | — | — | — |
-| `src/routes/host-read-host.js` | server.js | `src/codex/proxy-trace.js`, `src/host-battery.js`, `src/host-power-services.js`, `src/native/runtime.js`, `src/request-locality.js` | — | — | — | — |
+| `src/routes/host-power.js` | server.js | `src/http-errors.js`, `src/macos-unlock-password.js`, `src/macos-unlock-probe.js`, `src/native/runtime.js` | — | `fs`, `os`, `path` | — | — |
+| `src/routes/host-read-host.js` | server.js | `src/codex/proxy-trace.js`, `src/host-battery.js`, `src/native/runtime.js`, `src/request-locality.js`, `src/routes/host-power.js` | — | — | — | — |
 | `src/routes/host-write.js` | server.js | `src/native/runtime.js`, `src/routes/host-power.js` | — | — | — | — |
 | `src/routes/kimi-auth.js` | server.js | `src/cli-adapters/kimi-auth.js`, `src/quota-managed-browser.js` | — | — | — | — |
 | `src/routes/kimi-quota.js` | server.js | `src/network/outbound.js`, `src/providers/core.js`, `src/quota-managed-browser.js`, `src/upstream-error.js`, `src/usage-limit-poller.js` | — | — | — | — |

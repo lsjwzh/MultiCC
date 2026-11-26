@@ -5,8 +5,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { createUnlockPassword } = require('./macos-unlock-password');
-const { createUnlockProbe } = require('./macos-unlock-probe');
+const { createUnlockPassword } = require('../../../src/macos-unlock-password');
+const { createUnlockProbe } = require('../../../src/macos-unlock-probe');
 
 function createPowerPreferences({ dir = process.env.MULTICC_AGENT_DIR || path.join(os.homedir(), '.multicc', 'agent') } = {}) {
   const file = path.join(dir, 'power-settings.json');

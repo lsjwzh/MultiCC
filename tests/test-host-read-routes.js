@@ -304,3 +304,74 @@ test('server mounts the host port and retains no inline host read GETs', () => {
   const rust = fs.readFileSync(path.join(__dirname, '..', 'native', 'gateway', 'src', 'app', 'host_read.rs'), 'utf8');
   assert.match(rust, /http_gate::is_local_request\(peer, &ctx\.headers\)/);
 });
+
+test('power service preserves async boundaries, service getter order and status identity', async () => {
+  const frozen = require('./helpers/frozen-file-batch18/host-power-services');
+  const current = require('../src/routes/host-power');
+  async function observe(api, spec) {
+    const calls = [];
+    const sentinel = new Error('fixture failure');
+    const status = { available: true, enabled: spec.lidEnabled };
+    const authorization = { state: spec.authorization || 'authorized' };
+    const guard = { active: true };
+    const watched = (label, object) => new Proxy(object, {
+      get(target, key) { calls.push(label + '.' + String(key)); return Reflect.get(target, key); },
+    });
+    const deps = watched('deps', {
+      macosPower: watched('power', {
+        isAvailable() { return spec.available !== false; },
+        getLidModeSettings() {
+          if (spec.failure === 'lid') return Promise.reject(sentinel);
+          return Promise.resolve(status);
+        },
+      }),
+      batteryGuard: watched('guard', { getStatus() { return guard; } }),
+      unlockPassword: watched('password', {
+        isAvailable() { return spec.passwordAvailable ?? true; },
+        hasPassword() {
+          if (spec.failure === 'password-sync') throw sentinel;
+          return spec.failure === 'password' ? Promise.reject(sentinel) : Promise.resolve(spec.set ?? true);
+        },
+      }),
+      powerPreferences: watched('preferences', {
+        read(set) {
+          calls.push(['legacy', set]);
+          if (spec.failure === 'preferences') throw sentinel;
+          return spec.requested ?? false;
+        },
+      }),
+      unlockProbe: watched('probe', {
+        desktopPermissions() {
+          return spec.failure === 'authorization' ? Promise.reject(sentinel) : Promise.resolve(authorization);
+        },
+      }),
+      isLocalRequest(req) {
+        assert.equal(req, request);
+        if (spec.failure === 'locality') throw sentinel;
+        return 'local';
+      },
+    });
+    const request = {};
+    try {
+      const value = await api.readPowerSettings(deps, request);
+      if (spec.available !== false) {
+        assert.equal(value, status);
+        assert.equal(value.batteryGuard, guard);
+        if (value.unlockPassword.authorization) assert.equal(value.unlockPassword.authorization, authorization);
+      }
+      return { calls, value };
+    } catch (error) {
+      assert.equal(error, sentinel);
+      return { calls, threw: true };
+    }
+  }
+  for (const spec of [
+    { available: false }, {}, { requested: true }, { lidEnabled: true },
+    { requested: true, authorization: 'denied' }, { passwordAvailable: 0 },
+    { set: 'set', requested: 0, lidEnabled: 'lid' },
+    ...['lid', 'password', 'password-sync', 'preferences', 'authorization', 'locality']
+      .map(failure => ({ failure, requested: true })),
+  ]) {
+    assert.deepEqual(await observe(current, spec), await observe(frozen, spec), JSON.stringify(spec));
+  }
+});

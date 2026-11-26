@@ -138,7 +138,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'server.js',
     // The runtime only forwards the injected probe to the host port.
     'src/cli/switch-runtime.js',
-    'src/host-power-services.js',
     'src/request-locality.js',
     'src/router-tool-host.js',
     // One host port per migrated route group: each internal listener accepts

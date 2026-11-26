@@ -365,7 +365,7 @@ async function answer(script, input) {
   if (op === 'sakurafrp') return { ok: true, payload: (script.tunnel || {}).sakura };
   if (op === 'access-token') return { ok: true, payload: { token: script.token || '' } };
   if (op === 'power') {
-    return { ok: true, payload: await legacy.readPowerSettings(powerDeps(script.power, input.canEdit), {}) };
+    return { ok: true, payload: await require(path.join(REPO, 'src/routes/host-power')).readPowerSettings(powerDeps(script.power, input.canEdit), {}) };
   }
   if (op === 'battery') return { ok: true, payload: script.battery };
   return { ok: false };
