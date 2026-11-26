@@ -17,7 +17,24 @@ const {
   modelChoices,
   priceLadder,
   priceOf,
-} = require('../src/chat/auto-provider-pricing');
+} = require('../src/native/runtime').getAutoProviderPricing();
+
+test('pricing facade matches the frozen wrapper across price, expansion, choices and ladder inputs', () => {
+  const api = require('../src/native/runtime').getAutoProviderPricing();
+  const frozen = require('./helpers/frozen-file-batch26/auto-provider-pricing');
+  const { exercise, boundary } = require('./helpers/auto-pricing-fixture');
+  for (const method of ['price', 'expand', 'choices', 'ladder']) for (let mode = 0; mode < 6; mode++) {
+    for (const auto of [false, true]) for (const requirePrice of [false, true]) {
+      const input = { method, mode, auto, requirePrice };
+      assert.deepEqual(exercise(api, input), exercise(frozen, input), JSON.stringify(input));
+    }
+  }
+  for (let id = 0; id < 16; id++) assert.deepEqual(boundary(api, id), boundary(frozen, id), `boundary ${id}`);
+  assert.deepEqual(Object.keys(api), Object.keys(frozen));
+  for (const key of ['priceOf', 'expandCandidates', 'modelChoices', 'priceLadder']) {
+    assert.deepEqual([api[key].name, api[key].length], [frozen[key].name, frozen[key].length]);
+  }
+});
 
 // The shared table is an in-memory index that answers null for an id it cannot
 // price; a stub keeps the lookups explicit instead of loading the real table.

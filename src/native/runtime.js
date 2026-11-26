@@ -1,6 +1,8 @@
 'use strict';
 
 const path = require('node:path');
+let autoProviderPricing;
+function getAutoProviderPricing() { return autoProviderPricing ??= getNative().autoProviderPricingApi(getNative()); }
 let autoProviderPolicy;
 function getAutoProviderPolicy() { return autoProviderPolicy ??= getNative().autoProviderPolicyApi(getNative()); }
 let retryPolicy;
@@ -876,7 +878,7 @@ function commandEnvelope(value) {
   return Object.defineProperty(Object.create(null), 'value', { value, enumerable: true });
 }
 
-module.exports = { getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
+module.exports = { getAutoProviderPricing, getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
   getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   historyFrame, installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   adapterCompletion, postTurnRouter, finalizationPlan, artifactReference, getContextSelection, decodeRecoveryEvents, taskShellContext, providerInvocation, createAutoProviderHandoff,
