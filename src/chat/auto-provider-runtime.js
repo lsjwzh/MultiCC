@@ -25,7 +25,7 @@ const {
   syntheticVendorProvider,
 } = require('../providers/native-vendor');
 const { peekOpenCodeModels } = require('../routes/opencode-models');
-const { limitState } = require('./auto-provider-policy');
+const { limitState } = require('../native/runtime').getAutoProviderPolicy();
 const { createAutoProviderRouting } = require('./auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('./auto-provider-pricing');
 const { createRoutingAdmissionPhase } = require('./admission-progress');
