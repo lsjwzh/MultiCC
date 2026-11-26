@@ -1,5 +1,5 @@
 'use strict';
-const { hash, estimateTokens, renderSnapshots, snapshotHistory, verifySnapshot, renderLazyContextPrompt } = require('../native/runtime').taskShellContext;
+const { hash, estimateTokens, renderSnapshots, verifySnapshot, renderLazyContextPrompt } = require('../native/runtime').taskShellContext;
 const { selectContext, clipTokens } = require('../native/runtime').getContextSelection();
 const { getNative } = require('../native/runtime');
 const excerptRendering = {
@@ -39,7 +39,7 @@ function boundedHandoff(handoff, budget = 1500) {
   return getNative().boundedContextExcerpt(true, handoff, budget, excerptRendering);
 }
 
-function createContextPlanner({ store, getRecord, getHistory, getTask, graphContextOf }) {
+function createContextPlanner({ store, getRecord, snapshotTaskHistory, getTask, graphContextOf }) {
   function prepare(task, { receiptId, turnId, text = '', isFirstTurn = false, fallback = '', memory, budget = 4800, force = false }) {
     const receipt = store.get('receipt', receiptId);
     if (!receipt || receipt.taskId !== task.id) throw new Error('context_receipt_mismatch');
@@ -73,7 +73,7 @@ function createContextPlanner({ store, getRecord, getHistory, getTask, graphCont
       return snapshot;
     });
     if (reset && !record.pendingCliHandoff) {
-      const own = snapshotHistory(task.id, getHistory(task.sessionId));
+      const own = snapshotTaskHistory(task.sessionId, task.id);
       if (own.messages.length) { store.set('snapshot', own.hash, own); snapshots.push(own); }
     }
     for (const snapshot of snapshots) {

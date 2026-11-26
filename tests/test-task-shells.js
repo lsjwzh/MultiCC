@@ -187,6 +187,49 @@ test('C01 C02: immutable completed exchanges, provenance and tools; no active or
   assert.equal(verifySnapshot({ ...snapshot, messages: [] }, snapshot.hash), false);
 });
 
+test('long history supplies only a bounded snapshot to the cold-start seed', t => {
+  const { createChatHistoryService } = require('../src/session/chat-history-service');
+  const f = fixture(t);
+  const task = f.runtime.adopt(f.a.id, 'a');
+  f.store.set('task', task.id, { ...task, adopted: false });
+  const pair = (id, content, fields = {}) => [
+    { id: 'u' + id, turnId: id, role: 'user', content: 'request', ...fields },
+    { id: 'a' + id, turnId: id, role: 'assistant', content, ...fields },
+  ];
+  const old = Array.from({ length: 620 }, (_, i) => pair('old' + i, 'old result')).flat();
+  const oversized = pair('large', '测'.repeat(12_000));
+  const recent = pair('recent', 'most recent completed reply');
+  const history = [...old, ...oversized, ...recent,
+    ...pair('other', 'different task', { taskId: 'tsk_other' }),
+    ...pair('live', 'current reply'),
+    ...pair('partial', 'unfinished reply', { partial: true })];
+  const service = createChatHistoryService({
+    history: { readOwned: () => history, read: () => history, write() {}, deleteSession() {}, hasPersistedDelivery() { return false; } },
+    idFactory: () => 'unused-id',
+  });
+
+  // Fail directly on the old boundary while allowing small metadata/snapshots.
+  const stringify = JSON.stringify;
+  const restore = t.mock.method(JSON, 'stringify', (value, ...args) => {
+    const rows = value?.history ?? value;
+    assert.ok(!Array.isArray(rows) || rows.length < old.length, 'full history serialization');
+    return stringify(value, ...args);
+  });
+  try {
+    const snapshot = service.taskContextSnapshot(f.a.id, task.id, 'live');
+    assert.deepEqual(snapshot.messages.map(row => row.id), ['urecent', 'arecent']);
+    assert.equal(snapshot.omittedExchanges, 621);
+    assert.equal(verifySnapshot(snapshot, snapshot.hash), true);
+    assert.deepEqual(snapshotHistory(task.id, history, { activeTurnId: 'live' }), snapshot);
+    const seed = f.store.shellContextSeed(task.id, true, '', snapshot);
+    assert.match(seed, /most recent completed reply/);
+    assert.doesNotMatch(seed, /current reply|unfinished reply|old result/);
+    assert.ok(Buffer.byteLength(seed) < 12_000);
+  } finally {
+    restore.mock.restore();
+  }
+});
+
 test('lazy context prompt distinguishes task attribution from execution ownership', () => {
   const prompt = renderLazyContextPrompt('tsk_current');
   assert.match(prompt, /get_task_context/);

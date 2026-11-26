@@ -922,12 +922,10 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
             "contextTrace" => self.context_trace(id, v["includeMessages"] == true)?,
             "shellContextTrace" => self.shell_context_trace(&v)?,
             "shellContextSeed" => {
-                let history = crate::js::json_parse(text(&v["historyJson"])).map_err(err)?;
-                let crate::js::JsValue::Array(history) = history else {
-                    return Err("task reference history must be an array".into());
-                };
                 let fallback = text(&v["fallback"]);
-                let seed = self.shell_context_seed(id, v["first"] == true, fallback, &history)?;
+                let seed = self.shell_context_seed(id, v["first"] == true, fallback, || {
+                    crate::js::json_parse(text(&v["snapshotJson"])).map_err(err)
+                })?;
                 json!(seed + &crate::task_shell::reference::lazy_context_prompt(id))
             }
             "migration" => self.migration.clone(),

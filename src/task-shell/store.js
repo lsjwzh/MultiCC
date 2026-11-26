@@ -73,8 +73,8 @@ function createTaskShellStore(file) {
     // 上下文记录：提交后压缩并整理窗口；读取引用来源面板的数据。
     contextCommitted: (taskId, receiptId) => run({ op: 'contextCommitted', taskId, id: receiptId }),
     shellContextTrace: facts => commandWithRules({ ...facts, op: 'shellContextTrace' }),
-    shellContextSeed: (id, first, fallback, history) => commandWithRules({
-      op: 'shellContextSeed', id, first, fallback, historyJson: JSON.stringify(history),
+    shellContextSeed: (id, first, fallback, snapshot) => commandWithRules({
+      op: 'shellContextSeed', id, first, fallback, snapshotJson: JSON.stringify(snapshot),
     }),
     contextTrace: (receiptId, includeMessages = false) => run({ op: 'contextTrace', id: receiptId, includeMessages }),
     cachedList: kind => cached('rows', kind).rows.slice(),
