@@ -52,7 +52,7 @@ const sessions = new Map();
 const DEFAULT_IDLE_MS = 10 * 60 * 1000; // reclaim a warm-but-unused app-server after 10min
 const CLOSE_KILL_GRACE_MS = 1_500;
 const RECYCLE_KILL_GRACE_MS = 3_000;
-const closer = require('./process-close').createProcessCloser({
+const closer = require('../native/runtime').getProcessCloser().createProcessCloser({
   timeoutMs: CLOSE_KILL_GRACE_MS + 1_000, code: 'CODEX_APP_STREAM_CLOSE_TIMEOUT',
 });
 
