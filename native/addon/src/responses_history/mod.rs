@@ -1,5 +1,6 @@
 //! Only changed request nodes are copied. Live V8 values preserve getters,
 //! sparse arrays, JSON conversion errors, and references to untouched nodes.
+mod hooks;
 mod preprocess;
 mod references;
 mod repair;
@@ -205,10 +206,10 @@ fn combined<'a>(body: L<'a>, passes: &[L<'a>]) -> Result<L<'a>> {
     result(body, changes)
 }
 
-fn normalize<'a>(rules: L<'a>, args: &mut [L<'a>]) -> Result<L<'a>> {
-    let prepared = preprocess::run(rules, args[0])?;
+fn normalize<'a>(rules: L<'a>, body: L<'a>, omit_reasoning: bool) -> Result<L<'a>> {
+    let prepared = preprocess::run(rules, body)?;
     let body = prepared.get(c"body")?;
-    let content = if args[1].truthy()? {
+    let content = if omit_reasoning {
         item_pass(body, ItemPass::Content)?
     } else {
         result(body, array(body, &[])?)?
@@ -231,9 +232,15 @@ pub fn responses_history_api(env: Env) -> Result<sys::napi_value> {
         )?;
     }
     let api = fields(anchor, &[])?;
-    let methods: [(&CStr, usize, Visitor); 7] = [
+    let methods: [(&CStr, usize, Visitor); 9] = [
         (c"preprocess", 1, |r, a| preprocess::run(r, a[0])),
-        (c"normalize", 2, normalize),
+        (c"normalize", 2, |r, a| normalize(r, a[0], a[1].truthy()?)),
+        (c"onRequest", 2, |r, a| {
+            hooks::DialStage::Request.run(r, a[0], a[1])
+        }),
+        (c"onUpstreamRejected", 2, |r, a| {
+            hooks::DialStage::Rejection.run(r, a[0], a[1])
+        }),
         (c"repair", 2, |r, a| repair::run(r, a[0], a[1])),
         (c"stripContent", 1, |_, a| {
             item_pass(a[0], ItemPass::Content)

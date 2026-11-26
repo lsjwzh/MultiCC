@@ -184,3 +184,100 @@ test('a working hook never lets its own logging break the turn', () => {
   });
   assert.deepEqual(thrown.onRequest(requestContext(body)), { body: { input: [] } });
 });
+
+const oldHooks = require('./helpers/legacy-codex-history-hooks').createCodexHistoryHooks;
+
+test('both hook results, diagnostics and untouched item identities match the 1e43b66f hooks', t => {
+  const keep = { type: 'message', id: 'msg_keep', content: ['keep'] };
+  const bodies = [
+    null, 0, 'raw', [], {}, { input: [keep] },
+    { previous_response_id: 'previous', input: [keep, { type: 'item_reference', id: 'previous' }] },
+    { input: [keep, { type: 'function_call', id: 'old', status: 'alien', arguments: { x: 3 } }] },
+    { input: [keep, { type: 'reasoning', id: 'r', encrypted_content: 'opaque', summary: ['s'] }] },
+    { input: [keep, { type: 'web_search_call', action: { type: 'search', query: 'q' } }], tools: [{ type: 'function', strict: true }] },
+  ];
+  const messages = [
+    undefined, 'upstream failure', '{}', 'null', '["unknown"]', '{"error":[]}', '{"error":null}',
+    JSON.stringify({ error: { message: 'Unsupported parameter', param: 'input[1].status', code: 'invalid_value' } }),
+    JSON.stringify({ message: "Unsupported parameter 'tools[0].strict'" }),
+    "Item with id 'r' not found", '{"error":{"message":"Encrypted content x could not be decrypted"}}',
+  ];
+  function run(create, method, context) {
+    const logs = [];
+    const logger = { warn(event, fields) { assert.equal(this, logger); logs.push([event, fields]); } };
+    const hook = create({ logger });
+    const result = hook[method](context);
+    if (result && context.body.input?.[0] === keep) assert.equal(result.body.input[0], keep);
+    return { result, logs };
+  }
+  let comparisons = 0;
+  for (const body of bodies) for (const protocol of ['openai-responses', 'anthropic-messages']) {
+    const base = { body, protocol, providerId: 'p', sessionId: 's', role: 'main' };
+    assert.deepEqual(run(createCodexHistoryHooks, 'onRequest', base), run(oldHooks, 'onRequest', base));
+    comparisons++;
+    for (const status of [400, 404, ' 404 ', 400n, 401, 429, 500, NaN]) for (const message of messages) {
+      const context = { ...base, status, message };
+      assert.deepEqual(run(createCodexHistoryHooks, 'onUpstreamRejected', context), run(oldHooks, 'onUpstreamRejected', context));
+      comparisons++;
+    }
+  }
+  t.diagnostic(`${comparisons} request and rejection comparisons matched`);
+});
+
+test('getter and coercion failures retain identity and logger failures remain best effort', t => {
+  const failure = Object.freeze({ code: 'injected' });
+  function observe(create, method, failAt, loggerEnabled) {
+    const trace = [];
+    function seen(key) {
+      trace.push(key);
+      if (trace.length === failAt) throw failure;
+    }
+    const token = key => ({ [Symbol.toPrimitive](hint) {
+      seen(key + ':' + hint);
+      return key === 'status' ? '404' : '{"error":{"param":"input[0].status","message":"Unknown parameter"}}';
+    } });
+    const logger = { get warn() {
+      seen('logger.warn');
+      return function () { seen('logger.call'); assert.equal(this, logger); };
+    } };
+    const options = { get logger() { seen('options.logger'); return loggerEnabled ? logger : null; } };
+    const context = new Proxy({
+      protocol: 'openai-responses', body: { input: [{ type: 'message', id: 'old', content: [], status: 'x' }] },
+      status: token('status'), message: token('message'), role: 'aux',
+    }, { get(target, key) { seen('context.' + key); return target[key]; } });
+    let result, error;
+    try { result = create(options)[method](context); } catch (e) { error = e; }
+    if (error !== undefined) assert.equal(error, failure);
+    return { trace, result, threw: error === failure };
+  }
+  let count = 0;
+  for (const method of ['onRequest', 'onUpstreamRejected']) for (const enabled of [true, false]) {
+    const normal = observe(oldHooks, method, 0, enabled);
+    assert.deepEqual(observe(createCodexHistoryHooks, method, 0, enabled), normal);
+    for (let i = 1; i <= normal.trace.length; i++) {
+      assert.deepEqual(observe(createCodexHistoryHooks, method, i, enabled), observe(oldHooks, method, i, enabled));
+      count++;
+    }
+  }
+  t.diagnostic(`${count} injected failure positions matched`);
+});
+
+test('the frozen hook facade supports detached synchronous calls and reentrant diagnostics', () => {
+  for (const create of [oldHooks, createCodexHistoryHooks]) {
+    let again, outer, nested;
+    const logger = { warn(event, fields) {
+      if (nested !== undefined) return;
+      nested = false;
+      nested = again({ protocol: 'openai-responses', body: { previous_response_id: 'inner' } });
+      fields.changes.length = 0;
+      throw new Error('log sink unavailable');
+    } };
+    const facade = create({ logger });
+    assert.ok(Object.isFrozen(facade));
+    assert.deepEqual(Object.keys(facade), ['onRequest', 'onUpstreamRejected']);
+    again = facade.onRequest;
+    outer = again({ protocol: 'openai-responses', body: { previous_response_id: 'outer', input: [] } });
+    assert.deepEqual(outer, { body: { input: [] } });
+    assert.deepEqual(nested, { body: {} });
+  }
+});
