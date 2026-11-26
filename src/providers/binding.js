@@ -4,11 +4,9 @@
 // cross the provider-router boundary: callers explicitly select only the fields
 // the routing and usage contracts need.
 
+const { getNative } = require('../native/binding');
+
 const BINDING_BRAND = Symbol('MultiCC.ProviderBinding');
-const ALLOWED_KEYS = new Set([
-  'sessionId', 'cli', 'providerId', 'model',
-  'roleKind', 'agentRole', 'routeName', 'accountId',
-]);
 // Must track the chat CLI roster (cli-switch.js SUPPORTED_CHAT_CLIS). Providerless
 // CLIs (qoder, codebuddy, dsh, gemini, grok) still cross this boundary; omitting
 // one makes its sessions fail turn preparation with "unsupported cli".
@@ -24,79 +22,11 @@ class ProviderBindingError extends Error {
   }
 }
 
-function assertRecord(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new ProviderBindingError('ProviderBinding input must be an object');
-  }
-}
-
-function cleanString(value, label, { required = false, max = 256 } = {}) {
-  if (value == null || value === '') {
-    if (required) throw new ProviderBindingError(`${label} is required`);
-    return null;
-  }
-  const text = String(value).trim();
-  if (!text && required) throw new ProviderBindingError(`${label} is required`);
-  if (!text) return null;
-  if (text.length > max || /[\u0000-\u001f\u007f]/.test(text)) {
-    throw new ProviderBindingError(`${label} is invalid`);
-  }
-  return text;
-}
+// Consumers can extend the exported sets and catch this exact error class.
+const policyHost = { SUPPORTED_CLIS, ROLE_KINDS, AGENT_ROLES, ProviderBindingError };
 
 function createProviderBinding(input) {
-  assertRecord(input);
-  const unexpected = Object.keys(input).filter(key => !ALLOWED_KEYS.has(key));
-  if (unexpected.length) {
-    throw new ProviderBindingError(
-      `ProviderBinding rejects session fields: ${unexpected.sort().join(', ')}`,
-      'PROVIDER_BINDING_TOO_BROAD',
-    );
-  }
-
-  const sessionId = cleanString(input.sessionId, 'sessionId', { required: true });
-  const cli = cleanString(input.cli, 'cli', { required: true, max: 32 }).toLowerCase();
-  if (!SUPPORTED_CLIS.has(cli)) {
-    throw new ProviderBindingError(`unsupported cli: ${cli}`);
-  }
-  const providerId = cleanString(input.providerId, 'providerId');
-  const model = cleanString(input.model, 'model');
-  const accountId = cleanString(input.accountId, 'accountId', { max: 64 });
-  const roleKind = cleanString(input.roleKind || 'main', 'roleKind', { required: true, max: 16 }).toLowerCase();
-  if (!ROLE_KINDS.has(roleKind)) {
-    throw new ProviderBindingError('roleKind must be main, sub, or aux');
-  }
-
-  let agentRole = cleanString(input.agentRole, 'agentRole', { max: 32 });
-  let routeName = cleanString(input.routeName, 'routeName', { max: 64 });
-  if (roleKind === 'sub') {
-    agentRole = (agentRole || 'default').toLowerCase();
-    if (!AGENT_ROLES.has(agentRole)) {
-      throw new ProviderBindingError('sub agentRole must be default, worker, explorer, or custom');
-    }
-    routeName = (routeName || agentRole).toLowerCase();
-    if (!/^[a-z][a-z0-9_-]{0,63}$/.test(routeName)) {
-      throw new ProviderBindingError('routeName must be a valid agent route');
-    }
-  } else {
-    if (agentRole) throw new ProviderBindingError(`agentRole is only valid for sub bindings`);
-    if (routeName && routeName.toLowerCase() !== roleKind) {
-      throw new ProviderBindingError(`${roleKind} routeName must be ${roleKind}`);
-    }
-    agentRole = null;
-    routeName = roleKind;
-  }
-
-  const binding = {
-    sessionId,
-    cli,
-    providerId,
-    model,
-    roleKind,
-    agentRole,
-    routeName,
-    accountId,
-  };
+  const binding = getNative().normalizeProviderBinding(input, policyHost);
   Object.defineProperty(binding, BINDING_BRAND, { value: true });
   return Object.freeze(binding);
 }
@@ -117,16 +47,7 @@ function assertProviderBinding(value) {
 // other persisted-session field.
 function toLegacyProviderView(value) {
   const binding = assertProviderBinding(value);
-  return Object.freeze({
-    id: binding.sessionId,
-    cli: binding.cli,
-    provider: binding.providerId,
-    model: binding.model,
-    roleKind: binding.roleKind,
-    agentRole: binding.agentRole,
-    routeName: binding.routeName,
-    accountId: binding.accountId,
-  });
+  return Object.freeze(getNative().legacyProviderBindingView(binding));
 }
 
 module.exports = {
