@@ -218,7 +218,7 @@ function buildDeps(initialScenario = {}) {
 
   const notesStore = {
     saveNotes() { pushCall(state, { call: 'saveNotes', count: state.notes.length }); },
-    pendingNotesFor(id) { return state.notes.filter(note => note.toSessionId === id && !note.delivered).length; },
+    pendingNotesFor(id) { return state.notes.filter(note => note.toSessionId === id && !note.delivered); },
     getNotes() { return state.notes; },
   };
 

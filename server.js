@@ -139,7 +139,7 @@ const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
 const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
 const { mountSecretsVaultHostRoute } = require('./src/routes/secrets-vault-host');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
-const { createSessionRoutesHost } = require('./src/routes/session-routes-host');
+const { createSessionRoutesHost, createSessionMetaRuntime } = require('./src/routes/session-routes-host');
 const { createShareMachinesHost } = require('./src/routes/share-machines-host');
 const { createAccountRoutesHost, mountCliKeyAccountRoutes, mountCommandcodeAuthRoutes, readCommandcodeLogin, mountCodexOAuthRoutes } = require('./src/routes/account-routes-host');
 const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
@@ -151,7 +151,6 @@ const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
 const { createSessionBundleRoutes } = require('./src/routes/session-bundle');
 const { createSessionLifecycleRuntime } = require('./src/routes/session-lifecycle');
-const { createSessionMetaRuntime } = require('./src/routes/session-meta');
 const { createServerRestartRoute } = require('./src/routes/server-restart-route');
 const { createUpdateRoute } = require('./src/routes/update-route');
 const { createAuthRuntime } = require('./src/routes/auth');
@@ -1730,7 +1729,7 @@ const updateRoute = createUpdateRoute({
 });
 
 // ── Per-session metadata: inter-agent notes + liveness ──
-// Handler logic lives in src/routes/session-meta.js; only host wiring stays
+// Handler logic lives in the native session meta routes; only host wiring stays
 // here. `notes` lives inside src/notes-store.js and is never exposed by
 // reference — the module receives getNotes()/saveNotes()/pendingNotesFor().
 createSessionMetaRuntime({

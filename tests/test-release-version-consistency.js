@@ -770,13 +770,14 @@ test('core runner covers every selected path and expands declared variants', () 
   // 488 -> 489 entries, 407 -> 408 deterministic, 459 -> 460 commands.
   assert.ok(core.some(entry => entry.path === 'tests/test-large-context-prefix.js'));
   assert.ok(core.some(entry => entry.path === 'tests/test-captured-route-differential.js' && entry.lane === 'deterministic'));
-  assert.equal(core.length, 490, 'the reviewed core set changed; re-audit the release tier');
-  assert.equal(plan.entries.length, 490);
+  assert.ok(core.some(entry => entry.path === 'tests/test-session-meta-routes.js' && entry.lane === 'deterministic'));
+  assert.equal(core.length, 491, 'the reviewed core set changed; re-audit the release tier');
+  assert.equal(plan.entries.length, 491);
   assert.deepEqual(
     [...new Set(plan.entries.map(entry => entry.lane))].sort(),
     [...RELEASE_CORE_LANES].sort(),
   );
-  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 409);
+  assert.equal(core.filter(entry => entry.lane === 'deterministic').length, 410);
   assert.equal(core.filter(entry => entry.lane === 'isolated').length, 49);
   assert.equal(core.filter(entry => entry.lane === 'flutter').length, 32,
     'the reviewed non-UI Flutter core set changed; re-audit it before release');
@@ -786,8 +787,8 @@ test('core runner covers every selected path and expands declared variants', () 
   )).sort();
   const plannedPaths = plan.commands.flatMap(command => command.paths).sort();
   assert.deepEqual(plannedPaths, expectedPaths, 'the runner must neither skip nor add manifest paths');
-  assert.equal(plan.commands.length, 461,
-    '458 Node entries, two extra variant executions, and one batched Flutter command are expected');
+  assert.equal(plan.commands.length, 462,
+    '459 Node entries, two extra variant executions, and one batched Flutter command are expected');
 
   const presentationSuites = new Map([
     ['tests/test-chat-history-ordering.js', 'other'],
