@@ -797,11 +797,16 @@ test('managed loopback routing stays bound to the claude/codex lane families', (
   const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
   const managed = ['claude', 'claude-exp', 'codex', 'codex-exp'];
   for (const cli of managed) assert.ok(SUPPORTED_CHAT_CLIS.includes(cli), cli);
-  const source = fs.readFileSync(path.join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
-  // The two spawn-time gates are the only wiring between lanes and the managed
-  // proxy env. If either condition changes, revisit this allowlist on purpose.
-  assert.match(source, /if \(persisted\.cli === 'claude' \|\| persisted\.cli === 'claude-exp'\) providers\.applyClaudeProxyEnv/);
-  assert.match(source, /persisted\.cli === 'codex' \|\| persisted\.cli === 'codex-exp'\) \{\s*const proxyRequired = providers\.codexProxyConfigRequired/);
+  const source = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/process_runner.rs'), 'utf8');
+  for (const [cli, operation] of [['claude', 'applyClaudeProxyEnv'], ['codex', 'codexProxyConfigRequired']]) {
+    const gate = 'if rec.get(c"cli")?.is_string("' + cli + '")? || rec.get(c"cli")?.is_string("' + cli + '-exp")? {';
+    const start = source.indexOf(gate);
+    const end = source.indexOf('\n    }', start);
+    assert.ok(start >= 0 && end > start, cli);
+    const call = 'c"' + operation + '"';
+    assert.ok(source.slice(start, end).includes(call), operation);
+    assert.equal(source.split(call).length - 1, 1, operation);
+  }
   // Behavioural spot check on the dsh lane (pure env, no filesystem): its
   // endpoint stays the provider's external URL and no loopback leaks in.
   // kimi/grok builders write real session homes on disk, so they stay

@@ -23,7 +23,6 @@ function takeoverCommand(owner, command) {
   return result === null ? command : result;
 }
 const homebrewTakeover = { homebrewOwnerOf, takeoverCommand, isNpmGlobalInstall };
-const { bundledClaudeCodeBinary } = require('./claude-bundled-binary');
 const { getChildProxyEnv } = require('../network/outbound');
 const native = getNative();
 const OFFICIAL_INSTALL_SPECS = Object.freeze(Object.fromEntries(
@@ -65,7 +64,7 @@ function createCliToolsHost(options) {
   // The package descriptor is a Node module-resolution fact, not version policy.
   let installedEngine, declaredEngine;
   try {
-    const binary = bundledClaudeCodeBinary();
+    const binary = capability.bundledClaudeCodeBinary();
     if (binary) installedEngine = JSON.parse(fs.readFileSync(path.join(path.dirname(binary), 'package.json'), 'utf8')).version;
   } catch (_) {}
   try { declaredEngine = require('../../package.json').dependencies?.['@anthropic-ai/claude-agent-sdk']; } catch (_) {}
@@ -87,7 +86,7 @@ function createCliToolsHost(options) {
     const now = clock();
     const plan = call('bundledPlan', { now, force });
     if (plan.cached) return plan.version;
-    const binary = bundledClaudeCodeBinary();
+    const binary = capability.bundledClaudeCodeBinary();
     const result = binary ? await probe(binary) : null;
     return call('bundledCommit', { now, version: result?.version || null });
   }

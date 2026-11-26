@@ -170,11 +170,6 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 `);
   fs.chmodSync(fakeCli, 0o755);
   // Claude 聊天已统一到内置 SDK，CLAUDE_CMD 只影响非聊天用途。
-  // 仅在隔离测试子进程中替换二进制定位器，仍经过真实 Rust lane 和收尾链路。
-  const preload = path.join(root, 'sdk-test-preload.cjs');
-  fs.writeFileSync(preload, `require(${JSON.stringify(path.join(ROOT, 'src/cli/claude-bundled-binary'))})
-    .bundledClaudeCodeBinary = () => ${JSON.stringify(fakeCli)};\n`);
-
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const addon = process.env.MULTICC_RUST_ADDON
@@ -191,7 +186,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     env: {
       ...process.env,
       NODE_ENV: 'test',
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require ${JSON.stringify(preload)}`,
+      MULTICC_CLAUDE_BIN: fakeCli,
       HOST: '127.0.0.1',
       PORT: String(port),
       ACCESS_TOKEN: TOKEN,

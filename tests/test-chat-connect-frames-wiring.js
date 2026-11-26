@@ -203,9 +203,8 @@ test('task state keeps the order of live reads, the error identity and serializa
 
 // ── the connect plan ────────────────────────────────────────────────────────
 
-test('the connect plan export the turn engine calls reproduces the frozen plan', () => {
+test('兼容计划和实际发送的重放序列均符合冻结样本', () => {
   const native = getNative();
-  assert.equal(typeof native.chatConnectReplayPlan, 'function', 'the turn engine calls this export by name');
   const names = { chatHistory: 'chat_history', taskStateSeed: 'task_state_seed',
     clearBuffer: 'clear_buffer', replayBurst: 'replay_burst' };
   assert.equal(connectCorpus.cases.length, 144, 'the corpus lost cases');
@@ -213,6 +212,30 @@ test('the connect plan export the turn engine calls reproduces the frozen plan',
     const plan = JSON.parse(native.chatConnectReplayPlan(JSON.stringify(entry.facts)));
     const steps = plan.steps.map(step => (step.op === 'replayBurst'
       ? { type: names[step.op], frames: step.frames } : { type: names[step.op] }));
+    const facts = entry.facts, trace = [];
+    let buffered = facts.bufferedEvents, seeds = 0;
+    const messages = Array.from({ length: facts.replayMessages }, () => ({ role: 'user' }));
+    if (messages.length && facts.lastMessageIsAssistant) messages.at(-1).role = 'assistant';
+    const page = { messages, hasMore: true }, usage = facts.hasTokenUsage ? {} : null;
+    native.chatApplyConnectReplay({
+      replay: {
+        size: () => buffered,
+        clear() { trace.push({ type: 'clear_buffer' }); buffered = 0; },
+        burst() { trace.push({ type: 'replay_burst', frames: buffered }); },
+      },
+      persistedSessions: new Map(),
+      getTaskState() { seeds++; },
+      taskStateSeed: () => facts.hasTaskStateSeed ? { type: 'task_state_seed' } : null,
+      sendWs(_, frame) {
+        if (frame.type === 'chat_history') {
+          assert.equal(frame.messages, messages); assert.equal(frame.tokenUsage, usage); assert.equal(frame.hasMore, true);
+        }
+        trace.push({ type: frame.type });
+      },
+    }, { _multiccConnId: 17 }, 's', { isStreaming: facts.isStreaming }, page, usage);
+    assert.deepEqual(trace, entry.steps);
+    assert.equal(buffered, entry.bufferAfter);
+    assert.equal(seeds, entry.steps.some(step => step.type === 'chat_history') ? 1 : 0);
     assert.deepEqual(steps, entry.steps, `case ${index}: ${JSON.stringify(entry.facts)}`);
     assert.equal(plan.bufferAfter, entry.bufferAfter, `case ${index}: bufferAfter`);
     // The seed is only resolved when the plan can use it, so it is asked for

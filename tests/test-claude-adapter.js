@@ -9,7 +9,7 @@ const { pathToFileURL } = require('node:url');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createClaudeAdapter } = require('../src/native/runtime');
 const { processSpawnArgs } = require('../src/native/runtime');
-const { createChatTurnEngine } = require('../src/chat/turn-engine');
+const { createChatTurnEngine } = require('../src/chat/turn-engine-host');
 const hasNativeHistory = (record, options) => require('../src/native/runtime').getNative().claudeExpHasNativeHistory(record, options);
 const prepareTurn = require('./helpers/claude-turn');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
@@ -424,6 +424,8 @@ test('Rust startup cleanup matches frozen bytes and completes before the SDK chi
   }
   const source = fs.readFileSync(path.join(__dirname, '../src/chat/claude-sdk-stream.js'), 'utf8');
   assert.match(source, /await cfg\.beforeSpawn\?\./, 'SDK startup waits for the asynchronous preparation port');
-  const host = fs.readFileSync(path.join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
-  assert.match(host, /return cleaned\.then\(invalidate\)/, 'the host propagates completion of the native cleanup');
+  const backend = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/streaming/backend.rs'), 'utf8');
+  assert.match(backend, /st\.callback\("invalidate", 1,[\s\S]{0,140}call\(cleaned, c"then", &\[cb\]\)/,
+    '异步清理完成后才使旧准备失效，并将该 Promise 返回给 SDK');
+
 });

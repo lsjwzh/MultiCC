@@ -1,6 +1,6 @@
 'use strict';
 
-const { vendorLoginForCli } = require('../cli-adapters/vendor-login');
+const { vendorLoginForCli } = require('../native/runtime').getVendorLogin();
 const { mergeCliAccountsPatch, sharedCliKeyAccountStore } = require('../cli-key-accounts');
 const { mountAgyAccountRoutes } = require('./account-routes-host');
 

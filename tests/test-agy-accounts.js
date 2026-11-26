@@ -136,7 +136,7 @@ test('login env may pin HOME and nothing else', () => {
 
 test('agy is a whitelisted interactive login flow', () => {
   const { vendorLoginForCli, cliForLoginFlow, vendorLoginTerminalCmd } =
-    require('../src/cli-adapters/vendor-login');
+    require('../src/native/runtime').getVendorLogin();
   const spec = vendorLoginForCli('agy');
   assert.equal(spec.loginFlow, 'agy-login');
   assert.equal(cliForLoginFlow('agy-login'), 'agy');

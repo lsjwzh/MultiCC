@@ -1,39 +1,21 @@
-//! napi wrappers for Auto Provider price shaping.
-//!
-//! The shaping decisions and the price ladder live in
-//! `multicc_core::auto_provider_pricing`. The one thing that cannot move is the
-//! table storage itself: the table is `src/pricing/price-table.js`, a live
-//! in-memory index that hands out frozen entry objects. The native facade
-//! invokes its lookup method while retaining V8 exceptions and getter order.
-//! The shared JSON interfaces remain available:
-//!
-//!   1. [`auto_provider_pricing_models`] says which models this pool's
-//!      expansion will price;
-//!   2. the native facade looks those models up and encodes the entries;
-//!   3. [`auto_provider_expand_candidates`] prices, expands, orders and caps.
-//!
-//! [`auto_provider_price_of`] is the same post-processing for a single model,
-//! and [`RustPriceLadder`] owns one turn's ladder so `tierOf` never has to
-//! restate the price list in JavaScript.
+//! 自动供应商定价直接调用 `multicc_core::auto_provider_pricing`。
+//! 查价回调读取宿主持有的实时价格表。旧版 JSON 接口与价格阶梯类仍供兼容调用方使用。
 
 use multicc_core::auto_provider_pricing as kernel;
-use multicc_core::js::serde::{to_serde, truthy};
+use multicc_core::js::serde::{from_serde, to_serde, truthy};
 use multicc_core::js::JsValue as V;
 use napi::{
-    bindgen_prelude::{JsValue as _, Unknown},
+    bindgen_prelude::{ToNapiValue, Unknown},
     Env, Result,
 };
 use napi_derive::napi;
 use serde_json::Value;
 
-fn read(env: Env, value: Unknown<'_>) -> Result<V> {
-    unsafe { crate::js_bridge::read_value(env.raw(), value.raw(), 0, &mut Vec::new()) }
-}
-
-/// The JS value as ordinary JSON data. `undefined` arrives as `null`, which is
-/// what every field read here treats it as.
-fn data(env: Env, value: Unknown<'_>) -> Result<Value> {
-    Ok(to_serde(&read(env, value)?))
+/// 和兼容接口共用同一套 V8 输入转换，保留 getter 的读取顺序。
+fn data(value: L<'_>) -> Result<Value> {
+    let value =
+        unsafe { crate::js_bridge::read_value(value.env(), value.raw(), 0, &mut Vec::new()) }?;
+    Ok(to_serde(&value))
 }
 
 fn reason(error: String) -> napi::Error {
@@ -44,8 +26,8 @@ fn json(value: &Value) -> Result<String> {
     serde_json::to_string(value).map_err(|error| reason(error.to_string()))
 }
 
-fn list(value: &Value) -> Vec<Value> {
-    value.as_array().cloned().unwrap_or_default()
+fn list(value: &Value) -> &[Value] {
+    value.as_array().map(Vec::as_slice).unwrap_or_default()
 }
 
 /// The shaping constants, so JavaScript never restates them.
@@ -62,7 +44,7 @@ pub fn auto_provider_pricing_defaults() -> Result<String> {
 /// `priceOf` after the table lookup: the entry in, the price (or `null`) out.
 #[napi]
 pub fn auto_provider_price_of(env: Env, entry: Unknown<'_>) -> Result<String> {
-    let entry = data(env, entry)?;
+    let entry = data(L::new(&env, entry))?;
     match kernel::price_of_entry(Some(&entry)) {
         Some(price) => json(&price),
         None => Ok("null".to_string()),
@@ -71,7 +53,7 @@ pub fn auto_provider_price_of(env: Env, entry: Unknown<'_>) -> Result<String> {
 
 #[napi]
 pub fn auto_provider_model_choices(env: Env, provider: Unknown<'_>) -> Result<String> {
-    let provider = data(env, provider)?;
+    let provider = data(L::new(&env, provider))?;
     let choices = kernel::model_choices(Some(&provider)).map_err(reason)?;
     json(&Value::Array(
         choices.into_iter().map(Value::String).collect(),
@@ -81,8 +63,8 @@ pub fn auto_provider_model_choices(env: Env, provider: Unknown<'_>) -> Result<St
 /// The models the napi edge must price for this pool, in visit order.
 #[napi]
 pub fn auto_provider_pricing_models(env: Env, candidates: Unknown<'_>) -> Result<String> {
-    let candidates = data(env, candidates)?;
-    let models = kernel::pricing_models(&list(&candidates)).map_err(reason)?;
+    let candidates = data(L::new(&env, candidates))?;
+    let models = kernel::pricing_models(list(&candidates)).map_err(reason)?;
     json(&Value::Array(
         models.into_iter().map(Value::String).collect(),
     ))
@@ -95,22 +77,30 @@ pub fn auto_provider_pricing_models(env: Env, candidates: Unknown<'_>) -> Result
 /// on the JavaScript side.
 #[napi]
 pub fn auto_provider_expand_candidates(env: Env, request: Unknown<'_>) -> Result<String> {
-    let request = data(env, request)?;
+    let request = data(L::new(&env, request))?;
+    let expanded = expand_request(&request)?;
+    json(&Value::Array(
+        expanded
+            .into_iter()
+            .map(Option::unwrap_or_default)
+            .collect(),
+    ))
+}
+
+fn expand_request(request: &Value) -> Result<Vec<Option<Value>>> {
     let candidates = request.get("candidates").map(list).unwrap_or_default();
     let entries = request
         .get("entries")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let require_price = request.get("requirePrice").is_none_or(truthy);
     let table = kernel::MapTable::new(entries);
-    let expanded =
-        kernel::expand_candidates(&candidates, Some(&table), require_price).map_err(reason)?;
-    let expanded: Vec<Value> = expanded
-        .into_iter()
-        .map(|item| item.unwrap_or(Value::Null))
-        .collect();
-    json(&Value::Array(expanded))
+    kernel::expand_candidates(
+        candidates,
+        Some(&table),
+        request.get("requirePrice").is_none_or(truthy),
+    )
+    .map_err(reason)
 }
 
 /// One turn's ladder: `tiers` plus `tierOf(candidate)`, over the price order
@@ -124,9 +114,9 @@ pub struct RustPriceLadder {
 impl RustPriceLadder {
     #[napi(constructor)]
     pub fn new(env: Env, candidates: Unknown<'_>) -> Result<Self> {
-        let candidates = data(env, candidates)?;
+        let candidates = data(L::new(&env, candidates))?;
         Ok(Self {
-            state: kernel::price_ladder(&list(&candidates)),
+            state: kernel::price_ladder(list(&candidates)),
         })
     }
 
@@ -137,7 +127,7 @@ impl RustPriceLadder {
 
     #[napi]
     pub fn tier_of(&self, env: Env, candidate: Unknown<'_>) -> Result<Option<String>> {
-        let candidate = data(env, candidate)?;
+        let candidate = data(L::new(&env, candidate))?;
         Ok(self.state.tier_of(Some(&candidate)))
     }
 }
@@ -166,9 +156,8 @@ fn pricing_wire<'a>(value: L<'a>, api: L<'a>) -> Result<L<'a>> {
     Ok(out)
 }
 
-fn pricing_json<'a>(api: L<'a>, name: &std::ffi::CStr, args: &[L<'a>]) -> Result<L<'a>> {
-    let result = call(api.get(c"native")?, name, args)?;
-    call(api.global()?.get(c"JSON")?, c"parse", &[result])
+fn strings(values: Vec<String>) -> V {
+    V::Array(values.into_iter().map(V::from).collect())
 }
 
 fn pricing_lookup<'a>(table: L<'a>, model: L<'a>) -> Result<L<'a>> {
@@ -182,32 +171,20 @@ fn pricing_lookup<'a>(table: L<'a>, model: L<'a>) -> Result<L<'a>> {
 }
 
 #[napi]
-pub fn auto_provider_pricing_api(env: Env, native: Unknown<'_>) -> Result<sys::napi_value> {
-    let native = L::new(&env, native);
-    let api = fields(native, &[("native", native)])?;
+pub fn auto_provider_pricing_api(env: Env) -> Result<sys::napi_value> {
+    let api = fields(L::new(&env, ().into_unknown(&env)?), &[])?;
     api.set(
         c"wire",
         method(&env, api, "wire", 1, 1, |s, a| pricing_wire(a[0], s))?,
     )?;
-    api.set(
-        c"expandedItem",
-        method(&env, api, "", 1, 1, |s, a| {
-            if a[0].kind()? == sys::ValueType::napi_null {
-                s.from_value(&V::Undefined)
-            } else {
-                a[0].freeze()
-            }
-        })?,
-    )?;
-    let defaults = pricing_json(api, c"autoProviderPricingDefaults", &[])?;
     let out = fields(
         api,
         &[
-            ("MAX_PRICE_TIERS", property(defaults, c"maxPriceTiers")?),
-            ("MAX_VARIANTS", property(defaults, c"maxVariants")?),
+            ("MAX_PRICE_TIERS", num(api, kernel::MAX_PRICE_TIERS as f64)?),
+            ("MAX_VARIANTS", num(api, kernel::MAX_VARIANTS as f64)?),
             (
                 "MAX_VARIANTS_PER_PROVIDER",
-                property(defaults, c"maxVariantsPerProvider")?,
+                num(api, kernel::MAX_VARIANTS_PER_PROVIDER as f64)?,
             ),
             ("expandCandidates", api.from_value(&V::Undefined)?),
             ("modelChoices", api.from_value(&V::Undefined)?),
@@ -227,20 +204,17 @@ pub fn auto_provider_pricing_api(env: Env, native: Unknown<'_>) -> Result<sys::n
                 return null(s);
             }
             let entry = pricing_wire(pricing_lookup(table, model)?, s)?;
-            let entry = if entry.nullish()? { null(s)? } else { entry };
-            let answer = pricing_json(s, c"autoProviderPriceOf", &[entry])?;
-            if answer.nullish()? {
-                null(s)
-            } else {
-                answer.freeze()
+            match kernel::price_of_entry(Some(&data(entry)?)) {
+                Some(price) => s.from_value(&from_serde(&price))?.freeze(),
+                None => null(s),
             }
         })?,
     )?;
     out.set(
         c"modelChoices",
         method(&env, api, "modelChoices", 1, 1, |s, a| {
-            let value = if a[0].nullish()? { null(s)? } else { a[0] };
-            pricing_json(s, c"autoProviderModelChoices", &[value])
+            let choices = kernel::model_choices(Some(&data(a[0])?)).map_err(reason)?;
+            s.from_value(&strings(choices))
         })?,
     )?;
     out.set(
@@ -263,19 +237,20 @@ pub fn auto_provider_pricing_api(env: Env, native: Unknown<'_>) -> Result<sys::n
             if !call(s.global()?.get(c"Array")?, c"isArray", &[candidates])?.truthy()? {
                 return Err(s.type_error("candidates is not iterable"));
             }
-            let models = pricing_json(s, c"autoProviderPricingModels", &[candidates])?;
+            let models = kernel::pricing_models(list(&data(candidates)?)).map_err(reason)?;
             let entries = fields(s, &[])?;
             if table.truthy()?
                 && property(table, c"lookup")?.kind()? == sys::ValueType::napi_function
             {
-                models.for_each(|model| {
+                for model in models {
+                    let model = text(s, &model)?;
                     let entry = pricing_lookup(table, model)?;
                     if entry.truthy()? {
                         entries.set_key(model, pricing_wire(entry, s)?)?;
                     }
-                    Ok(())
-                })?;
+                }
             }
+            // lookup 可以修改候选项；展开前按原顺序重新读取。
             let request = fields(
                 s,
                 &[
@@ -284,8 +259,16 @@ pub fn auto_provider_pricing_api(env: Env, native: Unknown<'_>) -> Result<sys::n
                     ("requirePrice", required),
                 ],
             )?;
-            let expanded = pricing_json(s, c"autoProviderExpandCandidates", &[request])?;
-            call(expanded, c"map", &[s.get(c"expandedItem")?])
+            let expanded = expand_request(&data(request)?)?;
+            let out = s.from_value(&V::Array(vec![]))?;
+            for (i, item) in expanded.iter().enumerate() {
+                let item = match item {
+                    Some(value) => s.from_value(&from_serde(value))?.freeze()?,
+                    None => s.from_value(&V::Undefined)?,
+                };
+                out.define_key(text(s, &i.to_string())?, item)?;
+            }
+            Ok(out)
         })?,
     )?;
     out.set(
@@ -294,13 +277,14 @@ pub fn auto_provider_pricing_api(env: Env, native: Unknown<'_>) -> Result<sys::n
             if !call(s.global()?.get(c"Array")?, c"isArray", &[a[0]])?.truthy()? {
                 return Err(s.type_error("candidates is not iterable"));
             }
-            let ladder = property(s.get(c"native")?, c"RustPriceLadder")?.construct(&[a[0]])?;
-            let tiers = property(ladder, c"tiers")?.freeze()?;
-            let owner = fields(s, &[("ladder", ladder)])?;
+            let ladder = kernel::price_ladder(list(&data(a[0])?));
+            let tiers = s.from_value(&strings(ladder.tiers.clone()))?.freeze()?;
             let env = Env::from_raw(s.env());
-            let tier = method(&env, owner, "tierOf", 1, 1, |owner, a| {
-                let candidate = if a[0].nullish()? { null(owner)? } else { a[0] };
-                call(owner.get(c"ladder")?, c"tierOf", &[candidate])
+            let tier = method(&env, s, "tierOf", 1, 1, move |s, a| {
+                match ladder.tier_of(Some(&data(a[0])?)) {
+                    Some(tier) => text(s, &tier),
+                    None => null(s),
+                }
             })?;
             let tier = L::from_raw(s.env(), tier.raw());
             fields(s, &[("tiers", tiers), ("tierOf", tier)])?.freeze()

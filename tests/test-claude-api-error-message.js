@@ -9,7 +9,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createChatTurnEngine } = require('../src/chat/turn-engine');
+const { createChatTurnEngine } = require('../src/chat/turn-engine-host');
 const { createClaudeAdapter } = require('../src/native/runtime');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { createBackgroundHold } = require('../src/chat/background-hold');

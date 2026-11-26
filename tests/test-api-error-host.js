@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createApiErrorHost } = require('../src/chat/api-error-host');
 const { createApiErrorPolicyRuntime, detectErrorEnvelope, decideApiErrorPolicy } = require('../src/chat/api-error-policy');
-const { createChatTurnEngine } = require('../src/chat/turn-engine');
+const { createChatTurnEngine } = require('../src/chat/turn-engine-host');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 

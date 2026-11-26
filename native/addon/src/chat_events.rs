@@ -382,7 +382,7 @@ fn held_query_result<'a>(
 /// Node; until it arrives the row stays `saving` and no boundary is acked, so a
 /// failed write can be retried by the next boundary replay without double
 /// appending a row that already landed.
-fn commit_held_answer<'a>(
+pub(crate) fn commit_held_answer<'a>(
     anchor: LV<'a>,
     cs: LV<'a>,
     turn: LV<'a>,
@@ -1358,7 +1358,7 @@ fn apply_result<'a>(
 /// here: usage commit, turn count, `_resultSaved`, the synthetic result frame,
 /// the usage-limit poller and only then the original result event.
 #[allow(clippy::too_many_arguments)]
-fn commit_final_persist<'a>(
+pub(crate) fn commit_final_persist<'a>(
     anchor: LV<'a>,
     cs: LV<'a>,
     session: LV<'a>,

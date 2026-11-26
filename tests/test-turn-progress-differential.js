@@ -1,7 +1,7 @@
 'use strict';
 
 // Differential: one Rust owner (`RustTurnProgress` behind
-// src/chat/turn-progress.js) against the four frozen pre-migration JS modules
+// native/addon/src/turn_progress_facade.rs) against the four frozen pre-migration JS modules
 // (tests/helpers/legacy-*.js).
 //
 //   * both lanes run on the SAME virtual clock, in lock-step steps;
@@ -27,7 +27,7 @@ const legacyHeartbeat = require('./helpers/legacy-progress-heartbeat');
 const legacyTiming = require('./helpers/legacy-turn-timing');
 const legacyTimeline = require('./helpers/legacy-turn-timeline');
 const legacyProbe = require('./helpers/legacy-delivery-probe');
-const progress = require('../src/chat/turn-progress');
+const progress = require('../src/native/runtime').getTurnProgress();
 const { createStateOwner } = require('../src/state/owner');
 const { createChatSessions } = require('../src/chat/sessions');
 
@@ -974,28 +974,17 @@ test('intentional difference (bug 6): empty probe sessions are pruned, no cap sp
 // ── engine + host wiring ───────────────────────────────────────────────────
 
 test('bug 2: the streaming finalize keeps the heartbeat alive across a scheduled retry', () => {
-  const engine = read('src/chat/turn-engine.js');
-  const start = engine.indexOf('function finalizeStreamingTurn(');
-  assert.ok(start > 0, 'finalizeStreamingTurn exists');
-  const branch = engine.indexOf("if (plan.action === 'retry-api')", start);
-  assert.ok(branch > start, 'the retry branch exists');
-  // The branch ends right before the non-retry path's comment.
-  const branchEnd = engine.indexOf('\n    // Not a retry:', branch);
-  assert.ok(branchEnd > branch, 'the retry branch returns before the non-retry path');
-  // The old bug: a stop before the retry decision killed the retried turn.
-  const beforeRetry = engine.slice(start, branch);
-  assert.doesNotMatch(beforeRetry, /turnProgressHeartbeat\.stop\(/,
-    'no heartbeat stop before the retry decision');
-  // The blocked-retry catch is the one terminal stop inside the branch.
-  const insideBranch = engine.slice(branch, branchEnd);
-  const catchAt = insideBranch.indexOf('catch (error)');
-  assert.ok(catchAt > 0, 'the scheduled retry start is wrapped in try/catch');
-  const stopsInside = [...insideBranch.matchAll(/turnProgressHeartbeat\.stop\(/g)].map(match => match.index);
-  assert.equal(stopsInside.length, 1, 'exactly one terminal stop inside the retry branch');
-  assert.ok(stopsInside[0] > catchAt, 'the stop is in the blocked-retry catch, after the failure is known');
-  // The non-retry path stops the heartbeat before finalizing.
-  const afterBranch = engine.slice(branchEnd);
-  assert.match(afterBranch, /turnProgressHeartbeat\.stop\(sessionName, turn\.turnId\)/);
+  const source = read('native/addon/src/turn_engine/stream_finish/execution.rs');
+  const start = source.indexOf('fn execute<');
+  const retry = source.indexOf('is_string("retry-api")', start);
+  const scheduled = source.indexOf('return null(c);', retry);
+  const stop = source.indexOf('stop_heartbeat(p, c)?;', start);
+  assert.ok(start >= 0 && retry > start && scheduled > retry && stop > scheduled);
+  assert.match(source.slice(retry, scheduled), /c"scheduleOwnedRetry"/);
+  const blocked = source.slice(source.indexOf('fn retry_start'), start);
+  assert.doesNotMatch(blocked.slice(0, blocked.indexOf('Err(err)')), /stop_heartbeat/);
+  assert.match(blocked, /"retryBlocked"[\s\S]{0,420}stop_heartbeat\(p, c\)\?[\s\S]{0,220}execute_plan/);
+
 });
 
 test('wiring: one owner behind the heartbeat, the timeline, timing and probes', () => {
@@ -1068,7 +1057,7 @@ test('wiring source guard: server.js creates one owner and wires every reader', 
   assert.match(server, /turnTimeline: turnProgress\.timeline/);
   assert.match(server, /deliveryProbeRegistry: turnProgress\.deliveryProbe\(\)/);
   assert.match(server, /timelineCurrentStage: turnProgress\.timeline\.currentStage/);
-  const engine = read('src/chat/turn-engine.js');
+  const engine = read('src/chat/turn-engine-host.js');
   assert.match(engine, /turnTiming: injectedTurnTiming = null/);
   assert.match(engine, /turnTimeline: injectedTurnTimeline = null/);
   assert.match(engine, /deliveryProbeRegistry: injectedDeliveryProbeRegistry = null/);
@@ -1079,7 +1068,7 @@ test('wiring source guard: server.js creates one owner and wires every reader', 
       `legacy-${gone}.js frozen oracle`);
   }
   const sources = [
-    'server.js', 'src/chat/turn-engine.js', 'src/chat/host-runtime.js', 'src/chat/finalize-host.js',
+    'server.js', 'src/chat/turn-engine-host.js', 'src/chat/host-runtime.js', 'src/chat/finalize-host.js',
     'src/codex/usage.js', 'src/liveness/runtime.js',
   ].map(read).join('\n');
   assert.doesNotMatch(sources, /require\(['"]\.\/?(?:progress-heartbeat|turn-timing|turn-timeline|delivery-probe)['"]\)/);

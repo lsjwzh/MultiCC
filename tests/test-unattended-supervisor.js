@@ -711,6 +711,27 @@ test('boot re-arms a persisted retry and fires promptly when it is already due',
   assert.equal(f.host.get('s1').retryAt, null);
 });
 
+test('恢复入队明确失败时保留到期标记，再次投递复用同一幂等键', async () => {
+  for (const refusal of [false, { ok: false, code: 'scheduler_not_ready' }]) {
+    const f = harness({ clock: 2_000_000, injectResult: refusal });
+    await f.arm();
+    const retryAt = f.clock();
+    Object.assign(f.records.get('s1').unattended, { retryAt, retryCategory: 'fault' });
+    f.host.rearmTimer('s1');
+    assert.equal(f.fireDueTimers(), 1);
+    await tick();
+    assert.equal(f.host.get('s1').retryAt, retryAt);
+    f.advance(1000);
+    assert.equal(f.fireDueTimers(), 1);
+    await tick();
+    assert.equal(f.calls.injectOptions.length, 2);
+    const [first, second] = f.calls.injectOptions;
+    assert.ok(first.options.idempotencyKey);
+    assert.equal(second.options.idempotencyKey, first.options.idempotencyKey);
+    f.host.shutdown();
+  }
+});
+
 test('resume resets the fault streak and drops the pending retry', async () => {
   const f = harness({ clock: 1_000_000 });
   await f.arm({ maxDurationMinutes: 60 });

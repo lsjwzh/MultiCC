@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { createChatTurnEngine } = require('../../src/chat/turn-engine');
+const { createChatTurnEngine } = require('../../src/chat/turn-engine-host');
 const { createClaudeAdapter } = require('../../src/native/runtime');
 const { createTestChatHub } = require('./native-chat-hub');
 

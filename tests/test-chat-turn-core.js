@@ -41,7 +41,7 @@ const {
   normalizeClaudeToolResultContent,
   recoverDispatchFromHistory,
   deriveCloseTurnFacts,
-} = require('../src/chat/turn-engine');
+} = require('../src/chat/turn-engine-host');
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 
 function runtimeRouteProof(sessionId, turnId) {
@@ -107,6 +107,34 @@ test('dispatch recovery fails closed when the latest lineage-owned turn is incom
     { role: 'user', content: 'unrelated' },
     { role: 'assistant', content: 'done' },
   ], operation), null);
+});
+
+test('历史恢复保留稀疏记录、后续轮次边界及 UTF-16 尾部', () => {
+  const request = {};
+  const history = Array(500);
+  const summary = '🙂' + '甲'.repeat(3999);
+  history[20] = { role: 'user', clientMsgId: request, turnId: 9 };
+  history[40] = { role: 'assistant', partial: true, content: { toString: () => summary } };
+  history[400] = { role: 'user', turnId: '9' };
+  history[401] = { role: 'assistant', content: '另一次回复' };
+  assert.deepEqual(recoverDispatchFromHistory(history, { id: '调度', requestOutboxId: request }),
+    { completed: false, lastOutput: summary.slice(-4000) });
+});
+
+test('退出诊断保留持久化结果、信号优先级和宿主对象身份', () => {
+  const outcome = {};
+  const cs = { cli: 'codex', _resultSaved: true, currentAssistantText: '🙂', currentToolCalls: [], clients: new Set([1]) };
+  const options = { code: null, pendingStreamError: '断开', completionOutcome: outcome,
+    pendingTransportError: '甲'.repeat(199) + '🙂', isRetry: 1 };
+  const facts = deriveCloseTurnFacts(cs, { resultDurable: false }, options);
+  assert.equal(facts.kind, 'normal');
+  assert.equal(facts.recoveredCodexDisconnect, true);
+  assert.equal(facts.diag.resultSaved, false);
+  assert.equal(facts.diag.completion, outcome);
+  assert.equal(facts.diag.gotText, 2);
+  assert.equal(facts.diag.pendingTransportError, options.pendingTransportError.slice(0, 200));
+  assert.equal(deriveCloseTurnFacts(cs, {}, { ...options, signal: 'SIGTERM', killReason: '取消' }).kind, 'killed(取消)');
+  assert.equal(deriveCloseTurnFacts(cs, {}, { code: '0' }).kind, 'nonzero_exit');
 });
 
 test('Claude-compatible content arrays collapse before capability redaction and forwarding', () => {
@@ -209,11 +237,28 @@ test('provider-cause evidence outranks the proxy generic status at turn close', 
   // error event names the cause ("You have exceeded the 5-hour usage quota…").
   // Both close paths must hand the specific record to the policy — reading the
   // proxy record first made every quota wall a retryable rate limit.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  assert.equal((source.match(/boundaryErrorEnvelope\s*\|\| (?:opencodeProcessError\([^\n]+?\) \|\| )?runner\.apiErrorRaw \|\| proxyFailure/g) || []).length, 2,
-    'both the process and stream close paths must prefer provider-owned evidence over the proxy status');
-  assert.equal(/proxyFailure \|\| boundaryErrorEnvelope/.test(source), false,
-    'the generic proxy record must never shadow the provider diagnosis');
+  const processPlan = fs.readFileSync('native/addon/src/turn_process_close.rs', 'utf8');
+  const processSpecific = processPlan.indexOf('else if boundary.truthy()?');
+  const processFallback = processPlan.indexOf('either(run.get(c"apiErrorRaw")?', processSpecific);
+  assert.ok(processSpecific >= 0 && processFallback > processSpecific);
+  assert.ok(processPlan.indexOf('either(proxy,', processFallback) > processFallback);
+  const proxyFailure = { source: 'proxy_response', httpStatus: 429 };
+  const cliEvent = { source: 'codex_event', message: 'quota exceeded' };
+  const boundary = { source: 'codex_event', message: 'quota reached at turn close' };
+  const classified = [];
+  const stop = new Error('classification observed');
+  const stream = require('../src/native/runtime').getNative().chatStreamFinishApi({
+    turnTimeline: {}, attemptRuntime: { snapshot: () => ({}), proxyFailure: () => proxyFailure },
+    turnHasSideEffects: () => false, meaningfulTurnOutput: () => false,
+    evaluateTurnApiError({ raw }) { classified.push(raw); throw stop; },
+  });
+  for (const [envelope, apiErrorRaw] of [[boundary, cliEvent], [null, cliEvent], [null, null]]) {
+    assert.throws(() => stream.execute({
+      sessionName: 'session', cs: { cli: 'codex', currentToolCalls: [] }, persisted: { cli: 'codex' },
+      turn: {}, runner: { apiErrorRaw }, autoTurn: {}, envelope,
+    }), error => error === stop);
+  }
+  assert.deepEqual(classified, [boundary, cliEvent, proxyFailure]);
 
   // The policy then classifies the specific record: a quota wall is never a
   // short retry, with or without the relay status riding along.
@@ -228,7 +273,7 @@ test('provider-cause evidence outranks the proxy generic status at turn close', 
 });
 
 test('attempt semantic DLP runs before Claude and adapter state mutation', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   const claudeStart = source.indexOf('function applyClaudeChatEvent(');
   const claudeEnd = source.indexOf('function applyAdapterChatEvent(', claudeStart);
   const claudeBody = source.slice(claudeStart, claudeEnd);
@@ -542,12 +587,11 @@ test('a new Claude attempt is rejected before persistence while background work 
   assert.deepEqual(blocked.effects, []);
   assert.equal(blocked.trace.includes('persistence-plan'), false);
 
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  const admissionStart = source.indexOf('const admission = planTurnAdmission');
-  const turnStart = source.indexOf('const turnId =', admissionStart);
-  const body = source.slice(admissionStart, turnStart);
-  assert.match(body, /backgroundWorkActive:[\s\S]*hasProcessBackgroundTasks\(sessionName\)/);
-  assert.match(body, /background-work-active[\s\S]*本消息尚未执行/);
+  const claim = fs.readFileSync('native/addon/src/turn_engine/claim.rs', 'utf8');
+  assert.match(claim, /background: proxy[\s\S]{0,180}c"hasProcessBackgroundTasks"/);
+  const refused = claim.indexOf('本消息尚未执行');
+  const allocate = claim.indexOf('let turn_id =');
+  assert.ok(refused >= 0 && claim.indexOf('if decision != Admission::Prepare', refused) < allocate && allocate > refused);
 });
 
 test('a prior network failure never gates a later continuation or user request', () => {
@@ -691,56 +735,26 @@ test('preparation lease settles after runner handoff and releases every failure 
 });
 
 test('production cutover keeps duplicate, proof and runner ordering explicit', () => {
-  // runChatTurn now lives in src/chat/turn-engine.js; the ordering assertions scan
-  // the extracted engine body up to the next engine function's banner comment.
-  // The boundary starts at admitRunChatTurn (the pre-flight gate chain extracted
-  // from runChatTurn's head), so both the admission gates and the turn body stay
-  // inside the scanned region.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  const start = source.indexOf('function admitRunChatTurn(sessionName, text, opts)');
-  const end = source.indexOf('// ── Wait injector: continue a session', start);
-  assert.ok(start >= 0 && end > start, 'runChatTurn engine boundary must exist');
-  const body = source.slice(start, end);
-  const at = (needle) => {
-    const index = body.indexOf(needle);
-    assert.ok(index >= 0, `production turn boundary must include ${needle}`);
-    return index;
-  };
-
-  const normalized = at('normalizeTurnRequest({');
-  // Native-history proof is now handed to the kernel inline as the admission
-  // input; a freshly reserved id may never stand in for it.
-  assert.match(body, /hasNativeSession: hasNativeHistory\(persisted\)/);
-  assert.doesNotMatch(body, /willAllocateClaudeNativeSession/);
-  const admission = at('planTurnAdmission(turnRequest');
-  const duplicateReturn = at("admission.decision === 'duplicate'");
-  const nativeAllocation = at('persisted.cliSessionId = crypto.randomUUID()');
-  const claim = at('chatTurnPreparationRuntime.claim(');
-  // P0-2: a re-executed delivery skips the duplicate append, so the canonical
-  // shape is a conditional awaited `userMessageSaved = await appendChatMessage(`.
-  const append = at('userMessageSaved = await appendChatMessage(');
-  const durable = at('createDurableMessageProof(turnRequest');
-  const route = at('const initialInvocation = prepareInvocation(');
-  const usageAttribution = at('bindTurnUsageAttribution(turn, initialInvocation.baseUsageAttribution)');
-  const guard = at('evaluateSpawnGuard(turnRequest');
-  const authorize = at('chatTurnPreparationRuntime.start(');
-  const claudeRunner = at('const accepted = runChatTurnStreaming(');
-  const codexRunner = at('cs.claudeProc = spawnChat(initialInvocation, false)');
-  const failureRelease = at('if (preparationOpen)');
-
-  assert.ok(normalized < admission);
-  assert.ok(admission < duplicateReturn && duplicateReturn < nativeAllocation,
-    'duplicate delivery must not allocate or mutate a native session');
-  assert.ok(duplicateReturn < claim);
-  assert.doesNotMatch(body, /New user_message while claude pid=|interrupting previous/,
-    'the canonical turn boundary must reject busy races instead of interrupting an active turn');
-  assert.ok(claim < append && append < durable && durable < route);
-  assert.ok(route < usageAttribution && usageAttribution < guard,
-    'provider/model/cli attribution is frozen after route resolution and before authorization');
-  assert.ok(usageAttribution < authorize);
-  assert.ok(guard < authorize);
-  assert.ok(authorize < claudeRunner && authorize < codexRunner);
-  assert.ok(codexRunner < failureRelease, 'finally must release a failed preparation lease');
+  const read = (name) => fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine', name + '.rs'), 'utf8');
+  function ordered(body, ...markers) {
+    let last = -1;
+    for (const marker of markers) {
+      const index = body.indexOf(marker, last + 1);
+      assert.ok(index > last, marker);
+      last = index;
+    }
+  }
+  const claim = read('claim');
+  ordered(claim, 'duplicate_seen:', 'Admission::Duplicate', 'issueTurnId', 'createTurnLifecycle', 'c"claim"');
+  const execution = read('execution');
+  ordered(execution, 'task_start::select_task', 'claim::claim', 'preparation::start');
+  ordered(execution, 'task_start::prepare', 'durableMessageProof', 'invocation::begin');
+  const invocation = read('invocation').split("fn route<'a>")[1];
+  ordered(invocation, 'baseUsageAttribution', 'markProviderRouteResolved', 'evaluateSpawnGuard', 'bindTurn', 'c"start"', 'runChatTurnStreaming');
+  ordered(execution, 'invocation::route', 'spawnProcessTurn', 'preparation::handed_off');
+  const preparing = read('task_start/preparation');
+  ordered(preparing, 'randomUUID', 'appendChatMessage', 'createDurableMessageProof');
+  assert.match(read('admission_finish'), /hasNativeHistory/);
   const invocationSource = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'addon', 'src', 'provider_invocation.rs'), 'utf8');
   assert.match(invocationSource, /method\(router, c"resolveSpawnEnv", &\[session, overrides\]\)/,
@@ -748,8 +762,8 @@ test('production cutover keeps duplicate, proof and runner ordering explicit', (
   assert.match(invocationSource,
     /let route_overrides = object\([\s\S]*?\(c"providerId", binding\.get\(c"providerId"\)\?\)[\s\S]*?\(c"model", selected\)[\s\S]*?\.freeze\(\)\?/,
     'the child env must rebuild from the same provider and raw selected model, not a qualified wire model');
-  assert.match(body, /errorCategory: 'proxy_config', reasonCode: 'proxy_config_failed'/,
-    'a proxy materialization failure must terminalize its physical attempt before retry exits');
+  const process = read('process_runner');
+  assert.match(process, /proxy_config_failed/);
 });
 
 const frozenRetryPolicy = require('./helpers/frozen-file-batch24/retry-policy');
@@ -1347,7 +1361,7 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   // concatenated host + engine source so host-only negatives and engine positives
   // both resolve.
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8')
-    + '\n' + fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+    + '\n' + fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   assert.equal(source.includes('cs._killReason'), false, 'kill reason must not be session-global');
   assert.doesNotMatch(source, /function (?:persistFinalAssistantResult|recordDurableTurnUsage|runDurablePostTurn)\(/,
     'host lifecycle composition must live outside the God file');
@@ -1360,10 +1374,13 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     'chat_finalize_execution.rs'), 'utf8');
   assert.match(finalizeNativeSource, /\.port\(\s*c"persistAssistant",[\s\S]{0,130}\.is_true\(\)\?/,
     '原生收尾执行器必须以真实历史写入返回值确认持久化');
-  assert.match(source, /persistAssistant\(context, append\) \{[\s\S]{0,120}persistFinalAssistantResult\(/,
-    'server composition must inject the authoritative assistant writer');
-  assert.match(source, /context\.runner\.pendingUsage[\s\S]{0,180}\{ usage: context\.runner\.pendingUsage \}/,
-    'interrupted/error assistant checkpoints must persist measured token usage');
+  const finishDir = path.join(__dirname, '../native/addon/src/turn_engine/stream_finish');
+  const streamPorts = fs.readFileSync(path.join(finishDir, 'ports.rs'), 'utf8');
+  const streamPlan = fs.readFileSync(finishDir + '.rs', 'utf8');
+  const streamEffects = fs.readFileSync(path.join(finishDir, 'execution.rs'), 'utf8');
+  assert.match(streamPorts, /"persistAssistant"[\s\S]*persist\(p, a\[0\], a\[1\]\)/);
+  assert.match(streamPorts, /msg\.set\(c"usage", prop\(prop\(c, c"runner"\)\?, c"pendingUsage"\)/);
+  assert.match(streamPorts, /c"persistFinalAssistantResult"/);
   // The durable-result branch is native and two-phase: the engine starts the
   // write, awaits the durable verdict and hands it back to the Rust commit entry.
   assert.match(source, /requestFinalPersist: \(sessionName, cs, turn, runner, message, options, forward, wasMapped, evt\) => requestFinalPersist\(/);
@@ -1371,23 +1388,24 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   const nativeEvents = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
   assert.match(nativeEvents, /if durable \{[\s\S]{0,600}cs\.assign\(c"_resultSaved"/);
-  assert.match(source, /runPostTurn\(context, entry\) \{[\s\S]{0,160}runDurablePostTurn\(/);
+  assert.match(streamPorts, /fn post[\s\S]{0,220}c"runDurablePostTurn"/);
   assert.match(source, /isCurrentTurnRunner\(cs, turn, runner\)/);
-  assert.equal((source.match(/runnerHandedOff = true;/g) || []).length, 2,
-    'both streaming and process runners must be marked handed off before lease release');
-  const catchAt = source.indexOf('if (runnerHandedOff) {', source.indexOf('function runChatTurn('));
-  const falsePreparationErrorAt = source.indexOf('turn preparation failed before runner handoff', catchAt);
-  assert.ok(catchAt >= 0 && falsePreparationErrorAt > catchAt,
-    'a handed-off runner must bypass the pre-runner failure response');
+  const launch = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/invocation.rs'), 'utf8');
+  const execution = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/execution.rs'), 'utf8');
+  assert.match(launch, /preparation::handed_off/);
+  assert.match(execution, /preparation::handed_off/);
   assert.equal((finalizeNativeSource.match(/回复已生成但未能持久化，已停止回流和后续动作。/g) || []).length, 1,
     'stream and process finalizers must share one durable-result failure effect');
   assert.equal(source.includes('turn.resultEvent'), false, 'result events must be runner-owned');
-  assert.equal((source.match(/sameDurablePartial: hasMatchingPartialCheckpoint\(runner,/g) || []).length, 2,
-    'both runner paths must pass checkpoint evidence into the shared planner');
-  assert.ok((source.match(/planTurnFinalization\(\{/g) || []).length >= 2,
-    'process and stream paths, including blocked retries, must use the pure finalization plan');
-  assert.equal((source.match(/turnFinalizationExecutor\.execute\((?:finalizePlan|plan),/g) || []).length, 2,
-    'process and stream paths must both use the shared host effect executor');
+  const closePlan = fs.readFileSync('native/addon/src/turn_process_close.rs', 'utf8');
+  const closeEffects = fs.readFileSync('native/addon/src/turn_process_close/execute.rs', 'utf8');
+  assert.match(closePlan, /chat_has_partial_checkpoint\(/);
+  assert.match(closePlan, /"sameDurablePartial", flag\(p, same\)/);
+  assert.match(closePlan, /frozen\(\s*"plan"/);
+  assert.match(closeEffects, /c"turnFinalizationExecutor"[\s\S]{0,110}c"execute"[\s\S]{0,80}self\.plan/);
+  assert.match(streamPlan, /"sameDurablePartial",[\s\S]{0,210}chat_has_partial_checkpoint\([\s\S]{0,200}arg\(runner\),\s*arg\(checkpoint\)/);
+  assert.match(streamPlan, /frozen\(c, "plan", input/);
+  assert.match(streamEffects, /call\(p\.get\(c"executor"\)\?, c"execute", &\[plan, context\]\)/);
   assert.match(source, /createChatHostRuntime\(\{[\s\S]{0,500}persistUsage: accumulateTokenUsage/,
     'production host must inject the authoritative usage writer into the coordinator');
   const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-coordinator.js'), 'utf8');
@@ -1456,7 +1474,7 @@ test('chat core modules import no runtime I/O dependencies', () => {
 });
 
 test('hard turn-control paths terminalize the provider attempt before teardown or history mutation', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   // Resume-mismatch teardown is a native decision now; the JS module only wires
   // the attempt and process effects as ports.
   const rust = fs.readFileSync(
@@ -1477,19 +1495,18 @@ test('hard turn-control paths terminalize the provider attempt before teardown o
 
   const { getNative } = require('../src/native/runtime');
   assert.equal(getNative().chatWsCommand('clear_history', '', false, false, false, false), 'clearHistory');
-  const clearStart = source.indexOf("if (command === 'clearHistory')");
-  const clearEnd = source.indexOf("if (command === 'message')", clearStart);
-  const clearBody = source.slice(clearStart, clearEnd);
-  assert.ok(clearStart >= 0 && clearEnd > clearStart);
-  assert.match(clearBody, /clearHistory\(sessionName, msg, cs\)/);
-  assert.doesNotMatch(clearBody, /cancelActiveTurn|killReason|hasLiveBackgroundTasks/,
-    'display clearing must not cancel active work or wait for background tasks');
-  const proxyStart = source.indexOf('const proxyRequired = providers.codexProxyConfigRequired(');
-  const proxyEnd = source.indexOf('} catch (error)', proxyStart);
-  assert.ok(proxyStart >= 0 && proxyEnd > proxyStart);
-  const proxyBody = source.slice(proxyStart, proxyEnd);
-  assert.match(proxyBody, /const proxyApplied = providers\.applyCodexProxyConfig\([\s\S]*?providers\.assertCodexProxyConfigApplied\(\{ required: proxyRequired, applied: proxyApplied \}\)/,
-    'a routed Codex attempt must apply the explicit route policy before leaving the guarded setup block');
+  const msg = { type: 'clear_history' }, cs = {}, calls = [];
+  const ports = { getChatHistoryRuntime: () => ({ clearHistory: (...args) => calls.push(args) }) };
+  getNative().chatHandleSocketMessage(ports, {}, 's', null, {}, cs, msg);
+  assert.deepEqual(calls, [['s', msg, cs]]);
+  assert.equal(calls[0][2], cs);
+  const spawn = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/process_runner.rs'), 'utf8');
+  const required = spawn.indexOf('let required = st.service(c"providers", c"codexProxyConfigRequired"');
+  const applied = spawn.indexOf('let applied = st.service(c"providers", c"applyCodexProxyConfig"', required);
+  const checked = spawn.indexOf('c"assertCodexProxyConfigApplied"', applied);
+  assert.ok(required >= 0 && applied > required && checked > applied);
+  assert.match(spawn.slice(checked, checked + 180), /\("required", required\), \("applied", applied\)/);
+
 });
 
 test('tool timing stamps ride in the persisted tools array (replay upgrade)', () => {
@@ -1524,7 +1541,7 @@ test('reasoning spans are measured so think time reaches the wall-clock', () => 
   );
   assert.match(source, /tool\.assign\(c"endedAt", number\(anchor, now\(anchor\)\?\)\?\)\?;/);
 
-  const { closeOpenThinkingTool } = require(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'));
+  const { closeOpenThinkingTool } = require(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'));
 
   // A lane that never emits the closing frame still gets a measured span when
   // the turn's result lands — reasoning cannot outlive the turn.
@@ -1553,20 +1570,18 @@ test('reasoning spans are measured so think time reaches the wall-clock', () => 
 });
 
 test('a turn refreshes a stale chat cwd before spawning the CLI', () => {
-  const source = fs.readFileSync('src/chat/turn-engine.js', 'utf8');
-  const start = source.indexOf('function runChatTurn(sessionName, text, opts = {})');
-  const end = source.indexOf('function runChatTurnStreaming(', start);
-  assert.ok(start >= 0 && end > start);
-  const body = source.slice(start, end);
-  const created = body.indexOf('if (!cs) cs = restoreLiveChatSession(sessionName');
-  const refreshed = body.indexOf("cs.cwd = cwdForSession(persisted)");
+  const body = fs.readFileSync('native/addon/src/turn_engine/task_start/preparation.rs', 'utf8');
+  const created = body.indexOf('c"restoreLiveChatSession"');
+  const refreshed = body.indexOf('cs.assign(c"cwd"');
   assert.ok(created >= 0 && refreshed > created,
     'the cached cwd must be re-resolved after the chat state exists');
-  const restoreStart = source.indexOf('function restoreLiveChatSession(');
-  const restoreEnd = source.indexOf('async function handleChatWs(', restoreStart);
-  assert.ok(restoreStart >= 0 && restoreEnd > restoreStart);
-  assert.match(source.slice(restoreStart, restoreEnd), /chatSessions\.set\(sessionName, state\);\s*return state;/,
-    'the restore helper must install the same state that the turn refreshes');
+  const sessions = new Map(), clients = new Set(), history = [{ role: 'assistant' }];
+  const ports = { chatSessions: sessions, replay: { clientsOf: () => clients },
+    taskContextHost: { restore: value => { assert.equal(value, history); return 'task'; } } };
+  const restored = require('../src/native/runtime').getNative().chatRestoreLiveSession(ports, 's', 'codex', '/work', history);
+  assert.equal(restored, sessions.get('s'));
+  assert.equal(restored.clients, clients);
+  assert.equal(restored._currentTaskId, 'task');
   // The CLI-switch path does the same before reusing the chat state.
   const switchSource = fs.readFileSync('src/cli/switch-runtime.js', 'utf8');
   assert.match(switchSource, /chat\.cwd = cwd/);
@@ -1746,58 +1761,42 @@ test('Rust turn mutations keep strict setters, reads, partial writes and reentry
 });
 
 test('已执行或未知的重复投递跳过配置，未启动的持久化投递重新过配置门', async () => {
-  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
-  const start = source.indexOf('    function afterDeliveryProbe(replay) {');
-  const end = source.indexOf('    function finishConfiguration(replay)', start);
-  assert.ok(start > 0 && end > start, 'the durable-delivery gate still precedes configuration');
-  // Run the real post-probe step with stubbed collaborators: refusal comes back
-  // as { blocked: true }, admission as the finishConfiguration() marker.
-  const step = new Function('replay', 'deps', 'sessionName', 'opts', 'text', 'finishConfiguration',
-    'delivery', 'runnerDeliveryHandoff', 'shouldReexecutePersistedDelivery',
-    source.slice(start, end) + '    return afterDeliveryProbe(replay);');
-  const { shouldReexecutePersistedDelivery } = require('../src/chat/turn-progress');
-  const admitted = () => 'admitted';
-  const invoke = (replay, deps, probe, finish = admitted) => step(replay, deps, 's', {}, 't', finish,
-    'delivery-1', (session, identity) => {
-      assert.equal(session, 's');
-      assert.equal(identity, 'delivery-1');
-      return probe;
-    }, shouldReexecutePersistedDelivery);
+  const native = require('../src/native/runtime').getNative();
   const blocked = { blocked: true, code: 'turn_configuration_pending' };
-  for (const probe of [null, { known: false }, { known: true, handedOff: true }]) {
-    for (const verdict of [true, false, undefined]) {
-      let called = 0;
-      const deps = { applyPendingConfiguration: () => { called++; return verdict; } };
-      assert.equal(invoke(true, deps, probe), 'admitted');
-      assert.equal(called, 0, '已执行或无法确认的重复不能消耗新配置');
-    }
+  const delegated = { delegated: 'admitted' };
+  function gate(replay, deps, probe) {
+    const driver = native.chatTurnExecution({
+      deps, persistedSessions: new Map([['s', {}]]),
+      getChatHistoryService: () => ({ hasPersistedDelivery: () => replay }),
+      runnerDeliveryHandoff(session, identity) {
+        assert.equal(session, 's');
+        assert.equal(identity, 'delivery-1');
+        return probe;
+      },
+      getExperimentalTuiChatRuntime: () => ({ owns: () => true, admit: () => 'admitted' }),
+    });
+    return driver.gate('s', 'text', { deliveryId: 'delivery-1' });
   }
-  assert.deepEqual(invoke(false, { applyPendingConfiguration: () => false }, null), blocked);
-  assert.equal(invoke(false, { applyPendingConfiguration: () => true }, null), 'admitted');
-  assert.equal(invoke(false, {}, null), 'admitted');
-
-  const preHandoff = { known: true, handedOff: false, turnId: 'failed-preparation' };
-  let attempts = 0, starts = 0;
+  for (const probe of [null, { known: false }, { known: true, handedOff: true }]) {
+    let called = 0;
+    assert.deepEqual(await gate(true, { applyPendingConfiguration() { called++; return false; } }, probe), delegated);
+    assert.equal(called, 0);
+  }
+  assert.deepEqual(await gate(false, { applyPendingConfiguration: () => false }), blocked);
+  assert.deepEqual(await gate(false, { applyPendingConfiguration: () => true }), delegated);
+  assert.deepEqual(await gate(false, {}), delegated);
+  let attempts = 0;
   const deps = { applyPendingConfiguration: async () => ++attempts > 1 };
-  const finish = persisted => { assert.equal(persisted, true); starts++; return 'target-cli'; };
-  assert.deepEqual(await invoke(true, deps, preHandoff, finish), blocked);
-  assert.equal(starts, 0, '切换未落实时不能启动旧车道');
-  assert.equal(await invoke(true, deps, preHandoff, finish), 'target-cli');
-  assert.equal(attempts, 2);
-  assert.equal(starts, 1);
-  const failure = Error('配置准备失败');
-  await assert.rejects(invoke(true, { applyPendingConfiguration: async () => { throw failure; } },
-    preHandoff), error => error === failure);
+  const probe = { known: true, handedOff: false };
+  assert.deepEqual(await gate(true, deps, probe), blocked);
+  assert.deepEqual(await gate(true, deps, probe), delegated);
+  const error = Error('配置准备失败');
+  await assert.rejects(gate(true, { applyPendingConfiguration: async () => { throw error; } }, probe), e => e === error);
 });
 
 test('配置等待使用投递背压，其他拒绝保持原有处理', async () => {
-  const source = fs.readFileSync(path.join(__dirname, '../src/chat/turn-engine.js'), 'utf8');
-  const start = source.indexOf('  async function runAdmittedChatTurn(');
-  const end = source.indexOf("    if ('delegated' in admissionGate)", start);
-  assert.ok(start > 0 && end > start);
-  const run = new Function('getWorkspaceAdmission', 'logger',
-    source.slice(start, end) + '\n  }\n return runAdmittedChatTurn;')(
-    () => null, { warn() {} });
+  const driver = require('../src/native/runtime').getNative().chatTurnExecution({ logger: { warn() {} } });
+  const run = async (session, _text, opts, gate) => driver.begin(session, opts, gate).result;
   await assert.rejects(run('s', 'text', { deliveryId: 'delivery-1' },
     { blocked: true, code: 'turn_configuration_pending' }),
   error => error.code === 'turn_configuration_pending' && error.backpressure === true);
@@ -1808,32 +1807,34 @@ test('配置等待使用投递背压，其他拒绝保持原有处理', async ()
   error => error.code === 'task_archived' && error.retryable === false);
 });
 
-test('a preparation failure after turn start settles through the one host entry', () => {
-  // Composition failure, a rejected streaming runner, a rejected process spawn
-  // and the pre-handoff catch all leave a persisted P turn with an in-flight
-  // identity but no runner to finalize it. Each exit must settle once through
-  // the same cancel entry instead of waiting for the watchdog to declare a
-  // phantom dead turn. The decision (host interruption => fault continuation)
-  // stays in Rust (`preparation_failed` in HOST_CANCEL_SOURCES).
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
-  const start = source.indexOf('function runChatTurn(sessionName, text, opts = {})');
-  const end = source.indexOf('function runChatTurnStreaming(', start);
-  assert.ok(start >= 0 && end > start);
-  const body = source.slice(start, end);
-
-  assert.match(body,
-    /const settlePreparationFailure = async \(\) => \{[\s\S]{0,400}?!preparationStateActivated\) return;[\s\S]{0,600}?preparationSettled = true;[\s\S]{0,900}?host\.cancelActiveTurn\(sessionName, \{[\s\S]{0,200}?source: 'preparation_failed'/,
-    'the settle helper is idempotent and reports the host-cancel fact');
-  assert.equal((body.match(/await settlePreparationFailure\(\);/g) || []).length, 4,
-    'every post-start failure exit settles (compose, stream reject, spawn reject, catch)');
-  // A failure before the P write has no turn to settle: the guard keeps the
-  // helper out of the message-not-durable / proof / user-input exits.
-  const activated = body.indexOf('preparationStateActivated = true;');
-  const firstCall = body.indexOf('await settlePreparationFailure();');
-  assert.ok(activated >= 0 && firstCall > activated,
-    'nothing is settled before the turn identity exists');
+test('准备失败只对已经激活的回合执行一次取消，并按运行器交接状态归还租约', async () => {
+  const calls = [];
+  const driver = require('../src/native/runtime').getNative().chatTurnExecution({
+    getSessionWorkHost: () => ({ cancelActiveTurn: (...args) => calls.push(['cancel', ...args]) }),
+    logger: { warn() {}, error() {} },
+    recordDeliveryProbe: (...args) => calls.push(['probe', ...args]),
+    turnProgressHeartbeat: { stop: () => calls.push(['stop']) },
+    chatTurnPreparationRuntime: { settle: () => calls.push(['settle']) },
+    turnTiming: { abort: () => calls.push(['abort']), drop: () => calls.push(['drop']) },
+  });
+  const preparation = { session: 's', turnId: 't', activated: false, open: true, failure: 'preparation-failed' };
+  const context = { cs: { _activeTurn: {} }, preparation };
+  await driver.settle(context);
+  assert.deepEqual(calls, []);
+  preparation.activated = true;
+  await driver.settle(context);
+  await driver.settle(context);
+  assert.deepEqual(calls, [['cancel', 's', { source: 'preparation_failed', reason: preparation.failure, killReason: preparation.failure }]]);
+  assert.equal(context.cs._activeTurn, null);
+  driver.release(context);
+  assert.deepEqual(calls.slice(1).map(call => call[0]), ['probe', 'stop', 'settle', 'abort', 'drop']);
+  calls.length = 0;
+  preparation.runnerHandedOff = true;
+  assert.equal(driver.failed(context, Error('after handoff')), true);
+  driver.release(context);
+  assert.deepEqual(calls.map(call => call[0]), ['probe']);
+  assert.equal(calls[0].at(-1).handedOff, true);
 });
-
 
 // The close handler used to derive hasTurnOutput before awaiting the buffered
 // result's durable append. A Codex transport disconnect followed by a result
@@ -1860,9 +1861,9 @@ test('close facts judge a recovered Codex disconnect only after the durable appe
   assert.equal(after.kind, 'normal');
   assert.equal(after.diag.resultSaved, true);
   // Structural guard: the derivation must sit after the awaited durable commit.
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   const commit = source.indexOf('await commitAdapterResult(');
-  const derive = source.indexOf('const { hasTurnOutput, recoveredCodexDisconnect, diag, kind } = deriveCloseTurnFacts');
+  const derive = source.indexOf('native.chatFinishProcessClose(closePorts, closeContext)');
   assert.ok(commit >= 0 && derive > commit, 'close facts are derived after the pending append settles');
 });
 
@@ -1888,4 +1889,80 @@ test('chat WS share gate matches the retired policy and detects unsafe mutations
   for (const mutation of mutations) {
     assert.ok(corpus.some(input => mutation(input) !== reference(input.type, input.permission)), 'corpus catches mutation');
   }
+});
+
+test('常驻发送使用本轮的运行器、时间线和原生会话；被替换后忽略迟到的结束事件', () => {
+  const native = require('../src/native/runtime').getNative();
+  const cs = { cli: 'claude', cwd: '/work', chatTurnCount: 1 };
+  const persisted = { cli: 'claude', dirId: 'd' };
+  const provider = { name: 'claude' }, turn = { turnId: 't' };
+  const trace = [];
+  let config, onEvent, onTiming, hooks;
+  const ports = {
+    env: {}, crypto: { randomUUID: () => 'native-id', randomBytes: () => Buffer.alloc(6, 1) },
+    getPort: () => 30, getClaudeOfficialViaProxy: () => false,
+    providerRouterRuntime: { buildChildEnv: (_, __, env) => ({ env }) },
+    providers: { prepareResidentChildEnv() {}, settingsOverrideFor: () => '/settings' },
+    secretsVault: { applyEnvOverlay() {} }, claudeSettingsExtra: () => ({}),
+    rememberActiveCliState() {}, savePersistedSessionsBestEffort: reason => trace.push(reason),
+    spawnContractOf: () => 'digest',
+    chatStream: {
+      ensure(_, options) { config = options; }, status: () => ({ pid: 41 }),
+      send(_, payload, event, options) { assert.equal(payload, 'prompt'); onEvent = event; onTiming = options.onTiming; return 9; },
+    },
+    createAdapterCompletion: () => ({}), createRunnerOwnership: (_, spec) => spec,
+    isCurrentTurnRunner: (chat, activeTurn, runner) => chat === cs && chat._activeTurn === activeTurn && chat._activeRunner === runner,
+    attemptRuntime: { acceptEvent: () => true }, applyAdapterChatEvent: () => trace.push('event'),
+    turnTiming: { markFirstByte: () => trace.push('byte'), markSent: () => trace.push('sent'), markSpawned: () => trace.push('spawned') },
+    managedContext: { contextSent: () => trace.push('context') }, getWorkspaceAdmission: () => null,
+    finalizeCompletionStream(pending, callbacks) { assert.equal(pending, 9); hooks = callbacks; },
+    logger: { error: event => trace.push(event) },
+  };
+  const prepared = { invocation: { cmd: 'claude', args: ['a'], payload: 'prompt', sdkOptions: {} },
+    binding: { providerId: 'p' }, attempt: { routeAttemptId: 'r' }, invocationEnvelope: { historyHandle: { isFirstTurn: true } } };
+  assert.equal(native.chatRunStreaming(ports, { sessionName: 's', cs, persisted, prepared, provider, turn }), true);
+  assert.deepEqual(config.baseArgs, ['a', '--settings', '/settings']);
+  assert.equal(config.resume, false);
+  assert.equal(config.sessionId, 'native-id');
+  assert.equal(cs._activeRunner, hooks.runner);
+  config.onNewSessionId('captured');
+  assert.equal(persisted.cliSessionId, 'captured');
+  onTiming('spawned'); onTiming('sent'); onEvent({});
+  const replacement = cs._activeRunner = {};
+  onEvent({});
+  hooks.onFinalizeError(new Error('旧轮次'));
+  assert.equal(cs._activeRunner, replacement);
+  assert.deepEqual(trace, ['runtime.streaming-session-id-allocate', 'runtime.streaming-session-id-capture',
+    'spawned', 'sent', 'context', 'byte', 'event', 'chat_stream_finalize_failed']);
+});
+
+test('子进程启动后若接线异常，保留写租约直到进程组结束，并把原异常交给调用方', async () => {
+  const native = require('../src/native/runtime').getNative();
+  const { EventEmitter } = require('node:events');
+  const failure = new Error('进程已创建，接线失败');
+  const child = Object.assign(new EventEmitter(), { pid: 41 });
+  const lease = {}, trace = [];
+  let finish;
+  const ports = {
+    env: {}, crypto: { randomBytes: () => Buffer.alloc(8) }, getPort: () => 30,
+    providerRouterRuntime: { buildChildEnv: () => ({ env: {} }) }, providers: { releaseCodexProxyConfig: () => trace.push('release-config') },
+    resolveCliRelayTarget: () => null, processSpawnArgs: () => [],
+    createAdapterCompletion: () => ({}), createRunnerOwnership: (_, spec) => spec,
+    finishProviderAttempt: (_, outcome, facts) => trace.push([outcome, facts.reasonCode]),
+    getWorkspaceAdmission: () => ({ starting() {}, acquireProcessWriter: () => lease,
+      annotateWriterPid(s, w, pid) { assert.equal(w, lease); trace.push([s, pid]); },
+      finishProcessWriter(s, w) { assert.equal(w, lease); trace.push(['released', s]); } }),
+    getWriterGroup: () => ({ whenGroupEmpty(pid, done) { assert.equal(pid, 41); finish = done; } }),
+    spawn: () => child,
+    routerToolHost: { spawnProcess(spec) { spec.spawn('cli', [], {}); throw failure; } },
+  };
+  const cs = { cli: 'custom', cwd: '/work' }, persisted = { cli: 'custom' };
+  const prepared = { invocation: { cmd: 'cli' }, binding: {}, attempt: {}, invocationEnvelope: { historyHandle: { isFirstTurn: true } } };
+  assert.throws(() => native.chatSpawnProcess(ports, { sessionName: 's', cs, persisted, prepared, provider: {}, turn: {} }), e => e === failure);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(trace, ['release-config', ['failed', 'process_spawn_failed'], ['s', 41]]);
+  child.emit('close'); assert.equal(typeof finish, 'function');
+  finish();
+  assert.deepEqual(trace.at(-1), ['released', 's']);
+  assert.equal(cs._activeRunner, undefined);
 });

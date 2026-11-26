@@ -86,6 +86,7 @@ function createUnattendedHost(options = {}) {
   // unref'd). The kernel decides the delay and persists `retryAt`; this host
   // only runs the clock and injects the recovery instruction when it fires.
   const retryTimers = new Map();
+  const admittingRetries = new Set();
   // At most one backlog recheck per active session. A verdict that yields to the
   // FIFO assumes the backlog produces its own D settle; a leftover entry that
   // was already executed never does, so the kernel names a delay and an attempt
@@ -161,6 +162,7 @@ function createUnattendedHost(options = {}) {
   }
 
   function shutdown() {
+    admittingRetries.clear();
     for (const sessionId of [...timers.keys()]) clearTimer(sessionId);
     for (const sessionId of [...retryTimers.keys()]) clearRetryTimer(sessionId);
     for (const sessionId of [...backlogRechecks.keys()]) clearBacklogRecheck(sessionId);
@@ -238,15 +240,41 @@ function createUnattendedHost(options = {}) {
     }
     let busy = false;
     try { busy = isRunActive(sessionId) === true; } catch (_) { busy = false; }
-    // Clear the durable marker either way: it has been consumed.
-    if (!write(sessionId, { ...current, retryAt: null, retryCategory: null, updatedAt: now() })) return;
-    if (busy) return;
-    const faults = Number(state.stall && state.stall.consecutiveFaults) || 1;
-    trace(sessionId, tagged(`故障后自动继续（第 ${faults} 次）`));
-    if (typeof inject !== 'function') return;
-    trackInjection(sessionId, inject(sessionId, tagged(kernel.faultInstruction()), {
-      unattendedRecovery: true,
-    }), 'fault');
+    const sameRetry = () => {
+      const latest = stateOf(sessionId);
+      return latest?.status === STATUS.ACTIVE && latest.startedAt === current.startedAt
+        && latest.lastTurnEndId === current.lastTurnEndId && Number(latest.retryAt) === retryAt;
+    };
+    const consume = () => {
+      if (sameRetry() && !write(sessionId, { ...stateOf(sessionId), retryAt: null, retryCategory: null, updatedAt: now() })) defer();
+    };
+    if (busy || typeof inject !== 'function') { consume(); return; }
+
+    // Re-arming a live timer and restarting after admission must both reuse
+    // the same durable scheduler entry. Keep the marker until its receipt.
+    const idempotencyKey = JSON.stringify(['unattended-fault', sessionId, current.startedAt, current.lastTurnEndId, retryAt]);
+    if (admittingRetries.has(idempotencyKey)) return;
+    admittingRetries.add(idempotencyKey);
+    try {
+      const faults = Number(current.stall?.consecutiveFaults) || 1;
+      trace(sessionId, tagged(`故障后自动继续（第 ${faults} 次）`));
+      const result = await inject(sessionId, tagged(kernel.faultInstruction()), {
+        unattendedRecovery: true, idempotencyKey,
+      });
+      if (!admittingRetries.has(idempotencyKey)) return;
+      if (!sameRetry()) {
+        if (result?.entry?.id && !result.duplicate) withdrawFaultEntries(sessionId, [result.entry.id]);
+        return;
+      }
+      if (result === false || result?.ok === false) { defer(); return; }
+      rememberInjection(sessionId, result, 'fault');
+      consume();
+    } catch (error) {
+      log(`[unattended] retry admission failed for ${sessionId}: ${error?.message || error}`);
+      if (admittingRetries.has(idempotencyKey) && sameRetry()) defer();
+    } finally {
+      admittingRetries.delete(idempotencyKey);
+    }
   }
 
   // ── Backlog recheck ───────────────────────────────────────────────────────

@@ -451,14 +451,18 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(runtime.includes('taskStateSeed = task => taskStateFrame(task, true)'));
   assert.ok(runtime.includes('taskStatePayload = task => taskStateFrame(task, false)'));
   assert.ok(frameHost.includes('seed_only && !chat_task_state_should_seed'));
-  const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
+  const turnEngine = fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine-host.js'), 'utf8');
   assert.ok(turnEngine.includes("taskStateSeed } = require('../native/runtime')"));
-  // The connect sequence is the kernel's plan now, so the step is what gets
-  // pinned, not an inline `if`.
-  assert.ok(turnEngine.includes("step.op === 'taskStateSeed'"),
-    'the connect path must send the seed when the plan emits it');
-  assert.ok(turnEngine.includes('chatConnectReplayPlan') && !turnEngine.includes('hasTaskStateSeed:'),
-    'the connect plan must schedule seed resolution without eagerly building the frame');
+  assert.ok(turnEngine.includes('chatReplaySocket(socketPorts, ws, connection, replayGate, urlObj)'));
+  const native = require('../src/native/runtime').getNative();
+  const frames = [];
+  const ports = { replay: { size: () => 0 }, persistedSessions: new Map(), getTaskState: () => ({}),
+    taskStateSeed: () => ({ type: 'task_state' }), sendWs: (_, frame) => frames.push(frame.type) };
+  const page = { messages: [], hasMore: false };
+  native.chatApplyConnectReplay(ports, {}, 's', {}, page, null);
+  assert.deepEqual(frames, []);
+  native.chatApplyConnectReplay(ports, {}, 's', {}, page, {});
+  assert.deepEqual(frames, ['chat_history', 'task_state']);
   // The live broadcast is the task-state store's: server.js builds it and
   // keeps no inline copy, so the cancel-flow tests run the production code.
   assert.ok(source.includes("require('./src/session/records')"),

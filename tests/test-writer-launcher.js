@@ -9,8 +9,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { getNative } = require('../src/native/runtime');
+const { spawn, spawnSync } = require('node:child_process');
+const { getNative, getWriterGroup } = require('../src/native/runtime');
 
 function locateBinary() {
   if (process.env.MULTICC_WRITER_BIN) return process.env.MULTICC_WRITER_BIN;
@@ -115,4 +115,43 @@ test('group lifetime covers detached descendants', { skip: !binary || process.pl
   assert.equal(result.status, 0, result.stderr);
   assert.ok(elapsed >= 900, `launcher left after ${elapsed}ms with the group still alive`);
   assert.equal(f.run({ op: 'writerLeaseList', workspaceId: 'w' }).writers['ext-group'].state, 'released');
+});
+
+test('无进程组时同步释放租约', () => {
+  const group = getWriterGroup();
+  const supported = process.platform !== 'win32';
+  assert.equal(group.processGroups(), supported);
+  assert.deepEqual(group.detachedSpawn(), supported ? { detached: true } : {});
+  let calls = 0;
+  for (const pid of [undefined, null, 0, 1, -2, '100', 3.5, NaN]) {
+    assert.equal(group.groupAlive(pid), false);
+    assert.equal(group.whenGroupEmpty(pid, () => { calls++; }), null);
+  }
+  assert.equal(calls, 8);
+});
+
+test('进程组存活期间保留租约，退出后仅释放一次', { skip: process.platform === 'win32', timeout: 10000 }, async t => {
+  const group = getWriterGroup();
+  const child = spawn(process.execPath, ['-e', 'process.stdin.resume()'], {
+    ...group.detachedSpawn(), stdio: ['pipe', 'ignore', 'ignore'],
+  });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  await require('node:events').once(child, 'spawn');
+  assert.equal(group.groupAlive(child.pid), true);
+  let count = 0;
+  const released = new Promise(resolve => {
+    const timer = group.whenGroupEmpty(child.pid, () => { count++; resolve(); }, { pollMs: 5 });
+    assert.equal(timer.hasRef(), false);
+    // Keep the isolated test alive after the child exits.
+    timer.ref();
+    t.after(() => clearInterval(timer));
+  });
+  const cancelled = group.whenGroupEmpty(child.pid, () => assert.fail('已取消的轮询触发了回调'), { pollMs: 1 });
+  clearInterval(cancelled);
+  assert.equal(count, 0);
+  child.stdin.end();
+  await released;
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(count, 1);
+  assert.equal(group.groupAlive(child.pid), false);
 });

@@ -78,7 +78,7 @@ const { getNative, findProviderReferences, messageComposer, bootstrapState,
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
-const { isResidentSession, displayNameOf, isAlias, nameOf: canonicalCli, watchEffortCatalog } = require('./src/cli/cli-capability');
+const { isResidentSession, displayNameOf, isAlias, bundledClaudeCodeBinary, nameOf: canonicalCli, watchEffortCatalog } = require('./src/cli/cli-capability');
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { renderPrompt } = messageComposer;
 const {
@@ -144,7 +144,7 @@ const { createAccountRoutesHost, mountCliKeyAccountRoutes, mountCommandcodeAuthR
 const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes, mountZcodeAuthLoginRoute } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes, mountKimiAuthLoginRoute } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
-const { createChatTurnEngine } = require('./src/chat/turn-engine'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/providers/auto-provider-config');
+const { createChatTurnEngine } = require('./src/chat/turn-engine-host'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/providers/auto-provider-config');
 const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
@@ -199,7 +199,7 @@ const { createProviderLogWatchdog } = require('./src/chat/provider-log-watchdog'
 const { createLogHousekeeping, LOG_HOUSEKEEPING_INTERVAL_MS } = require('./src/log-housekeeping');
 const { createPushRuntime } = require('./src/push/runtime');
 const { createWorkspaceRuntime } = require('./src/workspace/runtime');
-const { TurnProgressHeartbeat, createTurnProgress } = require('./src/chat/turn-progress');
+const { TurnProgressHeartbeat, createTurnProgress } = require('./src/native/runtime').getTurnProgress();
 const { createBackgroundTaskRuntime } = require('./src/chat/background-task-runtime');
 const { sharedTurnEventJournal } = require('./src/chat/turn-event-journal');
 const { createTaskContextHost } = require('./src/task-context-host');
@@ -372,15 +372,7 @@ const ALLOW_LEGACY_TOKEN_QUERY = envEnabled(process.env.MULTICC_ALLOW_LEGACY_TOK
 const ALLOW_LEGACY_WS_TOKEN = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_TOKEN);
 const ALLOW_LEGACY_WS_COOKIE = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_COOKIE);
 
-function parseCookies(header) {
-  const cookies = {};
-  if (!header) return cookies;
-  for (const pair of header.split(';')) {
-    const [k, ...v] = pair.trim().split('=');
-    if (k) cookies[k.trim()] = v.join('=').trim();
-  }
-  return cookies;
-}
+const { httpParseCookies: parseCookies } = getNative();
 
 app.use(requestIdMiddleware, require('./src/http/json-compression').jsonCompression);
 routerToolHost.mount(app);
@@ -503,7 +495,8 @@ function debugLogClaudeInvoke(session, args) {
   } catch (_) {}
 }
 
-const { vendorLoginTerminalCmd, cliForLoginFlow } = require('./src/cli-adapters/vendor-login'); const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
+const { terminalLoginCommand } = require('./src/native/runtime').getVendorLogin();
+const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
   isWindows,
   claudeArgs: CLAUDE_ARGS,
   claudeChatDisallowedTools: CLAUDE_CHAT_DISALLOWED_TOOLS,
@@ -530,18 +523,9 @@ function cliCommandAvailable(command) {
 
 // Re-resolve when the environment moved: a just-installed CLI must show up.
 const commandsForAvailability = require('./src/cli-adapters/commands').createCommandResolver({ isWindows, seed: cliCommands });
-const { bundledClaudeCodeBinary } = require('./src/cli/claude-bundled-binary');
-
-// `claude` chat runs the bundled Agent SDK binary (or a Remote CLI relay), not PATH `claude`.
-function claudeLaneAvailable() { try { return bundledClaudeCodeBinary() != null || providers.hasCliRelayProvider('claude'); } catch (_) { return false; } }
-
 function cliAvailabilitySummary() {
-  const commands = commandsForAvailability();
-  const out = {};
-  for (const cli of CLIENT_CHAT_CLIS) {
-    out[cli] = { available: cli === 'claude' ? claudeLaneAvailable() : cliCommandAvailable(commands[cli]) };
-  }
-  return out;
+  return getNative().cliAvailabilitySummary(CLIENT_CHAT_CLIS, commandsForAvailability(),
+    bundledClaudeCodeBinary, providers, cliCommandAvailable);
 }
 
 function providerFor(session) {
@@ -942,47 +926,6 @@ const sessions = new Map();
 // Extracted modules read these via require('./src/state/container') — no bespoke injection.
 Object.assign(state, { sessions, directories, persistedSessions });
 
-function generateId() {
-  let id = '';
-  while (id.length < 8) id += Math.random().toString(36).slice(2);
-  return id.slice(0, 8);
-}
-
-function sessionIdPrefixForDirectory(dir) {
-  const raw = (dir?.name || path.basename(dir?.path || '') || 'dir').toString();
-  const safe = raw
-    .normalize('NFKD')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32)
-    .replace(/-+$/g, '');
-  return safe || 'dir';
-}
-
-function allocateSessionId(dir, cli, kind) {
-  const prefix = sessionIdPrefixForDirectory(dir);
-  const cliPart = SUPPORTED_CHAT_CLIS.includes(cli) ? cli : 'claude';
-  const kindPart = kind === 'chat' ? 'chat' : 'term';
-  const stem = `${prefix}-${cliPart}-${kindPart}`;
-  let maxSeq = 0;
-  for (const s of persistedSessions.values()) {
-    if (s.dirId !== dir.id) continue;
-    const m = String(s.id || '').match(new RegExp(`^${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)$`));
-    if (m) maxSeq = Math.max(maxSeq, Number(m[1]) || 0);
-  }
-  for (let seq = maxSeq + 1; seq < maxSeq + 1000; seq++) {
-    const id = `${stem}-${String(seq).padStart(2, '0')}`;
-    if (!persistedSessions.has(id)) return id;
-  }
-  // Extremely unlikely fallback: keep the readable prefix and add a short entropy tail.
-  let id;
-  do {
-    id = `${stem}-${generateId()}`;
-  } while (persistedSessions.has(id));
-  return id;
-}
-
 function resolveCwd(current, arg) {
   if (!arg || arg === '~') return os.homedir();
   if (arg.startsWith('~/') || arg.startsWith('~\\')) return path.join(os.homedir(), arg.slice(2));
@@ -1048,8 +991,7 @@ async function createSession(id) {
     console.log(`[multicc] Creating tmux session: ${tmuxSessionName(id)} in ${cwd} (${provider.name} session: ${persisted.cliSessionId || '<pending>'})`);
     const launchSession = provEnv.qualifiedModel ? { ...persisted, model: provEnv.qualifiedModel } : persisted;
     // Login flows run the CLI's own interactive login command, not the TUI.
-    const loginCmd = persisted.loginFlow === 'codex-login' ? `${cliCommands.codex} login`
-      : persisted.loginFlow === 'claude-auth-login' ? `${cliCommands.claude} auth login` : vendorLoginTerminalCmd(persisted.loginFlow, cliCommands);
+    const loginCmd = terminalLoginCommand(persisted.loginFlow, cliCommands);
     const terminalCmd = loginCmd || provider.buildTerminalCmd(turnLedgerRuntime.prepareTerminal(launchSession || {}, termEnv));
     await tmuxCreateSession(id, cwd, 80, 24, terminalCmd, termEnv);
   } else {
@@ -1494,8 +1436,8 @@ memoModule.migrateLegacy().done.catch(error => console.log(`[memo] migration fai
 // Shared creation boundary; an explicit id creates or reuses a named session.
 function createSessionRecord(input) {
   const created = getNative().sessionCreateRecordFactory({
-    sharedWorkspace: require('./src/task-shell/workspace').sharedWorkspace,
-    SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, allocateSessionId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, cliForLoginFlow, loginWorkspacePath: MULTICC_PATHS.loginWorkspacePath
+    existsSync: fs.existsSync,
+    SUPPORTED_CHAT_CLIS, isResidentSession, validateExperimentalSession, tuiChatMirrorEnabled, normalizeEffort, validEffortForCli, codexDefaultReasoningLevel, normalizeCliAgent, validateProviderSelection, providers, primaryProviderCandidate, providerDefaults, validProviderId, persistedSessions, ensureDirGitReady, friendlyDirReason, WORKTREE_SUBDIR, gitWorktreeAdd, gitWorktreeRollbackCreate, sanitizeLoginEnv, ensureCliStates, sessionPersistence, savePersistedSessionsBestEffort, appendEvent, loginWorkspacePath: MULTICC_PATHS.loginWorkspacePath
   }, path)(input && typeof input === 'object' && input.cli != null ? { ...input, cli: canonicalCli(input.cli) } : input);
   // 会话创建/复用是清墓碑的唯一时机；固定 id 的辅助会话重建时让历史队列重新接受写入。
   const registered = value => {

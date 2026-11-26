@@ -7,10 +7,7 @@ const { existsSync } = require('node:fs');
 const fail = (code, message = code) => Object.assign(new Error(message), { code, status: 409 });
 
 function sharedWorkspace(records, ownerId, dirId) {
-  const owner = records.get(ownerId);
-  if (!owner || owner.dirId !== dirId || owner.workspaceOwnerSessionId || !owner.worktreePath || !owner.branch
-      || !existsSync(owner.worktreePath) || (owner.workspaceState && owner.workspaceState !== 'awake')) throw fail('shell_workspace_unavailable');
-  return { worktreePath: owner.worktreePath, branch: owner.branch };
+  return getNative().sessionSharedWorkspace(records, ownerId, dirId, existsSync);
 }
 
 function createShellWorkspaceHost(deps) {

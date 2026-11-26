@@ -51,20 +51,11 @@ fn install_signal_forwarding() {
 }
 
 #[cfg(unix)]
-fn group_alive(pgid: u32) -> bool {
-    // Conservative: anything but ESRCH means "cannot prove empty" — an EPERM
-    // group still exists and may be writing.
-    let rc = unsafe { libc::kill(-(pgid as libc::pid_t), 0) };
-    if rc == 0 {
-        return true;
-    }
-    std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-}
-
-#[cfg(unix)]
 fn wait_group_empty(pgid: u32) {
-    while group_alive(pgid) {
-        std::thread::sleep(std::time::Duration::from_millis(250));
+    while multicc_core::writer_group::alive(pgid) {
+        std::thread::sleep(std::time::Duration::from_millis(
+            multicc_core::writer_group::POLL_MS,
+        ));
     }
 }
 

@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { releaseResidentRoute, retainResidentRoute } = require('../codex/resident-route');
 const { envDigest } = require('../secrets-vault');
-const writerGroup = require('../workspace/writer-group');
+const { getWriterGroup } = require('../native/runtime');
 
 // ── Resident codex app-server process per chat session ──
 //
@@ -166,7 +166,7 @@ function spawnProc(name, s) {
       windowsHide: true,
       cwd: s.cwd,
       env: s.env && Object.keys(s.env).length ? s.env : { ...process.env, TERM: 'dumb', NO_COLOR: '1' },
-      ...writerGroup.detachedSpawn(),
+      ...getWriterGroup().detachedSpawn(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch (error) {
@@ -182,7 +182,7 @@ function spawnProc(name, s) {
     const token = proc.writerLeaseToken;
     proc.writerLeaseToken = null;
     if (!token) return;
-    writerGroup.whenGroupEmpty(proc.pid, () => { try { s.releaseWriter?.(token); } catch (_) {} });
+    getWriterGroup().whenGroupEmpty(proc.pid, () => { try { s.releaseWriter?.(token); } catch (_) {} });
   });
   if (protocol.retainsHome) proc.once('close', retainResidentRoute(s.env?.CODEX_HOME));
   s.spawnedFingerprint = protocol.fingerprint(s.env);

@@ -342,3 +342,77 @@ test('宿主启动从缓存恢复，同一进程后续切换到更高修订的�
   await assert.rejects(native.cliReloadEffortCatalog(file));
   assert.deepEqual(cap.effortOf('pi').modelLevels.fixed, []);
 });
+
+test('Rust 目录所有查询与冻结 JS 一致，静态行保持引用，选择器返回新副本', () => {
+  const old = require('./helpers/legacy-cli-capability');
+  const cap = require('../src/cli/cli-capability');
+  assert.deepEqual(Object.keys(cap).sort(), [...Object.keys(old), 'bundledClaudeCodeBinary'].sort());
+  const inputs = [...old.knownClis(), ...Object.keys(old.ALIASES), undefined, null, 0,
+    false, Symbol('cli'), '  NEW  ', 'constructor', '__proto__', '\u0085Pi', '\uFEFFPI',
+    '\ud800', 'ßunknown', { toString: () => '  QODER  ' }];
+  for (const fn of ['nameOf', 'capabilityOf', 'familyOf', 'familyNameOf', 'displayOf', 'displayNameOf',
+    'shortMarkOf', 'colourOf', 'isProviderless', 'deprecationOf', 'isDeprecated', 'engineOf', 'kindsOf',
+    'isAlias', 'familiesFor', 'updateOf', 'isBundled', 'bundledEnginesOf', 'isResident',
+    'isResidentSession', 'protocolOf', 'cancelStopsProcess', 'transportOf', 'protocolFamilyOf']) {
+    for (const input of inputs) assert.deepEqual(cap[fn](input), old[fn](input), fn + ' ' + String(input));
+  }
+  for (const input of inputs) for (const kind of [' CHAT ', 'terminal', '__proto__', 'missing']) {
+    assert.deepEqual(cap.lanesOf(input, kind), old.lanesOf(input, kind));
+    assert.equal(cap.offersIn(input, kind), old.offersIn(input, kind));
+  }
+  for (const fn of ['knownClis', 'providerlessClis', 'npmPackages', 'updateSpecs']) {
+    assert.deepEqual(cap[fn](), old[fn]());
+  }
+  assert.equal(cap.displayOf(' Claude-EXP '), cap.DISPLAY.claude);
+  assert.ok(Object.isFrozen(cap.CLIS.claude));
+  assert.notEqual(cap.lanesOf('claude', 'chat')[0], cap.lanesOf('claude', 'chat')[0]);
+  assert.notEqual(cap.providerlessClis(), cap.providerlessClis());
+});
+
+test('内置 Claude 引擎优先使用有效覆盖路径，平台包缺失时按系统依次回退', () => {
+  const native = require('../src/native/runtime').getNative();
+  const calls = [];
+  function locate(override, platform, packages, binaries) {
+    calls.length = 0;
+    return native.cliBundledClaudeBinary(override, platform, 'arm64', request => {
+      calls.push(request);
+      if (!packages.has(request)) throw new Error('找不到平台包');
+      return packages.get(request);
+    }, path.posix, value => binaries.includes(value));
+  }
+  const linux = '@anthropic-ai/claude-agent-sdk-linux-arm64/package.json';
+  const musl = '@anthropic-ai/claude-agent-sdk-linux-arm64-musl/package.json';
+  const win = '@anthropic-ai/claude-agent-sdk-win32-arm64/package.json';
+  const packages = new Map([[linux, '/a/package.json'], [musl, '/b/package.json'], [win, '/c/package.json']]);
+  assert.equal(locate('./引擎', 'linux', packages, ['./引擎']), './引擎');
+  assert.deepEqual(calls, []);
+  assert.equal(locate('/缺失', 'linux', packages, ['/a/claude', '/b/claude']), '/a/claude');
+  assert.deepEqual(calls, [linux]);
+  assert.equal(locate(undefined, 'linux', packages, ['/b/claude']), '/b/claude');
+  packages.delete(linux);
+  assert.equal(locate(undefined, 'linux', packages, ['/b/claude']), '/b/claude');
+  assert.deepEqual(calls, [linux, musl]);
+  assert.equal(locate('', 'win32', packages, ['/c/claude.exe']), '/c/claude.exe');
+  assert.deepEqual(calls, [win]);
+  assert.equal(locate(null, 'darwin', packages, []), null);
+});
+
+test('CLI 可用性沿用目录顺序，按需探测远程线路并传播普通命令错误', () => {
+  const native = require('../src/native/runtime').getNative();
+  const calls = [];
+  const clis = ['codex', 'claude', 'dsh'];
+  const providers = { hasCliRelayProvider(cli) { calls.push(cli); return true; } };
+  const summary = bundled => native.cliAvailabilitySummary(clis, { codex: '/codex' },
+    bundled, providers, command => { calls.push(command); return !!command; });
+  assert.deepEqual(summary(() => '/内置'), { codex: { available: true }, claude: { available: true }, dsh: { available: false } });
+  assert.deepEqual(calls, ['/codex', undefined]);
+  calls.length = 0;
+  assert.equal(summary(() => null).claude.available, true);
+  assert.deepEqual(calls, ['/codex', 'claude', undefined]);
+  assert.equal(summary(() => { throw new Error(); }).claude.available, false);
+  providers.hasCliRelayProvider = () => { throw new Error(); };
+  assert.equal(summary(() => null).claude.available, false);
+  const error = new Error('命令探测失败');
+  assert.throws(() => native.cliAvailabilitySummary(['codex'], {}, () => null, providers,
+    () => { throw error; }), thrown => thrown === error);
+});

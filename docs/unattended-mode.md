@@ -169,14 +169,15 @@ Product decisions (user, 2026-11-10; input/FIFO updated 2026-11-14):
    不因 FIFO 积压而跳过。活动回合不受抢占，B 后台等待保留既有调度规则。
    暂存不是无限的（用户 2026-11-14 指示：有 FIFO 时无人值守要帮着把消息发出去），
    两种形态下值守直接采纳 FIFO 头，否则队列会永久楔死：**(a) E 宽限超时** —— 故障
-   settle 已过 `FAULT_FIFO_GRACE_MS`（15 s）仍无恢复指令入队（恢复注入可能在关机
+   settle 已过 `FAULT_FIFO_GRACE_MS`（15 s），没有待执行的持久重试且仍无恢复指令入队（恢复注入可能在关机
    竞态中丢失；宽限窗保住「先验证副作用再续跑」的正常次序；无 `lastSettleAt` 记录
    的旧状态 fail-closed 继续等待）；**(b) 死字母** —— 处理中字母（P/C）既无在途
    delivery（`hasActive`）也无活 run（调用方证明 `runActive:false`），分类转换已随
    进程死掉、永远不会再产出 D，立即推 FIFO 头。`runActive` 缺失或为 `true` 时
    fail-closed（常驻 run 可能仍拥有该字母）。悬而未决的用户问题（`pendingRequestId`）
    在两种形态下都优先于 FIFO 头；已入队的恢复指令和已接纳的换线（auto_provider_handoff）
-   同样优先。驱动 FIFO 头本身就是恢复：下一回合的 settle 会重建干净的分类字母。
+   同样优先。持久重试的 `retryAt` 覆盖退避时间和等待入队回执的时间。入队遇到临时失败时，
+   宿主用同一幂等键重试。成功时只清除对应轮次的标记。驱动 FIFO 头后，下一回合的 settle 会重建分类字母。
    新业务规则均在 Rust 内核。现有 Node 宿主仅保留必要的状态、队列和消息元数据
    桥接；后续 Rust 接管调度宿主接口时移除这些桥接。
 3. **等待与故障优先恢复。**

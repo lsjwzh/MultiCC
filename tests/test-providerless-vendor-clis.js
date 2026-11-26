@@ -82,9 +82,8 @@ test('stale vendor provider ids cannot silently fall through to another account'
 test('host spawn paths apply CLI-specific proxies only after resolving the provider route', () => {
   const root = path.join(__dirname, '..');
   const terminalSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  const chatSource = fs.readFileSync(path.join(root, 'src/chat/turn-engine.js'), 'utf8');
+  const native = require('../src/native/runtime').getNative();
   assert.match(terminalSource, /providerRouterRuntime\.resolveSpawnEnv\(persisted\)/);
-  assert.match(chatSource, /providerRouterRuntime\.buildChildEnv\(process\.env, persisted,/);
 
   // Execute the actual host adaptation boundaries with inert provider ports.
   // Sharing a provider pool does not make DSH/OpenCode a Claude executable:
@@ -98,10 +97,24 @@ test('host spawn paths apply CLI-specific proxies only after resolving the provi
   const terminalProxy = new Function('persisted', 'providers', 'termEnv', 'routeSession',
     'PORT', 'CLAUDE_OFFICIAL_VIA_PROXY', boundary(terminalSource,
       "if (persisted.cli === 'claude') {", '// Claude: pre-allocate'));
-  const chatProxy = new Function('persisted', 'providers', 'childEnv', 'binding',
-    'proxySessionId', 'getPort', 'getClaudeOfficialViaProxy', 'prepared', 'sessionName',
-    boundary(chatSource, "if (persisted.cli === 'claude' || persisted.cli === 'claude-exp') providers.applyClaudeProxyEnv",
-      '} catch (error) {\n        providers.releaseCodexProxyConfig'));
+  function chatProxy(session, providers, route) {
+    const afterRoute = new Error('代理配置完成');
+    const prepared = { invocation: { cmd: 'test' }, binding: { providerId: 'attempt-provider' },
+      proxySessionId: route, invocationEnvelope: { spawnOpts: {}, historyHandle: { isFirstTurn: false } } };
+    let resolved = false;
+    assert.throws(() => native.chatSpawnProcess({
+      env: process.env, getPort: () => 3100, getClaudeOfficialViaProxy: () => true,
+      resolveCliRelayTarget: () => null, processSpawnArgs: () => [], claudeSettingsExtra: () => ({}),
+      providerRouterRuntime: { buildChildEnv(env, record) {
+        assert.equal(record, session); assert.equal(env, process.env); resolved = true; return { env: {} };
+      } },
+      providers: { ...providers, settingsOverrideFor: () => null,
+        applyClaudeProxyEnv(...args) { assert.equal(resolved, true); return providers.applyClaudeProxyEnv(...args); },
+        applyCodexProxyConfig(...args) { assert.equal(resolved, true); return providers.applyCodexProxyConfig(...args); } },
+      createAdapterCompletion() { throw afterRoute; },
+    }, { sessionName: 'logical-session', persisted: session, cs: {}, turn: {}, prepared }), e => e === afterRoute);
+    assert.equal(resolved, true);
+  }
 
   for (const cli of ['claude', 'codex', 'claude-exp', 'codex-exp', 'qoder', 'kimi',
     'codebuddy', 'commandcode', 'gemini', 'pi', 'dsh', 'opencode', 'grok', 'zcode']) {
@@ -117,9 +130,7 @@ test('host spawn paths apply CLI-specific proxies only after resolving the provi
       const session = { cli, provider: 'managed-provider', cliSessionId: 'native-session' };
       const route = 'session-capability';
       if (kind === 'terminal') terminalProxy(session, port, {}, route, 3100, true);
-      else chatProxy(session, port, {}, { providerId: 'attempt-provider' }, route,
-        () => 3100, () => true,
-        { invocationEnvelope: { spawnOpts: {}, historyHandle: { isFirstTurn: false } } }, 'logical-session');
+      else chatProxy(session, port, route);
       const protocol = cli === 'claude' || (kind === 'chat' && cli === 'claude-exp') ? 'claude'
         : cli === 'codex' || (kind === 'chat' && cli === 'codex-exp') ? 'codex' : null;
       assert.deepEqual(calls.map(call => call.protocol), protocol ? [protocol] : [], `${kind}:${cli}`);
@@ -129,14 +140,15 @@ test('host spawn paths apply CLI-specific proxies only after resolving the provi
       }
     }
   }
-  for (const source of [terminalSource, chatSource]) {
+  {
+    const source = terminalSource;
     assert.doesNotMatch(source, /persisted\.cli !== 'qoder'\)\s*providers\.applyClaudeProxyEnv/);
     assert.doesNotMatch(source, /persisted\.cli !== 'codex' && persisted\.cli !== 'qoder'/);
   }
 });
 
 test('vendor login flows map each vendor-auth CLI to a whitelisted login terminal spec', () => {
-  const { VENDOR_LOGIN, vendorLoginForCli, cliForLoginFlow, vendorLoginTerminalCmd } = require('../src/cli-adapters/vendor-login');
+  const { VENDOR_LOGIN, vendorLoginForCli, cliForLoginFlow, vendorLoginTerminalCmd } = require('../src/native/runtime').getVendorLogin();
   assert.deepEqual(Object.keys(VENDOR_LOGIN).sort(), ['agy', 'codebuddy', 'commandcode', 'qoder']);
   assert.equal(vendorLoginForCli('codebuddy').loginFlow, 'codebuddy-login');
   assert.equal(vendorLoginForCli('codebuddy').label, 'WorkBuddy');
@@ -158,6 +170,25 @@ test('vendor login flows map each vendor-auth CLI to a whitelisted login termina
   assert.equal(cliForLoginFlow('bogus'), null);
 });
 
+
+test('原生登录目录与旧 JS 的顺序、冻结对象和终端命令一致', () => {
+  const old = require('./helpers/legacy-session-routes/vendor-login');
+  const api = require('../src/native/runtime').getVendorLogin();
+  assert.deepEqual(Object.entries(api.VENDOR_LOGIN), Object.entries(old.VENDOR_LOGIN));
+  assert.ok(Object.isFrozen(api.VENDOR_LOGIN));
+  for (const [cli, spec] of Object.entries(api.VENDOR_LOGIN)) {
+    assert.ok(Object.isFrozen(spec));
+    assert.equal(api.vendorLoginForCli('  ' + cli.toUpperCase() + '  '), spec);
+    assert.equal(api.cliForLoginFlow(' ' + spec.loginFlow + ' '), cli);
+    for (const binary of [null, '', "/opt/a b'c", '\ud800end', '工具']) {
+      const commands = { [cli]: binary };
+      assert.equal(api.terminalLoginCommand(spec.loginFlow, commands), old.vendorLoginTerminalCmd(spec.loginFlow, commands));
+    }
+  }
+  assert.equal(api.terminalLoginCommand('codex-login', { codex: 'my-codex' }), 'my-codex login');
+  assert.equal(api.terminalLoginCommand('claude-auth-login', { claude: 'my-claude' }), 'my-claude auth login');
+  assert.equal(api.terminalLoginCommand('regular', {}), null);
+});
 
 test('Pi local credentials do not acquire a MultiCC provider route', () => {
   assert.equal(providers.appTypeForCli('pi'), null);

@@ -50,7 +50,7 @@ class ChatSessionMap extends Map {
   has(key) { return ownerOf(this).chatHas(key); }
   // Turn-progress state (timeline, delivery probes) is keyed by session name
   // inside the Rust owner and has to leave with the session. See
-  // `setForgetHook` and src/chat/turn-progress.js.
+  // `setForgetHook` and native/addon/src/turn_progress_facade.rs.
   delete(key) {
     const removed = ownerOf(this).chatDelete(key);
     if (removed) forgetKey(owners.get(this), key);

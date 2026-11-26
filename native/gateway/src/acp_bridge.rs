@@ -172,6 +172,9 @@ pub async fn serve(args: &[String]) -> i32 {
                 }
             }
         }
+        // Tokio 的 stdout 可在后台写入完成前返回。入口会立即退出进程，
+        // 在此等最后一帧写完，提前退出的 agent 才能把错误送回调用方。
+        let _ = stdout.flush().await;
     });
     let (client, incoming) = match acp_transport::spawn(SpawnOptions {
         binary: binary.clone(),

@@ -5,13 +5,13 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 421 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 417 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
 兼容宿主打包路径与根 npm 包独立。下表只统计根包 dependencies。开发依赖与桌面包中的宿主仍应分别审计。
 
-兼容宿主的 Claude 引擎由 `@anthropic-ai/claude-agent-sdk` 的平台可选包提供二进制，解析入口为 `src/cli/claude-bundled-binary.js`。CPR 的传递依赖（包括 `@iarna/toml`）保留在 package-lock.json 中。
+兼容宿主的 Claude 引擎由 `@anthropic-ai/claude-agent-sdk` 的平台可选包提供二进制，解析入口为 `native/core/src/claude_models.rs`。CPR 的传递依赖（包括 `@iarna/toml`）保留在 package-lock.json 中。
 
 | 包 | 声明版本 | 直接引用（server.js、src、启动入口、生产插件） |
 |---|---|---|
@@ -32,24 +32,24 @@
 | `src/cdp-relay.js` | server.js | `src/cdpd.js` | — | `events`, `net` | `ws` | — |
 | `src/cdpd.js` | server.js | — | — | `child_process`, `fs`, `net`, `os`, `path` | — | — |
 | `src/chat/admission-progress.js` | server.js | `src/chat/api-error-policy.js` | — | — | — | — |
-| `src/chat/api-error-host.js` | server.js | `src/chat/api-error-policy.js`, `src/claude-auth/oauth-refresh.js`, `src/cli-adapters/vendor-login.js`, `src/network/global-proxy.js` | — | — | — | — |
+| `src/chat/api-error-host.js` | server.js | `src/chat/api-error-policy.js`, `src/claude-auth/oauth-refresh.js`, `src/native/runtime.js`, `src/network/global-proxy.js` | — | — | — | — |
 | `src/chat/api-error-policy.js` | server.js | `src/native/runtime.js`, `src/provider-error.js`, `src/upstream-error.js` | — | — | — | — |
 | `src/chat/auto-provider-routing.js` | server.js | `src/native/runtime.js`, `src/providers/auto-provider-config.js`, `src/providers/jev-client.js`, `src/secret-audit.js`, `src/secrets-vault.js` | — | — | — | — |
 | `src/chat/auto-provider-runtime.js` | server.js | `src/chat/admission-progress.js`, `src/chat/auto-provider-routing.js`, `src/native/runtime.js`, `src/pricing/price-table.js`, `src/providers/auto-provider-config.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/routes/opencode-models.js` | — | — | — | — |
 | `src/chat/auto-route-notes.js` | server.js | `src/providers/auto-provider-config.js` | — | — | — | — |
 | `src/chat/background-hold.js` | server.js | `src/cli-adapters/result-completion.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/chat/background-task-runtime.js` | server.js | `src/native/runtime.js`, `src/observability.js`, `src/paths.js` | — | — | — | — |
-| `src/chat/chat-stream.js` | server.js | `src/chat/background-hold.js`, `src/chat/claude-sdk-stream.js`, `src/chat/codex-app-stream.js`, `src/chat/missing-resume-recovery.js`, `src/chat/stream-router.js`, `src/cli-adapters/result-completion.js`, `src/native/runtime.js`, `src/secrets-vault.js`, `src/workspace/writer-group.js` | — | `child_process`, `crypto` | — | — |
+| `src/chat/chat-stream.js` | server.js | `src/chat/background-hold.js`, `src/chat/claude-sdk-stream.js`, `src/chat/codex-app-stream.js`, `src/chat/missing-resume-recovery.js`, `src/chat/stream-router.js`, `src/cli-adapters/result-completion.js`, `src/native/runtime.js`, `src/secrets-vault.js` | — | `child_process`, `crypto` | — | — |
 | `src/chat/claude-sdk-config.js` | server.js | `src/chat/claude-sdk-route.js` | — | `crypto`, `fs`, `os`, `path` | — | — |
 | `src/chat/claude-sdk-route.js` | server.js | — | — | `crypto`, `http` | — | — |
-| `src/chat/claude-sdk-stream.js` | server.js | `src/chat/background-hold.js`, `src/chat/claude-sdk-config.js`, `src/chat/claude-sdk-route.js`, `src/chat/missing-resume-recovery.js`, `src/cli-adapters/result-completion.js`, `src/cli/claude-bundled-binary.js`, `src/native/runtime.js`, `src/secrets-vault.js`, `src/workspace/writer-group.js` | — | `crypto` | — | — |
-| `src/chat/codex-app-stream.js` | server.js | `src/codex/resident-route.js`, `src/native/runtime.js`, `src/secrets-vault.js`, `src/workspace/writer-group.js` | — | `child_process`, `crypto`, `fs`, `path` | — | — |
+| `src/chat/claude-sdk-stream.js` | server.js | `src/chat/background-hold.js`, `src/chat/claude-sdk-config.js`, `src/chat/claude-sdk-route.js`, `src/chat/missing-resume-recovery.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/secrets-vault.js` | — | `crypto` | — | — |
+| `src/chat/codex-app-stream.js` | server.js | `src/codex/resident-route.js`, `src/native/runtime.js`, `src/secrets-vault.js` | — | `child_process`, `crypto`, `fs`, `path` | — | — |
 | `src/chat/codex-rollout-guard.js` | server.js | `src/native/runtime.js` | — | `os` | — | — |
 | `src/chat/error-persistence.js` | server.js | — | — | `crypto` | — | — |
-| `src/chat/finalize-host.js` | server.js | `src/chat/turn-progress.js`, `src/native/runtime.js` | — | — | — | — |
+| `src/chat/finalize-host.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/chat/held-turn-injection.js` | server.js | `src/chat/background-hold.js` | — | — | — | — |
 | `src/chat/host-coordinator.js` | server.js | `src/chat/turn-lifecycle.js`, `src/native/runtime.js` | — | `crypto` | — | — |
-| `src/chat/host-runtime.js` | server.js | `src/chat/host-coordinator.js`, `src/chat/turn-progress.js`, `src/cli/cli-capability.js`, `src/observability.js` | — | — | — | — |
+| `src/chat/host-runtime.js` | server.js | `src/chat/host-coordinator.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/observability.js` | — | — | — | — |
 | `src/chat/index.js` | server.js | `src/chat/api-error-host.js`, `src/chat/api-error-policy.js`, `src/chat/finalize-host.js`, `src/chat/host-coordinator.js`, `src/chat/host-runtime.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-lifecycle.js`, `src/chat/turn-request.js`, `src/native/runtime.js`, `src/state/owner.js` | — | — | — | — |
 | `src/chat/missing-resume-recovery.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/chat/native-session-guard.js` | server.js | `src/native/runtime.js` | — | `os` | — | — |
@@ -62,10 +62,9 @@
 | `src/chat/sessions.js` | server.js | `src/ws/ws-host.js` | — | — | — | — |
 | `src/chat/stalled-turn-recovery.js` | server.js | `src/classify/vocab.js` | — | — | — | — |
 | `src/chat/stream-router.js` | server.js | `src/chat/workspace-residency.js` | — | — | — | — |
-| `src/chat/turn-engine.js` | server.js | `src/chat/admission-progress.js`, `src/chat/auto-provider-runtime.js`, `src/chat/auto-route-notes.js`, `src/chat/chat-stream.js`, `src/chat/codex-rollout-guard.js`, `src/chat/held-turn-injection.js`, `src/chat/host-coordinator.js`, `src/chat/index.js`, `src/chat/native-session-guard.js`, `src/chat/opencode-context.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-progress.js`, `src/cli-adapters/completion.js`, `src/cli-switch.js`, `src/cli/cli-capability.js`, `src/cli/session-policy.js`, `src/cli/switch-runtime.js`, `src/codex/usage.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/observability.js`, `src/providers/auto-provider-config.js`, `src/providers/core.js`, `src/providers/egress-ip-policy.js`, `src/routes/chat-history.js`, `src/secrets-vault.js`, `src/wait/injector.js`, `src/workspace/writer-group.js` | — | `child_process`, `crypto` | — | — |
+| `src/chat/turn-engine-host.js` | server.js | `src/chat/admission-progress.js`, `src/chat/auto-provider-runtime.js`, `src/chat/auto-route-notes.js`, `src/chat/chat-stream.js`, `src/chat/codex-rollout-guard.js`, `src/chat/held-turn-injection.js`, `src/chat/host-coordinator.js`, `src/chat/index.js`, `src/chat/native-session-guard.js`, `src/chat/opencode-context.js`, `src/chat/provider-attempt-runtime.js`, `src/cli-adapters/completion.js`, `src/cli-switch.js`, `src/cli/cli-capability.js`, `src/cli/session-policy.js`, `src/cli/switch-runtime.js`, `src/codex/usage.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/observability.js`, `src/providers/auto-provider-config.js`, `src/providers/core.js`, `src/providers/egress-ip-policy.js`, `src/routes/chat-history.js`, `src/secrets-vault.js`, `src/wait/injector.js` | — | `child_process`, `crypto` | — | — |
 | `src/chat/turn-event-journal.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/chat/turn-lifecycle.js` | server.js | `src/native/runtime.js` | — | — | — | — |
-| `src/chat/turn-progress.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/chat/turn-request.js` | server.js | `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/providers/binding.js` | — | — | — | — |
 | `src/chat/usage-limit-wiring.js` | server.js | `src/native/runtime.js`, `src/quota/claude-bar-state.js`, `src/quota/claude-usage-queue.js` | — | — | — | — |
 | `src/chat/workspace-residency.js` | server.js | — | — | `fs`, `path` | — | — |
@@ -84,7 +83,7 @@
 | `src/claude-auth/refresh-health.js` | server.js | `src/runtime-security.js` | — | `fs`, `path` | — | — |
 | `src/claude-models.js` | server.js | `src/paths.js` | — | `fs`, `path` | — | — |
 | `src/cli-adapters/acp.js` | server.js | `src/cli-adapters/completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/provider-error.js` | — | — | — | — |
-| `src/cli-adapters/claude-agent-sdk-bridge.mjs` | 宿主脚本路径 | `src/cli-adapters/result-completion.js`, `src/cli/claude-bundled-binary.js`, `src/native/runtime.js` | — | `fs`, `module`, `os`, `path`, `url` | — | — |
+| `src/cli-adapters/claude-agent-sdk-bridge.mjs` | 宿主脚本路径 | `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | `fs`, `module`, `os`, `path`, `url` | — | — |
 | `src/cli-adapters/codebuddy.js` | server.js | `src/cli-adapters/result-completion.js`, `src/cli-adapters/router-mcp.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/cli-adapters/command-code.js` | server.js | `src/cli-adapters/completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/cli-adapters/commands.js` | server.js | `src/agy-accounts.js`, `src/native/runtime.js`, `src/providers/core.js`, `src/windows-env.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
@@ -100,7 +99,6 @@
 | `src/cli-adapters/qoder.js` | server.js | `src/cli-adapters/result-completion.js`, `src/cli-adapters/router-mcp.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/cli-adapters/result-completion.js` | server.js | `src/cli-adapters/completion.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/cli-adapters/router-mcp.js` | server.js | `src/native/runtime.js` | — | `fs`, `os`, `path` | — | — |
-| `src/cli-adapters/vendor-login.js` | server.js | `src/cli/cli-capability.js` | — | — | — | — |
 | `src/cli-adapters/zcode-app-server.js` | 宿主脚本路径 | — | — | — | — | — |
 | `src/cli-adapters/zcode-auth.js` | server.js | `src/native/runtime.js`, `src/runtime-security.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
 | `src/cli-adapters/zcode-bridge.cjs` | 宿主脚本路径 | `src/chat/background-hold.js`, `src/cli-adapters/zcode-app-server.js`, `src/native/runtime.js` | — | `child_process`, `fs`, `os`, `path`, `readline` | — | — |
@@ -108,13 +106,12 @@
 | `src/cli-adapters/zcode.js` | server.js | `src/cli-adapters/completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | `src/cli-adapters/zcode-bridge.cjs`, `src/cli-adapters/zcode-terminal.cjs` | `path` | — | — |
 | `src/cli-key-accounts.js` | server.js | `src/agy-accounts.js`, `src/cli/cli-capability.js`, `src/official-accounts.js`, `src/runtime-security.js` | — | `crypto`, `fs`, `path` | — | — |
 | `src/cli-switch.js` | server.js | `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/providers/native-vendor.js` | — | — | — | — |
-| `src/cli/claude-bundled-binary.js` | server.js | — | — | `fs`, `path` | — | `23 require.resolve('${name}/package.json')` |
-| `src/cli/cli-capability.js` | server.js | `src/native/runtime.js` | — | `fs` | — | — |
+| `src/cli/cli-capability.js` | server.js | `src/native/runtime.js` | — | `fs`, `path` | — | — |
 | `src/cli/cli-upstream-version.js` | server.js | `src/cli/cli-capability.js`, `src/native/runtime.js` | — | `os`, `path`, `tls` | — | — |
 | `src/cli/native-session-exists.js` | server.js | `src/sqlite/driver.js` | — | `fs`, `os`, `path` | — | — |
 | `src/cli/session-policy.js` | server.js | `src/claude-models.js`, `src/cli/cli-capability.js`, `src/native/runtime.js` | — | `fs`, `os`, `path` | — | — |
 | `src/cli/switch-runtime.js` | server.js | `src/cli/cli-capability.js`, `src/cli/native-session-exists.js`, `src/cli/tools-host.js`, `src/native/runtime.js`, `src/providers/auto-provider-config.js`, `src/providers/native-vendor.js`, `src/routes/cli-switch-host.js` | — | `crypto` | — | — |
-| `src/cli/tools-host.js` | server.js | `package.json`, `src/cli-adapters/commands.js`, `src/cli/claude-bundled-binary.js`, `src/cli/cli-capability.js`, `src/cli/cli-upstream-version.js`, `src/native/runtime.js`, `src/network/outbound.js`, `src/windows-env.js` | — | `child_process`, `crypto`, `fs`, `os`, `path` | — | — |
+| `src/cli/tools-host.js` | server.js | `package.json`, `src/cli-adapters/commands.js`, `src/cli/cli-capability.js`, `src/cli/cli-upstream-version.js`, `src/native/runtime.js`, `src/network/outbound.js`, `src/windows-env.js` | — | `child_process`, `crypto`, `fs`, `os`, `path` | — | — |
 | `src/codex-auth/official-oauth.js` | server.js | — | — | `crypto`, `http` | — | — |
 | `src/codex/accounts-refresh.js` | server.js | `src/codex/oauth-refresh.js` | — | — | — | — |
 | `src/codex/attempt-home.js` | server.js | `src/runtime-security.js`, `src/state/store.js` | — | `crypto`, `fs`, `path` | — | — |
@@ -126,7 +123,7 @@
 | `src/codex/proxy-trace.js` | server.js | — | — | — | — | — |
 | `src/codex/resident-route.js` | server.js | `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/providers/core.js` | — | `fs` | — | — |
 | `src/codex/session-home.js` | server.js | `src/runtime-security.js` | — | `crypto`, `fs`, `os`, `path` | — | — |
-| `src/codex/usage.js` | server.js | `src/chat/turn-progress.js` | — | `crypto` | — | — |
+| `src/codex/usage.js` | server.js | `src/native/runtime.js` | — | `crypto` | — | — |
 | `src/commander-migration.js` | server.js | — | — | — | — | — |
 | `src/detached.js` | server.js | `src/paths.js` | — | `child_process`, `crypto`, `fs`, `os`, `path` | — | — |
 | `src/directories.js` | server.js | `src/git/service.js`, `src/native/runtime.js`, `src/state/container.js` | — | `fs`, `path` | — | — |
@@ -159,7 +156,7 @@
 | `src/lan-discovery.js` | server.js | `src/native/runtime.js` | — | `net`, `os` | `@homebridge/ciao` | — |
 | `src/liveness/process-probe.js` | server.js | — | — | — | — | — |
 | `src/liveness/rollout-path.js` | server.js | — | — | — | — | — |
-| `src/liveness/runtime.js` | server.js | `src/chat/turn-progress.js` | — | — | — | — |
+| `src/liveness/runtime.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/log-housekeeping.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/machines.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/macos-agent-build.js` | server.js | — | — | `crypto`, `fs`, `path` | — | — |
@@ -175,7 +172,7 @@
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/memory/task-distill.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/model-history-converter.js` | server.js | — | — | `crypto` | — | — |
-| `src/native/runtime.js` | server.js | `src/chat/api-error-policy.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/provider-error.js`, `src/providers/auto-provider-config.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path`, `util` | — | `418 require(file)` |
+| `src/native/runtime.js` | server.js | `src/chat/api-error-policy.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-request.js`, `src/cli-adapters/completion.js`, `src/cli-adapters/result-completion.js`, `src/cli/cli-capability.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/provider-error.js`, `src/providers/auto-provider-config.js`, `src/providers/native-vendor.js`, `src/quota/provider-limit-cache-native-host.js`, `src/session/records.js`, `src/upstream-error.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | `crypto`, `fs`, `os`, `path`, `util` | — | `429 require(file)` |
 | `src/native/task-domain.js` | server.js | `src/native/runtime.js`, `src/paths.js`, `src/state/store.js` | — | `fs` | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/native/task-search.js` | server.js | `src/native/runtime.js`, `src/task-board/search.js` | — | — | — | — |
@@ -253,7 +250,7 @@
 | `src/repo-actor.js` | server.js | `src/portable-git.js` | — | `child_process`, `crypto`, `fs`, `path`, `util` | — | — |
 | `src/request-locality.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/role-token-tracker.js` | server.js | `src/state/store.js`, `src/usage-observed.js` | — | `fs`, `path` | — | — |
-| `src/router-tool-host.js` | server.js | `src/cli-adapters/router-mcp.js`, `src/router-tool-runtime.js`, `src/secrets-vault.js`, `src/workspace/writer-group.js` | `scripts/multicc-router-mcp.js` | `path` | — | — |
+| `src/router-tool-host.js` | server.js | `src/cli-adapters/router-mcp.js`, `src/native/runtime.js`, `src/router-tool-runtime.js`, `src/secrets-vault.js` | `scripts/multicc-router-mcp.js` | `path` | — | — |
 | `src/router-tool-runtime.js` | server.js | `src/native/runtime.js`, `src/secret-audit.js` | — | `crypto` | — | — |
 | `src/routes/account-routes-host.js` | server.js | `src/cli-key-accounts.js`, `src/native/runtime.js`, `src/request-locality.js` | — | `fs`, `os`, `path` | — | — |
 | `src/routes/agent-resources.js` | server.js | — | — | — | — | — |
@@ -262,7 +259,7 @@
 | `src/routes/ark-quota.js` | server.js | — | — | `child_process`, `fs`, `path` | — | — |
 | `src/routes/auth.js` | server.js | `src/gateway-child.js`, `src/native/runtime.js` | — | — | — | — |
 | `src/routes/aux-goal.js` | server.js | `src/native/runtime.js`, `src/quota/provider-limit-cache-native-host.js` | — | — | — | — |
-| `src/routes/chat-history.js` | server.js | `src/chat/opencode-context.js`, `src/native/runtime.js`, `src/session/chat-history-service.js` | — | `crypto` | — | — |
+| `src/routes/chat-history.js` | server.js | `src/chat/opencode-context.js`, `src/cli-switch.js`, `src/native/runtime.js`, `src/session/chat-history-service.js` | — | `crypto` | — | — |
 | `src/routes/claude-accounts.js` | server.js | `src/claude-auth/official-oauth.js`, `src/network/egress-fetch.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/providers/official-catalog.js`, `src/quota/account-subscription-reader.js` | — | — | — | — |
 | `src/routes/claude-oauth.js` | server.js | — | — | — | — | — |
 | `src/routes/claude-usage-quota.js` | server.js | `src/chrome-cdp.js`, `src/claude-auth/account-credentials.js`, `src/claude-auth/official-oauth.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/quota-managed-browser.js`, `src/quota/claude-cli-oauth.js`, `src/quota/claude-usage-queue.js` | — | — | — | — |
@@ -304,7 +301,7 @@
 | `src/routes/session-admin-host.js` | server.js | `src/classify/vocab.js`, `src/providers/auto-provider-config.js`, `src/request-locality.js` | — | — | — | — |
 | `src/routes/session-admin.js` | server.js | `src/classify/vocab.js`, `src/native/runtime.js`, `src/native/task-domain.js`, `src/routes/orchestration-host.js`, `src/routes/session-admin-host.js`, `src/routes/task-goal.js`, `src/session/query-service.js`, `src/session/workspace-service.js` | — | — | — | — |
 | `src/routes/session-bundle.js` | server.js | `src/git/service.js`, `src/memory/builtin-rules.js`, `src/native/runtime.js`, `src/session/handoff-env.js` | — | `child_process`, `crypto`, `fs`, `os`, `path`, `util` | `express` | `771 require(file.zipRef)`, `779 require(file.zipRef)`, `782 require(zipPayload.gitBundleZip.zipRef)` |
-| `src/routes/session-create.js` | server.js | `src/cli-adapters/vendor-login.js`, `src/cli-key-accounts.js`, `src/routes/account-routes-host.js` | — | `crypto` | — | — |
+| `src/routes/session-create.js` | server.js | `src/cli-key-accounts.js`, `src/native/runtime.js`, `src/routes/account-routes-host.js` | — | `crypto` | — | — |
 | `src/routes/session-git-host.js` | server.js | `src/request-locality.js` | — | `path` | — | — |
 | `src/routes/session-git.js` | server.js | `src/native/runtime.js`, `src/routes/session-git-host.js` | — | `path` | — | — |
 | `src/routes/session-lifecycle.js` | server.js | `src/chat/codex-rollout-guard.js`, `src/native/runtime.js` | — | — | — | — |
@@ -429,7 +426,7 @@
 | `src/wait/injector.js` | server.js | `src/native/runtime.js` | — | `crypto` | — | — |
 | `src/wait/service.js` | server.js | `src/native/runtime.js`, `src/outbox.js` | — | `crypto` | — | — |
 | `src/windows-env.js` | server.js | `src/native/runtime.js` | — | `child_process`, `fs`, `path` | — | — |
-| `src/workspace/admission.js` | server.js | `src/git/service.js`, `src/native/runtime.js`, `src/repo-actor.js`, `src/task-routing/code-revision.js`, `src/task-routing/evidence.js`, `src/task-shell/role-bindings.js`, `src/task-shell/store.js`, `src/workspace/registry.js`, `src/workspace/writer-escalation.js`, `src/workspace/writer-group.js` | — | `child_process`, `crypto`, `fs`, `path`, `util` | — | — |
+| `src/workspace/admission.js` | server.js | `src/git/service.js`, `src/native/runtime.js`, `src/repo-actor.js`, `src/task-routing/code-revision.js`, `src/task-routing/evidence.js`, `src/task-shell/role-bindings.js`, `src/task-shell/store.js`, `src/workspace/registry.js`, `src/workspace/writer-escalation.js` | — | `child_process`, `crypto`, `fs`, `path`, `util` | — | — |
 | `src/workspace/air-card-cache.js` | server.js | `src/native/runtime.js`, `src/native/task-domain.js` | — | — | — | — |
 | `src/workspace/air-index-port.js` | server.js | `src/native/runtime.js`, `src/native/task-read-model.js` | — | `crypto` | — | — |
 | `src/workspace/air-routes-host.js` | server.js | `src/classify/vocab.js`, `src/native/task-domain.js`, `src/request-locality.js`, `src/task-board/core.js`, `src/task-routing/delivery-view.js`, `src/workspace/air-card-cache.js`, `src/workspace/air-sync-runtime.js` | — | `crypto`, `path` | — | — |
@@ -441,7 +438,6 @@
 | `src/workspace/runtime.js` | server.js | `src/native/runtime.js` | — | — | — | — |
 | `src/workspace/separation-transfer.js` | server.js | `src/git/service.js` | — | — | — | — |
 | `src/workspace/writer-escalation.js` | server.js | `src/server-processes.js` | — | — | — | — |
-| `src/workspace/writer-group.js` | server.js | — | — | — | — | — |
 | `src/ws/connection-router.js` | server.js | `src/gateway-child.js`, `src/native/runtime.js`, `src/ws/native-queue.js`, `src/ws/ws-host.js` | — | `crypto` | `ws` | — |
 | `src/ws/gateway-chat-bridge.js` | server.js | — | — | `crypto`, `events`, `net` | — | — |
 | `src/ws/native-queue.js` | server.js | — | — | — | — | — |

@@ -3,7 +3,7 @@
 const { createChatHostCoordinator } = require('./host-coordinator');
 const { redactProviderRouteCapability } = require('../observability');
 const { protocolFamilyOf } = require('../cli/cli-capability');
-const turnProgress = require('./turn-progress');
+const { getTurnProgress } = require('../native/runtime');
 
 const REQUIRED_PORTS = Object.freeze([
   'appendMessage',
@@ -137,7 +137,7 @@ function modelAttributionField(state, turn, runner) {
 
 function createChatHostRuntime(rawPorts) {
   const ports = assertHostRuntimePorts(rawPorts);
-  const timelineField = typeof ports.timelineField === 'function' ? ports.timelineField : turnProgress.field;
+  const timelineField = typeof ports.timelineField === 'function' ? ports.timelineField : getTurnProgress().field;
   const liveState = (sessionId, state) => ports.getSessionState(sessionId) === state ? state : null;
   const current = (sessionId, state, turn, runner) => {
     const live = liveState(sessionId, state);

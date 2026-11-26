@@ -228,15 +228,14 @@ test('page size remains stable and immutable snapshots expose request generation
 });
 
 test('durable history reset broadcasts an authoritative page and invalidates every client cursor', () => {
-  // handleChatWs (which owns the history-reset WS message) now lives in the
-  // extracted chat turn engine; scan host + engine so the delegation shape resolves.
-  const server = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8')
-    + '\n' + fs.readFileSync(path.join(ROOT, 'src', 'chat', 'turn-engine.js'), 'utf8');
   const historyRuntime = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'chat-history.js'), 'utf8');
   const events = fs.readFileSync(path.join(ROOT, 'public', 'chat-event-controller.js'), 'utf8');
 
-  assert.match(server, /await (?:chatHistoryRuntime|getChatHistoryRuntime\(\))\.clearHistory\(sessionName, msg, cs\)/,
-    'the WebSocket host must delegate clear ownership to the history runtime');
+  const msg = { type: 'clear_history' }, cs = {}, result = {};
+  const ports = { getChatHistoryRuntime: () => ({ clearHistory(id, input, state) {
+    assert.equal(id, 's'); assert.equal(input, msg); assert.equal(state, cs); return result;
+  } }) };
+  assert.equal(require('../src/native/runtime').getNative().chatHandleSocketMessage(ports, {}, 's', null, {}, cs, msg), result);
   assert.match(historyRuntime,
     /await mutate\(key, 'clear', \[keep\]\)[\s\S]*type: 'chat_history_reset'/,
     'reset must be broadcast only after the queued durable visibility write and cache publish');

@@ -132,14 +132,12 @@ test('an untracked dispatch detaches from the prior task and survives history re
 });
 
 test('production gives every new untracked user/dispatch turn a provisional taskId', () => {
-  const turnEngine = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'),
-    'utf8',
-  );
-  assert.match(turnEngine,
-    /const provisionalAdmission = !requestedTask\.id && !reexecutePersistedDelivery\s*&& \(!originContinue \|\| directUserInput\)/);
-  assert.match(turnEngine, /beginTurn\(cs,\s*requestedTask,\s*\{\s*provisional:\s*provisionalAdmission\s*\}\)/);
-  assert.match(turnEngine, /messageMetadata\(messageTask,\s*nextTaskId,\s*\{\s*detached:\s*taskDetached\s*\}\)/);
+  const owner = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/task_start.rs'), 'utf8');
+  const prepare = fs.readFileSync(path.join(__dirname, '../native/addon/src/turn_engine/task_start/preparation.rs'), 'utf8');
+  assert.match(prepare, /!s.get\(c"reexecutePersistedDelivery"\)\?\.truthy\(\)\? && self.fresh\(\)/);
+  assert.match(owner, /let provisional = !task.get\(c"id"\)\?\.truthy\(\)\? && fresh.truthy\(\)\?/);
+  assert.match(owner, /c"beginTurn",[\s\S]{0,140}"provisional", flag\(p, provisional\)/);
+  assert.match(owner, /c"messageMetadata",[\s\S]{0,180}"detached", bound.get\(c"detached"\)/);
 });
 
 test('a provisional admission replaces an unfinished prior task immediately', () => {
@@ -295,7 +293,7 @@ test('unattended arming rides the first message and later human input is reporte
 test('production wires task board and WebSocket chat to the same session ingress', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
   const turnEngine = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'chat', 'turn-engine.js'),
+    path.join(__dirname, '..', 'src', 'chat', 'turn-engine-host.js'),
     'utf8',
   );
   assert.match(source,
@@ -305,8 +303,12 @@ test('production wires task board and WebSocket chat to the same session ingress
   // no longer lives inline in the WS handler; it is centralized in the reusable
   // prepareQueuedTurn hook wired as beforeDeliver so both entrypoints (and a
   // post-restart replay of the same queue record) prepare identically.
-  assert.match(turnEngine,
-    /await taskContextHost\.deliverSessionMessage\(sessionName,\s*msg\.text,\s*turnOpts\)/);
+  assert.match(turnEngine, /chatHandleSocketMessage\(socketPorts/);
+  const sent = [];
+  require('../src/native/runtime').getNative().chatHandleSocketMessage({
+    taskContextHost: { deliverSessionMessage: (...args) => sent.push(args) },
+  }, {}, 's', null, {}, {}, { type: 'user_message', text: 'hi' });
+  assert.deepEqual(sent, [['s', 'hi', {}]]);
   assert.doesNotMatch(turnEngine,
     /const deliver\s*=\s*\(\)\s*=>\s*taskContextHost\.deliverSessionMessage\(sessionName,\s*msg\.text,\s*turnOpts\)/,
     'admission prep must live in the shared prepareQueuedTurn hook, not inline in the WS handler');

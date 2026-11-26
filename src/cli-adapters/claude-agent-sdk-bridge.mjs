@@ -14,7 +14,7 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { getNative } = require('../native/runtime');
-const { bundledClaudeCodeBinary } = require('../cli/claude-bundled-binary');
+const { bundledClaudeCodeBinary } = require('../cli/cli-capability');
 const { isMainResult } = require('../cli-adapters/result-completion');
 
 export function parseArgs(argv) {

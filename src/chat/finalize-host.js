@@ -1,7 +1,7 @@
 'use strict';
 
 const { getNative } = require('../native/runtime');
-const turnProgress = require('./turn-progress');
+const { getTurnProgress } = require('../native/runtime');
 
 function assertFinalizeHostPorts(ports) {
   return getNative().chatValidateFinalizationPorts(ports);
@@ -10,7 +10,7 @@ function assertFinalizeHostPorts(ports) {
 function createTurnFinalizationExecutor(rawPorts) {
   const ports = assertFinalizeHostPorts(rawPorts);
   const now = typeof ports.now === 'function' ? ports.now : Date.now;
-  const timelineField = typeof ports.timelineField === 'function' ? ports.timelineField : turnProgress.field;
+  const timelineField = typeof ports.timelineField === 'function' ? ports.timelineField : getTurnProgress().field;
   const log = typeof ports.log === 'function' ? ports.log : () => {};
   const logError = typeof ports.logError === 'function' ? ports.logError : () => {};
 

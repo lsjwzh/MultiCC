@@ -8,10 +8,9 @@ const exec = promisify(execFile);
 const { createTaskShellStore } = require('../task-shell/store');
 const { createWorkspaceRegistry } = require('./registry');
 const { createWriterEscalation } = require('./writer-escalation');
-const writerGroup = require('./writer-group');
 const { WORKTREE_SUBDIR } = require('../git/service');
 const { captureCodeRevision } = require('../task-routing/code-revision');
-const { getNative } = require('../native/runtime');
+const { getWriterGroup, getNative } = require('../native/runtime');
 const BACKPRESSURE_CODES = new Set([
   'workspace_busy',
   'workspace_lease_unavailable',
@@ -534,7 +533,7 @@ function createWorkspaceAdmission(deps) {
     const age = at - Number(lease.updatedAt || lease.acquiredAt || 0);
     for (const [writerId, writer] of Object.entries(writers)) {
       if (writer?.state !== 'active') continue;
-      const dead = writerPidAlive(writer.pid) === false && !writerGroup.groupAlive(writer.pid);
+      const dead = writerPidAlive(writer.pid) === false && !getWriterGroup().groupAlive(writer.pid);
       if (!dead && age < staleUncertainLimit()) continue;
       try {
         store.writerLeaseRelease({ leaseId: lease.id, epoch: lease.epoch, generation: lease.generation,

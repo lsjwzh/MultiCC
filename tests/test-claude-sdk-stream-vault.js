@@ -18,7 +18,7 @@ assertTestDir(dataDir);
 const vault = require('../src/secrets-vault');
 const { createSdkStream } = require('../src/chat/claude-sdk-stream');
 const { createStreamRouter } = require('../src/chat/stream-router');
-const { bundledClaudeCodeBinary } = require('../src/cli/claude-bundled-binary');
+const { bundledClaudeCodeBinary } = require('../src/cli/cli-capability');
 const sdkFixture = require('./helpers/claude-sdk-fixture');
 const laneLedger = require('./helpers/claude-lane-ledger');
 

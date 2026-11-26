@@ -89,7 +89,7 @@ function readServerCode() {
       'src/classify/state-machine.js',
       'src/chat/api-error-policy.js',
       'src/chat/api-error-host.js',
-      'src/chat/turn-engine.js',
+      'src/chat/turn-engine-host.js',
     ];
     return relativePaths.map(relativePath => fs.readFileSync(
       path.join(__dirname, '..', relativePath), 'utf8',

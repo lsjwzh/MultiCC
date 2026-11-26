@@ -209,6 +209,7 @@ pub mod session_question;
 pub mod session_records;
 pub mod state_tx;
 pub mod workspace_sharing;
+pub mod writer_group;
 pub mod ws_admission;
 pub mod ws_backpressure;
 

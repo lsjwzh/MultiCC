@@ -275,12 +275,17 @@ pub fn api_error_detect_envelope(
     provider: Unknown<'_>,
     text: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let provider = read(&env, LiveValue::new(&env, provider))?;
-    let text = read(&env, LiveValue::new(&env, text))?;
-    write(
-        &env,
-        &api_error_policy::detect_error_envelope(&provider, &text),
-    )
+    Ok(detect_envelope(LiveValue::new(&env, provider), LiveValue::new(&env, text))?.raw())
+}
+
+pub(crate) fn detect_envelope<'a>(
+    provider: LiveValue<'a>,
+    text: LiveValue<'a>,
+) -> Result<LiveValue<'a>> {
+    let env = Env::from_raw(provider.env());
+    let name = read(&env, provider)?;
+    let value = read(&env, text)?;
+    provider.from_value(&api_error_policy::detect_error_envelope(&name, &value))
 }
 
 #[napi]

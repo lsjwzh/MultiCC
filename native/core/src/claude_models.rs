@@ -509,24 +509,29 @@ pub fn resolve_bundle(package_root: &Path, home: &Path) -> PathBuf {
     bundled_sdk_binary(package_root).unwrap_or_else(|| resolve_system_bundle(home))
 }
 
-fn bundled_sdk_binary(package_root: &Path) -> Option<PathBuf> {
-    // 与 src/cli/claude-bundled-binary.js 一致，平台包可能被 npm 提升到上层。
-    // 搜索起点是 MultiCC 安装目录，不使用任务或会话的工作目录。
-    let package_root = package_root.canonicalize().ok()?;
-    let platform =
-        crate::egress_plugin::node_platform_arch_for(std::env::consts::OS, std::env::consts::ARCH);
-    let binary = if cfg!(windows) {
+/// npm 平台包优先使用常规构建，Linux 再查 musl 构建。
+pub fn sdk_packages(os: &str, arch: &str) -> impl Iterator<Item = String> {
+    let platform = crate::egress_plugin::node_platform_arch_for(os, arch);
+    let suffixes: &[&str] = if os == "linux" { &["", "-musl"] } else { &[""] };
+    suffixes
+        .iter()
+        .map(move |suffix| format!("@anthropic-ai/claude-agent-sdk-{platform}{suffix}"))
+}
+
+pub fn sdk_executable(os: &str) -> &'static str {
+    if matches!(os, "windows" | "win32") {
         "claude.exe"
     } else {
         "claude"
-    };
-    let suffixes: &[&str] = if cfg!(target_os = "linux") {
-        &["", "-musl"]
-    } else {
-        &[""]
-    };
-    for suffix in suffixes {
-        let package = format!("node_modules/@anthropic-ai/claude-agent-sdk-{platform}{suffix}");
+    }
+}
+
+fn bundled_sdk_binary(package_root: &Path) -> Option<PathBuf> {
+    // 允许 npm 把平台包提升到祖先目录。
+    let package_root = package_root.canonicalize().ok()?;
+    let binary = sdk_executable(std::env::consts::OS);
+    for name in sdk_packages(std::env::consts::OS, std::env::consts::ARCH) {
+        let package = Path::new("node_modules").join(name);
         for root in package_root.ancestors() {
             let dir = root.join(&package);
             let path = dir.join(binary);

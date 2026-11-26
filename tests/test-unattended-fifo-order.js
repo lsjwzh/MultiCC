@@ -130,7 +130,8 @@ function fixture(t) {
 
   // The REAL native kernel, recorded only. These tests exercise scheduler
   // ordering; the policy bytes are Rust and are exercised verbatim.
-  const calls = { decide: 0, enqueue: 0, turnEnds: [] };
+  const calls = { decide: 0, enqueue: 0, turnEnds: [], injections: 0, recheckExhaustions: 0 };
+  let injectionBarrier = null;
   const kernel = {
     tag: () => nativeKernel.tag(),
     deferEvaluation: input => nativeKernel.deferEvaluation(input),
@@ -179,7 +180,14 @@ function fixture(t) {
     // Exactly how server.js wires the supervisor's `inject` port: the typed
     // session-delivery boundary, whose admission result tells the supervisor
     // whether its continuation is still queued.
-    inject: (id, text, options) => delivery.deliverSystem(id, text, { ...options, unattendedSystem: true }),
+    inject: (id, text, options) => {
+      calls.injections += 1;
+      const send = () => delivery.deliverSystem(id, text, { ...options, unattendedSystem: true });
+      return injectionBarrier ? injectionBarrier.then(send) : send();
+    },
+    log: message => {
+      if (message.includes('backlog recheck gave up')) calls.recheckExhaustions += 1;
+    },
     withdrawQueued: (id, entryId) => scheduler.cancelQueued(id, entryId, {
       actor: 'unattended', reason: 'paused',
     }),
@@ -302,6 +310,11 @@ function fixture(t) {
     },
     setClassifyState(value) { record.taskState.classifyState = value; },
     now: () => clock,
+    holdInjection() {
+      let release;
+      injectionBarrier = new Promise(resolve => { release = resolve; });
+      return () => { injectionBarrier = null; release(); };
+    },
     advance(ms = 1) { clock += ms; },
     fireTimers() {
       let fired = 0;
@@ -590,6 +603,8 @@ test('(f) the recheck gives up after the kernel attempt cap and never evaluates 
   let ticks = 0;
   while (h.unattended.stats().backlogRechecks > 0 && ticks < 125) {
     await tick(h, 15_000);
+    await until(() => h.unattended.stats().backlogRechecks > 0 || h.calls.recheckExhaustions > 0,
+      'the completed backlog recheck');
     ticks += 1;
   }
   assert.equal(ticks, 120, 'one tick per attempt up to the kernel cap (recheckMaxAttempts)');
@@ -1011,7 +1026,7 @@ test('(i) a delayed fault retry is selectable before a staged FIFO when its time
   // The durable timer fires: the recovery injection outranks the FIFO.
   h.advance(h.record.unattended.retryAt - h.now());
   assert.equal(h.fireTimers(), 1);
-  await flush();
+  await until(() => h.record.unattended.retryAt === null, 'the admitted fault continuation');
   assert.equal(h.record.unattended.retryAt, null, 'the consumed retry is cleared');
   const recovery = await claimNext(h, 'delayed fault continuation');
   assert.equal(recovery.payload.options.unattendedRecovery, true);
@@ -1019,6 +1034,34 @@ test('(i) a delayed fault retry is selectable before a staged FIFO when its time
   assert.notEqual(recovery.id, backlog.entry.id);
   await h.startClaim(recovery);
   assert.equal(await h.claimOne(), null, 'the FIFO stays staged behind the recovery turn');
+});
+
+test('delayed recovery admission keeps its retry marker and the FIFO staged until accepted', async t => {
+  const h = fixture(t);
+  await h.arm();
+  await h.activeTurn('do work');
+  const backlog = await h.scheduler.admit({ sessionId: SESSION, text: 'staged human work', source: 'operation' });
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+  await h.unattended.onTurnEnd(SESSION, { kind: 'fault', retryScheduled: false });
+  await h.startClaim(await claimNext(h, 'first fault recovery'));
+  h.setClassifyState('E');
+  await h.scheduler.complete(SESSION, { classifyState: 'E' });
+  await h.unattended.onTurnEnd(SESSION, { kind: 'fault', retryScheduled: false });
+  const retryAt = h.record.unattended.retryAt;
+  const previousInjections = h.calls.injections;
+  const release = h.holdInjection();
+  t.after(release);
+  h.advance(retryAt - h.now());
+  assert.equal(h.fireTimers(), 1);
+  await until(() => h.calls.injections > previousInjections, 'the blocked recovery admission');
+  assert.equal(h.record.unattended.retryAt, retryAt, 'the recovery is not consumed before admission');
+  assert.equal(await h.claimOne(), null, 'an overdue retry still owns recovery ahead of the FIFO');
+  release();
+  await until(() => h.record.unattended.retryAt === null, 'the accepted recovery');
+  const recovery = await claimNext(h, 'the delayed recovery');
+  assert.equal(recovery.payload.options.unattendedRecovery, true);
+  assert.notEqual(recovery.id, backlog.entry.id);
 });
 
 test('provider handoff is the single fault recovery and clears an existing retry', async t => {

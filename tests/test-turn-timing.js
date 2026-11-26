@@ -1,6 +1,6 @@
 'use strict';
 
-// Isolated tests for the chat turn-timing instrumentation (src/chat/turn-progress.js
+// Isolated tests for the chat turn-timing instrumentation (native/addon/src/turn_progress_facade.rs
 // over the Rust owner + the chat-stream streaming hooks). No real CLI processes:
 // the recorder runs against an injected clock/emitter, and chat-stream runs
 // against a fake child_process.spawn installed via require.cache before first require.
@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
-const { createTurnTimingRecorder } = require('../src/chat/turn-progress');
+const { createTurnTimingRecorder } = require('../src/native/runtime').getTurnProgress();
 
 function makeRecorder(startTs = 1_700_000_000_000) {
   const lines = [];

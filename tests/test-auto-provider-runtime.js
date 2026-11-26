@@ -1981,7 +1981,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
     assert.equal(runtime.snapshot('wb-native').providerName, 'WorkBuddy');
     const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
     const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-    const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine');
+    const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
     const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
     const attempts = createProviderAttemptRuntime();
     const attempt = attempts.beginAttempt({
@@ -2021,7 +2021,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
 test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具仍阻止重放', () => {
   const { createQoderAdapter } = require('../src/cli-adapters/qoder');
   const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-  const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine');
+  const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
   const { chatClaudeBoundaryEnvelope } = require('../src/native/runtime').getNative();
   const adapter = createQoderAdapter({ cmd: 'qoder' });
   const message = '服务暂时繁忙，请稍后重试';

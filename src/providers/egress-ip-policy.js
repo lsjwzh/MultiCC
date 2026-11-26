@@ -4,7 +4,7 @@
 // a provider with a non-empty egressIpAllowlist may only be used while this
 // machine's current public IP is exactly one of the listed addresses. Exact
 // match only (no CIDR/range). Consumed by both the chat-turn admission gate
-// (turn-engine.js) and the balance/quota poll paths (usage-limit-poller.js,
+// (turn_engine/preflight.rs) and the balance/quota poll paths (usage-limit-poller.js,
 // routes/provider-balance.js) so a provider restricted this way is refused
 // everywhere it would otherwise make an outbound call, not just on send.
 
