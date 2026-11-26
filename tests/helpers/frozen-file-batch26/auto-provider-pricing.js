@@ -25,7 +25,7 @@
 // reads the same value back. A broken table therefore still prices as unknown
 // instead of silently becoming free.
 
-const { getNative } = require('../native/runtime');
+const { getNative } = require('../../../src/native/runtime');
 
 const DEFAULTS = JSON.parse(getNative().autoProviderPricingDefaults());
 const MAX_PRICE_TIERS = DEFAULTS.maxPriceTiers;

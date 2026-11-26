@@ -27,7 +27,7 @@ const {
 const { peekOpenCodeModels } = require('../routes/opencode-models');
 const { limitState } = require('../native/runtime').getAutoProviderPolicy();
 const { createAutoProviderRouting } = require('./auto-provider-routing');
-const { expandCandidates, modelChoices, priceLadder } = require('./auto-provider-pricing');
+const { expandCandidates, modelChoices, priceLadder } = require('../native/runtime').getAutoProviderPricing();
 const { createRoutingAdmissionPhase } = require('./admission-progress');
 const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
 const { selectionKey } = require('../providers/auto-provider-config');

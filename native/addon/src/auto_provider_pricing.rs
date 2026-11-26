@@ -2,12 +2,14 @@
 //!
 //! The shaping decisions and the price ladder live in
 //! `multicc_core::auto_provider_pricing`. The one thing that cannot move is the
-//! table lookup itself: the table is `src/pricing/price-table.js`, a live
-//! in-memory index that hands out frozen entry objects. So the split is
+//! table storage itself: the table is `src/pricing/price-table.js`, a live
+//! in-memory index that hands out frozen entry objects. The native facade
+//! invokes its lookup method while retaining V8 exceptions and getter order.
+//! The shared JSON interfaces remain available:
 //!
 //!   1. [`auto_provider_pricing_models`] says which models this pool's
 //!      expansion will price;
-//!   2. JavaScript looks those models up and passes the entries back;
+//!   2. the native facade looks those models up and encodes the entries;
 //!   3. [`auto_provider_expand_candidates`] prices, expands, orders and caps.
 //!
 //! [`auto_provider_price_of`] is the same post-processing for a single model,
@@ -138,4 +140,171 @@ impl RustPriceLadder {
         let candidate = data(env, candidate)?;
         Ok(self.state.tier_of(Some(&candidate)))
     }
+}
+
+// Live facade for the compatibility host. The table stays in V8; traversal,
+// lookup failure policy, non-finite encoding and result ownership live here.
+use crate::{host_methods::method, js_iteration::read as property, route_response::*};
+
+fn pricing_wire<'a>(value: L<'a>, api: L<'a>) -> Result<L<'a>> {
+    if value.kind()? == sys::ValueType::napi_number {
+        return if call(value.global()?.get(c"Number")?, c"isFinite", &[value])?.truthy()? {
+            Ok(value)
+        } else {
+            string(value)
+        };
+    }
+    if !value.truthy()? || value.kind()? != sys::ValueType::napi_object {
+        return Ok(value);
+    }
+    if call(value.global()?.get(c"Array")?, c"isArray", &[value])?.truthy()? {
+        return call(value, c"map", &[api.get(c"wire")?]);
+    }
+    let out = fields(api, &[])?;
+    call(value.global()?.get(c"Object")?, c"keys", &[value])?
+        .for_each(|key| out.set_key(key, pricing_wire(value.get_key(key)?, api)?))?;
+    Ok(out)
+}
+
+fn pricing_json<'a>(api: L<'a>, name: &std::ffi::CStr, args: &[L<'a>]) -> Result<L<'a>> {
+    let result = call(api.get(c"native")?, name, args)?;
+    call(api.global()?.get(c"JSON")?, c"parse", &[result])
+}
+
+fn pricing_lookup<'a>(table: L<'a>, model: L<'a>) -> Result<L<'a>> {
+    Ok(table
+        .catch(|| {
+            // The method is read before String(model), just like table.lookup(...).
+            let lookup = property(table, c"lookup")?;
+            crate::js_iteration::call(lookup, table, &[string(model)?])
+        })?
+        .unwrap_or(null(table)?))
+}
+
+#[napi]
+pub fn auto_provider_pricing_api(env: Env, native: Unknown<'_>) -> Result<sys::napi_value> {
+    let native = L::new(&env, native);
+    let api = fields(native, &[("native", native)])?;
+    api.set(
+        c"wire",
+        method(&env, api, "wire", 1, 1, |s, a| pricing_wire(a[0], s))?,
+    )?;
+    api.set(
+        c"expandedItem",
+        method(&env, api, "", 1, 1, |s, a| {
+            if a[0].kind()? == sys::ValueType::napi_null {
+                s.from_value(&V::Undefined)
+            } else {
+                a[0].freeze()
+            }
+        })?,
+    )?;
+    let defaults = pricing_json(api, c"autoProviderPricingDefaults", &[])?;
+    let out = fields(
+        api,
+        &[
+            ("MAX_PRICE_TIERS", property(defaults, c"maxPriceTiers")?),
+            ("MAX_VARIANTS", property(defaults, c"maxVariants")?),
+            (
+                "MAX_VARIANTS_PER_PROVIDER",
+                property(defaults, c"maxVariantsPerProvider")?,
+            ),
+            ("expandCandidates", api.from_value(&V::Undefined)?),
+            ("modelChoices", api.from_value(&V::Undefined)?),
+            ("priceLadder", api.from_value(&V::Undefined)?),
+            ("priceOf", api.from_value(&V::Undefined)?),
+        ],
+    )?;
+    out.set(
+        c"priceOf",
+        method(&env, api, "priceOf", 2, 2, |s, a| {
+            let table = a[0];
+            let model = a[1];
+            if !table.truthy()?
+                || property(table, c"lookup")?.kind()? != sys::ValueType::napi_function
+                || !model.truthy()?
+            {
+                return null(s);
+            }
+            let entry = pricing_wire(pricing_lookup(table, model)?, s)?;
+            let entry = if entry.nullish()? { null(s)? } else { entry };
+            let answer = pricing_json(s, c"autoProviderPriceOf", &[entry])?;
+            if answer.nullish()? {
+                null(s)
+            } else {
+                answer.freeze()
+            }
+        })?,
+    )?;
+    out.set(
+        c"modelChoices",
+        method(&env, api, "modelChoices", 1, 1, |s, a| {
+            let value = if a[0].nullish()? { null(s)? } else { a[0] };
+            pricing_json(s, c"autoProviderModelChoices", &[value])
+        })?,
+    )?;
+    out.set(
+        c"expandCandidates",
+        method(&env, api, "expandCandidates", 1, 2, |s, a| {
+            let options = if a[1].undefined()? {
+                fields(s, &[])?
+            } else {
+                a[1]
+            };
+            let table = property(options, c"priceTable")?;
+            let table = if table.undefined()? { null(s)? } else { table };
+            let required = property(options, c"requirePrice")?;
+            let required = if required.undefined()? {
+                flag(s, true)?
+            } else {
+                required
+            };
+            let candidates = a[0];
+            if !call(s.global()?.get(c"Array")?, c"isArray", &[candidates])?.truthy()? {
+                return Err(s.type_error("candidates is not iterable"));
+            }
+            let models = pricing_json(s, c"autoProviderPricingModels", &[candidates])?;
+            let entries = fields(s, &[])?;
+            if table.truthy()?
+                && property(table, c"lookup")?.kind()? == sys::ValueType::napi_function
+            {
+                models.for_each(|model| {
+                    let entry = pricing_lookup(table, model)?;
+                    if entry.truthy()? {
+                        entries.set_key(model, pricing_wire(entry, s)?)?;
+                    }
+                    Ok(())
+                })?;
+            }
+            let request = fields(
+                s,
+                &[
+                    ("candidates", candidates),
+                    ("entries", entries),
+                    ("requirePrice", required),
+                ],
+            )?;
+            let expanded = pricing_json(s, c"autoProviderExpandCandidates", &[request])?;
+            call(expanded, c"map", &[s.get(c"expandedItem")?])
+        })?,
+    )?;
+    out.set(
+        c"priceLadder",
+        method(&env, api, "priceLadder", 1, 1, |s, a| {
+            if !call(s.global()?.get(c"Array")?, c"isArray", &[a[0]])?.truthy()? {
+                return Err(s.type_error("candidates is not iterable"));
+            }
+            let ladder = property(s.get(c"native")?, c"RustPriceLadder")?.construct(&[a[0]])?;
+            let tiers = property(ladder, c"tiers")?.freeze()?;
+            let owner = fields(s, &[("ladder", ladder)])?;
+            let env = Env::from_raw(s.env());
+            let tier = method(&env, owner, "tierOf", 1, 1, |owner, a| {
+                let candidate = if a[0].nullish()? { null(owner)? } else { a[0] };
+                call(owner.get(c"ladder")?, c"tierOf", &[candidate])
+            })?;
+            let tier = L::from_raw(s.env(), tier.raw());
+            fields(s, &[("tiers", tiers), ("tierOf", tier)])?.freeze()
+        })?,
+    )?;
+    Ok(out.raw())
 }

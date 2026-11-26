@@ -51,7 +51,7 @@ const TARGETS = {
 
 const MODULE_PATHS = {
   src: {
-    pricing: '../src/chat/auto-provider-pricing',
+    pricing: '../src/native/runtime',
     selectionKey: '../src/providers/auto-provider-config',
     routing: '../src/chat/auto-provider-routing',
     runtime: '../src/chat/auto-provider-runtime',
@@ -93,7 +93,9 @@ function installFetchTrap() {
 
 function loadModules() {
   const load = paths => ({
-    pricing: require(path.join(__dirname, paths.pricing)),
+    pricing: paths === MODULE_PATHS.src
+      ? require(path.join(__dirname, paths.pricing)).getAutoProviderPricing()
+      : require(path.join(__dirname, paths.pricing)),
     selectionKey: require(path.join(__dirname, paths.selectionKey)).selectionKey,
     routing: require(path.join(__dirname, paths.routing)),
     runtime: require(path.join(__dirname, paths.runtime)),
