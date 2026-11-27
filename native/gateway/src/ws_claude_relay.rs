@@ -58,11 +58,7 @@ const CLAUDE_ALT_TRANSPORT_KEYS: &[&str] = &[
 ];
 
 fn host_claude_bin() -> String {
-    std::env::var("MULTICC_CLAUDE_BIN")
-        .ok()
-        .or_else(|| std::env::var("CLAUDE_CMD").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "claude".to_string())
+    crate::cli_bin::resolve_claude_bin_string()
 }
 
 fn valid_provider_id(id: &str) -> bool {
