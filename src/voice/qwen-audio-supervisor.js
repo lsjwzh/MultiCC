@@ -12,7 +12,7 @@ const {
   isGlobalVoiceGatewayRecord,
   isVoiceGatewayRecord,
   resolveVoiceGateway,
-} = require('./gateway');
+} = require('../native/binding').voiceGatewayDomain;
 const { ensurePrivateDir } = require('../native/binding').runtimeSecurity;
 
 // Realtime voice is a single machine-wide child. GLOBAL_KEY is its slot in the

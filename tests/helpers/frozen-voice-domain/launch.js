@@ -14,7 +14,7 @@
 // — a voice request must not land somewhere the user did not mean.
 
 const crypto = require('crypto');
-const { VOICE_ROUTER_ID, isVoiceRouterRecord } = require('../native/binding').voiceRouter;
+const { VOICE_ROUTER_ID, isVoiceRouterRecord } = require('../../../src/native/binding').voiceRouter;
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const MAX_TICKETS = 64;

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // Pinyin hotword post-correction (src/voice/hotword-corrector.js).
 const assert = require('assert');
-const Module = require('module');
 
-const hot = require('../src/voice/hotword-corrector');
+const hot = require('../src/native/binding').voiceCorrector;
 
 let failed = 0;
 function test(name, fn) {
@@ -102,22 +101,12 @@ test('size and entry caps hold', () => {
 });
 
 test('missing pinyin-pro degrades to ASCII-only correction without throwing', () => {
-  const origLoad = Module._load;
-  const resolved = require.resolve('../src/voice/hotword-corrector');
-  const cached = require.cache[resolved];
-  delete require.cache[resolved];
-  Module._load = function (request, ...rest) {
-    if (request === 'pinyin-pro') { const e = new Error("Cannot find module 'pinyin-pro'"); e.code = 'MODULE_NOT_FOUND'; throw e; }
-    return origLoad.call(this, request, ...rest);
-  };
-  try {
-    const bare = require('../src/voice/hotword-corrector');
-    assert.strictEqual(bare.correctWithHotwords('这个权线 multi cc', '权限, MultiCC'), '这个权线 MultiCC');
-  } finally {
-    Module._load = origLoad;
-    delete require.cache[resolved];
-    if (cached) require.cache[resolved] = cached;
-  }
+  const native = require('../src/native/binding').getNative();
+  const bare = native.voiceCorrectorApi({
+    loadPinyin() { throw new Error("Cannot find module 'pinyin-pro'"); },
+    windows: native.HotwordWindows,
+  });
+  assert.strictEqual(bare.correctWithHotwords('这个权线 multi cc', '权限, MultiCC'), '这个权线 MultiCC');
 });
 
 test('nearSyllable covers accent pairs and rejects unrelated sounds', () => {
@@ -139,5 +128,5 @@ require('node:test')('67f54869 differential: voice/hotword-corrector', async () 
     return [api.parseHotwords(lexicon), api.stripAliases(lexicon),
       ...['🚀测试权线，权线', 'CLAUDE CODE /claude code', '克劳德'].map(text => api.correctWithHotwords(text, lexicon)),
       ...[['zhan','zang'], ['shi','si'], ['量','量']].map(pair => api.nearSyllable(...pair))];
-  });
+  }, hot);
 });

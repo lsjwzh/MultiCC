@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 344 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 334 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -143,7 +143,7 @@
 | `src/memory/retrieval.js` | server.js | `src/memory-store.js`, `src/memory/builtin-rules.js`, `src/native/binding.js` | — | `fs`, `path` | — | — |
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/model-history-converter.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
-| `src/native/binding.js` | server.js | `src/chat/api-error-host.js`, `src/chat/claude-sdk-route.js`, `src/chat/finalize-host.js`, `src/chat/host-coordinator.js`, `src/chat/host-runtime.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-lifecycle.js`, `src/chat/turn-request.js`, `src/claude-auth/official-oauth.js`, `src/cli-adapters/commands.js`, `src/cli-adapters/dsh.js`, `src/cli-adapters/kimi-auth.js`, `src/cli-adapters/router-mcp.js`, `src/cli-adapters/zcode-auth.js`, `src/codex/image-bridge.js`, `src/codex/oauth-refresh.js`, `src/http-errors.js`, `src/native/bootstrap-apis.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/operation-service.js`, `src/orchestration/draft-host.js`, `src/orchestration/native-store-host.js`, `src/outbox.js`, `src/providers/auto-provider-config.js`, `src/providers/egress-ip.js`, `src/providers/host.js`, `src/providers/official-catalog.js`, `src/routes/opencode-models.js`, `src/session/records.js`, `src/state/store.js`, `src/tailscale-funnel-health.js`, `src/task-board/board-store.js`, `src/task-worktree.js`, `src/tunnel-sakurafrp-api.js`, `src/upstream-error.js`, `src/usage-limit-poller.js`, `src/usage-observed.js`, `src/wait/service.js`, `src/workspace/air-routes-host.js`, `src/ws/gateway-chat-bridge.js` | `scripts/multicc-router-mcp.js`, `src/cli-adapters/claude-agent-sdk-bridge.mjs`, `src/cli-adapters/pi-router-extension.mjs`, `src/cli-adapters/zcode-bridge.cjs`, `src/cli-adapters/zcode-terminal.cjs`, `src/task-shell/migration-page-worker.js` | `async_hooks`, `child_process`, `crypto`, `diagnostics_channel`, `events`, `fs`, `fs/promises`, `http`, `https`, `module`, `net`, `os`, `path`, `util`, `worker_threads`, `zlib` | `multer` | `1059 require(path.join(root, 'scripts', 'ensure-source-rust'))`, `487 require(file)` |
+| `src/native/binding.js` | server.js | `src/chat/api-error-host.js`, `src/chat/claude-sdk-route.js`, `src/chat/finalize-host.js`, `src/chat/host-coordinator.js`, `src/chat/host-runtime.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-lifecycle.js`, `src/chat/turn-request.js`, `src/claude-auth/official-oauth.js`, `src/cli-adapters/commands.js`, `src/cli-adapters/dsh.js`, `src/cli-adapters/kimi-auth.js`, `src/cli-adapters/router-mcp.js`, `src/cli-adapters/zcode-auth.js`, `src/codex/image-bridge.js`, `src/codex/oauth-refresh.js`, `src/http-errors.js`, `src/native/bootstrap-apis.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/operation-service.js`, `src/orchestration/draft-host.js`, `src/orchestration/native-store-host.js`, `src/outbox.js`, `src/providers/auto-provider-config.js`, `src/providers/egress-ip.js`, `src/providers/host.js`, `src/providers/official-catalog.js`, `src/routes/opencode-models.js`, `src/session/records.js`, `src/state/store.js`, `src/tailscale-funnel-health.js`, `src/task-board/board-store.js`, `src/task-worktree.js`, `src/tunnel-sakurafrp-api.js`, `src/upstream-error.js`, `src/usage-limit-poller.js`, `src/usage-observed.js`, `src/wait/service.js`, `src/workspace/air-routes-host.js`, `src/ws/gateway-chat-bridge.js` | `scripts/multicc-router-mcp.js`, `src/cli-adapters/claude-agent-sdk-bridge.mjs`, `src/cli-adapters/pi-router-extension.mjs`, `src/cli-adapters/zcode-bridge.cjs`, `src/cli-adapters/zcode-terminal.cjs`, `src/task-shell/migration-page-worker.js`, `src/voice/multicc-acp-agent.mjs` | `async_hooks`, `child_process`, `crypto`, `diagnostics_channel`, `events`, `fs`, `fs/promises`, `http`, `https`, `module`, `net`, `os`, `path`, `stream`, `stream/promises`, `util`, `worker_threads`, `zlib` | `multer`, `pinyin-pro` | `1059 require(path.join(root, 'scripts', 'ensure-source-rust'))`, `487 require(file)` |
 | `src/native/bootstrap-apis.js` | server.js | `native/core/src/task_planning_status.json`, `src/native/binding.js` | — | `events`, `os`, `path` | — | — |
 | `src/native/task-domain.js` | server.js | `src/native/binding.js`, `src/state/store.js` | — | `fs` | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/binding.js` | — | — | — | — |
@@ -260,11 +260,8 @@
 | `src/routes/task-search.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/routes/token-usage.js` | server.js | `src/codex/usage.js`, `src/native/binding.js` | — | — | — | — |
 | `src/routes/update-route.js` | server.js | `src/routes/release-history-host.js`, `src/update-runner.js` | — | — | — | — |
-| `src/routes/voice-gateway-host.js` | server.js | `src/native/binding.js`, `src/voice/gateway.js` | `src/voice/multicc-acp-agent.mjs` | `path` | — | — |
 | `src/routes/voice-gateway-proxy.js` | server.js | `src/native/binding.js` | — | `http` | — | — |
-| `src/routes/voice-host.js` | server.js | `src/native/binding.js` | — | — | — | — |
-| `src/routes/voice-runtime-host.js` | server.js | `src/native/binding.js`, `src/routes/voice-gateway-host.js` | — | — | — | — |
-| `src/routes/voice.js` | server.js | `src/native/binding.js`, `src/routes/voice-host.js` | — | — | — | — |
+| `src/routes/voice.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/routes/zcode-auth.js` | server.js | `src/cli-adapters/zcode-auth.js` | — | — | — | — |
 | `src/runtime-homes-janitor.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
 | `src/search/index-store.js` | server.js | `src/native/binding.js`, `src/sqlite/driver.js` | — | `crypto`, `fs`, `path` | — | — |
@@ -336,18 +333,11 @@
 | `src/usage-limit-poller.js` | server.js | `src/native/binding.js`, `src/network/outbound.js`, `src/providers/host.js`, `src/upstream-error.js` | — | `crypto` | — | — |
 | `src/usage-observed.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/voice/acp-bridge.js` | 宿主脚本路径 | `src/native/binding.js` | — | `crypto` | `ws` | — |
-| `src/voice/asr-local.js` | server.js | `src/voice/config.js`, `src/voice/hotword-corrector.js` | — | `child_process`, `fs`, `os`, `path` | `sherpa-onnx-node` | — |
-| `src/voice/asr-model-installer.js` | server.js | — | — | `fs`, `path`, `stream`, `stream/promises` | — | — |
-| `src/voice/config.js` | server.js | `src/native/binding.js`, `src/voice/hotword-corrector.js`, `src/voice/hotword-learner.js` | — | `fs` | — | — |
-| `src/voice/gateway.js` | server.js | `src/native/binding.js` | — | `crypto` | — | — |
-| `src/voice/host.js` | server.js | `src/native/binding.js`, `src/routes/voice-gateway-host.js`, `src/routes/voice-gateway-proxy.js`, `src/routes/voice-runtime-host.js`, `src/routes/voice.js`, `src/voice/asr-local.js`, `src/voice/asr-model-installer.js`, `src/voice/config.js`, `src/voice/gateway.js`, `src/voice/launch.js`, `src/voice/qwen-audio-installer.js`, `src/voice/qwen-audio-supervisor.js` | `src/voice/multicc-acp-agent.mjs` | `path` | — | — |
-| `src/voice/hotword-corrector.js` | server.js | `src/native/binding.js` | — | — | `pinyin-pro` | — |
-| `src/voice/hotword-learner.js` | server.js | `src/native/binding.js`, `src/voice/hotword-miner.js` | — | `crypto`, `fs`, `path` | — | — |
-| `src/voice/hotword-miner.js` | server.js | `src/native/binding.js`, `src/voice/hotword-corrector.js` | — | — | — | — |
-| `src/voice/launch.js` | server.js | `src/native/binding.js` | — | `crypto` | — | — |
+| `src/voice/asr-local.js` | server.js | `src/native/binding.js` | — | `child_process`, `fs`, `os`, `path` | `sherpa-onnx-node` | — |
+| `src/voice/host.js` | server.js | `src/native/binding.js`, `src/routes/voice-gateway-proxy.js`, `src/routes/voice.js`, `src/voice/asr-local.js`, `src/voice/qwen-audio-installer.js`, `src/voice/qwen-audio-supervisor.js` | `src/voice/multicc-acp-agent.mjs` | `path` | — | — |
 | `src/voice/multicc-acp-agent.mjs` | 宿主脚本路径 | `src/voice/acp-bridge.js` | — | `stream` | `@agentclientprotocol/sdk` | — |
 | `src/voice/qwen-audio-installer.js` | server.js | `src/native/binding.js`, `src/network/outbound.js` | — | `child_process`, `crypto`, `fs`, `path` | — | — |
-| `src/voice/qwen-audio-supervisor.js` | server.js | `src/native/binding.js`, `src/network/outbound.js`, `src/voice/gateway.js` | — | `child_process`, `crypto`, `fs`, `net`, `path` | — | — |
+| `src/voice/qwen-audio-supervisor.js` | server.js | `src/native/binding.js`, `src/network/outbound.js` | — | `child_process`, `crypto`, `fs`, `net`, `path` | — | — |
 | `src/voice/router.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
 | `src/voice/tts-service.js` | server.js | `src/network/outbound.js` | — | `child_process`, `https` | `ws` | — |
 | `src/wait/injector.js` | server.js | `src/native/binding.js` | — | `crypto` | — | — |

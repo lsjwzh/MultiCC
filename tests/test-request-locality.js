@@ -139,6 +139,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'server.js',
     // The runtime only forwards the injected probe to the host port.
     'src/cli/switch-runtime.js',
+    'src/native/binding.js',
     'src/router-tool-host.js',
     // One host port per migrated route group: each internal listener accepts
     // loopback calls only, so a request forwarded from a real client is 404.
@@ -174,9 +175,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/share-machines-host.js',
     'src/routes/subagent-defaults-host.js',
     'src/routes/task-routes-host.js',
-    'src/routes/voice-gateway-host.js',
-    'src/routes/voice-host.js',
-    'src/routes/voice-runtime-host.js',
     'src/task-shell/host.js',
     // The air host port lives with its runtime rather than under routes/.
     'src/workspace/air-routes-host.js',

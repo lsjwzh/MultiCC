@@ -166,6 +166,8 @@ pub mod usage;
 pub mod vault_metadata;
 pub mod vendor_model_catalog;
 pub mod virtual_provider;
+pub mod asr_model_installer;
+pub mod voice_words;
 pub mod voice_gateway_routes;
 pub mod voice_hotword_list;
 pub mod voice_hotword_pairs;

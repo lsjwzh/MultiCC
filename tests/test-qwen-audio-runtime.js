@@ -25,7 +25,7 @@ const {
   fleetRuntimeKey,
   redactLogLine,
 } = require('../src/voice/qwen-audio-supervisor');
-const { createVoiceRuntimeHost, HOST_PATH } = require('../src/routes/voice-runtime-host');
+const { createVoiceRuntimeHost, HOST_PATH } = require('../src/native/binding').voiceRuntimeHost;
 
 function tempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));

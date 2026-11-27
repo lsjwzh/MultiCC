@@ -7,9 +7,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const miner = require('../src/voice/hotword-miner');
-const { createHotwordLearner } = require('../src/voice/hotword-learner');
-const { correctWithHotwords } = require('../src/voice/hotword-corrector');
+const miner = require('../src/native/binding').voiceMiner;
+const { createHotwordLearner } = require('../src/native/binding').voiceLearner;
+const { correctWithHotwords } = require('../src/native/binding').voiceCorrector;
 
 const quiet = { log() {}, error() {} };
 function tmpDir() {
@@ -191,8 +191,18 @@ test('the user\'s own spelling outranks a model spelling of the same term', asyn
 test('the voice host only starts learning when the real server opts in', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/voice/host.js'), 'utf8');
   assert.match(src, /if \(autoDownloadAsrModels && voice\.autoHotwordsEnabled && voice\.autoHotwords\)/);
-  const config = fs.readFileSync(path.join(__dirname, '../src/voice/config.js'), 'utf8');
-  assert.doesNotMatch(config, /autoHotwords\.start\(\)/, 'requiring the config module must not start a scan');
+  const binding = require('../src/native/binding');
+  const originalTimer = global.setTimeout;
+  const originalInterval = global.setInterval;
+  let schedules = 0;
+  try {
+    global.setTimeout = global.setInterval = () => { schedules++; return { unref() {} }; };
+    assert.ok(binding.voiceConfig.autoHotwords);
+    assert.equal(schedules, 0, 'loading the voice config must not start learning');
+  } finally {
+    global.setTimeout = originalTimer;
+    global.setInterval = originalInterval;
+  }
 });
 
 test('refresh drops all three template prefixes per speaker at 24 UTF-16 units', async t => {
@@ -281,14 +291,16 @@ test('语音纠错按冻结输入对拍 UTF-16 边界、重复片段和拼音回
       },
       nearSyllable(a,b){ events.push([a,b]); return a===b; },
     };
-    compileFunction(body.toString(),['module','require'],{filename})(box,id=>id==='./hotword-corrector'?corrector:resolve(id));
+    if (body === null) {
+      const n = require('../src/native/binding').getNative();
+      box.exports = n.voiceMinerApi({ corrector, list: n.voiceHotwordList });
+    } else compileFunction(body.toString(),['module','require'],{filename})(box,id=>id==='./hotword-corrector'?corrector:resolve(id));
     return { results:samples.map(([a,b])=>{
       try { return box.exports.minePairs(a,b); }
       catch(e){ assert.equal(e,unsupported);return 'dictionary failed'; }
     }),events };
   }
-  const current=fs.readFileSync(filename);
-  for(const mode of ['absent','present','throw']) assert.deepEqual(exercise(current,mode),exercise(frozen,mode),mode);
+  for(const mode of ['absent','present','throw']) assert.deepEqual(exercise(null,mode),exercise(frozen,mode),mode);
 });
 
 test('输入词汇统计与冻结版本保持出现次数、拼写顺序及会话集合身份', () => {
@@ -298,7 +310,7 @@ test('输入词汇统计与冻结版本保持出现次数、拼写顺序及会�
   const bytes = fs.readFileSync(path.join(__dirname,'helpers/frozen-hotword-typed-terms.js'));
   assert.equal(createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex'), 'b7e9a263ea334c3426e29b773262f9f308099d5b');
   const original = {exports:{}};
-  compileFunction(bytes.toString(), ['module','require'], {filename})(original,createRequire(filename));
+  compileFunction(bytes.toString(), ['module','require'], {filename})(original,id => id === './hotword-corrector' ? require('./helpers/frozen-leaf-hosts/hotword-corrector') : createRequire(filename)(id));
   const opaque = Object.freeze({toJSON(){throw Error('session must stay opaque');}});
   const id = Symbol('session'), stop = Error('message');
   function run(api) {
@@ -336,7 +348,7 @@ test('热词清单与冻结实现逐项核对激活、否决、顺序与返回�
   const bytes=fs.readFileSync(path.join(__dirname,'helpers/frozen-hotword-list.js'));
   assert.equal(createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex'),'9af5875d169cb5cd8f45afdf2ad0ce3b673858a4');
   const old={exports:{}};
-  compileFunction(bytes.toString(),['module','require'],{filename})(old,createRequire(filename));
+  compileFunction(bytes.toString(),['module','require'],{filename})(old,id => id === './hotword-corrector' ? require('./helpers/frozen-leaf-hosts/hotword-corrector') : createRequire(filename)(id));
   for(const alias of ['','cli','é','热水','S T T','Äxx','Multi CC','\ud800X']) {
     const kept=['CLI','cli-foo','client','字热水词','é','x Multi cc x','\ud800X'];
     if(alias) for(const row of kept) assert.equal(miner.vetoedBy(alias,[row]),old.exports.vetoedBy(alias,[row]));

@@ -22,7 +22,7 @@ const {
   validateSchemaDocument,
 } = require('./helpers/contract-validator');
 const { toSessionDto } = require('../src/native/binding').getSessionDto();
-const { gatewayDto } = require('../src/voice/gateway');
+const { gatewayDto } = require('../src/native/binding').voiceGatewayDomain;
 
 const ROOT = path.join(__dirname, '..');
 const CONTRACT_DIR = path.join(ROOT, 'contracts', API_VERSION);
@@ -402,10 +402,10 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(source.includes("createVoiceHost } = require('./src/voice/host')"));
   assert.ok(source.includes('getBaseUrl: () => `http://127.0.0.1:${PORT}`'));
   assert.doesNotMatch(source, /getBaseUrl:\s*\(\)\s*=>[^\n]*\bgetPort\(\)/);
-  assert.ok(voiceHost.includes("createVoiceGatewayHost } = require('../routes/voice-gateway-host')"));
+  assert.ok(voiceHost.includes("createVoiceGatewayHost } = require('../native/binding').voiceGatewayHost"));
   // The public global voice gateway / voice runtime routes are owned by the Rust
   // front door; Node keeps only the internal host port it calls back into.
-  assert.ok(voiceHost.includes("createVoiceRuntimeHost } = require('../routes/voice-runtime-host')"));
+  assert.ok(voiceHost.includes("createVoiceRuntimeHost } = require('../native/binding').voiceRuntimeHost"));
   assert.doesNotMatch(voiceHost, /routes\/voice-gateway-global|routes\/qwen-audio-runtime/);
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
   // The outward task short-code registry must be the persisted one — without
@@ -659,9 +659,11 @@ test('/api task-board, search, task-graph, mark-achieved and task-attribution ro
     'the search runtime no longer mounts public routes');
   assert.equal(source.includes('mountTaskGoalRoutes'), false,
     'mark-achieved is no longer mounted by Node');
-  for (const file of [
-    'task-board', 'task-planning', 'task-search', 'task-goal', 'task-graph',
-  ]) {
+  for (const file of ['task-board', 'task-planning']) {
+    assert.equal(fs.existsSync(path.join(ROOT, 'src', 'routes', file + '.js')), false,
+      file + ' was retired when the task board moved to Rust');
+  }
+  for (const file of ['task-search', 'task-goal', 'task-graph']) {
     const text = fs.readFileSync(require.resolve(path.join(ROOT, 'src', 'routes', file)), 'utf8');
     assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false, `${file}.js must not register routes`);
   }

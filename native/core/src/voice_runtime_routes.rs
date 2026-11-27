@@ -31,6 +31,8 @@ use crate::js::serde::truthy;
 use crate::js::{from_serde, js_to_string};
 use crate::voice_gateway_routes as shared;
 
+pub const HOST_PATH: &str = "/api/__host/voice-runtime";
+
 /// Express's automatic `OPTIONS` answer for `/api/voice-gateway`, which
 /// registers GET (implicit HEAD), PUT and DELETE.
 pub const GLOBAL_ALLOW: &str = "GET,HEAD,PUT,DELETE";

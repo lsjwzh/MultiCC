@@ -21,7 +21,7 @@
 //! frame schedule live in [`multicc_core::voice_routes`]. Node keeps the
 //! in-process voice service, the AuxQueue, the env file and the ASR model
 //! installer behind one host port, `POST /api/__host/voice`
-//! (`src/routes/voice-host.js`).
+//! (`voice_settings_host` in the addon).
 //!
 //! The retired handlers that wrote state ran to completion on the event loop;
 //! the write routes here await one host round trip, so
@@ -41,8 +41,7 @@ use crate::app::express::{self, RequestCtx};
 use crate::app::App;
 use crate::host_port;
 
-/// The host port the Node child serves (`src/routes/voice-host.js`).
-const HOST_PATH: &str = "/api/__host/voice";
+use rules::HOST_PATH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {

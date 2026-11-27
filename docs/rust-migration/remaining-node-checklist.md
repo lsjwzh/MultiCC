@@ -1,5 +1,34 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 8 批（2026-11-27，MacPro x86_64）
+
+基线为 `e0732e88`。从 `server.js` 追踪语音宿主、语音网关和模型安装器。[逐文件调用方](reachable-current.tsv) · [依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 305 / 92,715 | 295 / 90,155 |
+| server.js 与 src/ | 306 / 95,576 | 296 / 93,016 |
+| server.js、src/ 与 plugins/ | 318 / 99,495 | 308 / 96,935 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/voice/config.js` | 315 | 热更新语音配置，构建 Whisper 提示，解析流式识别后处理响应 |
+| `src/voice/hotword-corrector.js` | 156 | 拼音和 ASCII 热词纠错，词表匹配缓存 |
+| `src/voice/hotword-learner.js` | 277 | 学习样例和定时刷新，在工作线程扫描历史 |
+| `src/voice/hotword-miner.js` | 176 | 提取纠错词对，统计拼写、会话频次与否决词 |
+| `src/voice/launch.js` | 216 | 签发、消费和撤回票据，重新校验会话绑定 |
+| `src/voice/gateway.js` | 375 | 派生语音网关记录，持久化网关状态 |
+| `src/voice/asr-model-installer.js` | 339 | 单飞下载、断点续传、镜像切换与取消 |
+| `src/routes/voice-gateway-host.js` | 143 | 回环校验和语音网关操作 |
+| `src/routes/voice-runtime-host.js` | 236 | 运行时探测与启动票据回调 |
+| `src/routes/voice-host.js` | 389 | 读取设置与词汇，按阶段应用和补偿回滚 |
+
+十个旧文件共 2,622 行。JavaScript 提供 Express 和宿主回调、可选拼音 SDK、Web Stream 与 Node 文件流的连接。HTTP 协议、模型传输控制、配置事务和学习策略由 Rust 实现。模型目录的零字节 `.download.guard` 保持跨进程锁的文件身份。
+
+本批显式加载 x64 绑定，关联 Node 测试 221 项、桌面打包 4 项、真实网关回环 WebSocket 冒烟 1 项通过。Rust 内核 53 项、网关集成 62 项通过。三组 HTTP 差分和配置流式回调的基线对拍通过。十个旧路径均已退出 Git 索引和 npm 包。模型下载使用受控的分片响应。
+
+首次发布构建检出一处缺失的生命周期标注。集中修复后构建成功，五件 x64 产物通过架构、SHA-256 和来源指纹 `2172587416e30aaf56432a53` 检查。HTTP 差分包含 669 项一致响应和 61 项按原契约分别核验的差异。源码行数和 46 项写入治理通过。
+
 ## server.js 可达模块第 7 批（2026-11-27，MacPro x86_64）
 
 基线为 `3ce99615`。生产入口通过 `src/native/binding.js` 调用 Rust 适配器工厂。注册表保留命令对象的身份，命令变化时为后续调用刷新适配器，已开始的轮次继续使用原实例。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)

@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { resolveDirectoryCommander } = require('../native/binding').taskBoardCore;
+const { resolveDirectoryCommander } = require('../../../src/native/binding').taskBoardCore;
 
 const GATEWAY_RECORD_TYPE = 'gateway';
 const GATEWAY_KIND = 'qwen-audio';
