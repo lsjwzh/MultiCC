@@ -416,7 +416,9 @@ HTTP + 1 条 WS 同提交搬走并删 Node + 跑差分（8b/8c）→ ④删 `src
 - `AppState` 多一个 `power` 字段；`with_power` 供测试指到临时文件，否则用例会读开发机真实设置。
 - Node 侧删掉 `deps.powerConsent`、`powerConsentHeader()` 与对 `host-power-services` /
   `powerd` 的依赖；`tests/test-remote-screen.js` 里那条断言改成「唤屏请求不带同意头」，防止回长。
-- `src/host-power-services.js` 与 `src/powerd.js` **没有删**：前者被 `src/routes/host-power.js`、
-  `src/routes/host-read-host.js`（网页电源设置路由）使用，后者被 `plugins/utils/macos-power.js`
-  （关盖运行的写意图）使用。8a 只迁了「读」，两处的「写」仍归 Node。
-  同样的规则现在存在于两处（Node 的电源模块和 `power.rs`）：改「允许自动解锁」的语义时要两边一起改。
+- 8a 当时保留了两个写入口。网页电源设置路由通过 `src/host-power-services.js` 写设置，
+  `plugins/utils/macos-power.js` 通过 `src/powerd.js` 写关盖运行意图。当时更改「允许自动解锁」
+  的语义，需要同时更新 Node 的电源模块和 Rust 的 `power.rs`。
+
+2026-11-27 补记：电源写路径已迁入 Rust，`plugins/utils/macos-power.js` 与 `src/powerd.js`
+均已删除。电源守护进程测试直接调用 addon 的 `systemPowerDaemon` 和 `powerDaemon`。

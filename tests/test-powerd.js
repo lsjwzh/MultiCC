@@ -1,15 +1,16 @@
 'use strict';
 
 // com.multicc.powerd: the reconcile job itself (run for real against a fake
-// pmset), the installer's generated layout (dry run, no root), and the Node
-// side that writes the intent. Nothing here needs root or touches /Library.
+// pmset), the installer's generated layout (dry run, no root), and the Rust
+// side that reads/writes the intent (native addon power daemon API). Nothing
+// here needs root or touches /Library.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { createPowerd } = require('../src/powerd');
+const { getNative } = require('../src/native/binding');
 
 const DAEMON = path.join(__dirname, '..', 'scripts', 'multicc-powerd.sh');
 const INSTALLER = path.join(__dirname, '..', 'scripts', 'install-powerd.sh');
@@ -124,7 +125,8 @@ test('installer: dry run produces a valid, correctly-moded layout and uninstalls
 test('client: installed only when the plist exists and the intent is writable', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-powerd-client-'));
   const plistPath = path.join(dir, 'job.plist');
-  const powerd = createPowerd({ platform: 'darwin', dataDir: dir, plistPath });
+  const powerd = getNative().systemPowerDaemon('darwin', fs,
+    path.join(dir, 'power-intent'), path.join(dir, 'powerd-status.json'), plistPath);
   assert.equal(powerd.setIntent(true), false, 'not installed: caller falls back');
   fs.writeFileSync(plistPath, '');
   fs.writeFileSync(powerd.intentPath, '');
@@ -132,7 +134,8 @@ test('client: installed only when the plist exists and the intent is writable', 
   assert.equal(powerd.readIntent(), 'on');
   powerd.setIntent(false);
   assert.equal(powerd.status().intent, 'off');
-  assert.equal(createPowerd({ platform: 'linux', dataDir: dir, plistPath }).installed(), false);
+  assert.equal(getNative().systemPowerDaemon('linux', fs,
+    path.join(dir, 'power-intent'), path.join(dir, 'powerd-status.json'), plistPath).installed(), false);
 });
 
 test('setLidSleepPrevention prefers the daemon: no sudo, no password prompt', async () => {
@@ -182,6 +185,24 @@ test('turning off releases saved intent even when another app keeps system sleep
 
 test('8a259312 differential: access order, status fallbacks and write error identity', () => {
   const before = require('./helpers/frozen-host-leaves/powerd').createPowerd;
+  // The compatibility leaf src/powerd.js retired once the daemon moved into
+  // Rust. Its injected-filesystem port is still part of the addon API, so the
+  // frozen JS implementation stays the oracle for access order, fallbacks and
+  // write error identity.
+  const rustPowerd = ({ platform, dataDir, plistPath, fsImpl }) => {
+    const intentPath = path.join(dataDir, 'power-intent');
+    const statusPath = path.join(dataDir, 'powerd-status.json');
+    return getNative().powerDaemon({
+      platform, intentPath, statusPath,
+      checkAccess() {
+        fsImpl.accessSync(plistPath, fs.constants.R_OK);
+        fsImpl.accessSync(intentPath, fs.constants.W_OK);
+      },
+      readWord: () => fsImpl.readFileSync(intentPath, 'utf8').trim(),
+      readJson: () => JSON.parse(fsImpl.readFileSync(statusPath, 'utf8')),
+      write: word => fsImpl.writeFileSync(intentPath, word),
+    });
+  };
   function trace(factory, platform, failAt) {
     const calls = [], err = new Error('injected');
     const hit = (kind, name, value) => {
@@ -199,6 +220,6 @@ test('8a259312 differential: access order, status fallbacks and write error iden
     return { calls, result, keys: Object.keys(svc) };
   }
   for (const os of ['darwin', 'linux']) for (let i = 0; i <= 14; i++) {
-    assert.deepEqual(trace(createPowerd, os, i), trace(before, os, i));
+    assert.deepEqual(trace(rustPowerd, os, i), trace(before, os, i));
   }
 });
