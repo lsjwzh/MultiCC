@@ -235,7 +235,7 @@
     },
     agy: {
       name: 'Antigravity', colour: '#6d5dfc', mark: 'A', providerless: true,
-      update: { manual: '请安装并登录官方 Antigravity CLI（agy）' },
+      update: { command: 'curl -fsSL https://antigravity.google/cli/install.sh | bash' },
       lanes: { chat: [{ id: 'agy', engine: 'agy --output-format stream-json' }], terminal: [{ id: 'agy' }] },
     },
     grok: {

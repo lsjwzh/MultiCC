@@ -108,6 +108,9 @@ function createCliToolsHost(options) {
     return cliUpstream.fetchLatestVersionWithSource(pkg, { registryBase: options.registryBase });
   }
   async function collectVersions(force) {
+    if (force) {
+      try { await refresh({ force: true }); } catch (_) {}
+    }
     const now = clock();
     let local = call('localPeek', { now, force });
     if (!local) {

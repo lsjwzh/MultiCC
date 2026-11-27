@@ -243,3 +243,12 @@ test('a Windows re-check forces the registry refresh before probing', async () =
   assert.equal(refreshes, 1);
   assert.deepEqual(res.body.git, { available: false, version: null });
 });
+
+test('POSIX force refresh invalidates cached command maps so newly installed CLIs appear without restart', async () => {
+  windowsEnv._resetForTests();
+  const before = windowsEnv.version();
+  assert.deepEqual(await windowsEnv.refresh({ windows: false, force: false }), { changed: false, supported: false });
+  assert.equal(windowsEnv.version(), before, 'non-forced POSIX refresh keeps cache intact');
+  assert.deepEqual(await windowsEnv.refresh({ windows: false, force: true }), { changed: false, supported: false });
+  assert.ok(windowsEnv.version() > before, 'forced POSIX refresh bumps revision so command maps re-resolve');
+});
