@@ -34,10 +34,15 @@ fn display<'a>(s: L<'a>, key: L<'a>) -> Result<L<'a>> {
 }
 
 #[napi]
-pub fn classify_vocab_api(env: Env, signatures: Unknown<'_>) -> Result<sys::napi_value> {
+pub fn classify_vocab_api(
+    env: Env,
+    signatures: Unknown<'_>,
+    policy: Unknown<'_>,
+) -> Result<sys::napi_value> {
     let signatures = L::new(&env, signatures);
     let s = json_parse(signatures, &super::classify_vocab_catalog()?)?;
     s.set(c"signatures", signatures)?;
+    s.set(c"policy", L::new(&env, policy))?;
     let api = fields(s, &[])?;
     let parse = function(s, "parseClassifyResult", 1, 1, |s, a| {
         let input = if a[0].nullish()? {
@@ -56,7 +61,14 @@ pub fn classify_vocab_api(env: Env, signatures: Unknown<'_>) -> Result<sys::napi
                 "buildSystemPrompt",
                 &[
                     ("priorGoal", nullable(a[0])?),
-                    ("errorSignatures", s.get(c"signatures")?.call_plain(&[])?),
+                    ("errorSignatures", {
+                        let policy = s.get(c"policy")?;
+                        if policy.undefined()? {
+                            s.get(c"signatures")?.call_plain(&[])?
+                        } else {
+                            crate::api_error_policy::quoted(policy)?
+                        }
+                    }),
                 ],
             )?
             .get(c"prompt")

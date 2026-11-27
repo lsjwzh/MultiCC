@@ -12,6 +12,8 @@
 const { getNative } = require('../native/binding');
 const { corruptedStateError, loadDirectories } = require('../directory/records');
 
+const nativeOrigins = new WeakMap();
+
 function createStateOwner() {
   const native = getNative();
   if (typeof native.RustSessionRecords !== 'function') {
@@ -23,6 +25,7 @@ function createStateOwner() {
   // may retain only the native instance; give V8 the missing instance -> anchor
   // edge instead of adding a permanent strong reference on the Rust side.
   Object.defineProperty(owner, Symbol('host-value-anchor'), { value: anchor });
+  nativeOrigins.set(owner, native);
   const shared = { native: owner, anchor };
   let directoriesFile = null;
   let sessionsFile = null;
@@ -66,7 +69,8 @@ function createStateOwner() {
 }
 
 function createTurnRuntimeStore(options = {}) {
-  return getNative().turnRuntimeStore(options, createStateOwner);
+  const addon = getNative();
+  return addon.turnRuntimeStore(options, createStateOwner, nativeOrigins, addon);
 }
 
 module.exports = { createTurnRuntimeStore, createStateOwner };

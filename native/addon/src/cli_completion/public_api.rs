@@ -1,6 +1,6 @@
 //! Public tracker factories; event values and adapter receivers stay in V8.
 use crate::{
-    host_methods::{default_object, function},
+    host_methods::{arg, default_object, env as environment, function, raw},
     route_response::*,
 };
 use napi_derive::napi;
@@ -9,20 +9,27 @@ use napi_derive::napi;
 pub fn cli_result_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_value> {
     let s = L::new(&env, addon);
     let api = fields(s, &[])?;
-    for (name, target, count) in [
-        ("isMainResult", c"cliIsMainResult", 1),
-        ("resultCompletion", c"cliResultCompletion", 1),
-        (
-            "createResultCompletionTracker",
-            c"createResultCompletionTracker",
-            0,
-        ),
-    ] {
-        api.set_key(
-            text(s, name)?,
-            function(s, name, count, count, move |s, a| call(s, target, a))?,
-        )?;
-    }
+    api.set(
+        c"isMainResult",
+        function(s, "isMainResult", 1, 1, |s, a| {
+            flag(s, super::main_result(a[0])?)
+        })?,
+    )?;
+    api.set(
+        c"resultCompletion",
+        function(s, "resultCompletion", 1, 1, |_, a| {
+            super::result_completion(a[0])
+        })?,
+    )?;
+    api.set(
+        c"createResultCompletionTracker",
+        function(s, "createResultCompletionTracker", 0, 0, |s, _| {
+            Ok(raw(
+                s,
+                super::tracker::create_result_completion_tracker(environment(s))?,
+            ))
+        })?,
+    )?;
     Ok(api.raw())
 }
 
@@ -35,7 +42,10 @@ pub fn cli_completion_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_valu
         function(s, "createStepCompletionTracker", 0, 1, |s, a| {
             let boundary =
                 crate::js_iteration::read(default_object(a[0])?, c"streamBoundary")?.truthy()?;
-            call(s, c"createStepCompletionTracker", &[flag(s, boundary)?])
+            Ok(raw(
+                s,
+                super::tracker::create_step_completion_tracker(environment(s), boundary)?,
+            ))
         })?,
     )?;
     api.set(
@@ -44,17 +54,25 @@ pub fn cli_completion_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_valu
             if a[2].undefined()? {
                 a[2] = text(s, "protocol")?
             }
-            call(s, c"cliCompletion", a)
+            Ok(raw(
+                s,
+                super::cli_completion(environment(s), arg(a[0])?, arg(a[1])?, arg(a[2])?)?,
+            ))
         })?,
     )?;
     api.set(
         c"isCompleted",
-        function(s, "isCompleted", 1, 1, |s, a| call(s, c"cliIsCompleted", a))?,
+        function(s, "isCompleted", 1, 1, |s, a| {
+            flag(s, super::completed(a[0])?)
+        })?,
     )?;
     api.set(
         c"createCompletionTracker",
         function(s, "createCompletionTracker", 0, 1, |s, a| {
-            call(s, c"createCliCompletionTracker", &[default_object(a[0])?])
+            Ok(raw(
+                s,
+                super::tracker::create_cli_completion_tracker(environment(s), arg(a[0])?)?,
+            ))
         })?,
     )?;
     api.set(
@@ -66,18 +84,23 @@ pub fn cli_completion_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_valu
             {
                 call(adapter, c"createCompletionTracker", &[])
             } else {
-                call(
+                Ok(raw(
                     s,
-                    c"createCliCompletionTracker",
-                    &[fields(s, &[("fallback", flag(s, true)?)])?],
-                )
+                    super::tracker::create_cli_completion_tracker(
+                        environment(s),
+                        arg(fields(s, &[("fallback", flag(s, true)?)])?)?,
+                    )?,
+                ))
             }
         })?,
     )?;
     api.set(
         c"createProtocolCompletionTracker",
         function(s, "createProtocolCompletionTracker", 1, 1, |s, a| {
-            call(s, c"createProtocolCompletionTracker", a)
+            Ok(raw(
+                s,
+                super::tracker::create_protocol_completion_tracker(environment(s), arg(a[0])?)?,
+            ))
         })?,
     )?;
     Ok(api.raw())

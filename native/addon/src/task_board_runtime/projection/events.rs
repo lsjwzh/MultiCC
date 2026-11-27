@@ -1,4 +1,5 @@
 use super::*;
+use crate::host_methods::{arg, env, raw};
 
 pub(super) fn admission<'a>(p: L<'a>, a: L<'a>) -> Result<L<'a>> {
     let caller = record(p, read(a, c"callerSessionId")?)?;
@@ -159,16 +160,16 @@ pub(super) fn queue<'a>(p: L<'a>, e: L<'a>) -> Result<L<'a>> {
     if kind.is_string("queued")? && !e.get(c"workKind")?.is_string("task")? {
         return unchanged(None);
     }
-    let state = call(
-        p.get(c"native")?,
-        c"taskBoardQueueRunState",
-        &[
-            kind,
-            e,
-            p.get(c"runStateForFreezeReason")?,
-            p.get(c"runStateForLetter")?,
-        ],
-    )?;
+    let state = raw(
+        p,
+        crate::task_board_queue::task_board_queue_run_state(
+            env(p),
+            crate::host_methods::typed(kind)?,
+            arg(e)?,
+            arg(p.get(c"runStateForFreezeReason")?)?,
+            arg(p.get(c"runStateForLetter")?)?,
+        )?,
+    );
     if !state.truthy()? {
         return unchanged(None);
     }

@@ -113,7 +113,6 @@ pub fn rollout_path_api(
     let state = fields(
         n,
         &[
-            ("native", n),
             ("unpack", L::new(&env, unpack)),
             ("prepare", L::new(&env, prepare)),
         ],
@@ -156,7 +155,13 @@ pub fn rollout_path_api(
             },
         ])?;
         ports.set(c"cache", s.global()?.get(c"Map")?.construct(&[])?)?;
-        call(s.get(c"native")?, c"rolloutResolver", &[ports])
+        Ok(crate::host_methods::raw(
+            s,
+            rollout_resolver(
+                crate::host_methods::env(s),
+                crate::host_methods::arg(ports)?,
+            )?,
+        ))
     })?;
     Ok(fields(
         n,

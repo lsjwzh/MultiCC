@@ -1,4 +1,5 @@
 use super::*;
+use crate::host_methods::{arg, env, raw};
 
 pub(super) fn dto<'a>(p: L<'a>, task: L<'a>) -> Result<L<'a>> {
     let board = p.get(c"board")?;
@@ -36,11 +37,14 @@ pub(super) fn dto<'a>(p: L<'a>, task: L<'a>) -> Result<L<'a>> {
             &[num(p, 0.)?, num(p, length - 1.)?],
         )?,
     )?;
-    let display = call(
-        p.get(c"native")?,
-        c"taskDisplayFields",
-        &[task, deps.get(c"taskShortCode")?],
-    )?;
+    let display = raw(
+        p,
+        crate::task_display_attribution::task_display_fields(
+            env(p),
+            arg(task)?,
+            arg(deps.get(c"taskShortCode")?)?,
+        )?,
+    );
     call(p.global()?.get(c"Object")?, c"assign", &[dto, display])?;
     let body = transcript::canonical(p, task, undef(p)?, true)?;
     if dto

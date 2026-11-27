@@ -1,5 +1,8 @@
 use super::*;
+use crate::chat_history::RustChatHistory;
 use crate::host_methods::variadic_method;
+use crate::host_methods::{arg, env as environment, raw};
+use napi::bindgen_prelude::{ClassInstance, FromNapiValue, ToNapiValue};
 
 fn require_fn(obj: L<'_>, key: &str, nullable: bool) -> Result<()> {
     let v = obj.get_key(text(obj, key)?)?;
@@ -46,7 +49,7 @@ pub fn history_service_with_owner(
         ports.set(k, if v.undefined()? { default } else { v })?;
     }
     let history = ports.get(c"history")?;
-    call(n, c"sessionAssertChatHistoryPort", &[history])?;
+    crate::session_ports::session_assert_chat_history_port(env, arg(history)?)?;
     for (name, nullable) in [
         ("idFactory", false),
         ("clock", false),
@@ -71,7 +74,10 @@ pub fn history_service_with_owner(
     }
     ports.set(c"withLazyMessages", L::new(&env, lazy))?;
     let anchor = fields(n, &[("ports", ports)])?;
-    let owner = n.get(c"RustChatHistory")?.construct(&[anchor])?;
+    let state = RustChatHistory::new(env, arg(anchor)?)?;
+    let owner = raw(n, unsafe {
+        RustChatHistory::to_napi_value(n.env(), state)?
+    });
     let service = fields(n, &[])?;
     let f = fields(n, &[("owner", owner), ("anchor", anchor)])?;
     for name in [
@@ -104,11 +110,17 @@ pub fn history_service_with_owner(
             })?
         } else {
             variadic_method(&env, f, "", 0, move |f, a| {
-                call(
-                    f.get(c"owner")?,
-                    c"run",
-                    &[f.get(c"anchor")?, text(f, name)?, array(f, a)?],
-                )
+                let owner: ClassInstance<'_, RustChatHistory> =
+                    unsafe { ClassInstance::from_napi_value(f.env(), f.get(c"owner")?.raw())? };
+                Ok(raw(
+                    f,
+                    owner.run(
+                        environment(f),
+                        arg(f.get(c"anchor")?)?,
+                        name.into(),
+                        arg(array(f, a)?)?,
+                    )?,
+                ))
             })?
         };
         service.set_key(text(n, name)?, method)?;
@@ -210,7 +222,13 @@ pub fn chat_history_service_api(env: Env, addon: Unknown<'_>) -> Result<sys::nap
         &[(
             "cleanThinkingBlocks",
             function(n, "cleanThinkingBlocks", 1, 1, |s, a| {
-                call(s, c"chatHistoryCleanThinkingBlocks", a)
+                Ok(raw(
+                    s,
+                    crate::chat_history::chat_history_clean_thinking_blocks(
+                        environment(s),
+                        arg(a[0])?,
+                    )?,
+                ))
             })?,
         )],
     )?;
@@ -222,15 +240,15 @@ pub fn chat_history_service_api(env: Env, addon: Unknown<'_>) -> Result<sys::nap
             text(n, name)?,
             function(owner, name, 0, 1, move |s, a| {
                 let n = s.get(c"native")?;
-                let result = call(
+                let result = raw(
                     n,
-                    c"historyServiceWithOwner",
-                    &[
-                        n,
-                        crate::host_methods::default_object(a[0])?,
-                        s.get(c"lazy")?,
-                    ],
-                )?;
+                    history_service_with_owner(
+                        environment(n),
+                        arg(n)?,
+                        arg(crate::host_methods::default_object(a[0])?)?,
+                        arg(s.get(c"lazy")?)?,
+                    )?,
+                );
                 if with_owner {
                     Ok(result)
                 } else {

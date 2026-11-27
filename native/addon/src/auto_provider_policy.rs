@@ -176,13 +176,18 @@ fn auto_from<'a>(encoder: L<'a>, value: L<'a>, callback: &CStr) -> Result<L<'a>>
         "Array.from",
     )
 }
-fn auto_answer<'a>(api: L<'a>, key: &CStr, request: L<'a>) -> Result<L<'a>> {
+fn auto_answer<'a>(
+    api: L<'a>,
+    policy: fn(String) -> Result<String>,
+    request: L<'a>,
+) -> Result<L<'a>> {
     let json = api.global()?.get(c"JSON")?;
     let parse = read(json, c"parse")?;
-    let native = api.get(c"native")?;
-    let policy = read(native, key)?;
     let payload = call(api.global()?.get(c"JSON")?, c"stringify", &[request])?;
-    parse.call(json, &[policy.call(native, &[payload])?])
+    parse.call(
+        json,
+        &[text(api, &policy(crate::host_methods::typed(payload)?)?)?],
+    )
 }
 fn auto_limit<'a>(api: L<'a>, entry: L<'a>, options: L<'a>) -> Result<L<'a>> {
     let options = auto_options(options)?;
@@ -219,7 +224,7 @@ fn auto_limit<'a>(api: L<'a>, entry: L<'a>, options: L<'a>) -> Result<L<'a>> {
     if !model.undefined()? {
         request.assign(c"model", auto_wire(encoder, model)?)?;
     }
-    auto_answer(api, c"autoProviderLimitState", request)?.freeze()
+    auto_answer(api, auto_provider_limit_state, request)?.freeze()
 }
 fn auto_choose<'a>(api: L<'a>, options: L<'a>) -> Result<L<'a>> {
     let options = auto_options(options)?;
@@ -278,7 +283,7 @@ fn auto_choose<'a>(api: L<'a>, options: L<'a>) -> Result<L<'a>> {
     request.assign(c"preferCli", auto_wire(encoder, cli)?)?;
     request.assign(c"byPrice", auto_wire(encoder, price)?)?;
     request.assign(c"byQuota", auto_wire(encoder, quota)?)?;
-    let answer = auto_answer(api, c"autoProviderChooseCandidate", request)?;
+    let answer = auto_answer(api, auto_provider_choose_candidate, request)?;
     let candidate = if read(answer, c"candidate")?.nullish()? {
         null(api)?
     } else {
@@ -320,7 +325,7 @@ fn auto_failover<'a>(api: L<'a>, decision: L<'a>, attempt: L<'a>) -> Result<L<'a
             )?;
         }
     }
-    auto_answer(api, c"autoProviderFailoverSafety", request)?.freeze()
+    auto_answer(api, auto_provider_failover_safety, request)?.freeze()
 }
 
 #[napi]
@@ -329,17 +334,14 @@ pub fn auto_provider_policy_api(env: Env, native: Unknown<'_>) -> Result<sys::na
     let facts = call(
         native.global()?.get(c"JSON")?,
         c"parse",
-        &[call(native, c"autoProviderPolicyFacts", &[])?],
+        &[text(native, &auto_provider_policy_facts())?],
     )?;
     let api = fields(
         native,
-        &[
-            ("native", native),
-            (
-                "hole",
-                fields(native, &[("$hole", num(native, 1.0)?)])?.freeze()?,
-            ),
-        ],
+        &[(
+            "hole",
+            fields(native, &[("$hole", num(native, 1.0)?)])?.freeze()?,
+        )],
     )?;
     api.set(
         c"wire",

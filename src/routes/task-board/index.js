@@ -38,7 +38,7 @@ function createTaskBoardRuntime(deps) {
   const createSessionRecord = typeof deps.createSessionRecord === 'function' ? deps.createSessionRecord : null;
   const resolveDirectoryPort = deps.directories instanceof Map ? id => deps.directories.get(id)
     : typeof deps.directories === 'function' ? deps.directories : null;
-  const ports = { native, deps, records, board, boardStore, activeTaskOperations, core, planning,
+  const ports = { deps, records, board, boardStore, activeTaskOperations, core, planning,
     attention, crypto, logger, recentTaskIds, loadHistory, workspaceBroadcast, getSessionRunState,
     resolveSessionQueue, createSessionRecord, resolveDirectoryPort, runStateForFreezeReason,
     runStateForLetter, isVoiceRouterRecord };

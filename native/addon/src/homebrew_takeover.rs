@@ -24,7 +24,7 @@ pub fn homebrew_resolve_owner(
     realpath: Unknown<'_>,
     path: Unknown<'_>,
     exists: Unknown<'_>,
-    addon: Unknown<'_>,
+    _addon: Unknown<'_>,
 ) -> Result<sys::napi_value> {
     use crate::{
         host_methods::call,
@@ -79,10 +79,5 @@ pub fn homebrew_resolve_owner(
             ("basename", call(path, c"basename", &[resolved])?),
         ],
     )?;
-    Ok(call(
-        L::new(&env, addon),
-        c"homebrewTakeoverRequest",
-        &[cmd.from_value(&"owner".into())?, input],
-    )?
-    .raw())
+    homebrew_takeover_request(env, "owner".into(), crate::host_methods::arg(input)?)
 }

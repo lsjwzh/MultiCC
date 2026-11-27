@@ -125,7 +125,7 @@ pub fn agy_terminal(
 #[napi]
 pub fn agy_host_invocation(
     env: napi::Env,
-    addon: napi::bindgen_prelude::Unknown<'_>,
+    _addon: napi::bindgen_prelude::Unknown<'_>,
     cmd: napi::bindgen_prelude::Unknown<'_>,
     envelope: napi::bindgen_prelude::Unknown<'_>,
     composer: napi::bindgen_prelude::Unknown<'_>,
@@ -154,8 +154,6 @@ pub fn agy_host_invocation(
             v.from_value(&V::Undefined)
         }
     }
-    let addon = L::new(&env, addon);
-    let build = read(addon, c"agyBuildInvocation")?;
     let model = string_option(options, c"rawModel")?;
     let effective = read(options, c"effectiveModel")?;
     let input = fields(
@@ -184,5 +182,6 @@ pub fn agy_host_invocation(
             ),
         ],
     )?;
-    Ok(build.call(addon, &[input])?.raw())
+    let output = agy_build_invocation(crate::host_methods::typed(input)?);
+    unsafe { napi::bindgen_prelude::ToNapiValue::to_napi_value(env.raw(), output) }
 }

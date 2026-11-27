@@ -224,13 +224,7 @@ pub fn responses_history_api(env: Env) -> Result<sys::napi_value> {
     let anchor = L::from_raw(env.raw(), unsafe {
         crate::js_bridge::write_value(env.raw(), &V::Undefined)?
     });
-    let rules = fields(anchor, &[])?;
-    for (kind, prefix) in ITEM_PREFIXES {
-        rules.define_key(
-            text(anchor, kind)?,
-            fields(anchor, &[("prefix", text(anchor, prefix)?)])?,
-        )?;
-    }
+    let rules = make_rules(anchor)?;
     let api = fields(anchor, &[])?;
     let methods: [(&CStr, usize, Visitor); 9] = [
         (c"preprocess", 1, |r, a| preprocess::run(r, a[0])),
@@ -258,5 +252,16 @@ pub fn responses_history_api(env: Env) -> Result<sys::napi_value> {
         )?;
     }
     Ok(api.raw())
+}
+
+fn make_rules(anchor: L<'_>) -> Result<L<'_>> {
+    let rules = fields(anchor, &[])?;
+    for (kind, prefix) in ITEM_PREFIXES {
+        rules.define_key(
+            text(anchor, kind)?,
+            fields(anchor, &[("prefix", text(anchor, prefix)?)])?,
+        )?;
+    }
+    Ok(rules)
 }
 mod public_api;

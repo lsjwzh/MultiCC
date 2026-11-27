@@ -63,11 +63,9 @@ pub fn network_policy_find_available_port(
         .map_err(reason)
 }
 
-fn predicate<'a>(state: L<'a>, value: L<'a>, key: &std::ffi::CStr) -> Result<L<'a>> {
-    let native = state.get(c"native")?;
-    let f = read(native, key)?;
+fn predicate<'a>(state: L<'a>, value: L<'a>, policy: fn(String) -> bool) -> Result<L<'a>> {
     let value = string(fallback(value, "".into())?)?;
-    f.call(native, &[value])
+    flag(state, policy(crate::host_methods::typed(value)?))
 }
 
 fn resolve<'a>(state: L<'a>, value: L<'a>) -> Result<L<'a>> {
@@ -80,10 +78,11 @@ fn resolve<'a>(state: L<'a>, value: L<'a>) -> Result<L<'a>> {
     // error when stringify returns undefined.
     let json = state.global()?.get(c"JSON")?;
     let parse = read(json, c"parse")?;
-    let native = state.get(c"native")?;
-    let resolver = read(native, c"networkPolicyResolve")?;
     let serialized = call(state.global()?.get(c"JSON")?, c"stringify", &[value])?;
-    let result = resolver.call(native, &[serialized])?;
+    let result = text(
+        state,
+        &network_policy_resolve(crate::host_methods::typed(serialized)?)?,
+    )?;
     parse.call(json, &[result])
 }
 
@@ -121,18 +120,18 @@ fn find<'a>(state: L<'a>, start: L<'a>, host: L<'a>, options: L<'a>) -> Result<L
 }
 
 fn select<'a>(state: L<'a>, policy: L<'a>, finder: L<'a>) -> Result<L<'a>> {
-    let finder = if finder.undefined()? {
-        state.get(c"find")?
-    } else {
-        finder
-    };
     if !policy.truthy()? || !read(policy, c"development")?.truthy()? {
         return read(policy, c"port");
+    }
+    let port = read(policy, c"port")?;
+    let host = read(policy, c"host")?;
+    if finder.undefined()? {
+        return find(state, port, host, finder);
     }
     invoke(
         state.from_value(&V::Undefined)?,
         finder,
-        &[read(policy, c"port")?, read(policy, c"host")?],
+        &[port, host],
         "finder",
     )
 }
@@ -148,18 +147,34 @@ pub fn network_policy_api(
     let native = L::new(&env, native);
     let state = fields(
         native,
-        &[("native", native), ("process", L::new(&env, process))],
+        &[
+            ("native", native),
+            (
+                "defaultProbe",
+                native.get(c"networkPolicyFindAvailablePort")?,
+            ),
+            ("process", L::new(&env, process)),
+        ],
     )?;
     state.set(
         c"probe",
         method(&env, state, "", 0, 3, |s, a| {
-            call(s.get(c"native")?, c"networkPolicyFindAvailablePort", a)
+            let native = s.get(c"native")?;
+            let probe = read(native, c"networkPolicyFindAvailablePort")?;
+            if !probe.equals(s.get(c"defaultProbe")?)? {
+                return probe.call(native, a);
+            }
+            let port = network_policy_find_available_port(
+                crate::host_methods::typed(a[0])?,
+                crate::host_methods::typed(a[1])?,
+                crate::host_methods::typed(a[2])?,
+            )?;
+            num(s, port.into())
         })?,
     )?;
     let find = method(&env, state, "findAvailablePort", 2, 3, |s, a| {
         find(s, a[0], a[1], a[2])
     })?;
-    state.set(c"find", find)?;
     let select = method(&env, state, "selectListenPort", 1, 2, |s, a| {
         crate::host_methods::async_result(s, || select(s, a[0], a[1]))
     })?;
@@ -169,13 +184,13 @@ pub fn network_policy_api(
             (
                 "envEnabled",
                 method(&env, state, "envEnabled", 1, 1, |s, a| {
-                    predicate(s, a[0], c"networkPolicyEnvEnabled")
+                    predicate(s, a[0], network_policy_env_enabled)
                 })?,
             ),
             (
                 "isLoopbackHost",
                 method(&env, state, "isLoopbackHost", 1, 1, |s, a| {
-                    predicate(s, a[0], c"networkPolicyIsLoopbackHost")
+                    predicate(s, a[0], network_policy_is_loopback_host)
                 })?,
             ),
             (

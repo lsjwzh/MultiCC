@@ -1,5 +1,5 @@
 //! A runtime owns its decision Map; user callbacks and their exceptions stay live.
-use super::public_api::{decision, load_addon};
+use super::public_api::{alternate, decision_with_time};
 use crate::js_live::invoke;
 use crate::{
     host_methods::{default_object, function},
@@ -90,9 +90,15 @@ fn log_decision(s: L<'_>, d: L<'_>, ctx: L<'_>) -> Result<()> {
     ] {
         let inc = read(metrics, c"inc")?;
         let value = source.get(key)?;
-        let token = call(load_addon(api)?, c"apiErrorMetricToken", &[value])?
-            .coerce_string()?
-            .to_string_lossy();
+        let token = match alternate(api)? {
+            Some(native) => call(native, c"apiErrorMetricToken", &[value])?
+                .coerce_string()?
+                .to_string_lossy(),
+            None => super::api_error_metric_token(
+                crate::host_methods::env(value),
+                crate::host_methods::arg(value)?,
+            )?,
+        };
         invoke(
             metrics,
             inc,
@@ -132,12 +138,11 @@ fn evaluate<'a>(s: L<'a>, raw: L<'a>, ctx: L<'a>) -> Result<L<'a>> {
         .global()?
         .get(c"Number")?
         .call_plain(&[s.get(c"now")?.call_plain(&[])?])?;
-    let clock = function(fields(s, &[("at", at)])?, "now", 0, 0, |s, _| s.get(c"at"))?;
-    let deps = fields(s, &[("now", clock)])?;
+    let deps = fields(s, &[])?;
     let api = s.get(c"api")?;
-    let normalized = decision(api, raw, ctx, deps, true)?;
+    let normalized = decision_with_time(api, raw, ctx, deps, true, Some(at))?;
     deps.set(c"random", s.get(c"random")?)?;
-    let result = decision(api, normalized, ctx, deps, false)?;
+    let result = decision_with_time(api, normalized, ctx, deps, false, Some(at))?;
     if key.truthy()? {
         call(map, c"set", &[key, result])?;
         if map.get(c"size")?.number()? > 1000.0 {
