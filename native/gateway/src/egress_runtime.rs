@@ -234,10 +234,11 @@ pub async fn serve_local_egress_exec(args: &[String]) -> i32 {
         idx += 1;
     }
 
-    let Some(agy_bin) = bin.filter(|s| !s.trim().is_empty()) else {
+    let Some(raw_bin) = bin.filter(|s| !s.trim().is_empty()) else {
         emit_agy_error("agy-egress-exec 缺少 --bin 参数");
         return 1;
     };
+    let agy_bin = crate::cli_bin::resolve_agy_bin_or_explicit(Some(&raw_bin));
     let raw_egress = std::env::var("MULTICC_AGY_EGRESS_JSON").unwrap_or_default();
     let parsed_val: Value = match serde_json::from_str(&raw_egress) {
         Ok(v) => v,
@@ -406,9 +407,7 @@ pub async fn serve_host_exec(args: &[String]) -> i32 {
         emit_agy_error("agy-host-exec 缺少 --account-id 参数");
         return 1;
     };
-    let agy_bin = bin
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "agy".to_string());
+    let agy_bin = crate::cli_bin::resolve_agy_bin_or_explicit(bin.as_deref());
 
     let Some(host_home) = std::env::var_os("MULTICC_AGY_ACCOUNTS_HOME")
         .filter(|v| !v.is_empty())

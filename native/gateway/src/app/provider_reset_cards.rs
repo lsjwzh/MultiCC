@@ -93,22 +93,7 @@ fn inventory(vendor: &str, body: &Value, now: i64) -> Option<Value> {
     Some(json!({"ok":true,"count":total,"cards":cards,"fetchedAt":now}))
 }
 async fn claude_agent() -> Option<String> {
-    let binary = std::env::var_os("CLAUDE_CMD").unwrap_or_else(|| {
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        home.into_iter()
-            .flat_map(|home| {
-                [
-                    ".local/bin/claude",
-                    ".local/share/claude/bin/claude",
-                    ".npm-global/bin/claude",
-                    ".npm/bin/claude",
-                ]
-                .map(|p| home.join(p))
-            })
-            .find(|p| p.is_file())
-            .map(|p| p.into_os_string())
-            .unwrap_or_else(|| "claude".into())
-    });
+    let binary = crate::cli_bin::resolve_claude_bin();
     let output = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::process::Command::new(binary)
