@@ -83,6 +83,30 @@ function stageFakeServer(resourcesDir) {
   return appServer;
 }
 
+test('独立版在恢复期间报告进度，并忽略超时或失去启动器的进度', t => {
+  const scratch = tmpdir('multicc-workspace-status-');
+  t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
+  const resources = path.join(scratch, 'Resources');
+  const recovery = { phase: 'reconcile', completed: 249, total: 695 };
+  const at = Date.now() - 70_000;
+  fs.writeFileSync(path.join(scratch, 'standalone-startup.json'), JSON.stringify({ at, pid: process.pid, recovery }));
+  assert.equal(launcherScript.readStartupState(scratch, { now: at + 121_000 }), null);
+  assert.equal(launcherScript.readStartupState(scratch, { isAlive: () => false }), null);
+  const env = { ...process.env, MULTICC_STANDALONE_RESOURCES: resources, MULTICC_STANDALONE_HOME: scratch };
+  const layout = cliScript.resolveLayout({ env });
+  for (const file of [layout.runtimeNode, layout.launcherPath, path.join(layout.appServerDir, 'server.js')]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+  }
+  const result = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'standalone-cli.js'), 'status', '--json'], { env, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const status = JSON.parse(result.stdout);
+  assert.equal(status.running, false);
+  assert.equal(status.starting, true);
+  assert.equal(status.recoveringWorkspaces, true);
+  assert.deepEqual(status.recovery, recovery);
+});
+
 test('runtime pinning: SHASUMS parsing, dist names and the macOS floor', () => {
   const name = 'node-v22.23.2-darwin-x64.tar.gz';
   const text = `aaaa  other-file.tar.gz\n${'b'.repeat(64)}  *${name}\n`;

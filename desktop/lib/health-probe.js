@@ -27,6 +27,26 @@ async function readMigration(res) {
   } catch (_) { return null; }
 }
 
+// Limit the whole HTTP exchange, including a body that stops streaming. The
+// overall inactivity deadline is reevaluated between requests so out-of-band
+// worktree progress still counts while the gateway is waiting for Node.
+async function probeOnce(url, fetchImpl, signal, budgetMs) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const timer = setTimeout(abort, budgetMs);
+  signal?.addEventListener('abort', abort, { once: true });
+  try {
+    const res = await fetchImpl(url, { cache: 'no-store', signal: controller.signal });
+    const migration = res.status === 503 ? await readMigration(res) : null;
+    try { await res.arrayBuffer(); } catch (_) {}
+    controller.signal.throwIfAborted();
+    return { status: res.status, migration };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
 // Poll `${origin}${path}` every intervalMs until it answers 200 or timeoutMs
 // elapses. Connection-refused / 503 answers during boot are expected and keep
 // the poller running; only a timeout (or a failed data migration) rejects.
@@ -38,6 +58,7 @@ async function waitForReadiness({
   timeoutMs = 90_000,
   migrationTimeoutMs = MIGRATION_TIMEOUT_MS,
   onMigration,
+  getWorkspaceProgressAt,
   signal,
 } = {}) {
   if (!origin) throw new TypeError('[desktop] waitForReadiness requires origin');
@@ -52,21 +73,19 @@ async function waitForReadiness({
       error.code = 'READY_ABORTED';
       throw error;
     }
-    if (Date.now() >= deadline) {
+    if (getWorkspaceProgressAt) {
+      deadline = Math.max(deadline, getWorkspaceProgressAt() + timeoutMs);
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       const error = new Error(`server not ready within ${Math.round(timeoutMs / 1000)}s (${lastError || 'no response'})`);
       error.code = 'READY_TIMEOUT';
       throw error;
     }
     try {
-      const res = await fetchImpl(url, { cache: 'no-store', signal });
-      if (isReadyStatus(res.status)) {
-        // Drain the body so the socket is reusable / cleanly closed.
-        try { await res.arrayBuffer(); } catch (_) {}
-        return { url, status: res.status };
-      }
-      lastError = `HTTP ${res.status}`;
-      const migration = await readMigration(res);
-      try { await res.arrayBuffer(); } catch (_) {}
+      const { status, migration } = await probeOnce(url, fetchImpl, signal, remaining);
+      if (isReadyStatus(status)) return { url, status };
+      lastError = `HTTP ${status}`;
       if (migration && migration.state === 'failed' && !(migration.error && migration.error.retrying)) {
         const error = new Error(`task data upgrade failed: ${(migration.error && migration.error.message) || 'unknown'}`);
         error.code = 'DATA_MIGRATION_FAILED';
@@ -83,7 +102,7 @@ async function waitForReadiness({
       // ECONNREFUSED while the child boots — keep polling.
       lastError = cause && cause.code ? cause.code : (cause && cause.message) || 'fetch failed';
     }
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    await new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, Math.max(1, deadline - Date.now()))));
   }
 }
 

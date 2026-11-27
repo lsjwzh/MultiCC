@@ -804,10 +804,12 @@ if (_state.needsSave) {
   console.log(`[multicc] Migration complete: ${directories.size} directories, ${persistedSessions.size} sessions`);
 }
 
+const workspaceStartupProgress = process.env.MULTICC_WORKSPACE_STARTUP_PROGRESS === '1'
+  ? progress => console.log('[multicc-workspace-startup] ' + JSON.stringify(progress)) : undefined;
 const initWorktrees = () => initializeSessionWorktrees({ records: persistedSessions, directories, invalidSessions,
   realPathOf, isHomeOrAbove, ensureDirGitReady, addWorktree: gitWorktreeAdd, existsSync: fs.existsSync,
   tmuxHasSession, tmuxKillSession, saveDirectories, saveSessions: savePersistedSessionsBestEffort,
-  auxSessionId: AUX_SESSION_ID, log: console });
+  auxSessionId: AUX_SESSION_ID, log: console, onProgress: workspaceStartupProgress });
 function cwdForSession(session) {
   const cwd = resolveSessionCwd(session, { directories, dataRoot: MULTICC_PATHS.root, existsSync: fs.existsSync, homeDir: os.homedir, moduleDir: __dirname });
   if (session?.type === 'gateway') try { fs.mkdirSync(cwd, { recursive: true }); } catch (_) {}
@@ -2688,7 +2690,7 @@ const teardownTriggers = triggerRuntime.teardownSession;
 
 const ensureFirstRunDirectory = async () =>
   getNative().ensureFirstRunDirectory(_state, directories, directoryModule, MULTICC_PATHS, logger);
-const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(() => sessionHibernationRuntime.reconcileStartup()).then(ensureFirstRunDirectory).then(initWorktrees)
+const startupRepoReady = Promise.resolve().then(providers.migrateLegacyProviderProtocols).then(() => sessionHibernationRuntime.reconcileStartup(workspaceStartupProgress)).then(ensureFirstRunDirectory).then(initWorktrees)
   .catch(error => console.error('[multicc] async repo startup failed:', error.message))
   .then(() => commanderStartup.migrate(directories, taskShellHost, logger))
   .catch(error => commanderStartup.fail(directories, logger, error))

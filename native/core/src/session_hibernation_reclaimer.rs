@@ -71,6 +71,26 @@ pub fn run_limit_reached(hibernated: f64, limit: f64) -> bool {
     hibernated >= limit
 }
 
+/// Startup only reconciles interrupted transitions and retained sleeping worktrees.
+pub fn startup_reconciliation<'a>(
+    state: &str,
+    previous_error: Option<&str>,
+    path_exists: bool,
+    valid: bool,
+    resident_error: Option<&'a str>,
+) -> Option<(&'static str, Option<&'a str>)> {
+    let next = match state {
+        "hibernating" | "thawing" if path_exists => "awake",
+        "hibernated" if path_exists && (valid || resident_error.is_some()) => "awake",
+        "hibernating" | "thawing" | "hibernated" => "hibernated",
+        _ => return None,
+    };
+    if next == state && resident_error == previous_error {
+        return None;
+    }
+    Some((next, resident_error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

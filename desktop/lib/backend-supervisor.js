@@ -63,6 +63,37 @@ function killProcessTree(pid, { spawn, platform = process.platform, signal = 'SI
   return signalled;
 }
 
+const RECOVERY_PREFIX = '[multicc-workspace-startup] ';
+const RECOVERY_PHASES = ['history', 'reconcile', 'worktrees'];
+
+// stdout may split or coalesce writes. Discard oversized lines until the next
+// newline so ordinary server output cannot grow the parser's carry buffer.
+function workspaceProgressReader(onProgress) {
+  let partial = '';
+  let oversized = false;
+  return chunk => {
+    const lines = chunk.toString().split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!oversized) {
+        if (partial.length + lines[i].length > 512) oversized = true;
+        else partial += lines[i];
+      }
+      if (i === lines.length - 1) break;
+      if (!oversized && partial.startsWith(RECOVERY_PREFIX)) {
+        let value;
+        try { value = JSON.parse(partial.slice(RECOVERY_PREFIX.length)); } catch (_) {}
+        if (value && RECOVERY_PHASES.includes(value.phase)
+          && Number.isSafeInteger(value.completed) && Number.isSafeInteger(value.total)
+          && value.completed >= 0 && value.completed <= value.total) {
+          onProgress({ phase: value.phase, completed: value.completed, total: value.total });
+        }
+      }
+      partial = '';
+      oversized = false;
+    }
+  };
+}
+
 function createBackendSupervisor(rawDeps) {
   const {
     spawn,
@@ -99,6 +130,7 @@ function createBackendSupervisor(rawDeps) {
   let ringBytes = 0;
   let failure = null;
   let logStream = null;
+  let workspaceProgress = null;
 
   fs.mkdirSync(logsDir, { recursive: true });
 
@@ -173,29 +205,33 @@ function createBackendSupervisor(rawDeps) {
     return Promise.resolve();
   }
 
-  async function probeHealth() {
-    healthAbort = new AbortController();
+  async function probeHealth(getWorkspaceProgressAt) {
+    const controller = new AbortController();
+    healthAbort = controller;
     try {
       await waitForReadiness({
         origin,
         fetchImpl,
         intervalMs: 400,
         timeoutMs: opts.healthTimeoutMs,
-        signal: healthAbort.signal,
+        signal: controller.signal,
+        getWorkspaceProgressAt,
         onMigration: migration => onPhase('migrating', { port, origin, attempt: attempts, migration }),
       });
     } catch (error) {
       if (stopRequested || state === 'stopping') return;
-      const aborted = error && (error.code === 'READY_ABORTED' || healthAbort.signal.aborted);
+      const aborted = controller.signal.aborted || error?.code === 'READY_ABORTED';
       if (aborted) return;
       // Still alive but never turned ready: our own child, so tear it down
       // before reporting — never leave a half-booted server holding the port.
       const stuckPid = child ? child.pid : null;
       if (stuckPid) killProcessTree(stuckPid, { spawn, signal: 'SIGKILL' });
-      fail('not-ready', `server did not become ready: ${error.message}`);
+      const recovery = workspaceProgress;
+      const detail = recovery ? ` (workspace ${recovery.phase}: ${recovery.completed}/${recovery.total})` : '';
+      fail('not-ready', `server did not become ready: ${error.message}${detail}`);
       return;
     }
-    if (stopRequested || state === 'stopping') return;
+    if (controller.signal.aborted || stopRequested || state !== 'starting') return;
     state = 'ready';
     writeRuntimeInfo();
     onPhase('ready', { port, origin, attempt: attempts });
@@ -214,7 +250,7 @@ function createBackendSupervisor(rawDeps) {
 
     try {
       child = spawn(command, args, {
-        env: buildEnv({ port, attempt: attempts }),
+        env: { ...buildEnv({ port, attempt: attempts }), MULTICC_WORKSPACE_STARTUP_PROGRESS: '1' },
         // stdin is the front door's lifeline (--stdin-lifeline): held, never
         // written, closed by the OS whenever this process goes away.
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -229,21 +265,39 @@ function createBackendSupervisor(rawDeps) {
     attempts += 1;
     // EPIPE once the child is gone must not become an uncaught exception.
     if (child.stdin) child.stdin.on('error', () => {});
-    child.stdout.on('data', appendRing);
+    const currentChild = child;
+    let progressAt = 0;
+    const readProgress = workspaceProgressReader(recovery => {
+      if (state !== 'starting' || currentChild !== child) return;
+      if (workspaceProgress) {
+        const previousPhase = RECOVERY_PHASES.indexOf(workspaceProgress.phase);
+        const phase = RECOVERY_PHASES.indexOf(recovery.phase);
+        if (phase < previousPhase || (phase === previousPhase
+          && (recovery.total !== workspaceProgress.total || recovery.completed <= workspaceProgress.completed))) return;
+      }
+      workspaceProgress = recovery;
+      progressAt = Date.now();
+      onPhase('workspace-recovery', { port, origin, attempt: attempts, recovery });
+    });
+    child.stdout.on('data', chunk => { appendRing(chunk); if (state === 'starting') readProgress(chunk); });
     child.stderr.on('data', appendRing);
     child.on('error', error => {
-      if (state === 'stopping' || stopRequested) return;
+      if (currentChild !== child || state === 'stopping' || stopRequested) return;
       fail('spawn-error', error.message);
       resolveExitWaiters();
     });
-    child.on('exit', (code, signal) => handleExit(code, signal));
-    probeHealth();
+    child.on('exit', (code, signal) => {
+      if (currentChild === child) handleExit(code, signal);
+    });
+    probeHealth(() => progressAt);
   }
 
   function handleExit(code, signal) {
     // Read before anything may overwrite it: an exit from a server that had
     // already served /readyz is a different event from one that never booted.
     const wasReady = state === 'ready';
+    healthAbort?.abort();
+    if (wasReady) workspaceProgress = null;
     resolveExitWaiters();
     closeLogStream();
     clearRuntimeInfo();
@@ -313,6 +367,7 @@ function createBackendSupervisor(rawDeps) {
     stopRequested = false;
     failure = null;
     attempts = 0;
+    workspaceProgress = null;
     crashTimes.length = 0;
     spawnChild({ respawn: false });
   }

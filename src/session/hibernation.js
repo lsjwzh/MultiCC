@@ -112,6 +112,22 @@ function numericOption(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// Report completed records after the caller processes them, including its early
+// continues. A fixed set of IDs keeps totals meaningful across async Git calls.
+function* startupRecords(records, phase, onProgress) {
+  const ids = [...records.keys()];
+  const total = ids.length;
+  onProgress?.({ phase, completed: 0, total });
+  let nextReport = Date.now() + 2000;
+  for (let index = 0; index < total; index += 1) {
+    if (records.has(ids[index])) yield records.get(ids[index]);
+    if (onProgress && (index + 1 === total || Date.now() >= nextReport)) {
+      onProgress({ phase, completed: index + 1, total });
+      nextReport = Date.now() + 2000;
+    }
+  }
+}
+
 function createSessionHibernationRuntime(options = {}) {
   const {
     records,
@@ -475,9 +491,9 @@ function createSessionHibernationRuntime(options = {}) {
     }
   }
 
-  async function reconcileStartup() {
+  async function reconcileStartup(onProgress) {
     const missing = [];
-    for (const record of records.values()) {
+    for (const record of startupRecords(records, 'history', onProgress)) {
       if (record?.kind === 'chat' && record.taskBoundTaskId && !record.lastWorkAt) {
         let history = [];
         try { history = loadHistory(record.id) || []; } catch (_) {}
@@ -487,25 +503,25 @@ function createSessionHibernationRuntime(options = {}) {
     if (missing.length) persistence.mutate('startup.hibernate-last-work-backfill', (map) => {
       for (const [id, lastWorkAt] of missing) if (map.get(id) && !map.get(id).lastWorkAt) map.get(id).lastWorkAt = lastWorkAt;
     });
-    for (const record of records.values()) {
+    for (const record of startupRecords(records, 'reconcile', onProgress)) {
       if (!record?.taskBoundTaskId || record.kind !== 'chat' || record.workspaceOwnerSessionId) continue;
       const state = stateOf(record);
-      if (state === 'planned') continue;
-      if (state === 'awake') continue;
+      if (state === 'planned' || state === 'awake') continue;
+      // Only an explicit checkout path can prove this sleeping workspace absent:
+      // an injected Git port may resolve a missing legacy path using the ID.
+      if (state === 'hibernated' && typeof record.worktreePath === 'string' && path.isAbsolute(record.worktreePath)
+        && record.workspaceStateErrorCode == null
+        && !pathExists(record)) continue;
       const observed = await inspect(record);
-      let next = state;
-      let code = null;
-      const degradedCode = degradedResidentCode(observed);
-      if (degradedCode) {
-        next = 'awake';
-        code = degradedCode;
-      } else if (state === 'hibernating') next = observed.pathExists ? 'awake' : 'hibernated';
-      else if (state === 'thawing') next = observed.pathExists ? 'awake' : 'hibernated';
-      else if (state === 'hibernated' && observed.pathExists && observed.valid !== false) next = 'awake';
+      const previousError = record.workspaceStateErrorCode == null ? null : String(record.workspaceStateErrorCode);
+      const update = getNative().sessionHibernationStartupUpdate(state, previousError,
+        Boolean(observed.pathExists), observed.valid !== false, degradedResidentCode(observed));
+      if (!update) continue;
+      const code = update.errorCode ?? null;
       persistState(record.id, 'startup.hibernate-reconcile', current => {
-        current.workspaceState = next;
+        current.workspaceState = update.state;
         current.workspaceStateErrorCode = code;
-        if (next === 'awake') current.hibernatedAt = null;
+        if (update.state === 'awake') current.hibernatedAt = null;
       });
       publish('reconcile', 'success', record.id, code);
     }
@@ -654,7 +670,7 @@ async function initializeSessionWorktrees(options = {}) {
     records, directories, invalidSessions, realPathOf, isHomeOrAbove,
     ensureDirGitReady, addWorktree, existsSync = fs.existsSync,
     tmuxHasSession, tmuxKillSession, saveDirectories, saveSessions,
-    auxSessionId, log = console,
+    auxSessionId, log = console, onProgress,
   } = options;
   const seenPaths = new Map();
   const duplicateDirectories = new Set();
@@ -665,7 +681,7 @@ async function initializeSessionWorktrees(options = {}) {
   }
   let built = 0;
   let deferred = 0;
-  for (const session of records.values()) {
+  for (const session of startupRecords(records, 'worktrees', onProgress)) {
     if (session.type === 'aux' || session.id === auxSessionId || session.type === 'gateway') continue;
     if (session.loginFlow) continue; // gitless login terminals: no worktree to rebuild
     if (session.workspaceOwnerSessionId) continue;
