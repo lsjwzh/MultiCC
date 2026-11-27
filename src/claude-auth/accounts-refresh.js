@@ -1,7 +1,7 @@
 'use strict';
 
 // Per-account Claude OAuth refresh through the claude CLI itself — the Claude
-// twin of codex/accounts-refresh.js (which points CODEX_HOME at each account).
+// twin of the Rust Codex refresh supervisor (which sets CODEX_HOME per account).
 //
 // The claude CLI keys its credential store on CLAUDE_CONFIG_DIR: with the
 // variable unset it uses the Keychain item "Claude Code-credentials"; with it

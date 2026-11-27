@@ -484,8 +484,8 @@
       "migrationStrategy": "Remove the read fallback after the installed-skill compatibility window and documented expiry period.",
       "sources": [
         {
-          "file": "src/artifacts.js",
-          "anchor": "const LEGACY_ARTIFACTS_DIR = path.join(os.homedir(), '.multicc', 'artifacts');"
+          "file": "native/addon/src/artifact_cleanup.rs",
+          "anchor": "&[p.get(c\"home\")?, text(p, \".multicc\")?, text(p, \"artifacts\")?]"
         }
       ]
     },

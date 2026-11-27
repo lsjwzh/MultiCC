@@ -9,7 +9,7 @@ const { createUsageObserved } = require('../src/usage-observed');
 const {
   createRoleTokenTracker,
   usageObservedToRoleTokenInfo,
-} = require('../src/role-token-tracker');
+} = require('../src/native/binding').roleTokenTracker;
 
 function observed(overrides = {}) {
   return createUsageObserved({
@@ -119,4 +119,50 @@ test('role tracker keeps the newest 50000 distinct event IDs in insertion order'
   assert.equal(owner.seen('0'), false);
   assert.equal(owner.seen('1'), true);
   assert.equal(owner.seen('50000'), true);
+});
+
+test('the native role ledger creates private ancestors and keeps existing directory modes', {
+  skip: process.platform === 'win32',
+}, t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-role-modes-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  fs.chmodSync(parent, 0o750);
+  const file = path.join(parent, 'new', 'nested', 'ledger.json');
+  const tracker = createRoleTokenTracker({ filePath: file });
+  assert.equal(tracker.accumulateObserved(observed()), true);
+  const mode = file => fs.statSync(file).mode & 0o777;
+  assert.equal(mode(parent), 0o750);
+  assert.equal(mode(path.join(parent, 'new')), 0o700);
+  assert.equal(mode(path.dirname(file)), 0o700);
+  assert.equal(mode(file), 0o600);
+});
+
+test('native ledger matches injected write, rename and cleanup failures and Date-like coercion', () => {
+  const before = require('./helpers/frozen-state-leaves/role-token-tracker');
+  const after = require('../src/native/binding').roleTokenTracker;
+  function trace(api, failure) {
+    const calls = [];
+    const error = Error('injected write failure');
+    const save = (kind, file, value) => {
+      const dest = file === 'ledger.json' ? file : '<temporary>';
+      calls.push([kind, dest, value]);
+      if (kind === failure) throw error;
+    };
+    const tracker = api.createRoleTokenTracker({
+      filePath: 'ledger.json',
+      now: () => ({ getFullYear: () => 2026, getMonth: () => 0, getDate: () => 9 }),
+      fsImpl: {
+        mkdirSync: (dir, options) => calls.push(['mkdir', dir, options]),
+        readFileSync: () => '{}', writeFileSync: (file, text) => save('write', file, text),
+        renameSync: (file, dest) => save('rename', file, dest), unlinkSync: file => save('unlink', file),
+      },
+      onError: caught => calls.push(['error', caught === error]),
+    });
+    const event = observed();
+    const result = [tracker.accumulateObserved(event), tracker.accumulateObserved(event)];
+    return { calls, result, snapshot: tracker.snapshot('s1') };
+  }
+  for (const failure of ['', 'write', 'rename', 'unlink']) {
+    assert.deepEqual(trace(after, failure), trace(before, failure));
+  }
 });

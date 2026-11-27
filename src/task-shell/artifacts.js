@@ -47,7 +47,7 @@ function collectTaskArtifacts(entry, registry, exists = () => null) {
 
 function artifactFileExists(artifactId, relativePath) {
   const fs = require('node:fs'), path = require('node:path');
-  return require('../artifacts').servedRoots().some(root => {
+  return require('../native/binding').artifacts.servedRoots().some(root => {
     try { return fs.statSync(path.join(root, artifactId, relativePath)).isFile(); } catch (_) { return false; }
   });
 }

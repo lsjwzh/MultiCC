@@ -41,7 +41,8 @@ const os = require('os');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
 const { spawn, execFile } = require('child_process');
-const { createUploadSuite } = require('./src/native/binding');
+const nativeBinding = require('./src/native/binding');
+const { createUploadSuite } = nativeBinding;
 const chokidar = require('chokidar');
 const cron = require('node-cron');
 const upload = createUploadSuite();
@@ -55,18 +56,18 @@ const ttsService = require('./src/voice/tts-service');
 const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./src/native/binding').macosPower;
-const batteryGuardRuntime = require('./src/battery-guard').createBatteryGuardRuntime({ macosPower, logger: console }).start(); // 掉电保护，详见 src/battery-guard.js 头注
+const batteryGuardRuntime = nativeBinding.batteryGuard.createSystemBatteryGuardRuntime({ logger: console }).start();
 const gitPush = require('./plugins/utils/git-push');
 const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/native/binding').gitQueue;
 
 const crypto = require('crypto');
 const bus = require('./src/native/binding').eventBus;
 const state = require('./src/native/binding').stateContainer;
-const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
+const artifacts = nativeBinding.artifacts, docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
 const providers = require('./src/providers/host');
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
-const { createRoleTokenTracker } = require('./src/role-token-tracker');
+const { createRoleTokenTracker } = nativeBinding.roleTokenTracker;
 const {
   createCodexUsageHost,
   projectHistoryUsage,
@@ -102,13 +103,13 @@ const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlia
 const stateStore = require('./src/state/store');
 const { createSessionRecords, createTaskStateStore } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');
-const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');
-const { createDirectoryTable } = require('./src/directory/records');
+const { createChatSessions, createChatReplayRuntime } = nativeBinding.chatSessions;
+const { createDirectoryTable } = nativeBinding.directoryRecords;
 const mountPublicSessionAccessGuard = (app, options) =>
   require('./src/native/binding').getNative().sessionPublicAccessApi().mountPublicSessionAccessGuard(app, options);
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
 const { createOrchestrationRuntime } = require('./src/native/binding').orchestrationHost;
-const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');
+const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = nativeBinding.officialImageBridgeRuntime;
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
 const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
@@ -125,9 +126,9 @@ const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
-const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/providers/relay-share-store');
+const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = nativeBinding.relayShares;
 const { mountModelCatalogsHostRoute } = require('./src/routes/model-catalogs-host');
-const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
+const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = nativeBinding.codexAccountsRefresh; const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountQuotaHostRoute } = require('./src/routes/quota-host');
 const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance-host');
 const { createProviderRelayModelCatalogRuntime } = require('./src/providers/relay-model-catalog');
@@ -186,11 +187,11 @@ const { createProductionQuestionHost, createProductionWorkHost } = require('./sr
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/binding').getHostPrompts();
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
-const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
+const { createDispatchProgressSubscription } = nativeBinding.dispatchProgress;
 const { createClassifyStateMachine } = require('./src/classify/task-attribution');
 const { createAuxRunLog } = require('./src/classify/aux-run-log');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
-const { createProcessProbe } = require('./src/liveness/process-probe');
+const { createSystemProcessProbe } = nativeBinding.processProbe;
 const { createRolloutPathResolver } = require('./src/native/binding').rolloutPath;
 const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
 const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
@@ -1100,10 +1101,7 @@ const {
 // streaming flags / turn heartbeat, and an on-demand process probe so the UI can
 // tell "working" (producing / waiting on the model) from "idle" and "stalled".
 // chatStreamStatus is a lazy closure — chatStream is required further below.
-const livenessProcessProbe = createProcessProbe({
-  execFile,
-  statMtimeMs: p => { try { return fs.statSync(p).mtimeMs; } catch (_) { return null; } },
-});
+const livenessProcessProbe = createSystemProcessProbe();
 // Best-effort resolve a codex session's rollout file (for the growth signal).
 // The walk is memoized inside the resolver — see src/liveness/rollout-path.js.
 const livenessRolloutResolver = createRolloutPathResolver({
@@ -2835,7 +2833,11 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
-const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsRegistry.listPermanentArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
+    const cleanupArtifacts = async () => {
+      try { return await artifacts.cleanupAsync(undefined, docsRegistry.listPermanentArtifactIds()); }
+      catch { logger.warn('artifact_cleanup_pin_read_failed'); return 0; }
+    };
+    void cleanupArtifacts();
     trackServiceTimer(setInterval(cleanupArtifacts, 6 * 3600 * 1000));
     if (!gatewayChildMode) {
       const retention = new (getNative().AssistSnapshotRetention)(MULTICC_PATHS.assistDir);

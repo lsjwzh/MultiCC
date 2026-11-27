@@ -12,7 +12,7 @@ const { createLivenessRuntime } = require('../src/liveness/runtime');
 const { createOrchestrationRuntime } = require('../src/orchestration/host');
 const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
 const { createOutbox } = require('../src/outbox');
-const { createProcessProbe } = require('../src/liveness/process-probe');
+const { createProcessProbe } = require('../src/native/binding').processProbe;
 const { createRolloutPathResolver } = require('../src/liveness/rollout-path');
 const { createSessionGitRuntime, LOADING_MERGE_STATE } = require('../src/routes/session-git');
 

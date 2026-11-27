@@ -328,6 +328,43 @@ fn sleep_attempt(ctx: L<'_>, index: usize) -> Result<L<'_>> {
     call(result, c"then", &[success, failed])
 }
 
+pub(super) fn read_battery<'a>(p: L<'a>, options: L<'a>) -> Result<L<'a>> {
+    async_result(p, || {
+        let ctx = context(p, options)?;
+        if !platform(ctx)?.is_string("darwin")? {
+            return battery(ctx, "", Some(false));
+        }
+        then(
+            execute(ctx, PMSET, &["-g", "batt"], 5000, true)?,
+            ctx,
+            |ctx, v| battery(ctx, &as_string(v)?, Some(true)),
+        )
+    })
+}
+
+pub(super) fn lid_prevention<'a>(p: L<'a>, options: L<'a>, settings: bool) -> Result<L<'a>> {
+    async_result(p, || {
+        let ctx = context(p, options)?;
+        if !platform(ctx)?.is_string("darwin")? {
+            return lid_result(ctx, false, false);
+        }
+        let observed = read_lid(ctx)?;
+        if settings {
+            then(observed, ctx, read_settings)
+        } else {
+            Ok(observed)
+        }
+    })
+}
+
+pub(super) fn sleep_now<'a>(p: L<'a>, options: L<'a>) -> Result<L<'a>> {
+    async_result(p, || {
+        let ctx = context(p, options)?;
+        ctx.set(c"errors", ctx.from_value(&V::Array(vec![]))?)?;
+        sleep_attempt(ctx, 0)
+    })
+}
+
 #[napi]
 pub fn macos_power_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
     let p = L::new(&env, ports);
@@ -363,19 +400,7 @@ pub fn macos_power_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> 
     )?;
     api.set(
         c"readBattery",
-        function(p, "readBattery", 0, 1, |p, a| {
-            async_result(p, || {
-                let ctx = context(p, a[0])?;
-                if !platform(ctx)?.is_string("darwin")? {
-                    return battery(ctx, "", Some(false));
-                }
-                then(
-                    execute(ctx, PMSET, &["-g", "batt"], 5000, true)?,
-                    ctx,
-                    |ctx, v| battery(ctx, &as_string(v)?, Some(true)),
-                )
-            })
-        })?,
+        function(p, "readBattery", 0, 1, |p, a| read_battery(p, a[0]))?,
     )?;
     for (name, settings) in [
         ("getLidSleepPrevention", false),
@@ -383,20 +408,7 @@ pub fn macos_power_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> 
     ] {
         api.set_key(
             text(p, name)?,
-            function(p, name, 0, 1, move |p, a| {
-                async_result(p, || {
-                    let ctx = context(p, a[0])?;
-                    if !platform(ctx)?.is_string("darwin")? {
-                        return lid_result(ctx, false, false);
-                    }
-                    let observed = read_lid(ctx)?;
-                    if settings {
-                        then(observed, ctx, read_settings)
-                    } else {
-                        Ok(observed)
-                    }
-                })
-            })?,
+            function(p, name, 0, 1, move |p, a| lid_prevention(p, a[0], settings))?,
         )?;
     }
     api.set(
@@ -407,13 +419,7 @@ pub fn macos_power_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> 
     )?;
     api.set(
         c"sleepNow",
-        function(p, "sleepNow", 0, 1, |p, a| {
-            async_result(p, || {
-                let ctx = context(p, a[0])?;
-                ctx.set(c"errors", ctx.from_value(&V::Array(vec![]))?)?;
-                sleep_attempt(ctx, 0)
-            })
-        })?,
+        function(p, "sleepNow", 0, 1, |p, a| sleep_now(p, a[0]))?,
     )?;
     Ok(api.raw())
 }

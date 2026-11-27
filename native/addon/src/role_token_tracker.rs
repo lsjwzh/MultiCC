@@ -235,6 +235,7 @@ impl Observed {
 }
 #[napi]
 pub struct RustRoleTokenTracker {
+    native_ledger: bool,
     values: Values,
     sessions: Value,
     next_id: Cell<u64>,
@@ -242,6 +243,10 @@ pub struct RustRoleTokenTracker {
     observed: RefCell<Observed>,
 }
 impl RustRoleTokenTracker {
+    pub(crate) fn use_native_ledger(&mut self) {
+        self.native_ledger = true;
+    }
+
     fn turn(&self, env: &Env, info: L<'_>) -> Result<Rc<Turn>> {
         let index = self.values.read(env, info, &self.sessions)?;
         let session = info.get(c"sessionId")?;
@@ -274,6 +279,7 @@ impl RustRoleTokenTracker {
         let values = Values::new(a)?;
         let sessions = values.capture_host(&env, a.global()?.get(c"Map")?.construct(&[])?)?;
         Ok(Self {
+            native_ledger: false,
             values,
             sessions,
             next_id: Cell::new(0),
@@ -306,9 +312,13 @@ impl RustRoleTokenTracker {
             let bucket = if role == "sub" { &turn.sub } else { &turn.main };
             bucket.record(&env, &self.values, info, usage, anchor.get(c"add")?)?;
         }
-        anchor
-            .get(c"persist")?
-            .call_plain(&[info, text(info, role)?, usage])?;
+        if self.native_ledger {
+            crate::role_token_runtime::persist(anchor, info, text(info, role)?, usage)?;
+        } else {
+            anchor
+                .get(c"persist")?
+                .call_plain(&[info, text(info, role)?, usage])?;
+        }
         Ok(true)
     }
     #[napi]

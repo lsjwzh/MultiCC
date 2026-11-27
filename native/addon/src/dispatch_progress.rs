@@ -205,43 +205,175 @@ fn push(p: L<'_>, e: L<'_>) -> Result<()> {
     }
     Ok(())
 }
+fn reducer_owner<'a>(notify: L<'a>, options: L<'a>) -> Result<L<'a>> {
+    if notify.kind()? != sys::ValueType::napi_function {
+        return Err(notify.type_error("dispatch progress callback is required"));
+    }
+    let cli = if crate::js_iteration::read(options, c"cli")?.kind()? == sys::ValueType::napi_string
+    {
+        crate::js_iteration::read(options, c"cli")?
+    } else {
+        text(notify, "")?
+    };
+    fields(
+        notify,
+        &[
+            ("notify", notify),
+            ("cli", cli),
+            ("snapshot", text(notify, "")?),
+            ("memory", text(notify, "")?),
+            ("seen", notify.global()?.get(c"Set")?.construct(&[])?),
+        ],
+    )
+}
+
+fn create_reducer<'a>(notify: L<'a>, options: L<'a>) -> Result<L<'a>> {
+    let owner = reducer_owner(notify, options)?;
+    fields(
+        owner,
+        &[(
+            "push",
+            function(owner, "push", 1, 1, |owner, args| {
+                push(owner, args[0])?;
+                owner.from_value(&V::Undefined)
+            })?,
+        )],
+    )?
+    .freeze()
+}
+
 #[napi]
 pub fn dispatch_reducer(
     env: Env,
     notify: Unknown<'_>,
     options: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let p = L::new(&env, notify);
-    let options = L::new(&env, options);
-    if p.kind()? != sys::ValueType::napi_function {
-        return Err(p.type_error("dispatch progress callback is required"));
-    }
-    let cli = if crate::js_iteration::read(options, c"cli")?.kind()? == sys::ValueType::napi_string
-    {
-        crate::js_iteration::read(options, c"cli")?
+    Ok(create_reducer(L::new(&env, notify), L::new(&env, options))?.raw())
+}
+
+fn belongs(subscription: L<'_>) -> Result<bool> {
+    let active = subscription
+        .get(c"activeTurnOf")?
+        .call_plain(&[subscription.get(c"targetSessionId")?])?;
+    let lineage = active.optional(c"lineage")?;
+    Ok(lineage.optional(c"kind")?.is_string("dispatch")?
+        && active
+            .get(c"lineage")?
+            .get(c"operationId")?
+            .equals(subscription.get(c"operationId")?)?)
+}
+
+fn deliver<'a>(subscription: L<'a>, event: L<'a>) -> Result<()> {
+    let reducer = subscription.get(c"reducer")?;
+    if subscription.get(c"nativeReducer")?.truthy()? {
+        push(reducer, event)
     } else {
-        text(p, "")?
+        call(reducer, c"push", &[event]).map(|_| ())
+    }
+}
+
+fn subscribe<'a>(ports: L<'a>, options: L<'a>) -> Result<L<'a>> {
+    let options = crate::host_methods::default_object(options)?;
+    let op_id = crate::js_iteration::read(options, c"operationId")?;
+    let session = options.get(c"targetSessionId")?;
+    let notify = options.get(c"onProgress")?;
+    let cli = ports.get(c"cliOf")?.call_plain(&[session])?;
+    let config = fields(ports, &[("cli", cli)])?;
+    let factory = ports.get(c"createReducer")?;
+    let native = factory.undefined()?;
+    let reducer = if native {
+        reducer_owner(notify, config)?
+    } else {
+        factory.call_plain(&[notify, config])?
     };
-    let owner = fields(
-        p,
+    let bus = ports.get(c"bus")?;
+    let subscription = fields(
+        ports,
         &[
-            ("notify", p),
-            ("cli", cli),
-            ("snapshot", text(p, "")?),
-            ("memory", text(p, "")?),
-            ("seen", p.global()?.get(c"Set")?.construct(&[])?),
+            ("bus", bus),
+            ("operationId", op_id),
+            ("targetSessionId", session),
+            ("activeTurnOf", ports.get(c"activeTurnOf")?),
+            ("reducer", reducer),
+            ("nativeReducer", flag(ports, native)?),
         ],
     )?;
+    let handler = function(subscription, "handle", 2, 2, |s, args| {
+        if args[0].equals(s.get(c"targetSessionId")?)? && belongs(s)? {
+            s.catch(|| deliver(s, args[1]))?;
+        }
+        s.from_value(&V::Undefined)
+    })?;
+    let topic = text(bus, "chat:stream-progress")?;
+    call(bus, c"on", &[topic, handler])?;
+    // Register before looking at the bounded replay. Replayed pushes propagate errors;
+    // live emissions isolate a subscriber's exception from the event bus.
+    if belongs(subscription)? {
+        let replay = ports.get(c"streamReplayOf")?.call_plain(&[session])?;
+        if replay.is_array()? {
+            replay.for_each(|event| deliver(subscription, event))?;
+        }
+    }
+    let detach = fields(bus, &[("bus", bus), ("topic", topic), ("handle", handler)])?;
+    function(detach, "", 0, 0, |s, _| {
+        call(
+            s.get(c"bus")?,
+            c"off",
+            &[s.get(c"topic")?, s.get(c"handle")?],
+        )
+    })
+}
+
+#[napi]
+pub fn dispatch_progress_api(env: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::host_methods::default_object;
+    let p = L::new(&env, anchor);
+    let factory = function(p, "createDispatchProgressSubscription", 0, 1, |_, args| {
+        let options = default_object(args[0])?;
+        let bus = crate::js_iteration::read(options, c"bus")?;
+        let ports = fields(
+            options,
+            &[
+                ("bus", bus),
+                ("createReducer", options.get(c"createReducer")?),
+                ("cliOf", options.get(c"cliOf")?),
+                ("activeTurnOf", options.get(c"activeTurnOf")?),
+                ("streamReplayOf", options.get(c"streamReplayOf")?),
+            ],
+        )?;
+        if !bus.truthy()?
+            || bus.get(c"on")?.kind()? != sys::ValueType::napi_function
+            || bus.get(c"off")?.kind()? != sys::ValueType::napi_function
+        {
+            return Err(options.type_error("dispatch progress subscription requires a bus"));
+        }
+        function(ports, "subscribeDispatchProgress", 0, 1, |ports, a| {
+            subscribe(ports, a[0])
+        })
+    })?;
     Ok(fields(
         p,
-        &[(
-            "push",
-            function(owner, "push", 1, 1, |p, a| {
-                push(p, a[0])?;
-                p.from_value(&V::Undefined)
-            })?,
-        )],
+        &[
+            (
+                "createSafeProgressReducer",
+                function(p, "createSafeProgressReducer", 1, 2, |_, a| {
+                    create_reducer(a[0], default_object(a[1])?)
+                })?,
+            ),
+            ("createDispatchProgressSubscription", factory),
+            (
+                "reasoningDeltaFromPart",
+                function(p, "reasoningDeltaFromPart", 1, 1, |p, a| {
+                    p.from_value(&V::String(part(a[0], true)?))
+                })?,
+            ),
+            (
+                "textDeltaFromPart",
+                function(p, "textDeltaFromPart", 1, 1, |p, a| {
+                    p.from_value(&V::String(part(a[0], false)?))
+                })?,
+            ),
+        ],
     )?
-    .freeze()?
     .raw())
 }

@@ -832,6 +832,41 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+exposeHostApi('artifacts', () => getNative().artifactCleanupApi({
+  artifactsDir: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).artifactsDir,
+  environment: process.env, path, fs: require('node:fs'), home: require('node:os').homedir(),
+}));
+
+exposeHostApi('roleTokenTracker', () => {
+  const native = getNative();
+  const { validateUsageObserved } = require('../usage-observed');
+  // Legacy token buckets and Date-like inputs use V8's additive coercion.
+  const add = (a, b) => a + b;
+  const ports = { add, path, fs: require('node:fs'), now: () => new Date(),
+    reportFailure: require('../state/store').reportFailure,
+    onError: err => console.error(`[multicc] role token tracker: ${err.message}`) };
+  return {
+    emptyBucket: native.emptyRoleTokenBucket, hasUsage: native.roleBucketHasUsage,
+    addUsage: (bucket, usage) => native.accumulateRoleBucket(bucket, usage, add),
+    localDayKey: date => native.roleLocalDay(date, add),
+    usageObservedToRoleTokenInfo: value => native.roleObservedInfo(validateUsageObserved(value)),
+    createRoleTokenTracker(options) {
+      const api = native.createRoleTokenRuntime(options, ports);
+      const ingest = api.accumulateObserved;
+      api.accumulateObserved = value => ingest(validateUsageObserved(value));
+      return api;
+    },
+  };
+});
+
+exposeHostApi('officialImageBridgeRuntime', () => {
+  const { createOfficialImageBridge } = require('../codex/image-bridge');
+  const host = { home: require('node:os').homedir, path,
+    officialId: require('../official-accounts').officialAccountIdFromProvider };
+  return { createOfficialImageBridgeRuntime: options =>
+    createOfficialImageBridge(getNative().officialImageBridgePorts(options, host)) };
+});
+
 exposeHostApi('macosPower', () => getNative().macosPowerApi({
   platform: process.platform, fs: require('node:fs'), DomainError: require('../http-errors').DomainError,
   installer: path.resolve(__dirname, '../../scripts/install-powerd.sh'),
@@ -848,11 +883,130 @@ exposeHostApi('appPaths', () => getNative().appPathsPublicApi({
   fs: require('node:fs'), os: require('node:os'), path, process, pkgRoot: path.resolve(__dirname, '../..'),
 }, pathSafety));
 
+// V8 owns the Map prototype and the iterators returned to JavaScript. The
+// native record owner keeps all membership, insertion order and live values.
+function recordMapPrototype(prefix, ownerOf) {
+  const size = prefix + 'Size', get = prefix + 'Get', set = prefix + 'Set';
+  const has = prefix + 'Has', remove = prefix + 'Delete', clear = prefix + 'Clear';
+  const entries = map => ownerOf(map)[prefix + 'Entries']();
+  return class extends Map {
+    get size() { return ownerOf(this)[size](); }
+    get(key) { return ownerOf(this)[get](key); }
+    set(key, value) { ownerOf(this)[set](key, value); return this; }
+    has(key) { return ownerOf(this)[has](key); }
+    delete(key) { return ownerOf(this)[remove](key); }
+    clear() { ownerOf(this)[clear](); }
+    keys() { return entries(this).map(pair => pair[0])[Symbol.iterator](); }
+    values() { return entries(this).map(pair => pair[1])[Symbol.iterator](); }
+    entries() { return entries(this)[Symbol.iterator](); }
+    [Symbol.iterator]() { return this.entries(); }
+    forEach(callback, thisArg) {
+      for (const [key, value] of entries(this)) callback.call(thisArg, value, key, this);
+    }
+  };
+}
+
+exposeHostApi('chatSessions', () => {
+  const slots = new WeakMap();
+  const chatSessionsOwner = map => slots.get(map)?.native ?? null;
+  class ChatSessionMap extends recordMapPrototype('chat', map => {
+    const owner = chatSessionsOwner(map);
+    if (!owner) throw new TypeError('chat session owner is required');
+    return owner;
+  }) {
+    constructor(shared) {
+      super();
+      slots.set(this, getNative().newChatTableSlot(shared));
+    }
+    delete(key) {
+      return getNative().chatTableAfterDelete(slots.get(this), key, super.delete(key));
+    }
+    clear() {
+      const keys = [...super.keys()];
+      super.clear();
+      getNative().chatTableAfterClear(slots.get(this), keys);
+    }
+    setForgetHook(fn) { getNative().chatTableHook(slots.get(this), fn, false); return this; }
+    onForget(fn) { getNative().chatTableHook(slots.get(this), fn, true); return this; }
+  }
+  return { ChatSessionMap, createChatSessions: shared => new ChatSessionMap(shared), chatSessionsOwner,
+    get createChatReplayRuntime() { return require('../ws/ws-host').createChatReplayRuntime; } };
+});
+
+exposeHostApi('directoryRecords', () => {
+  const slots = new WeakMap();
+  const directoryOwner = map => slots.get(map)?.native || null;
+  class DirectoryMap extends recordMapPrototype('directory', map => {
+    const owner = directoryOwner(map);
+    if (!owner) throw new TypeError('directory table owner is required');
+    return owner;
+  }) {
+    constructor(shared) { super(); slots.set(this, shared); }
+  }
+  function createDirectoryTable(shared) {
+    if (typeof shared?.native?.directoryEntries !== 'function') {
+      throw new TypeError('directory table requires the native state owner');
+    }
+    return new DirectoryMap(shared);
+  }
+  function corruptedStateError(file, result) {
+    return getNative().stateRecordError(require('../state/store').CorruptedStateError, file, result);
+  }
+  function loadDirectories(shared, file) {
+    if (!shared?.native) throw new TypeError('state owner is required');
+    const result = shared.native.loadDirectories();
+    if (result.errorKind) throw corruptedStateError(file, result);
+    return result;
+  }
+  return { DirectoryMap, createDirectoryTable, directoryOwner, corruptedStateError, loadDirectories };
+});
+
+exposeHostApi('relayShares', () => getNative().relayShareApi(globalThis));
+
 exposeHostApi('requestLocality', () => getNative().requestLocalityApi(getNative()));
+
+// V8 owns the injected comparison operators and the public async Promise.
+exposeHostApi('processProbe', () => {
+  const native = getNative();
+  const { DEFAULT_ROLLOUT_WINDOW_MS, DEFAULT_OUTBOUND_TTL_MS } = native;
+  function api({ outboundHttps, rolloutGrew }) {
+    async function probe(pid, rolloutPath) {
+      const [hasOutboundConnection, rolloutGrowing] = await Promise.all([
+        outboundHttps(pid).catch(() => false),
+        Promise.resolve().then(() => rolloutGrew(rolloutPath)).catch(() => false),
+      ]);
+      return { hasOutboundConnection, rolloutGrowing, pid: pid || null };
+    }
+    return { probe, outboundHttps, rolloutGrew };
+  }
+  function createProcessProbe({ execFile, statMtimeMs, now = Date.now,
+    rolloutWindowMs = DEFAULT_ROLLOUT_WINDOW_MS, outboundTtlMs = DEFAULT_OUTBOUND_TTL_MS } = {}) {
+    return api(native.processProbeRuntime({ execFile, statMtimeMs, now: () => now(),
+      fresh: (at, prev) => at - prev <= outboundTtlMs, expired: (at, prev) => at - prev > outboundTtlMs,
+      recent: mtime => now() - mtime <= rolloutWindowMs, advanced: (mtime, prev) => mtime > prev,
+    }, false));
+  }
+  return { createProcessProbe, createSystemProcessProbe: () => api(native.processProbeRuntime({}, true)),
+    DEFAULT_ROLLOUT_WINDOW_MS, DEFAULT_OUTBOUND_TTL_MS };
+});
 
 exposeHostApi('cliResultCompletion', () => getNative().cliResultApi(getNative()));
 
 exposeHostApi('cliCompletion', () => getNative().cliCompletionApi(getNative()));
+
+// V8's relational operators preserve coercion of legacy threshold values.
+exposeHostApi('batteryGuard', () => getNative().batteryGuardApi({
+  platform: process.platform, ge: (a, b) => a >= b, le: (a, b) => a <= b, gt: (a, b) => a > b,
+}));
+
+exposeHostApi('codexAccountsRefresh', () => {
+  const { createCodexOAuthRefresher, stripOpenAiEnv } = require('../codex/oauth-refresh');
+  return getNative().codexAccountRefreshApi({
+    process, createCodexOAuthRefresher, stripOpenAiEnv, quietLogger: { info() {}, warn() {}, error() {} },
+  });
+});
+
+exposeHostApi('dispatchProgress', () => getNative().dispatchProgressApi({}));
 
 exposeHostApi('cliCapability', () => {
   const native = getNative();

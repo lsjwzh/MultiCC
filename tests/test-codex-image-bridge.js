@@ -163,3 +163,29 @@ test('bridge removes its copied auth material when the native worker fails', asy
   );
   assert.deepEqual(fs.existsSync(path.join(root, 'runs')) ? fs.readdirSync(path.join(root, 'runs')) : [], []);
 });
+
+test('official runtime resolves current account credentials in list order on every call', () => {
+  const native = require('../src/native/binding').getNative();
+  const { officialAccountIdFromProvider } = require('../src/official-accounts');
+  const before = require('./helpers/frozen-state-leaves/image-bridge-runtime').createOfficialImageBridgeRuntime;
+  const id = '0123456789abcdef';
+  function trace(build) {
+    const reads = [];
+    let accounts = [{ id, loggedIn: true }, { id: 'expired', loggedIn: true, expired: true },
+      { id: 'signed-out' }, { id, loggedIn: true }];
+    const ports = build({
+      paths: { artifactsDir: '/artifacts' }, providers: { getProvider: (app, key) => [app, key] },
+      officialAccounts: { listCodexAccounts: () => accounts,
+        codexAuthFile(key) { reads.push(key); return path.join('/accounts', key, 'auth.json'); } },
+    });
+    const result = [ports.getProvider('codex', id), ports.resolveAuthFile({}),
+      ports.resolveAuthFile({ settingsConfig: { officialAccount: { id } } }), ports.fallbackAuthFiles()];
+    accounts = [];
+    result.push(ports.fallbackAuthFiles());
+    return { result, reads };
+  }
+  const host = { home: os.homedir, path, officialId: officialAccountIdFromProvider };
+  const actual = trace(options => native.officialImageBridgePorts(options, host));
+  assert.deepEqual(actual, trace(before));
+  assert.deepEqual(actual.reads, [id, id, id]);
+});

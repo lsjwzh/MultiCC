@@ -14,7 +14,7 @@ const { officialAccountIdFromProvider } = require('../../src/official-accounts')
 const { detachProviderReferences } = require('./legacy-provider-force-detach');
 const { isValidIp } = require('../../src/providers/egress-ip');
 const { reassignProviderSessions } = require('../../src/provider-reassign');
-const { parseCredential, relayRouteFromBaseUrl } = require('../../src/providers/relay-share-store');
+const { parseCredential, relayRouteFromBaseUrl } = require('../../src/native/binding').relayShares;
 const { nativeVendorOf } = require('../../src/providers/native-vendor');
 const { CLAUDE_MODELS_FALLBACK } = require('../../src/claude-models');
 

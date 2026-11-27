@@ -15,7 +15,7 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
 const { createStateOwner, createTurnRuntimeStore: createNativeRuntime } = require('../src/state/owner');
-const { createChatSessions } = require('../src/chat/sessions');
+const { createChatSessions } = require('../src/native/binding').chatSessions;
 const { createTurnRuntimeStore: createLegacyRuntime } = require('./helpers/legacy-chat-runtime-store');
 const { createLegacyChatSession, createLegacyChatSessions } = require('./helpers/legacy-chat-sessions');
 
@@ -526,4 +526,26 @@ test('回合入口保留宿主对象、默认参数、返回值和调用顺序',
     return calls;
   }
   assert.deepEqual(trace(createNativeRuntime), trace(old));
+});
+
+test('清空先移除全部键，再按注册顺序通知；观察者异常原样抛出', () => {
+  const table = createChatSessions(createStateOwner());
+  const error = new Error('观察者执行失败');
+  const seen = [];
+  table.set('first', {}).set('second', {});
+  const oldEntries = table.keys();
+  table.setForgetHook(key => seen.push(['hook', key, table.size]));
+  table.onForget(key => {
+    seen.push(['observer', key]);
+    table.onForget(later => seen.push(['late', later]));
+  });
+  table.onForget(key => { if (key === 'second') throw error; });
+
+  assert.throws(() => table.clear(), err => err === error);
+  assert.deepEqual([...oldEntries], ['first', 'second']);
+  assert.deepEqual([...table], []);
+  assert.deepEqual(seen, [
+    ['hook', 'first', 0], ['observer', 'first'], ['late', 'first'],
+    ['hook', 'second', 0], ['observer', 'second'],
+  ]);
 });

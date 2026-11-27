@@ -6,11 +6,11 @@
 // sessions.json share one writer and one host-value anchor.
 //
 // This module is the composition point: the session facade
-// (src/session/records.js) and the directory facade (src/directory/records.js)
+// (src/session/records.js) and the directory Map adapter (src/native/binding.js)
 // both receive this object rather than reaching for each other.
 
 const { getNative } = require('../native/binding');
-const { corruptedStateError, loadDirectories } = require('../directory/records');
+const { corruptedStateError, loadDirectories } = require('../native/binding').directoryRecords;
 
 const nativeOrigins = new WeakMap();
 

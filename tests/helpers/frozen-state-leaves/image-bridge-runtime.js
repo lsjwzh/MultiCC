@@ -1,9 +1,11 @@
+// Frozen at 92f9dbae; module paths point back into the host under test.
 'use strict';
 
 const os = require('node:os');
 const path = require('node:path');
-const { officialAccountIdFromProvider } = require('../official-accounts');
-const { createOfficialImageBridge } = require('./image-bridge');
+const { officialAccountIdFromProvider } = require('../../../src/official-accounts');
+// Capture the assembled ports without launching an image worker.
+const createOfficialImageBridge = ports => ports;
 
 function createOfficialImageBridgeRuntime({ paths, resolveSessionCwd, providers, officialAccounts, registerArtifact, codexCommand } = {}) {
   return createOfficialImageBridge({

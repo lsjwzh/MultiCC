@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createCleanup } = require('../src/artifacts');
+const { createCleanup } = require('../src/native/binding').artifacts;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -63,7 +63,7 @@ test('server resolves pins from the docs registry for every artifact cleanup tic
   // contributes its `permanent` rows — 置顶 alone no longer keeps a file alive,
   // which is exactly the split test-docs-registry.js pins down.
   assert.match(source,
-    /artifacts\.cleanup\(undefined, docsRegistry\.listPermanentArtifactIds\(\)\)/);
+    /artifacts\.cleanupAsync\(undefined, docsRegistry\.listPermanentArtifactIds\(\)\)/);
   assert.match(source, /artifact_cleanup_pin_read_failed/);
   assert.match(source, /cleanupArtifacts\(\);/);
   assert.match(source,
@@ -162,4 +162,50 @@ test('dot-prefixed nested references retain source artifacts through cleanup', t
   assert.equal(createCleanup({ artifactsDir: root, now: () => now, log() {} })(7 * DAY_MS, kept), 1);
   assert.equal(fs.existsSync(path.join(root, 'input')), true);
   assert.equal(fs.existsSync(path.join(root, 'unrelated')), false);
+});
+
+test('the asynchronous artifact sweep uses the primary root, exact pins and the same age boundary', t => {
+  const { execFileSync } = require('node:child_process');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-worker-artifacts-'));
+  t.after(() => fs.rmSync(data, { recursive: true, force: true }));
+  const root = path.join(data, 'artifacts');
+  fs.mkdirSync(root);
+  artifactDir(root, 'keep', 1);
+  artifactDir(root, 'drop', 1);
+  const modulePath = require.resolve('../src/native/binding');
+  execFileSync(process.execPath, ['-e', `
+    const assert = require('node:assert/strict');
+    const { artifacts } = require(${JSON.stringify(modulePath)});
+    const result = artifacts.cleanupAsync(undefined, new Set(['keep']));
+    assert.ok(result instanceof Promise);
+    result.then(count => assert.equal(count, 1));
+  `], { env: { ...process.env, MULTICC_DATA_DIR: data } });
+  assert.deepEqual(fs.readdirSync(root), ['keep']);
+});
+
+test('the injected sweep preserves partial pins, root rechecks and log behavior', () => {
+  const before = require('./helpers/frozen-state-leaves/artifacts').createCleanup;
+  function trace(factory, replaceRoot) {
+    const root = path.resolve('artifact-test-root');
+    const calls = [];
+    let rootReads = 0;
+    const stats = directory => ({
+      mtimeMs: 0, isSymbolicLink: () => !directory, isDirectory: () => directory,
+    });
+    const fsImpl = {
+      lstatSync(file) {
+        const key = path.relative(root, file) || '.';
+        calls.push(['stat', key]);
+        return stats(key !== '.' || ++rootReads !== replaceRoot);
+      },
+      readdirSync() { return ['keep', 'old', 'second']; },
+      rmSync(file, options) { calls.push(['remove', path.basename(file), options]); },
+    };
+    function* pins() { yield 'keep'; throw Error('iterator failed after yielding a pin'); }
+    const cleanup = factory({ artifactsDir: root, fsImpl, now: () => 100, log: line => calls.push(['log', line]) });
+    return { count: cleanup(50, pins()), calls };
+  }
+  for (const rootRead of [0, 1, 2, 3]) {
+    assert.deepEqual(trace(createCleanup, rootRead), trace(before, rootRead));
+  }
 });

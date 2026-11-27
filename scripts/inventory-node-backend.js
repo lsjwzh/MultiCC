@@ -11,7 +11,8 @@ const { parse } = require('internal/deps/acorn/acorn/dist/acorn');
 
 const root = path.resolve(__dirname, '..');
 const manifest = require('../package.json');
-const output = process.argv[2];
+const reachableTsv = process.argv[2] === '--reachable-tsv';
+const output = process.argv[reachableTsv ? 3 : 2];
 const files = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
   cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
 }).split('\0').filter(file => /\.[cm]?js$/.test(file) && fs.existsSync(path.join(root, file)));
@@ -101,6 +102,28 @@ function closure(entry, includeScriptPaths = false) {
 }
 const fromServer = closure('server.js');
 const fromServerPaths = closure('server.js', true);
+// Use the same AST edges as the module report. A final unterminated line is
+// still a physical line; an empty file has zero lines.
+if (reachableTsv) {
+  const callers = new Map([...fromServerPaths]
+    .filter(file => file === 'server.js' || /^(?:src|plugins)\/.*\.[cm]?js$/.test(file))
+    .sort().map(file => [file, new Set()]));
+  for (const caller of fromServerPaths) {
+    const edges = visited.get(caller);
+    if (!edges) continue;
+    for (const target of [...edges.local, ...edges.scriptPaths]) callers.get(target)?.add(caller);
+  }
+  const rows = ['文件\t物理行数\t可达调用方'];
+  for (const [file, imports] of callers) {
+    const source = fs.readFileSync(path.join(root, file), 'utf8');
+    const lines = source.split('\n').length - Number(!source || source.endsWith('\n'));
+    rows.push([file, lines, [...imports].sort().join(',') || '—'].join('\t'));
+  }
+  const result = rows.join('\n') + '\n';
+  if (output) fs.writeFileSync(output, result);
+  else process.stdout.write(result);
+  return;
+}
 const toolReach = [...toolEntries].map(([file, label]) => [label, closure(file, true)]);
 const pluginReach = new Set(runtimeFiles.filter(file => file.startsWith('plugins/')).flatMap(file => [...closure(file, true)]));
 const dependencies = Object.entries(manifest.dependencies || {}).sort(([a], [b]) => a.localeCompare(b));

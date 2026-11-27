@@ -1,3 +1,4 @@
+// Frozen at 92f9dbae; module paths point back into the host under test.
 // Temp artifacts domain — data-root policy, retention roots and expiry cleanup
 // for the throwaway files/web pages produced by the bundled `multicc-artifact`
 // skill. The skill (running inside a claude session) writes each artifact into
@@ -15,8 +16,8 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createPaths } = require('./native/binding').appPaths;
-const { isArtifactId } = require('./native/binding').artifactReference;
+const { createPaths } = require('../../../src/native/binding').appPaths;
+const { isArtifactId } = require('../../../src/native/binding').artifactReference;
 
 const DEFAULT_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 

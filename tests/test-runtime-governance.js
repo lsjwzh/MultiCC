@@ -29,7 +29,7 @@ test('artifacts and detached paths resolve beneath MULTICC_DATA_DIR', (t) => {
   assert.equal(paths.tunnelRepairLedgerFile, path.join(root, 'tunnel-repair-ledger.json'));
 
   const script = [
-    "const a=require('./src/artifacts')",
+    "const a=require('./src/native/binding').artifacts",
     "const d=require('./src/detached')",
     "process.stdout.write(JSON.stringify({artifacts:a.ARTIFACTS_DIR,detached:d.BASE_DIR,env:process.env.MULTICC_ARTIFACTS_DIR}))",
   ].join(';');

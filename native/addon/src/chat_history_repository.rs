@@ -1136,47 +1136,7 @@ impl<'a> Repository<'a> {
         &self,
         failure: &state_file::WriteFailure,
     ) -> Result<(L<'a>, L<'a>, &'static str)> {
-        use state_file::WriteStage;
-        let path = Some(failure.path.as_path());
-        let reported = match failure.stage {
-            WriteStage::Mkdir => {
-                node_fs_error::build(self.anchor, &failure.error, "mkdir", path, None)?
-            }
-            WriteStage::ChmodDir | WriteStage::ChmodTarget => {
-                node_fs_error::build(self.anchor, &failure.error, "chmod", path, None)?
-            }
-            WriteStage::OpenTemporary | WriteStage::OpenDirectory => {
-                node_fs_error::build(self.anchor, &failure.error, "open", path, None)?
-            }
-            WriteStage::Write => {
-                node_fs_error::build(self.anchor, &failure.error, "write", None, None)?
-            }
-            WriteStage::Fsync | WriteStage::FsyncDirectory => {
-                node_fs_error::build(self.anchor, &failure.error, "fsync", None, None)?
-            }
-            // The history repository never installs a before-rename hook, so
-            // this arm is unreachable from it; both late steps name `rename`.
-            WriteStage::BeforeRename | WriteStage::Rename => node_fs_error::build(
-                self.anchor,
-                &failure.error,
-                "rename",
-                path,
-                failure.dest.as_deref(),
-            )?,
-        };
-        if failure.stage == WriteStage::Mkdir {
-            let inner = node_fs_error::failure_message(&failure.error, "mkdir", path, None);
-            let thrown = node_fs_error::build_message(
-                self.anchor,
-                c"Error",
-                &format!(
-                    "[state-store] mkdir {}: {inner}",
-                    failure.path.to_string_lossy()
-                ),
-            )?;
-            return Ok((thrown, reported, "mkdir"));
-        }
-        Ok((reported, reported, "atomic_write"))
+        node_fs_error::atomic_write_failure(self.anchor, failure)
     }
     /// Best-effort host report. The metric/logger live in Node
     /// (`stateStore.setFailureReporter`), so Rust calls the port with the exact

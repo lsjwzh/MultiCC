@@ -20,7 +20,7 @@ const {
   codexAccountAuthFilePath,
 } = require('../src/official-accounts');
 const { createCodexOfficialRelayHandler } = require('../src/codex/official-relay');
-const { createCodexAccountRefreshSupervisor } = require('../src/codex/accounts-refresh');
+const { createCodexAccountRefreshSupervisor } = require('../src/native/binding').codexAccountsRefresh;
 const poller = require('../src/usage-limit-poller');
 const { fetchCodexUsage } = require('../src/routes/codex-quota');
 const { createQuotaRuntime } = require('../src/routes/quota-host');
@@ -333,6 +333,46 @@ test('supervisor syncs refreshers with logged-in accounts and drops removed ones
   store.deleteCodexAccount(a.id);
   supervisor.sync();
   assert.equal(supervisor.status(a.id), null);
+});
+
+test('92f9dbae differential: failed account reads, CLI copies and serial refresh recovery', async () => {
+  const frozen = require('./helpers/frozen-state-leaves/codex-accounts-refresh').createCodexAccountRefreshSupervisor;
+  async function trace(createSupervisor) {
+    let listed = ['one', 'copy', 'broken', 'next'].map(id => ({ id, loggedIn: true, cliCopy: id === 'copy' }));
+    const events = [];
+    const accounts = {
+      listCodexAccounts() {
+        if (!listed) throw Error('temporarily unreadable');
+        return listed;
+      },
+    };
+    const supervisor = createSupervisor({
+      accounts,
+      logger: { warn(event, details) { events.push([event, details]); } },
+      makeRefresher({ id }) {
+        if (id === 'broken') throw Error('creation failed');
+        return {
+          status: () => id,
+          async check(reason) {
+            events.push(['begin', id, reason]);
+            await Promise.resolve();
+            events.push(['end', id]);
+            if (id === 'one') throw Error('check failed');
+            return { outcome: 'fresh' };
+          },
+        };
+      },
+    });
+    supervisor.sync();
+    listed = null;
+    const results = await supervisor.checkAll();
+    const retained = [...supervisor.refreshers.keys()];
+    listed = [{ id: 'next', loggedIn: false }, { id: 'copy', loggedIn: true }];
+    const reconciled = await supervisor.checkAll('manual');
+    return { events, results, retained, reconciled, removed: supervisor.status('one'),
+      existing: supervisor.status('next'), frozen: Object.isFrozen(supervisor) };
+  }
+  assert.deepEqual(await trace(createCodexAccountRefreshSupervisor), await trace(frozen));
 });
 
 // ── poller target.authFile + quota route ?account ───────────────────────────

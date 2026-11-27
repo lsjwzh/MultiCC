@@ -220,7 +220,7 @@ function claudeSpeedtestModel(env, summary) {
   if (explicit) return explicit;
   const fromCatalog = preferredSpeedtestModel(summary && summary.modelOptions);
   if (fromCatalog) return fromCatalog;
-  const { relayRouteFromBaseUrl } = require('../../src/providers/relay-share-store');
+  const { relayRouteFromBaseUrl } = require('../../src/native/binding').relayShares;
   if (relayRouteFromBaseUrl(env.ANTHROPIC_BASE_URL)) {
     const { CLAUDE_MODELS_FALLBACK } = require('../../src/claude-models');
     return preferredSpeedtestModel(CLAUDE_MODELS_FALLBACK.map(entry => entry.model));
