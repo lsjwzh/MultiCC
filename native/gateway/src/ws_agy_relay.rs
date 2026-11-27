@@ -33,8 +33,7 @@ use tokio_tungstenite::{
 use multicc_core::account_subscription::valid_account;
 use multicc_core::agy_accounts::{self as agy_store, ResolvedAgyAccount};
 use multicc_core::agy_remote::{
-    build_remote_permissions_settings, wrap_remote_prompt, DEFAULT_REMOTE_AGY_BIN,
-    FILE_MODE_REMOTE_MCP,
+    build_remote_permissions_settings, wrap_remote_prompt, FILE_MODE_REMOTE_MCP,
 };
 use multicc_core::egress_plugin::LOOPBACK_NO_PROXY;
 use multicc_core::state_file;
@@ -55,10 +54,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn host_agy_bin() -> String {
-    std::env::var("MULTICC_AGY_BIN")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_REMOTE_AGY_BIN.to_string())
+    crate::cli_bin::resolve_agy_bin_string()
 }
 
 /// 解析 `/agy-proxy/<16hex>/turn` 中的 `account_id`。
