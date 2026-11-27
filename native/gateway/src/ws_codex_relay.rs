@@ -54,11 +54,7 @@ const HOST_EXEC_ENV_VARS: &[&str] = &[
 ];
 
 fn host_codex_bin() -> String {
-    std::env::var("MULTICC_CODEX_BIN")
-        .ok()
-        .or_else(|| std::env::var("CODEX_CMD").ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "codex".to_string())
+    crate::cli_bin::resolve_codex_bin_string()
 }
 
 fn valid_provider_id(id: &str) -> bool {

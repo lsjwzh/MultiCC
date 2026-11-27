@@ -2,7 +2,7 @@ use super::{optional_text, Session};
 use crate::app::App;
 use multicc_core::{claude_lane::LaunchInput, claude_process::StartInput};
 use serde_json::{json, Map, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(super) fn launch_options(state: &Session) -> StartInput {
     let record = &state.stored.record;
@@ -67,17 +67,7 @@ pub(super) async fn prepare_history(app: &App, options: &StartInput) {
 }
 
 fn claude_binary() -> String {
-    if let Ok(command) = std::env::var("MULTICC_CLAUDE_BIN") {
-        if !command.trim().is_empty() {
-            return command;
-        }
-    }
-    if cfg!(windows) {
-        "claude.exe"
-    } else {
-        "claude"
-    }
-    .into()
+    crate::cli_bin::resolve_claude_bin_string()
 }
 
 pub(super) async fn init_facts(
@@ -164,11 +154,5 @@ pub(super) fn codex_effort(
 }
 
 fn available(path: &Path) -> bool {
-    if path.components().count() > 1 {
-        path.is_file()
-    } else {
-        std::env::var_os("PATH").is_some_and(|paths| {
-            std::env::split_paths(&paths).any(|entry: PathBuf| entry.join(path).is_file())
-        })
-    }
+    crate::cli_bin::is_resolved_runnable(path.as_os_str())
 }

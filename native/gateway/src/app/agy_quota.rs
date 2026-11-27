@@ -1,10 +1,7 @@
 //! Antigravity account quota from the official agy CLI, plus transparent
 //! pass-through to the lending Host for relay-shared accounts. Subprocesses are
 //! asynchronous, bounded, per-account single-flight and never expose raw output.
-use super::{
-    agy_catalog::executable,
-    express::{self, RequestCtx},
-};
+use super::express::{self, RequestCtx};
 use crate::agy_relay_client::{fetch_relay_quota, RelayQuotaError};
 use crate::agy_remote_bridge::run_ssh_script;
 use axum::{body::Body, http::Response};
@@ -292,9 +289,7 @@ fn accounts_home_dir() -> Option<PathBuf> {
 }
 
 fn agy_executable() -> OsString {
-    std::env::var_os("MULTICC_AGY_BIN")
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(executable)
+    crate::cli_bin::resolve_agy_bin()
 }
 
 async fn fetch_local_with_env(

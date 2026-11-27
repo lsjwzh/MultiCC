@@ -18,6 +18,7 @@ pub mod auth_control;
 pub mod backoff;
 pub mod chat_bridge;
 pub mod claude_relay_client;
+pub mod cli_bin;
 pub mod cli_relay_attachments;
 pub mod cli_relay_bridge;
 pub mod cli_relay_client;
