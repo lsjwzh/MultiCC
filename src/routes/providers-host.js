@@ -118,7 +118,7 @@ function mountProvidersHostRoute(app, options = {}) {
       } catch (_) { /* a catalog refresh must never hide the Provider list */ }
     }
     const ccSwitchStatus = deps.providers.getCcSwitchStatus();
-    const subscriptions = require('../quota/account-subscription-cache');
+    const subscriptions = require('../native/binding').accountSubscriptionCache;
     await subscriptions.ready().catch(() => {});
     // 这里只读宿主快照；筛选、订阅投影、公开限额字段和虚拟线路选择由前门组装。
     const providers = deps.providers.listProviders(

@@ -20,7 +20,7 @@ const path = require('node:path');
 
 const { createQuotaRuntime } = require('../src/routes/quota-host');
 const { createQuotaBarCache } = require('../src/quota/quota-bar-cache');
-const Queue = require('../src/quota/claude-usage-queue');
+const Queue = require('../src/native/binding').claudeUsageQueue;
 const BarState = require('../src/quota/claude-bar-state');
 
 function tmpCache() {

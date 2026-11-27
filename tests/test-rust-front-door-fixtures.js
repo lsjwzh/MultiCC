@@ -3,7 +3,7 @@
 // The Rust front door is the only server for these routes now, so the frozen
 // Node oracles and corpora that justified each port must not drift silently:
 //   - native/core/tests/fixtures/outbound-proxy-cases.json is recomputed from
-//     src/network/proxy-policy.js (still the Node policy for everything else);
+//     the frozen Node proxy policy in tests/helpers/frozen-leaf-hosts/;
 //   - native/gateway/tests/fixtures/{account-subscription,provider-limit-history,
 //     claude-models}.json are recomputed from the frozen Node oracles.
 // Before this test, every generator was only wired to its own `node scripts/...`

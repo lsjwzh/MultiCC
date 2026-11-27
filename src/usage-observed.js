@@ -12,7 +12,7 @@
 // `UsageObservedError` with the same name/code/message.
 
 const { assertProviderBinding } = require('./native/binding').providerBinding;
-const { normalizeProxyOutcome } = require('./providers/proxy-outcome');
+const { normalizeProxyOutcome } = require('./native/binding').proxyOutcome;
 const { getNative } = require('./native/binding');
 
 const native = getNative();

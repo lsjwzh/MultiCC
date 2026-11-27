@@ -58,7 +58,7 @@ const { claudeSettingsExtra, appendAdapterAssistantText, adapterReasoningProgres
     providers, markHostErrorEnvelope, redactProviderRouteCapability,
   });
 
-const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
+const { checkEgressIpAllowed } = require('../native/binding').egressIpPolicy;
 const { deriveOpenTasks } = require('../native/binding').getTurnEventReplay();
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);

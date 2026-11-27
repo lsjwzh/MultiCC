@@ -3,7 +3,7 @@
 // Host ports for the existing quota recorder, egress plugins and refresh callbacks.
 // Native storage and per-request Rust state own persistence, selection and retries.
 const { getNative } = require('../native/binding');
-const subscriptions = require('../quota/account-subscription-cache');
+const subscriptions = require('../native/binding').accountSubscriptionCache;
 let cache = null;
 let guard = null, refreshOne = null, recordDto = null;
 function configure(options = {}) { cache = options.cache || null; guard = options.guard || null; recordDto = options.recordDto || null; }
@@ -16,7 +16,7 @@ function validate(input) { return call('validateVirtualProvider', input); }
 function snapshot(provider, providers, { model, excluded = [] } = {}) {
   return { providerId: provider.id, appType: provider.appType, virtual: provider.virtual,
     providers: providers.map(p => ({ ...p, virtualGateAllowed:
-      require('./egress-ip-policy').checkEgressIpAllowed(p).allowed && !guard?.check({ appType: p.appType, providerId: p.id }).blocked })),
+      require('../native/binding').egressIpPolicy.checkEgressIpAllowed(p).allowed && !guard?.check({ appType: p.appType, providerId: p.id }).blocked })),
     limits: cache?.snapshot().entries || {}, subscriptions: subscriptions.snapshot(), model, excluded, now: Date.now() };
 }
 // Prepare one committed view for all candidate decisions. This is separate
@@ -26,7 +26,7 @@ async function snapshotAsync(provider, providers, { model, excluded = [] } = {})
   const limits = cache ? (await cache.snapshot()).entries : {};
   return { providerId: provider.id, appType: provider.appType, virtual: provider.virtual,
     providers: providers.map(p => ({ ...p, virtualGateAllowed:
-      require('./egress-ip-policy').checkEgressIpAllowed(p).allowed
+      require('../native/binding').egressIpPolicy.checkEgressIpAllowed(p).allowed
         && !guard?.checkEntry({ appType: p.appType, providerId: p.id }, limits[`${p.appType}:${p.id}`]).blocked })),
     limits, subscriptions: subscriptions.snapshot(), model, excluded, now: Date.now() };
 }

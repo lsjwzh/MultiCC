@@ -6,7 +6,7 @@ const {
   installGlobalProxy, resolveProxyEnv, parseMacSystemProxy, cidrToRange,
   latestChildProxyEnv, latestProxyMode, systemProxyHijackHint, resetLatestForTests,
 } = require('../src/native/binding').globalProxy;
-const { ensureLoopbackNoProxyEnv, mergeLoopbackNoProxy } = require('../src/network/proxy-policy');
+const { ensureLoopbackNoProxyEnv, mergeLoopbackNoProxy } = require('../src/native/binding').proxyPolicy;
 
 const SCUTIL = `<dictionary> {
   ExceptionsList : <array> {

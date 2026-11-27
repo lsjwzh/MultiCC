@@ -429,3 +429,10 @@ mod worktree_orphans;
 pub mod writer_group;
 pub mod ws_admission;
 pub mod ws_host;
+
+mod claude_sdk_config;
+mod egress_ip_policy;
+mod account_cache_host;
+mod claude_quota_headers;
+mod model_connect_watch;
+mod proxy_observer;

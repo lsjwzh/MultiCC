@@ -24,7 +24,7 @@
 // per account by limit-cache-recorder.)
 
 const { claudeBar } = require('../native/binding').getQuotaBarView();
-const { claudeUsageKey, readClaudeUsage } = require('./claude-usage-queue');
+const { claudeUsageKey, readClaudeUsage } = require('../native/binding').claudeUsageQueue;
 const { claudeQuota } = require('../native/binding');
 
 const liveByKey = new Map();

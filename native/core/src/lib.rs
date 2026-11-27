@@ -247,3 +247,5 @@ pub mod workspace_state;
 
 pub mod chat_error_history;
 pub mod memory_distill;
+
+pub mod artifact_retention;

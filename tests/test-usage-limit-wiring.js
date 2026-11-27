@@ -71,7 +71,7 @@ test('broadcast maps window DTO → rate_limit_event, balance DTO → usage_bala
 // way throws on every call, and the queue swallows that into the default key, so
 // every account quietly shares one reading.
 test('wiring installs a claude key resolver that resolves a session to its account', () => {
-  const Queue = require('../src/quota/claude-usage-queue');
+  const Queue = require('../src/native/binding').claudeUsageQueue;
   const sessions = new Map([
     ['acct-2-s', { provider: 'claude-official-bbb', cli: 'claude' }],
     ['relay-s', { provider: 'zhipu', cli: 'claude' }],
@@ -107,7 +107,7 @@ test('wiring installs a claude key resolver that resolves a session to its accou
 // user asks for it — the bar's ⟳ / tap sends `force=1`. So the wiring hands
 // onTurnComplete straight to the poller and never enqueues a Claude reading.
 test('a turn ending does not scrape Claude, and the poller still runs', async () => {
-  const Queue = require('../src/quota/claude-usage-queue');
+  const Queue = require('../src/native/binding').claudeUsageQueue;
   const sessions = new Map([['acct-s', { provider: 'p-official', cli: 'claude' }]]);
   Queue.resetClaudeUsageQueue();
   const scrapes = [];

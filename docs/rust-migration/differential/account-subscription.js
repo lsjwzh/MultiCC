@@ -485,7 +485,7 @@ function specFor(group, upstream, options = {}) {
     mount(app, ctx) {
       const { createOfficialAccountStore } = require(path.join(ROOT, 'src/official-accounts'));
       const { createClaudeAccountCredentialService } = require(path.join(ROOT, 'src/claude-auth/account-credentials'));
-      const subscriptions = require(path.join(ROOT, 'src/quota/account-subscription-cache'));
+      const subscriptions = require(path.join(ROOT, 'src/native/binding')).accountSubscriptionCache;
       subscriptions.configure({ file: path.join(ctx.dataRoot, 'provider-limit-cache.db') });
       const accounts = createOfficialAccountStore({});
       ORACLE.mountAccountSubscriptionRoute(app, 'claude', {

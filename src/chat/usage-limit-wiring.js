@@ -20,7 +20,7 @@ const {
   labelRoutedProvider, labelRoutedBalance,
 } = require('../native/binding').getQuotaBarView();
 const { rememberClaudeLive, renderClaudeBar } = require('../quota/claude-bar-state');
-const { DEFAULT_KEY, configureClaudeKeyResolver } = require('../quota/claude-usage-queue');
+const { DEFAULT_KEY, configureClaudeKeyResolver } = require('../native/binding').claudeUsageQueue;
 
 // No automatic Claude scrape is started from here. A turn ending used to warm
 // the account's reading; that was removed on request — a Claude reading is now

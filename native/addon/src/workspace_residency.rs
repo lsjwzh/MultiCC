@@ -162,3 +162,108 @@ pub fn workspace_residency(env: Env, ports: Unknown<'_>) -> Result<sys::napi_val
     )?
     .raw())
 }
+
+fn advance(claim: L<'_>) -> Result<L<'_>> {
+    let owner = claim.get(c"owner")?;
+    let name = claim.get(c"name")?;
+    let workspace = claim.get(c"workspace")?;
+    let target = claim.get(c"target")?;
+    let exclusive = claim.get(c"exclusive")?;
+    let cursor = claim.get(c"cursor")?;
+    loop {
+        let step = call(cursor, c"next", &[])?;
+        if step.get(c"done")?.truthy()? {
+            return call(owner, c"finish", &[name, workspace, target, exclusive]);
+        }
+        let (id, entry) = step.get(c"value")?.iterator_pair()?;
+        if call(
+            owner,
+            c"prepareClose",
+            &[name, workspace, target, exclusive, id, entry],
+        )?
+        .truthy()?
+        {
+            let ports = claim.get(c"ports")?;
+            let joined = ports.get(c"closeAndWait")?.call_plain(&[id])?;
+            let promise = call(claim.global()?.get(c"Promise")?, c"resolve", &[joined])?;
+            let resume = function(claim, "afterClose", 1, 1, |c, a| {
+                if !a[0].optional(c"closed")?.is_true()? {
+                    return Err(busy(c.get(c"ports")?)?);
+                }
+                advance(c)
+            })?;
+            return call(promise, c"then", &[resume]);
+        }
+    }
+}
+#[napi]
+pub fn workspace_residency_api(
+    env: Env,
+    ports: Unknown<'_>,
+    owner: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let p = L::new(&env, ports);
+    let owner = L::new(&env, owner);
+    p.set(c"owner", owner)?;
+    Ok(fields(
+        p,
+        &[
+            ("track", owner.get(c"track")?),
+            ("park", owner.get(c"park")?),
+            ("assertSend", owner.get(c"assertSend")?),
+            (
+                "activity",
+                function(p, "activity", 1, 1, |p, a| {
+                    let e = entry(p, a[0])?;
+                    let cb = e.optional(c"onActivity")?;
+                    if !cb.nullish()? {
+                        cb.call(e, &[])?;
+                    }
+                    p.from_value(&V::Undefined)
+                })?,
+            ),
+            (
+                "forget",
+                function(p, "forget", 1, 1, |p, a| {
+                    call(p.get(c"entries")?, c"delete", a)
+                })?,
+            ),
+            (
+                "claim",
+                function(p, "claim", 2, 3, |p, a| {
+                    crate::host_methods::async_result(p, || {
+                        let path = a[1].optional(c"path")?;
+                        if !path.truthy()? {
+                            return Err(busy(p)?);
+                        }
+                        let target = call(p, c"location", &[path])?;
+                        let array =
+                            call(p.global()?.get(c"Array")?, c"from", &[p.get(c"entries")?])?;
+                        let exclusive = a[2].optional(c"exclusive")?;
+                        let c = fields(
+                            p,
+                            &[
+                                ("ports", p),
+                                ("owner", p.get(c"owner")?),
+                                ("name", a[0]),
+                                ("workspace", a[1]),
+                                ("target", target),
+                                (
+                                    "exclusive",
+                                    if exclusive.undefined()? {
+                                        flag(p, false)?
+                                    } else {
+                                        exclusive
+                                    },
+                                ),
+                                ("cursor", call(array, c"values", &[])?),
+                            ],
+                        )?;
+                        advance(c)
+                    })
+                })?,
+            ),
+        ],
+    )?
+    .raw())
+}

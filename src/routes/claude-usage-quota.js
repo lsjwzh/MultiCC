@@ -47,7 +47,7 @@ const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 const {
   configureClaudeUsageQueue, claudeUsageKey, readClaudeUsage, enqueueClaudeUsage,
-} = require('../quota/claude-usage-queue');
+} = require('../native/binding').claudeUsageQueue;
 const { fetchUsage, USAGE_URL } = require('../claude-auth/official-oauth');
 const { fetchCliUsage } = require('../quota/claude-cli-oauth');
 

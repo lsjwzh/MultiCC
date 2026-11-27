@@ -3,7 +3,7 @@
 // One policy for fetch, HTTP/WebSocket agents and child process environments.
 const { Agent, ProxyAgent: FetchProxyAgent, Dispatcher, Request, fetch: undiciFetch } = require('undici');
 const { ProxyAgent } = require('proxy-agent');
-const { createProxyPolicy, isLoopback } = require('./proxy-policy');
+const { createProxyPolicy, isLoopback } = require('../native/binding').proxyPolicy;
 
 async function abortable(promise, signal) {
   if (!signal) return promise;
@@ -96,7 +96,7 @@ module.exports = { ...shared, createOutbound, RoutingDispatcher };
 // Capture the same SDK exports on first official use, after injected-fetch selection.
 Object.defineProperty(module.exports, 'official', { configurable: true, get() {
   const { createOutbound, outboundFetch } = module.exports;
-  const { parseMacSystemProxy } = require('./proxy-policy');
+  const { parseMacSystemProxy } = require('../native/binding').proxyPolicy;
   function parseMacProxy(text) {
     const { httpProxy, httpsProxy } = parseMacSystemProxy(text);
     return { httpProxy, httpsProxy };

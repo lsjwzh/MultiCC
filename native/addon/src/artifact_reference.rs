@@ -189,3 +189,31 @@ impl<'env> Walk<'env> {
         Ok(())
     }
 }
+
+#[napi]
+pub fn artifact_id_from_registry_url(url: Option<String>) -> Option<String> {
+    multicc_core::docs_memory_routes::artifact_id_from_url(url.as_deref())
+}
+
+#[napi]
+pub fn retained_artifact_ids(entries: String, roots: Vec<String>) -> napi::Result<Vec<String>> {
+    let entries = serde_json::from_str::<Vec<serde_json::Value>>(&entries)
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let roots = roots
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    multicc_core::artifact_retention::retained(&entries, &roots)
+        .map(|ids| ids.into_iter().collect())
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+
+#[napi]
+pub async fn retained_artifact_ids_async(
+    entries: String,
+    roots: Vec<String>,
+) -> napi::Result<Vec<String>> {
+    tokio::task::spawn_blocking(move || retained_artifact_ids(entries, roots))
+        .await
+        .map_err(|e| napi::Error::from_reason(e.to_string()))?
+}

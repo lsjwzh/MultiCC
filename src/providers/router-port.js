@@ -11,7 +11,7 @@ const { mountCodexOfficialRelay } = require('../codex/official-relay');
 const { codexProxyTrace } = require('../codex/proxy-trace');
 const { createCodexHistoryHooks } = require('../native/binding').codexHistoryHooks;
 const { createClaudeOAuthProxyRecovery } = require('../claude-auth/proxy-recovery');
-const { createClaudeQuotaBridge } = require('./claude-quota-bridge');
+const { createClaudeQuotaBridge } = require('../native/binding').claudeQuotaBridge;
 const {
   createProviderProxyAdmission,
   createProviderProxyGuard,

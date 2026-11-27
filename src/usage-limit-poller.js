@@ -28,7 +28,7 @@ const { getNative, requestCodexUsage, readCodexAuth } = require('./native/bindin
 const crypto = require('crypto');
 const { publicTransportError } = require('./upstream-error');
 const providers = require('./providers/host');
-const { checkEgressIpAllowed } = require('./providers/egress-ip-policy');
+const { checkEgressIpAllowed } = require('./native/binding').egressIpPolicy;
 
 const POLL_TIMEOUT_MS = 6000;
 // 借道余量透传：出借方收到查询后自己触发对厂商的真实余量查询（可能比本机
