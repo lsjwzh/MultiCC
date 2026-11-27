@@ -1,6 +1,6 @@
 'use strict';
 
-const { cleanMemoryCandidate } = require('../memory/task-distill');
+const { cleanMemoryCandidate } = require('../native/binding').taskDistill;
 const taskSearch = require('../task-board/search');
 
 // How much of the current turn is used as the retrieval query. The user message

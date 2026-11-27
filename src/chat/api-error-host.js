@@ -3,7 +3,7 @@
 const { isErrorOnlyText, normalizeRejection, retryNotice } = require('../native/binding').apiErrorPolicy;
 const { vendorLoginForCli } = require('../native/binding').getVendorLogin();
 const { looksLikeRevokedOAuth } = require('../claude-auth/oauth-refresh');
-const { systemProxyHijackHint } = require('../network/global-proxy');
+const { systemProxyHijackHint } = require('../native/binding').globalProxy;
 
 function cleanIdentity(value) {
   return value == null ? '' : String(value).trim();

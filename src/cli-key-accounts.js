@@ -23,7 +23,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { atomicWriteJson, ensurePrivateDir } = require('./runtime-security');
+const { atomicWriteJson, ensurePrivateDir } = require('./native/binding').runtimeSecurity;
 const { DEFAULT_ROOT, ACCOUNT_ID_PATTERN } = require('./official-accounts');
 const { hasAccount: hasAgyAccountNative } = require('./agy-accounts');
 const { displayNameOf } = require('./native/binding').cliCapability;

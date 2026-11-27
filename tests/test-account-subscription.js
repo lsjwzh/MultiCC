@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { subscriptionFromBody, codexAuthSubscription } = require('../src/native/binding');
 const { mountAccountSubscriptionRoute } = require('./helpers/legacy-account-subscription-route');
-const { registerAccountSubscriptionReader } = require('../src/quota/account-subscription-reader');
+const { registerAccountSubscriptionReader } = require('../src/native/binding').accountReader;
 const subscriptions = require('../src/quota/account-subscription-cache');
 const { createOfficialAccountStore } = require('../src/official-accounts');
 
@@ -375,7 +375,7 @@ test('多写者、record 与 project 交错时所有写入最终都可见', asyn
 
 test('订阅读取与冻结版使用相同的提前返回、请求和回退结果', async () => {
   const previous = require('./helpers/frozen-file-batch8/native-subscription').query;
-  const current = require('../src/quota/account-subscription-reader').query;
+  const current = require('../src/native/binding').accountReader.query;
   async function sample(query, input, mode) {
     const calls = [];
     const result = await query(input, { fetch: async (url, options) => {

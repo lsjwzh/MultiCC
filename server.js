@@ -31,7 +31,7 @@ for (const k of [
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
 require('./src/task-shell/migration-gate').runAtBoot();
-require('./src/network/global-proxy').installGlobalProxy();
+require('./src/native/binding').globalProxy.installGlobalProxy();
 const express = require('express');
 const http = require('http');
 const https = require('https');
@@ -237,14 +237,14 @@ const {
   createAuthSecurity,
   normalizeRedirect,
   escapeHtmlAttribute,
-} = require('./src/auth-security');
+} = nativeBinding.authSecurity;
 const { envEnabled, resolveNetworkPolicy, selectListenPort } = getNetworkPolicy();
 const { isLocalRequest, isPrivateRequestPeer } = require('./src/native/binding').requestLocality;
 const { createObservability, installConsoleRedaction } = require('./src/observability');
 const { mountWsConnectionRouter } = require('./src/ws/connection-router');
 const { mountServerCoreHostRoute } = require('./src/routes/server-core-host');
-const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
-const { createHostEnv } = require('./src/host-env');
+const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = nativeBinding.runtimeSecurity;
+const { createHostEnv } = nativeBinding.hostEnv;
 // Windows keeps its startup PATH: widen it from install dirs + registry now.
 const windowsEnv = require('./src/windows-env'); windowsEnv.prepare();
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
@@ -354,7 +354,7 @@ const ALLOW_LEGACY_WS_COOKIE = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_CO
 
 const { httpParseCookies: parseCookies } = getNative();
 
-app.use(requestIdMiddleware, require('./src/http/json-compression').jsonCompression);
+app.use(requestIdMiddleware, nativeBinding.jsonCompression.jsonCompression);
 routerToolHost.mount(app);
 // Auth gates shutdown, login and scoped grants.
 // It stays mounted before every API/relay route so mutable credentials apply
@@ -612,7 +612,7 @@ const directories = createDirectoryTable(stateOwner);
 mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
 // 供应商余量共享缓存：写入成功后向使用该线路的会话同步展示快照。
-const { providerQuotaHistory, providerLimitCache, limitRecorder, quotaBarCache, quotaGuard } = require('./src/quota/provider-runtime').createProviderQuotaRuntime({ paths: MULTICC_PATHS, persistedSessions, providers, broadcast: (id, data) => chatBroadcast(id, data), logger });
+const { providerQuotaHistory, providerLimitCache, limitRecorder, quotaBarCache, quotaGuard } = nativeBinding.providerQuota.createProviderQuotaRuntime({ paths: MULTICC_PATHS, persistedSessions, providers, broadcast: (id, data) => chatBroadcast(id, data), logger });
 // The native owner writes sessions.json itself (same envelope, `.bak1..3`
 // rotation, file+directory fsync). It honours the same isolated-test failure
 // marker inside a temporary MULTICC_DATA_DIR, under NODE_ENV=test only.
@@ -1481,7 +1481,7 @@ const folderMemory = createFolderMemoryService({
 });
 // P4 任务级记忆蒸馏：归因 aux 的 memory_candidate 与交付回执都经它写入
 // tasks/<taskId>/MEMORY.md 的「自动蒸馏」小节（去重→替换、容量上限，只碰小节）。
-const taskMemoryDistiller = require('./src/memory/task-distill').createTaskMemoryDistiller({
+const taskMemoryDistiller = nativeBinding.taskDistill.createTaskMemoryDistiller({
   fs,
   path,
   taskDir: (dirId, taskId) => folderMemory.taskDir(dirId, taskId),
@@ -1631,7 +1631,7 @@ mountFileTransferHostRoute(app, {
 });
 
 // ── Host .env management + Web Push (PWA notifications) ──
-// .env read/write helpers and VAPID key provisioning extracted to src/host-env.js.
+// The native host environment owns the editable configuration and VAPID provisioning.
 // The startup order below is preserved verbatim: DEFAULT_CLI migration, voice
 // route wiring, then VAPID key provisioning + setVapidDetails.
 const hostEnv = createHostEnv({ webpush });
@@ -1679,7 +1679,7 @@ const sessionDelivery = require('./src/native/binding').getSessionDeliveryApi().
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
   log: message => console.log('[multicc/delivery]', message),
 });
-const authHealth = require('./src/claude-auth/refresh-health').createRefreshHealthStore({ root: OFFICIAL_ACCOUNTS_ROOT, logger }); const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger, health: authHealth, healthKey: 'claude-cli' });
+const authHealth = nativeBinding.refreshHealth.createRefreshHealthStore({ root: OFFICIAL_ACCOUNTS_ROOT, logger }); const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger, health: authHealth, healthKey: 'claude-cli' });
 const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore({ onCredentialWritten: id => limitRecorder.releaseProviderFailure({ providerId: require('./src/providers/official-catalog').accountProviderId('claude', id) }) }); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger, health: authHealth }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive, onNeedsRefresh: id => claudeAccountRefresh.checkAccount(id, 'read-miss') }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
 const apiErrorHost = createApiErrorHost({ replay: chatReplay,
   policy: apiErrorPolicy, logger, persistedSessions, setTaskState, chatBroadcast,
@@ -1999,7 +1999,7 @@ mountQuotaHostRoute(app, {
 // `?account=` quota reads and the subscription panel resolve the same auth
 // files through the account-subscription reader; the retired codex mount
 // registered it, so it is registered explicitly here.
-require('./src/quota/account-subscription-reader').registerAccountSubscriptionReader('codex', { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
+nativeBinding.accountReader.registerAccountSubscriptionReader('codex', { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
 mountCodexOAuthRoutes(accountRoutesHost.app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent, disposeLoginTerminal }); claudeOAuthSurface.mountRoutes(accountRoutesHost.app); // see src/routes/claude-oauth.js header
 // The token-usage host port stays between the two Provider route phases: the
@@ -2013,7 +2013,7 @@ providerRoutes.mountManagementRoutes(app);
 // the usage-limit poller's adapters. Outcomes mirror into the provider-limit cache
 // (onResult); lookupCached reads it back so a transient failure answers last-known-
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
-require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes, getPort: () => PORT }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
+nativeBinding.quotaSelfHeal.wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes, getPort: () => PORT }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
 
 // ZCode / Kimi auth management (desktop key sync, manual key, pre-turn auth
 // check) rides the account host port; only their blocking login POSTs stay

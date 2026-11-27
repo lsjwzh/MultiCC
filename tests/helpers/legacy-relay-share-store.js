@@ -15,7 +15,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const { createStore } = require('../../src/state/store');
-const { atomicWriteText } = require('../../src/runtime-security');
+const { atomicWriteText } = require('../../src/native/binding').runtimeSecurity;
 
 const APP_TYPES = new Set(['claude', 'codex']);
 const TOKEN_PREFIX = 'mcr1';

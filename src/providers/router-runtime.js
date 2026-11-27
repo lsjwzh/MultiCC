@@ -16,7 +16,7 @@ const { toLegacyProviderView } = require('./binding');
 const { VENDOR_NATIVE_SET } = require('./native-vendor');
 const { applyCliKeyAccountEnv, selectedAccountId } = require('../cli-key-accounts');
 const { ensureLoopbackNoProxyEnv, hasProxyEnv } = require('../network/proxy-policy');
-const { latestChildProxyEnv } = require('../network/global-proxy');
+const { latestChildProxyEnv } = require('../native/binding').globalProxy;
 const { accountEnv: agyAccountEnv } = require('../agy-accounts');
 
 const DEFAULT_MODE = 'legacy';

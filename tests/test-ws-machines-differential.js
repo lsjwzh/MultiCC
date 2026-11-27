@@ -30,7 +30,7 @@ const binary = path.join(path.dirname(addonPath), process.platform === 'win32' ?
 const fixture = path.resolve(__dirname, 'helpers/gateway-auth-child.js');
 const { bridgeMachineSocket } = require('./helpers/legacy-ws-machines');
 const { installNativeQueue } = require('../src/ws/native-queue');
-const auth = require('../src/auth-security');
+const auth = require('../src/native/binding').authSecurity;
 const { getNative } = require('../src/native/binding');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

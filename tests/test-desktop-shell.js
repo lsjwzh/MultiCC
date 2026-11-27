@@ -1214,15 +1214,22 @@ test('host-env honors MULTICC_ENV_FILE for read and write', withEnv({ MULTICC_EN
   const dir = tmpdir('desktop-envfile-');
   const file = path.join(dir, 'multicc.env');
   process.env.MULTICC_ENV_FILE = file;
-  delete require.cache[require.resolve(path.join(ROOT, 'src', 'host-env.js'))];
-  const hostEnv = require(path.join(ROOT, 'src', 'host-env.js'));
+  const hostEnv = require(path.join(ROOT, 'src', 'native', 'binding')).hostEnv;
   assert.equal(hostEnv.envPath(), file);
   hostEnv.writeEnvFile({ VAPID_PUBLIC_KEY: 'pub-1' });
   assert.equal(fs.readFileSync(file, 'utf8').trim(), 'VAPID_PUBLIC_KEY=pub-1');
   assert.equal(hostEnv.readEnvFile().VAPID_PUBLIC_KEY, 'pub-1');
   hostEnv.writeEnvFile({ VAPID_PUBLIC_KEY: 'pub-2' });
   assert.equal(hostEnv.readEnvFile().VAPID_PUBLIC_KEY, 'pub-2');
-  delete require.cache[require.resolve(path.join(ROOT, 'src', 'host-env.js'))];
+  fs.writeFileSync(file, '# keep\nDUP=first\n\n  DUP = second  \nREMOVE=yes\n');
+  assert.equal(hostEnv.readEnvFile().DUP, 'second');
+  const parentMode = fs.statSync(dir).mode & 0o777;
+  hostEnv.writeEnvFile({ DUP: 'both', REMOVE: null, ADDED: 42 });
+  assert.equal(fs.readFileSync(file, 'utf8'), '# keep\nDUP=both\nDUP=both\nADDED=42\n');
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(dir).mode & 0o777, parentMode);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
 }));
 
 // ── static: security posture, purity, packaging, workflow, icon ─────────────

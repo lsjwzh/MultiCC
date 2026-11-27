@@ -13,7 +13,7 @@ const path = require('path');
 const { randomUUID } = require('crypto');
 const { exec } = require('child_process');
 const { createPaths } = require('../../src/native/binding').appPaths;
-const { atomicWriteJson } = require('../../src/runtime-security');
+const { atomicWriteJson } = require('../../src/native/binding').runtimeSecurity;
 const fanoutMigration = require('./fanout-migration');
 
 const PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });

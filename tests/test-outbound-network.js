@@ -8,7 +8,7 @@ const { once } = require('node:events');
 const { WebSocket, WebSocketServer } = require('ws');
 const { createOutbound } = require('../src/network/outbound');
 const { createProxyPolicy, bypassProxy, parseMacSystemProxy } = require('../src/network/proxy-policy');
-const { installGlobalProxy } = require('../src/network/global-proxy');
+const { installGlobalProxy } = require('../src/native/binding').globalProxy;
 
 async function fixture(t) {
   const sockets = new Set();
@@ -220,7 +220,7 @@ test('HTTPS 和加密 WebSocket 使用代理隧道并正常校验证书', { time
   });
   const code = `
     const network = require(${JSON.stringify(require.resolve('../src/network/outbound'))});
-    const { installGlobalProxy } = require(${JSON.stringify(require.resolve('../src/network/global-proxy'))});
+    const { installGlobalProxy } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).globalProxy;
     const WebSocket = require(${JSON.stringify(require.resolve('ws'))});
     const https = require('node:https');
     (async () => {

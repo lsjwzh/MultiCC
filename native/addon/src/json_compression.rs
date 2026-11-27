@@ -84,3 +84,88 @@ pub fn response_json_eligible(
     }
     json(res, ports)
 }
+
+/// Express and Buffer stay in the host. Rust installs and restores the
+/// one-shot end hook and owns all response eligibility and header decisions.
+#[napi]
+pub fn json_compression_middleware(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::host_methods::{arg, env as scope, function};
+    let p = L::new(&env, ports);
+    Ok(function(p, "jsonCompression", 3, 3, |p, a| {
+        let (req, res, next) = (a[0], a[1], a[2]);
+        if req.get(c"method")?.is_string("HEAD")?
+            || !call(req.get(c"path")?, c"startsWith", &[text(p, "/api/")?])?.truthy()?
+        {
+            return next.call_plain(&[]);
+        }
+        let gzip = response_accepts_gzip(
+            scope(p),
+            arg(req.get(c"headers")?.get(c"accept-encoding")?)?,
+        )?;
+        let state = fields(
+            p,
+            &[
+                ("ports", p),
+                ("gzip", flag(p, gzip)?),
+                ("res", res),
+                ("end", res.get(c"end")?),
+            ],
+        )?;
+        let hook = function(state, "endMaybeCompressed", 3, 3, |s, a| {
+            let res = s.get(c"res")?;
+            let end = s.get(c"end")?;
+            res.assign(c"end", end)?;
+            let p = s.get(c"ports")?;
+            let (chunk, mut encoding, mut callback) = (a[0], a[1], a[2]);
+            if chunk.kind()? == sys::ValueType::napi_function {
+                return end.call(res, &[chunk]);
+            }
+            if encoding.kind()? == sys::ValueType::napi_function {
+                callback = encoding;
+                encoding = p.from_value(&V::Undefined)?;
+            }
+            response_json_vary(scope(p), arg(res)?, arg(p)?)?;
+            if !s.get(c"gzip")?.truthy()?
+                || !response_json_eligible(scope(p), arg(res)?, arg(chunk)?, arg(p)?)?
+                || !call(p, c"largeEnough", &[chunk, encoding])?.truthy()?
+            {
+                return end.call(res, &[chunk, encoding, callback]);
+            }
+            let body = call(p, c"buffer", &[chunk, encoding])?;
+            let pending = fields(
+                s,
+                &[
+                    ("res", res),
+                    ("end", end),
+                    ("body", body),
+                    ("callback", callback),
+                ],
+            )?;
+            let done = function(pending, "compressed", 2, 2, |s, a| {
+                let res = s.get(c"res")?;
+                let body = if a[0].truthy()? || res.get(c"headersSent")?.truthy()? {
+                    s.get(c"body")?
+                } else {
+                    call(
+                        res,
+                        c"setHeader",
+                        &[text(s, "Content-Encoding")?, text(s, "gzip")?],
+                    )?;
+                    call(
+                        res,
+                        c"setHeader",
+                        &[text(s, "Content-Length")?, a[1].get(c"length")?],
+                    )?;
+                    a[1]
+                };
+                s.get(c"end")?.call(res, &[body, s.get(c"callback")?])
+            })?;
+            call(p, c"gzip", &[body, done])?;
+            Ok(res)
+        })?;
+        res.assign(c"end", hook)?;
+        next.call_plain(&[])?;
+        p.from_value(&V::Undefined)
+    })?
+    .raw())
+}

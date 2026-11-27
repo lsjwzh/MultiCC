@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const legacy = require('./helpers/legacy-auth-security');
-const native = require('../src/auth-security');
+const native = require('../src/native/binding').authSecurity;
 
 test('Rust owned credentials rotate atomically, reject oversized control state and retain shutdown', () => {
   const auth = native.createAuthSecurity({ secret: 'old-fixture' });
@@ -211,7 +211,7 @@ test('Rust authentication: flat issued claims work; excessive signed JSON nestin
 
 test('Rust authentication: VM collects runtime cycles through callbacks and ticket metadata', () => {
   const result = spawnSync(process.execPath, ['--expose-gc', '-e', `
-    const { createAuthSecurity } = require('./src/auth-security');
+    const { createAuthSecurity } = require('./src/native/binding').authSecurity;
     const assert = require('node:assert/strict');
     (async () => {
       let weak;
@@ -232,7 +232,7 @@ test('Rust authentication: VM collects runtime cycles through callbacks and tick
 
 test('control handoff callback does not retain VM ticket owners', () => {
   const result = spawnSync(process.execPath, ['--expose-gc', '-e', `
-    const { createAuthSecurity } = require('./src/auth-security');
+    const { createAuthSecurity } = require('./src/native/binding').authSecurity;
     const assert = require('node:assert/strict');
     (async () => {
       let weak;

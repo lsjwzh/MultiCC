@@ -24,7 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { codexAuthSubscription } = require('./native/binding');
 
-const { ensurePrivateDir, secureFile } = require('./runtime-security');
+const { ensurePrivateDir, secureFile } = require('./native/binding').runtimeSecurity;
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.multicc', 'official-accounts');
 const ACCOUNT_ID_PATTERN = /^[a-f0-9]{16}$/;

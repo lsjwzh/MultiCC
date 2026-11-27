@@ -137,7 +137,7 @@ process.on('SIGTERM', () => exitSoon(0));
 if (gatewayChild.isGatewayChild(process.env)) {
   // The real gateway now requires a live auth snapshot even for /readyz.
   // Keep the native owner reachable until this isolated fixture exits.
-  globalThis.__fixtureAuth = require('../../src/auth-security').createAuthSecurity({ secret: 'fixture-token' });
+  globalThis.__fixtureAuth = require('../../src/native/binding').authSecurity.createAuthSecurity({ secret: 'fixture-token' });
   gatewayChild.connectAuthControl(globalThis.__fixtureAuth);
   gatewayChild.watchGatewayLifeline();
   gatewayChild.listenBehindGateway(server, { port: gatewayChild.internalPort(process.env), onListening });

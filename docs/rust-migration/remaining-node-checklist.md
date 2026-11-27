@@ -1,5 +1,31 @@
 # 剩余 Node 后端清单
 
+## server.js 直连模块第 2 批（2026-11-27，MacPro x86_64）
+
+从 `39a884cf` 的 `server.js` 静态追踪字面量模块依赖和脚本路径。物理行统计包括无末尾换行符的最后一行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| server.js 与 src/ | 366 / 100,794 | 356 / 100,274 |
+| server.js、src/ 与 plugins/ | 378 / 104,713 | 368 / 104,193 |
+
+| 删除的生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/runtime-security.js` | 46 | 启动时收紧目录、文件和备份的权限，复用原子写入和分阶段错误上报 |
+| `src/host-env.js` | 91 | 配置读取和逐行更新、保留父目录权限、VAPID 密钥初始化 |
+| `src/network/global-proxy.js` | 89 | 代理刷新、定时器、保留上次成功配置及子进程环境 |
+| `src/auth-security.js` | 64 | 复用 Rust 认证所有者，投影跨进程票据元数据 |
+| `src/http/json-compression.js` | 47 | 安装及恢复响应结束钩子、选择压缩、设置响应头 |
+| `src/quota/provider-runtime.js` | 23 | 按原顺序创建配额存储并连接缓存、守卫及订阅 |
+| `src/memory/task-distill.js` | 68 | 复用 UTF-16 蒸馏规则，合并自动小节并原子替换记忆文件 |
+| `src/claude-auth/refresh-health.js` | 96 | 账号健康记录的缓存、私有文件读写和软失败 |
+| `src/quota/account-subscription-reader.js` | 81 | 选择账号凭据、合并同账号在途查询、等待缓存写入 |
+| `src/quota/quota-self-heal.js` | 80 | 过期配额重读与 401 刷新，跳过共享 CLI 令牌的副本 |
+
+删除路径合计 685 行，保留文件净增 165 行，可达生产代码净减 520 行。Node 桥接保留 Express 响应、异步 zlib、V8 弱引用和对象转换、进程全局代理、Web Push SDK 及注入的凭据和文件端口。默认字符串路径的原子写入走 Rust，有 `beforeRename`、`enforceDirMode` 等特殊选项的调用仍复用既有 StateStore。调用方解除这些宿主接口依赖后可移除对应桥接。
+
+一次 x64 Cargo 发布构建用时 5 分 1 秒，五件产物均通过来源指纹 `100656db36ffb5e181f38c5c`、SHA-256 和架构校验。测试进程显式使用这份 addon。35 个关联测试文件共 408 项通过，另有桌面配置与权限测试 1 项、真实网关就绪及两条回环 WebSocket 的冒烟 1 项通过。首次测试将模拟主目录放在 os.tmpdir() 内，触发一项测试目录断言；分离二者后整组通过。源码行数门禁、46 项写入治理和 1,328 项打包索引检查均通过。包及 Git 索引均包含本批全部 10 个有改动的 Rust 源文件。
+
 ## server.js 直连模块第 1 批（2026-11-27，MacPro x86_64）
 
 以 `92f9dbae` 为迁前基线，按字面量模块依赖和脚本路径复算。物理行数计入没有换行符的末行。每个文件的行数及调用方见 [逐文件清单](reachable-current.tsv)，依赖类型见 [模块依赖表](node-module-dependencies.md)。

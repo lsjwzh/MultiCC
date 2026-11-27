@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const http = require('node:http');
 const https = require('node:https');
-const { atomicWriteJson } = require('../runtime-security');
+const { atomicWriteJson } = require('../native/binding').runtimeSecurity;
 
 class BarkDeviceError extends Error {
   constructor(code, status = 400) { super(code); this.code = code; this.status = status; }

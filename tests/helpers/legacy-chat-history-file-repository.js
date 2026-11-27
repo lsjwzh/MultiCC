@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createPaths } = require('../../src/paths');
-const { atomicWriteText, ensurePrivateDir } = require('../../src/runtime-security');
+const { atomicWriteText, ensurePrivateDir } = require('../../src/native/binding').runtimeSecurity;
 
 // Transcripts are stored as JSONL — one message per line — so that the common
 // mutation can be an append instead of a rewrite.
