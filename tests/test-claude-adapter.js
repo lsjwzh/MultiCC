@@ -98,6 +98,33 @@ test('claude chat invokes the Agent SDK bridge with first-turn and resume identi
   assert.equal(resumed.args.includes('--session-id'), false);
 });
 
+test('Claude 调用日志按 UTF-16 截断，日志故障不会中止调用', t => {
+  const messages = [];
+  const log = t.mock.method(console, 'log', function (message) {
+    assert.equal(this, console);
+    messages.push(message);
+  });
+  const options = { bridge: '/bridge', resolveSessionWireModel: model => model,
+    cliEffortLevel: () => null, logClaudeInvocations: true };
+  const input = envelope();
+  input.contextLayers = [];
+  input.userText = '中'.repeat(159) + '😀!';
+  const invoke = deps => createClaudeAdapter(deps).buildInvocation(input);
+  const result = invoke(options);
+  assert.equal(result.payload, input.userText);
+  assert.deepEqual(messages, [
+    '[multicc/chat] claude -p invoke [-] provider=<default> argv: ' +
+    result.args.join(' ') + ' ' + input.userText.slice(0, 160) + '…(+2 chars)',
+  ]);
+  const failure = new Error('日志输出失败');
+  log.mock.mockImplementation(() => { throw failure; });
+  assert.deepEqual(invoke(options), result);
+  assert.throws(() => invoke({ ...options, debugLogClaudeInvoke() { throw failure; } }),
+    error => error === failure);
+  assert.deepEqual(invoke({ ...options, logClaudeInvocations: false }), result);
+  assert.equal(log.mock.callCount(), 2);
+});
+
 test('turn spawn keeps settings before the prompt separator for claude', () => {
   const invocation = adapter().buildInvocation(envelope());
   assert.deepEqual(processSpawnArgs(invocation, '/tmp/settings.json').slice(-4), [
