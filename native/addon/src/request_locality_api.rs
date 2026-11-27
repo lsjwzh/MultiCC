@@ -5,11 +5,7 @@ use napi_derive::napi;
 #[napi]
 pub fn request_locality_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_value> {
     let owner = L::new(&env, addon);
-    let constants = call(
-        owner,
-        c"requestLocality",
-        &[text(owner, "constants")?, null(owner)?],
-    )?;
+    let constants = crate::request_locality::evaluate("constants", owner)?;
     let api = fields(owner, &[])?;
     let set = owner.global()?.get(c"Set")?;
     for (key, name) in [
@@ -28,8 +24,8 @@ pub fn request_locality_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_va
     ] {
         api.set_key(
             text(api, key)?,
-            function(owner, key, 1, 1, move |s, a| {
-                call(s, c"requestLocality", &[text(s, op)?, a[0]])
+            function(owner, key, 1, 1, move |_, a| {
+                crate::request_locality::evaluate(op, a[0])
             })?,
         )?;
     }

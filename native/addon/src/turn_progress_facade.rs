@@ -6,6 +6,7 @@ use napi_derive::napi;
 use std::ffi::CStr;
 
 mod heartbeat;
+mod owner;
 const DEFAULT_MAX_IDENTITIES: f64 = 64.0;
 
 fn undefined(s: L<'_>) -> Result<L<'_>> {
@@ -88,7 +89,7 @@ fn timeline<'a>(root: L<'a>, owner: L<'a>) -> Result<L<'a>> {
                     root.set(c"shared", owner)?;
                 }
             }
-            let result = call(owner, op, a)?;
+            let result = owner::invoke(owner, op, a)?;
             if name == "field" {
                 if result.truthy()? {
                     fields(s, &[("timeline", result)])
@@ -133,14 +134,14 @@ fn probe<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
     let out = fields(root, &[])?;
     add(out, state, "record", 3, 4, |s, a| {
         let facts = options(a[3])?;
-        call(
+        owner::invoke(
             registry_owner(s)?,
             c"probeRecord",
             &[a[0], a[1], a[2], facts, s.get(c"ports")?],
         )
     })?;
     add(out, state, "lookup", 2, 2, |s, a| {
-        call(registry_owner(s)?, c"probeLookup", a)
+        owner::invoke(registry_owner(s)?, c"probeLookup", a)
     })?;
     out.freeze()
 }
@@ -224,7 +225,7 @@ fn timing<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
             }
         };
         let opts = fields(s, &[("t0", value(c"t0")?), ("cli", value(c"cli")?)])?;
-        call(
+        owner::invoke(
             registry_owner(s)?,
             c"timingBegin",
             &[a[0], a[1], opts, s.get(c"ports")?],
@@ -243,15 +244,15 @@ fn timing<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
             let owner = registry_owner(s)?;
             if op == c"timingMark" {
                 let key = if name == "markSpawned" { "t1" } else { "t2" };
-                call(
+                owner::invoke(
                     owner,
                     op,
                     &[a[0], a[1], text(s, key)?, a[2], s.get(c"ports")?],
                 )
             } else if n == 3 {
-                call(owner, op, &[a[0], a[1], a[2], s.get(c"ports")?])
+                owner::invoke(owner, op, &[a[0], a[1], a[2], s.get(c"ports")?])
             } else {
-                let result = call(owner, op, a)?;
+                let result = owner::invoke(owner, op, a)?;
                 if name == "drop" {
                     undefined(s)
                 } else {
@@ -286,8 +287,8 @@ fn progress<'a>(root: L<'a>, opts: L<'a>) -> Result<L<'a>> {
     }
     add(out, state, "forgetSession", 1, 1, |s, a| {
         let owner = s.get(c"owner")?;
-        call(owner, c"timelineForget", a)?;
-        call(owner, c"probeForget", a)?;
+        owner::invoke(owner, c"timelineForget", a)?;
+        owner::invoke(owner, c"probeForget", a)?;
         undefined(s)
     })?;
     Ok(out)

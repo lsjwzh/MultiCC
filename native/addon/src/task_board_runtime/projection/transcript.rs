@@ -1,4 +1,5 @@
 use super::*;
+use crate::host_methods::{arg, env, raw};
 
 pub(super) fn canonical<'a>(
     p: L<'a>,
@@ -28,25 +29,24 @@ pub(super) fn canonical<'a>(
         })?],
     )?;
     let history = p.get(c"loadHistory")?;
-    if body {
-        call(
-            p.get(c"native")?,
-            c"taskBoardCanonicalTaskBody",
-            &[
-                members,
-                ids,
-                task,
-                history,
-                p.get(c"core")?.get(c"messageText")?,
-            ],
-        )
+    let value = if body {
+        crate::task_board_transcript::task_board_canonical_task_body(
+            env(p),
+            arg(members)?,
+            arg(ids)?,
+            arg(task)?,
+            arg(history)?,
+            arg(p.get(c"core")?.get(c"messageText")?)?,
+        )?
     } else {
-        call(
-            p.get(c"native")?,
-            c"taskBoardCanonicalMessages",
-            &[members, ids, history],
-        )
-    }
+        crate::task_board_transcript::task_board_canonical_messages(
+            env(p),
+            arg(members)?,
+            arg(ids)?,
+            arg(history)?,
+        )?
+    };
+    Ok(raw(p, value))
 }
 
 pub(super) fn ensure<'a>(p: L<'a>, opts: L<'a>) -> Result<L<'a>> {

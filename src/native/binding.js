@@ -875,9 +875,9 @@ exposeHostApi('sessionWork', () => getNative().sessionWorkApi(getNative(), () =>
   createQuestionOwner: require('../orchestration/native-store-host').createQuestionOwner,
 })));
 
-exposeHostApi('codexHistoryHooks', () => getNative().codexHistoryHooksApi(getNative().responsesHistoryApi()));
+exposeHostApi('codexHistoryHooks', () => getNative().codexHistoryHooksApi(undefined));
 
-exposeHostApi('modelHistoryConverter', () => getNative().modelHistoryApi(getNative().responsesHistoryApi(),
+exposeHostApi('modelHistoryConverter', () => getNative().modelHistoryApi(undefined,
   ({ omitReasoningContent = false } = {}) => omitReasoningContent));
 
 exposeHostApi('stateContainer', () => getNative().sharedStateContainer());
@@ -964,13 +964,15 @@ exposeHostApi('taskBoardRouting', () => getNative().taskBoardRoutingApi({
   },
 }));
 
+let policyBinding;
 exposeHostApi('classifyVocab', () => {
   const { apiErrorSignaturesQuoted } = module.exports.apiErrorPolicy;
-  return getNative().classifyVocabApi(apiErrorSignaturesQuoted);
+  return getNative().classifyVocabApi(apiErrorSignaturesQuoted, policyBinding.policy);
 });
 
 exposeHostApi('apiErrorPolicy', () => {
   const { extractUpstreamError } = require('../upstream-error');
   const { errorFields } = require('../provider-error');
-  return getNative().apiErrorPolicyApi(getNative, extractUpstreamError, errorFields);
+  policyBinding = { process, addonPath: process.env.MULTICC_RUST_ADDON, prebuiltDir: process.env.MULTICC_RUST_PREBUILT_DIR };
+  return getNative().apiErrorPolicyApi(getNative, extractUpstreamError, errorFields, policyBinding);
 });

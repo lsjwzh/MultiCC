@@ -325,14 +325,24 @@ pub fn cli_catalog_queries(
     api.set(
         c"knownEffort",
         crate::host_methods::function(owner, "knownEffort", 1, 1, |s, a| {
-            call(s, c"cliKnownEffort", a)
+            flag(
+                s,
+                crate::cli_capability::cli_known_effort(crate::host_methods::typed(a[0])?),
+            )
         })?,
     )?;
     api.set(
         c"supportsEffort",
         crate::host_methods::function(owner, "supportsEffort", 3, 3, |s, a| {
             a[1] = fallback(a[1], V::from(""))?;
-            call(s, c"cliSupportsEffort", a)
+            flag(
+                s,
+                crate::cli_capability::cli_supports_effort(
+                    crate::host_methods::typed(a[0])?,
+                    crate::host_methods::typed(a[1])?,
+                    crate::host_methods::typed(a[2])?,
+                ),
+            )
         })?,
     )?;
     Ok(api.raw())

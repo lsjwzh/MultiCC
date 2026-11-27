@@ -57,8 +57,11 @@ pub fn request_locality(
     operation: String,
     input: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let input = V::new(&env, input);
-    let result = match operation.as_str() {
+    Ok(evaluate(&operation, V::new(&env, input))?.raw())
+}
+
+pub(crate) fn evaluate<'a>(operation: &str, input: V<'a>) -> Result<V<'a>> {
+    let result = match operation {
         "constants" => JsValue::object(vec![
             (
                 "loopback",
@@ -97,5 +100,5 @@ pub fn request_locality(
         )),
         _ => return Err(input.type_error("Unknown request locality operation")),
     };
-    Ok(input.from_value(&result)?.raw())
+    input.from_value(&result)
 }

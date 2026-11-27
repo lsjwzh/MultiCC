@@ -101,7 +101,13 @@ fn notice_number(value: L<'_>) -> Result<L<'_>> {
     value.global()?.get(c"Number")?.call_plain(&[value])
 }
 fn notice_lost<'a>(api: L<'a>, error: L<'a>) -> Result<L<'a>> {
-    call(api.get(c"native")?, c"chatLostNotice", &[error])
+    Ok(crate::host_methods::raw(
+        api,
+        chat_lost_notice(
+            crate::host_methods::env(api),
+            crate::host_methods::arg(error)?,
+        )?,
+    ))
 }
 fn notice_stuck<'a>(api: L<'a>, value: L<'a>) -> Result<L<'a>> {
     let value = notice_options(value)?;
@@ -118,23 +124,22 @@ fn notice_stuck<'a>(api: L<'a>, value: L<'a>) -> Result<L<'a>> {
     } else {
         reason
     };
-    let native = api.get(c"native")?;
-    let queued = read(native, c"chatQueuedNotice")?;
-    let locked = flag(api, reason.equals(text(api, "delivery_locked")?)?)?;
-    let list = api.from_value(&V::String(list.coerce_string()?))?;
+    let locked = reason.equals(text(api, "delivery_locked")?)?;
+    let list = list.coerce_string()?;
     let waited = notice_number(fallback(waited, V::Number(0.0))?)?;
-    queued.call(native, &[locked, list, waited])
+    api.from_value(&V::String(chat_notices::queued(
+        locked,
+        &list,
+        crate::host_methods::typed(waited)?,
+    )))
 }
 fn notice_held<'a>(api: L<'a>, value: L<'a>) -> Result<L<'a>> {
     let waited = notice_option(notice_options(value)?, c"waitedMs", V::Number(0.0))?;
-    let native = api.get(c"native")?;
-    let held = read(native, c"chatHeldNotice")?;
-    held.call(native, &[notice_number(fallback(waited, V::Number(0.0))?)?])
+    let waited = notice_number(fallback(waited, V::Number(0.0))?)?;
+    text(api, &chat_held_notice(crate::host_methods::typed(waited)?))
 }
 fn notice_cap<'a>(api: L<'a>, value: L<'a>) -> Result<L<'a>> {
     let minutes = notice_option(notice_options(value)?, c"minutes", V::Number(0.0))?;
-    let native = api.get(c"native")?;
-    let cap = read(native, c"chatHoldCapNotice")?;
     let rounded = if notice_number(minutes)?.number()? >= 1.0 {
         let math = api.global()?.get(c"Math")?;
         let round = read(math, c"round")?;
@@ -142,7 +147,10 @@ fn notice_cap<'a>(api: L<'a>, value: L<'a>) -> Result<L<'a>> {
     } else {
         null(api)?
     };
-    cap.call(native, &[rounded])
+    text(
+        api,
+        &chat_hold_cap_notice(crate::host_methods::typed(rounded)?),
+    )
 }
 
 fn notice_exception(anchor: L<'_>, error: napi::Error) -> Result<L<'_>> {
@@ -324,7 +332,7 @@ fn notice_create<'a>(api: L<'a>, options: L<'a>) -> Result<L<'a>> {
 #[napi]
 pub fn session_notices_api(env: Env, native: Unknown<'_>) -> Result<sys::napi_value> {
     let native = L::new(&env, native);
-    let api = fields(native, &[("native", native)])?;
+    let api = fields(native, &[])?;
     api.set(
         c"success",
         method(&env, api, "", 4, 4, |_, a| {

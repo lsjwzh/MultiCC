@@ -14,6 +14,7 @@
 //! only through its `get` method.
 mod decision;
 mod public_api;
+pub(crate) use public_api::quoted;
 mod runtime;
 use crate::js_live::LiveValue;
 pub(crate) use decision::decide as decide_live;

@@ -70,7 +70,7 @@ fn clean(v: L<'_>) -> Result<L<'_>> {
     }
 }
 fn arm(s: L<'_>) -> Result<L<'_>> {
-    let due = call(s.get(c"_owner")?, c"heartbeatNextDue", &[])?;
+    let due = owner::invoke(s.get(c"_owner")?, c"heartbeatNextDue", &[])?;
     if due.nullish()? {
         call(s, c"_clearTimer", &[])?;
         return undefined(s);
@@ -101,7 +101,7 @@ fn tick(s: L<'_>) -> Result<L<'_>> {
     call(s, c"_clearTimer", &[])?;
     let result = (|| {
         let at = call(s, c"_timestamp", &[])?;
-        call(s.get(c"_owner")?, c"heartbeatDue", &[at, s.get(c"_ports")?])
+        owner::invoke(s.get(c"_owner")?, c"heartbeatDue", &[at, s.get(c"_ports")?])
     })();
     let thrown = if result.is_err() {
         s.exception_value()?
@@ -126,7 +126,7 @@ fn run<'a>(name: &str, s: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
             if !turn.truthy()? {
                 return Err(s.type_error("turnId is required"));
             }
-            let snap = call(
+            let snap = owner::invoke(
                 s.get(c"_owner")?,
                 c"heartbeatStart",
                 &[session, turn, options(a[2])?, s.get(c"_ports")?],
@@ -152,22 +152,22 @@ fn run<'a>(name: &str, s: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
             let session = read(found, c"session")?;
             let turn = read(found, c"turn")?;
             let result = match name {
-                "touchVisible" => call(
+                "touchVisible" => owner::invoke(
                     owner,
                     c"heartbeatTouchVisible",
                     &[session, turn, s.get(c"_ports")?],
                 )?,
-                "touchActivity" => call(
+                "touchActivity" => owner::invoke(
                     owner,
                     c"heartbeatTouchActivity",
                     &[session, turn, s.get(c"_ports")?],
                 )?,
-                "updatePhase" => call(
+                "updatePhase" => owner::invoke(
                     owner,
                     c"heartbeatUpdatePhase",
                     &[session, turn, a[2], a[3], s.get(c"_ports")?],
                 )?,
-                _ => call(owner, c"heartbeatStop", &[session, turn])?,
+                _ => owner::invoke(owner, c"heartbeatStop", &[session, turn])?,
             };
             if name == "touchVisible" || (name == "stop" && result.truthy()?) {
                 call(s, c"_arm", &[])?;
@@ -179,7 +179,7 @@ fn run<'a>(name: &str, s: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
             if !session.truthy()? {
                 return null(s);
             }
-            let result = call(
+            let result = owner::invoke(
                 s.get(c"_owner")?,
                 c"heartbeatStatus",
                 &[session, s.get(c"_ports")?],
@@ -191,7 +191,7 @@ fn run<'a>(name: &str, s: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
             }
         }
         "stopAll" => {
-            let count = call(s.get(c"_owner")?, c"heartbeatStopAll", &[])?;
+            let count = owner::invoke(s.get(c"_owner")?, c"heartbeatStopAll", &[])?;
             call(s, c"_disarm", &[])?;
             Ok(count)
         }

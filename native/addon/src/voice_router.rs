@@ -124,7 +124,6 @@ pub fn voice_router_api(
     let state = fields(
         n,
         &[
-            ("native", n),
             ("unpack", L::new(&env, unpack)),
             ("prepare", L::new(&env, prepare)),
         ],
@@ -153,11 +152,15 @@ pub fn voice_router_api(
             },
             now,
         ])?;
-        call(s.get(c"native")?, c"voiceRouterProvisioner", &[ports])
+        Ok(crate::host_methods::raw(
+            s,
+            voice_router_provisioner(
+                crate::host_methods::env(s),
+                crate::host_methods::arg(ports)?,
+            )?,
+        ))
     })?;
-    let test = function(n, "isVoiceRouterRecord", 1, 1, |s, a| {
-        call(s, c"isVoiceRouter", a)
-    })?;
+    let test = function(n, "isVoiceRouterRecord", 1, 1, |s, a| flag(s, valid(a[0])?))?;
     Ok(fields(
         n,
         &[

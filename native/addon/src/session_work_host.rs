@@ -219,8 +219,14 @@ pub fn session_work_api(
 ) -> Result<sys::napi_value> {
     let s = L::new(&env, addon);
     let api = fields(s, &[])?;
-    api.spread_from(call(s, c"sessionWorkSchedulerApi", &[])?)?;
+    api.spread_from(L::from_raw(
+        s.env(),
+        crate::session_work_scheduler::session_work_scheduler_api(env)?,
+    ))?;
     let ports = L::new(&env, load_ports).call_plain(&[])?;
-    api.spread_from(call(s, c"sessionWorkHostApi", &[ports])?)?;
+    api.spread_from(L::from_raw(
+        s.env(),
+        session_work_host_api(env, crate::host_methods::arg(ports)?)?,
+    ))?;
     Ok(api.raw())
 }

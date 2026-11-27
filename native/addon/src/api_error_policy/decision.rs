@@ -102,8 +102,17 @@ fn share<'a>(p: L<'a>, value: L<'a>, flagged: bool, freeze: bool) -> Result<L<'a
     Ok(value)
 }
 pub(crate) fn decide<'a>(p: L<'a>, raw: L<'a>, ctx: L<'a>, deps: L<'a>) -> Result<L<'a>> {
+    decide_at(p, raw, ctx, deps, clock(p, deps)?)
+}
+
+pub(super) fn decide_at<'a>(
+    p: L<'a>,
+    raw: L<'a>,
+    ctx: L<'a>,
+    deps: L<'a>,
+    at: L<'a>,
+) -> Result<L<'a>> {
     let env = Env::from_raw(p.env());
-    let at = clock(p, deps)?;
     let random = if deps.get(c"random")?.kind()? == sys::ValueType::napi_function {
         deps.get(c"random")?
     } else {
@@ -185,19 +194,22 @@ pub fn api_policy_normalized(
     let p = L::new(&env, ports);
     let raw = L::new(&env, raw);
     let ctx = L::new(&env, context);
-    let at = clock(p, L::new(&env, deps))?;
+    Ok(normalized_at(p, raw, ctx, clock(p, L::new(&env, deps))?)?.raw())
+}
+
+pub(super) fn normalized_at<'a>(p: L<'a>, raw: L<'a>, ctx: L<'a>, at: L<'a>) -> Result<L<'a>> {
+    let env = Env::from_raw(p.env());
     let facts = prepared(p, raw, ctx)?;
     facts.set(c"now", at)?;
     let answer = local(
         p,
         api_error_normalize(env, unknown(raw)?, unknown(ctx)?, unknown(facts)?)?,
     );
-    Ok(share(
+    share(
         p,
         answer.get(c"result")?,
         answer.get(c"textEntitlement")?.truthy()?,
         true,
     )?
-    .freeze()?
-    .raw())
+    .freeze()
 }

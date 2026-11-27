@@ -103,6 +103,49 @@ pub(crate) fn arg(value: L<'_>) -> Result<Unknown<'_>> {
     // Both pointers belong to the current native callback scope.
     unsafe { Unknown::from_napi_value(value.env(), value.raw()) }
 }
+/// Only the addon's exact class prototype may take the internal path. A subclass
+/// or an own method belongs to the caller and keeps ordinary JS dispatch.
+pub(crate) fn uses_class_method(
+    owner: L<'_>,
+    class: &'static str,
+    key: &std::ffi::CStr,
+) -> Result<bool> {
+    let Some(ctor) = napi::bindgen_prelude::get_class_constructor(class) else {
+        return Ok(false);
+    };
+    let mut constructor = std::ptr::null_mut();
+    let mut prototype = std::ptr::null_mut();
+    napi::check_status!(unsafe {
+        sys::napi_get_reference_value(owner.env(), ctor, &mut constructor)
+    })?;
+    napi::check_status!(unsafe {
+        sys::napi_get_prototype(owner.env(), owner.raw(), &mut prototype)
+    })?;
+    if !raw(owner, constructor)
+        .get(c"prototype")?
+        .equals(raw(owner, prototype))?
+    {
+        return Ok(false);
+    }
+    let key = owner.from_value(&V::from(key.to_str().expect("static operation")))?;
+    let mut own = false;
+    napi::check_status!(unsafe {
+        sys::napi_has_own_property(owner.env(), owner.raw(), key.raw(), &mut own)
+    })?;
+    Ok(!own)
+}
+
+pub(crate) trait OwnedArgument: FromNapiValue {}
+impl OwnedArgument for String {}
+impl OwnedArgument for f64 {}
+impl OwnedArgument for Option<f64> {}
+impl OwnedArgument for crate::agy_stream::AgyInvocationInput {}
+
+/// Apply the same argument conversion used by the exported N-API function.
+pub(crate) fn typed<T: OwnedArgument>(value: L<'_>) -> Result<T> {
+    // The handle belongs to the active callback and its environment.
+    unsafe { T::from_napi_value(value.env(), value.raw()) }
+}
 pub(crate) fn env(value: L<'_>) -> Env {
     Env::from_raw(value.env())
 }
