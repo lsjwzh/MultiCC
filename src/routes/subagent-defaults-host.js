@@ -14,7 +14,7 @@
 // （docs/gateway.md 的内网端口模型）。Rust 接管会话存储与 provider 默认值后本文件删除。
 
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../native/binding').requestLocality;
 const { getNative, assignHostProperty } = require('../native/binding');
 
 const HOST_PATH = '/api/__host/subagent-defaults';

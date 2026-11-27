@@ -1,6 +1,6 @@
 'use strict';
 
-const { nameOf } = require('../cli/cli-capability');
+const { nameOf } = require('../native/binding').cliCapability;
 
 // Gateway/dispatch orchestration host: gateway prompts, canonical dispatch
 // admission, pending bookkeeping and result completion. Cross-session routing
@@ -13,7 +13,7 @@ const { nameOf } = require('../cli/cli-capability');
 // late-bound dependencies per call, and createSessionRecord / taskContextHost /
 // setSessionStatus are likewise resolved per call through getters. The
 
-const bus = require('../bus');
+const bus = require('../native/binding').eventBus;
 const { sanitizeVoiceSpeech } = require('../native/binding').voiceSpeech;
 const { recentTasksFor, routingStateFor } = require('./targeting');
 

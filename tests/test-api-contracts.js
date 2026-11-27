@@ -560,10 +560,13 @@ test('/api pricing and vendor-quota routes are owned by the Rust front door; Nod
 
 test('/api/air public routes are owned by the Rust front door; Node keeps only the host port', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  const mount = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'air-routes.js'), 'utf8');
+  const binding = fs.readFileSync(path.join(ROOT, 'src', 'native', 'binding.js'), 'utf8');
+  const mount = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'host_composition.rs'), 'utf8');
   const host = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'air-routes-host.js'), 'utf8');
-  assert.ok(source.includes("require('./src/workspace/air-routes').mountAirRoutes(app,"),
+  assert.ok(source.includes("require('./src/native/binding').airRoutes.mountAirRoutes(app,"),
     'server.js still wires the air mount point');
+  assert.ok(binding.includes("airMountApi(require('../workspace/air-routes-host').createAirRuntime)"),
+    'the mount API receives the Air host runtime factory');
   // The 15 public routes live in native/gateway/src/app/air_routes.rs. If Node
   // starts registering them again the front door and Node would disagree about
   // status codes, ETag/304 and the `{ ok: … }` envelope.
@@ -571,9 +574,10 @@ test('/api/air public routes are owned by the Rust front door; Node keeps only t
     "app.get('/api/air'", "app.post('/api/air/worktrees/reclaim'", "app.get('/api/air/resolve'",
     "app.post('/api/air/tasks'", "app.get('/api/air/tasks/:id'", "app.get('/api/air/pins'",
     "app.post('/api/air/pins'", "app.get('/api/air/todos'", "app.post('/api/air/todos'",
-  ]) assert.equal(mount.includes(retired), false, `Node must not register ${retired}`);
-  assert.ok(mount.includes('runtime.mount(app)'), 'the mount point still wires the host port');
-  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
+  ]) assert.equal(host.includes(retired), false, `Node must not register ${retired}`);
+  assert.ok(mount.includes('call(runtime, c"mount", &[a[0]])?'), 'Rust mounts the host runtime on the app');
+  assert.ok(host.includes("const HOST_PATH = '/api/__host/air'") && host.includes('app.post(HOST_PATH,'),
+    'the host runtime registers its internal port');
 });
 
 test('/api events, triggers and annotation-live routes are owned by the Rust front door', () => {

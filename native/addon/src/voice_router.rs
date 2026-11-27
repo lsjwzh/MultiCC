@@ -112,3 +112,60 @@ pub fn voice_router_provisioner(env: Env, ports: Unknown<'_>) -> Result<sys::nap
     .freeze()?
     .raw())
 }
+
+#[napi]
+pub fn voice_router_api(
+    env: Env,
+    addon: Unknown<'_>,
+    unpack: Unknown<'_>,
+    prepare: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let n = L::new(&env, addon);
+    let state = fields(
+        n,
+        &[
+            ("native", n),
+            ("unpack", L::new(&env, unpack)),
+            ("prepare", L::new(&env, prepare)),
+        ],
+    )?;
+    let create = function(state, "createVoiceRouterProvisioner", 0, 1, |s, a| {
+        let input = s.get(c"unpack")?.call_plain(&[a[0]])?;
+        let records = read(input, c"records")?;
+        let mutate = input.get(c"mutate")?;
+        let root = input.get(c"runtimeRoot")?;
+        let cli = input.get(c"cli")?;
+        let now = input.get(c"now")?;
+        if !records.instance_of(s.global()?.get(c"Map")?)? {
+            return Err(s.type_error("voice router provisioner requires records Map"));
+        }
+        if mutate.kind()? != sys::ValueType::napi_function {
+            return Err(s.type_error("voice router provisioner requires mutate"));
+        }
+        let ports = s.get(c"prepare")?.call_plain(&[
+            records,
+            mutate,
+            root,
+            if cli.undefined()? {
+                text(s, "claude")?
+            } else {
+                cli
+            },
+            now,
+        ])?;
+        call(s.get(c"native")?, c"voiceRouterProvisioner", &[ports])
+    })?;
+    let test = function(n, "isVoiceRouterRecord", 1, 1, |s, a| {
+        call(s, c"isVoiceRouter", a)
+    })?;
+    Ok(fields(
+        n,
+        &[
+            ("VOICE_ROUTER_ID", text(n, ID)?),
+            ("VOICE_ROUTER_LABEL", text(n, LABEL)?),
+            ("createVoiceRouterProvisioner", create),
+            ("isVoiceRouterRecord", test),
+        ],
+    )?
+    .raw())
+}

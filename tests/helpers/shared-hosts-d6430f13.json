@@ -1,0 +1,2353 @@
+{
+  "requestLocality": {
+    "entry": "src/request-locality.js",
+    "exports": [
+      [
+        "LOOPBACK_ADDRESSES",
+        "object",
+        null
+      ],
+      [
+        "FORWARDING_HEADERS",
+        "object",
+        null
+      ],
+      [
+        "requestHost",
+        "function",
+        1
+      ],
+      [
+        "hasForwardingMetadata",
+        "function",
+        1
+      ],
+      [
+        "isExternalProxyRequest",
+        "function",
+        1
+      ],
+      [
+        "isLocalRequest",
+        "function",
+        1
+      ],
+      [
+        "isPrivateNetworkAddress",
+        "function",
+        1
+      ],
+      [
+        "isPrivateRequestPeer",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        true,
+        false,
+        true,
+        [
+          "127.0.0.1",
+          "::1",
+          "::ffff:127.0.0.1"
+        ]
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "cliResultCompletion": {
+    "entry": "src/cli-adapters/result-completion.js",
+    "exports": [
+      [
+        "isMainResult",
+        "function",
+        1
+      ],
+      [
+        "resultCompletion",
+        "function",
+        1
+      ],
+      [
+        "createResultCompletionTracker",
+        "function",
+        0
+      ]
+    ],
+    "behavior": {
+      "value": [
+        [
+          false,
+          null
+        ],
+        [
+          false,
+          null
+        ],
+        [
+          true,
+          {
+            "version": 1,
+            "state": "completed",
+            "reason": "success_result",
+            "source": "protocol"
+          }
+        ],
+        [
+          true,
+          {
+            "version": 1,
+            "state": "failed",
+            "reason": "error_during_execution",
+            "source": "protocol"
+          }
+        ]
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "isMainResult",
+            "function",
+            1
+          ],
+          [
+            "resultCompletion",
+            "function",
+            1
+          ],
+          [
+            "createResultCompletionTracker",
+            "function",
+            0
+          ]
+        ],
+        "behavior": {
+          "error": "Error",
+          "message": "rust_backend_unavailable"
+        }
+      }
+    }
+  },
+  "cliCompletion": {
+    "entry": "src/cli-adapters/completion.js",
+    "exports": [
+      [
+        "createStepCompletionTracker",
+        "function",
+        0
+      ],
+      [
+        "completion",
+        "function",
+        2
+      ],
+      [
+        "isCompleted",
+        "function",
+        1
+      ],
+      [
+        "createCompletionTracker",
+        "function",
+        0
+      ],
+      [
+        "createAdapterCompletion",
+        "function",
+        1
+      ],
+      [
+        "createProtocolCompletionTracker",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        true,
+        {
+          "version": 1,
+          "state": "completed",
+          "reason": "ok",
+          "source": "protocol"
+        },
+        [
+          "observe",
+          "finish",
+          "snapshot"
+        ],
+        false
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "createStepCompletionTracker",
+            "function",
+            0
+          ],
+          [
+            "completion",
+            "function",
+            2
+          ],
+          [
+            "isCompleted",
+            "function",
+            1
+          ],
+          [
+            "createCompletionTracker",
+            "function",
+            0
+          ],
+          [
+            "createAdapterCompletion",
+            "function",
+            1
+          ],
+          [
+            "createProtocolCompletionTracker",
+            "function",
+            1
+          ]
+        ],
+        "behavior": {
+          "error": "Error",
+          "message": "rust_backend_unavailable"
+        }
+      }
+    }
+  },
+  "cliCapability": {
+    "entry": "src/cli/cli-capability.js",
+    "exports": [
+      [
+        "bundledClaudeCodeBinary",
+        "function",
+        0
+      ],
+      [
+        "ALIASES",
+        "object",
+        null
+      ],
+      [
+        "CAPABILITIES",
+        "object",
+        null
+      ],
+      [
+        "CLIS",
+        "object",
+        null
+      ],
+      [
+        "DEFAULT_CAPABILITY",
+        "object",
+        null
+      ],
+      [
+        "DEFAULT_COLOUR",
+        "string",
+        null
+      ],
+      [
+        "DEFAULT_KINDS",
+        "object",
+        null
+      ],
+      [
+        "DISPLAY",
+        "object",
+        null
+      ],
+      [
+        "KINDS",
+        "object",
+        null
+      ],
+      [
+        "nameOf",
+        "function",
+        1
+      ],
+      [
+        "capabilityOf",
+        "function",
+        1
+      ],
+      [
+        "displayOf",
+        "function",
+        1
+      ],
+      [
+        "familyOf",
+        "function",
+        1
+      ],
+      [
+        "familyNameOf",
+        "function",
+        1
+      ],
+      [
+        "displayNameOf",
+        "function",
+        1
+      ],
+      [
+        "engineOf",
+        "function",
+        1
+      ],
+      [
+        "shortMarkOf",
+        "function",
+        1
+      ],
+      [
+        "colourOf",
+        "function",
+        1
+      ],
+      [
+        "effortOf",
+        "function",
+        1
+      ],
+      [
+        "isProviderless",
+        "function",
+        1
+      ],
+      [
+        "providerlessClis",
+        "function",
+        0
+      ],
+      [
+        "deprecationOf",
+        "function",
+        1
+      ],
+      [
+        "isDeprecated",
+        "function",
+        1
+      ],
+      [
+        "kindsOf",
+        "function",
+        1
+      ],
+      [
+        "offersIn",
+        "function",
+        2
+      ],
+      [
+        "isAlias",
+        "function",
+        1
+      ],
+      [
+        "knownClis",
+        "function",
+        0
+      ],
+      [
+        "lanesOf",
+        "function",
+        2
+      ],
+      [
+        "familiesFor",
+        "function",
+        1
+      ],
+      [
+        "updateOf",
+        "function",
+        1
+      ],
+      [
+        "updateSpecs",
+        "function",
+        0
+      ],
+      [
+        "npmPackages",
+        "function",
+        0
+      ],
+      [
+        "isBundled",
+        "function",
+        1
+      ],
+      [
+        "bundledEnginesOf",
+        "function",
+        1
+      ],
+      [
+        "isResident",
+        "function",
+        1
+      ],
+      [
+        "isResidentSession",
+        "function",
+        1
+      ],
+      [
+        "protocolOf",
+        "function",
+        1
+      ],
+      [
+        "cancelStopsProcess",
+        "function",
+        1
+      ],
+      [
+        "transportOf",
+        "function",
+        1
+      ],
+      [
+        "protocolFamilyOf",
+        "function",
+        1
+      ],
+      [
+        "EFFORTS",
+        "get",
+        null
+      ],
+      [
+        "watchEffortCatalog",
+        "function",
+        1
+      ],
+      [
+        "knownEffort",
+        "function",
+        1
+      ],
+      [
+        "supportsEffort",
+        "function",
+        3
+      ]
+    ],
+    "behavior": {
+      "value": [
+        [
+          "Codex",
+          true
+        ],
+        [
+          "Claude",
+          true
+        ],
+        [
+          "unknown",
+          false
+        ]
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "repoActor": {
+    "entry": "src/repo-actor/index.js",
+    "exports": [
+      [
+        "RepoActor",
+        "function",
+        0
+      ],
+      [
+        "defaultRepoActor",
+        "object",
+        null
+      ],
+      [
+        "repoKeyFor",
+        "function",
+        1
+      ],
+      [
+        "operationId",
+        "function",
+        0
+      ],
+      [
+        "NONINTERACTIVE_ENV",
+        "object",
+        null
+      ],
+      [
+        "DEFAULT_TIMEOUT_MS",
+        "number",
+        null
+      ],
+      [
+        "DEFAULT_MAX_BUFFER",
+        "number",
+        null
+      ]
+    ],
+    "behavior": {
+      "value": [
+        true,
+        true
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "gitService": {
+    "entry": "src/git/service/index.js",
+    "exports": [
+      [
+        "defaultRepoActor",
+        "object",
+        null
+      ],
+      [
+        "WORKTREE_SUBDIR",
+        "string",
+        null
+      ],
+      [
+        "gitRun",
+        "function",
+        2
+      ],
+      [
+        "gitIsRepo",
+        "function",
+        1
+      ],
+      [
+        "gitHasCommit",
+        "function",
+        1
+      ],
+      [
+        "gitBaseBranch",
+        "function",
+        1
+      ],
+      [
+        "gitWorktreeSnapshot",
+        "function",
+        1
+      ],
+      [
+        "gitExportSessionBundle",
+        "function",
+        3
+      ],
+      [
+        "gitImportSessionBundle",
+        "function",
+        4
+      ],
+      [
+        "gitEnsureExcluded",
+        "function",
+        1
+      ],
+      [
+        "gitWorktreeAdd",
+        "function",
+        3
+      ],
+      [
+        "gitWorktreeCommitAll",
+        "function",
+        2
+      ],
+      [
+        "gitWorktreeValidate",
+        "function",
+        3
+      ],
+      [
+        "gitWorktreeDetach",
+        "function",
+        3
+      ],
+      [
+        "gitWorktreeRollbackCreate",
+        "function",
+        3
+      ],
+      [
+        "gitWorktreeRemove",
+        "function",
+        3
+      ],
+      [
+        "gitRebaseConflicts",
+        "function",
+        1
+      ],
+      [
+        "gitWorktreeMergeState",
+        "function",
+        2
+      ],
+      [
+        "gitMergeBack",
+        "function",
+        2
+      ],
+      [
+        "gitSyncFromBase",
+        "function",
+        2
+      ],
+      [
+        "gitRebaseResolve",
+        "function",
+        3
+      ],
+      [
+        "gitRelocateWorktree",
+        "function",
+        3
+      ],
+      [
+        "gitWorktreeSplitOff",
+        "function",
+        1
+      ],
+      [
+        "checkMergedJsSyntax",
+        "function",
+        4
+      ],
+      [
+        "isPermissionDeniedGitError",
+        "function",
+        1
+      ],
+      [
+        "isDeveloperToolsMissingGitError",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        ".multicc-worktrees",
+        true,
+        true,
+        true
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "taskBoardCore": {
+    "entry": "src/task-board/core/index.js",
+    "exports": [
+      [
+        "MAX_TAGS_PER_TURN",
+        "number",
+        null
+      ],
+      [
+        "MAX_REFS_PER_TASK",
+        "number",
+        null
+      ],
+      [
+        "CLASSIFY_PENDING_MODULE_NAME",
+        "string",
+        null
+      ],
+      [
+        "PENDING_TASK_TITLE",
+        "string",
+        null
+      ],
+      [
+        "TASK_ORIGINS",
+        "object",
+        null
+      ],
+      [
+        "TASK_RECORD_TYPES",
+        "object",
+        null
+      ],
+      [
+        "WORKFLOW_STAGES",
+        "object",
+        null
+      ],
+      [
+        "taskOriginForSource",
+        "function",
+        1
+      ],
+      [
+        "legacyTaskOrigin",
+        "function",
+        1
+      ],
+      [
+        "deriveTaskTitle",
+        "function",
+        1
+      ],
+      [
+        "createEmptyBoard",
+        "function",
+        0
+      ],
+      [
+        "normalizeBoard",
+        "function",
+        1
+      ],
+      [
+        "buildTagSystemPrompt",
+        "function",
+        0
+      ],
+      [
+        "buildTagUserPrompt",
+        "function",
+        1
+      ],
+      [
+        "buildBackfillSystemPrompt",
+        "function",
+        0
+      ],
+      [
+        "buildBackfillUserPrompt",
+        "function",
+        1
+      ],
+      [
+        "parseTagResult",
+        "function",
+        1
+      ],
+      [
+        "parseBackfillResult",
+        "function",
+        1
+      ],
+      [
+        "applyTagResult",
+        "function",
+        3
+      ],
+      [
+        "applyBackfillResult",
+        "function",
+        3
+      ],
+      [
+        "addRefToTask",
+        "function",
+        3
+      ],
+      [
+        "groupRelatedTasks",
+        "function",
+        3
+      ],
+      [
+        "relatedTaskGroup",
+        "function",
+        2
+      ],
+      [
+        "reconcileTaskGroups",
+        "function",
+        1
+      ],
+      [
+        "mergeTasks",
+        "function",
+        1
+      ],
+      [
+        "createPendingTask",
+        "function",
+        2
+      ],
+      [
+        "applyTaskClassification",
+        "function",
+        4
+      ],
+      [
+        "canonicalTaskTitle",
+        "function",
+        1
+      ],
+      [
+        "taskTitleSimilarity",
+        "function",
+        2
+      ],
+      [
+        "findModuleByName",
+        "function",
+        2
+      ],
+      [
+        "findTaskByTitle",
+        "function",
+        3
+      ],
+      [
+        "taskLastTs",
+        "function",
+        1
+      ],
+      [
+        "taskDirId",
+        "function",
+        2
+      ],
+      [
+        "resolveTask",
+        "function",
+        2
+      ],
+      [
+        "taskLineageIds",
+        "function",
+        2
+      ],
+      [
+        "pickRouteTarget",
+        "function",
+        4
+      ],
+      [
+        "pickDirTarget",
+        "function",
+        3
+      ],
+      [
+        "resolveDirectoryCommander",
+        "function",
+        2
+      ],
+      [
+        "isRoutableRecord",
+        "function",
+        1
+      ],
+      [
+        "routingTerms",
+        "function",
+        1
+      ],
+      [
+        "buildRoutingContext",
+        "function",
+        0
+      ],
+      [
+        "buildSessionRoutingProfile",
+        "function",
+        1
+      ],
+      [
+        "routingRelevanceScore",
+        "function",
+        2
+      ],
+      [
+        "recordAppearsAvailable",
+        "function",
+        2
+      ],
+      [
+        "rankRoutingCandidates",
+        "function",
+        1
+      ],
+      [
+        "buildRoutedMessage",
+        "function",
+        2
+      ],
+      [
+        "buildCommanderRoutedMessage",
+        "function",
+        2
+      ],
+      [
+        "extractTaskMarker",
+        "function",
+        1
+      ],
+      [
+        "messageText",
+        "function",
+        1
+      ],
+      [
+        "buildBoardDto",
+        "function",
+        2
+      ],
+      [
+        "taskRunSessionIds",
+        "function",
+        1
+      ],
+      [
+        "deadDispatchClaim",
+        "function",
+        2
+      ],
+      [
+        "foreignRunSession",
+        "function",
+        2
+      ],
+      [
+        "staleWorkerClaim",
+        "function",
+        2
+      ],
+      [
+        "soleRunSessionId",
+        "function",
+        1
+      ],
+      [
+        "sessionHasTurn",
+        "function",
+        1
+      ],
+      [
+        "normalizeTaskRouting",
+        "function",
+        1
+      ],
+      [
+        "setTaskRouting",
+        "function",
+        2
+      ]
+    ],
+    "behavior": {
+      "value": [
+        [
+          "schemaVersion",
+          "revision",
+          "modules",
+          "tasks",
+          "taskGroups",
+          "deletedTaskIds"
+        ],
+        "session",
+        "session"
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "sessionWork": {
+    "entry": "src/session-work/index.js",
+    "exports": [
+      [
+        "ACTIVE_STATES",
+        "object",
+        null
+      ],
+      [
+        "CONTROL_KINDS",
+        "object",
+        null
+      ],
+      [
+        "FREEZE_REASON_CLASSIFY",
+        "object",
+        null
+      ],
+      [
+        "FREEZE_REASON_RUN_STATE",
+        "object",
+        null
+      ],
+      [
+        "createSessionWorkScheduler",
+        "function",
+        0
+      ],
+      [
+        "isControlItem",
+        "function",
+        1
+      ],
+      [
+        "runStateForFreezeReason",
+        "function",
+        1
+      ],
+      [
+        "workKind",
+        "function",
+        1
+      ],
+      [
+        "createSessionWorkHost",
+        "function",
+        0
+      ],
+      [
+        "createProductionQuestionHost",
+        "function",
+        0
+      ],
+      [
+        "createProductionWorkHost",
+        "function",
+        2
+      ],
+      [
+        "createUserInputOwnedHost",
+        "function",
+        0
+      ],
+      [
+        "questionProtocol",
+        "function",
+        2
+      ]
+    ],
+    "behavior": {
+      "value": [
+        [
+          false,
+          "task"
+        ],
+        [
+          false,
+          "task"
+        ],
+        [
+          false,
+          "task"
+        ],
+        [
+          false,
+          "task"
+        ]
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "codexHistoryHooks": {
+    "entry": "src/providers/codex-history-hooks.js",
+    "exports": [
+      [
+        "createCodexHistoryHooks",
+        "function",
+        0
+      ]
+    ],
+    "behavior": {
+      "value": [
+        true,
+        [
+          "onRequest",
+          "onUpstreamRejected"
+        ],
+        {
+          "error": "RangeError",
+          "message": "logger"
+        }
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "createCodexHistoryHooks",
+            "function",
+            0
+          ]
+        ],
+        "behavior": {
+          "value": [
+            true,
+            [
+              "onRequest",
+              "onUpstreamRejected"
+            ],
+            {
+              "error": "RangeError",
+              "message": "logger"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "modelHistoryConverter": {
+    "entry": "src/model-history-converter.js",
+    "exports": [
+      [
+        "fillWebSearchQueries",
+        "function",
+        1
+      ],
+      [
+        "normalizeResponsesHistory",
+        "function",
+        1
+      ],
+      [
+        "preprocessResponsesHistory",
+        "function",
+        1
+      ],
+      [
+        "repairRejectedResponsesHistory",
+        "function",
+        2
+      ],
+      [
+        "stripReasoningContent",
+        "function",
+        1
+      ],
+      [
+        "stripUnresolvedItemReferences",
+        "function",
+        1
+      ],
+      [
+        "stripUnverifiableEncryptedContent",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        {
+          "body": {
+            "input": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ]
+          },
+          "changes": []
+        },
+        {
+          "body": {
+            "input": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ]
+          },
+          "changes": []
+        },
+        {
+          "error": "TypeError",
+          "message": "Cannot read properties of null (reading 'omitReasoningContent')"
+        }
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "fillWebSearchQueries",
+            "function",
+            1
+          ],
+          [
+            "normalizeResponsesHistory",
+            "function",
+            1
+          ],
+          [
+            "preprocessResponsesHistory",
+            "function",
+            1
+          ],
+          [
+            "repairRejectedResponsesHistory",
+            "function",
+            2
+          ],
+          [
+            "stripReasoningContent",
+            "function",
+            1
+          ],
+          [
+            "stripUnresolvedItemReferences",
+            "function",
+            1
+          ],
+          [
+            "stripUnverifiableEncryptedContent",
+            "function",
+            1
+          ]
+        ],
+        "behavior": {
+          "error": "Error",
+          "message": "rust_backend_unavailable"
+        }
+      }
+    }
+  },
+  "stateContainer": {
+    "entry": "src/state/container.js",
+    "exports": [
+      [
+        "sessions",
+        "object",
+        null
+      ],
+      [
+        "persistedSessions",
+        "object",
+        null
+      ],
+      [
+        "directories",
+        "object",
+        null
+      ]
+    ],
+    "behavior": {
+      "value": [
+        null,
+        true,
+        null,
+        null
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "sessions",
+            "object",
+            null
+          ],
+          [
+            "persistedSessions",
+            "object",
+            null
+          ],
+          [
+            "directories",
+            "object",
+            null
+          ]
+        ],
+        "behavior": {
+          "value": [
+            null,
+            true,
+            null,
+            null
+          ]
+        }
+      }
+    }
+  },
+  "eventBus": {
+    "entry": "src/bus.js",
+    "exports": [
+      [
+        "_events",
+        "object",
+        null
+      ],
+      [
+        "_eventsCount",
+        "number",
+        null
+      ],
+      [
+        "_maxListeners",
+        "number",
+        null
+      ]
+    ],
+    "behavior": {
+      "value": [
+        50,
+        true,
+        false,
+        [
+          "one"
+        ]
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "_events",
+            "object",
+            null
+          ],
+          [
+            "_eventsCount",
+            "number",
+            null
+          ],
+          [
+            "_maxListeners",
+            "number",
+            null
+          ]
+        ],
+        "behavior": {
+          "value": [
+            50,
+            true,
+            false,
+            [
+              "one"
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "airRoutes": {
+    "entry": "src/workspace/air-routes.js",
+    "exports": [
+      [
+        "mountAirRoutes",
+        "function",
+        2
+      ]
+    ],
+    "behavior": {
+      "value": [
+        {
+          "value": null
+        },
+        [
+          [
+            "POST",
+            "/api/__host/air"
+          ]
+        ]
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "chatHistoryService": {
+    "entry": "src/session/chat-history-service/index.js",
+    "exports": [
+      [
+        "cleanThinkingBlocks",
+        "function",
+        1
+      ],
+      [
+        "createChatHistoryService",
+        "function",
+        0
+      ],
+      [
+        "createChatHistoryServiceWithOwner",
+        "function",
+        0
+      ]
+    ],
+    "behavior": {
+      "value": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            }
+          ]
+        },
+        {
+          "error": "TypeError",
+          "message": "[session] history port is required"
+        }
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "cleanThinkingBlocks",
+            "function",
+            1
+          ],
+          [
+            "createChatHistoryService",
+            "function",
+            0
+          ],
+          [
+            "createChatHistoryServiceWithOwner",
+            "function",
+            0
+          ]
+        ],
+        "behavior": {
+          "error": "Error",
+          "message": "rust_backend_unavailable"
+        }
+      }
+    }
+  },
+  "voiceRouter": {
+    "entry": "src/voice/router.js",
+    "exports": [
+      [
+        "VOICE_ROUTER_ID",
+        "string",
+        null
+      ],
+      [
+        "VOICE_ROUTER_LABEL",
+        "string",
+        null
+      ],
+      [
+        "createVoiceRouterProvisioner",
+        "function",
+        0
+      ],
+      [
+        "isVoiceRouterRecord",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        false,
+        true,
+        {
+          "error": "TypeError",
+          "message": "Cannot destructure property 'records' of '(intermediate value)(intermediate value)(intermediate value)' as it is null."
+        },
+        {
+          "error": "TypeError",
+          "message": "voice router provisioner requires records Map"
+        },
+        {
+          "error": "TypeError",
+          "message": "voice router provisioner requires mutate"
+        }
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "VOICE_ROUTER_ID",
+            "string",
+            null
+          ],
+          [
+            "VOICE_ROUTER_LABEL",
+            "string",
+            null
+          ],
+          [
+            "createVoiceRouterProvisioner",
+            "function",
+            0
+          ],
+          [
+            "isVoiceRouterRecord",
+            "function",
+            1
+          ]
+        ],
+        "behavior": {
+          "error": "Error",
+          "message": "rust_backend_unavailable"
+        }
+      }
+    }
+  },
+  "rolloutPath": {
+    "entry": "src/liveness/rollout-path.js",
+    "exports": [
+      [
+        "createRolloutPathResolver",
+        "function",
+        0
+      ],
+      [
+        "DEFAULT_MISS_TTL_MS",
+        "number",
+        null
+      ]
+    ],
+    "behavior": {
+      "value": [
+        30000,
+        {
+          "error": "TypeError",
+          "message": "Cannot destructure property 'fs' of 'deps' as it is null."
+        },
+        {
+          "error": "TypeError",
+          "message": "[rollout-path] fs with existsSync/readdirSync is required"
+        },
+        {
+          "error": "TypeError",
+          "message": "[rollout-path] sessionsDirFor is required"
+        }
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "createRolloutPathResolver",
+            "function",
+            0
+          ],
+          [
+            "DEFAULT_MISS_TTL_MS",
+            "number",
+            null
+          ]
+        ],
+        "behavior": {
+          "value": [
+            30000,
+            {
+              "error": "TypeError",
+              "message": "Cannot destructure property 'fs' of 'deps' as it is null."
+            },
+            {
+              "error": "TypeError",
+              "message": "[rollout-path] fs with existsSync/readdirSync is required"
+            },
+            {
+              "error": "TypeError",
+              "message": "[rollout-path] sessionsDirFor is required"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "tunnelMonitor": {
+    "entry": "src/tunnel/index.js",
+    "exports": [
+      [
+        "init",
+        "function",
+        0
+      ],
+      [
+        "stop",
+        "function",
+        0
+      ],
+      [
+        "applyConfig",
+        "function",
+        1
+      ],
+      [
+        "getStatus",
+        "function",
+        0
+      ],
+      [
+        "restartNow",
+        "function",
+        1
+      ],
+      [
+        "checkProvider",
+        "function",
+        1
+      ],
+      [
+        "restartPhddns",
+        "function",
+        0
+      ],
+      [
+        "restartTailscale",
+        "function",
+        0
+      ],
+      [
+        "reapplyTailscaleFunnel",
+        "function",
+        0
+      ],
+      [
+        "restartNatapp",
+        "function",
+        0
+      ],
+      [
+        "restartCpolar",
+        "function",
+        0
+      ],
+      [
+        "restartSakurafrp",
+        "function",
+        0
+      ],
+      [
+        "sakuraAccess",
+        "function",
+        0
+      ],
+      [
+        "sakuraApplyPublicUrl",
+        "function",
+        0
+      ],
+      [
+        "loadConfig",
+        "function",
+        0
+      ],
+      [
+        "availability",
+        "function",
+        0
+      ],
+      [
+        "defaultFrpcDest",
+        "function",
+        0
+      ],
+      [
+        "setFunnel",
+        "function",
+        2
+      ],
+      [
+        "funnelStatus",
+        "function",
+        0
+      ],
+      [
+        "ipv6Status",
+        "function",
+        0
+      ],
+      [
+        "setFailureReporter",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        "frpc",
+        "frpc.exe"
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "orchestrationHost": {
+    "entry": "src/orchestration/host.js",
+    "exports": [
+      [
+        "createOrchestrationRuntime",
+        "function",
+        0
+      ],
+      [
+        "publicWait",
+        "function",
+        1
+      ],
+      [
+        "DEFAULTS",
+        "get",
+        null
+      ]
+    ],
+    "behavior": {
+      "value": [
+        {
+          "error": "TypeError",
+          "message": "Cannot read properties of null (reading 'metadata')"
+        },
+        {
+          "id": "w",
+          "checks": 0
+        },
+        true,
+        {
+          "intervalSec": 15,
+          "maxChecks": 40,
+          "timeoutSec": 1800,
+          "minIntervalSec": 3,
+          "minDelaySec": 1,
+          "maxDelaySec": 604800
+        }
+      ]
+    },
+    "bootstrap": {
+      "value": {
+        "exports": [
+          [
+            "createOrchestrationRuntime",
+            "function",
+            0
+          ],
+          [
+            "publicWait",
+            "function",
+            1
+          ],
+          [
+            "DEFAULTS",
+            "get",
+            null
+          ]
+        ],
+        "behavior": {
+          "error": "Error",
+          "message": "rust_backend_unavailable"
+        }
+      }
+    }
+  },
+  "chatApi": {
+    "entry": "src/chat/index.js",
+    "exports": [
+      [
+        "REQUEST_KIND",
+        "string",
+        null
+      ],
+      [
+        "TurnRequestError",
+        "function",
+        2
+      ],
+      [
+        "normalizeTurnRequest",
+        "function",
+        1
+      ],
+      [
+        "planTurnAdmission",
+        "function",
+        1
+      ],
+      [
+        "createDurableMessageProof",
+        "function",
+        1
+      ],
+      [
+        "createProviderRouteProof",
+        "function",
+        1
+      ],
+      [
+        "evaluateSpawnGuard",
+        "function",
+        1
+      ],
+      [
+        "DEFAULT_LIMITS",
+        "object",
+        null
+      ],
+      [
+        "DEFAULT_DELAYS",
+        "object",
+        null
+      ],
+      [
+        "decideRetry",
+        "function",
+        0
+      ],
+      [
+        "policyPorts",
+        "object",
+        null
+      ],
+      [
+        "CATEGORIES",
+        "object",
+        null
+      ],
+      [
+        "normalizeApiError",
+        "function",
+        0
+      ],
+      [
+        "decideApiErrorPolicy",
+        "function",
+        1
+      ],
+      [
+        "createApiErrorPolicyRuntime",
+        "function",
+        0
+      ],
+      [
+        "parseRetryAfter",
+        "function",
+        1
+      ],
+      [
+        "resetAfterFromText",
+        "function",
+        1
+      ],
+      [
+        "retryNotice",
+        "function",
+        1
+      ],
+      [
+        "sanitizeMessage",
+        "function",
+        3
+      ],
+      [
+        "isErrorOnlyText",
+        "function",
+        1
+      ],
+      [
+        "ERROR_ONLY_PREFIX_RE",
+        "object",
+        null
+      ],
+      [
+        "TRAILING_ERROR_ENVELOPE_RE",
+        "object",
+        null
+      ],
+      [
+        "splitTrailingErrorEnvelope",
+        "function",
+        1
+      ],
+      [
+        "detectErrorEnvelope",
+        "function",
+        2
+      ],
+      [
+        "claudeErrorEnvelope",
+        "function",
+        2
+      ],
+      [
+        "envelopeSourceFor",
+        "function",
+        1
+      ],
+      [
+        "normalizeRejection",
+        "function",
+        1
+      ],
+      [
+        "isKnownHarmlessStderrLine",
+        "function",
+        1
+      ],
+      [
+        "API_ERROR_SIGNATURES",
+        "object",
+        null
+      ],
+      [
+        "apiErrorSignaturesQuoted",
+        "function",
+        0
+      ],
+      [
+        "createApiErrorHost",
+        "function",
+        0
+      ],
+      [
+        "routePostTurn",
+        "function",
+        0
+      ],
+      [
+        "createDeliveryProof",
+        "function",
+        0
+      ],
+      [
+        "acknowledgeDeliveredEffect",
+        "function",
+        2
+      ],
+      [
+        "createTurnRuntimeStore",
+        "function",
+        0
+      ],
+      [
+        "freezeLineage",
+        "function",
+        1
+      ],
+      [
+        "freezeTask",
+        "function",
+        1
+      ],
+      [
+        "freezeUsageAttribution",
+        "function",
+        1
+      ],
+      [
+        "bindTurnTask",
+        "function",
+        2
+      ],
+      [
+        "bindTurnUsageAttribution",
+        "function",
+        2
+      ],
+      [
+        "bindRunnerUsageAttribution",
+        "function",
+        2
+      ],
+      [
+        "createTurnLifecycle",
+        "function",
+        1
+      ],
+      [
+        "createRunnerOwnership",
+        "function",
+        1
+      ],
+      [
+        "ownsCurrentRunner",
+        "function",
+        4
+      ],
+      [
+        "assignKillReason",
+        "function",
+        2
+      ],
+      [
+        "clearErrorFlagsForSucceededTurn",
+        "function",
+        3
+      ],
+      [
+        "recordResultEvent",
+        "function",
+        2
+      ],
+      [
+        "recordCloseResult",
+        "function",
+        2
+      ],
+      [
+        "recordPartialCheckpoint",
+        "function",
+        2
+      ],
+      [
+        "hasMatchingPartialCheckpoint",
+        "function",
+        2
+      ],
+      [
+        "claimDurableUsage",
+        "function",
+        1
+      ],
+      [
+        "reserveResultAppend",
+        "function",
+        1
+      ],
+      [
+        "releaseResultAppend",
+        "function",
+        1
+      ],
+      [
+        "recordConfirmedResult",
+        "function",
+        3
+      ],
+      [
+        "confirmedResult",
+        "function",
+        1
+      ],
+      [
+        "reserveUsageWrite",
+        "function",
+        1
+      ],
+      [
+        "releaseUsageWrite",
+        "function",
+        1
+      ],
+      [
+        "evaluatePostTurn",
+        "function",
+        2
+      ],
+      [
+        "claimPostTurn",
+        "function",
+        2
+      ],
+      [
+        "FENCE_ORDER",
+        "object",
+        null
+      ],
+      [
+        "ProviderAttemptError",
+        "function",
+        2
+      ],
+      [
+        "createProviderRevision",
+        "function",
+        0
+      ],
+      [
+        "createProviderAttemptRuntime",
+        "function",
+        0
+      ],
+      [
+        "fenceForEvent",
+        "function",
+        1
+      ],
+      [
+        "markHostErrorEnvelope",
+        "function",
+        1
+      ],
+      [
+        "providerAttemptFields",
+        "function",
+        1
+      ],
+      [
+        "scopeHostProviderEvent",
+        "function",
+        1
+      ],
+      [
+        "tagProviderAttemptEvent",
+        "function",
+        2
+      ],
+      [
+        "createProviderInvocationFactory",
+        "function",
+        0
+      ],
+      [
+        "protocolFor",
+        "function",
+        2
+      ],
+      [
+        "providerRetryRouteOptions",
+        "function",
+        1
+      ],
+      [
+        "buildAdapterUserInputSignal",
+        "function",
+        0
+      ],
+      [
+        "recordAdapterUserInput",
+        "function",
+        0
+      ],
+      [
+        "recordAdapterQuestion",
+        "function",
+        1
+      ],
+      [
+        "prepareQuestionReplay",
+        "function",
+        1
+      ],
+      [
+        "CHAT_HOST_PORTS",
+        "object",
+        null
+      ],
+      [
+        "assertChatHostPorts",
+        "function",
+        1
+      ],
+      [
+        "isCurrentTurnRunner",
+        "function",
+        3
+      ],
+      [
+        "assistantCheckpointKey",
+        "function",
+        0
+      ],
+      [
+        "decideRunnerFinality",
+        "function",
+        1
+      ],
+      [
+        "createChatHostCoordinator",
+        "function",
+        1
+      ],
+      [
+        "REQUIRED_PORTS",
+        "object",
+        null
+      ],
+      [
+        "assertHostRuntimePorts",
+        "function",
+        1
+      ],
+      [
+        "createChatHostRuntime",
+        "function",
+        1
+      ],
+      [
+        "modelAttributionFor",
+        "function",
+        3
+      ],
+      [
+        "modelAttributionField",
+        "function",
+        3
+      ],
+      [
+        "classifyProcessExit",
+        "function",
+        0
+      ],
+      [
+        "normalizeHandoff",
+        "function",
+        0
+      ],
+      [
+        "isGuardedHandoffFailure",
+        "function",
+        2
+      ],
+      [
+        "replaySafeHandoffProviderError",
+        "function",
+        1
+      ],
+      [
+        "planTurnFinalization",
+        "function",
+        0
+      ],
+      [
+        "planRetryBlockedFinalization",
+        "function",
+        1
+      ],
+      [
+        "resolveTurnFinalization",
+        "function",
+        1
+      ],
+      [
+        "assertFinalizeHostPorts",
+        "function",
+        1
+      ],
+      [
+        "createTurnFinalizationExecutor",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        "hello",
+        "function",
+        "function"
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  },
+  "taskBoardRouting": {
+    "entry": "src/task-board/routing.js",
+    "exports": [
+      [
+        "isRoutableRecord",
+        "function",
+        1
+      ],
+      [
+        "resolveDirectoryCommander",
+        "function",
+        2
+      ],
+      [
+        "routingTerms",
+        "function",
+        1
+      ],
+      [
+        "buildRoutingContext",
+        "function",
+        0
+      ],
+      [
+        "buildSessionRoutingProfile",
+        "function",
+        1
+      ],
+      [
+        "routingRelevanceScore",
+        "function",
+        2
+      ],
+      [
+        "recordAppearsAvailable",
+        "function",
+        2
+      ],
+      [
+        "rankRoutingCandidates",
+        "function",
+        1
+      ],
+      [
+        "pickDirTarget",
+        "function",
+        3
+      ],
+      [
+        "pickRouteTarget",
+        "function",
+        4
+      ],
+      [
+        "buildRoutedMessage",
+        "function",
+        2
+      ],
+      [
+        "buildCommanderRoutedMessage",
+        "function",
+        2
+      ],
+      [
+        "extractTaskMarker",
+        "function",
+        1
+      ],
+      [
+        "messageText",
+        "function",
+        1
+      ]
+    ],
+    "behavior": {
+      "value": [
+        [
+          "one",
+          "二三"
+        ],
+        false,
+        null,
+        []
+      ]
+    },
+    "bootstrap": {
+      "error": "Error",
+      "message": "rust_backend_unavailable"
+    }
+  }
+}

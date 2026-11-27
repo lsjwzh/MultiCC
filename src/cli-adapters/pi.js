@@ -2,11 +2,11 @@
 
 const path = require('node:path');
 const { renderPrompt } = require('../native/binding').messageComposer;
-const { createCompletionTracker } = require('./completion');
+const { createCompletionTracker } = require('../native/binding').cliCompletion;
 const { getNative } = require('../native/binding');
 const { extractUpstreamError } = require('../upstream-error');
 
-const { supportsEffort, effortOf } = require('../cli/cli-capability');
+const { supportsEffort, effortOf } = require('../native/binding').cliCapability;
 const ROUTER_EXTENSION = path.join(__dirname, 'pi-router-extension.mjs');
 const textContent = content => Array.isArray(content)
   ? content.filter(item => item.type === 'text').map(item => item.text || '').join('\n') : '';

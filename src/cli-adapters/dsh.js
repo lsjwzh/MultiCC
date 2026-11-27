@@ -1,6 +1,6 @@
 'use strict';
 
-const { createProtocolCompletionTracker } = require('./completion');
+const { createProtocolCompletionTracker } = require('../native/binding').cliCompletion;
 
 const fs = require('fs');
 const path = require('path');

@@ -25,7 +25,7 @@
 
 const crypto = require('node:crypto');
 const nodePath = require('node:path');
-const core = require('../task-board/core/index');
+const core = require('../native/binding').taskBoardCore;
 const { taskDomain, taskDomainAsync, createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../native/task-domain');
 const { isAbnormalLetter } = require('../classify/vocab');
 const { createAirCardCache } = require('./air-card-cache');
@@ -767,7 +767,7 @@ function createAirRuntime(rawDeps) {
     if (liveSync) deps.registerSync(liveSync);
     app.post(HOST_PATH, (req, res) => {
       // 只认回环。前门转发到内网端口时写的是真实对端地址，远端客户端在这里就被挡住。
-      if (!(deps.isLocal || require('../request-locality').isLocalRequest)(req)) {
+      if (!(deps.isLocal || require('../native/binding').requestLocality.isLocalRequest)(req)) {
         return res.status(404).json({ error: 'not found' });
       }
       const input = (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) ? req.body : {};

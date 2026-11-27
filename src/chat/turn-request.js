@@ -7,7 +7,7 @@
 // fields (`identity` / `origin` / `route.route`) and freezes the result graph.
 
 const { assertProviderBinding } = require('../providers/binding');
-const { ALIASES, CAPABILITIES, transportOf } = require('../cli/cli-capability');
+const { ALIASES, CAPABILITIES, transportOf } = require('../native/binding').cliCapability;
 const { getNative } = require('../native/binding');
 
 // No Node fallback: these kernels are Rust-only.

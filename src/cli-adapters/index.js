@@ -15,8 +15,8 @@ const { createDshAdapter } = require('./dsh');
 const { createGeminiAdapter, createGrokAdapter } = require('./acp');
 const { createCommandCodeAdapter } = require('./command-code');
 const { getNative, messageComposer } = require('../native/binding');
-const { createProtocolCompletionTracker } = require('./completion');
-const { displayNameOf, supportsEffort } = require('../cli/cli-capability');
+const { createProtocolCompletionTracker } = require('../native/binding').cliCompletion;
+const { displayNameOf, supportsEffort } = require('../native/binding').cliCapability;
 const { createPiAdapter } = require('./pi');
 
 function createCliAdapters(deps) {

@@ -5,7 +5,7 @@
 const crypto = require('node:crypto');
 const { getNative } = require('../native/binding');
 const { selectionKey } = require('../providers/auto-provider-config');
-const capability = require('./cli-capability');
+const capability = require('../native/binding').cliCapability;
 const { nativeSessionExists } = require('./native-session-exists');
 const { nativeVendorOf } = require('../providers/native-vendor');
 const { createCliToolsHost, OFFICIAL_INSTALL_SPECS } = require('./tools-host');

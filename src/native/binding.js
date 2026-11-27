@@ -637,7 +637,7 @@ function createAutoProviderHandoff(options) { return getNative().createAutoProvi
 function createClaudeAdapter(deps = {}) {
   return getNative().createClaudeAdapter(deps, path.join(__dirname, '../cli-adapters/claude-agent-sdk-bridge.mjs'),
     process.execPath, {
-      displayName: require('../cli/cli-capability').displayNameOf('claude'),
+      displayName: module.exports.cliCapability.displayNameOf('claude'),
       homedir: require('node:os').homedir,
     });
 }
@@ -645,7 +645,7 @@ const codexAdapter = {
   createCodexAdapter(deps) {
     return getNative().createCodexAdapter(deps, {
       extractUpstreamError: require('../upstream-error').extractUpstreamError,
-      displayName: require('../cli/cli-capability').displayNameOf('codex'),
+      displayName: module.exports.cliCapability.displayNameOf('codex'),
     });
   },
   normalizeCodexUsage: value => getNative().codexAdapterCall('usage', value, undefined),
@@ -656,7 +656,7 @@ const codexAdapter = {
 const codexAppAdapter = {
   createCodexExpAdapter(deps = {}) {
     return getNative().createCodexExpAdapter(deps, gatewayPath(), process.execPath, {
-      displayName: require('../cli/cli-capability').displayNameOf('codex-exp'),
+      displayName: module.exports.cliCapability.displayNameOf('codex-exp'),
     });
   },
   appServerUsage: value => getNative().codexAppAdapterValue('usage', value, undefined),
@@ -791,3 +791,175 @@ Object.defineProperty(module.exports, 'adapterCompletion', {
   enumerable: true,
   get: () => adapterCompletion ??= getNative().adapterCompletionApi(assignHostProperty),
 });
+
+// CommonJS exposes stable, per-isolate Rust APIs. Deferring construction also
+// keeps the loader usable by standalone tooling before it needs an addon.
+const legacyHostApis = new Map();
+function exposeHostApi(key, create) {
+  let api, legacyModule;
+  function load() {
+    if (api !== undefined) return api;
+    try { api = create(); }
+    catch (err) {
+      if (err.message !== 'rust_backend_unavailable') throw err;
+      api = require('./bootstrap-apis').bootstrapApi(key, create, err);
+    }
+    return api;
+  }
+  legacyHostApis.set(key, current => {
+    // Explicit require.cache eviction creates a fresh realm-local owner (for
+    // example an isolated tunnel with a different data directory).
+    if (legacyModule && legacyModule !== current) api = undefined;
+    legacyModule = current;
+    return load();
+  });
+  Object.defineProperty(module.exports, key, {
+    enumerable: true,
+    get: load,
+  });
+}
+
+module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
+
+exposeHostApi('requestLocality', () => getNative().requestLocalityApi(getNative()));
+
+exposeHostApi('cliResultCompletion', () => getNative().cliResultApi(getNative()));
+
+exposeHostApi('cliCompletion', () => getNative().cliCompletionApi(getNative()));
+
+exposeHostApi('cliCapability', () => {
+  const native = getNative();
+  const catalog = native.cliCatalogViews();
+  const fs = require('node:fs');
+  const resolve = require('node:module').createRequire(path.resolve(__dirname, '../cli/package.json')).resolve;
+  function bundledClaudeCodeBinary() {
+    return native.cliBundledClaudeBinary(process.env.MULTICC_CLAUDE_BIN, process.platform,
+      process.arch, resolve, path, fs.existsSync);
+  }
+  async function watchEffortCatalog(file) {
+    const reload = () => native.cliReloadEffortCatalog(file).then(catalog.refreshEfforts)
+      .catch(err => console.warn('[multicc] 强度目录缓存不可用：', err.message));
+    fs.watchFile(file, { persistent: false, interval: 1000 }, reload);
+    await reload();
+    return () => fs.unwatchFile(file, reload);
+  }
+  return native.cliCatalogQueries(native, {
+    bundledClaudeCodeBinary, ...catalog.api, get EFFORTS() { return catalog.efforts(); }, watchEffortCatalog,
+  });
+});
+
+exposeHostApi('repoActor', () => {
+  require('../portable-git').addToPath();
+  return getNative().repoActorApi({
+    process, path, fs: require('node:fs'), randomBytes: require('node:crypto').randomBytes,
+    execFile: require('node:util').promisify(require('node:child_process').execFile),
+    makeClass: initialize => class RepoActor {
+      constructor(options = {}) { initialize(this, options); }
+    },
+  });
+});
+
+exposeHostApi('gitService', () => getNative().gitServiceApi(module.exports.repoActor.defaultRepoActor, process.execPath,
+  callback => require('node:async_hooks').AsyncResource.bind(callback, 'MultiCCGitOperation')));
+
+exposeHostApi('taskBoardCore', () => getNative().taskBoardCoreApi({
+  planning: require('../task-board/planning'),
+  normalize: require('../task-board/normalize'),
+  bridge: require('../task-board/native-bridge'),
+  routing: module.exports.taskBoardRouting,
+}));
+
+exposeHostApi('sessionWork', () => getNative().sessionWorkApi(getNative(), () => ({
+  crypto: require('node:crypto'), zcodeAuth: require('../cli-adapters/zcode-auth'),
+  kimiAuth: require('../cli-adapters/kimi-auth'),
+  createQuestionOwner: require('../orchestration/native-store-host').createQuestionOwner,
+})));
+
+exposeHostApi('codexHistoryHooks', () => getNative().codexHistoryHooksApi(getNative().responsesHistoryApi()));
+
+exposeHostApi('modelHistoryConverter', () => getNative().modelHistoryApi(getNative().responsesHistoryApi(),
+  ({ omitReasoningContent = false } = {}) => omitReasoningContent));
+
+exposeHostApi('stateContainer', () => getNative().sharedStateContainer());
+
+exposeHostApi('eventBus', () => getNative().sharedEventBus(require('node:events').EventEmitter));
+
+exposeHostApi('airRoutes', () => getNative().airMountApi(require('../workspace/air-routes-host').createAirRuntime));
+
+exposeHostApi('chatHistoryService', () => getNative().chatHistoryServiceApi(getNative()));
+
+exposeHostApi('voiceRouter', () => getNative().voiceRouterApi(getNative(),
+  ({ records, mutate, runtimeRoot, cli, now } = {}) => ({ records, mutate, runtimeRoot, cli, now }),
+  (records, mutate, root, cli, now = () => new Date().toISOString()) => {
+  const cwd = path.join(String(root || process.cwd()), 'voice-router');
+  return { mutate, cwd, cli, now: () => now(), lookup: id => records.get(id),
+    draftGet: (draft, id) => draft.get(id), draftSet: (draft, id, record) => draft.set(id, record),
+    mkdir: () => require('node:fs').mkdirSync(cwd, { recursive: true }) };
+}));
+
+exposeHostApi('rolloutPath', () => getNative().rolloutPathApi(getNative(), (deps = {}) => {
+  const { fs, path, sessionsDirFor, now = Date.now, missTtlMs } = deps;
+  return { fs, path, sessionsDirFor, now, missTtlMs };
+}, (fs, paths, sessionsDirFor, now, ttl) => ({
+  now, sessionsDirFor, entries: dir => fs.readdirSync(dir, { withFileTypes: true }),
+  exists: name => fs.existsSync(name), join: (dir, entry) => paths.join(dir, entry.name),
+  key: (dir, record) => `${dir}::${record.cliSessionId}`, fresh: at => now() - at <= ttl,
+})));
+
+exposeHostApi('tunnelMonitor', () => {
+  const { atomicWriteJson } = require('../runtime-security');
+  const { createTailscaleFunnelProbe } = require('../tailscale-funnel-health');
+  const { readLauncherToken, getUserInfo, discoverAccess } = require('../tunnel-sakurafrp-api');
+  return getNative().tunnelMonitorApi({
+    pkgRoot: path.resolve(__dirname, '../..'), path, process,
+    fs: require('node:fs'), os: require('node:os'), http: require('node:http'), https: require('node:https'),
+    execFile: require('node:child_process').execFile, atomicWriteJson, createTailscaleFunnelProbe,
+    findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp, readLauncherToken, getUserInfo, discoverAccess,
+  });
+});
+
+exposeHostApi('orchestrationHost', () => {
+  const { createOrchestrationStore } = require('../orchestration/json-store-host');
+  const { createOrchestrationSqliteStore } = require('../orchestration/sqlite-store');
+  const { createOutbox } = require('../outbox');
+  const { createWaitService } = require('../wait/service');
+  const { createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES } = require('../operation-service');
+  const api = getNative().orchestrationRuntimeApi({
+    crypto: require('node:crypto'), process, AsyncLocalStorage: require('node:async_hooks').AsyncLocalStorage,
+    createOrchestrationStore, createOrchestrationSqliteStore, createOutbox, createWaitService,
+    createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES,
+    jsonStorePorts: orchestrationJsonPorts(createOrchestrationStore),
+    asyncMethod(native) {
+      const method = async (...args) => native(...args);
+      Object.defineProperties(method, { name: { value: native.name }, length: { value: native.length } });
+      return method;
+    },
+  });
+  return { createOrchestrationRuntime: api.createOrchestrationRuntime, publicWait: api.publicWait,
+    get DEFAULTS() { return api.DEFAULTS; } };
+});
+
+exposeHostApi('chatApi', () => getNative().chatHostExports([
+  () => require('../chat/turn-request'), getRetryPolicy, () => require('../chat/api-error-policy'),
+  () => require('../chat/api-error-host'), () => module.exports.postTurnRouter,
+  () => ({ createTurnRuntimeStore: require('../state/owner').createTurnRuntimeStore }),
+  () => require('../chat/turn-lifecycle'), () => require('../chat/provider-attempt-runtime'),
+  () => providerInvocation, () => require('../chat/host-coordinator'), () => require('../chat/host-runtime'),
+  () => module.exports.finalizationPlan, () => require('../chat/finalize-host'),
+]));
+
+exposeHostApi('taskBoardRouting', () => getNative().taskBoardRoutingApi({
+  taskDomain: require('./task-domain').taskDomain, taskDirId: require('../task-board/normalize').taskDirId,
+  entries: values => [...values || []],
+  affinity: task => new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean)),
+  rankInputs(records, { dirId = null, contextTerms = new Map(), affinitySessionIds = new Set(), options = {} } = {}, check) {
+    const entries = [...records || []], availability = {}, activities = {};
+    for (const [id, record] of entries) {
+      if (typeof options.isAvailable === 'function') availability[id] = check(record, id, options);
+      const value = record && (record.lastActivity || record.createdAt);
+      const ms = typeof value === 'number' ? value : Date.parse(value || '');
+      activities[id] = Number.isFinite(ms) ? ms : 0;
+    }
+    return { records: entries, dirId, contextTerms: [...contextTerms], affinitySessionIds: [...affinitySessionIds], availability, activities };
+  },
+}));

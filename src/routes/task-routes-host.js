@@ -227,7 +227,7 @@ function mountTaskRoutesHostRoute(app, options = {}) {
     throw new TypeError('[task-routes-host] Express-compatible app is required');
   }
   const deps = assertDependencies(options);
-  const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+  const isLocal = options.isLocal || require('../native/binding').requestLocality.isLocalRequest;
 
   app.post(HOST_PATH, (req, res) => {
     // 只认回环。前门转发到内网端口时写的是真实对端地址，远端客户端在这里就被挡住。

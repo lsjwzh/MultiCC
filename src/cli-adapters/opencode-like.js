@@ -1,9 +1,9 @@
 'use strict';
 
 const { renderPrompt } = require('../native/binding').messageComposer;
-const { supportsEffort } = require('../cli/cli-capability');
+const { supportsEffort } = require('../native/binding').cliCapability;
 const { errorFields } = require('../provider-error');
-const { createStepCompletionTracker } = require('./completion');
+const { createStepCompletionTracker } = require('../native/binding').cliCompletion;
 
 function createOpencodeLikeAdapter({
   name, label, cmd, supportsAgentVariant = false, includeThinking = false,

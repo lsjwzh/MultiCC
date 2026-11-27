@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
-const { protocolFamilyOf } = require('../cli/cli-capability');
+const { protocolFamilyOf } = require('../native/binding').cliCapability;
 const { codexProviderHome } = require('../native/binding');
 
 // A resident lane keeps ONE child warm across turns, so its managed provider

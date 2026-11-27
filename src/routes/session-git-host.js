@@ -83,7 +83,7 @@ function mountSessionGitHostRoute(app, options = {}) {
     throw new TypeError('[session-git-host] Express-compatible app is required');
   }
   const deps = assertDependencies(options);
-  const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+  const isLocal = options.isLocal || require('../native/binding').requestLocality.isLocalRequest;
   const log = options.logger || console;
   const errorText = options.errorText || (error => String((error && (error.stderr || error.message)) || error));
 

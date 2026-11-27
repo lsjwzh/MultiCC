@@ -301,7 +301,7 @@ function createQuotaRuntime(rawDeps) {
     const logger = deps.logger || console;
     app.post(HOST_PATH, (req, res) => {
       // 只认回环。前门转发到内网端口时写的是真实对端地址，远端客户端在这里就被挡住。
-      const isLocal = typeof deps.isLocal === 'function' ? deps.isLocal : require('../request-locality').isLocalRequest;
+      const isLocal = typeof deps.isLocal === 'function' ? deps.isLocal : require('../native/binding').requestLocality.isLocalRequest;
       if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
       const body = asObject(req.body);
       return Promise.resolve()

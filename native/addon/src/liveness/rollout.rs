@@ -100,3 +100,70 @@ pub fn rollout_resolver(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value>
     )?
     .raw())
 }
+
+const MISS_TTL_MS: f64 = 30_000.;
+#[napi]
+pub fn rollout_path_api(
+    env: Env,
+    addon: Unknown<'_>,
+    unpack: Unknown<'_>,
+    prepare: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let n = L::new(&env, addon);
+    let state = fields(
+        n,
+        &[
+            ("native", n),
+            ("unpack", L::new(&env, unpack)),
+            ("prepare", L::new(&env, prepare)),
+        ],
+    )?;
+    let create = function(state, "createRolloutPathResolver", 0, 1, |s, a| {
+        let input = s.get(c"unpack")?.call_plain(&[a[0]])?;
+        let fs = read(input, c"fs")?;
+        let path = input.get(c"path")?;
+        let sessions = input.get(c"sessionsDirFor")?;
+        let now = input.get(c"now")?;
+        let now = if now.undefined()? {
+            s.global()?.get(c"Date")?.get(c"now")?
+        } else {
+            now
+        };
+        let ttl = input.get(c"missTtlMs")?;
+        let callable =
+            |v: L<'_>| -> Result<bool> { Ok(v.kind()? == sys::ValueType::napi_function) };
+        if !fs.truthy()?
+            || !callable(fs.get(c"existsSync")?)?
+            || !callable(fs.get(c"readdirSync")?)?
+        {
+            return Err(s.type_error("[rollout-path] fs with existsSync/readdirSync is required"));
+        }
+        if !path.truthy()? || !callable(path.get(c"join")?)? {
+            return Err(s.type_error("[rollout-path] path is required"));
+        }
+        if !callable(sessions)? {
+            return Err(s.type_error("[rollout-path] sessionsDirFor is required"));
+        }
+        let ports = s.get(c"prepare")?.call_plain(&[
+            fs,
+            path,
+            sessions,
+            now,
+            if ttl.undefined()? {
+                num(s, MISS_TTL_MS)?
+            } else {
+                ttl
+            },
+        ])?;
+        ports.set(c"cache", s.global()?.get(c"Map")?.construct(&[])?)?;
+        call(s.get(c"native")?, c"rolloutResolver", &[ports])
+    })?;
+    Ok(fields(
+        n,
+        &[
+            ("createRolloutPathResolver", create),
+            ("DEFAULT_MISS_TTL_MS", num(n, MISS_TTL_MS)?),
+        ],
+    )?
+    .raw())
+}

@@ -20,7 +20,7 @@
 // 这不是一条公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest`
 // 拒绝任何转发自真实远端客户端的请求（docs/gateway.md 的内网端口模型）。
 
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../native/binding').requestLocality;
 const { publicBaseUrl } = require('./voice-gateway-host');
 
 const HOST_PATH = '/api/__host/voice-runtime';

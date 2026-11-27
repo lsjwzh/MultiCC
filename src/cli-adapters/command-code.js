@@ -1,8 +1,8 @@
 'use strict';
 
 const { renderPrompt } = require('../native/binding').messageComposer;
-const { createProtocolCompletionTracker } = require('./completion');
-const { displayNameOf } = require('../cli/cli-capability');
+const { createProtocolCompletionTracker } = require('../native/binding').cliCompletion;
+const { displayNameOf } = require('../native/binding').cliCapability;
 
 // 1.74.1 的 ACP 目录不包含 BYOK 模型；原生 headless 支持相同配置与恢复。
 function createCommandCodeAdapter({ cmd, env = process.env }) {

@@ -5,7 +5,7 @@
 const os = require('node:os');
 const path = require('node:path');
 const { getNative } = require('../native/binding');
-const { npmPackages } = require('./cli-capability');
+const { npmPackages } = require('../native/binding').cliCapability;
 const NPM_PACKAGES = Object.freeze(npmPackages());
 const request = (op, input) => getNative().cliUpstreamVersionRequest(op, input);
 const { DEFAULT_REGISTRY, FALLBACK_REGISTRIES, FETCH_TIMEOUT_MS } = request('constants', {});

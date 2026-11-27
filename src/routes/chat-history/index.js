@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { createChatHistoryServiceWithOwner } = require('../../session/chat-history-service/index');
+const { createChatHistoryServiceWithOwner } = require('../../native/binding').chatHistoryService;
 const { getNative, getPublicSafety } = require('../../native/binding');
 const { buildHandoffCheckpoint: defaultCheckpoint } = require('../../cli-switch');
 

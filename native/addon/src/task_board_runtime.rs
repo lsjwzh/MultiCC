@@ -4,4 +4,5 @@ mod core;
 mod lifecycle;
 mod projection;
 mod route_ports;
+mod routing;
 mod worktree;

@@ -139,7 +139,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'server.js',
     // The runtime only forwards the injected probe to the host port.
     'src/cli/switch-runtime.js',
-    'src/request-locality.js',
     'src/router-tool-host.js',
     // One host port per migrated route group: each internal listener accepts
     // loopback calls only, so a request forwarded from a real client is 404.
@@ -183,6 +182,8 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/workspace/air-routes-host.js',
     'src/ws/connection-router.js',
   ]);
+  const predicates = fs.readFileSync('native/addon/src/request_locality_api.rs', 'utf8');
+  assert.match(predicates, /\("isLocalRequest", "local"\)/);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
   assert.match(authRoutes, /httpEntryAuthenticated\(req, entryPort\)/);
   const nativeEntry = fs.readFileSync('native/addon/src/http_entry.rs', 'utf8');

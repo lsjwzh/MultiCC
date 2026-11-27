@@ -96,7 +96,7 @@ function mountSessionAdminHostRoute(app, options = {}) {
   if (typeof options.sessionView !== 'function' || typeof options.readSessionRuntime !== 'function') {
     throw new TypeError('[session-admin-host] runtime ports are required');
   }
-  const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+  const isLocal = options.isLocal || require('../native/binding').requestLocality.isLocalRequest;
   const sessionView = options.sessionView;
   const readSessionRuntime = options.readSessionRuntime;
   // Read-only admin views only need the transcript's current contents. Prefer

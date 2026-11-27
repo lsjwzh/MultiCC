@@ -2,12 +2,12 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const core = require('../../task-board/core/index');
+const core = require('../../native/binding').taskBoardCore;
 const planning = require('../../task-board/planning');
 const { recentTaskIds } = require('../../task-board/native-bridge');
 const { taskAttention: attention, createTaskBoardRepository } = require('../../native/task-domain');
-const { isVoiceRouterRecord } = require('../../voice/router');
-const { runStateForFreezeReason } = require('../../session-work');
+const { isVoiceRouterRecord } = require('../../native/binding').voiceRouter;
+const { runStateForFreezeReason } = require('../../native/binding').sessionWork;
 const { runStateForClassify: runStateForLetter } = require('../../classify/vocab');
 const { createTaskWorktreeService } = require('../../task-worktree');
 const { createTaskRetention } = require('../../task-board/retention');

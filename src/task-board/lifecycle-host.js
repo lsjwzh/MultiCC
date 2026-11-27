@@ -1,8 +1,8 @@
 'use strict';
 const fs = require('node:fs');
-const { gitRun, gitWorktreeMergeState, gitWorktreeRemove } = require('../git/service');
+const { gitRun, gitWorktreeMergeState, gitWorktreeRemove } = require('../native/binding').gitService;
 const { isOpenRunState } = require('../classify/vocab');
-const { taskDirId } = require('./core/index');
+const { taskDirId } = require('../native/binding').taskBoardCore;
 
 function createTaskLifecycleHost({ records, getBoard, getShell, getHistory, getState,
   getRunState, isSessionBusy = () => false, dropHistoryMessages, canDeleteHistory, deleteHistory,

@@ -1,7 +1,7 @@
 'use strict';
 
-const { defaultRepoActor } = require('../repo-actor');
-const { gitWorktreeSnapshot } = require('../git/service');
+const { defaultRepoActor } = require('../native/binding').repoActor;
+const { gitWorktreeSnapshot } = require('../native/binding').gitService;
 const { getNative } = require('../native/binding');
 const { existsSync } = require('node:fs');
 const fail = (code, message = code) => Object.assign(new Error(message), { code, status: 409 });

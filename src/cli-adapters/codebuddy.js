@@ -1,6 +1,6 @@
 'use strict';
 
-const { createResultCompletionTracker, isMainResult, resultCompletion } = require('./result-completion');
+const { createResultCompletionTracker, isMainResult, resultCompletion } = require('../native/binding').cliResultCompletion;
 
 const { renderPrompt } = require('../native/binding').messageComposer;
 const { claudeLikeMcpArgs } = require('./router-mcp');
@@ -13,7 +13,7 @@ const { claudeLikeMcpArgs } = require('./router-mcp');
  * `--resume <sessionId>`. Vendor auth lives in ~/.codebuddy (`codebuddy`
  * TUI /login), so this CLI is providerless like qoder.
  */
-const { supportsEffort, effortOf } = require('../cli/cli-capability');
+const { supportsEffort, effortOf } = require('../native/binding').cliCapability;
 
 function codebuddyEffortLevel(session) {
   const value = String(session?.effort || '').trim().toLowerCase();

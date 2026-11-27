@@ -8,7 +8,7 @@ const exec = promisify(execFile);
 const { createTaskShellStore } = require('../task-shell/store');
 const { createWorkspaceRegistry } = require('./registry');
 const { createWriterEscalation } = require('./writer-escalation');
-const { WORKTREE_SUBDIR } = require('../git/service');
+const { WORKTREE_SUBDIR } = require('../native/binding').gitService;
 const { captureCodeRevision } = require('../task-routing/code-revision');
 const { getWriterGroup, getNative } = require('../native/binding');
 const BACKPRESSURE_CODES = new Set([
@@ -444,7 +444,7 @@ function createWorkspaceAdmission(deps) {
         if (hasEvidence) {
           try { code = await capture(workspace.path); }
           catch (cause) { error = /^code_[a-z_]+$/.test(cause.message) ? cause.message : 'code_observation_failed'; }
-          observation = require('../repo-actor').defaultRepoActor.status(code?.operationId);
+          observation = require('../native/binding').repoActor.defaultRepoActor.status(code?.operationId);
           if (closed || active.get(id) !== permit || permit.fenceNeedsBump || isLive(id)) return;
         }
         // Result, barrier, fence check and lease release commit together.

@@ -16,7 +16,7 @@
 // 这不是公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest` 拒绝任何
 // 转发自真实远端客户端的请求（docs/gateway.md 的内网端口模型）。
 
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../native/binding').requestLocality;
 
 const { execFile } = require('node:child_process');
 const { resolveCliCommands } = require('../cli-adapters/commands');
