@@ -948,6 +948,36 @@ test('a 404 the converter cannot repair is never replayed', async () => {
   assert.equal(res.statusCode, 404);
 });
 
+// A bare `{}` 404 is a route miss: the backend never named an item. It must
+// neither enter the converter nor be replayed, and the skip reason must say so.
+test('a bare {} 404 is a route miss: no converter, no replay, skip reason logged', async () => {
+  let calls = 0;
+  const logs = [];
+  const handler = createCodexOfficialRelayHandler({
+    getProvider: () => officialProvider(),
+    readCredential: () => ({ ok: true, accessToken: 'tok', accountId: 'acct' }),
+    logger: { warn: (event, fields) => logs.push({ event, fields }) },
+    fetch: async () => {
+      calls++;
+      return new Response('{}', { status: 404 });
+    },
+  });
+  const thread = { model: 'gpt-5.3-codex', stream: true, input: [
+    { type: 'reasoning', id: 'rs_9f3k2h', encrypted_content: 'gAAAAA_third_party' },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+  ] };
+  const res = response();
+  await handler(request(structuredClone(thread)), res, () => assert.fail('Official must not fall through'));
+  assert.equal(calls, 1, 'a {} 404 is never replayed');
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.jsonBody.error.message, '{}');
+  assert.equal(res.jsonBody.historyRepairs, undefined);
+  const rejected = logs.find(item => item.event === 'codex_official_upstream_rejected');
+  assert.equal(rejected.fields.upstreamStatus, 404);
+  assert.equal(rejected.fields.repairSkipped, 'unstructured_404');
+  assert.equal(logs.some(item => item.event === 'model_history_repaired_after_rejection'), false);
+});
+
 test('a third-party encrypted-reasoning rejection repairs by dropping the blobs and dangling ids once', async () => {
   const sent = [];
   const handler = createCodexOfficialRelayHandler({
