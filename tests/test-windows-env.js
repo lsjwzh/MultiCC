@@ -8,7 +8,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const windowsEnv = require('../src/windows-env');
 const { isCommandAvailable, createCommandResolver } = require('../src/cli-adapters/commands');
-const { createCliAdapters } = require('../src/cli-adapters');
+const { createCliAdapters } = require('../src/native/binding').cliAdapters;
 const { createOpsTerminalRoutes } = require('../src/routes/ops-terminal');
 
 function fakeRes() {

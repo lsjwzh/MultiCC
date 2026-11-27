@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
+const { createZcodeAdapter } = require('../src/native/binding').cliAdapters;
 const { ensureCliStates } = require('../src/cli-switch');
 const { captureNativeSessionId } = require('./helpers/legacy-native-session-state');
 

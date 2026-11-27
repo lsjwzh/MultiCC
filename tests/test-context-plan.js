@@ -351,7 +351,20 @@ test('vault rule is injected only for lanes without the host system prompt', asy
   assert.ok(ids('opencode').includes('builtin:secret-vault'));
   assert.ok(ids('opencode').includes('builtin:shared-files'));
   assert.ok(ids('claude').includes('builtin:docs-registry'));
+  const { createCodebuddyAdapter, createQoderAdapter, createPiAdapter } = require('../src/native/binding').cliAdapters;
+  const factories = { codebuddy: createCodebuddyAdapter, qoder: createQoderAdapter, pi: createPiAdapter };
   for (const cli of SYSTEM_PROMPT_SECRET_RULE_CLIS) {
+    if (factories[cli]) {
+      const systemPrompt = 'host instructions for ' + cli;
+      const result = factories[cli]({ cmd: cli }).buildInvocation({
+        spawnOpts: {}, historyHandle: { isFirstTurn: true }, systemPrompt,
+        contextLayers: [], userText: 'hello', suffix: '',
+      });
+      const at = result.args.indexOf('--append-system-prompt');
+      assert.ok(at >= 0, cli);
+      assert.equal(result.args[at + 1], systemPrompt, cli);
+      continue;
+    }
     const owner = cli === 'claude'
       ? path.join(__dirname, '../native/addon/src/claude_adapter.rs')
       : cli === 'codex' ? path.join(__dirname, '../native/addon/src/codex_adapter.rs')

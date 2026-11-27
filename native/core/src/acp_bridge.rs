@@ -3,6 +3,10 @@
 //! These functions operate on JSON-compatible data, not arbitrary live JS.
 use crate::js::{self, JsValue as V};
 
+/// Gateway subcommands used by the adapter when selecting a process to launch.
+pub const BRIDGE_COMMAND: &str = "acp-bridge";
+pub const MODEL_ERROR_COMMAND: &str = "acp-model-error";
+
 const ROUTER_ENV_KEYS: [&str; 6] = [
     "MULTICC_SESSION_ID",
     "MULTICC_BASE_URL",

@@ -10,7 +10,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
+const { createZcodeAdapter } = require('../src/native/binding').cliAdapters;
 const {
   RUNTIME_PREFERENCES,
   DEFAULT_MODE,

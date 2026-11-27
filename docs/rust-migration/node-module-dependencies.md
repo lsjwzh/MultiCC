@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 354 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 344 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -72,28 +72,18 @@
 | `src/claude-auth/official-oauth.js` | server.js | `src/native/binding.js` | — | `crypto`, `http` | — | — |
 | `src/claude-auth/proxy-recovery.js` | server.js | — | — | `async_hooks`, `stream` | — | — |
 | `src/claude-models.js` | server.js | `src/native/binding.js` | — | `fs`, `path` | — | — |
-| `src/cli-adapters/acp.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/cli-adapters/claude-agent-sdk-bridge.mjs` | 宿主脚本路径 | `src/native/binding.js` | — | `fs`, `module`, `os`, `path`, `url` | — | — |
-| `src/cli-adapters/codebuddy.js` | server.js | `src/cli-adapters/router-mcp.js`, `src/native/binding.js` | — | — | — | — |
-| `src/cli-adapters/command-code.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/cli-adapters/commands.js` | server.js | `src/agy-accounts.js`, `src/native/binding.js`, `src/providers/host.js`, `src/windows-env.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
 | `src/cli-adapters/completion.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
 | `src/cli-adapters/dsh.js` | server.js | `src/native/binding.js` | — | `fs`, `os`, `path` | — | — |
-| `src/cli-adapters/index.js` | server.js | `src/cli-adapters/acp.js`, `src/cli-adapters/codebuddy.js`, `src/cli-adapters/command-code.js`, `src/cli-adapters/commands.js`, `src/cli-adapters/dsh.js`, `src/cli-adapters/kimi.js`, `src/cli-adapters/opencode.js`, `src/cli-adapters/pi.js`, `src/cli-adapters/qoder.js`, `src/cli-adapters/zcode.js`, `src/native/binding.js` | `scripts/multicc-router-mcp.js` | `path` | — | — |
 | `src/cli-adapters/kimi-auth.js` | server.js | `src/cli-adapters/commands.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
-| `src/cli-adapters/kimi.js` | server.js | `src/cli-adapters/router-mcp.js`, `src/native/binding.js` | — | — | — | — |
-| `src/cli-adapters/opencode-like.js` | server.js | `src/native/binding.js` | — | — | — | — |
-| `src/cli-adapters/opencode.js` | server.js | `src/cli-adapters/acp.js`, `src/cli-adapters/opencode-like.js`, `src/native/binding.js`, `src/routes/opencode-models.js` | — | — | — | — |
 | `src/cli-adapters/pi-router-extension.mjs` | 宿主脚本路径 | — | — | `child_process`, `readline`, `url` | — | — |
-| `src/cli-adapters/pi.js` | server.js | `src/native/binding.js`, `src/upstream-error.js` | `src/cli-adapters/pi-router-extension.mjs` | `path` | — | — |
-| `src/cli-adapters/qoder.js` | server.js | `src/cli-adapters/router-mcp.js`, `src/native/binding.js` | — | — | — | — |
 | `src/cli-adapters/result-completion.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
 | `src/cli-adapters/router-mcp.js` | server.js | `src/native/binding.js` | — | `fs`, `os`, `path` | — | — |
 | `src/cli-adapters/zcode-app-server.js` | 宿主脚本路径 | — | — | — | — | — |
 | `src/cli-adapters/zcode-auth.js` | server.js | `src/native/binding.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
 | `src/cli-adapters/zcode-bridge.cjs` | 宿主脚本路径 | `src/chat/background-hold.js`, `src/cli-adapters/zcode-app-server.js`, `src/native/binding.js` | — | `child_process`, `fs`, `os`, `path`, `readline` | — | — |
 | `src/cli-adapters/zcode-terminal.cjs` | 宿主脚本路径 | `src/native/binding.js` | — | `child_process`, `fs`, `os`, `path` | — | — |
-| `src/cli-adapters/zcode.js` | server.js | `src/native/binding.js` | `src/cli-adapters/zcode-bridge.cjs`, `src/cli-adapters/zcode-terminal.cjs` | `path` | — | — |
 | `src/cli-key-accounts.js` | server.js | `src/agy-accounts.js`, `src/native/binding.js`, `src/official-accounts.js` | — | `crypto`, `fs`, `path` | — | — |
 | `src/cli-switch.js` | server.js | `src/native/binding.js`, `src/providers/native-vendor.js` | — | — | — | — |
 | `src/cli/cli-capability.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
@@ -153,7 +143,7 @@
 | `src/memory/retrieval.js` | server.js | `src/memory-store.js`, `src/memory/builtin-rules.js`, `src/native/binding.js` | — | `fs`, `path` | — | — |
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/model-history-converter.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
-| `src/native/binding.js` | server.js | `src/chat/api-error-host.js`, `src/chat/claude-sdk-route.js`, `src/chat/finalize-host.js`, `src/chat/host-coordinator.js`, `src/chat/host-runtime.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-lifecycle.js`, `src/chat/turn-request.js`, `src/claude-auth/official-oauth.js`, `src/cli-adapters/kimi-auth.js`, `src/cli-adapters/zcode-auth.js`, `src/codex/image-bridge.js`, `src/codex/oauth-refresh.js`, `src/http-errors.js`, `src/native/bootstrap-apis.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/operation-service.js`, `src/orchestration/draft-host.js`, `src/orchestration/native-store-host.js`, `src/outbox.js`, `src/providers/auto-provider-config.js`, `src/providers/egress-ip.js`, `src/providers/host.js`, `src/providers/official-catalog.js`, `src/session/records.js`, `src/state/store.js`, `src/tailscale-funnel-health.js`, `src/task-board/board-store.js`, `src/task-worktree.js`, `src/tunnel-sakurafrp-api.js`, `src/upstream-error.js`, `src/usage-limit-poller.js`, `src/usage-observed.js`, `src/wait/service.js`, `src/workspace/air-routes-host.js`, `src/ws/gateway-chat-bridge.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs`, `src/task-shell/migration-page-worker.js` | `async_hooks`, `child_process`, `crypto`, `diagnostics_channel`, `events`, `fs`, `fs/promises`, `http`, `https`, `module`, `net`, `os`, `path`, `util`, `worker_threads`, `zlib` | `multer` | `1033 require(path.join(root, 'scripts', 'ensure-source-rust'))`, `487 require(file)` |
+| `src/native/binding.js` | server.js | `src/chat/api-error-host.js`, `src/chat/claude-sdk-route.js`, `src/chat/finalize-host.js`, `src/chat/host-coordinator.js`, `src/chat/host-runtime.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-lifecycle.js`, `src/chat/turn-request.js`, `src/claude-auth/official-oauth.js`, `src/cli-adapters/commands.js`, `src/cli-adapters/dsh.js`, `src/cli-adapters/kimi-auth.js`, `src/cli-adapters/router-mcp.js`, `src/cli-adapters/zcode-auth.js`, `src/codex/image-bridge.js`, `src/codex/oauth-refresh.js`, `src/http-errors.js`, `src/native/bootstrap-apis.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/operation-service.js`, `src/orchestration/draft-host.js`, `src/orchestration/native-store-host.js`, `src/outbox.js`, `src/providers/auto-provider-config.js`, `src/providers/egress-ip.js`, `src/providers/host.js`, `src/providers/official-catalog.js`, `src/routes/opencode-models.js`, `src/session/records.js`, `src/state/store.js`, `src/tailscale-funnel-health.js`, `src/task-board/board-store.js`, `src/task-worktree.js`, `src/tunnel-sakurafrp-api.js`, `src/upstream-error.js`, `src/usage-limit-poller.js`, `src/usage-observed.js`, `src/wait/service.js`, `src/workspace/air-routes-host.js`, `src/ws/gateway-chat-bridge.js` | `scripts/multicc-router-mcp.js`, `src/cli-adapters/claude-agent-sdk-bridge.mjs`, `src/cli-adapters/pi-router-extension.mjs`, `src/cli-adapters/zcode-bridge.cjs`, `src/cli-adapters/zcode-terminal.cjs`, `src/task-shell/migration-page-worker.js` | `async_hooks`, `child_process`, `crypto`, `diagnostics_channel`, `events`, `fs`, `fs/promises`, `http`, `https`, `module`, `net`, `os`, `path`, `util`, `worker_threads`, `zlib` | `multer` | `1059 require(path.join(root, 'scripts', 'ensure-source-rust'))`, `487 require(file)` |
 | `src/native/bootstrap-apis.js` | server.js | `native/core/src/task_planning_status.json`, `src/native/binding.js` | — | `events`, `os`, `path` | — | — |
 | `src/native/task-domain.js` | server.js | `src/native/binding.js`, `src/state/store.js` | — | `fs` | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/binding.js` | — | — | — | — |

@@ -1,5 +1,34 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 7 批（2026-11-27，MacPro x86_64）
+
+基线为 `3ce99615`。生产入口通过 `src/native/binding.js` 调用 Rust 适配器工厂。注册表保留命令对象的身份，命令变化时为后续调用刷新适配器，已开始的轮次继续使用原实例。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 315 / 94,053 | 305 / 92,715 |
+| server.js 与 src/ | 316 / 96,914 | 306 / 95,576 |
+| server.js、src/ 与 plugins/ | 328 / 100,833 | 318 / 99,495 |
+
+| 退役生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/cli-adapters/index.js` | 154 | 构建适配器注册表并按命令配置刷新，复用 AGY 的原生解码器 |
+| `src/cli-adapters/opencode.js` | 80 | 选择 ACP 或旧 JSON 协议，验证模型并返回结构化错误 |
+| `src/cli-adapters/opencode-like.js` | 123 | 生成旧 JSON 协议命令，解码步骤、文本和用量 |
+| `src/cli-adapters/acp.js` | 263 | 驱动 ACP 启动与事件协议，隔离会话的工具和思考状态 |
+| `src/cli-adapters/zcode.js` | 154 | 选择 ZCode 终端和流式桥接脚本，处理会话与步骤事件 |
+| `src/cli-adapters/qoder.js` | 122 | 生成 Qoder 参数，转接 Claude 风格事件和 HTTP 错误状态 |
+| `src/cli-adapters/kimi.js` | 179 | 构建 Kimi 调用，处理恢复提示、工具事件、重试及结束状态 |
+| `src/cli-adapters/codebuddy.js` | 112 | 保留 CodeBuddy 的独立推理等级和结构化错误字段 |
+| `src/cli-adapters/command-code.js` | 64 | 构建 Command Code 调用，归并嵌套事件并在最终结果计量 |
+| `src/cli-adapters/pi.js` | 113 | 生成 Pi 调用，接入路由扩展并归集最终成本与用量 |
+
+十个旧文件共 1,364 行。Node 桥接提供进程、脚本路径、现有命令解析器以及宿主注入的回调。ZCode 两个子进程脚本和 Pi 扩展仍由外部 CLI 按原路径加载。等相应宿主和外部协议入口迁至 Rust 后，可移除这些端口。Gemini 和 Grok 的冻结测试使用独立的旧 ACP 源码。
+
+一次 x64 发布构建用时 5 分 24 秒，五件产物通过架构、SHA-256 和来源指纹 `804c83c8b411f084f79104ca` 校验。31 个关联 Node 测试文件显式加载本批绑定，511 项通过，0 失败。1 项可选的真实 Claude 轨迹回放因本机缺少录制样本跳过。Rust 内核定向 27 项、网关 CLI 切换集成 13 项通过。真实网关与 Node 宿主的回环 WebSocket 冒烟 1 项通过，未验证局域网客户端。
+
+从基线十份源码构造独立参考，覆盖 13 种适配器组合和 132 个流事件帧。146 项与基线一致，另有 2 项终端引号变化按 shell 实际参数单独验证。Qoder、CodeBuddy 把含空格和撇号的模型名作为单个参数传递，ZCode 的带空格引擎路径也通过参数验证。源码行数、46 项写入治理和打包索引通过。npm 包 1,381 项，包含本批全部 17 个变更 Rust 文件，10 个旧生产路径均已退出索引和包。
+
 ## server.js 可达模块第 6 批（2026-11-27，MacPro x86_64）
 
 基线为 `956c635a`。从 `server.js` 追踪任务看板、分类器检索和任务规划路由。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)

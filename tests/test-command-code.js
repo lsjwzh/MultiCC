@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { configure, deepseekConfig } = require('../scripts/configure-command-code');
-const { createCommandCodeAdapter } = require('../src/cli-adapters/command-code');
+const { createCommandCodeAdapter } = require('../src/native/binding').cliAdapters;
 
 test('DeepSeek 配置只保存环境变量引用，保留其他 Provider，重复执行幂等', t => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'command-code-config-'));

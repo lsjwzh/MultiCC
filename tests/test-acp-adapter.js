@@ -7,8 +7,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { createAcpAdapter, createGeminiAdapter, createGrokAdapter } = require('../src/cli-adapters/acp');
-const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
+const { createAcpAdapter, createGeminiAdapter, createGrokAdapter, createOpencodeAdapter } = require('../src/native/binding').cliAdapters;
 const { pickPermissionOption, routerMcpServers } = require('./helpers/native-acp-bridge');
 const { gatewayPath } = require('../src/native/binding');
 

@@ -76,7 +76,7 @@ const {
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { appPaths: { createPaths }, getNative, findProviderReferences, messageComposer, bootstrapState,
   synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence, getSessionNotices } = require('./src/native/binding');
-const { createCliAdapters } = require('./src/cli-adapters');
+const { createCliAdapters } = require('./src/native/binding').cliAdapters;
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf, isAlias, bundledClaudeCodeBinary, nameOf: canonicalCli, watchEffortCatalog } = require('./src/native/binding').cliCapability;

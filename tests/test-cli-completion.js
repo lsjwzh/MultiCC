@@ -20,11 +20,11 @@ const adapters = [
   require('../src/native/binding').codexAdapter.createCodexAdapter({}),
   require('../src/native/binding').codexAppAdapter.createCodexExpAdapter({}),
   // Legacy JSON lane; the default ACP lane's completion is covered by test-acp-adapter.js.
-  require('../src/cli-adapters/opencode').createOpencodeAdapter({ env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } }),
-  require('../src/cli-adapters/zcode').createZcodeAdapter({}),
-  require('../src/cli-adapters/qoder').createQoderAdapter({}),
-  require('../src/cli-adapters/kimi').createKimiAdapter({}),
-  require('../src/cli-adapters/codebuddy').createCodebuddyAdapter({}),
+  require('../src/native/binding').cliAdapters.createOpencodeAdapter({ env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } }),
+  require('../src/native/binding').cliAdapters.createZcodeAdapter({}),
+  require('../src/native/binding').cliAdapters.createQoderAdapter({}),
+  require('../src/native/binding').cliAdapters.createKimiAdapter({}),
+  require('../src/native/binding').cliAdapters.createCodebuddyAdapter({}),
   require('../src/cli-adapters/dsh').createDshAdapter({}),
 ];
 const successResult = { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed' };
@@ -368,7 +368,7 @@ function legacyPiHooks() {
 
 test('Kimi and Pi native completion states match legacy recovery, errors and tool settlement', () => {
   const kimi = adapters.find(adapter => adapter.name === 'kimi');
-  const pi = require('../src/cli-adapters/pi').createPiAdapter({});
+  const pi = require('../src/native/binding').cliAdapters.createPiAdapter({});
   let seed = 74247;
   const pick = list => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return list[seed % list.length]; };
   const values = [undefined, null, false, '', 'stop', 'aborted', 'length', 'error', '\ud800', 'x'.repeat(200), 0, 1, {}];

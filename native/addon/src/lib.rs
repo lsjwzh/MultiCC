@@ -77,6 +77,7 @@ pub mod claude_settings_override;
 mod claude_usage_queue;
 mod cli_account_routes;
 pub mod cli_capability;
+pub mod cli_adapters;
 pub mod cli_catalog_views;
 pub mod cli_completion;
 pub mod cli_provider_registry;

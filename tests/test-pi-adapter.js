@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { createPiAdapter, PI_THINKING_LEVELS } = require('../src/cli-adapters/pi');
+const { createPiAdapter, PI_THINKING_LEVELS } = require('../src/native/binding').cliAdapters;
 const { processSpawnArgs } = require('../src/native/binding');
 const adapter = createPiAdapter({ cmd: '/bin/pi', routerMcpNode: process.execPath, routerMcpScript: '/router.js' });
 const envelope = overrides => ({ contextLayers: [], userText: 'Hello', suffix: '', systemPrompt: 'Role and image instructions',

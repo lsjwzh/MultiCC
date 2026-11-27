@@ -111,7 +111,7 @@ function probeAddon(file, node = process.execPath) {
       'jsonCompressionMiddleware','providerQuotaRuntime','taskMemoryRecorder','refreshHealthStore','accountReaderApi','quotaSelfHealApi',
       'taskBoardDomainFacades','taskSearchApi','boardSearchSnapshot','boardLifecycleApi','boardRelocateApi','boardRetentionApi',
       'taskPlanningRoutesApi','taskBoardRuntimeCreate','taskBoardCoreApi','taskBoardStateApi','taskBoardProjectionApi','taskBoardLifecycleApi','taskBoardRoutePorts','taskBoardWorktreePorts','repoActorApi','gitServiceApi','tunnelMonitorApi','appPathsApi','sessionWorkHostApi','sessionWorkSchedulerApi','orchestrationRuntimeApi','orchestrationJsonApi','createNativeQueue','createOpencodeLimitResolver','openCodeCatalogApi','eventPolicyApi',
-      'contextSelectionApi','monitorAdmissionApi','createCliProviderRegistry','providerSelectionDtoValue',
+      'contextSelectionApi','monitorAdmissionApi','cliAdaptersApi','createCliProviderRegistry','providerSelectionDtoValue',
       'commandEnvelope','orchestrationCommandSync','codexMaterializeValue','codexStripOfficialEnv',
       'normalizeNativeError','turnStateApi','postTurnApi','finalizationApi',
       'adapterCompletionApi','createProviderInvocationFactory','createClaudeAdapter','createCodexAdapter',
