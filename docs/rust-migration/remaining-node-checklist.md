@@ -1,5 +1,22 @@
 # 剩余 Node 后端清单
 
+## 退役电源守护进程的 Node 兼容入口（2026-11-27）
+
+从 `fd968912` 的 `server.js` 出发，按 `scripts/inventory-node-backend.js` 递归追踪字面量模块依赖和以 `__dirname` 为根的字面量脚本路径。以下统计覆盖 `.js`、`.mjs`、`.cjs`。仓库内的 `docs/rust-migration/reachable-baseline-fd968912.tsv` 列出每个文件的物理行数和静态可达调用方。
+
+| 可达范围 | 文件数 | 交接点 `f4b8bbd8` 物理行数 | 本批前后物理行数 | 交接点 / 本批换行符数 |
+|---|---:|---:|---:|---:|
+| 入口及 src | 376 | 101,374 | 101,397 | 101,373 / 101,396 |
+| 入口、src 及 plugins | 388 | 105,279 | 105,302 | 105,278 / 105,301 |
+
+`src/routes/opencode-quota.js` 的末行没有换行符，按物理行计算须计入这一行。两次基线相差的 23 行来自 `1d1186cc` 对 `src/codex/official-relay.js` 的修改。
+
+生产入口通过 `src/native/binding.js` 的 `macosPower` 调用 Rust。`src/powerd.js` 仅由 `tests/test-powerd.js` 引用。删除这个 28 行的兼容文件后，src 中的 `.js` 文件从 415 个降至 414 个，可达集合保持不变。自 `aa2dc054` 起，Git 差异累计删除两个 JavaScript 文件，前一批为 `plugins/utils/macos-power.js`，本批为 `src/powerd.js`。
+
+客户端测试直接调用 addon 的 `systemPowerDaemon`，用临时文件验证安装条件和意图读写。差分测试调用 `powerDaemon`，以冻结的 JavaScript 实现为对照，在 Darwin 和 Linux 两种平台参数下各运行 15 组，对比文件访问顺序、回退值和抛出错误对象的身份。根 npm 包的 `files` 清单不包含 `server.js`、`src/` 或电源守护进程脚本。
+
+MacPro 复用了交接构建的五件 x86_64 原生产物，并按各自的构建清单核对了 SHA-256。六个电源相关测试文件共 78 项通过。真实网关和兼容宿主使用临时数据目录启动后，通过了回环 HTTP 就绪检查以及工作区、元数据 WebSocket 检查。
+
 ## 无人值守监督器与策略接口（2026-11-27，macOS ARM64 工作树）
 
 从合入后的 `040d7a2b` 用原脚本递归扫描 `server.js`。最大的非入口模块是 `src/unattended/host.js`（1,407 行），唯一的本地依赖是 `src/unattended/kernel.js`（125 行）。已删除两个生产入口。新宿主适配为 `src/unattended/native-host.js`，冻结旧实现仅供测试。

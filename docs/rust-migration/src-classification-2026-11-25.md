@@ -26,6 +26,8 @@
 | 浏览器前端 | 0 |
 | **合计** | **530** |
 
+2026-11-27 更新：`src/powerd.js` 已退休。它只在测试里被引用，生产电源装配直接调用原生 addon；测试已改接 `systemPowerDaemon` / `powerDaemon`，本表该行仅作历史记录。
+
 例如，`src/chat/model-timeout-recovery.js` 判断失败是否属于当前回合，并决定是否终止运行中的请求。`src/cli/session-policy.js` 的 backfill 从已有会话转录补回模型名。`src/task-shell/migration-progress.js` 虽归入宿主脚本依赖，仍在 JS 中把迁移阶段和字节数换算为进度。与这些实现相比，`src/request-locality.js` 将本地请求判定转发给 Rust。
 
 ## 逐文件依据
