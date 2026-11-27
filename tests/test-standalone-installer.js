@@ -164,6 +164,7 @@ test('install.sh unpacks, configures, starts, and safely replaces a previous ins
   ], { env });
   assert.equal(first.status, 0, `installer failed:\n${first.stdout}\n${first.stderr}`);
   assert.match(first.stdout, /Installation Complete/);
+  assert.doesNotMatch(first.stdout + first.stderr, /installer-test-token/, '升级重定向的日志必须省略访问令牌');
   assert.match(first.stdout, /MultiCC is ready/, 'a normal install must return with a ready server');
   assert.equal(fs.existsSync(path.join(installDir, 'multicc')), true, 'the multicc command must be installed');
   assert.equal(fs.existsSync(path.join(installDir, resourcesRel(), 'runtime', 'bin', 'node')), true,

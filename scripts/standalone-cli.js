@@ -32,7 +32,6 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
-const crypto = require('crypto');
 
 const LIB_DIR = fs.existsSync(path.join(__dirname, 'lib'))
   ? path.join(__dirname, 'lib')
@@ -41,12 +40,13 @@ const {
   createLogger, openBrowser, probeReady, readStartupState, standaloneDataDir,
 } = require(path.join(__dirname, 'standalone-launcher'));
 const { pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
-const { dequarantine, translocationGuidance } = require(path.join(LIB_DIR, 'desktop-env'));
+const { translocationGuidance } = require(path.join(LIB_DIR, 'desktop-env'));
 
 // 独立包的 launcher 与完整 app-server 同级；开发时直接使用仓库模块。
-const networkModule = fs.existsSync(path.join(__dirname, '..', 'app-server', 'src', 'network', 'outbound.js'))
-  ? path.join(__dirname, '..', 'app-server', 'src', 'network', 'outbound')
-  : path.join(__dirname, '..', 'src', 'network', 'outbound');
+const appSource = fs.existsSync(path.join(__dirname, '..', 'app-server', 'src', 'network', 'outbound.js'))
+  ? path.join(__dirname, '..', 'app-server', 'src')
+  : path.join(__dirname, '..', 'src');
+const networkModule = path.join(appSource, 'network', 'outbound');
 // 本地 config/status/stop 不依赖网络模块，残缺安装也能进行本地修复。
 const outboundFetch = (...args) => require(networkModule).outboundFetch(...args);
 const getChildProxyEnv = (...args) => require(networkModule).getChildProxyEnv(...args);
@@ -54,7 +54,6 @@ const getChildProxyEnv = (...args) => require(networkModule).getChildProxyEnv(..
 const REPO = 'lsjwzh/MultiCC';
 const RELEASES_URL = `https://github.com/${REPO}/releases`;
 const API_LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
-const ARCHIVE_EXT = { win32: 'zip' };
 const TAIL_LINES = 40;
 
 // ── Layout ──────────────────────────────────────────────────────────────────
@@ -475,84 +474,54 @@ function cmdConfig(layout, env, args) {
 }
 
 // ── Update ──────────────────────────────────────────────────────────────────
-// The standalone release *is* the upgrade: there is no dependency tree to
-// reconcile, so "update" means download the newer package, verify it, swap the
-// bundle directory, keep the data directory. User state lives outside the
-// bundle, which is what makes this a rename instead of a migration.
+// 版本来自 release，替换安装目录的步骤始终由 main 上的安装器负责。
+const UNIX_INSTALLER_URL = `https://raw.githubusercontent.com/${REPO}/main/install.sh`;
 
-function archiveName(version, platform, arch) {
-  return `multicc-standalone-${version}-${platform}-${arch}.${ARCHIVE_EXT[platform] || 'tar.gz'}`;
-}
-
-function assetUrl(version, asset) {
-  return `${RELEASES_URL}/download/v${version}/${asset}`;
-}
-
-// ── Update through install.sh ───────────────────────────────────────────────
-// Replacing an installed tree is where the dangerous failures live: a loaded
-// launchd/systemd unit (KeepAlive / Restart=always) brings the launcher back
-// the moment `stop` ends it, so a plain swap races a fresh copy of the OLD
-// server and then deletes the directory it runs from; a half-moved tree has to
-// be put back; the login service must end the run exactly as it was. install.sh
-// already implements all of that — it is what the web updater and a first-time
-// user run — so the terminal updater delegates instead of keeping a second copy
-// of those rules. The script is fetched from the release being installed, never
-// from this bundle: an old install must not apply its own old rules.
-// Returns null when nothing was replaced (script unavailable → caller falls
-// back to the in-bundle swap); any number means install.sh ran and its exit
-// code is the verdict.
-const INSTALL_SCRIPT_BASE = 'https://raw.githubusercontent.com/lsjwzh/MultiCC';
-
-function installerScriptUrl(tag) {
-  return `${INSTALL_SCRIPT_BASE}/v${String(tag).replace(/^v/, '')}/install.sh`;
-}
-
-function installerDelegateArgs({ bundleRoot, tag }) {
-  return ['--dir', bundleRoot, '--version', `v${String(tag).replace(/^v/, '')}`, '--no-open'];
-}
-
-async function runInstallerScript({ layout, release, env, workDir, logger: log }) {
-  // Windows has no bash and no launchd; the in-bundle swap is its native path.
-  if (layout.platform === 'win32') return null;
-  // install.sh installs released versions (`v<major>.<minor>.<patch>`); a
-  // prerelease tag is compared here but would be rejected there, so keep the
-  // in-bundle path for it instead of spending a download to find out.
-  if (!/^\d+\.\d+\.\d+$/.test(String(release.tag).replace(/^v/, ''))) {
-    log.log(`install.sh handles released versions only (${release.tag}); using the in-bundle updater`);
-    return null;
+async function runUnixInstaller({ bundleRoot, targetVersion, port, env, from, noStart, logPath, fetchImpl = outboundFetch }) {
+  const res = await fetchImpl(UNIX_INSTALLER_URL, {
+    headers: { 'accept-encoding': 'identity' }, signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) throw new Error(`下载安装脚本失败：HTTP ${res.status}`);
+  const body = Buffer.from(await res.arrayBuffer());
+  const length = res.headers.get('content-length');
+  // fetch 可能透明解压响应；Content-Length 此时描述的是压缩字节。
+  const encoding = res.headers.get('content-encoding');
+  if (!body.length || ((!encoding || encoding === 'identity') && length !== null && Number(length) !== body.length)) {
+    throw new Error('下载的安装脚本不完整');
   }
-  // install.sh downloads the package with curl/wget (this CLI uses fetch), so
-  // a host without either keeps the in-bundle path instead of failing there.
-  if (spawnSync('sh', ['-c', 'command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1']).status !== 0) {
-    log.log('no curl or wget for install.sh; using the in-bundle updater');
-    return null;
-  }
-  const script = path.join(workDir, 'install.sh');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-update-'));
+  let logFd;
   try {
-    await downloadTo(installerScriptUrl(release.tag), script, { logger: log });
-  } catch (error) {
-    log.log(`install.sh unavailable (${error.message}); using the in-bundle updater`);
-    return null;
-  }
-  process.stdout.write(`Updating with install.sh → ${release.tag}...\n`);
-  const res = spawnSync('bash', [script, ...installerDelegateArgs({
-    bundleRoot: layout.bundleRoot, tag: release.tag,
-  })], { stdio: 'inherit', env: await getChildProxyEnv(env) });
-  // Only the script goes: the caller still owns workDir for the fallback path.
-  fs.rmSync(script, { force: true });
-  if (res.error) {
-    log.error(`could not run install.sh (${res.error.message}); nothing was replaced`);
-    return null;
-  }
-  if (res.status === 0) {
+    const script = path.join(workDir, 'install.sh');
+    fs.writeFileSync(script, body, { mode: 0o600 });
+    const args = [script, '--target', 'standalone', '--dir', bundleRoot, '--version', targetVersion, '--no-open'];
+    if (port) args.push('--port', String(port));
+    if (from) args.push('--from', from);
+    if (noStart) args.push('--no-start');
+    if (logPath) logFd = fs.openSync(logPath, 'a', 0o600);
+    const result = spawnSync('bash', args, {
+      cwd: workDir, env, stdio: logPath ? ['ignore', logFd, logFd] : 'inherit',
+    });
+    if (result.error) throw result.error;
+    return result.status ?? 1;
+  } finally {
+    if (logFd !== undefined) fs.closeSync(logFd);
     fs.rmSync(workDir, { recursive: true, force: true });
-    process.stdout.write(`MultiCC ${release.tag} is installed and running.\n`);
+  }
+}
+
+async function runInstallerScript(layout, env, { bundleRoot, targetVersion, port, from, noStart, logPath }) {
+  const childEnv = await getChildProxyEnv(env);
+  if (layout.platform === 'win32') {
+    const { startWindowsStandaloneUpdate } = require(path.join(appSource, 'windows-standalone-update'));
+    const updateLog = logPath || path.join(standaloneDataDir({ env }), 'logs', 'update.log');
+    await startWindowsStandaloneUpdate({
+      bundleRoot, targetVersion, port, from, noStart, waitForPid: process.pid, logPath: updateLog, env: childEnv,
+    });
+    process.stdout.write(`升级已交给 PowerShell，进度和结果请查看 ${updateLog}\n`);
     return 0;
   }
-  // Never stack the in-bundle swap on a run that stopped in the middle: it may
-  // have paused the service or moved directories already.
-  process.stderr.write(`install.sh failed (exit ${res.status}); it keeps or restores the previous installation. See above.\n`);
-  return res.status || 1;
+  return runUnixInstaller({ bundleRoot, targetVersion, port, from, noStart, logPath, env: childEnv });
 }
 
 async function latestRelease({ fetchImpl = outboundFetch, logger: log } = {}) {
@@ -570,101 +539,6 @@ async function latestRelease({ fetchImpl = outboundFetch, logger: log } = {}) {
     log.error(`could not reach GitHub Releases (${error.message})`);
     return null;
   }
-}
-
-// ── Update progress ─────────────────────────────────────────────────────────
-// The web UI runs `update` detached and reads its output back from a log file
-// (src/update-runner.js). With MULTICC_UPDATE_MARKERS=1 every step boundary is
-// printed as a marker line it turns into the dialog's step list; the marker
-// format is the one the git checkout's `./multicc update` prints.
-const UPDATE_STEP_MARKER = '__MULTICC_UPDATE_STEP__';
-const UPDATE_PLAN_MARKER = '__MULTICC_UPDATE_PLAN__';
-const STANDALONE_UPDATE_STEPS = ['check', 'download', 'checksum', 'extract', 'restart', 'ready'];
-
-function updateMarkersOn(env = process.env) {
-  return env.MULTICC_UPDATE_MARKERS === '1';
-}
-
-function updateStep(env, id, action, note = '') {
-  if (!updateMarkersOn(env)) return;
-  const at = Math.floor(Date.now() / 1000);
-  process.stdout.write(`${UPDATE_STEP_MARKER} ${id} ${action} ${at}${note ? ` ${note}` : ''}\n`);
-}
-
-// The swap helper outlives the CLI and has no stdout; it appends straight to
-// the log the web UI is reading (MULTICC_UPDATE_LOG, set by the runner).
-function appendUpdateLog(env, lines) {
-  if (!env.MULTICC_UPDATE_LOG) return;
-  try { fs.appendFileSync(env.MULTICC_UPDATE_LOG, lines.map(line => `${line}\n`).join('')); } catch (_) {}
-}
-
-function formatMB(bytes) {
-  return `${(bytes / 1048576).toFixed(1)} MB`;
-}
-
-// "12.3 / 48.0 MB · 25% · 3.1 MB/s" — total is unknown when the server sends
-// no Content-Length, and then only the received size and speed are shown.
-function downloadProgressText({ received, total, elapsedMs }) {
-  const speed = elapsedMs > 0 ? `${formatMB(received / (elapsedMs / 1000))}/s` : null;
-  const parts = total > 0
-    ? [`${(received / 1048576).toFixed(1)} / ${formatMB(total)}`, `${Math.min(100, Math.floor((received / total) * 100))}%`]
-    : [formatMB(received)];
-  if (speed) parts.push(speed);
-  return parts.join(' · ');
-}
-
-// Streams the body to disk instead of buffering it, so progress can be shown
-// while it arrives and a 60 MB archive never sits in memory twice. `onProgress`
-// is throttled to one call per `progressEveryMs` plus a final one.
-async function downloadTo(url, dest, {
-  fetchImpl = outboundFetch, logger: log, onProgress = null, progressEveryMs = 1000, now = Date.now,
-} = {}) {
-  const res = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(30 * 60_000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  const total = Number(res.headers && typeof res.headers.get === 'function' ? res.headers.get('content-length') : 0) || 0;
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const startedAt = now();
-  let received = 0;
-  let lastReport = 0;
-  const report = (force) => {
-    if (!onProgress) return;
-    const at = now();
-    if (!force && at - lastReport < progressEveryMs) return;
-    lastReport = at;
-    onProgress({ received, total, elapsedMs: at - startedAt });
-  };
-  const fd = fs.openSync(dest, 'w');
-  try {
-    if (res.body && typeof res.body.getReader === 'function') {
-      const reader = res.body.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        fs.writeSync(fd, value);
-        received += value.length;
-        report(false);
-      }
-    } else {
-      const buffer = Buffer.from(await res.arrayBuffer());
-      fs.writeSync(fd, buffer);
-      received = buffer.length;
-    }
-  } finally {
-    fs.closeSync(fd);
-  }
-  if (!received) throw new Error(`empty download from ${url}`);
-  if (total && received !== total) throw new Error(`incomplete download from ${url}: ${received} of ${total} bytes`);
-  report(true);
-  log.log(`downloaded ${path.basename(dest)} (${formatMB(received)})`);
-  return dest;
-}
-
-function verifyChecksum(file, checksumText) {
-  const expected = String(checksumText).trim().split(/\s+/)[0].toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error('published checksum is not a SHA-256 digest');
-  const actual = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-  if (actual !== expected) throw new Error(`checksum mismatch: expected ${expected}, got ${actual}`);
-  return actual;
 }
 
 // Compare release versions without pulling a semver dependency into the tiny
@@ -710,44 +584,6 @@ function bundleResources(root, platform) {
     : path.join(root, 'MultiCC.app', 'Contents', 'Resources');
 }
 
-function runtimeNodeIn(resources, platform) {
-  return platform === 'win32'
-    ? path.join(resources, 'runtime', 'node.exe')
-    : path.join(resources, 'runtime', 'bin', 'node');
-}
-
-// Both archives carry the bundle's own top-level directory (the tar with
-// --strip-components, the zip as its first path segment), so win32 has to shed
-// that segment by hand or the swap would nest a bundle inside a bundle.
-function extractArchive({ archive, dest, platform, logger: log }) {
-  fs.rmSync(dest, { recursive: true, force: true });
-  fs.mkdirSync(dest, { recursive: true });
-  if (platform === 'win32') {
-    const res = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
-      `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${dest}' -Force`], { stdio: 'inherit' });
-    if (res.status !== 0) throw new Error('Expand-Archive failed');
-    const entries = fs.readdirSync(dest).map(name => path.join(dest, name));
-    if (entries.length === 1 && fs.statSync(entries[0]).isDirectory()) {
-      const inner = entries[0];
-      for (const name of fs.readdirSync(inner)) fs.renameSync(path.join(inner, name), path.join(dest, name));
-      fs.rmSync(inner, { recursive: true, force: true });
-    }
-  } else {
-    const res = spawnSync('tar', ['-xzf', archive, '-C', dest, '--strip-components=1'], { stdio: 'inherit' });
-    if (res.status !== 0) throw new Error(`tar failed (status ${res.status})`);
-  }
-  // macOS: a freshly downloaded archive hands its "came from the internet" flag
-  // down to everything it contains, and Gatekeeper answers by running the bundle
-  // from a random read-only copy — where granted permissions never stick. The
-  // user asked for this package by running a checksum-verified installer, so
-  // clear the flag here rather than making them discover AppTranslocation later.
-  if (platform === 'darwin' && dequarantine(dest, { platform, logger: log })) {
-    log.log('cleared the macOS download flag (xattr com.apple.quarantine)');
-  }
-  log.log(`extracted into ${dest}`);
-  return dest;
-}
-
 // ── Hand-installed plugins across an upgrade ────────────────────────────────
 
 // A plugin someone installed by hand sits next to the built-in ones in the
@@ -784,8 +620,7 @@ function pathTaken(file) {
 }
 
 // Not fs.cpSync: on an unreadable directory it aborts the whole process from
-// native code instead of throwing, and the swap helper must live to restart the
-// server. Links are copied as they are (relative ones still resolve: the new
+// native code instead of throwing, and the installer needs its per-plugin failure report. Links are copied as they are (relative ones still resolve: the new
 // tree has the old one's shape); permissions come along, so bin/ stays executable.
 function copyPluginTree(source, dest) {
   const stat = fs.lstatSync(source);
@@ -862,85 +697,49 @@ function cmdCarryPlugins(layout, env, args) {
   }
 }
 
-// The swap can never happen in-process: the running CLI, and on POSIX the
-// runtime binary it is executing from, both live inside the directory being
-// replaced. So we hand the last step to a short-lived helper started from the
-// NEW bundle's runtime, which waits for us to exit and only then renames
-// directories. Uniform on every platform, and it works on Windows where an
-// in-use directory cannot be renamed at all.
-function spawnSwapHelper({ layout, env, stagedRoot, newVersion, restart, logger: log }) {
-  const helperResources = bundleResources(stagedRoot, layout.platform);
-  const runtime = runtimeNodeIn(helperResources, layout.platform);
-  const script = path.join(helperResources, 'launcher', 'standalone-cli.js');
-  if (!fs.existsSync(runtime) || !fs.existsSync(script)) {
-    throw new Error(`staged bundle is incomplete (${helperResources})`);
+// 老版本升级时会启动新包中的 __swap。兼容这个入口，让统一安装器复核旧版
+// 已下载的归档和校验文件；它的旧调用方通常在交接前已经停止了服务。
+async function cmdLegacySwap(layout, env, args) {
+  if (!args.root || !args.staged || !/^\d+\.\d+\.\d+$/.test(args.version)) {
+    throw new Error('旧版升级交接缺少目标目录、暂存目录或发布版本');
   }
-  const child = spawn(runtime, [
-    script, '__swap',
-    '--wait-pid', String(process.pid),
-    '--root', layout.bundleRoot,
-    '--staged', stagedRoot,
-    '--version', newVersion,
-    ...(restart ? ['--restart'] : []),
-  ], { detached: true, stdio: 'ignore', env });
-  if (child && typeof child.unref === 'function') child.unref();
-  log.log(`swap helper started (pid ${child.pid})`);
-  return child;
-}
-
-// Internal: run by spawnSwapHelper(), never by a user.
-async function cmdSwap(layout, env, args) {
-  const root = path.resolve(args.root);
-  const staged = path.resolve(args.staged);
-  const waitPid = Number.parseInt(args.waitPid, 10);
-  for (let i = 0; i < 240 && waitPid && pidAlive(waitPid); i += 1) {
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-  const retired = `${root}.old-${Date.now()}`;
   const log = logger(layout, env);
+  const logPath = env.MULTICC_UPDATE_LOG || path.join(standaloneDataDir({ env }), 'logs', 'update.log');
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  let code = 1;
   try {
-    if (fs.existsSync(root)) fs.renameSync(root, retired);
-    fs.renameSync(staged, root);
-    log.log(`updated to ${args.version} (previous bundle kept at ${retired})`);
-  } catch (error) {
-    log.error(`swap failed: ${error.message}`);
-    // The CLI already wrote its exit marker; a newer one makes the web UI
-    // report this failure instead of waiting for a server that never returns.
-    appendUpdateLog(env, [`swap failed: ${error.message} — the previous version stays installed; start it with: multicc start`, '__MULTICC_UPDATE_EXIT__ 1']);
-    // Never leave the user without an install: put the old tree back.
-    if (!fs.existsSync(root) && fs.existsSync(retired)) {
-      try { fs.renameSync(retired, root); log.log('restored the previous bundle'); } catch (_) {}
+    const pid = Number(args.waitPid);
+    for (let i = 0; i < 240 && pid > 0 && pidAlive(pid); i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 250));
     }
-    return 1;
-  }
-  // The new version is in place either way; only a plugin that could not be
-  // copied keeps the previous bundle on disk.
-  try {
-    const { failed } = carryUserPlugins({ oldRoot: retired, newRoot: root, platform: layout.platform, env, logger: log });
-    if (failed.length) log.error(`plugins not copied: ${failed.map(item => item.id).join(', ')}; the previous bundle stays at ${retired}`);
-    else fs.rmSync(retired, { recursive: true, force: true });
+    if (pid > 0 && pidAlive(pid)) throw new Error('旧升级进程未退出');
+    const ext = layout.platform === 'win32' ? 'zip' : 'tar.gz';
+    const name = `multicc-standalone-${args.version}-${layout.platform}-${layout.arch}.${ext}`;
+    const archive = path.join(path.dirname(path.resolve(args.staged)), name);
+    code = await runInstallerScript(layout, env, {
+      bundleRoot: path.resolve(args.root), targetVersion: `v${args.version}`, noStart: !args.restart, logPath,
+      from: fs.existsSync(archive) && fs.existsSync(`${archive}.sha256`) ? archive : undefined,
+    });
   } catch (error) {
-    log.error(`could not copy plugins from the previous bundle (${error.message}); it stays at ${retired}`);
+    log.error(error.message);
+    fs.appendFileSync(logPath, `${error.message}\n`);
   }
-  appendUpdateLog(env, [`${UPDATE_STEP_MARKER} restart done ${Math.floor(Date.now() / 1000)}`]);
-  if (args.restart) {
-    appendUpdateLog(env, [`${UPDATE_STEP_MARKER} ready start ${Math.floor(Date.now() / 1000)}`]);
-    const installedResources = bundleResources(root, layout.platform);
-    const target = path.join(installedResources, 'launcher', 'standalone-cli.js');
-    const runtime = runtimeNodeIn(installedResources, layout.platform);
-    if (fs.existsSync(target) && fs.existsSync(runtime)) {
-      const child = spawn(runtime, [target, 'start', '--no-open'], { detached: true, stdio: 'ignore' });
-      if (child && typeof child.unref === 'function') child.unref();
+  // Windows 后台 PowerShell 会在真正结束时写入退出码。
+  if (layout.platform !== 'win32' || code !== 0) {
+    if (code !== 0) {
+      const launcher = path.join(args.root, layout.platform === 'win32' ? 'multicc.cmd' : 'multicc');
+      const message = `升级未完成；请检查上述日志和安装目录，使用 "${launcher}" start 启动该安装。`;
+      log.error(message);
+      fs.appendFileSync(logPath, `${message}\n`);
     }
+    fs.appendFileSync(logPath, `__MULTICC_UPDATE_EXIT__ ${code}\n`);
   }
-  return 0;
+  return code;
 }
 
 async function cmdUpdate(layout, env, args) {
   const log = logger(layout, env);
   const current = layout.manifest.version;
-  if (!args.check && updateMarkersOn(env)) process.stdout.write(`${UPDATE_PLAN_MARKER} ${STANDALONE_UPDATE_STEPS.join(' ')}\n`);
-  if (!args.check) updateStep(env, 'check', 'start');
   if (layout.platform === 'darwin' && process.platform !== 'darwin') {
     process.stderr.write('[multicc] this bundle belongs to another platform; update it there.\n');
     return 1;
@@ -967,59 +766,20 @@ async function cmdUpdate(layout, env, args) {
     return 1;
   }
   if (comparison === 0) {
-    updateStep(env, 'check', 'done', 'up to date');
     process.stdout.write(`MultiCC ${current} is already the latest release.\n`);
     return 0;
   }
   if (comparison < 0) {
-    updateStep(env, 'check', 'done', 'no downgrade');
     process.stdout.write(`MultiCC ${current} is newer than the latest published release (${release.tag}); no downgrade was performed.\n`);
     return 0;
   }
-  updateStep(env, 'check', 'done', `v${release.tag}`);
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-update-'));
-  const delegated = await runInstallerScript({ layout, release, env, workDir, logger: log });
-  if (delegated !== null) return delegated;
-  const asset = archiveName(release.tag, layout.platform, layout.arch);
-  const archive = path.join(workDir, asset);
-  process.stdout.write(`Updating ${current} → ${release.tag}...\n`);
-  // Web: one progress marker per second. Terminal: one self-rewriting line.
-  const interactive = !updateMarkersOn(env) && process.stdout.isTTY;
-  const onProgress = progress => {
-    const text = downloadProgressText(progress);
-    if (updateMarkersOn(env)) updateStep(env, 'download', 'progress', text);
-    else if (interactive) process.stdout.write(`\r  ${text}\u001b[K`);
-  };
+  process.stdout.write(`正在更新 MultiCC ${current} → ${release.tag}…\n`);
   try {
-    updateStep(env, 'download', 'start', asset);
-    process.stdout.write(`  downloading ${asset}\n`);
-    await downloadTo(assetUrl(release.tag, asset), archive, { logger: log, onProgress });
-    if (interactive) process.stdout.write('\n');
-    const checksumFile = `${archive}.sha256`;
-    await downloadTo(assetUrl(release.tag, `${asset}.sha256`), checksumFile, { logger: log });
-    updateStep(env, 'download', 'done', formatMB(fs.statSync(archive).size));
-    updateStep(env, 'checksum', 'start');
-    verifyChecksum(archive, fs.readFileSync(checksumFile, 'utf8'));
-    updateStep(env, 'checksum', 'done');
-    process.stdout.write('  checksum verified\n');
-    updateStep(env, 'extract', 'start');
-    const staged = extractArchive({ archive, dest: path.join(workDir, 'staged'), platform: layout.platform, logger: log });
-    updateStep(env, 'extract', 'done');
-    const state = await currentState(layout, env);
-    const restart = Boolean(state.running) || args.restart;
-    updateStep(env, 'restart', 'start');
-    if (state.running) {
-      process.stdout.write('  stopping MultiCC...\n');
-      await cmdStop(layout, env);
-    }
-    spawnSwapHelper({ layout, env, stagedRoot: staged, newVersion: release.tag, restart, logger: log });
-    process.stdout.write(`  swapped in ${release.tag}${restart ? ' — restarting' : ''}\n`);
-    process.stdout.write('Update will finish in a moment (the helper waits for this process to exit).\n');
-    return 0;
+    return await runInstallerScript(layout, env, {
+      bundleRoot: layout.bundleRoot, targetVersion: `v${release.tag}`, port: args.port,
+    });
   } catch (error) {
-    log.error(`update failed: ${error.message}`);
-    process.stderr.write(`Update failed: ${error.message}\n`);
-    process.stderr.write(`Nothing was changed. Download manually: ${RELEASES_URL}\n`);
+    log.error(`升级失败：${error.message}`);
     return 1;
   }
 }
@@ -1233,7 +993,7 @@ async function main(argv = process.argv.slice(2)) {
   // Everything below actually runs the server, so the bundle has to be whole.
   if (args.command !== '__swap') requireBundle(layout);
   switch (args.command) {
-    case '__swap': return cmdSwap(layout, env, args);
+    case '__swap': return cmdLegacySwap(layout, env, args);
     case '__carry-plugins': return cmdCarryPlugins(layout, env, args);
     case 'start': return cmdStart(layout, env, args);
     case 'stop': return cmdStop(layout, env);
@@ -1260,25 +1020,17 @@ if (require.main === module) {
 
 module.exports = {
   HELP,
-  archiveName,
-  assetUrl,
   bundleResources,
   carryUserPlugins,
   compareVersions,
   configGet,
-  downloadProgressText,
-  downloadTo,
   configSet,
   envFilePath,
-  extractArchive,
-  installerDelegateArgs,
-  installerScriptUrl,
   latestRelease,
   main,
   parseArgs,
   resolveLayout,
-  runtimeNodeIn,
+  runUnixInstaller,
   serviceUnitPath,
   windowsStartupScript,
-  verifyChecksum,
 };

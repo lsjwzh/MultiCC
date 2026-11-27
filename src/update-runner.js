@@ -1,6 +1,7 @@
 'use strict';
 
 const { getChildProxyEnv } = require('./network/outbound');
+const { startWindowsStandaloneUpdate } = require('./windows-standalone-update');
 
 // ── Run the updater from the web UI ──
 // A git checkout runs `./multicc update`; a standalone package runs install.sh
@@ -79,15 +80,7 @@ function buildUpdateShellCommand(options = {}) {
 }
 
 // ── Standalone package ──
-// The standalone launcher runs the server from <resources>/app-server with the
-// desktop environment (MULTICC_DESKTOP=1) but no Electron. It has no git
-// checkout and no bash manager; the web UI updates it by running install.sh
-// against the existing install directory (see buildInstallScriptShellCommand),
-// the same script a first install would have piped into bash. The bundled
-// CLI's own `multicc update` (scripts/standalone-cli.js) still exists as a
-// terminal-only fallback for platforms install.sh does not cover (Windows).
-// The log lives in the data directory either way: the bundle it would
-// otherwise sit in is the thing being replaced.
+// 独立包的升级日志保存在用户数据目录，替换程序目录后仍能读取。
 function detectStandaloneUpdate(options = {}) {
   const { rootDir, env = process.env, fsImpl = fs, pathImpl = path, platform = process.platform } = options;
   if (!rootDir || !/^(1|true|yes|on)$/i.test(String(env.MULTICC_DESKTOP || '').trim())) return null;
@@ -135,24 +128,11 @@ function updateLogPath({ rootDir, env = process.env, fsImpl = fs, pathImpl = pat
   return standalone ? standalone.logPath : pathImpl.join(rootDir, UPDATE_LOG_RELATIVE);
 }
 
-// The web UI's "upgrade" button now runs the same install.sh a first-time user
-// would pipe into bash, pointed back at the existing install directory. That
-// script already knows how to stop the running instance, back up the old
-// bundle, unpack the target release, carry the port/token config across, and
-// start the result — so this file no longer needs its own swap/restart logic
-// for the standalone package, only the plumbing to fetch and invoke it.
-// install.sh itself is not shipped inside the package (see
-// scripts/standalone-bundle.js), so it is fetched from the tag being installed
-// — pinning the installer to the same release it is installing, exactly as
-// the pinned-tag one-liner in install.sh's own usage text does.
+// 安装器修复从 main 生效；目标版本独立传给安装器，用于选择发布包。
 function buildInstallScriptShellCommand({ standalone, targetVersion, port }) {
-  const versionNumber = targetVersion ? String(targetVersion).replace(/^v/, '').trim() : '';
-  const versionTag = versionNumber ? `v${versionNumber}` : '';
-  // Unknown target: fetch the installer off main (its own `--version latest`
-  // one-liner does the same) and let it resolve "latest" itself.
-  const scriptRef = versionTag || 'main';
-  const versionArg = versionTag || 'latest';
-  const scriptUrl = `https://raw.githubusercontent.com/${INSTALL_REPO}/${scriptRef}/install.sh`;
+  const versionNumber = String(targetVersion || '').trim().replace(/^v/, '');
+  const versionArg = versionNumber ? `v${versionNumber}` : 'latest';
+  const scriptUrl = `https://raw.githubusercontent.com/${INSTALL_REPO}/main/install.sh`;
   const quotedLog = shellQuote(standalone.logPath);
   const quotedDir = shellQuote(standalone.bundleRoot);
   const quotedPort = shellQuote(String(port || 3000));
@@ -165,8 +145,8 @@ function buildInstallScriptShellCommand({ standalone, targetVersion, port }) {
     // reattaches after a page reload (or a second tab) can resume the same
     // "wait for /api/version-check to report this exact version" check the
     // client that started the run is doing — see parseUpdateLog's target group.
-    `  echo "${START_MARKER} $(date -u +%Y-%m-%dT%H:%M:%SZ) force=0 target=${versionNumber}";`,
-    '  TMP="$(mktemp 2>/dev/null || echo /tmp/multicc-install-$$.sh)";',
+    `  echo "${START_MARKER} $(date -u +%Y-%m-%dT%H:%M:%SZ) force=0" ${shellQuote('target=' + versionNumber)};`,
+    `  TMP="$(mktemp)" || { echo "${EXIT_MARKER} 1"; exit 1; };`,
     '  DL_RC=1;',
     '  if command -v curl >/dev/null 2>&1; then',
     `    curl -fsSL ${quotedUrl} -o "$TMP"; DL_RC=$?;`,
@@ -195,11 +175,6 @@ function buildInstallScriptShellCommand({ standalone, targetVersion, port }) {
 }
 
 function preflightStandaloneUpdate({ standalone, fsImpl = fs, pathImpl = path }) {
-  // The detached child is a /bin/sh one-liner; Windows standalone installs
-  // update from their own terminal (`multicc update`) instead.
-  if (standalone.platform === 'win32') {
-    throw new UpdatePreflightError('UPDATE_STANDALONE_WINDOWS', 'run `multicc update` in a terminal to update this install');
-  }
   const logDir = pathImpl.dirname(standalone.logPath);
   try {
     fsImpl.mkdirSync(logDir, { recursive: true });
@@ -443,10 +418,16 @@ async function startDetachedUpdate(options = {}) {
 
   // Synchronous, before the route acknowledges: a run that cannot even read the
   // manager must not be reported as started.
-  const standalone = detectStandaloneUpdate({ rootDir, env, fsImpl, pathImpl });
+  const standalone = detectStandaloneUpdate({ rootDir, env, fsImpl, pathImpl, platform: options.platform });
   let command;
   if (standalone) {
     preflightStandaloneUpdate({ standalone, fsImpl, pathImpl });
+    if (standalone.platform === 'win32') {
+      return startWindowsStandaloneUpdate({
+        bundleRoot: standalone.bundleRoot, logPath: standalone.logPath, targetVersion, spawn,
+        env: await (options.getChildProxyEnv || getChildProxyEnv)(env),
+      });
+    }
     command = buildInstallScriptShellCommand({ standalone, targetVersion, port });
   } else {
     preflightUpdate({ rootDir, fsImpl, pathImpl });

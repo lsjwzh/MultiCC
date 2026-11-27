@@ -178,14 +178,13 @@ cd multicc-standalone-<版本>-darwin-x64
 ./multicc update           # 下载并安装最新 release
 ```
 
-界面右上角的「升级」和终端里的 `multicc update` 现在是**同一套实现**：两者都下载**目标 release 里的 `install.sh`**（不是包里自带的那份，也不是本机这一版附带的旧规则），用 `--dir <安装目录> --version v<目标版本> --no-open` 交给它执行。真正危险的步骤只有一份代码——
+独立版的网页升级按钮和终端命令 `multicc update` 都从官方仓库的 `main` 下载当前平台的安装脚本。macOS 和 Linux 使用 `install.sh`，Windows 使用 `install.ps1`。升级入口把当前安装目录和目标发布版本传给脚本，脚本下载对应平台的发布包，校验 SHA-256 后再替换程序。脚本下载失败时会报告错误，可以在网络恢复后重试。
 
-- 替换前先**卸载登录自启任务**（launchd `KeepAlive` / systemd `Restart=always` 会在 `stop` 结束监管进程的瞬间把它重新拉起，直接换目录就会和旧版抢同一棵树，最后还删掉旧版正在运行的目录）；
-- 用包内运行时核对旧实例的 pid 确实退出，没退出就中止、不动文件；
-- 旧目录改名为 `<root>.old-<pid>`，新包就位；配置（含端口、令牌）从旧安装继承；
-- 任一步失败把旧目录放回、把服务恢复成原来的状态；新版本没通过就绪检查也会回滚。
+已发布的旧版本仍按各自的升级规则运行。旧版在 macOS 11 上识别独立包失败时，可在终端指定目标版本，例如：
 
-`multicc update` 只在两种情况下退回包内的替换助手（旧流程）：目标 release 取不到 `install.sh`（例如镜像环境屏蔽了 `raw.githubusercontent.com`），或本机是 Windows（没有 bash）。取到了但执行失败时**不会**再叠一次替换——那时安装树可能已经被动过，交给脚本自己回滚。
+```bash
+curl -fsSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- --dir "$HOME/MultiCC" --version v2.24.0 --no-open
+```
 
 同名多装、独立版与桌面版并存时：一行命令（未给 `--dir`）会先枚举已有安装并让你选编号（`0` = 在 `~/MultiCC` 新装一个独立包，保留其他安装），不会替你猜；非交互运行必须显式传 `--target standalone --dir <路径>` 或 `--target desktop`。网页升级和 `multicc update` 属于「已知是哪一个实例」，直接按自己的安装目录走。`--dir` 指向桌面版（Electron）时安装脚本会拒绝覆盖，只提示去下载桌面安装包——这条同时兜住旧版桌面 App 把自己当成独立包点「升级」的情况。
 

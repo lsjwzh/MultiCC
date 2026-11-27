@@ -1811,11 +1811,11 @@ else
   echo "    (starting at ${PORT}; if it is taken, the next free port is used — 'multicc url' prints the real one)"
 fi
 echo ""
-if [ -n "$ACCESS_TOKEN" ]; then
+if [ -n "$ACCESS_TOKEN" ] && [ -t 1 ]; then
   echo "  ${C_BOLD}Access Token:${C_RESET}  ${C_YELLOW}${ACCESS_TOKEN}${C_RESET}"
   echo "  (Other devices on your LAN append ?token=${ACCESS_TOKEN} to the URL)"
 else
-  echo "  ${C_BOLD}Access Token:${C_RESET}  ${C_YELLOW}stored in the data directory${C_RESET} — see 'multicc config list'"
+  echo "  ${C_BOLD}Access Token:${C_RESET}  ${C_YELLOW}stored in the data directory${C_RESET} — see 'multicc config get ACCESS_TOKEN'"
 fi
 echo "  LAN access and Tailscale Funnel are configured in /manage; nothing is exposed by default."
 echo ""

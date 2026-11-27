@@ -88,12 +88,7 @@ the copy is one-way and the old installation keeps everything. Details in
 ./multicc update --check   # only compare versions
 ```
 
-Your sessions, providers and chat history live in the per-user data directory, so
-updating never touches them, and an interrupted swap rolls back to the previous
-version rather than leaving nothing. Updating from inside the web UI is
-deliberately disabled for packaged installs (`/api/update` returns 409) — for
-them the package *is* the upgrade. The full mechanism is in
-[standalone.md](standalone.md); the source-checkout semantics are below.
+The web upgrade button and the terminal command both download the platform installer from `main`. The installer verifies the archive for the selected release, updates the existing installation and keeps using its data directory. See [standalone updates](standalone.md#升级).
 
 ## Run from a source checkout (developers)
 
