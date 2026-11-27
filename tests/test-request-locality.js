@@ -147,7 +147,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/auth.js',
     'src/routes/cli-switch-host.js',
     'src/routes/directory-host.js',
-    'src/routes/docs-memory-host.js',
     'src/routes/events-host.js',
     'src/routes/file-transfer-host.js',
     'src/routes/host-ops-host.js',

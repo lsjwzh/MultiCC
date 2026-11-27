@@ -10,7 +10,7 @@ const {
   buildMemoryFolderSnapshot,
   readCuratedEntries,
   scanMemoryContent,
-} = require('../src/memory-store');
+} = require('../src/native/binding').curatedMemoryStore;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-memory-'));
 

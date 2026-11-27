@@ -1,3 +1,5 @@
+pub mod curated_memory;
+pub mod memory_markdown;
 pub mod account_routes;
 pub mod account_subscription;
 pub mod acp_bridge;
@@ -71,6 +73,7 @@ pub mod http_send;
 pub mod machines;
 pub mod macos_agent_build;
 pub mod macos_power;
+pub mod memory_browser_scan;
 pub mod memory_retrieval;
 pub mod message_composer;
 pub mod missing_resume_recovery;

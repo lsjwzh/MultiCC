@@ -3,35 +3,37 @@
 //! event ring. JSONL persistence is best effort; broadcasting follows append.
 use crate::{host_methods::function, js_iteration::read, route_response::*};
 use napi_derive::napi;
-fn recent<'a>(p: L<'a>, id: L<'a>) -> Result<L<'a>> {
-    let owner = call(p, c"events", &[])?;
-    if !call(p, c"has", &[owner, id])?.truthy()? {
+type Port = for<'a> fn(L<'a>, &std::ffi::CStr, &[L<'a>]) -> Result<L<'a>>;
+
+fn recent<'a>(port: Port, p: L<'a>, id: L<'a>) -> Result<L<'a>> {
+    let owner = port(p, c"events", &[])?;
+    if !port(p, c"has", &[owner, id])?.truthy()? {
         let ring = p.from_value(&V::Array(vec![]))?;
         p.catch(|| -> Result<()> {
-            let lines = call(p, c"lines", &[id])?;
+            let lines = port(p, c"lines", &[id])?;
             let start = (lines.get(c"length")?.number()? as u32).saturating_sub(200);
             for i in start..lines.get(c"length")?.number()? as u32 {
                 ring.catch(|| -> Result<()> {
-                    let parsed = call(p, c"parse", &[lines.element(i)?])?;
+                    let parsed = port(p, c"parse", &[lines.element(i)?])?;
                     call(ring, c"push", &[parsed])?;
                     Ok(())
                 })?;
             }
             Ok(())
         })?;
-        call(p, c"hydrate", &[owner, id, ring])?;
+        port(p, c"hydrate", &[owner, id, ring])?;
     }
-    call(p, c"recent", &[owner, id])
+    port(p, c"recent", &[owner, id])
 }
-fn append<'a>(p: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
+fn append<'a>(port: Port, p: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
     let (id, kind, detail, sid) = (a[0], a[1], a[2], a[3]);
     if id.truthy()? {
         let session = if sid.truthy()? {
-            call(p, c"session", &[sid])?
+            port(p, c"session", &[sid])?
         } else {
             null(p)?
         };
-        let at = call(p, c"now", &[])?;
+        let at = port(p, c"now", &[])?;
         let label = if session.truthy()? {
             let label = read(session, c"label")?;
             if label.truthy()? {
@@ -52,10 +54,10 @@ fn append<'a>(p: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
                 ("detail", fallback(detail, V::Null)?),
             ],
         )?;
-        recent(p, id)?;
-        call(p, c"append", &[id, event])?;
-        p.catch(|| call(p, c"persist", &[id, event]))?;
-        let broadcast = call(p, c"broadcast", &[])?;
+        recent(port, p, id)?;
+        port(p, c"append", &[id, event])?;
+        p.catch(|| port(p, c"persist", &[id, event]))?;
+        let broadcast = port(p, c"broadcast", &[])?;
         if broadcast.kind()? == sys::ValueType::napi_function {
             broadcast.call_plain(&[
                 id,
@@ -65,7 +67,7 @@ fn append<'a>(p: L<'a>, a: &[L<'a>]) -> Result<L<'a>> {
     }
     p.from_value(&V::Undefined)
 }
-fn filtered<'a>(p: L<'a>, sid: L<'a>, purge: bool) -> Result<L<'a>> {
+fn filtered<'a>(port: Port, p: L<'a>, sid: L<'a>, purge: bool) -> Result<L<'a>> {
     let predicate = function(sid, "", 1, 1, move |sid, a| {
         let to = read(a[0], c"toSessionId")?.equals(sid)?;
         let keep = if purge {
@@ -75,19 +77,22 @@ fn filtered<'a>(p: L<'a>, sid: L<'a>, purge: bool) -> Result<L<'a>> {
         };
         flag(sid, keep)
     })?;
-    call(p, c"filter", &[p.get(c"notes")?, predicate])
+    port(p, c"filter", &[p.get(c"notes")?, predicate])
 }
 #[napi]
 pub fn workspace_notes_owner(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
     let p = L::new(&env, ports);
+    Ok(owner(p, call)?.raw())
+}
+pub(super) fn owner(p: L<'_>, port: Port) -> Result<L<'_>> {
     p.set(c"notes", p.from_value(&V::Array(vec![]))?)?;
-    Ok(fields(
+    fields(
         p,
         &[
             (
                 "loadNotes",
-                function(p, "loadNotes", 0, 0, |p, _| {
-                    let next = call(p, c"load", &[])?;
+                function(p, "loadNotes", 0, 0, move |p, _| {
+                    let next = port(p, c"load", &[])?;
                     if !next.undefined()? {
                         p.set(c"notes", next)?;
                     }
@@ -96,31 +101,33 @@ pub fn workspace_notes_owner(env: Env, ports: Unknown<'_>) -> Result<sys::napi_v
             ),
             (
                 "saveNotes",
-                function(p, "saveNotes", 0, 0, |p, _| {
-                    call(p, c"save", &[p.get(c"notes")?])
+                function(p, "saveNotes", 0, 0, move |p, _| {
+                    port(p, c"save", &[p.get(c"notes")?])
                 })?,
             ),
             (
                 "recentEvents",
-                function(p, "recentEvents", 1, 1, |p, a| recent(p, a[0]))?,
+                function(p, "recentEvents", 1, 1, move |p, a| recent(port, p, a[0]))?,
             ),
             (
                 "appendEvent",
-                function(p, "appendEvent", 4, 4, |p, a| append(p, a))?,
+                function(p, "appendEvent", 4, 4, move |p, a| append(port, p, a))?,
             ),
             (
                 "pendingNotesFor",
-                function(p, "pendingNotesFor", 1, 1, |p, a| filtered(p, a[0], false))?,
+                function(p, "pendingNotesFor", 1, 1, move |p, a| {
+                    filtered(port, p, a[0], false)
+                })?,
             ),
             (
                 "purgeNotesForSession",
-                function(p, "purgeNotesForSession", 1, 1, |p, a| {
+                function(p, "purgeNotesForSession", 1, 1, move |p, a| {
                     let before = read(p.get(c"notes")?, c"length")?;
-                    let notes = filtered(p, a[0], true)?;
+                    let notes = filtered(port, p, a[0], true)?;
                     p.set(c"notes", notes)?;
                     if !read(notes, c"length")?.equals(before)? {
                         // Reading length can reenter purge and replace the collection.
-                        call(p, c"save", &[p.get(c"notes")?])?;
+                        port(p, c"save", &[p.get(c"notes")?])?;
                     }
                     p.from_value(&V::Undefined)
                 })?,
@@ -130,6 +137,5 @@ pub fn workspace_notes_owner(env: Env, ports: Unknown<'_>) -> Result<sys::napi_v
                 function(p, "getNotes", 0, 0, |p, _| p.get(c"notes"))?,
             ),
         ],
-    )?
-    .raw())
+    )
 }

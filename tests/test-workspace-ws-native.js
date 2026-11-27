@@ -14,7 +14,7 @@ const { createWorkspaceRuntime, prepareFrame } = require('../src/workspace/runti
 const { createWsEnvelope } = require('../src/native/binding').getApiContract();
 const { installWsBackpressure, DEFAULTS } = require('./helpers/legacy-ws-backpressure');
 const legacyWorkspace = require('./helpers/legacy-workspace-runtime').createWorkspaceRuntime;
-const { createNotesStore } = require('../src/notes-store');
+const { createNotesStore } = require('../src/native/binding').workspaceNotes;
 
 class Socket {
   constructor({ bufferedAmount = 0, failSend = null, correlationId = null } = {}) {

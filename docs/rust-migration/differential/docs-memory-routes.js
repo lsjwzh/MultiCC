@@ -325,13 +325,13 @@ const express = require(require.resolve('express', { paths: [REPO] }));
 const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/http-errors'));
 const { jsonCompression } = require(path.join(REPO, 'src/native/binding')).jsonCompression;
 const world = require(path.join(REPO, 'tests/helpers/docs-memory-scripted-world'));
-const { createDocsMemoryHost } = require(path.join(REPO, 'src/routes/docs-memory-host'));
-const { createMemoryBrowserRoutes } = require(path.join(REPO, 'src/routes/memory-browser'));
+const { createDocsMemoryHost } = require(path.join(REPO, 'src/native/binding')).docsMemoryHost;
+const { createMemoryBrowserRoutes } = require(path.join(REPO, 'src/native/binding')).memoryBrowser;
 const { createMemoModule } = require(path.join(REPO, 'src/memo'));
-const { createNotesStore } = require(path.join(REPO, 'src/notes-store'));
+const { createNotesStore } = require(path.join(REPO, 'src/native/binding')).workspaceNotes;
 
 const state = world.buildState(process.env.MULTICC_DATA_DIR);
-const docs = require(path.join(REPO, 'src/docs-registry'));
+const docs = require(path.join(REPO, 'src/native/binding')).docsRegistry;
 const memory = createMemoryBrowserRoutes(world.memoryDeps(state));
 const memo = createMemoModule(world.memoDeps(state)).controller;
 const notes = createNotesStore(world.notesDeps(state));

@@ -1,5 +1,34 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 11 批（2026-11-27，MacPro x86_64）
+
+基线为 `06ebf5fa`。本批退役十个文档、笔记和记忆模块，共 3,079 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 275 / 85,700 | 265 / 82,657 |
+| server.js 与 src/ | 276 / 88,561 | 266 / 85,510 |
+| 含生产插件 | 288 / 92,480 | 278 / 89,429 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/docs-registry.js` | 520 | 服务登记与探测、持久化和依赖保留 |
+| `src/memory-store.js` | 299 | 短事实增删改、原子写入与内容检查 |
+| `src/memory/builtin-rules.js` | 83 | 三份内置规则的读取、标记识别和种入 |
+| `src/memory/retrieval.js` | 123 | 分层文件检索与选择 |
+| `src/memory/folder-service.js` | 351 | 作用域目录、快照与提示词 |
+| `src/memory/runtime.js` | 357 | 会话记忆合并、复盘和蒸馏单飞 |
+| `src/notes-store.js` | 69 | 工作区笔记与事件环 |
+| `src/routes/docs-memory-host.js` | 250 | 文档、记忆与备忘录的内部路由 |
+| `src/routes/session-memory.js` | 180 | 会话私有与共享记忆读写处理器 |
+| `src/routes/memory-browser.js` | 847 | 记忆图、目录树与文件操作 |
+
+记忆图与目录树的生产扫描在 Rust 工作线程执行，返回后从当前目录和会话记录取得显示名称。Node 保留 Express 挂载、实时 Map、Promise、回调及可注入文件系统端口。原调用方依赖这些对象的身份与异常语义。调用方迁至 Rust 后，可移除相应宿主桥。三份内置规则仍从包内技能目录读取。
+
+x64 产物源码指纹为 `f8984453fab60b5f62ccef46`。22 个关联 Node 入口通过 259 项，跳过 0 项。Rust 通过 91 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+两组 HTTP 差分得到 220 项一致结果，并验证 0 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,468 个文件，覆盖本批 29 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
 ## server.js 可达模块第 10 批（2026-11-27，MacPro x86_64）
 
 本批从 `d7f8cf99` 迁移了十个生产模块，共 2,534 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)

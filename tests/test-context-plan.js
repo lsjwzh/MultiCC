@@ -3,8 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const { fixture } = require('./helpers/task-shell');
-const { createFolderMemoryService } = require('../src/memory/folder-service');
-const { readMemoryFolder } = require('../src/memory-store');
+const { createFolderMemoryService } = require('../src/native/binding').folderMemoryService;
+const { readMemoryFolder } = require('../src/native/binding').curatedMemoryStore;
 const { estimateTokens } = require('../src/native/binding').taskShellContext;
 const selectionApi = require('../src/native/binding').getContextSelection();
 const { selectContext } = selectionApi;
@@ -342,7 +342,7 @@ test('continuations send only facts the turn points at, not the rest of a MEMORY
 });
 
 test('vault rule is injected only for lanes without the host system prompt', async t => {
-  const { SYSTEM_PROMPT_SECRET_RULE_CLIS } = require('../src/memory/retrieval');
+  const { SYSTEM_PROMPT_SECRET_RULE_CLIS } = require('../src/native/binding').memoryRetrievalHost;
   const f = fixture(t), memory = memoryFor(f), d = await delivery(f, 'vault');
   const record = { ...f.records.get(d.sessionId), taskBoundTaskId: d.taskId };
   const ids = cli => memory.retrieve({ ...record, cli }, 'x').candidates.map(s => s.id);
@@ -376,7 +376,7 @@ test('vault rule is injected only for lanes without the host system prompt', asy
 });
 
 test('seeded rule paragraphs (current and legacy wording) never resurface as ordinary memory', async t => {
-  const { SECRET_VAULT_RULE, SHARED_FILES_RULE } = require('../src/memory/builtin-rules');
+  const { SECRET_VAULT_RULE, SHARED_FILES_RULE } = require('../src/native/binding').builtinMemoryRules;
   const f = fixture(t), memory = memoryFor(f), d = await delivery(f, 'rules');
   const record = { ...f.records.get(d.sessionId), cli: 'claude', taskBoundTaskId: d.taskId };
   const file = path.join(memory.sharedDir('d1'), 'MEMORY.md');

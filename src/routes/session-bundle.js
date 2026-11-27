@@ -11,7 +11,7 @@ const { promisify } = require('util');
 const { gitExportSessionBundle, gitImportSessionBundle } = require('../native/binding').gitService;
 const { createHandoffEnvService } = require('../session/handoff-env');
 const { getNative } = require('../native/binding');
-const { DOCS_REGISTRY_RULE } = require('../memory/builtin-rules');
+const { DOCS_REGISTRY_RULE } = require('../native/binding').builtinMemoryRules;
 
 const execFileAsync = promisify(execFile);
 const PROJECT_DOC_FILES = ['CLAUDE.md', 'AGENTS.md'];

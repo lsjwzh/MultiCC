@@ -794,8 +794,14 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   assert.equal(pkg.dependencies['sherpa-onnx-node'], undefined);
   assert.equal(pkg.dependencies['@iarna/toml'], undefined, 'the packaged server uses the native Grok config writer');
   assert.equal(pkg.version, require(path.join(ROOT, 'package.json')).version);
-  assert.equal(require(path.join(staged, 'src/memory/builtin-rules')).DOCS_REGISTRY_RULE,
-    require('../src/memory/builtin-rules').DOCS_REGISTRY_RULE);
+  const { builtinMemoryRules } = require(path.join(staged, 'src/native/binding'));
+  for (const [key, reference] of [
+    ['DOCS_REGISTRY_RULE', 'multicc-artifact/references/registration-rule.md'],
+    ['SECRET_VAULT_RULE', 'multicc-secrets/references/secret-vault-rule.md'],
+    ['SHARED_FILES_RULE', 'multicc-workspaces/references/shared-files-rule.md'],
+  ]) {
+    assert.equal(builtinMemoryRules[key], fs.readFileSync(path.join(staged, 'skills', reference), 'utf8').trim());
+  }
 });
 
 // A stub repo root is enough for the staging script: it copies these entries and

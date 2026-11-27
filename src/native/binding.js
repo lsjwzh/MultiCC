@@ -1817,6 +1817,42 @@ function recordMapPrototype(prefix, ownerOf) {
   };
 }
 
+exposeHostApi('memoryRuntime', () => getNative().sessionMemoryRuntimeApi({}));
+exposeHostApi('memoryBrowser', () => getNative().memoryBrowserApi({}));
+
+exposeHostApi('docsRegistry', () => getNative().docsRegistryApi({
+  STORE: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).docsRegistryFile,
+  servedRoots: () => module.exports.artifacts.servedRoots(),
+  reportFailure: module.exports.stateStore.reportFailure,
+}));
+
+exposeHostApi('workspaceNotes', () => getNative().workspaceNotesApi());
+
+exposeHostApi('docsMemoryHost', () => getNative().docsMemoryHostApi({
+  docs: () => module.exports.docsRegistry,
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+  mapError: require('../http-errors').mapError,
+}));
+
+let folderMemoryApis;
+function getFolderMemoryApis() {
+  const fs = require('node:fs');
+  return folderMemoryApis ??= getNative().folderMemoryApis({
+    fs, path, rename: fs.renameSync, skills: path.resolve(__dirname, '../../skills'),
+  });
+}
+for (const key of ['curatedMemoryStore', 'builtinMemoryRules', 'memoryRetrievalHost', 'folderMemoryService']) {
+  exposeHostApi(key, () => getFolderMemoryApis()[key]);
+}
+
+exposeHostApi('sessionMemoryRoutes', () => {
+  const native = getNative();
+  return {
+    assertDependencies(deps) { return native.assertSessionMemoryDependencies(deps); },
+    mountSessionMemoryRoutes(app, deps) { return native.mountSessionMemoryRoutes(app, deps); },
+  };
+});
+
 exposeHostApi('sessionRecordsHost', () => {
   const slots = new WeakMap();
   const sessionRecordsOwner = records => slots.get(records)?.native || null;
