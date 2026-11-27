@@ -279,7 +279,7 @@ function createTaskShellHost(deps) {
   }
   function taskSummary(id) {
     const rt = getRuntime();
-    const task = rt.listTasks().find(value => value.id === id);
+    const task = store.cachedById?.('task').get(id) ?? rt.listTasks().find(value => value.id === id);
     if (!task) return null;
     const lifecycle = deps.getTaskBoard?.()?.getBoard?.().tasks?.[id] || task;
     const record = deps.records.get(task.sessionId);
