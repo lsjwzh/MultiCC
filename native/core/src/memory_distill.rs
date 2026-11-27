@@ -58,9 +58,7 @@ fn heading(line: &S) -> bool {
     let trimmed = line.trim();
     let u = trimmed.as_units();
     let n = u.iter().take_while(|&&x| x == 35).count();
-    (1..=6).contains(&n)
-        && u.get(n).is_some_and(|x| is_js_whitespace(*x))
-        && trimmed != S::from(SECTION)
+    (1..=6).contains(&n) && u.get(n).is_some_and(|x| is_js_whitespace(*x)) && trimmed != SECTION
 }
 pub fn merge<E>(
     text: S,

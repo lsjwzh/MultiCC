@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 pub fn config(p: &Value) -> Value {
     provider_catalog::config_of(p).unwrap_or_else(|_| json!({}))
 }
-pub fn strval<'a>(v: &'a Value) -> &'a str {
+pub fn strval(v: &Value) -> &str {
     v.as_str().unwrap_or("")
 }
 pub fn nonempty<'a>(first: &'a str, other: &'a str) -> &'a str {

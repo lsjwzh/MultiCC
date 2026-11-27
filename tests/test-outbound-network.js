@@ -237,9 +237,14 @@ test('HTTPS 和加密 WebSocket 使用代理隧道并正常校验证书', { time
       global.stop(); await network.close();
     })().catch(error => { console.error(error.message); process.exitCode = 1; });
   `;
-  const result = await run(process.execPath, ['-e', code], { timeout: 10000,
-    env: { PATH: process.env.PATH, HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}`,
-      NODE_EXTRA_CA_CERTS: path.join(dir, 'cert.pem') } });
+  const childEnv = {
+    PATH: process.env.PATH,
+    HTTPS_PROXY: `http://127.0.0.1:${proxy.address().port}`,
+    NODE_EXTRA_CA_CERTS: path.join(dir, 'cert.pem'),
+  };
+  if (process.env.MULTICC_RUST_ADDON) childEnv.MULTICC_RUST_ADDON = process.env.MULTICC_RUST_ADDON;
+  if (process.env.HOME) childEnv.HOME = process.env.HOME;
+  const result = await run(process.execPath, ['-e', code], { timeout: 10000, env: childEnv });
   assert.match(result.stdout, /加密请求成功/);
   assert.match(result.stdout, /加密长连接成功/);
   assert.equal(hits, 3);
