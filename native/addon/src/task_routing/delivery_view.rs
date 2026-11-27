@@ -324,3 +324,88 @@ pub fn project_delivery_view(
     .project()?
     .raw())
 }
+
+/// Capture evidence before the optional await. Projection runs in this callback
+/// for synchronous paths, including a verifier that throws before returning.
+#[napi]
+pub fn begin_delivery_view(
+    env: Env,
+    session: Unknown<'_>,
+    task: Unknown<'_>,
+    candidate: Unknown<'_>,
+    separation: Unknown<'_>,
+    admission: Unknown<'_>,
+    cwd: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let live = |v| L::new(&env, v);
+    let (session, task, candidate, separation, admission, cwd) = (
+        live(session),
+        live(task),
+        live(candidate),
+        live(separation),
+        live(admission),
+        live(cwd),
+    );
+    let separated_session = separation.optional(c"sessionId")?;
+    let session = if separated_session.truthy()? {
+        separated_session
+    } else {
+        session
+    };
+    let separated_turn = separation.optional(c"turnId")?;
+    let turn = if separated_turn.truthy()? {
+        separated_turn
+    } else {
+        or_null(candidate.optional(c"turnId")?)?
+    };
+    let evidence = crate::js_live::invoke(
+        admission,
+        read(admission, c"deliveryEvidence")?,
+        &[session, turn],
+        "admission.deliveryEvidence",
+    )?;
+    if evidence.nullish()? {
+        let kind = if evidence.undefined()? {
+            "undefined"
+        } else {
+            "null"
+        };
+        return Err(evidence.type_error(&format!(
+            "Cannot destructure property 'run' of 'evidence' as it is {kind}."
+        )));
+    }
+    // Snapshot the four host properties in destructuring order before verification.
+    let run = read(evidence, c"run")?;
+    let integration = read(evidence, c"integration")?;
+    let barrier = read(evidence, c"barrier")?;
+    let application = read(evidence, c"application")?;
+    if integration.truthy()? && cwd.truthy()? {
+        if let Some(pending) =
+            admission.catch(|| call(admission, c"verifyBaseline", &[integration, cwd]))?
+        {
+            let captured = fields(
+                task,
+                &[
+                    ("run", run),
+                    ("integration", integration),
+                    ("barrier", barrier),
+                    ("application", application),
+                ],
+            )?;
+            return Ok(fields(task, &[("evidence", captured), ("value", pending)])?.raw());
+        }
+    }
+    let null = task.from_value(&V::Null)?;
+    let value = Inputs {
+        task,
+        candidate,
+        separation,
+        run,
+        integration,
+        barrier,
+        application,
+        baseline: null,
+    }
+    .project()?;
+    Ok(fields(task, &[("evidence", null), ("value", value)])?.raw())
+}
