@@ -196,7 +196,7 @@ pub fn route_redact<V: ScrubValue>(
 }
 
 /// `collisionSafeKey(output, requested)`.
-fn collision_safe_key<V: ScrubValue>(output: V, requested: &JsString) -> ScrubResult<V, JsString> {
+pub fn collision_safe_key<V: ScrubValue>(output: V, requested: &JsString) -> ScrubResult<V, JsString> {
     if !has_own(output, requested)? {
         return Ok(requested.clone());
     }

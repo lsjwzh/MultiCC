@@ -15,7 +15,7 @@ const {
   protocolOf,
   trustDomainOf,
   validateProviderSelection,
-} = require('../../src/providers/auto-provider-config');
+} = require('./frozen-b10-network/auto-provider-config');
 const {
   NATIVE_OPENCODE_PREFIX,
   nativeOpenCodeId,

@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const Module = require('node:module');
 const [mode, scenario] = process.argv.slice(2);
-const outbound = require('../../src/network/outbound');
+const outbound = mode === 'legacy' ? require('./frozen-b10-network/outbound')
+  : require('../../src/native/binding').outbound;
 const policy = require('../../src/native/binding').proxyPolicy;
 const close = outbound.close;
 const relayPath = require.resolve('../../src/codex/official-relay');
@@ -38,7 +39,10 @@ Module._load = function (request, parent, ...args) {
   if (parent?.filename === relayPath) {
     // The frozen old seam and its replacement both use the real relay body.
     if (request === '../network/official-fetch') return loadEntry();
-    if (request === '../network/outbound' && mode === 'legacy') return { get official() { return loadEntry(); } };
+    if (request === '../native/binding' && mode === 'legacy') {
+      const binding = previousLoad.call(this, request, parent, ...args);
+      return Object.create(binding, { outbound: { value: { get official() { return loadEntry(); } } } });
+    }
   }
   return previousLoad.call(this, request, parent, ...args);
 };

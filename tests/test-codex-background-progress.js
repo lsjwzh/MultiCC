@@ -187,6 +187,7 @@ function frozenBackground() {
   assert.equal(crypto.createHash('sha256').update(source).digest('hex'), '8cd7aefe10b4a0e85d0a5d202ea4ce2418e6f66d01abc7f12d87f60109efb899');
   const filename = path.resolve(__dirname, '../src/cli-adapters/codex-background-events.cjs');
   const legacy = new Module(filename); legacy.filename = filename; legacy.paths = Module._nodeModulePaths(path.dirname(filename));
+  legacy.require = require('./helpers/frozen-batch10').from(filename, legacy.require.bind(legacy));
   legacy._compile(source, filename); return legacy.exports;
 }
 

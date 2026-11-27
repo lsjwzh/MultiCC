@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 let handler = async () => { throw new Error('unexpected outbound request'); };
-mock.method(require('../src/network/outbound'), 'outboundFetch', (...args) => handler(...args));
+mock.method(require('../src/native/binding').outbound, 'outboundFetch', (...args) => handler(...args));
 const { fetchCodexUsage } = require('../src/routes/codex-quota');
 const { pollCodexUsage } = require('../src/usage-limit-poller');
 const { fetchKimiBalance } = require('../src/routes/kimi-quota');
@@ -180,11 +180,14 @@ test('余量和账户请求不能重新绕过统一网络入口', () => {
     'src/usage-limit-poller.js', 'src/routes/codex-quota.js', 'src/routes/claude-accounts.js',
     'src/routes/claude-usage-quota.js', 'src/routes/provider-balance-host.js', 'src/routes/qoder-quota.js',
     'src/routes/kimi-quota.js', 'src/quota/opencode-zen.js',
-    'src/official-accounts-cli-login.js', 'src/providers/jev-client.js',
+    'src/official-accounts-cli-login.js',
   ];
   const binding = fs.readFileSync(require.resolve('../src/native/binding'), 'utf8');
   const cliUsage = binding.slice(binding.indexOf("exposeHostApi('claudeCliUsage'"), binding.indexOf("exposeHostApi('officialUsage'"));
-  assert.match(cliUsage, /outboundFetch: require\('\.\.\/network\/outbound'\)\.outboundFetch/);
+  assert.match(cliUsage, /\boutbound\.outboundFetch\b/);
+  const jev = binding.match(/exposeHostApi\('jevClient'[\s\S]*?(?=\nexposeHostApi\(|$)/)?.[0] || '';
+  assert.match(jev, /\boutbound\b/);
+  assert.doesNotMatch(jev, /globalThis\.fetch|global\.fetch|\bhttps?\.(request|get)\s*\(/);
   assert.doesNotMatch(cliUsage, /globalThis\.fetch|global\.fetch|\bhttps?\.(request|get)\s*\(/);
   for (const file of files) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');

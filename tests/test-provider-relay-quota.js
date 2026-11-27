@@ -2,7 +2,7 @@
 
 // Stub the shared outbound transport: no test can accidentally use live credentials.
 let testFetch = async () => { throw new Error('unexpected outbound request'); };
-require('node:test').mock.method(require('../src/network/outbound'), 'outboundFetch',
+require('node:test').mock.method(require('../src/native/binding').outbound, 'outboundFetch',
   (...args) => testFetch(...args));
 
 // 保留 provider target 解析与后台 poller 的借道错误契约。公开出借方路由与

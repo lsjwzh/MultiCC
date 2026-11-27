@@ -19,7 +19,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
 const { WebSocket } = require('ws');
-const { createLogger } = require('../src/observability');
+const { createLogger } = require('../src/native/binding').observability;
 const { mountWsConnectionRouter } = require('../src/ws/connection-router');
 const corpus = require('../docs/rust-migration/differential/ws-admission-corpus.json');
 

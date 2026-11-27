@@ -17,7 +17,7 @@ const {
   normalizeConfig,
   windowKind,
 } = require('../src/native/binding').quotaGuard;
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 
 const NOW = 1_800_000_000_000;

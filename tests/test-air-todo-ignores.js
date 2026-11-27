@@ -15,7 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { TODO_IGNORE_LIMIT, IGNORE_KINDS, normalizeIgnores, createAirTodoIgnoreRuntime } = require('../src/native/task-domain');
+const { TODO_IGNORE_LIMIT, IGNORE_KINDS, normalizeIgnores, createAirTodoIgnoreRuntime } = require('../src/native/binding').taskDomainHost;
 const { mountAir } = require('./helpers/air-host');
 // `POST /api/air/tasks/mark-achieved` 的公开挂载点已搬到 Rust 前门
 // （native/gateway/src/app/task_routes.rs），eligibility 阶梯的单元/集成用例在
@@ -386,7 +386,7 @@ test('Air todo ignore reads and writes agree with the frozen host state machine'
   assert.equal(blob, 'a70c9b85bdd82b8a360f5d34fc73e9dda2b4f961');
   const filename = path.resolve(__dirname, '../src/workspace/todo-ignores.js');
   const frozen = { exports: {} };
-  compileFunction(source.toString(), ['require', 'module'], { filename })(createRequire(filename), frozen);
+  compileFunction(source.toString(), ['require', 'module'], { filename })(require('./helpers/frozen-batch10').from(filename, createRequire(filename)), frozen);
 
   function trace(make) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'air-ignore-diff-'));

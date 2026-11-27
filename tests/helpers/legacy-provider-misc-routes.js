@@ -118,8 +118,8 @@ function runSpeedtestRequest(options) {
 }
 
 // ── Auto Provider · 难度路由「测试一下」 ─────────────────────────────────────
-const { createJevClient } = require('../../src/providers/jev-client');
-const { jevTarget, validateRoutingTarget } = require('../../src/providers/auto-provider-config');
+const { createJevClient } = require('./frozen-b10-network/jev-client');
+const { jevTarget, validateRoutingTarget } = require('./frozen-b10-network/auto-provider-config');
 const { safeCode } = require('./frozen-file-batch19/public-safety');
 
 const MAX_TEXT_LENGTH = 2000;

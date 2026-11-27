@@ -12,7 +12,7 @@
 const express = require('express');
 const path = require('path');
 const os = require('os');
-const { outboundAgent } = require('../../src/network/outbound');
+const { outboundAgent } = require('../../src/native/binding').outbound;
 const { bridgeConfigFile, bridgeHistoryFile, saveBridgeConfig } = require('./secure-config');
 const {
   createEchoStore, createLogStore, createGatewayLifecycle, createChatWsClient, chunkOutbound,

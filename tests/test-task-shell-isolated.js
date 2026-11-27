@@ -10,7 +10,7 @@ const net = require('node:net');
 const { spawn, execFileSync } = require('node:child_process');
 const WebSocket = require('ws');
 const { createPaths, assertTestDir } = require('../src/paths');
-const { readJson } = require('../src/state/store');
+const { readJson } = require('../src/native/binding').stateStore;
 const { createTaskShellStore } = require('../src/task-shell/store');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-shell-isolated-'));

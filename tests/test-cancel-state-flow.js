@@ -26,7 +26,7 @@ const { EventEmitter } = require('node:events');
 
 const { createProductionQuestionHost, createProductionWorkHost, createSessionWorkScheduler } = require('../src/session-work');
 const { createClassifyStateMachine } = require('../src/classify/task-attribution');
-const { createTaskStateStore } = require('../src/session/records');
+const { createTaskStateStore } = require('../src/native/binding').sessionRecordsHost;
 const { createTaskBoardRuntime } = require('../src/native/binding').taskBoardRuntime;
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createOutbox } = require('../src/outbox');

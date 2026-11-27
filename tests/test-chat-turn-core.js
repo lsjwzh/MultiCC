@@ -31,7 +31,7 @@ const {
   claimPostTurn,
 } = require('../src/chat');
 const { createProviderBinding } = require('../src/native/binding').providerBinding;
-const { redactProviderRouteCapability } = require('../src/observability');
+const { redactProviderRouteCapability } = require('../src/native/binding').observability;
 const {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
@@ -42,7 +42,7 @@ const {
   recoverDispatchFromHistory,
   deriveCloseTurnFacts,
 } = require('../src/chat/turn-engine-host');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 
 function runtimeRouteProof(sessionId, turnId) {
   return Object.freeze({
@@ -1454,18 +1454,18 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
 
 test('chat core modules import no runtime I/O dependencies', () => {
   const root = path.join(__dirname, '..');
-  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js']) {
+  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js', 'src/chat/turn-request.js']) {
     assert.equal(fs.existsSync(path.join(root, retired)), false, retired);
   }
   for (const file of [
     'native/addon/src/post_turn_router.rs', 'native/addon/src/turn_runtime_store.rs', 'native/addon/src/record_facades.rs',
+    'native/addon/src/turn_request.rs', 'native/core/src/turn_request.rs',
     'native/core/src/chat_runtime.rs', 'native/addon/src/retry_policy.rs',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.doesNotMatch(source, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/, file);
   }
   for (const file of [
-    'src/chat/turn-request.js',
     'src/chat/turn-lifecycle.js', 'src/chat/finalize-host.js',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');

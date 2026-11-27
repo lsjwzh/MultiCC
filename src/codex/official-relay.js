@@ -23,7 +23,7 @@ const {
   normalizeResponsesHistory,
   repairRejectedResponsesHistory,
 } = require('../native/binding').modelHistoryConverter;
-const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../upstream-error');
+const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../native/binding').upstreamError;
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const DEFAULT_UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -399,7 +399,7 @@ function finishResponseObservation(observer, context) {
 
 function createCodexOfficialRelayHandler(options = {}) {
   const getProvider = options.getProvider;
-  const fetchImpl = options.fetch || require('../network/outbound').official.officialFetch;
+  const fetchImpl = options.fetch || require('../native/binding').outbound.official.officialFetch;
   // Credential resolution is per-PROVIDER: a provider record marked with
   // settingsConfig.officialAccount.id borrows that account's auth.json (the
   // multicc-owned credential store) instead of the shared ~/.codex/auth.json.

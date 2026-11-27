@@ -31,7 +31,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { writeJsonAtomic, readJson } = require('../../src/state/store');
+const { writeJsonAtomic, readJson } = require('./frozen-batch10').frozen('state/store');
 
 // Payload shape stored in the journal. The `files` array captures the FINAL
 // state we intend both files to reach; on replay we blindly write them, because

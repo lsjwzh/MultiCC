@@ -33,8 +33,8 @@ function assertMetricOrder(names) {
   }
 }
 
-function metricsText(repo, table) {
-  const { createMetrics } = require(path.join(repo, 'src/observability'));
+function metricsText(table) {
+  const { createMetrics } = require('../../../tests/helpers/frozen-batch10').frozen('observability');
   const metrics = createMetrics();
   for (const [name, value] of Object.entries(table)) metrics.set(name, value);
   return metrics.render();
@@ -122,7 +122,7 @@ function oracleMount(repo, state) {
     uptime: () => state.health.uptimeSeconds,
     isReady: () => state.health.ready,
     readinessDetails: () => state.health.checks,
-    renderMetrics: () => metricsText(repo, state.metrics),
+    renderMetrics: () => metricsText(state.metrics),
     status: id => (Object.prototype.hasOwnProperty.call(state.ops, id) ? state.ops[id] : null),
   };
   return createLegacyServerCoreRoutes(deps);

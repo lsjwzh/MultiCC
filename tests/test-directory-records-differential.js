@@ -15,8 +15,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createStore } = require('../src/state/store');
-const { createSessionRecords } = require('../src/session/records');
+const { createStore } = require('../src/native/binding').stateStore;
+const { createSessionRecords } = require('../src/native/binding').sessionRecordsHost;
 const { createStateOwner } = require('../src/native/binding').stateOwner;
 const { createDirectoryTable } = require('../src/native/binding').directoryRecords;
 const { createFsDirectoryRepository: createLegacyDirectoryRepository } = require('./helpers/legacy-directory-repository');

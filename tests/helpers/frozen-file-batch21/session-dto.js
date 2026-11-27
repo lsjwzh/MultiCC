@@ -1,7 +1,7 @@
 'use strict';
 
 const { getNative } = require('../../../src/native/runtime');
-const { providerSelectionDto } = require('../../../src/providers/auto-provider-config');
+const { providerSelectionDto } = require('../frozen-b10-network/auto-provider-config');
 
 // Public session contract. This boundary deliberately excludes filesystem and
 // native-CLI implementation details (cwd/worktreePath/cliSessionId), large

@@ -100,8 +100,8 @@ const {
 } = require('./src/cli-switch');
 const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
 // MULTICC_DATA_DIR owns state; stores use atomic writes.
-const stateStore = require('./src/state/store');
-const { createSessionRecords, createTaskStateStore } = require('./src/session/records');
+const stateStore = require('./src/native/binding').stateStore;
+const { createSessionRecords, createTaskStateStore } = require('./src/native/binding').sessionRecordsHost;
 const { createStateOwner } = require('./src/native/binding').stateOwner;
 const { createChatSessions, createChatReplayRuntime } = nativeBinding.chatSessions;
 const { createDirectoryTable } = nativeBinding.directoryRecords;
@@ -144,7 +144,7 @@ const { createAccountRoutesHost, mountCliKeyAccountRoutes, mountCommandcodeAuthR
 const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes, mountZcodeAuthLoginRoute } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes, mountKimiAuthLoginRoute } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
-const { createChatTurnEngine } = require('./src/chat/turn-engine-host'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/providers/auto-provider-config');
+const { createChatTurnEngine } = require('./src/chat/turn-engine-host'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/native/binding').autoProviderConfig;
 const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
@@ -181,7 +181,7 @@ const {
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/codex/oauth-refresh');
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/native/binding').classifyVocab;
-const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/task-domain');
+const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/binding').taskDomainHost;
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/native/binding').sessionWork;
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/binding').getHostPrompts();
@@ -240,7 +240,7 @@ const {
 } = nativeBinding.authSecurity;
 const { envEnabled, resolveNetworkPolicy, selectListenPort } = getNetworkPolicy();
 const { isLocalRequest, isPrivateRequestPeer } = require('./src/native/binding').requestLocality;
-const { createObservability, installConsoleRedaction } = require('./src/observability');
+const { createObservability, installConsoleRedaction } = require('./src/native/binding').observability;
 const { mountWsConnectionRouter } = require('./src/ws/connection-router');
 const { mountServerCoreHostRoute } = require('./src/routes/server-core-host');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = nativeBinding.runtimeSecurity;

@@ -21,7 +21,7 @@
 //   POST   /api/codex/accounts/:id/login-callback finish from a pasted address/code
 //   DELETE /api/codex/accounts/:id                remove an inactive credential dir
 
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 const { officialAccountIdFromProvider } = require('../official-accounts');
 const { accountProviderId } = require('../native/binding').officialCatalog;
 const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');

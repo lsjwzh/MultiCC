@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
-const { selectionKey } = require('../src/providers/auto-provider-config');
+const { selectionKey } = require('../src/native/binding').autoProviderConfig;
 const { failoverSafety } = require('../src/native/binding').getAutoProviderPolicy();
 const { decideApiErrorPolicy: evaluateApiError } = require('../src/chat/api-error-policy');
 
@@ -457,7 +457,7 @@ test('OpenCode runtime discovers Codex-pool candidates and reads their own quota
 });
 
 test('OpenCode and ZCode fail over across API dialects after a pool is saved and reloaded', () => {
-  const { validateProviderSelection, providerSelectionDto } = require('../src/providers/auto-provider-config');
+  const { validateProviderSelection, providerSelectionDto } = require('../src/native/binding').autoProviderConfig;
   for (const cli of ['opencode', 'zcode']) {
     const catalog = [
       { id: 'anthropic-route', appType: 'claude', apiFormat: 'anthropic', model: 'claude-model' },
@@ -1980,7 +1980,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
     });
     assert.equal(runtime.snapshot('wb-native').providerName, 'WorkBuddy');
     const { createCodebuddyAdapter } = require('../src/native/binding').cliAdapters;
-    const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+    const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
     const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
     const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
     const attempts = createProviderAttemptRuntime();
@@ -2020,7 +2020,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
 
 test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具仍阻止重放', () => {
   const { createQoderAdapter } = require('../src/native/binding').cliAdapters;
-  const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+  const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
   const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
   const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
   const adapter = createQoderAdapter({ cmd: 'qoder' });

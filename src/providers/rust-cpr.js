@@ -153,7 +153,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             else if (await resolver(args)) throw Object.assign(new Error('Rust CPR 需要出口地址接口，无法使用 Node 专属 Agent'), { code: 'RUST_CPR_EGRESS_UNSUPPORTED' });
           }
           // 复用宿主统一网络策略（含 macOS 系统代理和旁路规则），避免原生请求绕过它。
-          plan.proxyUrl ||= await require('../network/outbound').policy.proxyForUrl(plan.url) || undefined;
+          plan.proxyUrl ||= await require('../native/binding').outbound.policy.proxyForUrl(plan.url) || undefined;
           for (let attempt = 1; ; attempt++) {
             if (gone) return;
             // 修复后重新进入 Rust，统一重新计算模型和 Content-Length。

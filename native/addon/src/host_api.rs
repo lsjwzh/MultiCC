@@ -16,6 +16,20 @@ pub(crate) fn methods<'a>(
     }
     Ok(out)
 }
+/// Export methods whose defaulted parameters follow their JS `length`.
+pub(crate) fn defaulted_methods<'a>(
+    owner: L<'a>,
+    entries: &[(&'static str, usize, usize, Action)],
+) -> Result<L<'a>> {
+    let out = fields(owner, &[])?;
+    for &(name, length, count, run) in entries {
+        out.define_key(
+            text(owner, name)?,
+            function(owner, name, length, count, run)?,
+        )?;
+    }
+    Ok(out)
+}
 pub(crate) fn undef(p: L<'_>) -> Result<L<'_>> {
     p.from_value(&V::Undefined)
 }

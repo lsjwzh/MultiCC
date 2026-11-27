@@ -7,14 +7,14 @@ const { getNative, assignHostProperty, auxVerdictStaleness } = require('../nativ
 const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
 const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
 const forkConfiguration = (record, deps) => getNative().sessionForkConfiguration(record, deps);
-const { selectionKey } = require('../providers/auto-provider-config');
+const { selectionKey } = require('../native/binding').autoProviderConfig;
 const fs = require('fs');
 const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
-const { taskShortCode } = require('../native/task-domain');
+const { taskShortCode } = require('../native/binding').taskDomainHost;
 const { isGoalState } = require('../native/binding').classifyVocab;
-const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
+const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../native/binding').autoProviderConfig;
 const {
   mergeCliAccountsPatch,
   releaseCliAccountReferences,

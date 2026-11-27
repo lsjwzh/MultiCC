@@ -14,7 +14,7 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const { createStore } = require('../../src/state/store');
+const { createStore } = require('./frozen-batch10').frozen('state/store');
 const { atomicWriteText } = require('../../src/native/binding').runtimeSecurity;
 
 const APP_TYPES = new Set(['claude', 'codex']);

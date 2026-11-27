@@ -8,7 +8,7 @@ const {
   providerSelectionDto,
   selectionClis,
   validateProviderSelection,
-} = require('../src/providers/auto-provider-config');
+} = require('../src/native/binding').autoProviderConfig;
 
 function catalog() {
   const list = [
@@ -52,6 +52,34 @@ function selection(overrides = {}) {
     ...overrides,
   };
 }
+
+test('selection wire and catalog callbacks match the frozen provider registry contract', () => {
+  const baseline = require('./helpers/frozen-b10-network/auto-provider-config');
+  const current = require('../src/native/binding').autoProviderConfig;
+  const input = selection({ metadata: [undefined, -Infinity, 1n, '\ud800'] });
+  assert.equal(current.providerSelectionRequest(input), baseline.providerSelectionRequest(input));
+  function observe(api) {
+    const providers = catalog();
+    const seen = new Set();
+    const calls = [];
+    for (const name of Object.keys(providers)) {
+      const impl = providers[name];
+      providers[name] = function (...args) {
+        assert.equal(this, providers);
+        if (name === 'providerSupportsCli') assert.ok(seen.has(args[0]));
+        calls.push([name, ...args.map(v => typeof v === 'object' ? v.id : v)]);
+        const result = impl(...args);
+        if (name === 'listProviders') result.forEach(row => seen.add(row));
+        return result;
+      };
+    }
+    const result = api.validateProviderSelection(selection(), { cli: 'claude', providers });
+    assert.ok(result.ok);
+    assert.ok(calls.some(([name]) => name === 'providerSupportsCli'));
+    return { calls, result };
+  }
+  assert.deepEqual(observe(current), observe(baseline));
+});
 
 test('Auto Provider validates a same-protocol concrete candidate pool', () => {
   const result = validateProviderSelection(selection(), { cli: 'claude', providers: catalog() });

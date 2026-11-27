@@ -10,7 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { PIN_LIMIT, normalizePins, readStoredPinIds, createAirPinRuntime, createAirTodoRuntime } = require('../src/native/task-domain');
+const { PIN_LIMIT, normalizePins, readStoredPinIds, createAirPinRuntime, createAirTodoRuntime } = require('../src/native/binding').taskDomainHost;
 const { mountAir } = require('./helpers/air-host');
 
 function tempFile() {
@@ -164,7 +164,7 @@ test('Air pinned and todo lists match the frozen state machines', () => {
     const source = fs.readFileSync(path.join(__dirname, 'helpers', 'legacy-air-' + name + '.js'));
     assert.equal(createHash('sha1').update('blob ' + source.length + '\0').update(source).digest('hex'), hash);
     const mod = { exports: {} };
-    const local = createRequire(file);
+    const local = require('./helpers/frozen-batch10').from(file, createRequire(file));
     compileFunction(source.toString(), ['require', 'module'], { filename: file })(id => override[id] || local(id), mod);
     return mod.exports;
   }

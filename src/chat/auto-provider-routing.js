@@ -30,8 +30,8 @@
 // move: the Jev call itself, the single-flight promise map, and the host
 // wiring. Node is frozen — no decision may return here.
 
-const { jevTarget, validateProviderSelection } = require('../providers/auto-provider-config');
-const { createJevClient } = require('../providers/jev-client');
+const { jevTarget, validateProviderSelection } = require('../native/binding').autoProviderConfig;
+const { createJevClient } = require('../native/binding').jevClient;
 const secretAudit = require('../native/binding').secretAudit;
 const { getNative } = require('../native/binding');
 

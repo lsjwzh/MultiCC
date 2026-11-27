@@ -4,7 +4,7 @@
 // 公开路由、厂商 HTTP、查询编排、去重和失败回退由 Rust 前门执行。
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { isLocalRequest } = require('../native/binding').requestLocality;
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 const { providerLimitSnapshot, getNative } = require('../native/binding');
 const HOST_PATH = '/api/__host/provider-balance';
 const mounts = new WeakMap();

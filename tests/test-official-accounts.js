@@ -2,7 +2,7 @@
 
 // Stub the shared outbound transport: no test can accidentally use live credentials.
 let testFetch = async () => { throw new Error('unexpected outbound request'); };
-require('node:test').mock.method(require('../src/network/outbound'), 'outboundFetch',
+require('node:test').mock.method(require('../src/native/binding').outbound, 'outboundFetch',
   (...args) => testFetch(...args));
 
 const assert = require('node:assert/strict');

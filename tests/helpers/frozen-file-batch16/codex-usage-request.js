@@ -2,7 +2,7 @@
 
 const os = require('node:os');
 const path = require('node:path');
-const { outboundFetch } = require('../../../src/network/outbound');
+const { outboundFetch } = require('../frozen-b10-network/outbound');
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 

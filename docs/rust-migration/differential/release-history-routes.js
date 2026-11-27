@@ -133,7 +133,8 @@ function historyRepository(repo, dataDir) {
   }
   return R('src/native/binding').getNative().chatHistoryFileRepositoryCreate({
     root: R('src/paths').createPaths({ dataDir }).chatHistoryDir,
-    reportFailure: R('src/state/store').reportFailure,
+    reportFailure: (fs.existsSync(path.join(repo, 'src/state/store.js'))
+      ? R('src/state/store') : R('src/native/binding').stateStore).reportFailure,
   });
 }
 

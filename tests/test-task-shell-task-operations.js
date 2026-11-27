@@ -22,6 +22,7 @@ function setup(extra = {}) {
   const store = fakeStore();
   let revision = 'rev-1';
   const operations = createTaskOperations({ store, revisionOf: () => revision,
+    readCurrentTurn: extra.readCurrentTurn,
     isTurnBusy: extra.isTurnBusy || (() => false),
     resolveTarget: extra.resolveTarget || (async () => ({ id: 'tsk_b' })),
     taskTitle: id => (id === 'tsk_b' ? 'Beta' : 'Alpha') });
@@ -60,6 +61,24 @@ test('preview describes the change without writing anything', () => {
   assert.equal(preview.scopeRevision, 'rev-1');
   assert.equal(store.list('turn-attr').length, 0);
   assert.equal(store.list('task-op').length, 0);
+});
+
+test('an ordered turn read is shared across a selection and precedes the revision check', async () => {
+  let release;
+  const read = new Promise(resolve => { release = resolve; });
+  const calls = [];
+  const { operations, scope, turns, target, bump } = setup({
+    readCurrentTurn: id => { calls.push(id); return read; },
+    isTurnBusy: () => assert.fail('synchronous read bypassed the session owner'),
+  });
+  const selection = [...turns, { sessionId: 's1', turnId: 't2' }];
+  const preview = operations.preview({ scope, turns: selection, target });
+  const apply = operations.apply({ scope, turns: selection, target, clientMsgId: 'm1', expectedRevision: 'rev-1' });
+  bump();
+  release('t2');
+  assert.deepEqual((await preview).blocked, [{ ...selection[1], reason: 'turn_busy' }]);
+  await assert.rejects(apply, { code: 'scope_revision_conflict' });
+  assert.deepEqual(calls, ['s1', 's1']);
 });
 
 test('apply records an audited operation and the overlay drives every projection', async () => {

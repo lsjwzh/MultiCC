@@ -2,7 +2,7 @@
 
 // Stub the shared outbound transport: no test can accidentally use live credentials.
 let testFetch = async () => { throw new Error('unexpected outbound request'); };
-require('node:test').mock.method(require('../src/network/outbound'), 'outboundFetch',
+require('node:test').mock.method(require('../src/native/binding').outbound, 'outboundFetch',
   (...args) => testFetch(...args));
 // Tests for the SQLite-backed provider-limit cache and its recorder
 // (src/quota/provider-limit-cache.js + src/quota/limit-cache-recorder.js).
@@ -31,7 +31,7 @@ const {
   createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS,
 } = require('../src/native/binding').limitRecorder;
 const { compactBarText } = require('../src/native/binding').getQuotaBarView();
-const { writeJsonAtomic } = require('../src/state/store');
+const { writeJsonAtomic } = require('../src/native/binding').stateStore;
 
 let pass = 0, fail = 0;
 function ok(cond, name) {

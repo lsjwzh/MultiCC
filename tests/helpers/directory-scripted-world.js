@@ -115,7 +115,7 @@ function seed(dataRoot) {
   // The layout document is written through the same state store the runtime
   // uses, so the seed is a real envelope (with stale ids and an unknown key the
   // normalizer must drop).
-  const stateStore = require('../../src/state/store');
+  const stateStore = require('../../src/native/binding').stateStore;
   stateStore.createStore({
     file: path.join(dataRoot, 'ui-layout.json'), kind: 'ui-layout', schemaVersion: 1, legacyIsArray: false,
   }).save({

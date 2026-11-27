@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const stateStore = require('../../../src/state/store');
+const stateStore = require('../frozen-batch10').frozen('state/store');
 const {
   RustRoleTokenTracker, roleLedgerUpdate, emptyRoleTokenBucket: emptyBucket,
   roleBucketHasUsage, accumulateRoleBucket,

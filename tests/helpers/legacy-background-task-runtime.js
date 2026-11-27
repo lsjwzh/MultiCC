@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { redactProviderRouteCapability } = require('../../src/observability');
+const { redactProviderRouteCapability } = require('./frozen-batch10').frozen('observability');
 const { createNativeBackgroundTasks } = require('./legacy-native-background-tasks');
 const { createTaskMetadata } = require('./legacy-background-task-metadata');
 

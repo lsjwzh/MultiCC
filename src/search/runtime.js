@@ -6,7 +6,7 @@ const { createSearchIndex, MAX_LIMIT } = require('./index-store');
 const { createMessageCorpus, MESSAGE_SCOPE } = require('./message-corpus');
 const { createSliceRunner, DEFAULT_SLICE_MS, DEFAULT_DUTY } = require('./slice-runner');
 const { getNative, rerankSearchHits } = require('../native/binding');
-const { reportFailure } = require('../state/store');
+const { reportFailure } = require('../native/binding').stateStore;
 
 // The message index as a running service, rather than a CLI over a file.
 //

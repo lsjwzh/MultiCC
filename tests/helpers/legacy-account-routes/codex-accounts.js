@@ -26,7 +26,7 @@
 //   POST   /api/codex/accounts/:id/login-callback finish from a pasted address/code
 //   DELETE /api/codex/accounts/:id                remove an inactive credential dir
 
-const { outboundFetch } = require('../../../src/network/outbound');
+const { outboundFetch } = require('../frozen-b10-network/outbound');
 const { officialAccountIdFromProvider } = require('../../../src/official-accounts');
 const { accountProviderId } = require('../frozen-catalog-inputs/official-account-ids');
 const { createAccountEgressFetch, parseEgressBinding } = require('../../../src/network/egress-fetch');

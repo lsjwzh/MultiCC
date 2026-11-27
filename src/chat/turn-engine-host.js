@@ -28,14 +28,14 @@ const {
   sanitizeMessage: sanitizeApiErrorMessage,
 } = require('../native/binding').chatApi;
 const { createProviderAttemptRuntime, markHostErrorEnvelope, providerAttemptFields,
-  tagProviderAttemptEvent } = require('./provider-attempt-runtime');
+  tagProviderAttemptEvent } = require('../native/binding').providerAttemptRuntime;
 const { createProviderInvocationFactory } = require('../native/binding').providerInvocation;
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { createAutoRouteNotes } = require('./auto-route-notes');
 const { deliverAfterPendingMemory, createQueuedTurnPreparation } = require('./admission-progress');
 const { createAutoProviderHandoff } = require('../native/binding');
-const { redactProviderRouteCapability } = require('../observability');
-const { taskIdForShortCode } = require('../native/task-domain');
+const { redactProviderRouteCapability } = require('../native/binding').observability;
+const { taskIdForShortCode } = require('../native/binding').taskDomainHost;
 const { taskStateSeed } = require('../native/binding');
 const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
 const { buildSubagentProviderHint } = require('../native/binding').getHostPrompts();
@@ -63,7 +63,7 @@ const { deriveOpenTasks } = require('../native/binding').getTurnEventReplay();
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context');
-const { providerSelectionDto } = require('../providers/auto-provider-config');
+const { providerSelectionDto } = require('../native/binding').autoProviderConfig;
 const { isResident, isResidentSession } = require('../native/binding').cliCapability;
 
 const { chatRecoverDispatchFromHistory: recoverDispatchFromHistory,

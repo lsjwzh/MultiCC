@@ -2,7 +2,7 @@
 // Supports multiple providers: Edge TTS, OpenAI TTS, Volcano TTS
 
 const WebSocket = require('ws');
-const { outboundAgent, getChildProxyEnv, policy: outboundProxyPolicy } = require('../network/outbound');
+const { outboundAgent, getChildProxyEnv, policy: outboundProxyPolicy } = require('../native/binding').outbound;
 const { spawn } = require('child_process');
 const https = require('https');
 

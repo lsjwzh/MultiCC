@@ -6,7 +6,7 @@ const { createTaskShellRuntime } = require('../src/task-shell/runtime');
 const { createShellWorkspaceHost } = require('../src/task-shell/workspace');
 const { createTaskFirstMigration } = require('../src/task-shell/task-first');
 const { openBoardStore } = require('../src/task-board/board-store');
-const { taskDomainAsync } = require('../src/native/task-domain');
+const { taskDomainAsync } = require('../src/native/binding').taskDomainHost;
 
 test('role sessions become task entries without changing native handles, pending input, history or dirty files', async t => {
   let indexed = 0;

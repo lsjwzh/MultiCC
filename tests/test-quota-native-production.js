@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createProviderQuotaRuntime } = require('../src/native/binding').providerQuota;
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createNativeProviderLimitCache } = require('../src/native/binding').providerLimitCache;
 const { createLimitRecorder } = require('../src/native/binding').limitRecorder;
 

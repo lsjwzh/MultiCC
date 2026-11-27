@@ -23,7 +23,7 @@ function takeoverCommand(owner, command) {
   return result === null ? command : result;
 }
 const homebrewTakeover = { homebrewOwnerOf, takeoverCommand, isNpmGlobalInstall };
-const { getChildProxyEnv } = require('../network/outbound');
+const { getChildProxyEnv } = require('../native/binding').outbound;
 const native = getNative();
 const OFFICIAL_INSTALL_SPECS = Object.freeze(Object.fromEntries(
   Object.entries(native.cliToolsOfficialSpecs(capability.updateSpecs()))

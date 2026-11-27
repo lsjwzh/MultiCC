@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 
 // Claude official-account management routes (multi-account OAuth).
 //

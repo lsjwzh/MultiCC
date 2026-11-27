@@ -49,7 +49,7 @@ function createDeveloperToolsRoutes({
   log = console,
   spawnProcess = spawn,
   portableGit = defaultPortableGit,
-  childEnv = () => require('../network/outbound').getChildProxyEnv(process.env),
+  childEnv = () => require('../frozen-b10-network/outbound').getChildProxyEnv(process.env),
   refreshEnv = windowsEnv.refresh,
   findGit = () => findExecutableOnPath('git', { isWindows: platform === 'win32' }),
 } = {}) {

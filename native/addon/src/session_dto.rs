@@ -376,7 +376,7 @@ pub(crate) fn assert_safe<'a>(state: L<'a>, value: L<'a>, location: L<'a>) -> Re
     })?;
     Ok(value)
 }
-fn selection_dto(wire: L<'_>) -> Result<L<'_>> {
+pub(crate) fn selection_dto(wire: L<'_>) -> Result<L<'_>> {
     let input = wire.coerce_string()?;
     let output = crate::auto_provider_config::provider_selection_dto(input.to_string_lossy())?;
     let source = call(

@@ -2,7 +2,7 @@
 
 // 兼容宿主调用方的刷新接口。业务查询统一进入 Rust 前门，Node 不再注册余额
 // 或借道 quota 公开路由，也不再保留另一套厂商请求/缓存回退/并发去重实现。
-const { outboundFetch } = require('../../../src/network/outbound');
+const { outboundFetch } = require('../frozen-b10-network/outbound');
 const { mountProviderBalanceHost } = require('../../../src/routes/provider-balance-host');
 
 function createProviderBalanceRuntime(options = {}) {

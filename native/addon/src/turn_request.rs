@@ -1,3 +1,5 @@
+mod public;
+
 use crate::route_response::{call, fields, text, L, V};
 use multicc_core::turn_request;
 use napi::bindgen_prelude::Unknown;
@@ -31,7 +33,7 @@ fn request<'a>(op: &str, input: L<'a>) -> Result<L<'a>> {
     }?))
 }
 
-fn deep_freeze(value: L<'_>) -> Result<L<'_>> {
+pub(crate) fn deep_freeze(value: L<'_>) -> Result<L<'_>> {
     if !value.truthy()? || value.kind()? != sys::ValueType::napi_object {
         return Ok(value);
     }

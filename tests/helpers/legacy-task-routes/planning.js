@@ -4,7 +4,7 @@
 // logic is unchanged. Mounted by tests/helpers/legacy-task-routes.js.
 
 const { planning } = require('../load-frozen-task-board');
-const { cloneBoard } = require('../../../src/native/task-domain');
+const { cloneBoard } = require('../frozen-batch10').frozen('native/task-domain');
 
 function responseStatus(error) {
   if (error === 'task_not_found') return 404;

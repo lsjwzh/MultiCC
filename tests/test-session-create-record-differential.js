@@ -51,7 +51,7 @@ function normalize(value) {
 }
 const dir = { id: 'd1', path: '/repo', baseBranch: 'main' };
 test('正式创建入口从原生记录表分配 ID，保留旧序号并处理跨目录重名', async () => {
-  const { createSessionRecords } = require('../src/session/records');
+  const { createSessionRecords } = require('../src/native/binding').sessionRecordsHost;
   const { createStateOwner } = require('../src/native/binding').stateOwner;
   const records = createSessionRecords(null, createStateOwner());
   const item = world(candidate, { productionPorts: true, records });

@@ -9,7 +9,7 @@ const {
   markHostErrorEnvelope,
   scopeHostProviderEvent,
   tagProviderAttemptEvent,
-} = require('../src/chat/provider-attempt-runtime');
+} = require('../src/native/binding').providerAttemptRuntime;
 const { createUsageObserved } = require('../src/usage-observed');
 const { canPersistAdapterCompletion } = require('../src/native/binding').adapterCompletion;
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
@@ -1796,7 +1796,7 @@ test('native replay fence preserves lazy getters, exceptions and array callbacks
 // Frozen Node identity and capability rules; test-only reference.
 const legacyAttemptIdentity = (() => {
 const crypto = require('node:crypto');
-const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+const { ProviderAttemptError } = require('../src/native/binding').providerAttemptRuntime;
 const clean = value => value == null ? '' : String(value).trim();
 function required(value, label) {
   const text = clean(value);
@@ -1887,7 +1887,7 @@ return { required, positiveInteger, stallTimeoutBudget, createProviderRevision, 
 
 test('Rust attempt identity validation preserves coercions, bounds and public error classes', () => {
   const native = require('../src/native/binding').getNative();
-  const { ProviderAttemptError, providerAttemptFields } = require('../src/chat/provider-attempt-runtime');
+  const { ProviderAttemptError, providerAttemptFields } = require('../src/native/binding').providerAttemptRuntime;
   const values = [undefined, null, false, true, '', ' ', '\n', '\u0000', '\u007f', ' \ufeffvalid ', '\ud800', '😀'.repeat(128),
     '😀'.repeat(129), 'a'.repeat(257), 0, -0, NaN, Infinity, 1, 1.5, -1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1,
     1n, 9007199254740993n, Symbol('id'), [], [' a '], {}, { toString() { return 'custom'; } }, { valueOf() { return 7; } }];
@@ -1993,7 +1993,7 @@ function legacyAttemptTransition(previous, previousFence, { turnId, continuation
 
 test('Rust attempt transition preserves replay, finality, continuation and sequence priorities', () => {
   const native = require('../src/native/binding').getNative();
-  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const { ProviderAttemptError } = require('../src/native/binding').providerAttemptRuntime;
   for (let i = 0; i < 800; i++) {
     const facts = { turnId: 'turn', continuation: i % 2 === 0, providerId: 'provider', model: 'model', protocol: 'protocol', attemptNo: i % 4 + 1 };
     const previous = i % 19 ? { turnId: i % 7 ? 'turn' : 'other', providerId: i % 11 ? 'provider' : 'other',
@@ -2011,7 +2011,7 @@ test('Rust attempt transition preserves replay, finality, continuation and seque
 
 test('Rust attempt transition keeps lazy previous-record reads and lifecycle reentry', () => {
   const native = require('../src/native/binding').getNative();
-  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const { ProviderAttemptError } = require('../src/native/binding').providerAttemptRuntime;
   const sentinel = new Error('previous record getter');
   for (const reenter of [false, true]) {
     for (const throwAt of [null, 'turnId', 'lifecycle', 'providerId', 'attemptNo']) {
@@ -2263,7 +2263,7 @@ test('Rust proxy authorization preserves callback exceptions, lazy getters and r
 function compareProducerTrace(steps, options = {}) {
   const native = require('../src/native/binding').getNative();
   const { legacyProducerOperations } = require('./helpers/legacy-provider-producers');
-  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const { ProviderAttemptError } = require('../src/native/binding').providerAttemptRuntime;
   const attempt = Object.freeze({ turnId: 'turn', providerId: 'provider-a', routeAttemptId: 'attempt' });
   function execute(useNative) {
     const trace = [], results = [];
@@ -2407,7 +2407,7 @@ function describeOrdered(value, seen = new Set()) {
 function compareOutcomeTrace(steps, options = {}) {
   const native = require('../src/native/binding').getNative();
   const { legacyOutcomeOperations } = require('./helpers/legacy-provider-outcome');
-  const { ProviderAttemptError } = require('../src/chat/provider-attempt-runtime');
+  const { ProviderAttemptError } = require('../src/native/binding').providerAttemptRuntime;
   const attempt = Object.freeze({ sessionId: 'session', turnId: 'turn', runtimeEpoch: 'epoch',
     decisionId: 'decision', routeAttemptId: 'attempt', routeGeneration: 3, attemptNo: 2,
     providerId: 'provider-a', providerRevision: 'rev-a' });

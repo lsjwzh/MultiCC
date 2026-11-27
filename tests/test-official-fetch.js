@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createOfficialFetch, parseMacProxy } = require('../src/network/outbound').official;
+const { createOfficialFetch, parseMacProxy } = require('../src/native/binding').outbound.official;
 
 test('macOS system HTTP proxies are parsed only when explicitly enabled', () => {
   assert.deepEqual(parseMacProxy('<dictionary> {\n HTTPSProxy : 127.0.0.1\n HTTPSPort : 7897\n HTTPSEnable : 1\n HTTPEnable : 0\n HTTPProxy : ignored\n HTTPPort : 8\n}'), { httpProxy: '', httpsProxy: 'http://127.0.0.1:7897' });

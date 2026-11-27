@@ -20,7 +20,7 @@
 //   server → { type:'ready' | 'partial' | 'final' | 'done' | 'error', ... }
 
 const WebSocket = require('ws');
-const { outboundAgent } = require('../../src/network/outbound');
+const { outboundAgent } = require('../../src/native/binding').outbound;
 const zlib = require('zlib');
 // In-process local ASR (SenseVoice via sherpa-onnx) — no upstream socket at all.
 const asrLocal = require('../../src/voice/asr-local');

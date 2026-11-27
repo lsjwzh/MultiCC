@@ -29,7 +29,7 @@ pub const REQUEST_KIND: &str = "chat-turn-request.v1";
 const MAX_ID_LENGTH: usize = 128;
 const ROUTE_TEXT_MAX: usize = 256;
 
-const FORBIDDEN_FIELDS: [&str; 8] = [
+pub const FORBIDDEN_FIELDS: [&str; 8] = [
     "cliSessionId",
     "nativeSessionId",
     "sessionSecret",

@@ -6,7 +6,7 @@ const http = require('node:http');
 const net = require('node:net');
 const { once } = require('node:events');
 const { WebSocket, WebSocketServer } = require('ws');
-const { createOutbound } = require('../src/network/outbound');
+const { createOutbound } = require('../src/native/binding').outbound;
 const { createProxyPolicy, bypassProxy, parseMacSystemProxy } = require('../src/native/binding').proxyPolicy;
 const { installGlobalProxy } = require('../src/native/binding').globalProxy;
 
@@ -219,7 +219,7 @@ test('HTTPS 和加密 WebSocket 使用代理隧道并正常校验证书', { time
     await Promise.all([origin, proxy].map(server => new Promise(resolve => server.close(resolve))));
   });
   const code = `
-    const network = require(${JSON.stringify(require.resolve('../src/network/outbound'))});
+    const network = require(${JSON.stringify(require.resolve('../src/native/binding'))}).outbound;
     const { installGlobalProxy } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).globalProxy;
     const WebSocket = require(${JSON.stringify(require.resolve('ws'))});
     const https = require('node:https');
@@ -265,4 +265,34 @@ require('node:test')('67f54869 differential: network/proxy-policy', async () => 
     }
     return rows;
   }, require('../src/native/binding').proxyPolicy);
+});
+
+test('synchronous request failures annotate the original reason before returning', async () => {
+  const native = require('../src/native/binding').outbound;
+  const failure = new Error('synchronous transport error');
+  const client = native.createOutbound({ fetch() { throw failure; } });
+  try {
+    const aborted = new Error('already cancelled');
+    const discovery = client.outboundFetch('https://unused.invalid', { signal: AbortSignal.abort(aborted) });
+    assert.equal(aborted.multiccProxyMode, 'proxy-discovery');
+    await assert.rejects(discovery, error => error === aborted);
+    const direct = client.outboundFetch('http://127.0.0.1/');
+    assert.equal(failure.multiccProxyMode, 'direct');
+    await assert.rejects(direct, error => error === failure);
+  } finally { await client.close(); }
+});
+
+test('bootstrap tools can import the SDK and close its agents before a platform addon exists', () => {
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const child = spawnSync(process.execPath, ['-e', `
+    const { outbound } = require('./src/native/binding');
+    const assert = require('node:assert/strict');
+    const client = outbound.createOutbound({ fetch() {} });
+    assert.ok(client.outboundDispatcher instanceof require('undici').Dispatcher);
+    assert.equal(client.outboundFetch.close, client.close);
+    Promise.all([client.close(), outbound.close()]).catch(error => { throw error; });
+  `], { cwd: path.join(__dirname, '..'), env: { ...process.env,
+    MULTICC_RUST_ADDON: path.join(__dirname, 'fixture-missing-outbound.node') }, encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr);
 });

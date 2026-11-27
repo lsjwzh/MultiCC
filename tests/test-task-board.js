@@ -1408,7 +1408,7 @@ test('看板视图与冻结实现逐项核对 DTO、会话采集顺序与失败�
   assert.equal(createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex'),
     '002c4a04b0d1c8aad249fdb7a17aaccdbbbf1db4');
   const original = { exports: {} };
-  const load = createRequire(file);
+  const load = require('./helpers/frozen-batch10').from(file, createRequire(file));
   const { bridge, planning: referencePlanning } = require('./helpers/load-frozen-task-board');
   const overrides = { './native-bridge': bridge, './planning': referencePlanning };
   compileFunction(bytes.toString(), ['module', 'require'], { filename: file })(original,
