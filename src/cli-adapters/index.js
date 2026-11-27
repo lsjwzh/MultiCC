@@ -44,6 +44,7 @@ function createCliAdapters(deps) {
       cliEffortLevel: deps.cliEffortLevel,
       normalizeEffort: deps.normalizeEffort,
       debugLogClaudeInvoke: deps.debugLogClaudeInvoke,
+      logClaudeInvocations: deps.logClaudeInvocations,
       routerMcpNode,
       routerMcpScript,
     }),

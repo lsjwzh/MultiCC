@@ -456,27 +456,6 @@ const CODEX_ARGS = process.env.CODEX_ARGS ? process.env.CODEX_ARGS.split(' ') : 
 // (2) build chat-mode spawn args, (3) parse one line of streamed JSON output.
 // Chat-mode parse output schema: { kind: 'text'|'tool'|'tool_result'|'result'|'system'|'thread', ... }
 
-// Debug helper: dump the full `claude -p` argv (long prompt / system-prompt
-// values truncated) every time we invoke the CLI, so model-routing / provider
-// issues (e.g. a relay 10404 on a wrong model id) can be traced in pm2 logs.
-// Grep `[multicc/chat] claude -p`.
-function debugLogClaudeInvoke(session, args) {
-  try {
-    const sid = (session && (session.id || session.cliSessionId)) || '-';
-    const provider = (session && session.provider) || '';
-    const redacted = (args || []).map((a, i) => {
-      if (typeof a !== 'string') return a;
-      const prev = args[i - 1];
-      // Truncate the system-prompt value and any over-long literal (the prompt).
-      if ((prev === '--append-system-prompt' || a.length > 160)) {
-        return a.length > 160 ? a.slice(0, 160) + `…(+${a.length - 160} chars)` : a;
-      }
-      return a;
-    });
-    console.log(`[multicc/chat] claude -p invoke [${sid}] provider=${provider || '<default>'} argv: ${redacted.join(' ')}`);
-  } catch (_) {}
-}
-
 const { terminalLoginCommand } = require('./src/native/binding').getVendorLogin();
 const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapters({
   isWindows,
@@ -493,7 +472,7 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
   codexReasoningConfigArg,
   codexModelConfigArg,
   codexReasoningLevel,
-  debugLogClaudeInvoke,
+  logClaudeInvocations: true,
   isCodexResponseCompletedDisconnect,
   isCodexTransportDisconnect,
 });

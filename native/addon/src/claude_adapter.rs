@@ -43,6 +43,56 @@ fn push(array: L<'_>, values: &[L<'_>]) -> Result<()> {
     Ok(())
 }
 
+/// The array and metadata are owned by this invocation. Keep values live until
+/// join so object coercion and exceptions happen at the same point as in JS.
+fn log_invocation(meta: L<'_>, args: L<'_>) -> Result<()> {
+    const LIMIT: u32 = 160;
+    let session = or(meta.get(c"id")?, || meta.get(c"cliSessionId"))?;
+    let session = or(session, || text(meta, "-"))?;
+    let provider = or(meta.get(c"provider")?, || text(meta, "<default>"))?;
+    let displayed = args.from_value(&V::Array(vec![]))?;
+    for index in 0..args.get(c"length")?.number()? as u32 {
+        let mut value = args.element(index)?;
+        if value.kind()? == sys::ValueType::napi_string {
+            let length = value.get(c"length")?.number()? as u32;
+            if length > LIMIT {
+                let prefix = value.get(c"slice")?.call(
+                    value,
+                    &[
+                        value.from_value(&V::Number(0.0))?,
+                        value.from_value(&V::Number(f64::from(LIMIT)))?,
+                    ],
+                )?;
+                value = concat(
+                    args,
+                    &[
+                        prefix,
+                        text(args, &format!("…(+{} chars)", length - LIMIT))?,
+                    ],
+                )?;
+            }
+        }
+        displayed.set_element(index, value)?;
+    }
+    let console = args.global()?.get(c"console")?;
+    let log = console.get(c"log")?;
+    let prefix = concat(
+        args,
+        &[
+            text(args, "[multicc/chat] claude -p invoke [")?,
+            session,
+            text(args, "] provider=")?,
+            provider,
+            text(args, " argv: ")?,
+        ],
+    )?;
+    let argv = displayed
+        .get(c"join")?
+        .call(displayed, &[text(args, " ")?])?;
+    log.call(console, &[concat(args, &[prefix, argv])?])?;
+    Ok(())
+}
+
 fn supports_ultracode(model: L<'_>) -> Result<bool> {
     let model = model
         .string()?
@@ -70,6 +120,7 @@ pub fn claude_adapter_ports(
         c"cliEffortLevel",
         c"normalizeEffort",
         c"debugLogClaudeInvoke",
+        c"logClaudeInvocations",
         c"routerMcpNode",
         c"routerMcpScript",
     ] {
@@ -250,7 +301,8 @@ pub fn claude_adapter_invocation(
         || so.get(c"rawEffort")?.is_string("ultracode")?)
         && supports_ultracode(model)?;
     let debug = ports.get(c"debugLogClaudeInvoke")?;
-    if !debug.nullish()? {
+    let custom_debug = !debug.nullish()?;
+    if custom_debug || ports.get(c"logClaudeInvocations")?.is_true()? {
         let meta = object(
             input,
             &[
@@ -264,7 +316,11 @@ pub fn claude_adapter_invocation(
             logged,
             &[crate::message_composer::render_prompt(&env, input)?],
         )?;
-        debug.call_plain(&[meta, logged])?;
+        if custom_debug {
+            debug.call_plain(&[meta, logged])?;
+        } else {
+            input.catch(|| log_invocation(meta, logged))?;
+        }
     }
     let output = object(
         input,
