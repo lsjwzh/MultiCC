@@ -332,9 +332,11 @@ async function rebindTask(task, { force = false, reason = 'manual' } = {}) {
 async function migrateTasks() {
   if (!deps?.createTask || !deps?.getTask) return { migrated: 0, errors: [] };
   let migrated = 0;
+  let dirty = false;
   const errors = [];
   for (const task of tasks) {
     if (task.kind === 'script') continue; // 脚本任务没有可迁移的 Air 绑定
+    const prev = [task.taskId, task.taskSessionId, task.taskBindingVersion, task.taskBindingError, task.taskBindingBrokenAt, task.taskBindingNotifiedFor];
     try {
       const before = task.taskId;
       await ensureTask(task);
@@ -343,9 +345,20 @@ async function migrateTasks() {
       markBindingBroken(task, error);
       errors.push({ id: task.id, code: error.code || 'task_binding_failed', error: task.taskBindingError });
     }
+    const next = [task.taskId, task.taskSessionId, task.taskBindingVersion, task.taskBindingError, task.taskBindingBrokenAt, task.taskBindingNotifiedFor];
+    if (next.some((value, idx) => value !== prev[idx])) dirty = true;
   }
-  save();
+  if (dirty) save();
   return { migrated, errors };
+}
+
+// 读接口只需确保启动迁移已完成，且若有尚未绑定的历史规则再补迁；已绑定规则不再
+// 在每次 GET 时串行重跑全量校验与写盘。
+async function ensureMigrated() {
+  if (migration) await migration;
+  if (tasks.some(task => task.kind !== 'script' && (!task.taskId || task.taskBindingVersion !== 1))) {
+    await migrateTasks();
+  }
 }
 
 async function fireTask(task, reason, deliveryKey = null) {
@@ -457,6 +470,7 @@ function toView(task) {
   const dir = deps && deps.directories.get(task.dirId);
   const summary = task.taskId && deps?.taskSummary ? deps.taskSummary(task.taskId) : null;
   const isScript = task.kind === 'script';
+  const bindingError = isScript ? '' : (task.taskBindingError || (summary?.readOnly ? '固定任务已归档或只读' : ''));
   return {
     id: task.id, name: task.name, dirId: task.dirId,
     dirName: dir ? dir.name : '(已删除)',
@@ -478,8 +492,8 @@ function toView(task) {
     taskTitle: isScript ? null : (summary?.title || task.name),
     taskStatus: isScript ? null : (summary?.status || (task.taskId ? 'unknown' : 'binding')),
     taskReadOnly: summary?.readOnly === true,
-    taskBindingError: isScript ? '' : (task.taskBindingError || ''),
-    taskBindingBroken: !isScript && !!task.taskBindingError,
+    taskBindingError: bindingError,
+    taskBindingBroken: !isScript && !!bindingError,
     taskBindingBrokenAt: task.taskBindingBrokenAt || null,
     taskRebindHistory: Array.isArray(task.taskRebindHistory) ? task.taskRebindHistory : [],
     taskUrl: task.taskId ? `/air?task=${encodeURIComponent(task.taskId)}&dir=${encodeURIComponent(task.dirId)}` : null,
@@ -532,7 +546,7 @@ function validate(t) {
 // ── HTTP routes ──
 function mount(app) {
   app.get('/api/cron', (req, res, next) => Promise.resolve().then(async () => {
-    await migrateTasks();
+    await ensureMigrated();
     res.json(tasks.map(toView));
   }).catch(next));
 
@@ -624,7 +638,7 @@ function mount(app) {
   // 让订阅触发的任务在日历上可见; 没有下次(暂停/一次性已完)时 cron 是永不匹配的
   // 2 月 31, 直接跳过, 别白烧 cronNext 的一年扫描。
   app.get('/api/cron/calendar', (req, res, next) => Promise.resolve().then(async () => {
-    await migrateTasks();
+    await ensureMigrated();
     const match = /^(\d{4})-(\d{2})$/.exec(String(req.query.month || ''));
     if (!match) return res.status(400).json({ error: 'month 应为 YYYY-MM' });
     const year = Number(match[1]);

@@ -37,6 +37,7 @@
 
   let ctx = {};
   let rules = [];
+  let loaded = false;
   let loading = false;
 
   const notice = text => { if (typeof ctx.notice === 'function') ctx.notice(text); };
@@ -189,11 +190,19 @@
   async function load() {
     if (loading) return;
     loading = true;
+    const list = $('schedule-list');
+    if (!loaded && list && !list.children.length) {
+      const placeholder = node('div', null, 'schedule-empty');
+      placeholder.append(node('strong', t('loading')));
+      list.replaceChildren(placeholder);
+    }
     try {
       const value = await request('/api/cron');
       rules = Array.isArray(value) ? value : [];
+      loaded = true;
       render();
     } catch (error) {
+      if (!loaded && list) list.replaceChildren();
       if (ctx.mode && ctx.mode() === 'schedules') notice(t('airScheduleLoadFailed', { msg: errorText(error) }));
     } finally { loading = false; }
   }
