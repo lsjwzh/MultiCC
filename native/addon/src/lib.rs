@@ -79,6 +79,7 @@ pub mod handoff_zip;
 mod fcm_transport;
 mod history_host;
 mod host_battery;
+mod macos_agent_build;
 mod battery_guard;
 mod ios_distribution;
 mod runtime_homes;
