@@ -222,6 +222,7 @@ pub fn repo_actor_api(env: Env, host: Unknown<'_>) -> Result<sys::napi_value> {
     )?;
     public_methods(&env, proto)?;
     h.set(c"originalRunGit", proto.get(c"runGit")?)?;
+    h.set(c"originalQueueDepth", proto.get(c"queueDepth")?)?;
     h.set(c"originalRun", proto.get(c"run")?)?;
     Ok(fields(
         h,
@@ -242,4 +243,29 @@ pub fn repo_actor_api(env: Env, host: Unknown<'_>) -> Result<sys::napi_value> {
         ],
     )?
     .raw())
+}
+
+/// Callers outside the actor receive bound operations on the same repository
+/// queues. An overridden method must see the actor itself as its receiver.
+#[napi]
+pub fn default_git_queue(env: Env, actor: Unknown<'_>) -> Result<sys::napi_value> {
+    let actor = L::new(&env, actor);
+    let run = function(actor, "runGit", 2, 3, |actor, a| {
+        let opts = default_object(a[2])?;
+        let method = actor.get(c"runGit")?;
+        if method.equals(ports(actor)?.get(c"originalRunGit")?)? {
+            run_git(actor, a[0], a[1], opts)
+        } else {
+            method.call(actor, &[a[0], a[1], opts])
+        }
+    })?;
+    let queue_depth = function(actor, "queueDepth", 1, 1, |actor, a| {
+        let method = actor.get(c"queueDepth")?;
+        if method.equals(ports(actor)?.get(c"originalQueueDepth")?)? {
+            depth(actor, a[0])
+        } else {
+            method.call(actor, &[a[0]])
+        }
+    })?;
+    Ok(fields(actor, &[("runGit", run), ("queueDepth", queue_depth)])?.raw())
 }

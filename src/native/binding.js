@@ -859,6 +859,8 @@ exposeHostApi('repoActor', () => {
   });
 });
 
+exposeHostApi('gitQueue', () => getNative().defaultGitQueue(module.exports.repoActor.defaultRepoActor));
+
 exposeHostApi('gitService', () => getNative().gitServiceApi(module.exports.repoActor.defaultRepoActor, process.execPath,
   callback => require('node:async_hooks').AsyncResource.bind(callback, 'MultiCCGitOperation')));
 

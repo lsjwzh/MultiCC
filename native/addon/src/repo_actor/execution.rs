@@ -147,6 +147,11 @@ fn invoke_task(f: L<'_>) -> Result<L<'_>> {
         f.set(c"leased", flag(f, true)?)?;
     }
     progress(f, text(f, "started")?, null(f)?)?;
+    let task = f.get(c"task")?;
+    if f.get(c"internalGit")?.is_true()? {
+        let request = git(f, task.get(c"cwd")?, task.get(c"args")?, task.get(c"opts")?)?;
+        return wrap_git_output(request);
+    }
     let ctx = fields(
         f,
         &[
@@ -171,7 +176,7 @@ fn invoke_task(f: L<'_>) -> Result<L<'_>> {
         c"defineProperty",
         &[ctx, frame_key(ctx)?, fields(f, &[("value", f)])?],
     )?;
-    f.get(c"task")?.call_plain(&[ctx])
+    task.call_plain(&[ctx])
 }
 
 fn start(f: L<'_>) -> Result<L<'_>> {
@@ -301,7 +306,26 @@ pub(crate) fn run<'e>(
     task: L<'e>,
     options: L<'e>,
 ) -> Result<L<'e>> {
+    enqueue(actor, input, kind, RepoTask::Callback(task), options)
+}
+
+enum RepoTask<'e> {
+    Callback(L<'e>),
+    Git(L<'e>),
+}
+
+fn enqueue<'e>(
+    actor: L<'e>,
+    input: L<'e>,
+    kind: L<'e>,
+    task: RepoTask<'e>,
+    options: L<'e>,
+) -> Result<L<'e>> {
     async_result(actor, || {
+        let (task, internal_git) = match task {
+            RepoTask::Callback(callback) => (callback, false),
+            RepoTask::Git(command) => (command, true),
+        };
         let h = ports(actor)?;
         let options = default_object(options)?;
         let mut key = options.get(c"repoKey")?;
@@ -341,6 +365,7 @@ pub(crate) fn run<'e>(
                 ("repoKey", key),
                 ("options", options),
                 ("task", task),
+                ("internalGit", flag(actor, internal_git)?),
                 ("op", op),
                 ("queuedDepth", depth),
                 ("leased", flag(actor, false)?),
@@ -360,38 +385,33 @@ pub(crate) fn run<'e>(
     })
 }
 
+fn wrap_git_output(request: L<'_>) -> Result<L<'_>> {
+    call(
+        request,
+        c"then",
+        &[function(request, "wrapGitOutput", 1, 1, |s, a| {
+            fields(s, &[("ok", flag(s, true)?), ("stdout", a[0])])
+        })?],
+    )
+}
+
 pub(crate) fn run_git<'e>(actor: L<'e>, cwd: L<'e>, args: L<'e>, opts: L<'e>) -> Result<L<'e>> {
     let opts = default_object(opts)?;
     let kind = fallback(opts.get(c"kind")?, V::from("git"))?;
     let custom = !uses_default_run(actor)?;
-    let frame = fields(
-        actor,
-        &[
-            ("cwd", cwd),
-            ("args", args),
-            ("opts", opts),
-            ("custom", flag(actor, custom)?),
-        ],
-    )?;
-    let task = function(frame, "runGitTask", 1, 1, |f, a| {
-        let (cwd, args, opts) = (f.get(c"cwd")?, f.get(c"args")?, f.get(c"opts")?);
-        let request = if f.get(c"custom")?.truthy()? {
-            resolved(a[0].get(c"execGit")?.call_plain(&[cwd, args, opts])?)?
-        } else {
-            exec_context_git(a[0], cwd, args, opts)?
-        };
-        call(
-            request,
-            c"then",
-            &[function(f, "wrapGitOutput", 1, 1, |f, a| {
-                fields(f, &[("ok", flag(f, true)?), ("stdout", a[0])])
-            })?],
-        )
-    })?;
+    let command = fields(actor, &[("cwd", cwd), ("args", args), ("opts", opts)])?;
     let result = if custom {
+        let task = function(command, "runGitTask", 1, 1, |command, a| {
+            let request = a[0].get(c"execGit")?.call_plain(&[
+                command.get(c"cwd")?,
+                command.get(c"args")?,
+                command.get(c"opts")?,
+            ])?;
+            wrap_git_output(resolved(request)?)
+        })?;
         call(actor, c"run", &[cwd, kind, task, opts])?
     } else {
-        run(actor, cwd, kind, task, opts)?
+        enqueue(actor, cwd, kind, RepoTask::Git(command), opts)?
     };
     call(
         result,
