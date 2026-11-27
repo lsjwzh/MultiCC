@@ -1,5 +1,32 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 5 批（2026-11-27，MacPro x86_64）
+
+基线为 `93470d5b`。从 `server.js` 及其原生绑定追踪配额、用量和虚拟供应商的调用方。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 335 / 96,408 | 325 / 95,229 |
+| server.js 与 src/ | 336 / 99,269 | 326 / 98,090 |
+| server.js、src/ 与 plugins/ | 348 / 103,188 | 338 / 102,009 |
+
+| 退役生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/chat/usage-limit-wiring.js` | 116 | 将会话用量关联到账号、轮询器及广播 |
+| `src/providers/virtual-provider.js` | 88 | 根据已提交的配额快照选择成员并处理重试 |
+| `src/quota/claude-bar-state.js` | 119 | 合并账号与会话的实时用量 |
+| `src/quota/claude-cli-oauth.js` | 109 | 选择 CLI 凭据来源、检查有效期并读取用量 |
+| `src/quota/limit-cache-recorder.js` | 212 | 按供应商归集配额、失败和恢复事件 |
+| `src/quota/official-account-usage.js` | 131 | 投影账号窗口并按退避时间轮询 Codex 账号 |
+| `src/quota/provider-limit-cache-native-host.js` | 138 | 串行提交限额缓存读写并分发已提交的变更 |
+| `src/quota/provider-quota-history.js` | 81 | 首个有效采样到来时打开历史库并处理降级 |
+| `src/quota/quota-bar-cache.js` | 164 | 维护展示用快照、缓存淘汰及损坏恢复 |
+| `src/quota/quota-guard.js` | 105 | 根据阈值和快照评估配额并触发过期刷新 |
+
+十个旧文件合计 1,263 行。Node 兼容层仍向原生绑定提供现有宿主的 HTTP 传输、持久化实例、日志与调用方注入的回调。相应调用方迁到 Rust 后即可移除这些端口。账号轮询器提前停止时会同时取消首次和周期定时器，现有服务入口仅调用启动方法。
+
+首轮关联测试暴露三处回归。修复后执行了一次 x64 发布补构建，耗时 3 分 16 秒，五件产物的源码指纹均为 `b3e266cc88fbc15f22580fe7`。架构、SHA-256 和绑定加载探针通过。29 个 Node 测试文件显式加载本批绑定，660 项通过，含 FIFO 清理时的集合读取、历史库惰性降级和损坏缓存恢复，零失败、零跳过。Rust 内核定向测试 63 项通过。真实 Rust 网关与 Node 宿主的回环 WebSocket 冒烟 1 项通过。源码行数和 46 项写入规则通过。npm 打包清单含 1,350 项，包含 11 个 Rust 变更文件，10 个退役文件均已移出 Git 索引和包。
+
 ## server.js 可达模块第 4 批（2026-11-27，MacPro x86_64）
 
 从 `1f2838ea` 追踪生产依赖，统计包括无末尾换行符的最后一行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)

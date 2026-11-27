@@ -16,7 +16,7 @@ const {
   guardVerdict,
   normalizeConfig,
   windowKind,
-} = require('../src/quota/quota-guard');
+} = require('../src/native/binding').quotaGuard;
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 
@@ -314,7 +314,7 @@ test('Auto fails over away from a guarded account instead of spending it', () =>
 
 
 test('native coercion preserves nonfinite, negative zero and UTF-16 input semantics', () => {
-  const { liveWindows, readingAgeOf } = require('../src/quota/quota-guard');
+  const { liveWindows, readingAgeOf } = require('../src/native/binding').quotaGuard;
   const config = normalizeConfig({ fiveHourPercent: -0, weeklyPercent: NaN, monthlyPercent: Infinity });
   assert.equal(Object.is(config.fiveHourPercent, 0), true);
   assert.equal(config.weeklyPercent, 98);

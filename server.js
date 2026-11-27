@@ -2000,7 +2000,7 @@ mountQuotaHostRoute(app, {
 // files through the account-subscription reader; the retired codex mount
 // registered it, so it is registered explicitly here.
 nativeBinding.accountReader.registerAccountSubscriptionReader('codex', { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
-mountCodexOAuthRoutes(accountRoutesHost.app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
+mountCodexOAuthRoutes(accountRoutesHost.app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/native/binding').officialUsage.claudeUsageWindows(usage) }) }); require('./src/native/binding').officialUsage.createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent, disposeLoginTerminal }); claudeOAuthSurface.mountRoutes(accountRoutesHost.app); // see src/routes/claude-oauth.js header
 // The token-usage host port stays between the two Provider route phases: the
 // public token APIs are served by the Rust front door, accounting still lives here.
@@ -2145,8 +2145,8 @@ const subscribeDispatchProgress = createDispatchProgressSubscription({
   streamReplayOf: chatReplay.events,
 });
 
-// Usage-limit poller — a turn's own provider only; Claude readings are manual-refresh (see src/chat/usage-limit-wiring.js).
-const usageLimitPoller = require('./src/chat/usage-limit-wiring').createUsageLimitWiring({
+// Usage-limit poller — a turn's own provider only; Claude readings are manual-refresh.
+const usageLimitPoller = require('./src/native/binding').usageLimitWiring.createUsageLimitWiring({
   persistedSessions, providers, chatBroadcast,
   createPoller: require('./src/usage-limit-poller').createUsageLimitPoller,
   recordLimit: limitRecorder.recordSession,

@@ -12,7 +12,7 @@ const { fetchCodexUsage } = require('../src/routes/codex-quota');
 const { pollCodexUsage } = require('../src/usage-limit-poller');
 const { fetchKimiBalance } = require('../src/routes/kimi-quota');
 const { fetchWithCookies } = require('../src/routes/qoder-quota');
-const { fetchCliUsage } = require('../src/quota/claude-cli-oauth');
+const { fetchCliUsage } = require('../src/native/binding').claudeCliUsage;
 const { fetchZenGoUsage } = require('../src/quota/opencode-zen');
 const { createProviderBalanceRuntime } = require('../src/routes/provider-balance-host');
 const { mountProviderBalanceHost } = require('../src/routes/provider-balance-host');
@@ -141,7 +141,7 @@ test('供应商余额兼容层只调用 Rust 前门，编码线路参数并携�
 
 test('余额凭据宿主只提供既有凭据，不执行厂商网络查询且拒绝远端调用', async t => {
   let credentialReads = 0;
-  t.mock.method(require('../src/quota/claude-cli-oauth'), 'readCliCredentials', async () => {
+  t.mock.method(require('../src/native/binding').claudeCliUsage, 'readCliCredentials', async () => {
     credentialReads++;
     return { ok: true, accessToken: 'fixture-credential', expiresAt: Date.now() + 60000 };
   });
@@ -179,9 +179,13 @@ test('余量和账户请求不能重新绕过统一网络入口', () => {
   const files = [
     'src/usage-limit-poller.js', 'src/routes/codex-quota.js', 'src/routes/claude-accounts.js',
     'src/routes/claude-usage-quota.js', 'src/routes/provider-balance-host.js', 'src/routes/qoder-quota.js',
-    'src/routes/kimi-quota.js', 'src/quota/claude-cli-oauth.js', 'src/quota/opencode-zen.js',
+    'src/routes/kimi-quota.js', 'src/quota/opencode-zen.js',
     'src/official-accounts-cli-login.js', 'src/providers/jev-client.js',
   ];
+  const binding = fs.readFileSync(require.resolve('../src/native/binding'), 'utf8');
+  const cliUsage = binding.slice(binding.indexOf("exposeHostApi('claudeCliUsage'"), binding.indexOf("exposeHostApi('officialUsage'"));
+  assert.match(cliUsage, /outboundFetch: require\('\.\.\/network\/outbound'\)\.outboundFetch/);
+  assert.doesNotMatch(cliUsage, /globalThis\.fetch|global\.fetch|\bhttps?\.(request|get)\s*\(/);
   for (const file of files) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.doesNotMatch(source, /globalThis\.fetch|global\.fetch|\bhttps?\.(request|get)\s*\(/, file);

@@ -29,7 +29,7 @@ const {
 } = require('./helpers/legacy-provider-limit-cache');
 const {
   createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS,
-} = require('../src/quota/limit-cache-recorder');
+} = require('../src/native/binding').limitRecorder;
 const { compactBarText } = require('../src/native/binding').getQuotaBarView();
 const { writeJsonAtomic } = require('../src/state/store');
 
@@ -967,7 +967,7 @@ async function testNativeTransactionalStore() {
 }
 
 async function testAsyncNativeCacheHost() {
-  const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
+  const { createNativeProviderLimitCache } = require('../src/native/binding').providerLimitCache;
   const dir = tmpDir('native-host');
   const file = path.join(dir, 'limits.db');
   const legacy = path.join(dir, 'limits.json');
@@ -1002,7 +1002,7 @@ async function testAsyncNativeCacheHost() {
 }
 
 async function testAsyncRecorderParity() {
-  const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
+  const { createNativeProviderLimitCache } = require('../src/native/binding').providerLimitCache;
   const now = () => 1_700_000_000_000;
   const oldCache = createProviderLimitCache({ file: tmpDb('recorder-old'), now });
   const newCache = createNativeProviderLimitCache({ file: tmpDb('recorder-native'), now, logger: null });

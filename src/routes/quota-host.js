@@ -42,7 +42,7 @@ function defaultDeps() {
   const aliyun = require('./aliyun-quota');
   const { getManagedQuotaBrowser } = require('../quota-managed-browser');
   const queue = require('../native/binding').claudeUsageQueue;
-  const barState = require('../quota/claude-bar-state');
+  const barState = require('../native/binding').claudeBarState;
   return {
     priceTable: sharedPriceTable(),
     fetchOpenCodeUsage: opencode.fetchOpenCodeUsage,

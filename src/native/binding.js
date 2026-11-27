@@ -360,11 +360,11 @@ function getQuotaBarView() { return quotaBarView ||= getNative().quotaBarViewApi
 // Use the JS arithmetic operator for timestamps supplied by host extensions.
 const elapsedTime = (now, since) => now - since;
 function providerLimitSnapshot(entry, now = Date.now()) {
-  const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+  const { STALE_MS_DEFAULT } = module.exports.providerLimitCache;
   return getNative().providerLimitSnapshot(entry, now, STALE_MS_DEFAULT, elapsedTime);
 }
 function connectProviderLimitSync(options) {
-  return getNative().subscribeProviderLimits(options, require('../quota/provider-limit-cache-native-host').STALE_MS_DEFAULT, elapsedTime);
+  return getNative().subscribeProviderLimits(options, module.exports.providerLimitCache.STALE_MS_DEFAULT, elapsedTime);
 }
 
 let eventPolicy;
@@ -1419,21 +1419,105 @@ exposeHostApi('jsonCompression', () => {
 });
 
 function defaultCodexAuth() { return path.join(require('node:os').homedir(), '.codex', 'auth.json'); }
+// The addon owns quota policy and per-instance state. These ports keep injected
+// JavaScript stores, transports, and timers in the isolate that supplied them.
+exposeHostApi('usageLimitWiring', () => ({
+  createUsageLimitWiring: ({ persistedSessions, providers, chatBroadcast, createPoller, recordLimit }) => getNative().usageLimitWiring({
+    persistedSessions, providers, chatBroadcast, createPoller, recordLimit,
+    now: () => Date.now(), queue: module.exports.claudeUsageQueue,
+    live: module.exports.claudeBarState, view: getQuotaBarView() }),
+}));
+exposeHostApi('claudeBarState', () => getNative().claudeBarState({
+  now: () => Date.now(), queue: module.exports.claudeUsageQueue,
+  merge: input => claudeQuota('merge', input), claudeBar: getQuotaBarView().claudeBar,
+}));
+exposeHostApi('quotaBarCache', () => ({
+  ...getNative().quotaBarCacheApi({}),
+  createQuotaBarCache({ file, now = Date.now, storeFactory = require('../state/store').createStore, logger = console } = {}) {
+    if (!file || typeof file !== 'string') throw new TypeError('[quota-bar-cache] requires { file }');
+    const store = storeFactory({ file, kind: 'quota-bar-cache', schemaVersion: 1, legacyIsArray: false });
+    return getNative().quotaBarCacheStore({ file, now,
+      load: () => store.loadOrRecover(),
+      loadFailed: error => logger?.warn?.('[multicc/quota-bar-cache] load failed:', error.message),
+      save(state) { try { store.save(state); } catch (error) { logger?.warn?.('[multicc/quota-bar-cache] save failed:', error.message); } },
+    });
+  },
+}));
+exposeHostApi('limitRecorder', () => {
+  const native = getNative();
+  return { ...native.limitCacheRecorderRequestValue('constants', {}),
+    isRevokedCategory: category => native.limitCacheRecorderRequestValue('isRevokedCategory', { category }),
+    createLimitRecorder: ({ cache, persistedSessions, providers, now = Date.now } = {}) =>
+      native.limitRecorderHost({ cache, persistedSessions, providers, now }),
+  };
+});
+exposeHostApi('providerLimitCache', () => {
+  function createNativeProviderLimitCache({ file, legacyJsonFile = null, now = Date.now, onRecord = null, logger = console } = {}) {
+    return getNative().providerCacheHost({ file, legacyJsonFile, now, onRecord, logger, Owner: getNative().RustProviderLimitStore,
+      submit: (handle, op, input) => runNative(() => handle.requestAsync(op, input)),
+    });
+  }
+  return { createNativeProviderLimitCache, createProviderLimitCache: createNativeProviderLimitCache,
+    STALE_MS_DEFAULT: 600000, DATABASE_SCHEMA_VERSION: 1 };
+});
+exposeHostApi('quotaHistory', () => {
+  const DEFAULT_RETENTION_MS = 14 * 86400000;
+  function createProviderQuotaHistory({ file, native, retentionMs = DEFAULT_RETENTION_MS, logger = console } = {}) {
+    return getNative().quotaHistoryHost({ file, retentionMs, logger, now: () => Date.now(), native: native || getNative(),
+      submit: (handle, data) => runNative(() => handle.record(JSON.stringify(data))),
+    });
+  }
+  return { DEFAULT_RETENTION_MS, createProviderQuotaHistory };
+});
+exposeHostApi('quotaGuard', () => {
+  const native = getNative(), request = native.quotaGuardRequestValue;
+  const DEFAULTS = Object.freeze(request('defaults', null));
+  return { DEFAULTS, envConfig: (env = process.env) => request('envConfig', env),
+    normalizeConfig: raw => Object.freeze(request('normalizeConfig', raw)),
+    liveWindows: entry => request('liveWindows', entry), readingAgeOf: value => request('readingAgeOf', value),
+    windowKind: value => request('windowKind', value), thresholdFor: (kind, config) => request('thresholdFor', { kind, config }),
+    guardVerdict: (entry, { config = DEFAULTS, now = Date.now() } = {}) => Object.freeze(request('guardVerdict', { entry, config, now })),
+    createQuotaGuard: ({ cache, configFile, env = process.env, now = Date.now, logger, onStale } = {}) =>
+      native.quotaGuardHost({ Owner: native.RustQuotaGuard, request, cache, configFile, env, now, logger, onStale }),
+  };
+});
+exposeHostApi('claudeCliUsage', () => getNative().cliUsageHost({
+  credentials: providerCredentials, platform: process.platform,
+  file: path.join(require('node:os').homedir(), '.claude', '.credentials.json'),
+  readFile: file => require('node:fs/promises').readFile(file, 'utf8'), now: () => Date.now(),
+  outboundFetch: require('../network/outbound').outboundFetch, fetchUsage: require('../claude-auth/official-oauth').fetchUsage,
+}));
+exposeHostApi('officialUsage', () => ({
+  claudeUsageWindows: usage => getNative().officialUsageWindows(usage, false),
+  codexDtoWindows: dto => getNative().officialUsageWindows(dto, true),
+  createOfficialAccountUsageSweeper: ({ accounts, recorder, logger = console, now = Date.now, intervalMs = 600000,
+    pollCodex = require('../usage-limit-poller').pollCodexUsage } = {}) => getNative().officialUsageSweeper({
+    accounts, recorder, logger, now, intervalMs, pollCodex, authFile: dir => path.join(dir, 'auth.json'),
+    accountProviderId: require('../providers/official-catalog').accountProviderId,
+  }),
+}));
+exposeHostApi('virtualProvider', () => getNative().virtualProviderHost({
+  now: () => Date.now(), subscriptions: module.exports.accountSubscriptionCache,
+  egress: provider => module.exports.egressIpPolicy.checkEgressIpAllowed(provider),
+  listProviders: () => require('../providers/host').listProviders(),
+  routingView: (appType, id) => require('../providers/host').routingProviderView(appType, id),
+}));
+
 exposeHostApi('providerQuota', () => ({
   createProviderQuotaRuntime: options => getNative().providerQuotaRuntime(options, {
-    history: require('../quota/provider-quota-history').createProviderQuotaHistory,
-    limitCache: require('../quota/provider-limit-cache-native-host').createNativeProviderLimitCache,
-    recorder: require('../quota/limit-cache-recorder').createLimitRecorder,
-    connect: module.exports.connectProviderLimitSync, barCache: require('../quota/quota-bar-cache').createQuotaBarCache,
-    guard: require('../quota/quota-guard').createQuotaGuard,
+    history: module.exports.quotaHistory.createProviderQuotaHistory,
+    limitCache: module.exports.providerLimitCache.createNativeProviderLimitCache,
+    recorder: module.exports.limitRecorder.createLimitRecorder,
+    connect: module.exports.connectProviderLimitSync, barCache: module.exports.quotaBarCache.createQuotaBarCache,
+    guard: module.exports.quotaGuard.createQuotaGuard,
     subscriptions: opts => module.exports.accountSubscriptionCache.configure(opts),
-    virtualProvider: opts => require('../providers/virtual-provider').configure(opts),
+    virtualProvider: opts => module.exports.virtualProvider.configure(opts),
   }),
 }));
 exposeHostApi('quotaSelfHeal', () => getNative().quotaSelfHealApi({
   defaultCodexAuth,
   setCodexAuthRefresher: fn => require('../usage-limit-poller').setCodexAuthRefresher(fn),
-  setVirtualRefresher: fn => require('../providers/virtual-provider').setRefresher(fn),
+  setVirtualRefresher: fn => module.exports.virtualProvider.setRefresher(fn),
 }));
 
 exposeHostApi('accountReader', () => {
@@ -1457,7 +1541,7 @@ exposeHostApi('accountReader', () => {
     return JSON.parse(native.accountSubscriptionResult(JSON.stringify({ plan, status, body, now: Date.now() })));
   }
   return native.accountReaderApi({ defaultCodexAuth, query, cache: module.exports.accountSubscriptionCache,
-    readCliCredentials: () => require('../quota/claude-cli-oauth').readCliCredentials() });
+    readCliCredentials: () => module.exports.claudeCliUsage.readCliCredentials() });
 });
 
 exposeHostApi('artifacts', () => getNative().artifactCleanupApi({

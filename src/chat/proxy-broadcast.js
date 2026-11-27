@@ -13,7 +13,7 @@
 const {
   normalizeWindowEvent, windowEventBar, labelRoutedProvider,
 } = require('../native/binding').getQuotaBarView();
-const { rememberClaudeLive, renderClaudeBar } = require('../quota/claude-bar-state');
+const { rememberClaudeLive, renderClaudeBar } = require('../native/binding').claudeBarState;
 const { redactProviderRouteCapability } = require('../observability');
 
 // `resolveCli(sessionName)` → the session's CLI, used only to decide whether

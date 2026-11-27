@@ -3,7 +3,7 @@
 // Deterministic in-memory hosts: no database, account or outbound request.
 const assert = require('node:assert/strict');
 const legacy = require('./legacy-limit-cache-recorder').createLimitRecorder;
-const current = require('../../src/quota/limit-cache-recorder').createLimitRecorder;
+const current = require('../../src/native/binding').limitRecorder.createLimitRecorder;
 const start = 1_700_000_000_000;
 function run(create, scenario) {
   const effects = [];

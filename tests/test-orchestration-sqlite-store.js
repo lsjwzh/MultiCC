@@ -1247,15 +1247,14 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   // its compatibility aliases and submits storage to Rust; a Node SQLite
   // fallback must not hide behind its exports.
   assert.equal(fs.existsSync(path.join(root, 'src/quota/provider-limit-cache.js')), false);
-  const quotaHost = fs.readFileSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js'), 'utf8');
-  const dependencies = source => [...source.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)]
-    .map(match => match[1]);
-  assert.deepEqual(dependencies(quotaHost), ['../native/binding']);
-  const quotaExports = require('../src/quota/provider-limit-cache-native-host');
+  assert.equal(fs.existsSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js')), false);
+  const binding = fs.readFileSync(path.join(root, 'src/native/binding.js'), 'utf8');
+  const quotaHost = binding.slice(binding.indexOf("exposeHostApi('providerLimitCache'"), binding.indexOf("exposeHostApi('quotaHistory'"));
+  const quotaExports = require('../src/native/binding').providerLimitCache;
   assert.equal(quotaExports.createProviderLimitCache, quotaExports.createNativeProviderLimitCache);
   assert.equal(quotaExports.STALE_MS_DEFAULT, 10 * 60 * 1000);
   assert.equal(quotaExports.DATABASE_SCHEMA_VERSION, 1);
-  assert.match(quotaHost, /new\s+addon\.RustProviderLimitStore\s*\(/);
+  assert.match(quotaHost, /Owner: getNative\(\)\.RustProviderLimitStore/);
   assert.match(quotaHost, /handle\.requestAsync\s*\(\s*op\s*,\s*input\s*\)/);
   for (const source of [quotaHost]) {
     assert.doesNotMatch(source, /(?:node:sqlite|better-sqlite3|sqlite\/driver)/,

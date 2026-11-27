@@ -326,7 +326,7 @@ test('目录读取不自行刷新，宿主只执行 Rust 选定的账号刷新',
 
 test('目录宿主提供原始额度快照与共享展示器结果', async () => {
   const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
-  const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
+  const { createLimitRecorder } = require('../src/native/binding').limitRecorder;
   const os = require('node:os');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-provider-host-'));
   const cache = createProviderLimitCache({ file: path.join(dir, 'provider-limit-cache.db'), now: () => 1000 });

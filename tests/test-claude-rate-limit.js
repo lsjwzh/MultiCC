@@ -883,7 +883,7 @@ test('the claude refresh carries force=1, because nothing else licenses a scrape
 // minutes-old account-wide scrape. The live event wins — until its own reset
 // passes, after which it describes a window that no longer exists.
 test('a live 5h window stops answering the moment its own reset passes', async () => {
-  const BarState = require('../src/quota/claude-bar-state');
+  const BarState = require('../src/native/binding').claudeBarState;
   const Queue = require('../src/native/binding').claudeUsageQueue;
   BarState.resetClaudeBarState();
   Queue.resetClaudeUsageQueue();
@@ -931,7 +931,7 @@ test('a live 5h window stops answering the moment its own reset passes', async (
 });
 
 test('a live 5h window older than its own TTL is forgotten too', async () => {
-  const BarState = require('../src/quota/claude-bar-state');
+  const BarState = require('../src/native/binding').claudeBarState;
   const Queue = require('../src/native/binding').claudeUsageQueue;
   BarState.resetClaudeBarState();
   Queue.resetClaudeUsageQueue();

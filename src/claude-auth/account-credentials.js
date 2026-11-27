@@ -159,7 +159,7 @@ function createClaudeAccountCredentialService(options = {}) {
   const sharedLoginReader = typeof options.sharedLoginReader === 'function'
     ? options.sharedLoginReader
     : async (keychainService) => {
-      const value = await require('../quota/claude-cli-oauth').readCliCredentials({ keychainService });
+      const value = await require('../native/binding').claudeCliUsage.readCliCredentials({ keychainService });
       return value.ok && fresh(value.expiresAt, 0) ? { token: value.accessToken } : { token: null, reason: value.reason || 'access_token_expired' };
     };
 
