@@ -29,8 +29,7 @@ use crate::app::express::{self, RequestCtx};
 use crate::app::App;
 use crate::host_port;
 
-/// The host port the Node child serves (`src/routes/voice-gateway-host.js`).
-const HOST_PATH: &str = "/api/__host/voice-gateway";
+use multicc_core::voice_gateway_routes::HOST_PATH;
 
 const NO_STORE: &[(&str, &str)] = &[("Cache-Control", "no-store")];
 

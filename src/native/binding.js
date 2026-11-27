@@ -1911,6 +1911,68 @@ exposeHostApi('airRoutes', () => getNative().airMountApi(require('../workspace/a
 
 exposeHostApi('chatHistoryService', () => getNative().chatHistoryServiceApi(getNative()));
 
+exposeHostApi('voiceCorrector', () => {
+  const native = getNative();
+  return native.voiceCorrectorApi({
+    windows: native.HotwordWindows, loadPinyin: () => require('pinyin-pro').pinyin,
+  });
+});
+exposeHostApi('voiceMiner', () => {
+  const native = getNative();
+  return native.voiceMinerApi({ corrector: module.exports.voiceCorrector, list: native.voiceHotwordList });
+});
+exposeHostApi('voiceLearner', () => {
+  const native = getNative();
+  return native.voiceLearnerApi({
+    miner: module.exports.voiceMiner, scan: native.voiceWordsScan, fs: require('node:fs'),
+    atomicWriteJson: module.exports.runtimeSecurity.atomicWriteJson, basename: require('node:path').basename,
+  });
+});
+exposeHostApi('voiceConfig', () => getNative().voiceConfigApi({
+  env: process.env, fs: require('node:fs'), atomicWriteJson: module.exports.runtimeSecurity.atomicWriteJson,
+  paths: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }),
+  learner: module.exports.voiceLearner, corrector: module.exports.voiceCorrector,
+}));
+
+exposeHostApi('voiceLaunchRegistry', () => getNative().voiceLaunchRegistryApi({
+  isVoiceRouterRecord: module.exports.voiceRouter.isVoiceRouterRecord,
+}));
+exposeHostApi('voiceGatewayDomain', () => getNative().voiceGatewayDomainApi({
+  resolveDirectoryCommander: module.exports.taskBoardCore.resolveDirectoryCommander,
+}));
+exposeHostApi('voiceGatewayHost', () => getNative().voiceGatewayHostApi({
+  domain: module.exports.voiceGatewayDomain,
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+  acpAgentPath: path.join(__dirname, '..', 'voice', 'multicc-acp-agent.mjs'),
+}));
+exposeHostApi('voiceRuntimeHost', () => getNative().voiceRuntimeHostApi({
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+}));
+exposeHostApi('asrModelInstaller', () => {
+  const { Transform, Readable } = require('node:stream');
+  const { pipeline } = require('node:stream/promises');
+  return getNative().asrModelInstallerApi({
+    async writeBody(body, part, append, onChunk, controller, idleTimeout) {
+      const guard = setTimeout(() => controller.abort(), idleTimeout);
+      guard.unref?.();
+      try {
+        const source = Readable.fromWeb(body);
+        const counter = new Transform({
+          transform(chunk, _encoding, next) {
+            try { onChunk(chunk.length); guard.refresh(); }
+            catch (err) { next(err); return; }
+            next(null, chunk);
+          },
+        });
+        const output = require('node:fs').createWriteStream(part, { flags: append ? 'a' : 'w' });
+        await pipeline(source, counter, output, { signal: controller.signal });
+      } finally { clearTimeout(guard); }
+    },
+  });
+});
+exposeHostApi('voiceSettingsHost', () => getNative().voiceSettingsHostApi({
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+}));
 exposeHostApi('voiceRouter', () => getNative().voiceRouterApi(getNative(),
   ({ records, mutate, runtimeRoot, cli, now } = {}) => ({ records, mutate, runtimeRoot, cli, now }),
   (records, mutate, root, cli, now = () => new Date().toISOString()) => {

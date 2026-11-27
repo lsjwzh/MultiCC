@@ -7,8 +7,8 @@
 //! What moved here is pure: the service-failure status table, the legacy and
 //! v1 failure bodies, the `autoInstall` pre-check, the `PUT` options projection
 //! and the `withLaunch` DTO that appends the ACP launch block. The service
-//! itself (records, directories, commander binding, session persistence), the
-//! configured Node binary and the ACP agent path stay in Node behind
+//! uses the native addon for live records, directories and Commander binding.
+//! Session persistence and the configured executable paths are host ports behind
 //! `POST /api/__host/voice-gateway`; the front door only validates and shapes.
 //!
 //! Key order is part of the HTTP contract here: the legacy list/gateway bodies
@@ -19,6 +19,8 @@ use serde_json::{Map, Value};
 use crate::api_contract;
 use crate::js::serde::{from_serde, to_serde, truthy};
 use crate::js::JsValue as V;
+
+pub const HOST_PATH: &str = "/api/__host/voice-gateway";
 
 /// Express's automatic `OPTIONS` answer for `.../voice-gateways` (one GET route,
 /// whose HEAD is implicit).
@@ -169,6 +171,25 @@ pub fn thrown_failure(thrown: &Value, ids: &(String, String)) -> (u16, Value) {
         ("code", code),
     ]);
     (500, to_serde(&api_contract::error_dto(&input, ids)))
+}
+
+/// Persistent resource key shared by all host processes serving this directory.
+pub fn directory_gateway_id(directory: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(directory.as_bytes()));
+    format!("__voice_gateway__{}", &digest[..32])
+}
+
+/// Launch tickets are bearer credentials. A failed OS random source fails issuance.
+pub fn launch_token() -> Result<String, getrandom::Error> {
+    let mut bytes = [0u8; 24];
+    getrandom::fill(&mut bytes)?;
+    use std::fmt::Write;
+    let mut token = String::with_capacity(48);
+    for byte in bytes {
+        write!(token, "{byte:02x}").expect("writing to String");
+    }
+    Ok(token)
 }
 
 #[cfg(test)]

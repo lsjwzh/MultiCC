@@ -106,12 +106,12 @@ const SETUP = `(function () {
 // ---- fakes: one definition, used in both processes -------------------------------------
 // `makeWorld` builds records/directories/supervisor/installer/launch registry/router around a
 // scenario. It is serialised into the upstream child and eval'ed for the oracle.
-const WORLD = `(function (repo, setup, nowMs, runtimeRoot) {
+const WORLD = `(function (repo, setup, nowMs, runtimeRoot, frozen = false) {
   const path = require('node:path');
-  const { createVoiceLaunchRegistry } = require(path.join(repo, 'src/voice/launch'));
+  const { createVoiceLaunchRegistry } = frozen ? require(path.join(repo, 'tests/helpers/frozen-voice-domain/launch')) : require(path.join(repo, 'src/native/binding')).voiceLaunchRegistry;
   const { createVoiceRouterProvisioner } = require(path.join(repo, 'src/voice/router'));
-  const { createVoiceGatewayService } = require(path.join(repo, 'src/voice/gateway'));
-  const { resolveDirectoryCommander } = require(path.join(repo, 'src/task-board/core'));
+  const { createVoiceGatewayService } = frozen ? require(path.join(repo, 'tests/helpers/frozen-voice-domain/gateway')) : require(path.join(repo, 'src/native/binding')).voiceGatewayDomain;
+  const { resolveDirectoryCommander } = require(path.join(repo, 'src/native/binding')).taskBoardCore;
   const records = new Map(); const directories = new Map();
   const world = { calls: [], seq: 0, state: null, skew: 0 };
   function applyScenario(name) {
@@ -180,7 +180,7 @@ const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).ga
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
-const { createVoiceRuntimeHost } = require(path.join(repo, 'src/routes/voice-runtime-host'));
+const { createVoiceRuntimeHost } = require(path.join(repo, 'src/native/binding')).voiceRuntimeHost;
 const setup = ${SETUP};
 const w = (${WORLD})(repo, setup, ${NOW_MS}, ${JSON.stringify(RUNTIME_ROOT)});
 w.applyScenario('empty');
@@ -255,7 +255,7 @@ function main() {
     name: 'voice-runtime',
     mount(app, { repo }) {
       const setup = eval(SETUP); // eslint-disable-line no-eval -- the same literal the upstream evaluates
-      oracleWorld = eval(WORLD)(repo, setup, NOW_MS, RUNTIME_ROOT);
+      oracleWorld = eval(WORLD)(repo, setup, NOW_MS, RUNTIME_ROOT, true);
       oracleWorld.applyScenario('empty');
       const w = oracleWorld;
       const global = require(path.join(repo, 'tests/helpers/legacy-voice-gateway-global-routes'));

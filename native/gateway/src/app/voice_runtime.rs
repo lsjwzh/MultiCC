@@ -36,8 +36,7 @@ use crate::app::express::{self, RequestCtx};
 use crate::app::App;
 use crate::host_port;
 
-/// The host port the Node child serves (`src/routes/voice-runtime-host.js`).
-const HOST_PATH: &str = "/api/__host/voice-runtime";
+use multicc_core::voice_runtime_routes::HOST_PATH;
 
 const NO_STORE: &[(&str, &str)] = &[("Cache-Control", "no-store")];
 

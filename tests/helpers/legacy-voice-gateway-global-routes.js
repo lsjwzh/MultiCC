@@ -16,7 +16,20 @@
 // per-Fleet records, but the *runtime* they project is this single global child.
 
 const { createErrorDto, requestContext, withApiMeta } = require('./frozen-file-batch20/api-contract');
-const { publicBaseUrl } = require('../../src/routes/voice-gateway-host');
+function publicBaseUrl(value) {
+  try {
+    const url = new URL(String(value || 'http://127.0.0.1:3000'));
+    if (!['http:', 'https:'].includes(url.protocol)) throw new Error('unsupported protocol');
+    url.username = '';
+    url.password = '';
+    url.pathname = '/';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch (_) {
+    return 'http://127.0.0.1:3000';
+  }
+}
 const { PROXY_PREFIX } = require('../../src/routes/voice-gateway-proxy');
 
 const NOT_FOUND = new Set(['voice_gateway_not_found', 'voice_launch_source_not_found', 'voice_launch_unknown']);

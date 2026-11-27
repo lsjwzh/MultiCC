@@ -56,7 +56,7 @@ const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).ga
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
-const { createVoiceGatewayHost } = require(path.join(repo, 'src/routes/voice-gateway-host'));
+const { createVoiceGatewayHost } = require(path.join(repo, 'src/native/binding')).voiceGatewayHost;
 const seed = ${SEED};
 const records = new Map(); const directories = new Map(); let calls = [];
 function reset() {

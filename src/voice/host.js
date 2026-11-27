@@ -2,15 +2,15 @@
 
 const path = require('path');
 const { mountVoiceRoutes } = require('../routes/voice');
-const { createVoiceGatewayHost } = require('../routes/voice-gateway-host');
-const { createVoiceRuntimeHost } = require('../routes/voice-runtime-host');
+const { createVoiceGatewayHost } = require('../native/binding').voiceGatewayHost;
+const { createVoiceRuntimeHost } = require('../native/binding').voiceRuntimeHost;
 const { createVoiceGatewayWebProxy, wireUpgrade } = require('../routes/voice-gateway-proxy');
-const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./gateway');
+const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('../native/binding').voiceGatewayDomain;
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');
 const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
-const { createVoiceLaunchRegistry } = require('./launch');
+const { createVoiceLaunchRegistry } = require('../native/binding').voiceLaunchRegistry;
 const { createVoiceRouterProvisioner } = require('../native/binding').voiceRouter;
-const { createAsrModelInstaller } = require('./asr-model-installer');
+const { createAsrModelInstaller } = require('../native/binding').asrModelInstaller;
 const { resolveDirectoryCommander } = require('../native/binding').taskBoardCore;
 
 const DEFAULT_MODEL = 'qwen-audio-3.0-realtime-plus';
@@ -31,7 +31,7 @@ function createVoiceHost({
   getBaseUrl,
   acpAgentPath = path.join(__dirname, 'multicc-acp-agent.mjs'),
   uploadVoice,
-  voice = require('./config'),
+  voice = require('../native/binding').voiceConfig,
   asrLocal = require('./asr-local'),
   // Local ASR weights are ~229MB fetched off the network, so the host decides
   // whether it may do that unprompted. Off by default: a host composed inside a
@@ -167,7 +167,7 @@ function createVoiceHost({
   // already present), so this line only expresses intent, never a promise to
   // hit the network.
   // The same opt-in gates hotword learning: it reads the real chat history and
-  // writes voice_hotwords.json in the background (src/voice/hotword-learner.js).
+  // writes voice_hotwords.json in the background through the native learner.
   if (autoDownloadAsrModels && voice.autoHotwordsEnabled && voice.autoHotwords) {
     try { voice.autoHotwords.start(); } catch (e) { log.error('[multicc/hotwords] start failed:', e.message); }
   }
