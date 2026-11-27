@@ -22,21 +22,7 @@ impl Reader {
 
 #[cfg(target_os = "macos")]
 async fn probe() -> Option<Value> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(3),
-        tokio::process::Command::new("/usr/bin/pmset")
-            .args(["-g", "batt"])
-            .env("LC_ALL", "C")
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    parse_pmset(&String::from_utf8_lossy(&output.stdout))
+    parse_pmset(&multicc_core::host_battery::pmset_output().await?)
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -66,25 +52,14 @@ fn parse_pmset(text: &str) -> Option<Value> {
 
 #[cfg(target_os = "linux")]
 async fn probe() -> Option<Value> {
-    for name in ["BAT0", "BAT1"] {
-        let base = std::path::Path::new("/sys/class/power_supply").join(name);
-        let Ok(capacity) = tokio::fs::read_to_string(base.join("capacity")).await else {
-            continue;
-        };
-        let percent = multicc_core::js::number::js_string_to_number(&capacity);
-        if !(0.0..=100.0).contains(&percent) {
-            continue;
-        }
-        let status = tokio::fs::read_to_string(base.join("status"))
-            .await
-            .unwrap_or_default();
-        let charging = status.trim().eq_ignore_ascii_case("charging");
-        return Some(
-            json!({"available":true, "percent":percent, "charging":charging,
-            "pluggedIn":charging || status.trim().eq_ignore_ascii_case("full"), "remainingMinutes":null}),
-        );
-    }
-    None
+    let (percent, status) =
+        multicc_core::host_battery::linux_supply(std::path::Path::new("/sys/class/power_supply"))
+            .await?;
+    let charging = status.trim().eq_ignore_ascii_case("charging");
+    Some(
+        json!({"available":true, "percent":percent, "charging":charging,
+        "pluggedIn":charging || status.trim().eq_ignore_ascii_case("full"), "remainingMinutes":null}),
+    )
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
