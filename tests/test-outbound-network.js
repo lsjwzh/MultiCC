@@ -243,6 +243,7 @@ test('HTTPS 和加密 WebSocket 使用代理隧道并正常校验证书', { time
     NODE_EXTRA_CA_CERTS: path.join(dir, 'cert.pem'),
   };
   if (process.env.MULTICC_RUST_ADDON) childEnv.MULTICC_RUST_ADDON = process.env.MULTICC_RUST_ADDON;
+  if (process.env.MULTICC_RUST_PREBUILT_DIR) childEnv.MULTICC_RUST_PREBUILT_DIR = process.env.MULTICC_RUST_PREBUILT_DIR;
   if (process.env.HOME) childEnv.HOME = process.env.HOME;
   const result = await run(process.execPath, ['-e', code], { timeout: 10000, env: childEnv });
   assert.match(result.stdout, /加密请求成功/);

@@ -55,7 +55,7 @@ fn inventory(vendor: &str, body: &Value, now: i64) -> Option<Value> {
         }
     } else {
         let block = body.get("cedar_ember")?;
-        if block.get("eligible")?.as_bool()? != true {
+        if !block.get("eligible")?.as_bool()? {
             return None;
         }
         let entries = block.get("grants")?.as_array()?;
