@@ -7,7 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const js = require('./helpers/legacy-task-search');
 const native = require('../src/native/binding');
-const { buildIndex, searchIndex, createTaskSearchBackend } = require('../src/native/task-search');
+const { buildIndex, searchIndex, createTaskSearchBackend } = require('../src/native/binding').taskSearch;
 const usage = require('./helpers/legacy-token-usage-global-route');
 const { taskBoard, usageFixture } = require('./fixtures/rust-kernel-fixtures');
 const available = (() => { try { return !!native.getNative(); } catch { return false; } })();

@@ -2,7 +2,8 @@
 
 const assert = require('assert');
 const test = require('node:test');
-const { createTaskRelocate } = require('../src/task-board/relocate');
+const { taskRelocate } = require('../src/native/binding');
+const { createTaskRelocate } = taskRelocate;
 
 function fixture(overrides = {}, create = createTaskRelocate) {
   const board = { tasks: {}, revision: 1 };
@@ -149,6 +150,55 @@ test('task relocate without a bound session moves only metadata and ledger workt
   assert.equal(board.tasks.tsk_1.worktreePath, '/b/.multicc-worktrees/tsk_1');
 });
 
+test('会话和独立工作树都迁移成功后才提交看板，第二段拒绝保留旧目录', async () => {
+  function deferred() {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return { promise, resolve };
+  }
+  for (const ok of [true, false]) {
+    const sessionStarted = deferred(), sessionResult = deferred();
+    const ledgerStarted = deferred(), ledgerResult = deferred();
+    const { task, calls, relocate } = fixture({
+      task: { worktreePath: '/a/separate-ledger', branch: 'ledger' },
+      relocateSessionWorkspace() { sessionStarted.resolve(); return sessionResult.promise; },
+      gitRelocateWorktree() { ledgerStarted.resolve(); return ledgerResult.promise; },
+    });
+    const res = mockRes();
+    const result = relocate.relocate({ params: { taskId: task.id }, body: { dirId: 'dir-b' } }, res);
+    const stillPending = () => {
+      assert.equal(task.dirId, 'dir-a');
+      assert.equal(calls.commits, 0);
+      assert.deepEqual(calls.shell.map(call => call.dryRun), [true]);
+      assert.deepEqual(calls.notify, []);
+      assert.equal(res.body, null);
+    };
+    await sessionStarted.promise;
+    stillPending();
+    sessionResult.resolve({ ok: true, cwd: '/b/session' });
+    await ledgerStarted.promise;
+    stillPending();
+    const failure = { ok: false, blocked: true, reasons: ['unmerged'] };
+    ledgerResult.resolve(ok ? { ok: true, worktreePath: '/b/ledger', branch: 'moved', carried: { files: 1 } } : failure);
+    await result;
+    if (ok) {
+      assert.equal(calls.commits, 1);
+      assert.equal(task.dirId, 'dir-b');
+      assert.deepEqual(calls.shell.map(call => call.dryRun), [true, false]);
+      assert.deepEqual(calls.notify.map(call => call.dirId), ['dir-a', 'dir-b']);
+      assert.equal(res.body.cwd, '/b/session');
+      assert.deepEqual(res.body.carried, { files: 1 });
+    } else {
+      assert.equal(calls.commits, 0);
+      assert.equal(task.dirId, 'dir-a');
+      assert.deepEqual(calls.shell.map(call => call.dryRun), [true]);
+      assert.deepEqual(calls.notify, []);
+      assert.equal(res.statusCode, 409);
+      assert.deepEqual(res.body, failure);
+    }
+  }
+});
+
 require('node:test')('67f54869 differential: task-board/relocate', async () => {
   const { compare } = require('./helpers/compare-leaf-hosts');
   await compare('task-board/relocate.js', async api => {
@@ -160,5 +210,5 @@ require('node:test')('67f54869 differential: task-board/relocate', async () => {
       rows.push([res.statusCode, res.body, calls, task.refs.map(ref => [ref.sessionId, ref.dirId])]);
     }
     return rows;
-  });
+  }, taskRelocate);
 });

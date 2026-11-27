@@ -5,7 +5,7 @@
 运行 `node --expose-internals scripts/inventory-node-backend.js docs/rust-migration/node-module-dependencies.md` 重建。
 统计工作树中 Git 跟踪和未忽略的新文件。下表逐项列出 src 中的模块，含薄桥和离线工具。入口栏标示从 server.js 递归追踪字面量 import、require、require.resolve 及其 createRequire 别名的结果。脚本路径列另列 path.join/resolve(__dirname, 字面量) 指向的文件，包含 worker 与子进程。条件分支按可能加载计；运行时注入依赖仍需结合具体部署核验。动态表达式附行号。
 
-当前 src 中有 364 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
+当前 src 中有 354 个 .js、2 个 .cjs、3 个 .mjs。根包有 0 个直接运行依赖。
 
 ## 根包运行依赖
 
@@ -63,7 +63,7 @@
 | `src/chrome-cdp.js` | server.js | `src/cdp-relay.js` | — | `fs`, `http`, `os`, `path` | `ws` | — |
 | `src/classify/aux-run-log.js` | server.js | `src/native/binding.js` | — | `fs`, `path` | — | — |
 | `src/classify/history-backtest.js` | 归属离线回测 | `src/classify/task-attribution.js` | — | — | — | — |
-| `src/classify/task-attribution.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js`, `src/task-board/search.js` | — | `crypto` | — | — |
+| `src/classify/task-attribution.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js` | — | `crypto` | — | — |
 | `src/classify/vocab.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
 | `src/claude-auth/account-credentials.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/claude-auth/accounts-refresh.js` | server.js | `src/claude-auth/oauth-refresh.js`, `src/native/binding.js`, `src/official-accounts.js` | — | `child_process`, `crypto`, `fs`, `os`, `path` | — | — |
@@ -153,11 +153,10 @@
 | `src/memory/retrieval.js` | server.js | `src/memory-store.js`, `src/memory/builtin-rules.js`, `src/native/binding.js` | — | `fs`, `path` | — | — |
 | `src/memory/runtime.js` | server.js | — | — | — | — | — |
 | `src/model-history-converter.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
-| `src/native/binding.js` | server.js | `src/chat/api-error-host.js`, `src/chat/claude-sdk-route.js`, `src/chat/finalize-host.js`, `src/chat/host-coordinator.js`, `src/chat/host-runtime.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-lifecycle.js`, `src/chat/turn-request.js`, `src/claude-auth/official-oauth.js`, `src/cli-adapters/kimi-auth.js`, `src/cli-adapters/zcode-auth.js`, `src/codex/image-bridge.js`, `src/codex/oauth-refresh.js`, `src/http-errors.js`, `src/native/bootstrap-apis.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/operation-service.js`, `src/orchestration/draft-host.js`, `src/orchestration/native-store-host.js`, `src/outbox.js`, `src/providers/auto-provider-config.js`, `src/providers/egress-ip.js`, `src/providers/host.js`, `src/providers/official-catalog.js`, `src/session/records.js`, `src/state/store.js`, `src/tailscale-funnel-health.js`, `src/task-board/native-bridge.js`, `src/task-board/normalize.js`, `src/task-board/planning.js`, `src/tunnel-sakurafrp-api.js`, `src/upstream-error.js`, `src/usage-limit-poller.js`, `src/usage-observed.js`, `src/wait/service.js`, `src/workspace/air-routes-host.js`, `src/ws/gateway-chat-bridge.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs`, `src/task-shell/migration-page-worker.js` | `async_hooks`, `child_process`, `crypto`, `diagnostics_channel`, `events`, `fs`, `fs/promises`, `http`, `https`, `module`, `net`, `os`, `path`, `util`, `worker_threads`, `zlib` | `multer` | `1033 require(path.join(root, 'scripts', 'ensure-source-rust'))`, `487 require(file)` |
-| `src/native/bootstrap-apis.js` | server.js | `src/native/binding.js` | — | `events`, `os`, `path` | — | — |
+| `src/native/binding.js` | server.js | `src/chat/api-error-host.js`, `src/chat/claude-sdk-route.js`, `src/chat/finalize-host.js`, `src/chat/host-coordinator.js`, `src/chat/host-runtime.js`, `src/chat/provider-attempt-runtime.js`, `src/chat/turn-lifecycle.js`, `src/chat/turn-request.js`, `src/claude-auth/official-oauth.js`, `src/cli-adapters/kimi-auth.js`, `src/cli-adapters/zcode-auth.js`, `src/codex/image-bridge.js`, `src/codex/oauth-refresh.js`, `src/http-errors.js`, `src/native/bootstrap-apis.js`, `src/native/task-domain.js`, `src/network/outbound.js`, `src/official-accounts.js`, `src/operation-service.js`, `src/orchestration/draft-host.js`, `src/orchestration/native-store-host.js`, `src/outbox.js`, `src/providers/auto-provider-config.js`, `src/providers/egress-ip.js`, `src/providers/host.js`, `src/providers/official-catalog.js`, `src/session/records.js`, `src/state/store.js`, `src/tailscale-funnel-health.js`, `src/task-board/board-store.js`, `src/task-worktree.js`, `src/tunnel-sakurafrp-api.js`, `src/upstream-error.js`, `src/usage-limit-poller.js`, `src/usage-observed.js`, `src/wait/service.js`, `src/workspace/air-routes-host.js`, `src/ws/gateway-chat-bridge.js` | `src/cli-adapters/claude-agent-sdk-bridge.mjs`, `src/task-shell/migration-page-worker.js` | `async_hooks`, `child_process`, `crypto`, `diagnostics_channel`, `events`, `fs`, `fs/promises`, `http`, `https`, `module`, `net`, `os`, `path`, `util`, `worker_threads`, `zlib` | `multer` | `1033 require(path.join(root, 'scripts', 'ensure-source-rust'))`, `487 require(file)` |
+| `src/native/bootstrap-apis.js` | server.js | `native/core/src/task_planning_status.json`, `src/native/binding.js` | — | `events`, `os`, `path` | — | — |
 | `src/native/task-domain.js` | server.js | `src/native/binding.js`, `src/state/store.js` | — | `fs` | — | — |
 | `src/native/task-read-model.js` | server.js | `src/native/binding.js` | — | — | — | — |
-| `src/native/task-search.js` | server.js | `src/native/binding.js`, `src/task-board/search.js` | — | — | — | — |
 | `src/network/egress-fetch.js` | server.js | `src/claude-auth/egress-agent.js` | — | `http`, `https` | `proxy-agent` | — |
 | `src/network/outbound.js` | server.js | `src/native/binding.js` | — | — | `proxy-agent`, `undici` | — |
 | `src/network/sdk-bridges.js` | server.js | `src/network/outbound.js` | — | `fs`, `module`, `path` | `@discordjs/ws`, `discord.js`, `ws` | `50 localRequire(id)` |
@@ -265,12 +264,10 @@
 | `src/routes/share-machines-host.js` | server.js | `src/native/binding.js`, `src/routes/share.js` | — | — | — | — |
 | `src/routes/share.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/routes/subagent-defaults-host.js` | server.js | `src/native/binding.js` | — | — | — | — |
-| `src/routes/task-board/index.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js`, `src/routes/task-planning.js`, `src/task-board/board-store.js`, `src/task-board/lifecycle.js`, `src/task-board/native-bridge.js`, `src/task-board/planning.js`, `src/task-board/relocate.js`, `src/task-board/retention.js`, `src/task-worktree.js` | — | `crypto`, `fs` | — | — |
 | `src/routes/task-goal.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/routes/task-graph.js` | server.js | `src/native/binding.js` | — | — | — | — |
-| `src/routes/task-planning.js` | server.js | `native/core/src/task_planning_status.json`, `src/native/task-domain.js`, `src/task-board/planning.js` | — | — | — | — |
-| `src/routes/task-routes-host.js` | server.js | `src/native/binding.js`, `src/routes/task-planning.js` | — | — | — | — |
-| `src/routes/task-search.js` | server.js | `src/native/task-search.js` | — | — | — | — |
+| `src/routes/task-routes-host.js` | server.js | `src/native/binding.js` | — | — | — | — |
+| `src/routes/task-search.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/routes/token-usage.js` | server.js | `src/codex/usage.js`, `src/native/binding.js` | — | — | — | — |
 | `src/routes/update-route.js` | server.js | `src/routes/release-history-host.js`, `src/update-runner.js` | — | — | — | — |
 | `src/routes/voice-gateway-host.js` | server.js | `src/native/binding.js`, `src/voice/gateway.js` | `src/voice/multicc-acp-agent.mjs` | `path` | — | — |
@@ -305,17 +302,10 @@
 | `src/state/container.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
 | `src/state/store.js` | server.js | — | — | `fs`, `path` | — | — |
 | `src/tailscale-funnel-health.js` | server.js | — | — | `crypto`, `http`, `https`, `net` | — | — |
-| `src/task-board/board-store.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js`, `src/task-board/planning.js` | — | — | — | — |
+| `src/task-board/board-store.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js` | — | — | — | — |
 | `src/task-board/core/index.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
 | `src/task-board/lifecycle-host.js` | server.js | `src/native/binding.js` | — | `fs` | — | — |
-| `src/task-board/lifecycle.js` | server.js | `src/native/binding.js`, `src/task-board/native-bridge.js` | — | — | — | — |
-| `src/task-board/native-bridge.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js`, `src/task-board/planning.js` | — | `crypto` | — | — |
-| `src/task-board/normalize.js` | server.js | `src/native/binding.js`, `src/task-board/native-bridge.js`, `src/task-board/planning.js` | — | `crypto` | — | — |
-| `src/task-board/planning.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js` | — | `crypto` | — | — |
-| `src/task-board/relocate.js` | server.js | `src/native/binding.js` | — | — | — | — |
-| `src/task-board/retention.js` | server.js | `src/native/binding.js`, `src/native/task-domain.js` | — | — | — | — |
 | `src/task-board/routing.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |
-| `src/task-board/search.js` | server.js | `src/native/binding.js` | — | — | — | — |
 | `src/task-context-host.js` | server.js | `src/chat/provider-attempt-runtime.js`, `src/native/binding.js`, `src/unattended/native-host.js` | — | — | — | — |
 | `src/task-routing/code-revision.js` | server.js | `src/native/binding.js` | — | `crypto`, `fs/promises`, `path` | — | — |
 | `src/task-routing/delivery-view.js` | 未从已知入口静态到达 | `src/native/binding.js` | — | — | — | — |

@@ -7,10 +7,9 @@
 //! Express OPTIONS answer, the planning error→status ladder, the retention
 //! ordering (through [`multicc_core::task_domain::retention`]), the response
 //! envelopes and the mark-achieved eligibility ladder live here and in
-//! `multicc_core::task_routes`. Node keeps every store behind one host port,
-//! `POST /api/__host/task-routes` (src/routes/task-routes-host.js): the board
-//! and the task-shell SQLite store, the in-process mutation locks, the chat
-//! records and session binding, the message index and the graph aggregation.
+//! `multicc_core::task_routes`. The loopback host port connects the gateway
+//! to the resident board and live sessions. The addon queues planning mutations,
+//! waits for workspace moves and owns the board search operations.
 //!
 //! `POST /api/air/tasks/mark-achieved` is the one path this cluster shares with
 //! the Air cluster: Air registers `GET /api/air/tasks/:id` on it *after* this
@@ -392,9 +391,7 @@ async fn planning(
             .unwrap_or_default();
         return express::json(ctx, planning_status(code), outcome, &[]);
     }
-    let task = value.get("task").cloned().unwrap_or(Value::Null);
-    let revision = value.get("revision").cloned().unwrap_or(Value::Null);
-    express::json(ctx, 200, &planning_ok(&task, &revision), &[])
+    express::json(ctx, 200, &planning_ok(&value["task"], &value["revision"]), &[])
 }
 
 async fn answer(

@@ -14,7 +14,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const search = require('../src/task-board/search');
+const search = require('../src/native/binding').taskSearch;
 const legacySearch = require('./helpers/legacy-task-search');
 const { createTaskSearchRoutes, MAX_QUERY_CHARS } = require('../src/routes/task-search');
 const taskSearchUi = require('../public/task-search.js');

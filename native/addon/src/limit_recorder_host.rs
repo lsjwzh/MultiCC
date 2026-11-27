@@ -1,5 +1,5 @@
 //! Connect committed database transactions and injected synchronous stores to the same core policy.
-use crate::quota_host::*;
+use crate::host_api::*;
 use napi_derive::napi;
 type Pair<'a> = (&'a str, L<'a>);
 fn request<'a>(p: L<'a>, op: &str, input: &[Pair<'a>]) -> Result<L<'a>> {

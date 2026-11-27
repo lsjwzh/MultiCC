@@ -1,5 +1,5 @@
 //! Submission ordering and committed-entry delivery on the isolate that owns the JS listeners.
-use crate::quota_host::*;
+use crate::host_api::*;
 use napi_derive::napi;
 
 fn invoke<'a>(p: L<'a>, op: L<'a>, input: L<'a>) -> Result<L<'a>> {

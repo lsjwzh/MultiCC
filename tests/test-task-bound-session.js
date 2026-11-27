@@ -17,7 +17,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
 const core = require('../src/task-board/core');
-const { createTaskBoardRuntime } = require('../src/routes/task-board');
+const { createTaskBoardRuntime } = require('../src/native/binding').taskBoardRuntime;
 const { createSessionQueryService } = require('../src/session/query-service');
 const { retiredRoutes } = require('./helpers/task-board-ports');
 

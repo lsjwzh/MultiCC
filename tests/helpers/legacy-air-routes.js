@@ -9,7 +9,7 @@
 
 
 const crypto = require('node:crypto');
-const core = require('../../src/task-board/core');
+const { core } = require('./load-frozen-task-board');
 const { taskDomain, taskDomainAsync } = require('../../src/native/task-domain');
 const { isAbnormalLetter, isGoalState } = require('../../src/classify/vocab');
 const { createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../../src/native/task-domain');

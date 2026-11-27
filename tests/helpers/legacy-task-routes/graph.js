@@ -9,7 +9,7 @@
 // Read-only: no mutation of either store, computed per request like the
 // memory graph.
 
-const { taskDirId } = require('../../../src/task-board/core');
+const { taskDirId } = require('../load-frozen-task-board').core;
 const { sanitizePublicText } = require('../frozen-file-batch19/public-safety');
 
 const TASK_GRAPH_MAX_NODES = 800;

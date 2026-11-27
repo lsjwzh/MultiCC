@@ -121,7 +121,7 @@ const { mountSystemHostRoute, mountProviderRelayHostRoute, mountHostReadHostRout
 const { mountPushHostRoute } = require('./src/routes/push-host');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board/index'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
+const { createTaskBoardRuntime } = require('./src/native/binding').taskBoardRuntime; const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
 const { createSkillSyncRuntime } = require('./src/skill-sync');

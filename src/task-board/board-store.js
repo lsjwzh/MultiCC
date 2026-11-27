@@ -12,7 +12,7 @@
 // （测试每次调用后、生产每 10 分钟），分叉以宿主镜像为准重新上送。
 const { getNative, runNative, nativeCode } = require('../native/binding');
 const domain = require('../native/task-domain');
-const { wireDate } = require('./planning');
+const { wireDate } = require('../native/binding').taskPlanning;
 
 const KINDS = ['tasks', 'modules', 'taskGroups'];
 const SEP = '\u0001';

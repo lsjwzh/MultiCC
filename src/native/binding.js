@@ -1773,10 +1773,96 @@ exposeHostApi('gitQueue', () => getNative().defaultGitQueue(module.exports.repoA
 exposeHostApi('gitService', () => getNative().gitServiceApi(module.exports.repoActor.defaultRepoActor, process.execPath,
   callback => require('node:async_hooks').AsyncResource.bind(callback, 'MultiCCGitOperation')));
 
+// The resident board is identified by the host's WeakMap. Keep V8 date,
+// collation, and Array species behavior when preparing native commands.
+let boardDomainFacades;
+function getBoardDomainFacades() {
+  if (boardDomainFacades) return boardDomainFacades;
+  const { taskDomain, boardStoreOf, replace } = require('./task-domain');
+  boardDomainFacades = getNative().taskBoardDomainFacades({
+    taskDomain, boardStoreOf, replace,
+    turnRunStates: module.exports.classifyVocab.TURN_RUN_STATES,
+    compareIds: (a, b) => a.localeCompare(b),
+    uuid: () => require('node:crypto').randomUUID().replace(/-/g, ''),
+    mapTasks: (rows, board) => rows.map(task => board.tasks[task.id]),
+    moduleEntry: (board, task) => ({ [task.moduleId]: board.modules?.[task.moduleId] }),
+    wireDate(value) {
+      if (value == null || value === '') return null;
+      const date = value instanceof Date ? value : typeof value === 'number' ? new Date(value) : new Date(String(value));
+      return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+    },
+  });
+  return boardDomainFacades;
+}
+exposeHostApi('taskPlanning', () => getBoardDomainFacades().planning);
+exposeHostApi('taskNormalize', () => getBoardDomainFacades().normalize);
+exposeHostApi('taskBoardBridge', () => getBoardDomainFacades().bridge);
+
+exposeHostApi('taskLifecycle', () => getNative().boardLifecycleApi({
+  boardRule: module.exports.taskBoardBridge.boardRule, historyRefusal: getNative().taskHistoryRefusal,
+}));
+exposeHostApi('taskRelocate', () => getNative().boardRelocateApi({
+  plan: getNative().taskRelocatePlan, commit: getNative().taskRelocateCommit, assign: assignHostProperty,
+}));
+exposeHostApi('taskRetention', () => getNative().boardRetentionApi({
+  domain: require('./task-domain').taskDomain, isOpen: module.exports.classifyVocab.isOpenRunState,
+  limit: module.exports.taskShellCapacity.MAX_TASKS_PER_DIRECTORY,
+}));
+
+let taskSearchApi;
+function getTaskSearchApi() {
+  return taskSearchApi ??= getNative().taskSearchApi({ addon: getNative(), tokenizer: searchTokenizer, runNative, record });
+}
+// Importing routes or creating an injected host can precede loading the platform addon.
+module.exports.taskSearch = {
+  tokenize: searchTokenizer.tokenize,
+  normalizeText: searchTokenizer.normalizeText,
+  get FIELD_WEIGHTS() { return getTaskSearchApi().FIELD_WEIGHTS; },
+  analyzeQuery(query) { return getTaskSearchApi().analyzeQuery(query); },
+  buildSnippet(doc, query) { return getTaskSearchApi().buildSnippet(doc, query); },
+  buildTaskSearchIndex(board, options = {}) { return getTaskSearchApi().buildTaskSearchIndex(board, options); },
+  searchBoard(board, query, options = {}) { return getTaskSearchApi().searchBoard(board, query, options); },
+  searchTaskIndex(index, query, options = {}) { return getTaskSearchApi().searchTaskIndex(index, query, options); },
+  taskSearchFields(board, task) { return getTaskSearchApi().taskSearchFields(board, task); },
+  async buildIndex(board, options = {}) { return getTaskSearchApi().buildIndex(board, options); },
+  async searchIndex(index, query, options = {}) { return getTaskSearchApi().searchIndex(index, query, options); },
+  createTaskSearchBackend() {
+    let backend;
+    return async function searchTasks(board, query, options = {}) {
+      return (backend ??= getTaskSearchApi().createTaskSearchBackend())(board, query, options);
+    };
+  },
+};
+
+exposeHostApi('taskPlanningRoutes', () => getNative().taskPlanningRoutesApi({
+  planning: module.exports.taskPlanning, cloneBoard: require('./task-domain').cloneBoard,
+}));
+exposeHostApi('taskBoardRuntime', () => {
+  const native = getNative();
+  const { taskAttention, createTaskBoardRepository } = require('./task-domain');
+  const host = {
+    core: module.exports.taskBoardCore, planning: module.exports.taskPlanning,
+    recentTaskIds: module.exports.taskBoardBridge.recentTaskIds, attention: taskAttention, createTaskBoardRepository,
+    crypto: require('node:crypto'), existsSync: require('node:fs').existsSync,
+    isVoiceRouterRecord: module.exports.voiceRouter.isVoiceRouterRecord,
+    runStateForFreezeReason: module.exports.sessionWork.runStateForFreezeReason,
+    runStateForLetter: module.exports.classifyVocab.runStateForClassify,
+    openBoardStore: require('../task-board/board-store').openBoardStore,
+    createTaskWorktreeService: require('../task-worktree').createTaskWorktreeService,
+    createTaskRetention: module.exports.taskRetention.createTaskRetention,
+    createTaskPlanningRuntime: module.exports.taskPlanningRoutes.createTaskPlanningRuntime,
+    createBoardTaskLifecycle: module.exports.taskLifecycle.createBoardTaskLifecycle,
+    createTaskRelocate: module.exports.taskRelocate.createTaskRelocate,
+    Classification: native.TaskBoardClassification,
+  };
+  return { assertTaskBoardDeps: native.taskBoardAssertDeps,
+    createTaskBoardRuntime: deps => native.taskBoardRuntimeCreate(deps, host) };
+});
+
 exposeHostApi('taskBoardCore', () => getNative().taskBoardCoreApi({
-  planning: require('../task-board/planning'),
-  normalize: require('../task-board/normalize'),
-  bridge: require('../task-board/native-bridge'),
+  planning: module.exports.taskPlanning,
+  normalize: module.exports.taskNormalize,
+  bridge: module.exports.taskBoardBridge,
   routing: module.exports.taskBoardRouting,
 }));
 
@@ -1860,7 +1946,7 @@ exposeHostApi('chatApi', () => getNative().chatHostExports([
 ]));
 
 exposeHostApi('taskBoardRouting', () => getNative().taskBoardRoutingApi({
-  taskDomain: require('./task-domain').taskDomain, taskDirId: require('../task-board/normalize').taskDirId,
+  taskDomain: require('./task-domain').taskDomain, taskDirId: module.exports.taskNormalize.taskDirId,
   entries: values => [...values || []],
   affinity: task => new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean)),
   rankInputs(records, { dirId = null, contextTerms = new Map(), affinitySessionIds = new Set(), options = {} } = {}, check) {

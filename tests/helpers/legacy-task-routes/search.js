@@ -22,7 +22,7 @@
 // Read-only: nothing here mutates the board or touches disk. The message route
 // does hand work to the index runtime, but only reads: it never triggers a sweep.
 
-const { createTaskSearchBackend } = require('../../../src/native/task-search');
+const { taskSearch: { createTaskSearchBackend } } = require('../load-frozen-task-board');
 
 const MAX_QUERY_CHARS = 200;
 const DEFAULT_LIMIT = 20;

@@ -1,5 +1,5 @@
 //! Select from one committed snapshot; refresh callbacks execute in bounded groups.
-use crate::quota_host::*;
+use crate::host_api::*;
 use napi_derive::napi;
 fn action<'a>(p: L<'a>, op: &str, input: L<'a>, request: L<'a>) -> Result<L<'a>> {
     let wire = json_call(p, c"stringify", input)?;

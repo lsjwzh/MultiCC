@@ -6,3 +6,4 @@ mod projection;
 mod route_ports;
 mod routing;
 mod worktree;
+mod setup;

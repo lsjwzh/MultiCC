@@ -1,5 +1,5 @@
 //! A failed trend sample is independent of the committed provider limit.
-use crate::quota_host::*;
+use crate::host_api::*;
 use napi_derive::napi;
 fn warn<'a>(p: L<'a>, prefix: &str, err: L<'a>) -> Result<()> {
     if !p.get(c"warned")?.truthy()? {

@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const attention = require('../src/native/task-domain').taskAttention;
 const { mkRuntime } = require('./helpers/task-board-runtime');
-const { createTaskBoardRuntime } = require('../src/routes/task-board');
+const { createTaskBoardRuntime } = require('../src/native/binding').taskBoardRuntime;
 const { mountAir } = require('./helpers/air-host');
 
 test('a run moving into completed / error / waiting leaves a mark; the same outcome again does not', () => {

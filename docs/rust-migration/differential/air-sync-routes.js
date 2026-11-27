@@ -114,8 +114,9 @@ async function childReady() {
   }
 }
 
-function hooksFor(name, { seize = false } = {}) {
+function hooksFor(name, { seize = false, expectedDifference } = {}) {
   return {
+    expectedDifference,
     async before(side) {
       currentCase = name;
       if (side.name === 'rust') await childReady();
@@ -142,6 +143,8 @@ function corpus() {
 
   // ── sync: the bootstrap arm ──────────────────────────────────────────
   add('sync bootstrap', () => get('/api/air/sync'), { seize: true });
+  const conditional = side => get('/api/air/sync', { ...L, 'If-None-Match': seized[side.name].etag });
+  add('sync conditional with the seized etag', conditional);
   add('sync bootstrap with a day boundary', () => get('/api/air/sync?dayStart=1700000000000'));
   add('sync bootstrap include list', () => get('/api/air/sync?include=tk-a&include=tk-b'));
   add('sync bootstrap include commas', () => get('/api/air/sync?include=tk-a,,tk-b'));
@@ -163,8 +166,12 @@ function corpus() {
   // ── sync: methods, caching, compression ──────────────────────────────
   add('HEAD sync', () => head('/api/air/sync'));
   add('OPTIONS sync', () => options('/api/air/sync'));
-  add('sync conditional with the seized etag',
-    side => get('/api/air/sync', { ...L, 'If-None-Match': seized[side.name].etag || 'W/"missing"' }));
+  // The frozen Express wrapper invalidates metadata after HEAD. Its next
+  // read refreshes checkedAt, changing the ETag. The gateway's HEAD is read-only.
+  add('sync conditional after HEAD', conditional, { expectedDifference: {
+    node: view => view.status === 200 && view.headers.etag === '<etag>',
+    rust: view => view.status === 304 && view.body === '' && view.headers.etag === '<etag>',
+  } });
   add('sync gzip', () => get('/api/air/sync', { ...L, 'Accept-Encoding': 'gzip, deflate' }));
 
   // ── page ─────────────────────────────────────────────────────────────
@@ -370,6 +377,9 @@ main({
     const conditional = byName.get('sync conditional with the seized etag');
     if (!conditional || conditional.node.status !== 304 || conditional.rust.status !== 304) {
       problems.push('sync conditional with the seized etag: expected 304 on both sides');
+    }
+    if (byName.get('sync conditional after HEAD')?.node.body !== bootstrap?.node.body) {
+      problems.push('sync conditional after HEAD: the refreshed snapshot must retain the bootstrap payload');
     }
     for (const name of ['HEAD sync', 'HEAD page']) {
       const view = byName.get(name);

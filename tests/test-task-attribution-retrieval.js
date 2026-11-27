@@ -10,7 +10,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const taskSearch = require('../src/task-board/search');
+const taskSearch = require('../src/native/binding').taskSearch;
 const {
   attributionQueryText,
   buildTaskAttributionSystemPrompt,

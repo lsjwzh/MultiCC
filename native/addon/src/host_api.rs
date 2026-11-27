@@ -1,4 +1,4 @@
-//! Shared live-value adapters for the quota host's injected stores, clocks and callbacks.
+//! Live-value adapters for host-owned stores, clocks, callbacks and Promise continuations.
 pub(crate) use crate::{
     host_methods::{async_result, default_object, function},
     js_live::spread,

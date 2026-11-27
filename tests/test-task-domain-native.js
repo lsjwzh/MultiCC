@@ -10,8 +10,8 @@ const { createTaskBoardRepository } = require('../src/native/task-domain');
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
 const { taskDomain, taskDomainAsync } = require('../src/native/task-domain');
 const { getNative, nativeCode } = require('../src/native/binding');
-const { boardRule } = require('../src/task-board/native-bridge');
-const planning = require('../src/task-board/planning');
+const { boardRule } = require('../src/native/binding').taskBoardBridge;
+const planning = require('../src/native/binding').taskPlanning;
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const core = require('../src/task-board/core');
 function directory(t) {
@@ -342,7 +342,7 @@ test('原生 panic 被捕获为 TASK_DOMAIN_PANIC，且之后进程仍可用', (
     const root = ${JSON.stringify(root)};
     const { taskDomain, taskDomainAsync } = require(root + '/src/native/task-domain');
     const { getNative, nativeCode } = require(root + '/src/native/binding');
-    const planning = require(root + '/src/task-board/planning');
+    const planning = require(root + '/src/native/binding').taskPlanning;
     const codeOf = error => { nativeCode(error); return error.code; };
     (async () => {
       let syncCode, asyncCode, planningCode, cacheCode;

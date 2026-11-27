@@ -1,5 +1,5 @@
 //! A display-only projection with store-owned envelope recovery.
-use crate::quota_host::*;
+use crate::host_api::*;
 use multicc_core::{js::JsString, quota_routes::BAR_KINDS};
 use napi_derive::napi;
 fn clean(v: L<'_>, limit: usize) -> Result<L<'_>> {
