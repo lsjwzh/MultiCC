@@ -57,7 +57,7 @@ const webpush = require('web-push');
 const macosPower = require('./plugins/utils/macos-power');
 const batteryGuardRuntime = require('./src/battery-guard').createBatteryGuardRuntime({ macosPower, logger: console }).start(); // 掉电保护，详见 src/battery-guard.js 头注
 const gitPush = require('./plugins/utils/git-push');
-const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git/queue');
+const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/native/binding').gitQueue;
 
 const crypto = require('crypto');
 const bus = require('./src/native/binding').eventBus;
