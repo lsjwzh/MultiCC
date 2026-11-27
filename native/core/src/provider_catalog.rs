@@ -334,6 +334,7 @@ pub fn official_codex(record: &Value) -> bool {
 
 /// `isOfficial(record)`: content-based only (an official-shaped id alone is
 /// not enough; the id filter below covers those).
+#[allow(clippy::result_unit_err)]
 pub fn is_official(record: &Value) -> Result<bool, ()> {
     let Some(kind) = record.get("appType").and_then(Value::as_str) else {
         return Ok(false);

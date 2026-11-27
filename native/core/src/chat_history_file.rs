@@ -330,10 +330,7 @@ pub fn visit_jsonl_tail_reverse_projected(
         }
     }
 
-    if trailing_invalid && !accepted_any {
-        return Ok(false);
-    }
-    Ok(true)
+    Ok(!(trailing_invalid && !accepted_any))
 }
 
 pub fn read_hidden_ids(path: &Path) -> io::Result<std::collections::HashSet<crate::js::JsString>> {
