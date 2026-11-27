@@ -7,7 +7,7 @@
 // would snapshot the value and miss later applyEnvUpdates() changes (the exact
 // stale-binding bug that splitting server.js could have introduced).
 const fs = require('fs');
-const { createPaths } = require('../paths');
+const { createPaths } = require('../native/binding').appPaths;
 const { atomicWriteJson } = require('../runtime-security');
 const { stripAliases } = require('./hotword-corrector');
 const { createHotwordLearner } = require('./hotword-learner');

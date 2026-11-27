@@ -17,7 +17,7 @@ const { redactProviderRouteCapability } = require('../observability');
 // is honoured, which is how the test harnesses stay hermetic.
 function settledNudgeFile(deps) {
   if (deps.settledNudgeFile !== undefined) return deps.settledNudgeFile;
-  const { createPaths } = require('../paths');
+  const { createPaths } = require('../native/binding').appPaths;
   return createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).backgroundNudgeFile;
 }
 

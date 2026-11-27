@@ -189,7 +189,7 @@ function createTaskIdListRuntime(rawDeps, spec) {
 
 function createAirList(deps, todo) {
   const spec = getNative().airTaskListSpec(todo);
-  spec.defaultFile = () => require('../paths').createPaths()[spec.fileKey];
+  spec.defaultFile = () => require('./binding').appPaths.createPaths()[spec.fileKey];
   return createTaskIdListRuntime(deps, spec);
 }
 const createAirPinRuntime = deps => createAirList(deps, false);
@@ -204,7 +204,7 @@ function normalizeIgnores(value, limit = getNative().AIR_TODO_IGNORE_LIMIT) {
 }
 function createAirTodoIgnoreRuntime(rawDeps) {
   const deps = rawDeps || {};
-  const file = deps.file || require('../paths').createPaths().airTodoIgnoresFile;
+  const file = deps.file || require('./binding').appPaths.createPaths().airTodoIgnoresFile;
   if (typeof deps.listTasks !== 'function') throw new TypeError('[air-todo-ignores] listTasks() is required');
   const logger = deps.logger || console;
   const store = createStore({ file, kind: 'air-todo-ignores', schemaVersion: 1, legacyIsArray: false });

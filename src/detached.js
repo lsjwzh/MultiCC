@@ -10,7 +10,7 @@ const nodeFs = require('fs');
 const nodePath = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { createPaths } = require('./paths');
+const { createPaths } = require('./native/binding').appPaths;
 
 const LEGACY_BASE_DIR = nodePath.join(os.homedir(), '.multicc', 'detached');
 const DEFAULT_BASE_DIR = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).detachedDir;

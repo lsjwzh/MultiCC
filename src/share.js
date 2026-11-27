@@ -21,7 +21,7 @@
 
 const fs = require('fs');
 const crypto = require('crypto');
-const { createPaths } = require('./paths');
+const { createPaths } = require('./native/binding').appPaths;
 const { atomicWriteJson } = require('./runtime-security');
 const { timingSafeEqualText } = require('./auth-security');
 

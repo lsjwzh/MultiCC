@@ -12,6 +12,16 @@ function bootstrapApi(key, create, unavailable) {
     return f;
   };
   switch (key) {
+    case 'appPaths': {
+      const { pathSafety } = require('./binding');
+      return {
+        createPaths(options = {}) { return ready().createPaths(options); },
+        resolveDataDir(dir) { return ready().resolveDataDir(dir); },
+        assertTestDir(dir) { return ready().assertTestDir(dir); },
+        isHomeOrAbove: pathSafety.isHomeOrAbove, realPathOf: pathSafety.realPathOf,
+        PKG_ROOT: require('node:path').resolve(__dirname, '../..'),
+      };
+    }
     case 'cliResultCompletion':
       return { isMainResult: forward('isMainResult',1), resultCompletion: forward('resultCompletion',1),
         createResultCompletionTracker: forward('createResultCompletionTracker',0) };

@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const { resolveDataDir, createPaths } = require('../paths');
+const { resolveDataDir, createPaths } = require('../native/binding').appPaths;
 const { createSearchIndex, MAX_LIMIT } = require('./index-store');
 const { createMessageCorpus, MESSAGE_SCOPE } = require('./message-corpus');
 const { createSliceRunner, DEFAULT_SLICE_MS, DEFAULT_DUTY } = require('./slice-runner');

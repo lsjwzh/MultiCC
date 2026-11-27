@@ -821,6 +821,10 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+exposeHostApi('appPaths', () => getNative().appPathsPublicApi({
+  fs: require('node:fs'), os: require('node:os'), path, process, pkgRoot: path.resolve(__dirname, '../..'),
+}, pathSafety));
+
 exposeHostApi('requestLocality', () => getNative().requestLocalityApi(getNative()));
 
 exposeHostApi('cliResultCompletion', () => getNative().cliResultApi(getNative()));

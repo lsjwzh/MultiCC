@@ -73,7 +73,7 @@ const {
   summarizeHistoryUsage,
 } = require('./src/codex/usage');
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
-const { getNative, findProviderReferences, messageComposer, bootstrapState,
+const { appPaths: { createPaths }, getNative, findProviderReferences, messageComposer, bootstrapState,
   synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence, getSessionNotices } = require('./src/native/binding');
 const { createCliAdapters } = require('./src/cli-adapters');
 
@@ -99,7 +99,6 @@ const {
 } = require('./src/cli-switch');
 const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
 // MULTICC_DATA_DIR owns state; stores use atomic writes.
-const { createPaths } = require('./src/paths');
 const stateStore = require('./src/state/store');
 const { createSessionRecords, createTaskStateStore } = require('./src/session/records');
 const { createStateOwner } = require('./src/state/owner');

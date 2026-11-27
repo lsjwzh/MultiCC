@@ -21,7 +21,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createPaths } = require('./paths');
+const { createPaths } = require('./native/binding').appPaths;
 const { atomicWriteJson } = require('./runtime-security');
 const secretAudit = require('./secret-audit');
 

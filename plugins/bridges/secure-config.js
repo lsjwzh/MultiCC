@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createPaths } = require('../../src/paths');
+const { createPaths } = require('../../src/native/binding').appPaths;
 const { atomicWriteJson, atomicWriteText, ensurePrivateDir, secureFile } = require('../../src/runtime-security');
 
 const RUNTIME_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
