@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { EventEmitter } = require('node:events');
-const { observeProxyRequest } = require('../src/providers/proxy-outcome');
+const { observeProxyRequest } = require('../src/native/binding').proxyOutcome;
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const {
   classifyProviderProxyRoute,
@@ -469,7 +469,7 @@ test('an upstream 429 carries its structured rejection to the attempt outcome', 
   assert.equal('rejection' in clean.proxyFailure(next), false);
 });
 
-const currentOutcome = require('../src/providers/proxy-outcome');
+const currentOutcome = require('../src/native/binding').proxyOutcome;
 const legacyOutcome = require('./helpers/legacy-proxy-outcome');
 
 test('proxy request classification and normalization match 49fc8188, including repeated getters', () => {

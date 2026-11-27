@@ -41,7 +41,7 @@ function defaultDeps() {
   const claude = require('./claude-usage-quota');
   const aliyun = require('./aliyun-quota');
   const { getManagedQuotaBrowser } = require('../quota-managed-browser');
-  const queue = require('../quota/claude-usage-queue');
+  const queue = require('../native/binding').claudeUsageQueue;
   const barState = require('../quota/claude-bar-state');
   return {
     priceTable: sharedPriceTable(),

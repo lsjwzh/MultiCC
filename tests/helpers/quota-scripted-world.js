@@ -32,7 +32,7 @@ const path = require('node:path');
 
 const barView = require('../../src/native/binding').getQuotaBarView();
 const barState = require('../../src/quota/claude-bar-state');
-const usageQueue = require('../../src/quota/claude-usage-queue');
+const usageQueue = require('../../src/native/binding').claudeUsageQueue;
 const kimi = require('../../src/routes/kimi-quota');
 
 const CACHE_FILE = 'quota-bar-cache.json';

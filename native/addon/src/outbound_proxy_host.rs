@@ -196,3 +196,186 @@ pub fn outbound_resolve(
     )?
     .raw())
 }
+
+#[napi]
+pub fn outbound_system_proxy(input: String) -> Result<String> {
+    serde_json::to_string(&policy::parse_mac_system_proxy(&input))
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+fn bypass<'a>(ports: L<'a>, url: L<'a>, entries: L<'a>) -> Result<bool> {
+    let native = ports.get(c"native")?;
+    let mut host = call(url.get(c"hostname")?, c"toLowerCase", &[])?;
+    if call(host, c"startsWith", &[text(host, "[")?])?.truthy()? {
+        host = call(host, c"slice", &[num(host, 1.)?])?;
+    }
+    if call(host, c"endsWith", &[text(host, "]")?])?.truthy()? {
+        host = call(host, c"slice", &[num(host, 0.)?, num(host, -1.)?])?;
+    }
+    if call(native, c"outboundLoopback", &[host])?.truthy()? {
+        return Ok(true);
+    }
+    let port = url.get(c"port")?;
+    let port = if port.truthy()? {
+        port
+    } else {
+        text(url, if secure(url)? { "443" } else { "80" })?
+    };
+    let mut direct = false;
+    entries.for_each_while(|item| {
+        direct = call(
+            native,
+            c"outboundBypassEntry",
+            &[host, port, call(item, c"toLowerCase", &[])?],
+        )?
+        .truthy()?;
+        Ok(!direct)
+    })?;
+    Ok(direct)
+}
+fn secure(url: L<'_>) -> Result<bool> {
+    let protocol = url.get(c"protocol")?;
+    Ok(protocol.is_string("https:")? || protocol.is_string("wss:")?)
+}
+fn resolve<'a>(p: L<'a>, env: L<'a>, system: L<'a>) -> Result<L<'a>> {
+    let native = p.get(c"native")?;
+    call(
+        native,
+        c"outboundResolve",
+        &[
+            env,
+            system,
+            call(native, c"outboundProxyEnv", &[env])?,
+            p.get(c"valid")?,
+        ],
+    )
+}
+fn configuration(p: L<'_>) -> Result<L<'_>> {
+    use crate::host_methods::{async_result, function};
+    async_result(p, || {
+        let ports = p.get(c"ports")?;
+        let env = p.get(c"env")?;
+        let resolve_now = || resolve(ports, env, p.get(c"system")?);
+        if !p.get(c"platform")?.is_string("darwin")?
+            || call(ports.get(c"native")?, c"outboundProxyEnv", &[env])?.truthy()?
+        {
+            return resolve_now();
+        }
+        let now = p.get(c"now")?.call_plain(&[])?.number()?;
+        let interval = p.get(c"options")?.get(c"refreshMs")?;
+        let interval = if interval.nullish()? {
+            30000.
+        } else {
+            interval.number()?
+        };
+        if !(now - p.get(c"checkedAt")?.number()? >= interval) {
+            return resolve_now();
+        }
+        let mut pending = p.get(c"pending")?;
+        if !pending.truthy()? {
+            let tick = call(p.global()?.get(c"Promise")?, c"resolve", &[])?;
+            let read = call(tick, c"then", &[p.get(c"readSystem")?])?;
+            let success = function(p, "systemProxyRead", 1, 1, |p, a| {
+                p.set(c"system", a[0])?;
+                p.set(c"checkedAt", p.get(c"now")?.call_plain(&[])?)?;
+                p.from_value(&V::Undefined)
+            })?;
+            let failed = function(p, "systemProxyFailed", 1, 1, |p, a| {
+                if !p.get(c"system")?.truthy()? {
+                    return Err(a[0].throw_error());
+                }
+                p.set(c"checkedAt", p.get(c"now")?.call_plain(&[])?)?;
+                p.from_value(&V::Undefined)
+            })?;
+            let clear = function(p, "systemProxySettled", 0, 0, |p, _| {
+                p.set(c"pending", null(p)?)?;
+                p.from_value(&V::Undefined)
+            })?;
+            pending = call(
+                call(read, c"then", &[success, failed])?,
+                c"finally",
+                &[clear],
+            )?;
+            p.set(c"pending", pending)?;
+        }
+        call(
+            pending,
+            c"then",
+            &[function(p, "resolveProxy", 0, 0, |p, _| {
+                resolve(p.get(c"ports")?, p.get(c"env")?, p.get(c"system")?)
+            })?],
+        )
+    })
+}
+#[napi]
+pub fn outbound_bypass_url(
+    env: Env,
+    ports: Unknown<'_>,
+    url: Unknown<'_>,
+    entries: Unknown<'_>,
+) -> Result<bool> {
+    bypass(
+        L::new(&env, ports),
+        L::new(&env, url),
+        L::new(&env, entries),
+    )
+}
+#[napi]
+pub fn outbound_policy_instance(
+    env: Env,
+    ports: Unknown<'_>,
+    config: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    use crate::host_methods::{async_result, function};
+    let p = L::new(&env, config);
+    p.set(c"ports", L::new(&env, ports))?;
+    p.set(c"checkedAt", num(p, f64::NEG_INFINITY)?)?;
+    Ok(fields(
+        p,
+        &[
+            (
+                "configuration",
+                function(p, "configuration", 0, 0, |p, _| configuration(p))?,
+            ),
+            (
+                "invalidate",
+                function(p, "invalidate", 0, 0, |p, _| {
+                    p.set(c"checkedAt", num(p, f64::NEG_INFINITY)?)?;
+                    p.from_value(&V::Undefined)
+                })?,
+            ),
+            (
+                "proxyForUrl",
+                function(p, "proxyForUrl", 1, 1, |p, a| {
+                    async_result(p, || {
+                        let url = p.global()?.get(c"URL")?.construct(&[a[0]])?;
+                        let ports = p.get(c"ports")?;
+                        if call(
+                            ports.get(c"native")?,
+                            c"outboundLoopback",
+                            &[call(url.get(c"hostname")?, c"toLowerCase", &[])?],
+                        )?
+                        .truthy()?
+                        {
+                            return text(p, "");
+                        }
+                        let s = fields(p, &[("ports", ports), ("url", url)])?;
+                        let pick = function(s, "selectProxy", 1, 1, |s, a| {
+                            let url = s.get(c"url")?;
+                            if bypass(s.get(c"ports")?, url, a[0].get(c"noProxy")?)? {
+                                text(s, "")
+                            } else {
+                                a[0].get(if secure(url)? {
+                                    c"httpsProxy"
+                                } else {
+                                    c"httpProxy"
+                                })
+                            }
+                        })?;
+                        call(configuration(p)?, c"then", &[pick])
+                    })
+                })?,
+            ),
+        ],
+    )?
+    .raw())
+}

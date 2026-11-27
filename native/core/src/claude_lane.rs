@@ -1156,3 +1156,8 @@ mod tests {
         );
     }
 }
+
+pub fn sdk_config_hash(serialized: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(serialized.as_bytes()))
+}

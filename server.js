@@ -2834,7 +2834,7 @@ app.use(safeErrorHandler(logger));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
     const cleanupArtifacts = async () => {
-      try { return await artifacts.cleanupAsync(undefined, docsRegistry.listPermanentArtifactIds()); }
+      try { return await artifacts.cleanupAsync(undefined, await docsRegistry.listPermanentArtifactIdsAsync()); }
       catch { logger.warn('artifact_cleanup_pin_read_failed'); return 0; }
     };
     void cleanupArtifacts();

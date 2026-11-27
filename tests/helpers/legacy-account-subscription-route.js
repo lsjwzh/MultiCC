@@ -16,7 +16,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 
 function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
   const pending = new Map();
-  const cache = require(path.join(ROOT, 'src/quota/account-subscription-cache'));
+  const cache = require(path.join(ROOT, 'src/native/binding')).accountSubscriptionCache;
   async function read(id) {
     if (vendor === 'claude' && id && !deps.accounts.listClaudeAccounts().some(a => a.id === id)) {
       return { status: 'no_auth' };

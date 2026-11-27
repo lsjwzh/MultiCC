@@ -1,5 +1,32 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 4 批（2026-11-27，MacPro x86_64）
+
+从 `1f2838ea` 追踪生产依赖，统计包括无末尾换行符的最后一行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 345 / 96,845 | 335 / 96,408 |
+| server.js 与 src/ | 346 / 99,706 | 336 / 99,269 |
+| server.js、src/ 与 plugins/ | 358 / 103,625 | 348 / 103,188 |
+
+| 退役生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/artifact-retention.js` | 79 | 共用网关的有界依赖扫描，保留文件缓存，异步计算清理和注册表淘汰所需的保留集合 |
+| `src/network/proxy-policy.js` | 76 | 解析系统代理、合并环境、选择出口，合并在途查询并保留上次成功配置 |
+| `src/providers/claude-quota-bridge.js` | 56 | 合并响应头、按状态码提取限额、关联请求上下文和处理回调 |
+| `src/providers/egress-ip-policy.js` | 75 | 规范化允许列表，使用当前探测结果决定准入和错误码 |
+| `src/providers/model-connect-watch.js` | 74 | 管理每次连接的超时、撤销和响应关闭清理 |
+| `src/providers/proxy-outcome.js` | 54 | 监听 HTTP 终止事件，区分上下游断连，确保每个请求只通知一次 |
+| `src/quota/account-subscription-cache.js` | 76 | 按序执行异步数据库读写，按文件变化刷新同步快照，隔离重配置前的在途读取 |
+| `src/quota/claude-usage-queue.js` | 50 | 配置账号键、取数和时钟，复用每账号缓存与在途 Promise |
+| `src/chat/claude-sdk-config.js` | 64 | 生成会话配置指纹和原生执行参数，保留模型热切换和凭据轮换语义 |
+| `src/chat/workspace-residency.js` | 36 | 在抢占前冻结条目快照并依次等待旧进程退出，保留回调对象与写入屏障 |
+
+十个旧文件共 640 行，可达生产代码净减 437 行。Node 仍连接诊断通道、HTTP socket、Express 响应和请求级异步上下文，提供 SDK 私有临时目录、V8 对象及宿主回调。原有同步注册表 API 继续支持本地调用方。日常清理和前门文档端口在 Rust 工作线程扫描依赖，注册表在扫描期间变化会触发重新计算。下游迁离这些 Node 专属接口后可移除相应桥接。
+
+一次 x64 Cargo 发布构建耗时 5 分 04 秒。五件产物的源码指纹均为 `f21b3ac1f17516147e6bddbe`，架构和 SHA-256 均通过校验。测试进程显式加载该绑定，43 个关联测试文件共 714 项通过，0 失败、0 跳过。真实网关与 Node 宿主的回环 WebSocket 冒烟通过，未覆盖局域网客户端。文档与记忆路由差分 94/94 一致，订阅缓存差分 6/6 一致。源码行数、46 项写入治理及打包索引通过。npm 包共 1,340 项，包含本批 15 个 Rust 变更文件，十个退役文件已退出 Git 索引和包。构建输出保留一条网关扫描器抽取后未使用导入的警告。
+
 ## server.js 与网关子进程第 3 批（2026-11-27，MacPro x86_64）
 
 以 `2d80fc0a` 为基线，从 `server.js` 及其网关子进程适配器追踪生产调用。物理行数计入没有换行符的末行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)

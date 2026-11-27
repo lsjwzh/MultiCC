@@ -118,7 +118,7 @@ test('virtual validation rejects cross-CLI and nested members without mutating t
 });
 
 test('账号订阅查询持久化后参与自动切换，续费恢复、失败及旧快照不会串号或覆盖新数据', { skip: !available }, async t => {
-  const subscriptions = require('../src/quota/account-subscription-cache');
+  const subscriptions = require('../src/native/binding').accountSubscriptionCache;
   const { registerAccountSubscriptionReader } = require('../src/native/binding').accountReader;
   const account = 'aaaaaaaaaaaaaaaa', other = 'bbbbbbbbbbbbbbbb';
   const file = path.join(root, 'subscription-limits.db');

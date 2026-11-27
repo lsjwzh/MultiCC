@@ -169,7 +169,7 @@ test('switching backend waits for the old child the switch is closing', async ()
 
 test('01e931f1 differential: live callback this, parked close barrier, ownership and rejection', async () => {
   const before = require('./helpers/frozen-state-leaves/workspace-residency');
-  const after = require('../src/chat/workspace-residency');
+  const after = require('../src/native/binding').workspaceResidency;
   async function trace(factory, mode) {
     const calls = [], results = [], marker = new Error('host failure');
     let close;
@@ -197,7 +197,7 @@ test('01e931f1 differential: live callback this, parked close barrier, ownership
 
 test('01e931f1 differential: activity exposes the entry receiver and its strict setters', async () => {
   const before = require('./helpers/frozen-state-leaves/workspace-residency');
-  const after = require('../src/chat/workspace-residency');
+  const after = require('../src/native/binding').workspaceResidency;
   async function trace(factory) {
     const marker = new Error('setter'), events = [];
     const r = factory({ status: () => null, pending: () => false, closeAndWait: () => ({ closed: true }) });

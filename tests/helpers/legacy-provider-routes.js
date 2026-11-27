@@ -328,7 +328,7 @@ function createProviderRoutes(rawDeps) {
         } catch (_) { /* a catalog refresh must never hide the Provider list */ }
       }
       const ccSwitchStatus = deps.providers.getCcSwitchStatus();
-      const subscriptions = require('../../src/quota/account-subscription-cache');
+      const subscriptions = require('../../src/native/binding').accountSubscriptionCache;
       await subscriptions.ready().catch(() => {});
       const providers = subscriptions.project(deps.providers.listProviders(
         appType === 'claude' || appType === 'codex' ? appType : undefined,

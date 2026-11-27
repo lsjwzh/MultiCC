@@ -63,7 +63,7 @@ test('server resolves pins from the docs registry for every artifact cleanup tic
   // contributes its `permanent` rows — 置顶 alone no longer keeps a file alive,
   // which is exactly the split test-docs-registry.js pins down.
   assert.match(source,
-    /artifacts\.cleanupAsync\(undefined, docsRegistry\.listPermanentArtifactIds\(\)\)/);
+    /artifacts\.cleanupAsync\(undefined, await docsRegistry\.listPermanentArtifactIdsAsync\(\)\)/);
   assert.match(source, /artifact_cleanup_pin_read_failed/);
   assert.match(source, /cleanupArtifacts\(\);/);
   assert.match(source,
@@ -76,7 +76,7 @@ test('server resolves pins from the docs registry for every artifact cleanup tic
 });
 
 test('permanent artifacts keep transitive, relative and declared intermediates without retaining unrelated tasks', t => {
-  const { permanentArtifactIds } = require('../src/artifact-retention');
+  const { permanentArtifactIds } = require('../src/native/binding').artifactRetention;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-related-artifacts-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const now = Date.now(), old = now - 8 * DAY_MS;
@@ -99,7 +99,7 @@ test('permanent artifacts keep transitive, relative and declared intermediates w
 });
 
 test('dependency graph observes later edits, legacy roots and cycles, and never reads through symlinks', t => {
-  const { permanentArtifactIds } = require('../src/artifact-retention');
+  const { permanentArtifactIds } = require('../src/native/binding').artifactRetention;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-artifact-graph-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const primary = path.join(root, 'primary'), legacy = path.join(root, 'legacy');
@@ -116,7 +116,7 @@ test('dependency graph observes later edits, legacy roots and cycles, and never 
 });
 
 test('a graph that cannot be completely scanned fails closed instead of returning a partial keep-list', t => {
-  const { permanentArtifactIds } = require('../src/artifact-retention');
+  const { permanentArtifactIds } = require('../src/native/binding').artifactRetention;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-artifact-budget-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   artifactDir(root, 'final', 1);
@@ -149,7 +149,7 @@ test('artifact publisher records explicit binary-source associations without tur
 });
 
 test('dot-prefixed nested references retain source artifacts through cleanup', t => {
-  const { permanentArtifactIds } = require('../src/artifact-retention');
+  const { permanentArtifactIds } = require('../src/native/binding').artifactRetention;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-dot-relative-artifacts-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const now = Date.now(), old = now - 8 * DAY_MS;

@@ -832,6 +832,183 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+exposeHostApi('artifactRetention', () => {
+  const rows = entries => JSON.stringify(entries.map(({ url, permanent, relatedArtifactIds }) => ({
+    url: typeof url === 'string' ? url : null, permanent: !!permanent,
+    relatedArtifactIds: Array.isArray(relatedArtifactIds) ? relatedArtifactIds.filter(id => typeof id === 'string') : [],
+  })));
+  return {
+    artifactIdFromUrl: url => typeof url === 'string' ? getNative().artifactIdFromRegistryUrl(url) ?? null : null,
+    permanentArtifactIds: (entries, roots) => new Set(getNative().retainedArtifactIds(rows(entries), roots)),
+    permanentArtifactIdsAsync: (entries, roots) => getNative().retainedArtifactIdsAsync(rows(entries), roots),
+  };
+});
+
+exposeHostApi('claudeSdkConfig', () => {
+  const fs = require('node:fs');
+  const settings = cfg => cfg.settingsFile ? JSON.parse(fs.readFileSync(cfg.settingsFile, 'utf8')) : {};
+  return {
+    fingerprint(cfg) {
+      return getNative().claudeSdkFingerprint(cfg, require('../chat/claude-sdk-route').managedRoute(cfg.env), settings(cfg));
+    },
+    laneOptions(cfg, started, relayEnv) {
+      const parsed = settings(cfg);
+      const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'multicc-sdk-'));
+      const dispose = () => fs.rmSync(dir, { recursive: true, force: true });
+      try {
+        fs.chmodSync(dir, 0o700);
+        return getNative().claudeSdkLaneOptions(cfg, !!started, relayEnv, parsed, { path: path.join(dir, 'settings.json'), dispose });
+      } catch (error) { dispose(); throw error; }
+    },
+  };
+});
+
+exposeHostApi('workspaceResidency', () => ({
+  createWorkspaceResidency({ status, pending, closeAndWait }) {
+    const native = getNative();
+    const ports = {
+      entries: new Map(), status: name => status(name), pending: name => pending(name), closeAndWait,
+      setActivity(entry, callback) { entry.onActivity = callback; }, setParked(entry) { entry.parked = true; },
+      busy: () => Object.assign(new Error('workspace_busy'), { code: 'workspace_busy', backpressure: true }),
+      location(value) {
+        if (!value) return null;
+        try { return require('node:fs').realpathSync(value); } catch { return path.resolve(value); }
+      },
+    };
+    return native.workspaceResidencyApi(ports, native.workspaceResidency(ports));
+  },
+}));
+
+exposeHostApi('egressIpPolicy', () => getNative().egressIpPolicyApi(require('../providers/egress-ip')));
+
+exposeHostApi('proxyPolicy', () => {
+  const run = require('node:util').promisify(require('node:child_process').execFile);
+  const ports = { get native() { return getNative(); }, valid(value) {
+    try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; }
+  } };
+  function parseMacSystemProxy(text) { return JSON.parse(getNative().outboundSystemProxy(String(text))); }
+  async function readMacSystemProxy() {
+    const { stdout } = await run('/usr/sbin/scutil', ['--proxy'], { timeout: 2000, maxBuffer: 32768 });
+    return parseMacSystemProxy(stdout);
+  }
+  const hasProxyEnv = env => getNative().outboundProxyEnv(env);
+  const mergeLoopbackNoProxy = env => getNative().outboundMergeEnv(env);
+  return {
+    createProxyPolicy(options = {}) {
+      const config = { env: options.env || process.env, platform: options.platform || process.platform,
+        readSystem: options.readSystemProxy || readMacSystemProxy, now: options.now || Date.now, options };
+      let instance;
+      const policy = () => instance ??= getNative().outboundPolicyInstance(ports, config);
+      return { async configuration() { return policy().configuration(); }, async proxyForUrl(url) { return policy().proxyForUrl(url); },
+        invalidate() { instance?.invalidate(); } };
+    },
+    parseMacSystemProxy, readMacSystemProxy, hasProxyEnv, mergeLoopbackNoProxy,
+    ensureLoopbackNoProxyEnv: env => env && typeof env === 'object' && hasProxyEnv(env) ? mergeLoopbackNoProxy(env) : env,
+    resolveProxyConfig: (env, system) => getNative().outboundResolve(env, system, hasProxyEnv(env), ports.valid),
+    cidrToRange: entry => getNative().outboundCidr(String(entry)) ?? null,
+    bypassProxy: (url, entries) => getNative().outboundBypassUrl(ports, url, entries),
+    isLoopback: host => getNative().outboundLoopback(host.toLowerCase()),
+  };
+});
+
+exposeHostApi('modelConnectWatch', () => {
+  const scope = new (require('node:async_hooks').AsyncLocalStorage)();
+  const { channel } = require('node:diagnostics_channel');
+  let owner;
+  const timers = () => owner ??= getNative().modelConnectTimers({ schedule: getNative().scheduleRequestTimer });
+  channel('undici:request:create').subscribe(({ request }) => { if (scope.getStore()) timers().begin(request, scope.getStore()); });
+  // HTTP/2 skips sendHeaders. Both transports publish bodySent or headers.
+  for (const name of ['undici:client:sendHeaders', 'undici:request:bodySent', 'undici:request:headers', 'undici:request:error']) {
+    channel(name).subscribe(({ request }) => owner?.end(request));
+  }
+  channel('http.client.request.start').subscribe(({ request }) => {
+    if (!scope.getStore()?.stall?.isArmed()) return;
+    const end = () => timers().end(request);
+    function watchSocket(socket) {
+      if (!socket.connecting) return;
+      timers().begin(request, scope.getStore());
+      const connected = socket.encrypted ? 'secureConnect' : 'connect';
+      const done = () => {
+        end();
+        for (const event of [connected, 'error', 'close']) socket.removeListener(event, done);
+      };
+      for (const event of [connected, 'error', 'close']) socket.once(event, done);
+    }
+    if (request.socket) watchSocket(request.socket);
+    else request.once('socket', watchSocket);
+    request.once('error', end);
+    request.once('close', end);
+  });
+  return { withModelConnectWatch: (context, fn) => scope.run(context, fn) };
+});
+
+exposeHostApi('proxyOutcome', () => {
+  function proxyRequestKind(protocol, req) {
+    return getNative().proxyClassifyRequest(protocol === 'claude', String(req?.method || '').toUpperCase(), String(req?.url || req?.originalUrl || ''));
+  }
+  return { proxyRequestKind, normalizeProxyOutcome: value => getNative().proxyNormalizeOutcome(value),
+    observeProxyRequest(protocol, req, res, onTerminal = () => {}, beforeDisconnect = () => false) {
+      const native = getNative();
+      return native.observeProxyResponse({ id: require('node:crypto').randomUUID(), kind: proxyRequestKind(protocol, req),
+        state: new native.ProxyObservationState(), onTerminal, beforeDisconnect }, req, res);
+    },
+  };
+});
+
+exposeHostApi('claudeQuotaBridge', () => ({
+  createClaudeQuotaBridge(app, options) {
+    const extract = headers => claudeQuota('extract', { headers });
+    if (typeof options.onRateLimit !== 'function' || extract({}) === undefined) return { app, options };
+    const hooks = getNative().claudeQuotaHeaderHooks({ extract, options });
+    const contexts = new (require('node:async_hooks').AsyncLocalStorage)();
+    return {
+      app: { use(path, handler) {
+        return app.use(path, (req, res, next) => {
+          const state = { context: null, fallback: null };
+          const original = res.writeHead;
+          res.writeHead = function (status, ...args) {
+            res.writeHead = original;
+            try { hooks.writeHead(state, res, status, args); } catch { /* An observer cannot interrupt forwarding. */ }
+            return original.call(this, status, ...args);
+          };
+          return contexts.run(state, () => handler(req, res, next));
+        });
+      } },
+      options: { ...options, onActivity: event => hooks.activity(contexts.getStore(), event),
+        onRateLimit: event => hooks.rateLimit(contexts.getStore(), event) },
+    };
+  },
+}));
+
+function createAccountSubscriptionCache(native = getNative(), run = runNative) {
+  return getNative().accountCacheHost({
+    async access(file, input) { return JSON.parse(await run(() => native.accountSubscriptionCache(file, JSON.stringify(input)))); },
+    project: (providers, subscriptions) => JSON.parse(native.projectAccountSubscriptions(JSON.stringify({ providers, subscriptions }))),
+  });
+}
+exposeHostApi('accountSubscriptionCache', () => createAccountSubscriptionCache());
+module.exports.createAccountSubscriptionCache = createAccountSubscriptionCache;
+
+exposeHostApi('claudeUsageQueue', () => {
+  const native = getNative();
+  const defaultNow = () => Date.now();
+  const ports = { entries: new Map(), inflight: new Map(), defaultNow, now: defaultNow };
+  ports.store = native.claudeUsageCache({
+    entries: ports.entries, inflight: ports.inflight, now: () => ports.now(),
+    before: (at, other) => at < other, fresh: entry => ports.now() - entry.at < 60000,
+    get configured() { return typeof ports.fetchUsage === 'function'; },
+    resolved: value => Promise.resolve(value), account: name => name.slice('claude:'.length),
+    async fetch(name, accountId) {
+      const fetchUsage = ports.fetchUsage;
+      let result;
+      try { result = await (accountId ? fetchUsage({ accountId }) : fetchUsage()); }
+      catch (err) { result = { status: 'unavailable', error: String(err?.message || err) }; }
+      return ports.store.finish(name, result);
+    },
+  });
+  return native.claudeUsageQueueApi(ports);
+});
+
 // These values must be captured before the source child selects its addon.
 // Consume the six control variables as soon as the gateway adapter is loaded.
 exposeHostApi('gatewayChild', () => {
@@ -1211,7 +1388,7 @@ exposeHostApi('authSecurity', () => ({
 exposeHostApi('globalProxy', () => {
   const network = require('../network/outbound');
   const http = require('node:http'), https = require('node:https');
-  return getNative().globalProxyApi({ ...require('../network/proxy-policy'),
+  return getNative().globalProxyApi({ ...module.exports.proxyPolicy,
     outbound: options => Object.keys(options).length ? network.createOutbound(options) : network,
     log: message => console.log(`[multicc] ${message}`),
     agents: () => ({ fetch: globalThis.fetch, http: http.globalAgent, https: https.globalAgent }),
@@ -1249,7 +1426,7 @@ exposeHostApi('providerQuota', () => ({
     recorder: require('../quota/limit-cache-recorder').createLimitRecorder,
     connect: module.exports.connectProviderLimitSync, barCache: require('../quota/quota-bar-cache').createQuotaBarCache,
     guard: require('../quota/quota-guard').createQuotaGuard,
-    subscriptions: opts => require('../quota/account-subscription-cache').configure(opts),
+    subscriptions: opts => module.exports.accountSubscriptionCache.configure(opts),
     virtualProvider: opts => require('../providers/virtual-provider').configure(opts),
   }),
 }));
@@ -1279,7 +1456,7 @@ exposeHostApi('accountReader', () => {
     } catch { status = 0; }
     return JSON.parse(native.accountSubscriptionResult(JSON.stringify({ plan, status, body, now: Date.now() })));
   }
-  return native.accountReaderApi({ defaultCodexAuth, query, cache: require('../quota/account-subscription-cache'),
+  return native.accountReaderApi({ defaultCodexAuth, query, cache: module.exports.accountSubscriptionCache,
     readCliCredentials: () => require('../quota/claude-cli-oauth').readCliCredentials() });
 });
 

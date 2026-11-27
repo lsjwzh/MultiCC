@@ -7,7 +7,7 @@ const net = require('node:net');
 const { once } = require('node:events');
 const { WebSocket, WebSocketServer } = require('ws');
 const { createOutbound } = require('../src/network/outbound');
-const { createProxyPolicy, bypassProxy, parseMacSystemProxy } = require('../src/network/proxy-policy');
+const { createProxyPolicy, bypassProxy, parseMacSystemProxy } = require('../src/native/binding').proxyPolicy;
 const { installGlobalProxy } = require('../src/native/binding').globalProxy;
 
 async function fixture(t) {
@@ -264,5 +264,5 @@ require('node:test')('67f54869 differential: network/proxy-policy', async () => 
       rows.push(api.isLoopback(host), api.bypassProxy({ hostname: host, protocol: 'https:', port: '' }, ['10.0.0.0/8', '.example:443', '\ud801']));
     }
     return rows;
-  });
+  }, require('../src/native/binding').proxyPolicy);
 });

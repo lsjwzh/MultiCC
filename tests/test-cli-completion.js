@@ -7,7 +7,7 @@ const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletion
 const { clearErrorFlagsForSucceededTurn, evaluatePostTurn } = require('../src/chat/turn-lifecycle');
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-const { observeProxyRequest } = require('../src/providers/proxy-outcome');
+const { observeProxyRequest } = require('../src/native/binding').proxyOutcome;
 const { createTurnEventJournal } = require('../src/chat/turn-event-journal');
 const { recordResultEvent } = require('../src/chat/turn-lifecycle');
 const { EventEmitter } = require('node:events');

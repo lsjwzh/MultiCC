@@ -13,7 +13,7 @@ function createStreamRouter(legacy, sdk, appServer) {
   // residency pool reads it back through residents().
   const used = new Map();
   const pending = new Map();
-  const residency = require('./workspace-residency').createWorkspaceResidency({
+  const residency = require('../native/binding').workspaceResidency.createWorkspaceResidency({
     status: name => backend(name).status(name),
     closeAndWait: name => api.closeAndWait(name), pending: name => (pending.get(name) || 0)
       + Number(!!barriers.get(name)?.promise || !!barriers.get(name)?.selected.isClosing?.(name)),

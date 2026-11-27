@@ -91,15 +91,15 @@ function createDocsMemoryHost(rawDeps = {}) {
     return { sessionDir, exists, taskTitle };
   }
 
-  function invoke(body) {
+  async function invoke(body) {
     switch (body.op) {
       // ── docs registry ──
-      case 'docs-list':
-        return {
-          entries: docs.entriesSnapshot(),
-          order: docs.viewSortOrder(),
-          retained: docs.retainedIds(),
-        };
+      case 'docs-list': {
+        const entries = docs.entriesSnapshot();
+        const order = docs.viewSortOrder();
+        const retained = docs.retainedIdsAsync ? await docs.retainedIdsAsync(entries) : docs.retainedIds();
+        return { entries, order, retained };
+      }
 
       case 'docs-facts':
         return docsFacts(Array.isArray(body.items) ? body.items : []);
@@ -116,7 +116,7 @@ function createDocsMemoryHost(rawDeps = {}) {
         return docs.removeEntryById(String(body.id));
 
       case 'docs-register':
-        return docs.registerEntry(asObject(body.entry));
+        return docs.registerEntryAsync ? docs.registerEntryAsync(asObject(body.entry)) : docs.registerEntry(asObject(body.entry));
 
       case 'docs-start':
         return docs.startService(String(body.id));

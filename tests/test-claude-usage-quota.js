@@ -724,7 +724,7 @@ test('the claude quota op reads the queue and only scrapes for force', async () 
   // queue half — first read, forced scrape, the one-minute floor that holds
   // across sessions — which the front door can only learn through this op.
   const { createQuotaRuntime } = require('../src/routes/quota-host');
-  const Queue = require('../src/quota/claude-usage-queue');
+  const Queue = require('../src/native/binding').claudeUsageQueue;
   const BarState = require('../src/quota/claude-bar-state');
   Queue.resetClaudeUsageQueue();
   BarState.resetClaudeBarState();

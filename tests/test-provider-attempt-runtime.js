@@ -14,7 +14,7 @@ const { createUsageObserved } = require('../src/usage-observed');
 const { canPersistAdapterCompletion } = require('../src/native/binding').adapterCompletion;
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
 const { resolveTurnState } = require('../src/native/binding').getTurnState();
-const { normalizeProxyOutcome } = require('../src/providers/proxy-outcome');
+const { normalizeProxyOutcome } = require('../src/native/binding').proxyOutcome;
 
 function harness() {
   let sequence = 0;
