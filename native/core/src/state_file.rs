@@ -161,7 +161,15 @@ pub fn write_bytes_atomic_traced_before_rename(
     // `writeTextAtomic` swallows EEXIST from the recursive mkdir and lets the
     // temp-file open surface the real failure (a file where a directory
     // belongs fails ENOTDIR there, exactly like Node).
-    if let Err(error) = fs::create_dir_all(dir) {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        // Match mkdirSync({recursive: true, mode}) for newly created ancestors.
+        builder.mode(dir_mode);
+    }
+    if let Err(error) = builder.create(dir) {
         if error.kind() != io::ErrorKind::AlreadyExists {
             return Err(WriteFailure::new(WriteStage::Mkdir, error, dir));
         }

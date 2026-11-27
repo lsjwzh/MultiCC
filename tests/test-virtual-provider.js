@@ -11,7 +11,7 @@ const virtual = require('../src/providers/virtual-provider');
 const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
 const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
 const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
-const { createProviderRelayShareStore } = require('../src/providers/relay-share-store');
+const { createProviderRelayShareStore } = require('../src/native/binding').relayShares;
 const { createInstance, listen, listenHttp, closeServer, serverOrigin, postJson, ACCESS_TOKEN } = require('./helpers/provider-sharing');
 const native = require('../src/native/binding').getNative();
 const available = typeof native?.selectVirtualProvider === 'function';

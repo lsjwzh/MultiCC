@@ -1,12 +1,12 @@
 'use strict';
 
-// Unit tests for the process-level liveness probe (src/liveness/process-probe.js).
+// Unit tests for the process-level liveness probe.
 // execFile (lsof) and the mtime stat are faked so the ESTABLISHED-connection
 // parse and the rollout-growth bookkeeping are exercised without touching the OS.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createProcessProbe } = require('../src/liveness/process-probe');
+const { createProcessProbe, createSystemProcessProbe } = require('../src/native/binding').processProbe;
 
 function fakeExec(output, err = null) {
   return (cmd, args, opts, cb) => cb(err, output, '');
@@ -141,4 +141,38 @@ test('8a259312 differential: an invalid clock throws synchronously on outbound a
   }
   const before = require('./helpers/frozen-host-leaves/process-probe').createProcessProbe;
   assert.deepEqual(await errors(createProcessProbe), await errors(before));
+});
+
+test('system probe shares a real subprocess and uses rollout file mtimes', { skip: process.platform === 'win32' }, async t => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-process-probe-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const executable = path.join(dir, 'lsof');
+  const rollout = path.join(dir, 'rollout.jsonl');
+  fs.writeFileSync(rollout, '');
+  fs.writeFileSync(executable, [
+    '#!/bin/sh',
+    'echo "$@" >> "$(dirname "$0")/calls"',
+    'echo "node TCP local:1234->remote:443 (ESTABLISHED)"',
+    'exit 1',
+  ].join('\n'), { mode: 0o700 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = dir + path.delimiter + originalPath;
+  t.after(() => { process.env.PATH = originalPath; });
+
+  const probe = createSystemProcessProbe();
+  const first = probe.outboundHttps(4242);
+  assert.equal(first, probe.outboundHttps(4242));
+  assert.equal(await first, true, 'a nonzero exit can still supply a connection');
+  assert.deepEqual(await probe.probe(4242, rollout), {
+    hasOutboundConnection: true, rolloutGrowing: true, pid: 4242,
+  });
+  assert.equal(fs.readFileSync(path.join(dir, 'calls'), 'utf8'), '-nP -p 4242\n');
+  assert.equal(probe.rolloutGrew(rollout), false);
+  const next = new Date(Date.now() + 1000);
+  fs.utimesSync(rollout, next, next);
+  assert.equal(probe.rolloutGrew(rollout), true);
+  assert.equal(probe.rolloutGrew(path.join(dir, 'absent')), false);
 });

@@ -110,3 +110,45 @@ pub(crate) fn failure_message(
 ) -> String {
     message(error, syscall, path, dest)
 }
+
+/// Preserve StateStore's raw report and thrown error for an atomic write.
+pub(crate) fn atomic_write_failure<'a>(
+    anchor: L<'a>,
+    failure: &multicc_core::state_file::WriteFailure,
+) -> Result<(L<'a>, L<'a>, &'static str)> {
+    use multicc_core::state_file::WriteStage;
+    let path = Some(failure.path.as_path());
+    let reported = match failure.stage {
+        WriteStage::Mkdir => build(anchor, &failure.error, "mkdir", path, None)?,
+        WriteStage::ChmodDir | WriteStage::ChmodTarget => {
+            build(anchor, &failure.error, "chmod", path, None)?
+        }
+        WriteStage::OpenTemporary | WriteStage::OpenDirectory => {
+            build(anchor, &failure.error, "open", path, None)?
+        }
+        WriteStage::Write => build(anchor, &failure.error, "write", None, None)?,
+        WriteStage::Fsync | WriteStage::FsyncDirectory => {
+            build(anchor, &failure.error, "fsync", None, None)?
+        }
+        WriteStage::BeforeRename | WriteStage::Rename => build(
+            anchor,
+            &failure.error,
+            "rename",
+            path,
+            failure.dest.as_deref(),
+        )?,
+    };
+    if failure.stage == WriteStage::Mkdir {
+        let inner = failure_message(&failure.error, "mkdir", path, None);
+        let thrown = build_message(
+            anchor,
+            c"Error",
+            &format!(
+                "[state-store] mkdir {}: {inner}",
+                failure.path.to_string_lossy()
+            ),
+        )?;
+        return Ok((thrown, reported, "mkdir"));
+    }
+    Ok((reported, reported, "atomic_write"))
+}

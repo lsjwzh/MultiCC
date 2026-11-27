@@ -12,7 +12,7 @@ const {
   parseCredential,
   relayRouteFromBaseUrl,
   routeTarget,
-} = require('../src/providers/relay-share-store');
+} = require('../src/native/binding').relayShares;
 
 test('provider relay shares are scoped, hashed, durable, revocable and usage-accounted', async () => {
   const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-relay-shares-')));

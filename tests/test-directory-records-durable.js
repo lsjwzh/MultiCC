@@ -15,7 +15,7 @@ const path = require('node:path');
 const { createStore, CorruptedStateError } = require('../src/state/store');
 const { createSessionRecords } = require('../src/session/records');
 const { createStateOwner } = require('../src/state/owner');
-const { createDirectoryTable } = require('../src/directory/records');
+const { createDirectoryTable } = require('../src/native/binding').directoryRecords;
 const legacyTx = require('./helpers/legacy-state-tx');
 
 function tempRoot(t) {

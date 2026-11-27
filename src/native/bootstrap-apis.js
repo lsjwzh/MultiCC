@@ -12,6 +12,14 @@ function bootstrapApi(key, create, unavailable) {
     return f;
   };
   switch (key) {
+    case 'relayShares':
+      return { MAX_SECRET_LENGTH: 128, MIN_SECRET_LENGTH: 8, TOKEN_PREFIX: 'mcr1',
+        createProviderRelayShareStore(options = {}) {
+          if (!options.file) throw new TypeError('provider relay share store requires { file }');
+          return ready().createProviderRelayShareStore(options);
+        },
+        parseCredential: forward('parseCredential', 1), relayRouteFromBaseUrl: forward('relayRouteFromBaseUrl', 1),
+        routeTarget: forward('routeTarget', 1) };
     case 'appPaths': {
       const { pathSafety } = require('./binding');
       return {

@@ -10,7 +10,7 @@ const {
   decodeClaudeRoutedModel: decodeCcfwModel,
   parseClaudeProxyUrl: parseProxyUrl,
 } = require('cli-provider-router');
-const { createRoleTokenTracker } = require('../src/role-token-tracker');
+const { createRoleTokenTracker } = require('../src/native/binding').roleTokenTracker;
 
 let passed = 0;
 let failed = 0;

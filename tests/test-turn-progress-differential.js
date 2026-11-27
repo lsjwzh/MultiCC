@@ -29,7 +29,7 @@ const legacyTimeline = require('./helpers/legacy-turn-timeline');
 const legacyProbe = require('./helpers/legacy-delivery-probe');
 const progress = require('../src/native/binding').getTurnProgress();
 const { createStateOwner } = require('../src/state/owner');
-const { createChatSessions } = require('../src/chat/sessions');
+const { createChatSessions } = require('../src/native/binding').chatSessions;
 
 const ROOT = path.join(__dirname, '..');
 const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');

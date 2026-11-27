@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { createBatteryGuardRuntime } = require('../src/battery-guard');
+const { createBatteryGuardRuntime } = require('../src/native/binding').batteryGuard;
 const { parseBatteryStatus } = require('../src/native/binding').macosPower;
 
 function fakeMacosPower(overrides = {}) {

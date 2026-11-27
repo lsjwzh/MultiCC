@@ -1,5 +1,31 @@
 # 剩余 Node 后端清单
 
+## server.js 直连模块第 1 批（2026-11-27，MacPro x86_64）
+
+以 `92f9dbae` 为迁前基线，按字面量模块依赖和脚本路径复算。物理行数计入没有换行符的末行。每个文件的行数及调用方见 [逐文件清单](reachable-current.tsv)，依赖类型见 [模块依赖表](node-module-dependencies.md)。
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| server.js 与 src/ | 376 / 101,409 | 366 / 100,794 |
+| server.js、src/ 与 plugins/ | 388 / 105,328 | 378 / 104,713 |
+
+| 删除的生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/battery-guard.js` | 103 | 电量及合盖采样、休眠阈值、重入保护、轮询生命周期 |
+| `src/artifacts.js` | 99 | 目录解析、保留项和过期清理，生产扫描调度到工作线程 |
+| `src/role-token-tracker.js` | 113 | 用量投影、按本地日期分桶、账本原子落盘 |
+| `src/chat/sessions.js` | 98 | 会话表及删除观察者 |
+| `src/directory/records.js` | 103 | 目录表、读取、损坏状态错误映射 |
+| `src/codex/image-bridge-runtime.js` | 30 | 为图像请求组装官方账号鉴权文件列表 |
+| `src/providers/relay-share-store.js` | 45 | 按调用顺序执行分享操作、错误映射及冻结返回值 |
+| `src/codex/accounts-refresh.js` | 86 | 多账号刷新对账和状态查询，跳过 CLI 凭据副本 |
+| `src/dispatch/progress.js` | 58 | 订阅归属过滤与首次回放去重 |
+| `src/liveness/process-probe.js` | 44 | 带超时的 lsof 子进程、文件修改时间和探测缓存 |
+
+删除的十个文件合计 779 行。保留文件新增净计 164 行，两个可达范围均净减 615 行。现有 JavaScript 调用方依赖 V8 的 Map 原型、迭代器、Promise、运算符强制转换和可注入的宿主回调，原生绑定保留这些接口。对应调用方迁入 Rust 并解除这些契约后，可移除适配。
+
+Intel macOS 的一次 Cargo 发布构建生成五件原生产物。工作树内的产物均通过源码指纹 `bb26fe54be63f5cb5e922794`、SHA-256 和架构校验。显式指定新 addon 的 32 个关联测试文件共 399 项通过，失败、跳过、待办均为 0。首次测试环境把回环地址传给四项局域网共享测试，改用本机局域网地址后四项通过，随后整组复跑通过。真实网关和独立宿主另通过回环就绪检查及工作区、元数据 WebSocket 冒烟。冒烟使用隔离电源端口，原生电池采样另在禁用休眠触发的条件下验证。
+
 ## 退役电源守护进程的 Node 兼容入口（2026-11-27）
 
 从 `fd968912` 的 `server.js` 出发，按 `scripts/inventory-node-backend.js` 递归追踪字面量模块依赖和以 `__dirname` 为根的字面量脚本路径。以下统计覆盖 `.js`、`.mjs`、`.cjs`。仓库内的 `docs/rust-migration/reachable-baseline-fd968912.tsv` 列出每个文件的物理行数和静态可达调用方。

@@ -13,6 +13,7 @@ mod api_contract;
 pub mod api_error_policy;
 pub mod api_error_text;
 mod ark_quota;
+mod artifact_cleanup;
 pub mod artifact_reference;
 pub mod assist_snapshots;
 pub mod auth_security;
@@ -70,6 +71,7 @@ pub mod cli_provider_registry;
 pub mod cli_switch;
 pub mod cli_switch_runtime;
 pub mod cli_tools_runtime;
+mod codex_account_refresh;
 pub mod codex_provider_home;
 mod commander_startup;
 pub mod cpr;
@@ -363,12 +365,15 @@ mod provider_service;
 
 mod provider_binding;
 mod responses_history;
+mod image_bridge_runtime;
+mod role_token_runtime;
 mod role_token_tracker;
 pub mod selection;
 pub mod usage_observed;
 
 pub mod auth_routes;
 
+mod relay_share_facade;
 pub mod relay_shares;
 
 pub mod cli_upstream_version;
@@ -392,6 +397,7 @@ pub mod schedule_lifecycle_live;
 pub mod schedule_note_queued_live;
 pub mod schedule_settle_live;
 mod session_meta_routes;
+mod record_maps;
 mod session_records;
 mod session_state;
 mod session_state_service;

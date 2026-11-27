@@ -26,7 +26,7 @@
 // 拒绝任何转发自真实远端客户端的请求（docs/gateway.md 的内网端口模型）。
 
 const { isLocalRequest } = require('../native/binding').requestLocality;
-const { chatSessionsOwner } = require('../chat/sessions');
+const { chatSessionsOwner } = require('../native/binding').chatSessions;
 
 const HOST_PATH = '/api/__host/server-core';
 

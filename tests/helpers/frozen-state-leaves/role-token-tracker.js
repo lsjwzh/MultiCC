@@ -1,13 +1,14 @@
+// Frozen at 92f9dbae; module paths point back into the host under test.
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
-const stateStore = require('./state/store');
+const stateStore = require('../../../src/state/store');
 const {
   RustRoleTokenTracker, roleLedgerUpdate, emptyRoleTokenBucket: emptyBucket,
   roleBucketHasUsage, accumulateRoleBucket,
-} = require('./native/binding').getNative();
-const { validateUsageObserved } = require('./usage-observed');
+} = require('../../../src/native/binding').getNative();
+const { validateUsageObserved } = require('../../../src/usage-observed');
 
 // Use V8's '+' coercion for legacy strings and caller-owned objects.
 const jsAdd = (left, right) => left + right;

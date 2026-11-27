@@ -9,6 +9,7 @@ pub mod agy_remote;
 pub mod agy_stream;
 pub mod api_error_policy;
 pub mod ark_quota;
+pub mod artifact_cleanup;
 pub mod artifact_reference;
 pub mod assist_snapshots;
 pub mod auto_provider_config;
