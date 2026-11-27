@@ -20,7 +20,7 @@
 // 拒绝任何转发自真实远端客户端的请求。
 
 const { GOAL_STATES } = require('../native/binding').classifyVocab;
-const { providerSelectionDto } = require('../providers/auto-provider-config');
+const { providerSelectionDto } = require('../native/binding').autoProviderConfig;
 
 const HOST_PATH = '/api/__host/session-admin';
 

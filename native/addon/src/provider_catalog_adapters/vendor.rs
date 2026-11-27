@@ -1,6 +1,6 @@
 use super::*;
 use multicc_core::provider_registry::{
-    NATIVE_OPENCODE_ID_PATTERN, NATIVE_VENDOR_SUFFIX, VENDOR_NATIVE_CLIS,
+    NATIVE_OPENCODE_ID_PATTERN, NATIVE_VENDOR_MODEL_PATTERN, NATIVE_VENDOR_SUFFIX, VENDOR_NATIVE_CLIS,
 };
 
 fn strings<'a>(p: L<'a>, items: &[&str]) -> Result<L<'a>> {
@@ -135,10 +135,7 @@ pub(super) fn api(p: L<'_>) -> Result<L<'_>> {
             ("GEMINI_MODELS", gemini),
             (
                 "MODEL_ID",
-                regex.construct(&[text(
-                    p,
-                    r"^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,118}[A-Za-z0-9._/-]$",
-                )?])?,
+                regex.construct(&[text(p, NATIVE_VENDOR_MODEL_PATTERN)?])?,
             ),
             (
                 "NATIVE_VENDOR_ID",

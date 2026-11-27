@@ -11,7 +11,8 @@ function snapshot(filename, source, dependencies = {}) {
   const loaded = new Module(original, module);
   loaded.filename = original;
   loaded.paths = Module._nodeModulePaths(path.dirname(original));
-  loaded.require = id => Object.hasOwn(dependencies, id) ? dependencies[id] : Module.prototype.require.call(loaded, id);
+  const fallback = require('./frozen-batch10').from(original);
+  loaded.require = id => Object.hasOwn(dependencies, id) ? dependencies[id] : fallback(id);
   loaded._compile(fs.readFileSync(path.join(__dirname, source), 'utf8'), original);
   return loaded.exports;
 }
@@ -23,14 +24,17 @@ const normalize = snapshot('task-board/normalize.js', batch + 'normalize.js', {
   './planning': planning, './native-bridge': bridge,
 });
 const nativeBinding = require('../../src/native/binding');
-const checkedBinding = Object.create(nativeBinding, { taskPlanning: { value: planning } });
+const checkedBinding = Object.create(nativeBinding, {
+  taskPlanning: { value: planning },
+  taskDomainHost: { value: require('./frozen-batch10').frozen('native/task-domain') },
+});
 const boardStore = snapshot('task-board/board-store.js', '../../src/task-board/board-store.js', {
   '../native/binding': checkedBinding,
 });
 // The routing kernel is shared. Bind its taskDirId port to the reference
 // normalizer so routing cannot silently compare the candidate with itself.
 const routing = nativeBinding.getNative().taskBoardRoutingApi({
-  taskDomain: require('../../src/native/task-domain').taskDomain, taskDirId: normalize.taskDirId,
+  taskDomain: require('./frozen-batch10').frozen('native/task-domain').taskDomain, taskDirId: normalize.taskDirId,
   entries: values => [...values || []],
   affinity: task => new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean)),
   rankInputs(records, { dirId = null, contextTerms = new Map(), affinitySessionIds = new Set(), options = {} } = {}, check) {

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const Module = require('module');
 const WebSocket = require('ws');
-const { outboundAgent } = require('./outbound');
+const { outboundAgent } = require('../native/binding').outbound;
 
 // Preserve the SDK's response interceptors ($return_headers, payload decoding)
 // without changing its shared axios singleton or trusting axios' proxy discovery.

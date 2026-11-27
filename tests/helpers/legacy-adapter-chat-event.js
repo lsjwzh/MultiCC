@@ -14,7 +14,7 @@
 const {
   detectErrorEnvelope, sanitizeMessage, isErrorOnlyText,
 } = require('../../src/chat/api-error-policy');
-const { redactProviderRouteCapability } = require('../../src/observability');
+const { redactProviderRouteCapability } = require('./frozen-batch10').frozen('observability');
 
 function appendAdapterAssistantText(current, text, options = {}) {
   const prior = String(current || '');

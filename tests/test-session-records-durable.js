@@ -11,8 +11,8 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 
 const { createSessionPersistence, PersistenceError } = require('../src/native/binding');
-const { createTaskStateStore } = require('../src/session/records');
-const { createStore, CorruptedStateError } = require('../src/state/store');
+const { createTaskStateStore } = require('../src/native/binding').sessionRecordsHost;
+const { createStore, CorruptedStateError } = require('../src/native/binding').stateStore;
 const { createStateOwner } = require('../src/native/binding').stateOwner;
 const { createSessionRecords, recordsOf, appendClassifyHistory, resetTaskState } = require('./helpers/session-records');
 
@@ -272,8 +272,9 @@ test('GC: a deleted record is not retained by the owner', async () => {
   records.delete('gone');
   record = null;
   for (let attempt = 0; attempt < 10 && ref.deref() !== undefined; attempt += 1) {
-    global.gc();
+    // WeakRef.deref() keeps its target alive for the rest of the current job.
     await new Promise(resolve => setImmediate(resolve));
+    global.gc();
   }
   assert.equal(ref.deref(), undefined, 'no strong reference survives delete()');
 });

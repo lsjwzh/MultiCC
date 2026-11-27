@@ -4,7 +4,7 @@ const { nameOf } = require('../native/binding').cliCapability;
 
 const { getNative } = require('../native/binding');
 const { sanitizePublicText } = require('../native/binding').getSessionDto();
-const { labelWithCode } = require('../native/task-domain');
+const { labelWithCode } = require('../native/binding').taskDomainHost;
 
 const MAX_ROLE_SUMMARY_CHARS = 320;
 const MAX_RECENT_TASKS = 4;

@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('./outbound');
 
 // ── Jev（TypeSafe 决策模型）· 评估接口 ───────────────────────────────────────
 //

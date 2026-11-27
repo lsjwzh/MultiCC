@@ -16,7 +16,7 @@
 //     core's deferred-probe protocol;
 //   * restores JavaScript result shapes (frozen objects, Set constants, the
 //     candidate object identity `primaryProviderCandidate` returns).
-const { getNative } = require('../native/binding');
+const { getNative } = require('../../../src/native/binding');
 const {
   CUSTOM_API_KEY_NAME,
   CUSTOM_GATEWAY,
@@ -26,13 +26,13 @@ const {
   JEV_GATEWAYS,
   MAX_ENDPOINT_CHARS,
 } = require('./jev-client');
-const { NATIVE_OPENCODE_ID, NATIVE_OPENCODE_PREFIX } = require('../native/binding').getNativeOpenCodeCatalog();
+const { NATIVE_OPENCODE_ID, NATIVE_OPENCODE_PREFIX } = require('../../../src/native/binding').getNativeOpenCodeCatalog();
 const {
   MODEL_ID: NATIVE_VENDOR_MODEL_ID,
   NATIVE_VENDOR_ID,
   NATIVE_VENDOR_SUFFIX,
   VENDOR_NATIVE_CLIS,
-} = require('../native/binding').nativeVendor;
+} = require('../../../src/native/binding').nativeVendor;
 
 const native = getNative();
 

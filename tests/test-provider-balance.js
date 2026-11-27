@@ -4,7 +4,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 let fetchImpl = async () => { throw new Error('unexpected outbound'); };
-test.mock.method(require('../src/network/outbound'), 'outboundFetch', (...args) => fetchImpl(...args));
+test.mock.method(require('../src/native/binding').outbound, 'outboundFetch', (...args) => fetchImpl(...args));
 const { createProviderBalanceRuntime, mountProviderBalanceRoutes, mountProviderRelayQuotaRoutes } = require('../src/routes/provider-balance-host');
 const { HOST_PATH } = require('../src/routes/provider-balance-host');
 
@@ -94,6 +94,7 @@ test('缺少前门端口不回退到硬编码服务器', async () => {
 });
 
 test('余额桥与冻结入口对照地址编码、非法端口和同步异常', async () => {
+  test.mock.method(require('./helpers/frozen-b10-network/outbound'), 'outboundFetch', (...args) => fetchImpl(...args));
   const frozen = require('./helpers/frozen-file-batch9/provider-balance');
   async function exercise(create) {
     const calls = [], answers = [];

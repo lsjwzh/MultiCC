@@ -540,7 +540,7 @@ test('计划变更与冻结实现使用相同的日期、时钟、ID 和任务�
   assert.equal(createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex'),
     '5d2e1b24ae127b25f1b28d386931396d041b88a1');
   const original = { exports: {} };
-  compileFunction(bytes.toString(), ['module','require'], { filename })(original,createRequire(filename));
+  compileFunction(bytes.toString(), ['module','require'], { filename })(original, require('./helpers/frozen-batch10').from(filename, createRequire(filename)));
   function trace(api) {
     const savedNow = Date.now, reads = [], snapshots = [];
     Date.now = () => { reads.push('clock'); return 101; };

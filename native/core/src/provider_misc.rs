@@ -445,15 +445,18 @@ pub const MAX_TEXT_LENGTH: usize = 2000;
 pub const TEST_TIMEOUT_MS: u64 = 8000;
 pub const INVALID_TARGET_CODE: &str = "invalid_routing_target";
 
-const TIER_BANDS: [&str; 4] = [
+pub const CHOICE_INSTRUCTIONS: &str = "Pick the cheapest model tier that can still carry out this request well. Judge it by the work the request actually requires, not by how important it sounds or how long the message is.";
+
+pub const SCORE_INSTRUCTIONS: &str = "Rate how much engineering work this request really requires, from a mechanical edit to architecture-level design.";
+
+pub const TIER_BANDS: [&str; 4] = [
     "Mechanical change whose exact edit is already known: a typo, a rename, a version bump, a one-line fix, or re-running a known command. No design decisions and no investigation.",
     "Small, well-understood change: one or two files, the approach already clear from the request. Light reasoning, but nothing has to be designed.",
     "Multi-file change that needs real reasoning: a new small feature, a behaviour fix with an unknown cause, or wiring across modules. The approach has to be chosen first.",
     "Architecture-level work: refactors across layers, provider or protocol changes, concurrency or migration work, or a request whose scope must be designed before any code is written.",
 ];
 
-/// The `FACTS` object `src/providers/auto-provider-config.js` assembles. The
-/// values are the owners' constants; the differential run keeps them honest.
+/// Shared routing facts for gateway requests and the public selection binding.
 pub fn routing_facts() -> Value {
     json!({
         "gateways": [
@@ -469,11 +472,11 @@ pub fn routing_facts() -> Value {
         "nativeOpenCodePrefix": crate::provider_registry::NATIVE_OPENCODE_PREFIX,
         "nativeOpenCodeIdPattern": crate::provider_registry::NATIVE_OPENCODE_ID_PATTERN,
         "nativeOpenCodeIdIgnoreCase": true,
-        "nativeVendorSuffix": "-native:",
-        "vendorNativeClis": ["qoder", "codebuddy", "gemini", "pi", "commandcode", "dsh", "grok", "agy"],
-        "nativeVendorIdPattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+        "nativeVendorSuffix": crate::provider_registry::NATIVE_VENDOR_SUFFIX,
+        "vendorNativeClis": crate::provider_registry::VENDOR_NATIVE_CLIS,
+        "nativeVendorIdPattern": crate::provider_registry::NATIVE_OPENCODE_ID_PATTERN,
         "nativeVendorIdIgnoreCase": true,
-        "nativeVendorModelPattern": "^[A-Za-z0-9][A-Za-z0-9._:\\/-]{0,118}[A-Za-z0-9._/-]$",
+        "nativeVendorModelPattern": crate::provider_registry::NATIVE_VENDOR_MODEL_PATTERN,
         "nativeVendorModelIgnoreCase": false
     })
 }
@@ -567,12 +570,12 @@ pub fn routing_questions() -> Value {
     json!({
         "tier": {
             "type": "choice",
-            "instructions": "Pick the cheapest model tier that can still carry out this request well. Judge it by the work the request actually requires, not by how important it sounds or how long the message is.",
+            "instructions": CHOICE_INSTRUCTIONS,
             "criteria": criteria,
         },
         "complexity": {
             "type": "score",
-            "instructions": "Rate how much engineering work this request really requires, from a mechanical edit to architecture-level design.",
+            "instructions": SCORE_INSTRUCTIONS,
             "criteria": levels,
         },
     })
@@ -717,6 +720,39 @@ fn tier_index(tiers: &[&str], key: &str) -> Option<usize> {
     tiers.iter().position(|tier| tier.to_lowercase() == clean)
 }
 
+/// Combine the available signals without stepping down the supplied capability ladder.
+pub fn choose_routing_tier(
+    top: usize,
+    chosen_index: Option<usize>,
+    complexity_index: Option<usize>,
+    low_confidence: Option<bool>,
+    low_probability: bool,
+) -> (usize, &'static str) {
+    let chosen_index_signed = chosen_index.map(|index| index as i64).unwrap_or(-1);
+    let mut index = chosen_index.unwrap_or(0).max(complexity_index.unwrap_or(0));
+    let mut reason = if complexity_index.is_some_and(|value| value as i64 > chosen_index_signed) {
+        "jev_complexity_escalation"
+    } else {
+        "jev_choice"
+    };
+    if let Some(low) = low_confidence {
+        if low {
+            if top > index {
+                reason = "jev_low_confidence";
+            }
+            index = top;
+        }
+    } else if top > index {
+        reason = "jev_confidence_missing";
+        index = top;
+    }
+    if low_probability && index < top {
+        reason = "jev_low_tier_probability";
+        index += 1;
+    }
+    (index, reason)
+}
+
 /// `escalationPolicy({tiers, escalation: defaults}, answers, payload)`.
 pub fn escalation_policy(answers: &Value, payload: &Value) -> Value {
     let tiers = ["t1", "t2"];
@@ -746,29 +782,13 @@ pub fn escalation_policy(answers: &Value, payload: &Value) -> Value {
     if chosen_index.is_none() && complexity_index.is_none() {
         return json!({ "ok": false, "code": "jev_unreadable_answers" });
     }
-    let mut index = chosen_index.unwrap_or(0).max(complexity_index.unwrap_or(0));
-    let mut reason = if complexity_index.is_some_and(|value| value as i64 > chosen_index_signed) {
-        "jev_complexity_escalation"
-    } else {
-        "jev_choice"
-    };
-    if let Some(confidence) = confidence {
-        if confidence < 0.5 {
-            if top > index {
-                reason = "jev_low_confidence";
-            }
-            index = top;
-        }
-    } else if top > index {
-        reason = "jev_confidence_missing";
-        index = top;
-    }
-    if let Some(probability) = chosen_probability {
-        if probability < 0.5 && index < top {
-            reason = "jev_low_tier_probability";
-            index += 1;
-        }
-    }
+    let (index, reason) = choose_routing_tier(
+        top,
+        chosen_index,
+        complexity_index,
+        confidence.map(|n| n < 0.5),
+        chosen_probability.is_some_and(|n| n < 0.5),
+    );
     json!({
         "ok": true,
         "tierIndex": index,

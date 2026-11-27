@@ -11,7 +11,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const legacy = require('./helpers/legacy-api-error-text');
-const observability = require('../src/observability');
+const observability = require('../src/native/binding').observability;
 const { sanitizeMessage, normalizeRejection } = require('../src/chat/api-error-policy');
 
 function generator(seed) {

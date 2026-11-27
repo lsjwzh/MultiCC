@@ -298,7 +298,7 @@ rustTest('统一网络策略决定 Rust 出口，策略失败不能静默直连'
   });
   const proxyUrl = await listen(proxy); t.after(() => close(proxy));
   let unavailable = false;
-  t.mock.method(require('../src/network/outbound').policy, 'proxyForUrl', async url => {
+  t.mock.method(require('../src/native/binding').outbound.policy, 'proxyForUrl', async url => {
     resolutions.push(url);
     if (unavailable) throw new Error('fixture-policy-unavailable');
     return proxyUrl;

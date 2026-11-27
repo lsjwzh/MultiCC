@@ -21,7 +21,7 @@ const {
   DEFAULT_GATEWAY,
   GATEWAY_NAMES,
   JEV_GATEWAYS,
-} = require('../src/providers/jev-client');
+} = require('../src/native/binding').jevClient;
 
 const TIERS = Object.freeze([
   Object.freeze({ key: 'weak', label: 'Weak' }),
@@ -444,4 +444,43 @@ test('the answer-scoped confidence wins over the response-wide map', async () =>
   assert.equal(verdict.confidence, 0.95);
   assert.equal(verdict.reasonCode, 'jev_choice');
   assert.equal(verdict.tier, 'weak');
+});
+
+test('classification preserves the historical order of key, clock, transport and logger callbacks', async () => {
+  const baseline = require('./helpers/frozen-b10-network/jev-client');
+  const current = require('../src/native/binding').jevClient;
+  async function trace(api, scenario) {
+    const events = [];
+    let time = 0;
+    const client = api.createJevClient({
+      now() { events.push('now'); return ++time; },
+      resolveApiKey(name) {
+        events.push(['resolve', name]);
+        if (scenario === 'missing') throw Object.assign(new Error('unavailable'), { code: 'locked' });
+        return 'fixture';
+      },
+      async fetchImpl(url, init) {
+        events.push(['request', url, init.method, Object.keys(init.headers), JSON.parse(init.body)]);
+        if (scenario === 'timeout') throw Object.assign(new Error('timeout'), { name: 'AbortError' });
+        return { ok: scenario !== 'http', status: scenario === 'http' ? 403 : 200, async text() {
+          events.push('read');
+          if (scenario === 'body-error') throw new TypeError('failed body');
+          if (scenario === 'http') return '{"error":{"message":"denied"}}';
+          return JSON.stringify(answerPayload({ choice: 'weak', confidence: 1 }));
+        } };
+      },
+      logger: {
+        info(name, fields) { events.push(['info', name, fields]); },
+        warn(name, fields) { events.push(['warn', name, fields]); },
+      },
+    });
+    try {
+      const result = await client.classify({ tiers: TIERS, text: 'fixture', apiKeyName: 'fixture-name',
+        context: { request: 'untrusted', hint: 'x'.repeat(499) + '😀', drop: {} } });
+      return { events, result, frozen: Object.isFrozen(result), keys: Object.keys(result) };
+    } catch (e) { return { events, error: [e.name, e.message] }; }
+  }
+  for (const scenario of ['ok', 'missing', 'timeout', 'http', 'body-error']) {
+    assert.deepEqual(await trace(current, scenario), await trace(baseline, scenario), scenario);
+  }
 });

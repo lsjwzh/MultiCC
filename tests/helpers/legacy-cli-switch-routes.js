@@ -8,7 +8,7 @@
 const crypto = require('node:crypto');
 const { getNative } = require('../../src/native/runtime');
 const { isChatStateBusy } = require('./session-runtime-busy-oracle');
-const { selectionKey } = require('../../src/providers/auto-provider-config');
+const { selectionKey } = require('./frozen-b10-network/auto-provider-config');
 const capability = require('../../src/cli/cli-capability');
 const { nativeSessionExists } = require('../../src/cli/native-session-exists');
 const { nativeVendorOf } = require('./frozen-catalog-inputs/native-vendor');

@@ -12,7 +12,7 @@
 const express = require('express');
 const path = require('path');
 const os = require('os');
-const { outboundFetch } = require('../../src/network/outbound');
+const { outboundFetch } = require('../../src/native/binding').outbound;
 const { buildDiscordStrategy } = require('../../src/network/sdk-bridges');
 const { bridgeConfigFile, bridgeHistoryFile, saveBridgeConfig } = require('./secure-config');
 const {

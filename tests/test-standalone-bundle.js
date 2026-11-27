@@ -1018,15 +1018,15 @@ test('旧终端交接给新包的 __swap 仍可使用同一安装器重验已下
   const logPath = path.join(data, 'logs', 'update.log');
   const preload = path.join(scratch, 'test-network.js');
   const script = 'printf "%s\\n" "$@"\n';
-  fs.writeFileSync(preload, `require.cache[${JSON.stringify(require.resolve('../src/network/outbound'))}] = {
-    exports: {
+  fs.writeFileSync(preload, `const id = ${JSON.stringify(require.resolve('../src/native/binding'))};
+const binding = require(id);
+require.cache[id].exports = Object.create(binding, { outbound: { value: {
       getChildProxyEnv: async env => env,
       outboundFetch: async url => {
         if (url !== 'https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh') throw Error(url);
         return new Response(${JSON.stringify(script)});
       }
-    }
-  };\n`);
+    } } });\n`);
   const run = spawnSync(process.execPath, [
     '--require', preload, path.join(ROOT, 'scripts', 'standalone-cli.js'), '__swap',
     '--root', root, '--staged', path.join(scratch, 'staged'), '--wait-pid', '0', '--version', '9.9.9',

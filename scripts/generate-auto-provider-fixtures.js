@@ -30,11 +30,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 
-// The retained normalization bridge (Rust-backed) is the input side of the
-// selection-key oracle: the fixture records each pool's normalized selection
-// next to its key so the Rust port can replay the key derivation alone.
-const { normalizeStoredProviderSelection } = require('../src/providers/auto-provider-config');
-
 const root = path.join(__dirname, '..');
 const FIXTURE_DIR = path.join(root, 'native', 'core', 'tests', 'fixtures');
 const FROZEN_DATE = '2026-11-11';
@@ -52,7 +47,7 @@ const TARGETS = {
 const MODULE_PATHS = {
   src: {
     pricing: '../src/native/binding',
-    selectionKey: '../src/providers/auto-provider-config',
+    selectionKey: '../src/native/binding',
     routing: '../src/chat/auto-provider-routing',
     runtime: '../src/chat/auto-provider-runtime',
   },
@@ -96,7 +91,12 @@ function loadModules() {
     pricing: paths === MODULE_PATHS.src
       ? require(path.join(__dirname, paths.pricing)).getAutoProviderPricing()
       : require(path.join(__dirname, paths.pricing)),
-    selectionKey: require(path.join(__dirname, paths.selectionKey)).selectionKey,
+    selectionKey: (paths === MODULE_PATHS.src
+      ? require(path.join(__dirname, paths.selectionKey)).autoProviderConfig
+      : require(path.join(__dirname, paths.selectionKey))).selectionKey,
+    normalize: (paths === MODULE_PATHS.src
+      ? require('../src/native/binding').autoProviderConfig
+      : require('../tests/helpers/frozen-b10-network/auto-provider-config')).normalizeStoredProviderSelection,
     routing: require(path.join(__dirname, paths.routing)),
     runtime: require(path.join(__dirname, paths.runtime)),
   });
@@ -354,7 +354,7 @@ function selectionPool(extra = {}) {
   };
 }
 
-function buildSelectionKey(mod) {
+function buildSelectionKey(mod, normalizeStoredProviderSelection) {
   const cases = [];
   // `$undefined` stands for the hole JSON cannot express; a selection can never
   // be that string (it would normalize to null anyway).
@@ -1519,7 +1519,7 @@ async function buildAll(modules, fetchTrap, live = false) {
   delete routing.buildStore;
   return {
     pricing: buildPricing(modules.pricing),
-    selectionKey: buildSelectionKey(modules.selectionKey),
+    selectionKey: buildSelectionKey(modules.selectionKey, modules.normalize),
     routing,
     runtime: buildRuntime({
       runtime: modules.runtime,

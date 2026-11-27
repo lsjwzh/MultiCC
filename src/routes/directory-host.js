@@ -24,7 +24,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { isLocalRequest } = require('../native/binding').requestLocality;
 const { getNative, createFsDirectoryRepository } = require('../native/binding');
-const stateStore = require('../state/store');
+const stateStore = require('../native/binding').stateStore;
 
 function createDirectoryModule(deps) {
   return getNative().directoryModule(deps, {

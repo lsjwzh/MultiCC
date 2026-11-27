@@ -10,7 +10,7 @@
 
 const { getNative } = require('../native/binding');
 const { safeText } = require('../native/binding').codexBackground;
-const { redactProviderRouteCapability } = require('../observability');
+const { redactProviderRouteCapability } = require('../native/binding').observability;
 
 // `undefined` means "host did not decide", which is the production case: the
 // data root is then the answer. `null` is a decision — no durable ledger — and

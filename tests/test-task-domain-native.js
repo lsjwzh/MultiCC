@@ -6,9 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createTaskShellStore } = require('../src/task-shell/store');
-const { createTaskBoardRepository } = require('../src/native/task-domain');
+const { createTaskBoardRepository } = require('../src/native/binding').taskDomainHost;
 const { createAirCardCache } = require('../src/workspace/air-card-cache');
-const { taskDomain, taskDomainAsync } = require('../src/native/task-domain');
+const { taskDomain, taskDomainAsync } = require('../src/native/binding').taskDomainHost;
 const { getNative, nativeCode } = require('../src/native/binding');
 const { boardRule } = require('../src/native/binding').taskBoardBridge;
 const planning = require('../src/native/binding').taskPlanning;
@@ -340,7 +340,7 @@ test('原生 panic 被捕获为 TASK_DOMAIN_PANIC，且之后进程仍可用', (
   const root = path.resolve(__dirname, '..');
   const script = `
     const root = ${JSON.stringify(root)};
-    const { taskDomain, taskDomainAsync } = require(root + '/src/native/task-domain');
+    const { taskDomain, taskDomainAsync } = require(root + '/src/native/binding').taskDomainHost;
     const { getNative, nativeCode } = require(root + '/src/native/binding');
     const planning = require(root + '/src/native/binding').taskPlanning;
     const codeOf = error => { nativeCode(error); return error.code; };

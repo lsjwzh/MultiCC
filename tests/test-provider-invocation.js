@@ -6,7 +6,7 @@ const { createProviderBinding } = require('../src/native/binding').providerBindi
 const {
   createProviderAttemptRuntime,
   createProviderRevision,
-} = require('../src/chat/provider-attempt-runtime');
+} = require('../src/native/binding').providerAttemptRuntime;
 const { captureNativeSessionId } = require('./helpers/legacy-native-session-state');
 const {
   createProviderInvocationFactory,
@@ -651,6 +651,7 @@ function frozenInvocationFactory() {
     if (name === './model-request-policy') return require('./helpers/legacy-model-request-policy');
     return Module.prototype.require.call(legacy, name);
   };
+  legacy.require = require('./helpers/frozen-batch10').from(filename, legacy.require.bind(legacy));
   legacy._compile(source, filename);
   return legacy.exports.createProviderInvocationFactory;
 }

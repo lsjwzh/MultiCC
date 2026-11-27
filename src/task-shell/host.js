@@ -9,7 +9,7 @@ const { createTaskShellRuntime, failure, cleanError } = require('./runtime');
 const { getNative } = require('../native/binding');
 const { createArtifactsMemo, collectTaskArtifacts, artifactFileExists } = require('./artifacts');
 const { clearShellHistory, shellHistoryPage, watchShellHistory } = require('./chat-history');
-const { createAttributionSettingsFromEnv } = require('../native/task-domain');
+const { createAttributionSettingsFromEnv } = require('../native/binding').taskDomainHost;
 const { isTerminalLetter } = require('../native/binding').classifyVocab;
 
 function createTaskShellHost(deps) {
@@ -56,6 +56,7 @@ function createTaskShellHost(deps) {
   }
   const pendingInput = id => deps.pendingUserInput
     ? deps.pendingUserInput(id) : deps.records.get(id)?.taskState?.pendingUserInput || null;
+  const readPending = id => deps.pendingUserInputAsync ? deps.pendingUserInputAsync(id) : pendingInput(id);
   function currentTurn(sessionId, pending = pendingInput(sessionId)) {
     if (pending && pending.resolved !== true && pending.turnId) return pending.turnId;
     const live = deps.getChatState(sessionId);
@@ -104,7 +105,7 @@ function createTaskShellHost(deps) {
         const record = deps.records.get(id);
         if (!host || !scheduler || !record) return { busy: true, status: 'unavailable' };
         const state = await scheduler.status(id);
-        const pending = deps.pendingUserInputAsync ? await deps.pendingUserInputAsync(id) : pendingInput(id);
+        const pending = await readPending(id);
         const taskState = record.taskState || {};
         const classifyHistory = (Array.isArray(taskState.classifyHistory) ? taskState.classifyHistory : [])
           .slice(-20).map(item => ({ at: Number(item?.at) || null,
@@ -148,7 +149,7 @@ function createTaskShellHost(deps) {
       deletedAmong: async ids => {
         const board = deps.getTaskBoard?.()?.getBoard?.();
         if (!board) return null;
-        return require('../native/task-domain').taskDomainAsync({ op: 'deletedAmong', board, ids });
+        return require('../native/binding').taskDomainHost.taskDomainAsync({ op: 'deletedAmong', board, ids });
       },
       isTaskLifecycleBusy: id => deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(id),
       prepareExecution: workspace.prepareExecution, captureForkBaseline: workspace.captureForkBaseline,
@@ -207,7 +208,7 @@ function createTaskShellHost(deps) {
       send: (...args) => deps.deliver(...args),
       dispatch: (...args) => deps.dispatch(...args),
       cancel: async (id, turnId) => {
-        const pending = deps.pendingUserInputAsync ? await deps.pendingUserInputAsync(id) : pendingInput(id);
+        const pending = await readPending(id);
         if (currentTurn(id, pending) !== turnId) throw failure('stale_control');
         return deps.getWorkHost().cancelActiveTurn(id, { source: 'task-shell', reason: 'user_cancelled' });
       },
@@ -324,11 +325,7 @@ function createTaskShellHost(deps) {
     taskOperationsRuntime = require('./task-operations').createTaskOperations({
       store,
       revisionOf: scope => taskIndex(scope.shellId).scopeRevision,
-      isTurnBusy: (sessionId, turnId) => {
-        const pending = pendingInput(sessionId);
-        if (pending && pending.resolved !== true && pending.turnId === turnId) return true;
-        return currentTurn(sessionId) === turnId;
-      },
+      readCurrentTurn: async id => currentTurn(id, (await readPending(id)) ?? null),
       resolveTarget: async (scope, taskId) => {
         const task = store.get('task', taskId);
         if (!task) throw Object.assign(new Error('task_not_found'), { code: 'task_not_found', status: 404 });

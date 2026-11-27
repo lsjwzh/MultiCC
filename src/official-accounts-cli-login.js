@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('./network/outbound');
+const { outboundFetch } = require('./native/binding').outbound;
 
 // Notices the login the CLI itself holds (Keychain "Claude Code-credentials",
 // ~/.codex/auth.json) so the accounts panel can say "your CLI is signed in as X

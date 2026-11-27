@@ -7,7 +7,7 @@
 // from src/.
 
 const crypto = require('crypto');
-const { extractUpstreamError } = require('../../src/upstream-error');
+const { extractUpstreamError } = require('./frozen-batch10').frozen('upstream-error');
 const { classifyProviderError } = require('../../src/native/binding').providerError;
 const { getNative } = require('../../src/native/runtime');
 

@@ -11,7 +11,7 @@
 // 修改它。挂入时记为 volatile，落盘前每次上送都整条复核；另有全量校验兜底
 // （测试每次调用后、生产每 10 分钟），分叉以宿主镜像为准重新上送。
 const { getNative, runNative, nativeCode } = require('../native/binding');
-const domain = require('../native/task-domain');
+const domain = require('../native/binding').taskDomainHost;
 const { wireDate } = require('../native/binding').taskPlanning;
 
 const KINDS = ['tasks', 'modules', 'taskGroups'];

@@ -8,7 +8,7 @@ const path = require('node:path');
 const Module = require('node:module');
 const { createPaths } = require('../src/paths');
 const { getNative } = require('../src/native/binding');
-const { reportFailure } = require('../src/state/store');
+const { reportFailure } = require('../src/native/binding').stateStore;
 
 // Compile the unchanged frozen source at its former path so relative imports
 // resolve exactly as they did before retirement.
@@ -17,7 +17,8 @@ const formerPath = path.resolve(__dirname, '../src/session/adapters/chat-history
 const legacyModule = new Module(formerPath, module);
 legacyModule.filename = formerPath;
 legacyModule.paths = Module._nodeModulePaths(path.dirname(formerPath));
-legacyModule._compile(source, formerPath);
+legacyModule.require = require('./helpers/frozen-batch10').from(formerPath, legacyModule.require.bind(legacyModule));
+  legacyModule._compile(source, formerPath);
 const legacy = legacyModule.exports;
 
 function describe(error) {

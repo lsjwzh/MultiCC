@@ -10,7 +10,7 @@
 // fixtures (scripts/generate-auto-provider-fixtures.js --write), and that
 // re-record must first explain the change in the same commit.
 
-const { normalizeStoredProviderSelection } = require('../../src/providers/auto-provider-config');
+const { normalizeStoredProviderSelection } = require('./frozen-b10-network/auto-provider-config');
 
 // Session records are cloned during a CLI handoff and persistence hydration.
 // Only a policy change, not a new object holding the same policy, resets its

@@ -26,7 +26,7 @@
 const crypto = require('node:crypto');
 const nodePath = require('node:path');
 const core = require('../native/binding').taskBoardCore;
-const { taskDomain, taskDomainAsync, createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../native/task-domain');
+const { taskDomain, taskDomainAsync, createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../native/binding').taskDomainHost;
 const { isAbnormalLetter } = require('../native/binding').classifyVocab;
 const { createAirCardCache } = require('./air-card-cache');
 

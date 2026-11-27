@@ -14,7 +14,7 @@ const {
   normalizeWindowEvent, windowEventBar, labelRoutedProvider,
 } = require('../native/binding').getQuotaBarView();
 const { rememberClaudeLive, renderClaudeBar } = require('../native/binding').claudeBarState;
-const { redactProviderRouteCapability } = require('../observability');
+const { redactProviderRouteCapability } = require('../native/binding').observability;
 
 // `resolveCli(sessionName)` → the session's CLI, used only to decide whether
 // this window belongs to the CLI itself or to a provider routed underneath it

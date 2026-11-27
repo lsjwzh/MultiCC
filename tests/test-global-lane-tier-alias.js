@@ -32,7 +32,7 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 // environment overrides must be in place before the module loads.
 const providers = require('../src/providers/host.js');
 const { createProviderBinding } = require('../src/native/binding').providerBinding;
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createProviderInvocationFactory } = require('../src/native/binding').providerInvocation;
 const { normalizeTurnRequest, createTurnLifecycle } = require('../src/chat');
 const { createKimiAdapter } = require('../src/native/binding').cliAdapters;

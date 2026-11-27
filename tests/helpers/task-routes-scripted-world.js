@@ -176,7 +176,7 @@ function buildDeps(rawScenario) {
   const directories = new Map(Object.entries(scenario.directories || defaultDirectories()));
   const bag = {};
 
-  const repository = require('../../src/native/task-domain')
+  const repository = require('../../src/native/binding').taskDomainHost
     .createTaskBoardRepository(boardFile);
   const recordingRepository = {
     load: () => repository.load(),
@@ -383,7 +383,7 @@ function currentHostOptions(bag) {
   const graph = require('../../src/routes/task-graph')
     .createTaskGraphRoutes(deps.graph);
   const goal = require('../../src/routes/task-goal');
-  const attribution = require('../../src/native/task-domain')
+  const attribution = require('../../src/native/binding').taskDomainHost
     .createAttributionSettings({ initial: deps.attributionMode });
   return {
     ports: board.routePorts,

@@ -2,7 +2,7 @@
 // Seed an upgrade fixture while the isolated server is stopped. Production
 // creation APIs now create tasks, so they cannot manufacture legacy role data.
 const { createPaths, assertTestDir } = require('../../src/paths');
-const { readJson, writeJsonAtomic } = require('../../src/state/store');
+const { readJson, writeJsonAtomic } = require('./frozen-batch10').frozen('state/store');
 module.exports = async function legacySession({ dataDir, dirId, id, stop, start }) {
   assertTestDir(dataDir);
   await stop();

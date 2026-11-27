@@ -1,5 +1,5 @@
 'use strict';
-const { taskDomain } = require('../../../src/native/task-domain');
+const { taskDomain } = require('../frozen-batch10').frozen('native/task-domain');
 const { nativeCode } = require('../../../src/native/runtime');
 function createTaskBoardRepository(file) {
   function run(action, args = {}) {

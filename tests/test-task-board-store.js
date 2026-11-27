@@ -10,9 +10,9 @@ const path = require('node:path');
 const core = require('../src/task-board/core');
 const planning = require('../src/native/binding').taskPlanning;
 const { boardRule } = require('../src/native/binding').taskBoardBridge;
-const { taskDomain, taskDomainAsync, cloneBoard } = require('../src/native/task-domain');
+const { taskDomain, taskDomainAsync, cloneBoard } = require('../src/native/binding').taskDomainHost;
 const { openBoardStore } = require('../src/task-board/board-store');
-const { createTaskBoardRepository } = require('../src/native/task-domain');
+const { createTaskBoardRepository } = require('../src/native/binding').taskDomainHost;
 
 const NEW_IDS = Array.from({ length: 32 }, (_, i) => `${String(i).padStart(2, '0')}`.padEnd(32, 'a'));
 const plain = value => JSON.parse(JSON.stringify(value));

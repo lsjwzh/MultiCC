@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { MODES, DEFAULT_MODE, normalizeAttributionMode, planAttributionAction } = require('../src/native/task-domain').getAttributionModePolicy();
+const { MODES, DEFAULT_MODE, normalizeAttributionMode, planAttributionAction } = require('../src/native/binding').taskDomainHost.getAttributionModePolicy();
 
 test('unknown modes fall back to the default instead of failing open', () => {
   assert.deepEqual(MODES, ['off', 'shadow', 'suggest', 'auto']);
@@ -100,13 +100,13 @@ test('归属设置保留模式、拒绝错误与回滚前的内存值', () => {
   const { createRequire } = require('node:module');
   const { compileFunction } = require('node:vm');
   const file = path.resolve(__dirname, '../src/task-shell/attribution-settings.js');
-  const resolve = createRequire(file);
+  const resolve = require('./helpers/frozen-batch10').from(file, createRequire(file));
   const bytes = fs.readFileSync(path.join(__dirname, 'helpers/frozen-attribution-settings.js'));
   const hash = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
   assert.equal(hash, 'ebbf73b31408052f35d644e59f8db80406e50184');
   const original = { exports: {} };
   compileFunction(bytes.toString(), ['module', 'require'], {filename:file})(original,resolve);
-  const api = require('../src/native/task-domain');
+  const api = require('../src/native/binding').taskDomainHost;
   const table = resolve('../native/task-domain').getAttributionModePolicy().MODES;
   const values = [undefined, null, '', false, 0, 1, Symbol('mode'), new String('auto'), {},
     { toString(){ throw Error('coercion'); } }, '\u0085auto\u0085', '\ud800auto', 'deny', ...table,

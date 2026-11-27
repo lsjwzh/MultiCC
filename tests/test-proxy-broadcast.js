@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createProxyBroadcasters } = require('../src/chat/proxy-broadcast');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 
 function harness() {
   const sent = [];

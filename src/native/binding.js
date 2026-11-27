@@ -323,7 +323,7 @@ let networkPolicy;
 function getNetworkPolicy() { return networkPolicy ??= getNative().networkPolicyApi(getNative(), process); }
 let sessionDto;
 function getSessionDto() {
-  return sessionDto ??= getNative().sessionDtoApi(getNative(), value => require('../providers/auto-provider-config').providerSelectionRequest(value));
+  return sessionDto ??= getNative().sessionDtoApi(getNative(), value => module.exports.autoProviderConfig.providerSelectionRequest(value));
 }
 let apiContract;
 function getApiContract() {
@@ -339,7 +339,7 @@ let deliveryAddon = null;
 let sessionDeliveryAddon = null;
 let sessionDeliveryApi = null;
 let taskFrames;
-function getTaskFrames() { return taskFrames ??= getNative().taskFramesApi(require('./task-domain').taskCodeRegistryState); }
+function getTaskFrames() { return taskFrames ??= getNative().taskFramesApi(module.exports.taskDomainHost.taskCodeRegistryState); }
 const installAuxHealthProvider = fn => getTaskFrames().installAuxHealthProvider(fn);
 const auxVerdictStaleness = () => getTaskFrames().auxVerdictStaleness();
 const fanOutAuxVerdictStaleness = ports => getTaskFrames().fanOutAuxVerdictStaleness(ports);
@@ -578,7 +578,7 @@ function readCodexAuth(file) {
   return providerCredentials.credential({ operation: 'codexAuth',
     file: file || path.join(require('node:os').homedir(), '.codex', 'auth.json') });
 }
-function requestCodexUsage(auth, { fetch = require('../network/outbound').outboundFetch, signal } = {}) {
+function requestCodexUsage(auth, { fetch = module.exports.outbound.outboundFetch, signal } = {}) {
   return getNative().requestCodexUsage(auth, fetch, signal);
 }
 const taskShellCapacity = {
@@ -625,9 +625,9 @@ const artifactReference = {
 const providerInvocation = {
   createProviderInvocationFactory(options = {}) {
     return getNative().createProviderInvocationFactory(options, {
-      ProviderAttemptError: require('../chat/provider-attempt-runtime').ProviderAttemptError,
+      ProviderAttemptError: module.exports.providerAttemptRuntime.ProviderAttemptError,
       assertProviderBinding: module.exports.providerBinding.assertProviderBinding,
-      TurnRequestError: require('../chat/turn-request').TurnRequestError,
+      TurnRequestError: module.exports.turnRequestHost.TurnRequestError,
     });
   },
   protocolFor: (cli, summary) => getNative().providerInvocationProtocol(cli, summary),
@@ -644,7 +644,7 @@ function createClaudeAdapter(deps = {}) {
 const codexAdapter = {
   createCodexAdapter(deps) {
     return getNative().createCodexAdapter(deps, {
-      extractUpstreamError: require('../upstream-error').extractUpstreamError,
+      extractUpstreamError: module.exports.upstreamError.extractUpstreamError,
       displayName: module.exports.cliCapability.displayNameOf('codex'),
     });
   },
@@ -678,7 +678,7 @@ function jsonClone(value) {
 }
 // `arguments[0]` keeps the legacy zero-length signature and the `= {}` default.
 function createSessionPersistence() {
-  return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
+  return getNative().sessionPersistenceCreate(module.exports.sessionRecordsHost.sessionRecordsOwner, arguments[0]);
 }
 function quickCommitMessage(porcelain) {
   let addon;
@@ -832,6 +832,150 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+// Node owns the event-loop histogram and JavaScript's overloaded + operator.
+exposeHostApi('observability', () => {
+  const native = getNative();
+  return native.observabilityApi({
+    monitor: require('node:perf_hooks').monitorEventLoopDelay,
+    date: () => new Date(), add: (a, b) => a + b,
+  });
+});
+
+exposeHostApi('jevClient', () => getNative().jevClientApi(module.exports.outbound.outboundFetch));
+
+exposeHostApi('providerAttemptRuntime', () => {
+  class ProviderAttemptError extends Error {
+    constructor(message, code) {
+      super(message);
+      this.name = 'ProviderAttemptError';
+      this.code = code || 'PROVIDER_ATTEMPT_INVALID';
+    }
+  }
+  return getNative().providerAttemptRuntimeApi(ProviderAttemptError);
+});
+
+exposeHostApi('autoProviderConfig', () => getNative().providerSelectionHost());
+
+exposeHostApi('turnRequestHost', () => {
+  class TurnRequestError extends TypeError {
+    constructor(code, message) { super(message); this.name = 'TurnRequestError'; this.code = code; }
+  }
+  return getNative().turnRequestHost({ TurnRequestError, assertProviderBinding: module.exports.providerBinding.assertProviderBinding });
+});
+
+exposeHostApi('upstreamError', () => getNative().upstreamDiagnosticsApi(async (body, signal, timeout, limit) => {
+  const reader = body.getReader();
+  const chunks = [];
+  let length = 0, interrupted = false, stop;
+  const stopped = new Promise(resolve => {
+    stop = () => { interrupted = true; resolve({ done: true }); };
+  });
+  const timer = setTimeout(stop, timeout);
+  if (signal?.aborted) stop();
+  else signal?.addEventListener('abort', stop, { once: true });
+  try {
+    while (length < limit && !interrupted) {
+      const { value, done } = await Promise.race([reader.read(), stopped]);
+      if (done) break;
+      const chunk = Buffer.from(value).subarray(0, limit - length);
+      chunks.push(chunk);
+      length += chunk.length;
+    }
+  } catch {
+    // The received prefix can still contain the upstream diagnostic.
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
+    Promise.resolve(reader.cancel()).catch(() => {});
+  }
+  return Buffer.concat(chunks).toString('utf8').trim();
+}));
+
+exposeHostApi('outbound', () => {
+  const { Agent, ProxyAgent: FetchProxyAgent, Dispatcher, Request, fetch } = require('undici');
+  const { ProxyAgent } = require('proxy-agent');
+  const { createProxyPolicy } = module.exports.proxyPolicy;
+  class RoutingDispatcher extends Dispatcher {
+    constructor(policy) {
+      super();
+      this.policy = policy;
+      this.direct = new Agent();
+      this.proxies = new Map();
+      this.closed = false;
+    }
+    dispatch(options, handler) {
+      return getNative().outboundDispatch(this, options, handler, FetchProxyAgent);
+    }
+    async close() {
+      this.closed = true;
+      await Promise.all([this.direct, ...this.proxies.values()].map(agent => agent.close()));
+    }
+    async destroy(error) {
+      this.closed = true;
+      await Promise.all([this.direct, ...this.proxies.values()].map(agent => agent.destroy(error)));
+    }
+  }
+  async function abortable(promise, signal) {
+    if (!signal) return promise;
+    signal.throwIfAborted();
+    let onAbort;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+      })]);
+    } finally { signal.removeEventListener('abort', onAbort); }
+  }
+  function createOutbound(options = {}) {
+    const policy = options.policy || createProxyPolicy(options);
+    const dispatcher = new RoutingDispatcher(policy);
+    const agent = new ProxyAgent({ getProxyForUrl: url => policy.proxyForUrl(url) });
+    const ports = { fetch: options.fetch || fetch, policy, dispatcher, abortable };
+    async function outboundFetch(url, init = {}) {
+      try {
+        // Node's built-in Request and npm undici's Request have distinct
+        // constructors. Preserve the live body and AbortSignal on conversion.
+        if (url && typeof url.url === 'string' && !(url instanceof Request)) {
+          if (url.bodyUsed) throw new TypeError('请求正文已经被读取');
+          url = new Request(url.url, url);
+        }
+        const signal = init.signal ?? url?.signal;
+        signal?.throwIfAborted();
+        const target = new URL(typeof url === 'string' || url instanceof URL ? url : url.url);
+        return getNative().outboundRequest(ports, url, init, signal, target.hostname.toLowerCase());
+      } catch (error) {
+        if (error && typeof error === 'object') error.multiccProxyMode = 'proxy-discovery';
+        throw error;
+      }
+    }
+    async function getChildProxyEnv(base = process.env) {
+      const config = await policy.configuration();
+      return getNative().outboundChildEnv(base, config);
+    }
+    async function close() {
+      agent.destroy(); agent.httpAgent.destroy(); agent.httpsAgent.destroy();
+      await dispatcher.close();
+    }
+    outboundFetch.close = close;
+    return { outboundFetch, outboundAgent: agent, outboundDispatcher: dispatcher, getChildProxyEnv, policy, close };
+  }
+  const api = { ...createOutbound(), createOutbound, RoutingDispatcher };
+  Object.defineProperty(api, 'official', { configurable: true, get() {
+    const { createOutbound, outboundFetch } = api;
+    const { parseMacSystemProxy } = module.exports.proxyPolicy;
+    const value = {
+      parseMacProxy(text) {
+        const { httpProxy, httpsProxy } = parseMacSystemProxy(text);
+        return { httpProxy, httpsProxy };
+      },
+      createOfficialFetch: options => createOutbound(options).outboundFetch,
+      officialFetch: outboundFetch,
+    };
+    return Object.defineProperty(api, 'official', { value, writable: true }).official;
+  } });
+  return api;
+});
+
 exposeHostApi('cliAdapters', () => {
   const { displayNameOf, supportsEffort, effortOf } = module.exports.cliCapability;
   const { createCompletionTracker, createStepCompletionTracker, createProtocolCompletionTracker } = module.exports.cliCompletion;
@@ -845,7 +989,7 @@ exposeHostApi('cliAdapters', () => {
     resolveCliCommands, createCommandResolver,
     claudeLikeMcpArgs: require('../cli-adapters/router-mcp').claudeLikeMcpArgs,
     validateOpenCodeModel: module.exports.openCodeModels.validateOpenCodeModel,
-    extractUpstreamError: require('../upstream-error').extractUpstreamError,
+    extractUpstreamError: module.exports.upstreamError.extractUpstreamError,
     messageComposer, renderPrompt: messageComposer.renderPrompt,
     displayNameOf, supportsEffort, effortOf, classifyProviderError, errorFields, isZcodeSessionId,
     createCompletionTracker, createStepCompletionTracker, createProtocolCompletionTracker,
@@ -1321,9 +1465,36 @@ exposeHostApi('orchestrationSqlite', () => {
   return { DATABASE_SCHEMA_VERSION: 2, OrchestrationSqliteConflictError, OrchestrationSqliteError, createOrchestrationSqliteStore };
 });
 
+exposeHostApi('taskDomainHost', () => getNative().liveTaskDomainHost({
+  environment: process.env,
+  // Let V8 project caller-owned properties and raise its own destructuring errors.
+  planAttributionAction({ mode, relation, targetTaskId, currentTaskId } = {}) {
+    return getNative().planHostAttributionAction(mode, relation, targetTaskId, currentTaskId);
+  },
+  createStore: options => module.exports.stateStore.createStore(options),
+  defaultFile: key => module.exports.appPaths.createPaths()[key],
+  readText: file => require('node:fs').readFileSync(file, 'utf8'),
+  async runQueuedDomain(input) {
+    try { return JSON.parse(await runNative(() => getNative().taskDomainAsync(input))); }
+    catch (error) { throw nativeCode(error); }
+  },
+}));
+
+exposeHostApi('stateStore', () => {
+  class CorruptedStateError extends Error {
+    constructor(message, meta) {
+      super(message);
+      this.name = 'CorruptedStateError';
+      Object.assign(this, meta || {});
+    }
+  }
+  const fs = require('node:fs');
+  return getNative().stateStoreHost({ fs, path, CorruptedStateError });
+});
+
 exposeHostApi('runtimeSecurity', () => {
   const fs = require('node:fs');
-  const store = require('../state/store');
+  const store = module.exports.stateStore;
   function write(file, body, options = {}) {
     const opts = { mode: 0o600, dirMode: 0o700, ...options };
     // StateStore supports live beforeRename hooks and Node-specific fs argument
@@ -1351,13 +1522,13 @@ exposeHostApi('runtimeSecurity', () => {
 });
 
 exposeHostApi('hostEnv', () => getNative().hostEnvApi({
-  environment: process.env, reportFailure: require('../state/store').reportFailure,
+  environment: process.env, reportFailure: module.exports.stateStore.reportFailure,
   envPath: () => process.env.MULTICC_ENV_FILE ? path.resolve(process.env.MULTICC_ENV_FILE) : path.resolve(__dirname, '../..', '.env'),
 }));
 
 exposeHostApi('refreshHealth', () => ({
   KEY_PATTERN: /^[a-z0-9_-]{1,64}$/i,
-  createRefreshHealthStore: options => getNative().refreshHealthStore(options, { path, reportFailure: require('../state/store').reportFailure }),
+  createRefreshHealthStore: options => getNative().refreshHealthStore(options, { path, reportFailure: module.exports.stateStore.reportFailure }),
 }));
 
 exposeHostApi('taskDistill', () => {
@@ -1412,7 +1583,7 @@ exposeHostApi('authSecurity', () => ({
 }));
 
 exposeHostApi('globalProxy', () => {
-  const network = require('../network/outbound');
+  const network = module.exports.outbound;
   const http = require('node:http'), https = require('node:https');
   return getNative().globalProxyApi({ ...module.exports.proxyPolicy,
     outbound: options => Object.keys(options).length ? network.createOutbound(options) : network,
@@ -1459,7 +1630,7 @@ exposeHostApi('claudeBarState', () => getNative().claudeBarState({
 }));
 exposeHostApi('quotaBarCache', () => ({
   ...getNative().quotaBarCacheApi({}),
-  createQuotaBarCache({ file, now = Date.now, storeFactory = require('../state/store').createStore, logger = console } = {}) {
+  createQuotaBarCache({ file, now = Date.now, storeFactory = module.exports.stateStore.createStore, logger = console } = {}) {
     if (!file || typeof file !== 'string') throw new TypeError('[quota-bar-cache] requires { file }');
     const store = storeFactory({ file, kind: 'quota-bar-cache', schemaVersion: 1, legacyIsArray: false });
     return getNative().quotaBarCacheStore({ file, now,
@@ -1511,7 +1682,7 @@ exposeHostApi('claudeCliUsage', () => getNative().cliUsageHost({
   credentials: providerCredentials, platform: process.platform,
   file: path.join(require('node:os').homedir(), '.claude', '.credentials.json'),
   readFile: file => require('node:fs/promises').readFile(file, 'utf8'), now: () => Date.now(),
-  outboundFetch: require('../network/outbound').outboundFetch, fetchUsage: require('../claude-auth/official-oauth').fetchUsage,
+  outboundFetch: module.exports.outbound.outboundFetch, fetchUsage: require('../claude-auth/official-oauth').fetchUsage,
 }));
 exposeHostApi('officialUsage', () => ({
   claudeUsageWindows: usage => getNative().officialUsageWindows(usage, false),
@@ -1548,7 +1719,7 @@ exposeHostApi('quotaSelfHeal', () => getNative().quotaSelfHealApi({
 
 exposeHostApi('accountReader', () => {
   const native = getNative();
-  const { policy } = require('../network/outbound');
+  const { policy } = module.exports.outbound;
   // HTTP policy and parsing belong to the native query. AbortSignal and the
   // injected fetch/Response pair must be created in the caller's JS realm.
   async function query(input, { fetch } = {}) {
@@ -1581,7 +1752,7 @@ exposeHostApi('roleTokenTracker', () => {
   // Legacy token buckets and Date-like inputs use V8's additive coercion.
   const add = (a, b) => a + b;
   const ports = { add, path, fs: require('node:fs'), now: () => new Date(),
-    reportFailure: require('../state/store').reportFailure,
+    reportFailure: module.exports.stateStore.reportFailure,
     onError: err => console.error(`[multicc] role token tracker: ${err.message}`) };
   return {
     emptyBucket: native.emptyRoleTokenBucket, hasUsage: native.roleBucketHasUsage,
@@ -1624,9 +1795,11 @@ exposeHostApi('appPaths', () => getNative().appPathsPublicApi({
 // V8 owns the Map prototype and the iterators returned to JavaScript. The
 // native record owner keeps all membership, insertion order and live values.
 function recordMapPrototype(prefix, ownerOf) {
-  const size = prefix + 'Size', get = prefix + 'Get', set = prefix + 'Set';
-  const has = prefix + 'Has', remove = prefix + 'Delete', clear = prefix + 'Clear';
-  const entries = map => ownerOf(map)[prefix + 'Entries']();
+  const method = name => prefix ? prefix + name[0].toUpperCase() + name.slice(1) : name;
+  const size = method('size'), get = method('get'), set = method('set');
+  const has = method('has'), remove = method('delete'), clear = method('clear');
+  const snapshot = prefix ? method('entries') : 'entriesSnapshot';
+  const entries = map => ownerOf(map)[snapshot]();
   return class extends Map {
     get size() { return ownerOf(this)[size](); }
     get(key) { return ownerOf(this)[get](key); }
@@ -1643,6 +1816,17 @@ function recordMapPrototype(prefix, ownerOf) {
     }
   };
 }
+
+exposeHostApi('sessionRecordsHost', () => {
+  const slots = new WeakMap();
+  const sessionRecordsOwner = records => slots.get(records)?.native || null;
+  class SessionRecordMap extends recordMapPrototype('', sessionRecordsOwner) {
+    constructor(shared) { super(); slots.set(this, shared); }
+    listByDir(dirId) { return sessionRecordsOwner(this).listByDir(dirId); }
+  }
+  return getNative().sessionTableHost({ SessionRecordMap, ownerOf: sessionRecordsOwner,
+    payload: module.exports.taskStatePayload, emit: bus => (event, ...args) => bus.emit(event, ...args) });
+});
 
 exposeHostApi('chatSessions', () => {
   const slots = new WeakMap();
@@ -1688,7 +1872,7 @@ exposeHostApi('directoryRecords', () => {
     return new DirectoryMap(shared);
   }
   function corruptedStateError(file, result) {
-    return getNative().stateRecordError(require('../state/store').CorruptedStateError, file, result);
+    return getNative().stateRecordError(module.exports.stateStore.CorruptedStateError, file, result);
   }
   function loadDirectories(shared, file) {
     if (!shared?.native) throw new TypeError('state owner is required');
@@ -1804,7 +1988,7 @@ exposeHostApi('gitService', () => getNative().gitServiceApi(module.exports.repoA
 let boardDomainFacades;
 function getBoardDomainFacades() {
   if (boardDomainFacades) return boardDomainFacades;
-  const { taskDomain, boardStoreOf, replace } = require('./task-domain');
+  const { taskDomain, boardStoreOf, replace } = module.exports.taskDomainHost;
   boardDomainFacades = getNative().taskBoardDomainFacades({
     taskDomain, boardStoreOf, replace,
     turnRunStates: module.exports.classifyVocab.TURN_RUN_STATES,
@@ -1831,7 +2015,7 @@ exposeHostApi('taskRelocate', () => getNative().boardRelocateApi({
   plan: getNative().taskRelocatePlan, commit: getNative().taskRelocateCommit, assign: assignHostProperty,
 }));
 exposeHostApi('taskRetention', () => getNative().boardRetentionApi({
-  domain: require('./task-domain').taskDomain, isOpen: module.exports.classifyVocab.isOpenRunState,
+  domain: module.exports.taskDomainHost.taskDomain, isOpen: module.exports.classifyVocab.isOpenRunState,
   limit: module.exports.taskShellCapacity.MAX_TASKS_PER_DIRECTORY,
 }));
 
@@ -1861,11 +2045,11 @@ module.exports.taskSearch = {
 };
 
 exposeHostApi('taskPlanningRoutes', () => getNative().taskPlanningRoutesApi({
-  planning: module.exports.taskPlanning, cloneBoard: require('./task-domain').cloneBoard,
+  planning: module.exports.taskPlanning, cloneBoard: module.exports.taskDomainHost.cloneBoard,
 }));
 exposeHostApi('taskBoardRuntime', () => {
   const native = getNative();
-  const { taskAttention, createTaskBoardRepository } = require('./task-domain');
+  const { taskAttention, createTaskBoardRepository } = module.exports.taskDomainHost;
   const host = {
     core: module.exports.taskBoardCore, planning: module.exports.taskPlanning,
     recentTaskIds: module.exports.taskBoardBridge.recentTaskIds, attention: taskAttention, createTaskBoardRepository,
@@ -1924,7 +2108,7 @@ exposeHostApi('codexModelCatalog', () => getNative().codexAccountCatalogApi({
   officialCodex: provider => require('../codex/official-relay').isOfficialCodexOAuthProvider(provider),
   globalHome: () => path.join(require('node:os').homedir(), '.codex'), env: () => process.env,
   stripEnv: env => require('../codex/oauth-refresh').stripOpenAiEnv(env),
-  childProxyEnv: env => require('../network/outbound').getChildProxyEnv(env),
+  childProxyEnv: env => module.exports.outbound.getChildProxyEnv(env),
   createEgress: () => require('../claude-auth/egress-agent').createClaudeEgressAgentResolver(),
   commands: options => require('../cli-adapters/commands').resolveCliCommands(options),
 }));
@@ -1958,7 +2142,7 @@ exposeHostApi('modelCatalogsHost', () => getNative().modelCatalogsHostApi({
 }));
 
 exposeHostApi('relayModelCatalog', () => getNative().relayModelCatalogApi({
-  outboundFetch: require('../network/outbound').outboundFetch,
+  outboundFetch: module.exports.outbound.outboundFetch,
   officialAccountId: provider => require('../official-accounts').officialAccountIdFromProvider(provider),
 }));
 
@@ -2076,16 +2260,16 @@ exposeHostApi('orchestrationHost', () => {
 });
 
 exposeHostApi('chatApi', () => getNative().chatHostExports([
-  () => require('../chat/turn-request'), getRetryPolicy, () => module.exports.apiErrorPolicy,
+  () => module.exports.turnRequestHost, getRetryPolicy, () => module.exports.apiErrorPolicy,
   () => require('../chat/api-error-host'), () => module.exports.postTurnRouter,
   () => ({ createTurnRuntimeStore: module.exports.stateOwner.createTurnRuntimeStore }),
-  () => require('../chat/turn-lifecycle'), () => require('../chat/provider-attempt-runtime'),
+  () => require('../chat/turn-lifecycle'), () => module.exports.providerAttemptRuntime,
   () => providerInvocation, () => require('../chat/host-coordinator'), () => require('../chat/host-runtime'),
   () => module.exports.finalizationPlan, () => require('../chat/finalize-host'),
 ]));
 
 exposeHostApi('taskBoardRouting', () => getNative().taskBoardRoutingApi({
-  taskDomain: require('./task-domain').taskDomain, taskDirId: module.exports.taskNormalize.taskDirId,
+  taskDomain: module.exports.taskDomainHost.taskDomain, taskDirId: module.exports.taskNormalize.taskDirId,
   entries: values => [...values || []],
   affinity: task => new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean)),
   rankInputs(records, { dirId = null, contextTerms = new Map(), affinitySessionIds = new Set(), options = {} } = {}, check) {
@@ -2107,7 +2291,7 @@ exposeHostApi('classifyVocab', () => {
 });
 
 exposeHostApi('apiErrorPolicy', () => {
-  const { extractUpstreamError } = require('../upstream-error');
+  const { extractUpstreamError } = module.exports.upstreamError;
   const { errorFields } = module.exports.providerError;
   policyBinding = { process, addonPath: process.env.MULTICC_RUST_ADDON, prebuiltDir: process.env.MULTICC_RUST_PREBUILT_DIR };
   return getNative().apiErrorPolicyApi(getNative, extractUpstreamError, errorFields, policyBinding);

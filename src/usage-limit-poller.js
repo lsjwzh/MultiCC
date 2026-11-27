@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('./network/outbound');
+const { outboundFetch } = require('./native/binding').outbound;
 const { getNative, requestCodexUsage, readCodexAuth } = require('./native/binding');
 
 // Usage-limit poller — the ACTIVE-POLL half of the limit subsystem.
@@ -26,7 +26,7 @@ const { getNative, requestCodexUsage, readCodexAuth } = require('./native/bindin
 //   balance → { kind:'balance', available, currency, total, granted, toppedUp }
 
 const crypto = require('crypto');
-const { publicTransportError } = require('./upstream-error');
+const { publicTransportError } = require('./native/binding').upstreamError;
 const providers = require('./providers/host');
 const { checkEgressIpAllowed } = require('./native/binding').egressIpPolicy;
 

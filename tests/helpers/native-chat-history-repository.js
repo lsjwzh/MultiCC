@@ -7,7 +7,7 @@
 // directly.
 const { createPaths } = require('../../src/paths');
 const { getNative } = require('../../src/native/binding');
-const { reportFailure } = require('../../src/state/store');
+const { reportFailure } = require('../../src/native/binding').stateStore;
 
 function createChatHistoryFileRepository({ dataDir, appendEnabled } = {}) {
   return getNative().chatHistoryFileRepositoryCreate({

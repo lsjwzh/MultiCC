@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
 const { validateUsageObserved } = require('../src/usage-observed');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { REQUIRED_CAPABILITIES } = require('../src/providers/router-port');
 const {
   createHostEmbeddingPaths,

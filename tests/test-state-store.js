@@ -8,7 +8,7 @@ const os = require('os');
 const path = require('path');
 const {
   writeJsonAtomic, readJson, recoverFromBackup, createStore, CorruptedStateError,
-} = require('../src/state/store');
+} = require('../src/native/binding').stateStore;
 const paths = require('../src/paths');
 
 let pass = 0, fail = 0;

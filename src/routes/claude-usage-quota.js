@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 
 // GET /api/claude/quota — the Claude subscription's usage windows
 // (5h session / weekly / monthly).

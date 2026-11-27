@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { EventEmitter } = require('node:events');
 const { observeProxyRequest } = require('../src/native/binding').proxyOutcome;
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const {
   classifyProviderProxyRoute,
   createProviderProxyAdmission,

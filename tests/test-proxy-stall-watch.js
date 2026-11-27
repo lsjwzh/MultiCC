@@ -15,7 +15,7 @@ const {
 } = require('../src/providers/proxy-stall-watch');
 const { observeProxyRequest } = require('../src/native/binding').proxyOutcome;
 const { createProviderProxyAdmission, createProviderProxyGuard } = require('../src/providers/proxy-guard');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createApiErrorPolicyRuntime } = require('../src/chat/api-error-policy');
 const { failoverSafety } = require('../src/native/binding').getAutoProviderPolicy();
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');

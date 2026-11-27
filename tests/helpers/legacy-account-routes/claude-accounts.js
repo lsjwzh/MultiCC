@@ -5,7 +5,7 @@
 // tests/helpers/legacy-account-routes.js over the scripted world in
 // tests/helpers/account-routes-scripted-world.js.
 
-const { outboundFetch } = require('../../../src/network/outbound');
+const { outboundFetch } = require('../frozen-b10-network/outbound');
 
 // Claude official-account management routes (multi-account OAuth).
 //

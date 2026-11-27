@@ -135,7 +135,7 @@ function createPluginsRoutes(deps) {
     root: userPluginsDir,
     platform,
     // 走统一出站（代理设置照常生效）；测试注入 deps.fetch。
-    fetch: deps.fetch || ((...args) => require('../network/outbound').outboundFetch(...args)),
+    fetch: deps.fetch || ((...args) => require('../native/binding').outbound.outboundFetch(...args)),
     inspect: (parent, id) => {
       const found = readManifest(parent, id);
       return found ? { manifest: found.manifest, binary: resolveBinary(found, platform, arch) } : null;

@@ -14,7 +14,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const test = require('node:test');
 
-const { normalizeTurnRequest } = require('../src/chat/turn-request');
+const { normalizeTurnRequest } = require('../src/native/binding').turnRequestHost;
 const {
   createUsageObserved, stableUsageEventId,
 } = require('../src/usage-observed');

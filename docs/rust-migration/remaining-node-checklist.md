@@ -1,5 +1,34 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 10 批（2026-11-27，MacPro x86_64）
+
+本批从 `d7f8cf99` 迁移了十个生产模块，共 2,534 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 285 / 88,040 | 275 / 85,700 |
+| server.js 与 src/ | 286 / 90,901 | 276 / 88,561 |
+| 含生产插件 | 298 / 94,820 | 288 / 92,480 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/providers/auto-provider-config.js` | 299 | 供应商池校验、按需目录查询及候选对象身份 |
+| `src/providers/jev-client.js` | 505 | Jev 请求构造、响应解读与梯队选择 |
+| `src/network/outbound.js` | 107 | 出站请求代理选择及子进程网络环境 |
+| `src/native/task-domain.js` | 270 | 任务板命令、短码注册与 Air 列表 |
+| `src/state/store.js` | 246 | 原子状态写入、备份轮换、读取与恢复 |
+| `src/chat/provider-attempt-runtime.js` | 451 | 尝试归属、流式脱敏与重放限制 |
+| `src/observability.js` | 212 | 日志脱敏、指标与事件循环观测 |
+| `src/chat/turn-request.js` | 180 | 回合输入归一化、准入与启动证明 |
+| `src/upstream-error.js` | 147 | 上游错误的有界读取、字段提取与公开脱敏 |
+| `src/session/records.js` | 117 | 会话记录所有权、快照迭代与状态更新 |
+
+Node 宿主保留 undici 与 Node Agent 的构造和释放、Web Stream 读取与取消、V8 参数解构和对象身份，以及用户注入的回调。指标读取使用 Node 的事件循环直方图。状态文件字符串写入复用 Rust 原子替换。Buffer、特殊权限和被替换的 fs 方法使用 Node 的调用语义。备份轮换期间主文件保持可读。调用方迁出这些 SDK 和对象接口后可继续缩减宿主桥。
+
+本批 x64 源码指纹为 `fcd06ca3ebe96e2c9f9d13b3`。89 个关联 Node 测试入口共通过 1684 项，跳过 0 项。Rust 通过 301 项，真实网关 WebSocket 回环通过 1 项，桌面打包通过 4 项。隔离分类网关验证了 19 项，跳过 0 项。历史通过隔离磁盘写入和新 owner 重载验证。
+
+六组 HTTP 差分得到 404 项一致响应，逐项验证了 3 项预期差异。源码行数、运行时写入治理和打包索引门禁通过。npm 清单共 1,440 项，含本批全部 31 个改动的 Rust 源文件，十个旧生产路径均已退出 Git 索引与包。
+
 ## server.js 可达模块第 9 批（2026-11-27，MacPro x86_64）
 
 从 `3cc11ba5` 迁移了模型目录与供应商适配调用链。[逐文件可达清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)

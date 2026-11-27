@@ -83,6 +83,9 @@ pub const VENDOR_NATIVE_CLIS: [&str; 8] = [
 /// Mirrors `NATIVE_VENDOR_SUFFIX` in `src/providers/native-vendor.js`.
 pub const NATIVE_VENDOR_SUFFIX: &str = "-native:";
 
+/// Source of the public vendor-model RegExp, including its slash spelling.
+pub const NATIVE_VENDOR_MODEL_PATTERN: &str = r"^[A-Za-z0-9][A-Za-z0-9._:\/-]{0,118}[A-Za-z0-9._/-]$";
+
 /// OpenCode owns the native provider namespace, including user-installed providers.
 pub const NATIVE_OPENCODE_PREFIX: &str = "opencode-native:";
 pub const OPENCODE_CLI: &str = "opencode";

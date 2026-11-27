@@ -15,9 +15,9 @@
 const { createSessionQueryService } = require('./frozen-file-batch21/query-service');
 const { createWorkspaceService } = require('./frozen-file-batch21/workspace-service');
 const { isTerminalLetter, isSettledLetter, classifyDisplay, GOAL_STATES } = require('../../src/classify/vocab');
-const { taskShortCode } = require('../../src/native/task-domain');
+const { taskShortCode } = require('./frozen-batch10').frozen('native/task-domain');
 const { auxVerdictStaleness } = require('./legacy-aux-verdict-health');
-const { providerSelectionDto } = require('../../src/providers/auto-provider-config');
+const { providerSelectionDto } = require('./frozen-b10-network/auto-provider-config');
 // HEAD's task-goal module, frozen next to this oracle (the live one no longer mounts).
 const { mountTaskGoalRoutes } = require('./legacy-session-admin-routes/task-goal');
 const { mountUnattendedRoutes } = require('./frozen-file-batch10/routes');

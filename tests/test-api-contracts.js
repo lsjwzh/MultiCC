@@ -424,7 +424,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // JavaScript source line, which is what keeps the two producers honest.
   const frameHost = fs.readFileSync(path.join(ROOT, 'native/addon/src/chat_connect_frames.rs'), 'utf8');
   const runtime = fs.readFileSync(path.join(ROOT, 'src/native/binding.js'), 'utf8');
-  assert.ok(runtime.includes("taskFramesApi(require('./task-domain').taskCodeRegistryState)"));
+  assert.ok(runtime.includes('taskFramesApi(module.exports.taskDomainHost.taskCodeRegistryState)'));
   assert.ok(frameHost.includes('fn task_frame'));
   assert.ok(frameHost.includes('aux_verdict_health::freshness(source.get(c"provider")?, false)'));
   assert.ok(frameHost.includes('chat_task_state_payload(encode(envelope)?)'));
@@ -466,7 +466,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.deepEqual(frames, ['chat_history', 'task_state']);
   // The live broadcast is the task-state store's: server.js builds it and
   // keeps no inline copy, so the cancel-flow tests run the production code.
-  assert.ok(source.includes("require('./src/session/records')"),
+  assert.ok(source.includes('sessionRecordsHost'),
     'server.js must build its task state from the one store');
   assert.ok(source.includes('createTaskStateStore({'));
   assert.doesNotMatch(source, /TASK_STATE_DEFAULTS|taskStatePayload\(/,
@@ -474,8 +474,16 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   const taskStateStore = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'task_state_store.rs'), 'utf8');
   assert.ok(taskStateStore.includes('taskStatePayload'),
     'the store must share the payload contract');
-  assert.ok(taskStateStore.includes('resolve_owner') && fs.readFileSync(path.join(ROOT, 'src', 'session', 'records.js'), 'utf8').includes('taskStateStore(deps, sessionRecordsOwner,'),
-    'merge and write must stay in the one native record owner');
+  assert.ok(taskStateStore.includes('resolve_owner'));
+  const { createTaskStateStore } = require('../src/native/binding').sessionRecordsHost;
+  const { recordsOf } = require('./helpers/session-records');
+  const records = recordsOf([['contract', { id: 'contract' }]]);
+  const taskState = createTaskStateStore({ persistedSessions: records, now: () => 1,
+    bus: { emit() {} }, chatBroadcast() {}, workspaceBroadcast() {},
+  });
+  taskState.setTaskState('contract', { classifyState: 'P' }, { save: false });
+  assert.equal(records.get('contract').taskState.classifyState, 'P',
+    'the task store writes into the original live table');
   assert.ok(taskStateStore.includes('busEmit'),
     'the event hub derives task.* events from every write');
   const recordOwner = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'session_records.rs'), 'utf8');
@@ -667,9 +675,10 @@ test('/api task-board, search, task-graph, mark-achieved and task-attribution ro
     const text = fs.readFileSync(require.resolve(path.join(ROOT, 'src', 'routes', file)), 'utf8');
     assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false, `${file}.js must not register routes`);
   }
-  const attribution = fs.readFileSync(path.join(ROOT, 'src', 'native', 'task-domain.js'), 'utf8');
-  assert.equal(/app\.(get|post|put|patch|delete)\(/.test(attribution), false,
-    'the task domain compatibility port must not register routes');
+  assert.equal(fs.existsSync(path.join(ROOT, 'src', 'native', 'task-domain.js')), false);
+  const taskDomainCompatibility = require('../src/native/binding').taskDomainHost;
+  assert.equal(typeof taskDomainCompatibility.taskDomain, 'function');
+  assert.equal(typeof taskDomainCompatibility.mountRoutes, 'undefined');
   assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
   assert.ok(host.includes("'/api/__host/task-routes'"), 'and it is not a public path');
   assert.ok(host.includes("case 'mark-achieved-facts':"),

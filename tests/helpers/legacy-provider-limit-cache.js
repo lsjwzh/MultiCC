@@ -31,7 +31,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { readJson, recoverFromBackup } = require('../../src/state/store');
+const { readJson, recoverFromBackup } = require('./frozen-batch10').frozen('state/store');
 const { databaseConstructor } = require('../../src/sqlite/driver');
 const { getNative } = require('../../src/native/runtime');
 

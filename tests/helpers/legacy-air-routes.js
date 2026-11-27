@@ -10,9 +10,9 @@
 
 const crypto = require('node:crypto');
 const { core } = require('./load-frozen-task-board');
-const { taskDomain, taskDomainAsync } = require('../../src/native/task-domain');
+const { taskDomain, taskDomainAsync } = require('./frozen-batch10').frozen('native/task-domain');
 const { isAbnormalLetter, isGoalState } = require('../../src/classify/vocab');
-const { createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../../src/native/task-domain');
+const { createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('./frozen-batch10').frozen('native/task-domain');
 const { pendingAttention } = require('./legacy-task-attention');
 const { createAirCardCache } = require('../../src/workspace/air-card-cache');
 

@@ -1,6 +1,6 @@
 'use strict';
 
-const { getChildProxyEnv, outboundFetch } = require('../network/outbound');
+const { getChildProxyEnv, outboundFetch } = require('../native/binding').outbound;
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');

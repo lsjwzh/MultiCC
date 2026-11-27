@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
-const { getChildProxyEnv, outboundFetch } = require('../network/outbound');
+const { getChildProxyEnv, outboundFetch } = require('../native/binding').outbound;
 const { spawn } = require('child_process');
 const {
   GLOBAL_VOICE_GATEWAY_ID,

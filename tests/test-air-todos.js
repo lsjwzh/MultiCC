@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { TODO_LIMIT, createAirTodoRuntime } = require('../src/native/task-domain');
+const { TODO_LIMIT, createAirTodoRuntime } = require('../src/native/binding').taskDomainHost;
 const { mountAir } = require('./helpers/air-host');
 
 function tempFile(name = 'air-todos.json') {

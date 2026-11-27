@@ -1,7 +1,7 @@
 'use strict';
 
 const { createChatHostCoordinator } = require('./host-coordinator');
-const { redactProviderRouteCapability } = require('../observability');
+const { redactProviderRouteCapability } = require('../native/binding').observability;
 const { protocolFamilyOf } = require('../native/binding').cliCapability;
 const { getTurnProgress } = require('../native/binding');
 
