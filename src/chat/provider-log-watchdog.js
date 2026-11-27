@@ -27,7 +27,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { sanitizeMessage } = require('./api-error-policy');
+const { sanitizeMessage } = require('../native/binding').apiErrorPolicy;
 const { normalizeWindowEvent, windowEventBar } = require('../native/binding').getQuotaBarView();
 
 const DEFAULT_INTERVAL_MS = 5_000;

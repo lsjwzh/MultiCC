@@ -1,8 +1,9 @@
+mod public_api;
 use napi::Result;
 use napi_derive::napi;
 
 /// The classify vocabulary tables as one JSON document.
-/// `src/classify/vocab.js` reads it once at load and freezes it.
+/// The public API materializes one catalog per module instance.
 #[napi]
 pub fn classify_vocab_catalog() -> Result<String> {
     multicc_core::classify_vocab::catalog().map_err(napi::Error::from_reason)

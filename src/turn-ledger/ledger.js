@@ -14,7 +14,7 @@
 //   surfaced as needsReview, not as an error.
 
 const { resolveTurnState } = require('../native/binding').getTurnState();
-const { isProcessingLetter, isAbnormalLetter } = require('../classify/vocab');
+const { isProcessingLetter, isAbnormalLetter } = require('../native/binding').classifyVocab;
 const {
   OWNERSHIP, SILENT_E_REASONS, transitionId, projectLiveness,
 } = require('../native/binding').getTurnLedgerContract();

@@ -13,7 +13,7 @@ const path = require('path');
 
 const { normalizeManualMemory } = require('../memory/runtime');
 const { taskShortCode } = require('../native/task-domain');
-const { isGoalState } = require('../classify/vocab');
+const { isGoalState } = require('../native/binding').classifyVocab;
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
 const {
   mergeCliAccountsPatch,
