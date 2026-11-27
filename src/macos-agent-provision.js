@@ -33,7 +33,8 @@
 //     the Agent was signed with is unusable right now (a wrong clock at boot);
 //     that would silently revoke every grant. The next start retries.
 
-const { readShippedBuild, sourceHash } = require('./macos-agent-build');
+const nodePath = require('node:path');
+const { getNative } = require('./native/binding');
 
 const LABEL = 'com.multicc.agent';
 const OUTPUT_TAIL = 4000;
@@ -41,7 +42,8 @@ const SIGNING_DEFERRED_EXIT = 75;
 const DESKTOP_SERVER_SUFFIX = '.app/Contents/Resources/app-server';
 
 function createMacosAgentProvisioner(deps = {}) {
-  const fs = deps.fs || require('fs');
+  const injectedFs = deps.fs;
+  const fs = injectedFs || require('fs');
   const path = deps.path || require('path');
   const os = deps.os || require('os');
   const spawn = deps.spawn || require('child_process').spawn;
@@ -52,6 +54,20 @@ function createMacosAgentProvisioner(deps = {}) {
   const home = deps.home || os.homedir();
 
   const script = path.join(rootDir, 'scripts', 'install-agent.sh');
+  const sourceDir = nodePath.join(rootDir, 'scripts', 'macos-agent');
+  // Production reads these fixed package files in Rust. Injected filesystems
+  // keep their existing synchronous read interface and failure behavior.
+  const readMetadata = injectedFs ? () => {
+    try { return String(fs.readFileSync(nodePath.join(sourceDir, 'agent-build.json'), 'utf8')); }
+    catch { return ''; }
+  } : undefined;
+  const readSource = injectedFs ? name => {
+    const bytes = fs.readFileSync(nodePath.join(sourceDir, name));
+    if (typeof bytes === 'string') return Buffer.from(bytes);
+    if (Buffer.isBuffer(bytes)) return bytes;
+    if (ArrayBuffer.isView(bytes)) return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    throw new TypeError('Expected source text or bytes');
+  } : undefined;
   const source = path.join(rootDir, 'scripts', 'macos-agent', 'MultiCCAgent.swift');
   const bridgeHeader = path.join(rootDir, 'scripts', 'macos-agent', 'LidBrightnessBridge.h');
   const bridgeSource = path.join(rootDir, 'scripts', 'macos-agent', 'LidBrightnessBridge.m');
@@ -111,7 +127,8 @@ function createMacosAgentProvisioner(deps = {}) {
 
   // What is installed, by whom, and how it ranks against what this copy ships.
   function inspect() {
-    const shipped = readShippedBuild(rootDir, fs);
+    const native = getNative();
+    const shippedBuild = native.macosAgentShippedBuild(sourceDir, readMetadata);
     const me = self();
     const activeBin = realpath(link) || (exists(bin) ? bin : null);
     const activeApp = appOf(activeBin) || (exists(bin) ? app : null);
@@ -121,16 +138,16 @@ function createMacosAgentProvisioner(deps = {}) {
     const recordApp = rec && typeof rec.app === 'string' ? (realpath(rec.app) || rec.app) : null;
     const recordMatches = Boolean(rec && activeApp && rec.sourceSha256 === stampSum && recordApp === activeApp);
     let shippedSum = '';
-    try { shippedSum = sourceHash(rootDir, fs); } catch (_) { /* a package without the Agent sources */ }
+    try { shippedSum = native.macosAgentSourceHash(sourceDir, readSource); } catch (_) { /* a package without the Agent sources */ }
     let build = 0;
-    if (stampSum && stampSum === shippedSum) build = shipped.build;
+    if (stampSum && stampSum === shippedSum) build = shippedBuild;
     else if (recordMatches && Number.isSafeInteger(rec.build)) build = rec.build;
     const owner = recordMatches
       ? { kind: rec.installerKind || null, version: rec.installerVersion || null, root: rec.installerRoot || null, at: rec.installedAt || null }
       : null;
     return {
       self: me,
-      shipped: { build: shipped.build, sourceSha256: shippedSum },
+      shipped: { build: shippedBuild, sourceSha256: shippedSum },
       installed: activeApp ? { app: activeApp, build, sourceSha256: stampSum || null, owner, mine: Boolean(owner && owner.root === me.root) } : null,
       // A recorded install that the Agent on disk no longer matches: a copy
       // without these rules replaced it.
