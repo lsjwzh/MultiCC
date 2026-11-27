@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../i18n.dart';
-import '../providers/session_manager.dart';
 import '../services/connection_probe_service.dart';
 import '../services/demo/demo_mode.dart';
 import '../services/settings_service.dart';
 import '../widgets/lan_discovery_picker.dart';
-import 'main_shell.dart';
+import '../widgets/computer_spaces_shell.dart';
 
 class SetupScreen extends StatefulWidget {
   final SettingsService settings;
@@ -81,10 +79,7 @@ class _SetupScreenState extends State<SetupScreen> {
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (_) => ChangeNotifierProvider(
-          create: (_) => SessionManager(settings: widget.settings),
-          child: MainShell(settings: widget.settings),
-        ),
+        builder: (_) => ComputerSpacesShell(settings: widget.settings),
       ),
     );
   }
@@ -110,10 +105,7 @@ class _SetupScreenState extends State<SetupScreen> {
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
-        builder: (_) => ChangeNotifierProvider(
-          create: (_) => SessionManager(settings: widget.settings),
-          child: MainShell(settings: widget.settings),
-        ),
+        builder: (_) => ComputerSpacesShell(settings: widget.settings),
       ),
     );
   }

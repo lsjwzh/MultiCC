@@ -840,8 +840,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 反重力（agy）CLI 未安装横幅、新建/登录前引导弹窗与一键安装状态文案：
     // 新增 13 组双语键（+26 行），重跑生成器 countLines 口径实测 10948/716240。
     // 反重力工具步骤外显（toolStepsProgress）：新增 1 组双语键（+2 行），countLines 口径实测 10950/716354。
-    maxLines: 10950,
-    maxBytes: 716354,
+    // +5 bilingual Spaces labels, 14 missing English screen labels and 2 shared vault labels.
+    maxLines: 10978,
+    maxBytes: 717878,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

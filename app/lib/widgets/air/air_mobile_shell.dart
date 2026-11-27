@@ -229,6 +229,10 @@ extension _AirMobileShell on _AirTasksViewState {
         // 两页合并后搬到这里）；其余页面照旧是切换当前项目。
         title: InkWell(
           key: const ValueKey('air-mobile-project-picker'),
+          onLongPress: SpacesScope.maybeOf(context) == null ? null : () {
+            HapticFeedback.mediumImpact();
+            SpacesScope.maybeOf(context)?.enterOverview();
+          },
           onTap: () =>
               unawaited(_mobileProjects(listFilter: _mode == _AirMode.console)),
           child: Row(
@@ -252,7 +256,9 @@ extension _AirMobileShell on _AirTasksViewState {
                       ),
                     ),
                     Text(
-                      widget.settings.host,
+                      widget.settings.isMachineScoped
+                        ? '● ${widget.settings.machineName}'
+                        : SpacesScope.maybeOf(context)?.activeMachine.name ?? widget.settings.host,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -441,6 +447,8 @@ extension _AirMobileShell on _AirTasksViewState {
                 ),
               ],
             ),
+            if (SpacesScope.maybeOf(context) != null)
+              const SpaceDockHandle(key: ValueKey('air-space-dock-handle')),
           ],
         ),
       ),

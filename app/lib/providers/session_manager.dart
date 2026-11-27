@@ -291,6 +291,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   Session? get pendingTerminalSession => _pendingTerminalSession;
   void clearPendingTerminal() => _pendingTerminalSession = null;
 
+  bool _disposed = false;
   late final FcmService fcm;
 
   SessionManager({required this.settings}) {
@@ -314,6 +315,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   /// (cold start before the dashboard fetch returns), remember it and let
   /// [loadDashboard] open it once the list arrives.
   void openSessionFromNotification(String sessionId) {
+    if (_disposed) return;
     Session? match;
     for (final s in _sessions) {
       if (s.id == sessionId) {
@@ -386,6 +388,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
   // ── Dashboard load (directories + sessions in parallel) ───────────────────
 
   Future<void> loadDashboard() async {
+    if (_disposed) return;
     try {
       // 排布与目录/会话一起取：晚一步到就意味着列表先按创建顺序画一遍、再跳到
       // 用户排好的顺序。它自己吞掉失败（拿不到 = 默认顺序），不会拖垮这次加载。
@@ -394,6 +397,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         _sessionService.fetchSessions(),
         uiLayout.ensureLoaded(),
       ]);
+      if (_disposed) return;
       _directories = results[0] as List<Directory>;
       _sessions = results[1] as List<Session>;
       for (final s in _sessions) {
@@ -421,6 +425,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
     } catch (e) {
+      if (_disposed) return;
       _loadingSessions = false;
       _sessionsError = e.toString();
       notifyListeners();
@@ -905,12 +910,17 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void notifyListeners() {
+    if (_disposed) return;
     if (!settings.isMachineScoped) fcm.setActiveSession(_activeSessionId);
     super.notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    if (!settings.isMachineScoped) {
+      NotificationService.clearSelectHandler(openSessionFromNotification);
+    }
     fcm.dispose();
     _pendingChatOpen = null;
     WidgetsBinding.instance.removeObserver(this);

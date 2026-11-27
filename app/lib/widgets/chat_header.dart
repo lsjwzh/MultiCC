@@ -2,6 +2,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../i18n.dart';
@@ -19,6 +20,7 @@ import '../utils/context_level.dart';
 import '../screens/share_messages_screen.dart';
 import 'git_log_sheet.dart';
 import 'hook_list_view.dart';
+import 'spaces_scope.dart';
 
 class ChatHeader extends StatelessWidget {
   final SettingsService settings;
@@ -1507,8 +1509,14 @@ class _SessionTitle extends StatelessWidget {
           : SystemMouseCursors.click,
       child: GestureDetector(
         onDoubleTap: onDoubleTap,
+        onLongPress: SpacesScope.maybeOf(context) == null ? null : () {
+          HapticFeedback.mediumImpact();
+          SpacesScope.maybeOf(context)?.enterOverview();
+        },
         child: Tooltip(
           message: label,
+          triggerMode: SpacesScope.maybeOf(context) == null
+              ? TooltipTriggerMode.longPress : TooltipTriggerMode.manual,
           waitDuration: const Duration(milliseconds: 350),
           child: Semantics(
             label: label,
