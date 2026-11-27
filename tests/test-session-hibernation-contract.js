@@ -30,7 +30,7 @@ test('host composition gates every real ingress and keeps view paths passive', (
   const engine = read('src/chat/turn-engine-host.js');
   const cron = read('plugins/cron/cron-tasks.js');
   const board = read('native/addon/src/task_board_runtime/projection/view.rs');
-  assert.match(server, /reconcileStartup\(\).*initWorktrees/s);
+  assert.match(server, /reconcileStartup\(workspaceStartupProgress\).*initWorktrees/s);
   assert.match(engine, /getSessionHibernation/);
   const admission = read('native/addon/src/chat_work_admission.rs');
   assert.match(admission, /c"getSessionHibernation"/);

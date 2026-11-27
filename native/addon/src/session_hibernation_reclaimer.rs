@@ -13,6 +13,33 @@ use napi::{
 use napi_derive::napi;
 use std::{cell::Cell, cmp::Ordering, ffi::CStr, ptr, rc::Rc};
 
+#[napi(object)]
+pub struct WorkspaceStartupUpdate {
+    pub state: String,
+    pub error_code: Option<String>,
+}
+
+#[napi]
+pub fn session_hibernation_startup_update(
+    state: String,
+    previous_error: Option<String>,
+    path_exists: bool,
+    valid: bool,
+    resident_error: Option<String>,
+) -> Option<WorkspaceStartupUpdate> {
+    core::startup_reconciliation(
+        &state,
+        previous_error.as_deref(),
+        path_exists,
+        valid,
+        resident_error.as_deref(),
+    )
+    .map(|(state, error)| WorkspaceStartupUpdate {
+        state: state.into(),
+        error_code: error.map(str::to_owned),
+    })
+}
+
 fn obj(a: L<'_>) -> Result<L<'_>> {
     a.from_value(&J::Object(vec![]))
 }

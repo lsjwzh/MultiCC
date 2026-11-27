@@ -359,9 +359,10 @@ test('startup worktree initialization skips sleeping records and requires retain
     ['login', { id: 'login', dirId: 'dir-1', kind: 'terminal', loginFlow: 'codex-login', cwd: '/data/login-workspaces/login', createdAt: iso(DAY) }],
   ]);
   const calls = [];
+  const progress = [];
   const invalidSessions = new Map();
   const result = await initializeSessionWorktrees({
-    records,
+    records, onProgress: row => progress.push(row),
     directories: new Map([['dir-1', { id: 'dir-1', path: '/repo', baseBranch: 'main' }]]),
     invalidSessions,
     realPathOf: value => value,
@@ -379,6 +380,10 @@ test('startup worktree initialization skips sleeping records and requires retain
     auxSessionId: '__aux__',
     log: { log() {} },
   });
+  assert.deepEqual(progress, [
+    { phase: 'worktrees', completed: 0, total: 4 },
+    { phase: 'worktrees', completed: 4, total: 4 },
+  ]);
   assert.equal(result.built, 2);
   assert.deepEqual(calls.map(call => call.id), ['bound-awake', 'ordinary'], 'login terminals never get a worktree rebuilt');
   assert.equal(calls[0].options.requireExistingBranch, true);
@@ -459,7 +464,8 @@ test('startup reconcile implements the crash matrix without creating a branch', 
     bound('surprise', iso(DAY), { workspaceState: 'hibernated', _pathExists: true }),
     bound('lost', iso(DAY), { workspaceState: 'hibernated', _pathExists: false, _branchExists: false }),
   ];
-  const h = harness({ records: new Map(cases.map(record => [record.id, record])) });
+  const h = harness({ records: new Map(cases.map(record => [record.id, record])),
+    pathExists: record => record._pathExists !== false });
   await h.runtime.reconcileStartup();
   assert.equal(cases[0].workspaceState, 'awake');
   assert.equal(cases[1].workspaceState, 'hibernated');
@@ -467,8 +473,35 @@ test('startup reconcile implements the crash matrix without creating a branch', 
   assert.equal(cases[3].workspaceState, 'hibernated');
   assert.equal(cases[4].workspaceState, 'awake');
   assert.equal(cases[5].workspaceState, 'hibernated');
-  assert.equal(cases[5].workspaceStateErrorCode, null,
+  assert.equal(cases[5].workspaceStateErrorCode ?? null, null,
     'admission owns missing-branch recreation; startup does not manufacture a terminal error');
+});
+
+test('启动跳过已休眠且签出路径缺失的会话，旧路径和上次错误仍需校对', async () => {
+  const sleeping = bound('sleeping', iso(DAY), { workspaceState: 'hibernated', workspaceStateUpdatedAt: iso(DAY) });
+  const oldError = { ...sleeping, id: 'stale-error', workspaceStateErrorCode: 'wake_failed' };
+  const legacy = { ...sleeping, id: 'legacy', worktreePath: null };
+  const invalid = { ...sleeping, id: 'invalid' };
+  const rows = [sleeping, oldError, legacy, invalid];
+  const inspected = [], progress = [];
+  const h = harness({ records: new Map(rows.map(r => [r.id, r])),
+    pathExists: r => r === invalid,
+    git: { inspect: async (_dir, r) => {
+      inspected.push(r.id);
+      return { pathExists: r !== oldError, valid: r === legacy };
+    } },
+  });
+  await h.runtime.reconcileStartup(row => progress.push(row));
+  assert.deepEqual(inspected, ['stale-error', 'legacy', 'invalid']);
+  assert.equal(sleeping.workspaceStateUpdatedAt, iso(DAY));
+  assert.equal(invalid.workspaceStateUpdatedAt, iso(DAY));
+  assert.equal(oldError.workspaceStateErrorCode, null);
+  assert.equal(legacy.workspaceState, 'awake');
+  assert.equal(h.writes.length, 2);
+  assert.deepEqual(progress, [
+    { phase: 'history', completed: 0, total: 4 }, { phase: 'history', completed: 4, total: 4 },
+    { phase: 'reconcile', completed: 0, total: 4 }, { phase: 'reconcile', completed: 4, total: 4 },
+  ]);
 });
 
 test('delivery lease holds the keyed lock through durable admission and touch', async () => {

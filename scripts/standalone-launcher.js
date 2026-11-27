@@ -39,7 +39,7 @@ const LIB_DIR = fs.existsSync(path.join(__dirname, 'lib'))
   ? path.join(__dirname, 'lib')
   : path.resolve(__dirname, '..', 'desktop', 'lib');
 const { findFreePort, probePort, selectPort } = require(path.join(LIB_DIR, 'port-chooser'));
-const { createBackendSupervisor, killProcessTree } = require(path.join(LIB_DIR, 'backend-supervisor'));
+const { createBackendSupervisor, killProcessTree, DEFAULTS: supervisorDefaults } = require(path.join(LIB_DIR, 'backend-supervisor'));
 const { reclaimOrphan, pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim'));
 const {
   resolveDesktopEnv, buildChildEnv, readRestartPort, readEnvValues, ensureWritableDirs, translocationGuidance, gatewayLaunch,
@@ -206,12 +206,14 @@ function openBrowser(origin, { spawnImpl = spawn, platform = process.platform, l
 
 const STARTUP_STATE_FILE = 'standalone-startup.json';
 // What the supervising launcher last reported while the server was not ready
-// yet (today: the one-time task data upgrade). Stale or orphaned reports count
+// yet (task data migration or session workspace recovery). Stale or orphaned reports count
 // as nothing so a crashed launcher can never keep a CLI waiting.
 function readStartupState(dir, { now = Date.now(), isAlive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } } } = {}) {
   try {
     const value = JSON.parse(fs.readFileSync(path.join(dir, STARTUP_STATE_FILE), 'utf8'));
-    if (!value || !Number.isFinite(value.at) || now - value.at > 15_000 || !isAlive(value.pid)) return null;
+    const maxAge = value?.recovery ? supervisorDefaults.healthTimeoutMs : 15_000;
+    if (!value || !Number.isFinite(value.at) || value.at > now || now - value.at > maxAge ||
+        !Number.isSafeInteger(value.pid) || value.pid <= 0 || !isAlive(value.pid)) return null;
     return value;
   } catch (_) { return null; }
 }
@@ -610,6 +612,8 @@ function createLauncher({
           if (line !== lastMigrationLine) logger.log(`upgrading task data (one time): ${line}`);
           lastMigrationLine = line;
           writeStartupState({ pid: process.pid, at: Date.now(), migration });
+        } else if (phase === 'workspace-recovery') {
+          writeStartupState({ pid: process.pid, at: Date.now(), recovery: info.recovery });
         } else clearStartupState();
         if (phase === 'ready') {
           logger.log(`server ready at ${info.origin}`);

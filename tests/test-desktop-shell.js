@@ -189,6 +189,58 @@ test('health-probe keeps waiting past its timeout while the task data upgrade re
   assert.equal(resumed.status, 200);
 });
 
+test('health-probe times out even when a gateway hangs during fetch or body consumption', async () => {
+  for (const stallBody of [false, true]) {
+    const fetchImpl = async (url, { signal }) => {
+      const stalled = () => new Promise((_, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      if (!stallBody) return stalled();
+      return { status: 200, arrayBuffer: stalled };
+    };
+    await assert.rejects(waitForReadiness({
+      origin: 'http://127.0.0.1:1', intervalMs: 5, timeoutMs: 50, fetchImpl,
+    }), { code: 'READY_TIMEOUT' });
+  }
+});
+
+test('supervisor waits through advancing workspace recovery, stops on replay, and gates readiness on HTTP', async t => {
+  for (const stall of [false, true]) {
+    const dir = tmpdir('workspace-boot-');
+    const script = `
+      if (process.env.MULTICC_WORKSPACE_STARTUP_PROGRESS !== '1') process.exit(3);
+      const marker = '[multicc-workspace-startup] ';
+      const row = (phase, completed, total = 4) => marker + JSON.stringify({phase, completed, total}) + '\\n';
+      const emit = line => process.stdout.write(line);
+      emit('x'.repeat(540) + row('worktrees', 4));
+      emit(row('invalid', 1) + row('worktrees', 5));
+      const first = row('reconcile', 1);
+      emit(first.slice(0, 10));
+      setTimeout(() => emit(first.slice(10) + row('history', 0) + row('reconcile', 1) + row('reconcile', 2, 5)), 20);
+      let current = 1;
+      setInterval(() => {
+        if (!${stall} && current < 4) current++;
+        emit(row('reconcile', current) + row('history', 3));
+      }, 650);
+      require('node:http').createServer((req, res) => {
+        if (req.url === '/api/desktop-shutdown') { res.end(); setTimeout(() => process.exit(), 20); return; }
+        res.writeHead(current === 4 ? 200 : 503).end();
+      }).listen(Number(process.env.PORT), '127.0.0.1');
+    `;
+    const { sup, phases } = makeSupervisor({
+      args: ['-e', script], logsDir: dir, opts: { healthTimeoutMs: 1500, restartBackoffMs: 30_000 },
+    });
+    t.after(() => sup.stop());
+    await sup.start({ port: await reservePort() });
+    const final = stall ? 'failed' : 'ready';
+    await waitFor(() => phases.some(p => p.phase === final), { timeoutMs: 10_000, what: final });
+    const recovery = phases.filter(p => p.phase === 'workspace-recovery').map(p => p.info.recovery);
+    assert.deepEqual(recovery, (stall ? [1] : [1, 2, 3, 4]).map(completed => ({ phase: 'reconcile', completed, total: 4 })));
+    if (stall) assert.ok(!phases.some(p => p.phase === 'ready'));
+    await sup.stop();
+  }
+});
+
 // ── unit: desktop-env ───────────────────────────────────────────────────────
 
 test('desktop-env resolves packaged and dev layouts', () => {

@@ -246,8 +246,14 @@ async function waitUntilReady(layout, env, port, {
   for (let i = 0; i < attempts; i += 1) {
     const state = await currentState(layout, env);
     if (state.running) return state;
-    const migration = readStartupState(standaloneDataDir({ env }))?.migration;
-    if (migration && Date.now() - startedAt < migrationWaitMs) {
+    const startup = readStartupState(standaloneDataDir({ env }));
+    const migration = startup?.migration;
+    if (startup?.recovery) {
+      i = -1;
+      const line = workspaceRecoveryText(startup.recovery);
+      if (line !== lastLine) write(line + '\n');
+      lastLine = line;
+    } else if (migration && Date.now() - startedAt < migrationWaitMs) {
       i -= 1;
       const line = migration.state === 'failed'
         ? `waiting: ${migration.error?.message || 'upgrade failed'}`
@@ -308,15 +314,23 @@ async function holdRestartedForeground(layout, env, binary) {
   });
 }
 
+function workspaceRecoveryText({ phase, completed, total }) {
+  const label = { history: '检查会话历史', reconcile: '核对休眠状态', worktrees: '检查工作树' };
+  return `正在恢复会话工作区：${label[phase]} ${completed}/${total}`;
+}
+
 async function cmdStatus(layout, env, args) {
   const state = await currentState(layout, env);
   const configFile = envFilePath(layout, env);
-  const migration = state.running ? null : readStartupState(standaloneDataDir({ env }))?.migration || null;
+  const startup = state.running ? null : readStartupState(standaloneDataDir({ env }));
+  const migration = startup?.migration;
+  const recovery = startup?.recovery;
   if (args.json) {
     process.stdout.write(`${JSON.stringify({
       running: state.running,
-      starting: Boolean(state.starting),
+      starting: Boolean(state.starting || recovery || migration),
       migrating: Boolean(migration),
+      ...(recovery ? { recoveringWorkspaces: true, recovery } : {}),
       ...(migration ? { migration } : {}),
       pid: state.pid,
       url: state.origin,
@@ -332,6 +346,8 @@ async function cmdStatus(layout, env, args) {
   process.stdout.write(`MultiCC ${layout.manifest.version} (${layout.platform}-${layout.arch})\n`);
   if (state.running) {
     process.stdout.write(`  status: running at ${state.origin} (pid ${state.pid})\n`);
+  } else if (recovery) {
+    process.stdout.write(`  ${workspaceRecoveryText(recovery)}\n`);
   } else if (migration) {
     process.stdout.write(`  status: upgrading task data (one time only), ${migration.state === 'failed' ? migration.error?.message : `${migration.percent}%`}\n`);
   } else if (state.starting) {
