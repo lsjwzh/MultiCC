@@ -318,3 +318,14 @@ test('the chat page ships the chip, its stylesheet and the module in load order'
   const liveUi = fs.readFileSync(path.join(__dirname, '../public/chat-live-ui.js'), 'utf8');
   assert.match(liveUi, /function danmakuRunningCount\(\)/, 'the panel exposes its spinning task rows');
 });
+
+test('reconnecting mid-tool keeps the server toolSince elapsed duration instead of resetting to 0s', () => {
+  const { c, meter } = meterAt();
+  const toolStartedAt = c.now() - 12 * 60 * 1000; // started 12m before reconnect
+  meter.begin(0);
+  c.advance(46_000); // 46s after reconnect
+  const snap = meter.snapshot({ toolRunning: true, toolSince: toolStartedAt });
+  assert.deepEqual([snap.phase, snap.tone], ['tool', 'busy']);
+  assert.equal(snap.phaseMs, 12 * 60 * 1000 + 46_000);
+  assert.equal(rate.describe(snap).text, '🔧 工具运行 12m 46s');
+});

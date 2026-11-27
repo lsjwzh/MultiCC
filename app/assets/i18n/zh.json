@@ -328,6 +328,7 @@
   "workProgressIssue": "处理时遇到问题",
   "workProgressChecked": "处理步骤已完成",
   "technicalDetailsCount": "技术详情 · {n}",
+  "toolStepsProgress": "执行进度 · {done}/{total}",
   "clearConnectionHistory": "清除连接记录",
   "clearConnectionHistoryBody": "将删除所有已记住的服务器地址和 Token。当前正在使用的连接不受影响。",
   "clearAction": "清除",
