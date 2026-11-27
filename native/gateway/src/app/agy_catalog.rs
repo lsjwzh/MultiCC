@@ -8,7 +8,11 @@
 //! Node host op. The per-account cache and single-flight locks live here; the
 //! route shape stays in `model_catalogs`.
 use crate::agy_relay_client::{fetch_relay_models, RelayCatalogError};
+use crate::agy_remote_bridge::{build_ssh_base_args, ssh_bin};
 use multicc_core::agy_accounts::{self as agy_store, ResolvedAgyAccount};
+use multicc_core::agy_remote::{
+    build_remote_agy_command_script, posix_shell_quote, RemoteAgyTarget, DEFAULT_REMOTE_AGY_BIN,
+};
 use multicc_core::egress_plugin::{EgressBinding, LOOPBACK_NO_PROXY};
 use serde_json::{json, Value};
 use std::{
@@ -154,6 +158,68 @@ fn model_options(session: &Value) -> AgyCatalog {
     AgyCatalog { models, current }
 }
 
+async fn run_acp_model_query(
+    mut command: Command,
+    cwd: &str,
+    spawn_err: &str,
+) -> Result<AgyCatalog, String> {
+    let mut child = command.spawn().map_err(|_| spawn_err.to_string())?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法与 agy ACP 通信".to_string())?;
+    let mut stdout = BufReader::new(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| "无法读取 agy ACP 输出".to_string())?,
+    )
+    .lines();
+    for (id, method, params) in [
+        (
+            1,
+            "initialize",
+            json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"multicc-models","version":"1.0.0"}}),
+        ),
+        (2, "session/new", json!({"cwd":cwd,"mcpServers":[]})),
+    ] {
+        let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+        stdin
+            .write_all(format!("{}\n", request).as_bytes())
+            .await
+            .map_err(|_| "发送 agy ACP 请求失败".to_string())?;
+        loop {
+            let line = stdout
+                .next_line()
+                .await
+                .map_err(|_| "读取 agy ACP 响应失败".to_string())?
+                .ok_or_else(|| "未读到反重力模型，请确认已登录 agy 并检查网络".to_string())?;
+            if line.len() > MAX_LINE {
+                return Err("agy ACP 响应超出长度限制".to_string());
+            }
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if message.get("id").and_then(Value::as_i64) != Some(id) {
+                continue;
+            }
+            let result = message
+                .get("result")
+                .ok_or_else(|| "未读到反重力模型，请确认已登录 agy 并检查网络".to_string())?;
+            if id == 2 {
+                let catalog = model_options(result);
+                return if catalog.models.is_empty() {
+                    Err("未读到反重力模型，请确认已登录 agy 并检查网络".to_string())
+                } else {
+                    Ok(catalog)
+                };
+            }
+            break;
+        }
+    }
+    Err("未读到反重力模型，请确认已登录 agy 并检查网络".to_string())
+}
+
 async fn fetch_local_with_env(
     home_override: Option<&Path>,
     proxy_url: Option<&str>,
@@ -184,63 +250,55 @@ async fn fetch_local_with_env(
             .env("NO_PROXY", LOOPBACK_NO_PROXY)
             .env("no_proxy", LOOPBACK_NO_PROXY);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|_| "未读到反重力模型，请确认本机已安装并登录 agy".to_string())?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "无法与 agy ACP 通信".to_string())?;
-    let mut stdout = BufReader::new(
-        child
-            .stdout
-            .take()
-            .ok_or_else(|| "无法读取 agy ACP 输出".to_string())?,
-    )
-    .lines();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-    for (id, method, params) in [
-        (
-            1,
-            "initialize",
-            json!({"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"multicc-models","version":"1.0.0"}}),
+    let cwd = std::env::current_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .to_string_lossy()
+        .into_owned();
+    run_acp_model_query(command, &cwd, "未读到反重力模型，请确认本机已安装并登录 agy").await
+}
+
+/// 通过 SSH 桥接向远端 Host 拉取反重力模型目录（复用与本地一致的 ACP `initialize` + `session/new`）。
+///
+/// 命令通过 `sh -c <quoted_script>` 传递，确保 `stdin` 从首字节起完整透传给远端 `exec agy acp`。
+async fn fetch_ssh_models(remote: &RemoteAgyTarget) -> Result<AgyCatalog, String> {
+    let agy_bin = remote
+        .remote_agy_bin
+        .as_deref()
+        .unwrap_or(DEFAULT_REMOTE_AGY_BIN);
+    let script = build_remote_agy_command_script(
+        agy_bin,
+        remote.remote_home.as_deref(),
+        remote.host_account_id.as_deref(),
+        &["acp"],
+    );
+    let mut args = build_ssh_base_args(remote);
+    args.push(remote.ssh_target.clone());
+    args.push("--".to_string());
+    args.push(format!("sh -c {}", posix_shell_quote(&script)));
+
+    let mut command = Command::new(ssh_bin());
+    command
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .env_remove("MULTICC_AGY_REMOTE_ACCOUNT_JSON")
+        .env_remove("MULTICC_AGY_EGRESS_JSON");
+
+    match tokio::time::timeout(
+        Duration::from_secs(30),
+        run_acp_model_query(
+            command,
+            "/tmp",
+            "无法通过 SSH 连接远端反重力主机拉取模型目录",
         ),
-        (2, "session/new", json!({"cwd":cwd,"mcpServers":[]})),
-    ] {
-        let request = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-        stdin
-            .write_all(format!("{}\n", request).as_bytes())
-            .await
-            .map_err(|_| "发送 agy ACP 请求失败".to_string())?;
-        loop {
-            let line = stdout
-                .next_line()
-                .await
-                .map_err(|_| "读取 agy ACP 响应失败".to_string())?
-                .ok_or_else(|| "未读到反重力模型，请确认已登录 agy 并检查网络".to_string())?;
-            if line.len() > MAX_LINE {
-                return Err("agy ACP 响应超出长度限制".to_string());
-            }
-            let message: Value = serde_json::from_str(&line)
-                .map_err(|_| "解析 agy ACP 响应 JSON 失败".to_string())?;
-            if message.get("id").and_then(Value::as_i64) != Some(id) {
-                continue;
-            }
-            let result = message
-                .get("result")
-                .ok_or_else(|| "未读到反重力模型，请确认已登录 agy 并检查网络".to_string())?;
-            if id == 2 {
-                let catalog = model_options(result);
-                return if catalog.models.is_empty() {
-                    Err("未读到反重力模型，请确认已登录 agy 并检查网络".to_string())
-                } else {
-                    Ok(catalog)
-                };
-            }
-            break;
-        }
+    )
+    .await
+    {
+        Ok(res) => res,
+        Err(_) => Err("通过 SSH 拉取远端反重力模型目录超时，请检查 SSH 连接与网络".to_string()),
     }
-    Err("未读到反重力模型，请确认已登录 agy 并检查网络".to_string())
 }
 
 async fn slot_for(cache_key: &str) -> Arc<Mutex<CacheSlot>> {
@@ -374,10 +432,19 @@ pub(super) async fn resolve_models(
                 cached,
             })
         }
-        Ok(Some(ResolvedAgyAccount::Remote { .. })) => Err(
-            "当前为 SSH 远端反重力账号，暂不支持直接透传模型目录；请改用借道分享码或到远端 Host 查看"
-                .to_string(),
-        ),
+        Ok(Some(ResolvedAgyAccount::Remote { id, remote, .. })) => {
+            let cache_key = format!("ssh:{id}");
+            let (catalog, cached) = cached_models(&cache_key, refresh, || async {
+                fetch_ssh_models(&remote).await
+            })
+            .await?;
+            Ok(AgyCatalogResult {
+                models: catalog.models,
+                current: catalog.current,
+                source: "ssh",
+                cached,
+            })
+        }
         Err(err) => Err(err),
     }
 }
@@ -603,6 +670,88 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","catego
         std::env::remove_var("MULTICC_AGY_ACCOUNTS_HOME");
         std::env::remove_var("MULTICC_AGY_BIN");
         std::env::remove_var("MULTICC_EGRESS_PROXY_OVERRIDE");
+        invalidate().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_remote_account_bridges_models_over_ssh_with_caching() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "multicc-agy-ssh-models-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let client_home = root.join("client");
+        std::fs::create_dir_all(&client_home).unwrap();
+
+        let fake_agy = root.join("fake-agy");
+        std::fs::write(
+            &fake_agy,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+      ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","options":[{"value":"gemini-4-neon","name":"Gemini 4 Neon"}]}],"models":{"currentModelId":"gemini-4-neon-high","availableModels":[{"modelId":"gemini-4-neon-high","name":"Gemini 4 Neon (High)"}]}}}'
+      exit 0
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Fake ssh receives `... <target> -- "sh -c '<script>'"` and evaluates the last argument via sh -c.
+        let fake_ssh = root.join("fake-ssh");
+        std::fs::write(
+            &fake_ssh,
+            "#!/bin/sh\nlast=''\nfor a in \"$@\"; do last=\"$a\"; done\nexec /bin/sh -c \"$last\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let ssh_acct = agy_store::create_remote_account(
+            &client_home,
+            "SSH 借用反重力",
+            &json!({
+                "transport": "ssh",
+                "sshTarget": "user@host.test",
+                "sshPort": 32303,
+                "remoteAgyBin": fake_agy.to_string_lossy(),
+                "fileMode": "mutagen",
+            }),
+        )
+        .unwrap();
+        let acct_id = ssh_acct["id"].as_str().unwrap();
+        agy_store::set_active(&client_home, Some(acct_id)).unwrap();
+        std::env::set_var("MULTICC_AGY_ACCOUNTS_HOME", &client_home);
+        std::env::set_var("MULTICC_SSH_BIN", &fake_ssh);
+        invalidate().await;
+
+        let r1 = resolve_models(None, false).await.unwrap();
+        assert_eq!(r1.source, "ssh");
+        assert!(!r1.cached);
+        assert_eq!(r1.models.len(), 1);
+        assert_eq!(r1.models[0]["model"], "gemini-4-neon");
+        assert_eq!(
+            r1.current,
+            Some(json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"}))
+        );
+
+        let r2 = resolve_models(None, false).await.unwrap();
+        assert_eq!(r2.source, "ssh");
+        assert!(r2.cached);
+
+        std::env::remove_var("MULTICC_AGY_ACCOUNTS_HOME");
+        std::env::remove_var("MULTICC_SSH_BIN");
         invalidate().await;
         let _ = std::fs::remove_dir_all(&root);
     }

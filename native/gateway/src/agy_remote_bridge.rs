@@ -25,7 +25,7 @@ use multicc_core::agy_remote::{
     build_remote_agy_exec_command, build_remote_bootstrap_script,
     build_remote_host_mcp_bootstrap_script, mutagen_session_name, parse_remote_target,
     posix_shell_quote, remote_workspace_rel_or_abs, resolve_mutagen_ignores, RemoteAgyTarget,
-    RemoteExecSpec, DEFAULT_REMOTE_AGY_BIN, FILE_MODE_MUTAGEN,
+    RemoteExecSpec, DEFAULT_REMOTE_AGY_BIN, FILE_MODE_MUTAGEN, REMOTE_COMMON_PATH_EXPORT,
 };
 use multicc_core::mutagen_runtime::{
     executable_name, has_complete_managed_install, managed_mutagen_agents, managed_mutagen_bin,
@@ -43,7 +43,7 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn ssh_bin() -> String {
+pub(crate) fn ssh_bin() -> String {
     std::env::var("MULTICC_SSH_BIN")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -59,11 +59,13 @@ fn mutagen_install_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn build_ssh_base_args(target: &RemoteAgyTarget) -> Vec<String> {
+pub(crate) fn build_ssh_base_args(target: &RemoteAgyTarget) -> Vec<String> {
     let mut args = vec![
         "-T".to_string(),
         "-o".to_string(),
         "BatchMode=yes".to_string(),
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
         "-o".to_string(),
         "ServerAliveInterval=15".to_string(),
         "-o".to_string(),
@@ -78,6 +80,8 @@ fn build_ssh_base_args(target: &RemoteAgyTarget) -> Vec<String> {
     if let Some(key) = &target.ssh_identity_file {
         args.push("-i".to_string());
         args.push(key.clone());
+        args.push("-o".to_string());
+        args.push("IdentitiesOnly=yes".to_string());
     }
     args
 }
@@ -163,7 +167,7 @@ fn split_agy_args_and_prompt(raw: &[String]) -> (Vec<String>, String) {
     (Vec::new(), String::new())
 }
 
-async fn run_ssh_script(
+pub(crate) async fn run_ssh_script(
     target: &RemoteAgyTarget,
     script: &str,
     timeout: Duration,
@@ -454,6 +458,219 @@ fn mutagen_remote_endpoint(target: &RemoteAgyTarget, remote_abs_ws: &str) -> Str
     format!("{}:{remote_abs_ws}", target.ssh_target)
 }
 
+#[cfg(unix)]
+fn resolve_real_binary(name: &str, exclude_dir: &Path) -> String {
+    if name == "ssh" {
+        if let Ok(explicit) = std::env::var("MULTICC_SSH_BIN") {
+            let trimmed = explicit.trim();
+            if !trimmed.is_empty() && !Path::new(trimmed).starts_with(exclude_dir) {
+                return trimmed.to_string();
+            }
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            if dir == exclude_dir {
+                continue;
+            }
+            let cand = dir.join(name);
+            if cand.is_file() {
+                return cand.to_string_lossy().into_owned();
+            }
+        }
+    }
+    format!("/usr/bin/{name}")
+}
+
+#[cfg(unix)]
+fn render_mutagen_ssh_wrapper(real_ssh: &str, routes_path: &Path) -> String {
+    format!(
+        r#"#!/bin/sh
+REAL_SSH={real_ssh}
+ROUTES={routes}
+PORT='22'
+LOGIN=''
+DEST=''
+HAS_I=0
+SKIP=0
+EXPECT=''
+for arg in "$@"; do
+  if [ -n "$EXPECT" ]; then
+    if [ "$EXPECT" = "p" ]; then PORT="$arg"; fi
+    if [ "$EXPECT" = "l" ]; then LOGIN="$arg"; fi
+    EXPECT=''
+    continue
+  fi
+  if [ "$SKIP" -eq 1 ]; then
+    if [ -z "$DEST" ]; then DEST="$arg"; fi
+    continue
+  fi
+  case "$arg" in
+    --) SKIP=1 ;;
+    -p) EXPECT='p' ;;
+    -p*) PORT="${{arg#-p}}" ;;
+    -l) EXPECT='l' ;;
+    -l*) LOGIN="${{arg#-l}}" ;;
+    -i) HAS_I=1; EXPECT='skip' ;;
+    -i*) HAS_I=1 ;;
+    -B|-b|-c|-D|-E|-e|-F|-I|-J|-L|-m|-O|-o|-P|-Q|-R|-S|-W|-w) EXPECT='skip' ;;
+    -*) ;;
+    *)
+      if [ -z "$DEST" ]; then DEST="$arg"; fi
+      ;;
+  esac
+done
+TARGET="$DEST"
+case "$DEST" in
+  *@*) ;;
+  *)
+    if [ -n "$LOGIN" ] && [ -n "$DEST" ]; then
+      TARGET="${{LOGIN}}@${{DEST}}"
+    fi
+    ;;
+esac
+if [ "$HAS_I" -eq 0 ] && [ -n "$TARGET" ] && [ -f "$ROUTES" ]; then
+  KEY_FILE=$(awk -F '\t' -v t="$TARGET" -v p="$PORT" '$1 == t && $2 == p {{ print $3; exit }}' "$ROUTES")
+  if [ -n "$KEY_FILE" ] && [ -f "$KEY_FILE" ]; then
+    exec "$REAL_SSH" -i "$KEY_FILE" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$@"
+  fi
+fi
+exec "$REAL_SSH" "$@"
+"#,
+        real_ssh = posix_shell_quote(real_ssh),
+        routes = posix_shell_quote(&routes_path.to_string_lossy()),
+    )
+}
+
+#[cfg(unix)]
+fn render_mutagen_scp_wrapper(real_scp: &str, routes_path: &Path) -> String {
+    format!(
+        r#"#!/bin/sh
+REAL_SCP={real_scp}
+ROUTES={routes}
+PORT='22'
+DEST=''
+HAS_I=0
+EXPECT=''
+for arg in "$@"; do
+  if [ -n "$EXPECT" ]; then
+    if [ "$EXPECT" = "P" ]; then PORT="$arg"; fi
+    EXPECT=''
+    continue
+  fi
+  case "$arg" in
+    -P) EXPECT='P' ;;
+    -P*) PORT="${{arg#-P}}" ;;
+    -i) HAS_I=1; EXPECT='skip' ;;
+    -i*) HAS_I=1 ;;
+    -c|-F|-J|-l|-o|-S) EXPECT='skip' ;;
+    -*) ;;
+    *:*)
+      DEST="${{arg%%:*}}"
+      ;;
+  esac
+done
+if [ "$HAS_I" -eq 0 ] && [ -n "$DEST" ] && [ -f "$ROUTES" ]; then
+  KEY_FILE=$(awk -F '\t' -v t="$DEST" -v p="$PORT" '$1 == t && $2 == p {{ print $3; exit }}' "$ROUTES")
+  if [ -n "$KEY_FILE" ] && [ -f "$KEY_FILE" ]; then
+    exec "$REAL_SCP" -i "$KEY_FILE" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$@"
+  fi
+fi
+exec "$REAL_SCP" "$@"
+"#,
+        real_scp = posix_shell_quote(real_scp),
+        routes = posix_shell_quote(&routes_path.to_string_lossy()),
+    )
+}
+
+#[cfg(unix)]
+fn prepare_mutagen_ssh_env_in(
+    home: &Path,
+    target: &RemoteAgyTarget,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let Some(key_path) = target
+        .ssh_identity_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    let data_dir = home.join(".multicc").join("mutagen-data");
+    let ssh_dir = home.join(".multicc").join("mutagen-ssh");
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|err| format!("创建 Mutagen 数据目录失败: {err}"))?;
+    std::fs::create_dir_all(&ssh_dir)
+        .map_err(|err| format!("创建 Mutagen SSH 包装目录失败: {err}"))?;
+    let _ = std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700));
+    let _ = std::fs::set_permissions(&ssh_dir, std::fs::Permissions::from_mode(0o700));
+
+    let routes_path = ssh_dir.join("routes.tsv");
+    let port = target.ssh_port.unwrap_or(22).to_string();
+    let existing = std::fs::read_to_string(&routes_path).unwrap_or_default();
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|line| {
+            let mut cols = line.split('\t');
+            let Some(t) = cols.next() else { return false };
+            let Some(p) = cols.next() else { return false };
+            !(t == target.ssh_target && p == port)
+        })
+        .map(ToString::to_string)
+        .collect();
+    lines.push(format!("{}\t{}\t{}", target.ssh_target, port, key_path));
+    let routes_text = format!("{}\n", lines.join("\n"));
+    multicc_core::state_file::write_text_atomic(&routes_path, &routes_text, 0o600, 0o700)
+        .map_err(|err| format!("写入 Mutagen SSH 密钥路由表失败: {err}"))?;
+
+    let real_ssh = resolve_real_binary("ssh", &ssh_dir);
+    let real_scp = resolve_real_binary("scp", &ssh_dir);
+    let ssh_wrapper = ssh_dir.join("ssh");
+    let scp_wrapper = ssh_dir.join("scp");
+    multicc_core::state_file::write_text_atomic(
+        &ssh_wrapper,
+        &render_mutagen_ssh_wrapper(&real_ssh, &routes_path),
+        0o700,
+        0o700,
+    )
+    .map_err(|err| format!("写入 Mutagen SSH 包装脚本失败: {err}"))?;
+    multicc_core::state_file::write_text_atomic(
+        &scp_wrapper,
+        &render_mutagen_scp_wrapper(&real_scp, &routes_path),
+        0o700,
+        0o700,
+    )
+    .map_err(|err| format!("写入 Mutagen SCP 包装脚本失败: {err}"))?;
+
+    Ok(Some((data_dir, ssh_dir)))
+}
+
+#[cfg(not(unix))]
+fn prepare_mutagen_ssh_env_in(
+    _home: &Path,
+    _target: &RemoteAgyTarget,
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    Ok(None)
+}
+
+fn prepare_mutagen_ssh_env(target: &RemoteAgyTarget) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    if target.ssh_identity_file.is_none() {
+        return Ok(None);
+    }
+    let home = home_dir()
+        .ok_or_else(|| "无法定位 HOME 目录，无法配置 Mutagen SSH 借用私钥".to_string())?;
+    prepare_mutagen_ssh_env_in(&home, target)
+}
+
+fn apply_mutagen_ssh_env(cmd: &mut Command, env_dirs: &Option<(PathBuf, PathBuf)>) {
+    if let Some((data_dir, ssh_dir)) = env_dirs {
+        cmd.env("MUTAGEN_DATA_DIRECTORY", data_dir)
+            .env("MUTAGEN_SSH_PATH", ssh_dir);
+    }
+}
+
 async fn ensure_mutagen_session(
     target: &RemoteAgyTarget,
     session_name: &str,
@@ -461,14 +678,16 @@ async fn ensure_mutagen_session(
     remote_abs_ws: &str,
 ) -> Result<(), String> {
     let bin = mutagen_bin();
-    let check = Command::new(&bin)
+    let env_dirs = prepare_mutagen_ssh_env(target)?;
+    let mut check_cmd = Command::new(&bin);
+    check_cmd
         .args(["sync", "list", session_name])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .status()
-        .await;
+        .kill_on_drop(true);
+    apply_mutagen_ssh_env(&mut check_cmd, &env_dirs);
+    let check = check_cmd.status().await;
     if check.is_ok_and(|s| s.success()) {
         return Ok(());
     }
@@ -488,19 +707,18 @@ async fn ensure_mutagen_session(
     args.push(local_cwd.to_string_lossy().into_owned());
     args.push(mutagen_remote_endpoint(target, remote_abs_ws));
 
-    let out = tokio::time::timeout(
-        Duration::from_secs(45),
-        Command::new(&bin)
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| "创建 Mutagen 同步会话超时".to_string())?
-    .map_err(|err| format!("启动 mutagen sync create 失败: {err}"))?;
+    let mut create_cmd = Command::new(&bin);
+    create_cmd
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    apply_mutagen_ssh_env(&mut create_cmd, &env_dirs);
+    let out = tokio::time::timeout(Duration::from_secs(45), create_cmd.output())
+        .await
+        .map_err(|_| "创建 Mutagen 同步会话超时".to_string())?
+        .map_err(|err| format!("启动 mutagen sync create 失败: {err}"))?;
 
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -515,21 +733,24 @@ async fn ensure_mutagen_session(
     Ok(())
 }
 
-async fn flush_mutagen_session(session_name: &str) -> Result<(), String> {
+async fn flush_mutagen_session(
+    target: &RemoteAgyTarget,
+    session_name: &str,
+) -> Result<(), String> {
     let bin = mutagen_bin();
-    let out = tokio::time::timeout(
-        Duration::from_secs(30),
-        Command::new(&bin)
-            .args(["sync", "flush", session_name])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| "mutagen sync flush 超时".to_string())?
-    .map_err(|err| format!("执行 mutagen sync flush 失败: {err}"))?;
+    let env_dirs = prepare_mutagen_ssh_env(target)?;
+    let mut flush_cmd = Command::new(&bin);
+    flush_cmd
+        .args(["sync", "flush", session_name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    apply_mutagen_ssh_env(&mut flush_cmd, &env_dirs);
+    let out = tokio::time::timeout(Duration::from_secs(30), flush_cmd.output())
+        .await
+        .map_err(|_| "mutagen sync flush 超时".to_string())?
+        .map_err(|err| format!("执行 mutagen sync flush 失败: {err}"))?;
 
     if !out.status.success() {
         let detail = String::from_utf8_lossy(&out.stderr);
@@ -550,7 +771,7 @@ pub async fn probe_remote_target(target: &RemoteAgyTarget) -> Value {
     let home_export =
         multicc_core::agy_remote::render_remote_home_export(target.remote_home.as_deref());
     let script = format!(
-        r#"{home_export}
+        r#"{path_export}{home_export}
 AGY_VER="$({agy} --version 2>&1 | head -n 1 || true)"
 NODE_VER="$(node -v 2>&1 | head -n 1 || true)"
 HAS_AGY=0
@@ -559,6 +780,7 @@ HAS_NODE=0
 command -v node >/dev/null 2>&1 && HAS_NODE=1
 printf 'HAS_AGY=%s\nAGY_VER=%s\nHAS_NODE=%s\nNODE_VER=%s\n' "$HAS_AGY" "$AGY_VER" "$HAS_NODE" "$NODE_VER"
 "#,
+        path_export = REMOTE_COMMON_PATH_EXPORT,
         home_export = home_export,
         agy = posix_shell_quote(agy_bin),
     );
@@ -742,7 +964,7 @@ pub async fn serve(args: &[String]) -> i32 {
             emit_bridge_error(&err);
             return 1;
         }
-        if let Err(err) = flush_mutagen_session(&mutagen_session).await {
+        if let Err(err) = flush_mutagen_session(&target, &mutagen_session).await {
             emit_bridge_error(&err);
             return 1;
         }
@@ -757,16 +979,20 @@ pub async fn serve(args: &[String]) -> i32 {
     };
 
     let (before_exec, after_exec): (Option<AsyncHook>, Option<AsyncHook>) = if use_mutagen {
+        let t1 = target.clone();
+        let t2 = target.clone();
         let s1 = mutagen_session.clone();
         let s2 = mutagen_session.clone();
         (
             Some(Arc::new(move || {
+                let t = t1.clone();
                 let s = s1.clone();
-                Box::pin(async move { flush_mutagen_session(&s).await })
+                Box::pin(async move { flush_mutagen_session(&t, &s).await })
             })),
             Some(Arc::new(move || {
+                let t = t2.clone();
                 let s = s2.clone();
-                Box::pin(async move { flush_mutagen_session(&s).await })
+                Box::pin(async move { flush_mutagen_session(&t, &s).await })
             })),
         )
     } else {
@@ -909,7 +1135,7 @@ pub async fn serve(args: &[String]) -> i32 {
     let stderr_tail = stderr_task.await.unwrap_or_default();
 
     if use_mutagen {
-        if let Err(err) = flush_mutagen_session(&mutagen_session).await {
+        if let Err(err) = flush_mutagen_session(&target, &mutagen_session).await {
             eprintln!("[agy-remote-bridge] post-turn mutagen flush warning: {err}");
         }
     }
@@ -1002,6 +1228,135 @@ mod tests {
         assert_eq!(st["version"], "0.18.1-test");
 
         srv.abort();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mutagen_ssh_wrapper_injects_borrowed_key_for_matching_target_and_port() {
+        let root = std::env::temp_dir().join(format!(
+            "multicc-mutagen-ssh-wrap-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = root.join("home");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let key_file = root.join("agy-test.key");
+        std::fs::write(&key_file, "FAKE-KEY\n").unwrap();
+
+        let fake_real_ssh = bin_dir.join("fake-real-ssh");
+        std::fs::write(&fake_real_ssh, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&fake_real_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let target = parse_remote_target(&json!({
+            "transport": "ssh",
+            "sshTarget": "Zhuanz@ssh-api.example.com",
+            "sshPort": 32303,
+            "sshIdentityFile": key_file.to_string_lossy(),
+            "fileMode": "mutagen",
+        }))
+        .unwrap();
+
+        let (data_dir, ssh_dir) = prepare_mutagen_ssh_env_in(&home, &target)
+            .unwrap()
+            .expect("expected isolated mutagen dirs");
+        assert!(data_dir.ends_with(".multicc/mutagen-data"));
+        assert!(ssh_dir.ends_with(".multicc/mutagen-ssh"));
+
+        let routes_path = ssh_dir.join("routes.tsv");
+        assert_eq!(
+            std::fs::metadata(&routes_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        // Rewrite wrapper pointing to fake_real_ssh so we can inspect injected args deterministically.
+        let wrapper = ssh_dir.join("ssh");
+        let scp_wrapper = ssh_dir.join("scp");
+        std::fs::write(
+            &wrapper,
+            render_mutagen_ssh_wrapper(&fake_real_ssh.to_string_lossy(), &routes_path),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(
+            &scp_wrapper,
+            render_mutagen_scp_wrapper(&fake_real_ssh.to_string_lossy(), &routes_path),
+        )
+        .unwrap();
+        std::fs::set_permissions(&scp_wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        // 1) user@host + -p port style
+        let out1 = std::process::Command::new(&wrapper)
+            .args([
+                "-o",
+                "ConnectTimeout=10",
+                "-p",
+                "32303",
+                "Zhuanz@ssh-api.example.com",
+                "--",
+                "echo",
+                "ok",
+            ])
+            .output()
+            .unwrap();
+        assert!(out1.status.success());
+        let args1 = String::from_utf8_lossy(&out1.stdout);
+        assert!(
+            args1.contains(&format!("-i {}", key_file.display())),
+            "expected -i injected: {args1}"
+        );
+        assert!(args1.contains("IdentitiesOnly=yes"));
+        assert!(args1.contains("StrictHostKeyChecking=accept-new"));
+
+        // 2) Mutagen `-l user -p port host` style
+        let out2 = std::process::Command::new(&wrapper)
+            .args([
+                "-l",
+                "Zhuanz",
+                "-p",
+                "32303",
+                "ssh-api.example.com",
+                "sh",
+            ])
+            .output()
+            .unwrap();
+        assert!(out2.status.success());
+        let args2 = String::from_utf8_lossy(&out2.stdout);
+        assert!(
+            args2.contains(&format!("-i {}", key_file.display())),
+            "expected -i injected for -l user style: {args2}"
+        );
+
+        // 3) Unregistered host passes through untouched without -i
+        let out3 = std::process::Command::new(&wrapper)
+            .args(["-p", "22", "other@host.test", "echo", "hi"])
+            .output()
+            .unwrap();
+        assert!(out3.status.success());
+        let args3 = String::from_utf8_lossy(&out3.stdout);
+        assert!(!args3.contains("-i "), "unexpected -i for foreign host: {args3}");
+
+        // 4) scp -P 32303 local Zhuanz@ssh-api.example.com:/tmp/file
+        let out4 = std::process::Command::new(&scp_wrapper)
+            .args([
+                "-P",
+                "32303",
+                "/tmp/a",
+                "Zhuanz@ssh-api.example.com:/tmp/b",
+            ])
+            .output()
+            .unwrap();
+        assert!(out4.status.success());
+        let args4 = String::from_utf8_lossy(&out4.stdout);
+        assert!(
+            args4.contains(&format!("-i {}", key_file.display())),
+            "expected -i injected for scp: {args4}"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

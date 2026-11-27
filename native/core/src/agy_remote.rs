@@ -20,6 +20,10 @@ pub const TRANSPORT_SSH: &str = "ssh";
 pub const TRANSPORT_RELAY: &str = "relay";
 pub const DEFAULT_REMOTE_AGY_BIN: &str = "agy";
 pub const DEFAULT_REMOTE_WORKSPACE_BASE: &str = ".multicc-remote/workspaces";
+/// 非交互 SSH 登录往往只有 `/usr/bin:/bin:/usr/sbin:/sbin`，补齐 macOS Homebrew 与用户本地 bin 目录，
+/// 确保无需修改远端 `~/.zshenv` 即可找到 `agy` 与 `node`。
+pub const REMOTE_COMMON_PATH_EXPORT: &str =
+    "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"; ";
 
 /// 纯源码同步默认忽略规则：排除大体积依赖、构建产物与二进制，确保跨网只同步纯源码。
 pub const DEFAULT_MUTAGEN_IGNORES: &[&str] = &[
@@ -529,7 +533,7 @@ pub fn build_remote_host_mcp_bootstrap_script() -> String {
     let script_b64 = base64::engine::general_purpose::STANDARD
         .encode(crate::host_exec::render_remote_mcp_script().as_bytes());
     format!(
-        r#"set -e
+        r#"{path_export}set -e
 mkdir -p "$HOME/.multicc-remote/bin"
 SCRIPT="$HOME/.multicc-remote/bin/host-exec-mcp.cjs"
 printf '%s' {b64} | base64 -d > "$SCRIPT.tmp"
@@ -541,6 +545,7 @@ if [ -z "$NODE_BIN" ]; then
   exit 12
 fi
 "#,
+        path_export = REMOTE_COMMON_PATH_EXPORT,
         b64 = posix_shell_quote(&script_b64),
     )
 }
@@ -551,7 +556,7 @@ pub fn build_remote_bootstrap_script(remote_home: Option<&str>) -> String {
         .encode(crate::host_exec::render_remote_mcp_script().as_bytes());
     let home_export = render_remote_home_export(remote_home);
     format!(
-        r#"{home_export}set -e
+        r#"{path_export}{home_export}set -e
 mkdir -p "$HOME/.multicc-remote/bin" "$HOME/.gemini/config"
 SCRIPT="$HOME/.multicc-remote/bin/host-exec-mcp.cjs"
 printf '%s' {b64} | base64 -d > "$SCRIPT.tmp"
@@ -581,6 +586,7 @@ if (JSON.stringify(root.mcpServers.multicc_host_exec) !== JSON.stringify(desired
 }}
 ' "$SCRIPT"
 "#,
+        path_export = REMOTE_COMMON_PATH_EXPORT,
         home_export = home_export,
         b64 = posix_shell_quote(&script_b64),
     )
@@ -680,7 +686,7 @@ pub fn build_remote_agy_exec_command(spec: &RemoteExecSpec<'_>) -> String {
         let env_joined = env_parts.join(" ");
         let args_joined = quoted_args.join(" ");
         return format!(
-            r#"set -e
+            r#"{path_export}set -e
 ORIG_HOME="$HOME"
 HOST_GW="${{MULTICC_HOST_GATEWAY_BIN:-}}"
 HOST_PLUGINS="${{MULTICC_HOST_PLUGINS_DIR:-}}"
@@ -710,6 +716,7 @@ if [ -n "$HOST_PLUGINS" ]; then
 else
   exec env {env_joined} "$HOST_GW" agy-host-exec --account-id {host_id_q} --host-exec-mcp "$ORIG_HOME/.multicc-remote/bin/host-exec-mcp.cjs" --bin {agy_q} -- {args_joined}
 fi"#,
+            path_export = REMOTE_COMMON_PATH_EXPORT,
             ws = ws_expr,
             env_joined = env_joined,
             host_id_q = host_id_q,
@@ -719,12 +726,73 @@ fi"#,
     }
 
     format!(
-        "set -e; {} mkdir -p {ws} && cd {ws} && exec env {} {} {}",
+        "{}set -e; {} mkdir -p {ws} && cd {ws} && exec env {} {} {}",
+        REMOTE_COMMON_PATH_EXPORT,
         render_remote_home_export(spec.remote_home),
         env_parts.join(" "),
         posix_shell_quote(spec.remote_agy_bin),
         quoted_args.join(" "),
         ws = ws_expr,
+    )
+}
+
+/// 构造在远端 Host 上运行只读 `agy` 子命令（如 `agy acp` 模型目录探测、
+/// `agy -p /usage --output-format json` 用量探测）的 POSIX shell 脚本。
+///
+/// 优先使用 `host_account_id` 委托 Host 的 `multicc-gateway agy-host-exec`（自动挂载
+/// 账号隔离 `.home` 与专用出口代理）；若 Host 未写 `host-runtime.json` 则回退到隔离
+/// `.home` 目录或 `remote_home` / 默认 `$HOME`。
+pub fn build_remote_agy_command_script(
+    remote_agy_bin: &str,
+    remote_home: Option<&str>,
+    host_account_id: Option<&str>,
+    args: &[&str],
+) -> String {
+    let agy_q = posix_shell_quote(remote_agy_bin);
+    let args_joined = args
+        .iter()
+        .map(|a| posix_shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if let Some(account_id) = host_account_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let id_q = posix_shell_quote(account_id);
+        return format!(
+            r#"{path_export}ORIG_HOME="$HOME"
+HOST_GW="${{MULTICC_HOST_GATEWAY_BIN:-}}"
+HOST_PLUGINS="${{MULTICC_HOST_PLUGINS_DIR:-}}"
+if [ -z "$HOST_GW" ] && [ -f "$ORIG_HOME/.multicc/host-runtime.json" ]; then
+  NODE_BIN="$(command -v node || true)"
+  if [ -n "$NODE_BIN" ]; then
+    HOST_GW="$("$NODE_BIN" -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.gatewayBin||""));' "$ORIG_HOME/.multicc/host-runtime.json" 2>/dev/null || true)"
+    if [ -z "$HOST_PLUGINS" ]; then
+      HOST_PLUGINS="$("$NODE_BIN" -e 'const fs=require("fs");const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(String(j.pluginsDir||""));' "$ORIG_HOME/.multicc/host-runtime.json" 2>/dev/null || true)"
+    fi
+  fi
+fi
+if [ -n "$HOST_GW" ] && [ -x "$HOST_GW" ]; then
+  if [ -n "$HOST_PLUGINS" ]; then
+    exec "$HOST_GW" agy-host-exec --account-id {id_q} --plugins-dir "$HOST_PLUGINS" --bin {agy_q} -- {args_joined}
+  else
+    exec "$HOST_GW" agy-host-exec --account-id {id_q} --bin {agy_q} -- {args_joined}
+  fi
+fi
+ISO_HOME="$ORIG_HOME/.multicc/official-accounts/agy/"{id_q}".home"
+if [ -d "$ISO_HOME" ]; then
+  export HOME="$ISO_HOME"
+fi
+exec {agy_q} {args_joined}"#,
+            path_export = REMOTE_COMMON_PATH_EXPORT,
+            id_q = id_q,
+            agy_q = agy_q,
+            args_joined = args_joined,
+        );
+    }
+    format!(
+        "{}{}exec {} {}",
+        REMOTE_COMMON_PATH_EXPORT,
+        render_remote_home_export(remote_home),
+        agy_q,
+        args_joined,
     )
 }
 

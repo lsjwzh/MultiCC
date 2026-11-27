@@ -109,13 +109,19 @@ pub fn generate_key_pair(comment: &str) -> Result<SshKeyPair, String> {
     })
 }
 
-/// `restrict` keeps the borrowed key to a plain session: no port forwarding, no
-/// agent forwarding, no pty, no X11. Mutagen only needs `sh`, so this holds.
-/// `from=` is optional because the client's egress address is usually unknown.
+/// `restrict` disables agent/X11/pty/user-rc, while `port-forwarding` paired
+/// with `permitlisten="127.0.0.1:*"` allows only loopback reverse tunnels (`-R`)
+/// required by `agy-remote-bridge` for Host-Exec MCP callbacks (never public
+/// interfaces). `from=` is optional because the client's egress address is
+/// usually unknown.
 pub fn authorized_keys_line(public_key: &str, tag: &str, restrict_from: Option<&str>) -> String {
     match restrict_from.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(from) => format!("restrict,from=\"{from}\" {public_key} {tag}"),
-        None => format!("restrict {public_key} {tag}"),
+        Some(from) => format!(
+            "restrict,port-forwarding,permitlisten=\"127.0.0.1:*\",from=\"{from}\" {public_key} {tag}"
+        ),
+        None => format!(
+            "restrict,port-forwarding,permitlisten=\"127.0.0.1:*\" {public_key} {tag}"
+        ),
     }
 }
 
@@ -361,6 +367,7 @@ pub fn create_share(home: &Path, request: &ShareRequest<'_>) -> Result<CreatedSh
         &key.private_key,
         file_mode,
         &share_id,
+        Some(request.account_id),
         request.models,
     );
     Ok(CreatedShare {
@@ -482,11 +489,14 @@ mod tests {
     #[test]
     fn authorized_keys_line_uses_restrict_and_optional_from() {
         let line = authorized_keys_line("ssh-ed25519 AAAA", "multicc-relay:1", None);
-        assert_eq!(line, "restrict ssh-ed25519 AAAA multicc-relay:1");
+        assert_eq!(
+            line,
+            "restrict,port-forwarding,permitlisten=\"127.0.0.1:*\" ssh-ed25519 AAAA multicc-relay:1"
+        );
         let line = authorized_keys_line("ssh-ed25519 AAAA", "multicc-relay:1", Some(" 1.2.3.4 "));
         assert_eq!(
             line,
-            "restrict,from=\"1.2.3.4\" ssh-ed25519 AAAA multicc-relay:1"
+            "restrict,port-forwarding,permitlisten=\"127.0.0.1:*\",from=\"1.2.3.4\" ssh-ed25519 AAAA multicc-relay:1"
         );
     }
 
@@ -566,7 +576,18 @@ mod tests {
         let listed = list_shares(&home, Some("0123456789abcdef")).unwrap();
         assert_eq!(listed.len(), 1);
         let keys = fs::read_to_string(home.join(".ssh/authorized_keys")).unwrap();
-        assert!(keys.contains("restrict ssh-ed25519 "));
+        assert!(keys.contains("restrict,port-forwarding,permitlisten=\"127.0.0.1:*\" ssh-ed25519 "));
+        let b64 = created
+            .code
+            .strip_prefix(crate::provider_registry::SSH_SHARE_CODE_PREFIX)
+            .unwrap();
+        let decoded: Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(b64)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded["hostAccountId"], json!("0123456789abcdef"));
         let share_id = created.share["id"].as_str().unwrap().to_string();
         assert!(revoke_share(&home, &share_id).unwrap());
         assert_eq!(
