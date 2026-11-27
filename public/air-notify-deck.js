@@ -23,7 +23,7 @@
 // blur — see tests/test-air-paint-budget.js), so nothing animates once the
 // cards have settled.
 (function installNotifyDeck(root) {
-  const PRIORITY = { completed: 1, waiting: 2, error: 3 };
+  const PRIORITY = { completed: 1, interact: 2, waiting: 3, error: 4 };
   const CARD_W = 224;          // fanned-out card size, must match air.css
   const CARD_H = 58;
   const GAP = 8;
@@ -39,6 +39,7 @@
     const doc = opts.document || win.document;
     const t = typeof opts.translate === 'function' ? opts.translate : key => key;
     const onOpen = typeof opts.onOpen === 'function' ? opts.onOpen : () => {};
+    const statusOf = typeof opts.statusOf === 'function' ? opts.statusOf : null;
     const schedule = opts.setTimeout || ((fn, ms) => win.setTimeout(fn, ms));
     const now = typeof opts.now === 'function' ? opts.now : Date.now;
 
@@ -84,11 +85,42 @@
       win.addEventListener?.('resize', () => { if (open) render(); });
     }
 
-    function titleKey(kind) {
-      return kind === 'error' ? 'floatTitleError' : kind === 'waiting' ? 'floatTitleWaiting' : 'floatTitle';
+    // 与对话内状态栏（chat-live-ui.js renderAuxClassify）及 Air 任务行共用
+    // status-presentation.js 的 succeededGoalTone 逻辑：
+    //   · succeeded + goalState=achieved → 达成目标（绿）
+    //   · succeeded + goalState=interact → 需要交互（黄，优先级高于纯完成）
+    //   · succeeded + goalState=null     → 执行成功（灰）
+    //   · done / 无 status 的旧数据       → 任务已完成（绿）
+    function resolveTaskStatus(task) {
+      if (statusOf) return String(statusOf(task) || '').trim().toLowerCase();
+      const lifecycle = String(task?.status || '').trim().toLowerCase();
+      if (lifecycle === 'archived' || lifecycle === 'done') return lifecycle;
+      if (task?.runState) {
+        return String(win.MultiCCStatusPresentation?.taskStatus?.(task) || task.runState).trim().toLowerCase();
+      }
+      return lifecycle;
     }
-    function bodyKey(kind) {
-      return kind === 'error' ? 'errored' : kind === 'waiting' ? 'waiting' : 'completed';
+    function resolveCard(task, kind) {
+      if (kind === 'error') {
+        return { titleKey: 'floatTitleError', bodyKey: 'errored', toneClass: '', priority: PRIORITY.error };
+      }
+      if (kind === 'waiting') {
+        return { titleKey: 'floatTitleWaiting', bodyKey: 'waiting', toneClass: '', priority: PRIORITY.waiting };
+      }
+      const status = resolveTaskStatus(task);
+      if (status === 'succeeded') {
+        const goal = String(task?.goalState || '').trim().toLowerCase();
+        const tone = win.MultiCCStatusPresentation?.succeededGoalTone?.('succeeded', task?.goalState)
+          ?? (goal === 'achieved' ? '' : goal === 'interact' ? 'interact' : 'muted');
+        if (goal === 'achieved') {
+          return { titleKey: 'floatTitleAchieved', bodyKey: 'achieved', toneClass: 't-achieved', priority: PRIORITY.completed };
+        }
+        if (tone === 'interact') {
+          return { titleKey: 'floatTitleInteract', bodyKey: 'interact', toneClass: 't-interact', priority: PRIORITY.interact };
+        }
+        return { titleKey: 'floatTitleSucceeded', bodyKey: 'succeeded', toneClass: 't-muted', priority: PRIORITY.completed };
+      }
+      return { titleKey: 'floatTitle', bodyKey: 'completed', toneClass: '', priority: PRIORITY.completed };
     }
 
     function buildCard(id) {
@@ -123,7 +155,10 @@
 
     function ordered() {
       return [...items.entries()]
-        .sort(([, a], [, b]) => (PRIORITY[b.kind] || 0) - (PRIORITY[a.kind] || 0) || b.at - a.at);
+        .sort(([, a], [, b]) => (
+          resolveCard(b.task, b.kind).priority - resolveCard(a.task, a.kind).priority
+          || b.at - a.at
+        ));
     }
 
     // Quarter arc from straight up (90°) to straight left (180°) around a
@@ -163,9 +198,15 @@
       list.forEach(([id, item], i) => {
         let card = cards.get(id);
         if (!card) { card = buildCard(id); cards.set(id, card); }
-        card._title.textContent = t(titleKey(item.kind)) + ' ·';
-        card._body.textContent = t(bodyKey(item.kind), { title: item.task?.title || item.task?.id || '' });
-        card.className = `task-notify-card k-${item.kind}${i === 0 ? ' is-top' : ''}`;
+        const view = resolveCard(item.task, item.kind);
+        card._title.textContent = t(view.titleKey) + ' ·';
+        card._body.textContent = t(view.bodyKey, { title: item.task?.title || item.task?.id || '' });
+        card.className = [
+          'task-notify-card',
+          `k-${item.kind}`,
+          view.toneClass,
+          i === 0 ? 'is-top' : '',
+        ].filter(Boolean).join(' ');
         card.style.zIndex = String(40 - i);
         if (open && i >= shown) {
           // past the arc's capacity: tucked behind the corner, counted by `more`
@@ -209,13 +250,16 @@
       render();
     }
 
-    function upsert(task, kind) {
+    function upsert(task, kind, upsertOpts) {
       const id = String(task?.id || '').trim();
       if (!id) return;
       build();
       const leaving = cards.get(id);
       if (leaving?.classList.contains('is-leaving')) { leaving.remove(); cards.delete(id); }
-      items.set(id, { task, kind: PRIORITY[kind] ? kind : 'completed', at: now() });
+      const existing = items.get(id);
+      const at = upsertOpts?.preserveTime && existing ? existing.at : now();
+      const normalizedKind = kind === 'error' || kind === 'waiting' ? kind : 'completed';
+      items.set(id, { task, kind: normalizedKind, at });
       render();
     }
 

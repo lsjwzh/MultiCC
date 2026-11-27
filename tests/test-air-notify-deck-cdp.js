@@ -96,3 +96,75 @@ test('a still-pending mark keeps its card across a reload: the deck mirrors the 
     assert.equal(await page.evaluate(`(window.__errors || []).join(' | ')`), '', 'no page errors');
   });
 });
+
+test('succeeded sub-states render 达成目标 / 需要交互 / 执行成功 with matching tones in Air deck', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const routes = {}, publicDir = path.resolve(__dirname, '../public');
+  const json = body => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  for (const file of fs.readdirSync(publicDir).filter(f => /\.(js|css|html)$/.test(f))) {
+    const type = file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html';
+    routes['/' + file] = { body: fs.readFileSync(path.join(publicDir, file)), headers: { 'content-type': type } };
+  }
+  for (const file of fs.readdirSync(path.join(publicDir, 'shared')).filter(f => f.endsWith('.js'))) {
+    routes['/shared/' + file] = { body: fs.readFileSync(path.join(publicDir, 'shared', file)), headers: { 'content-type': 'text/javascript' } };
+  }
+  routes['/air'] = routes['/air.html'];
+  routes['/vendor/dompurify/purify.min.js'] = { body: fs.readFileSync(path.join(publicDir, 'vendor/dompurify/purify.min.js')), headers: { 'content-type': 'text/javascript' } };
+  routes['/auth-client.js'] = { headers: { 'content-type': 'text/javascript' }, body: `window.multiccWsUrl=async url=>url` };
+
+  const directories = [{ id: 'd1', name: 'Gapasea', path: '/projects/gapasea' }];
+  const mk = (id, title, goalState, at) => ({
+    id, dirId: 'd1', title, status: 'active', runState: 'succeeded', goalState,
+    updatedAt: 1000 + at, attention: { kind: 'completed', at },
+    resource: { residency: 'planned', lease: 'idle' },
+  });
+  const tasks = [
+    mk('tsk-ach', '发小版本', 'achieved', 9001),
+    mk('tsk-int', '确认方案', 'interact', 9000),
+    mk('tsk-und', '刚跑完的活', null, 9002),
+  ];
+  routes['/api/air'] = () => json({ ok: true, directories, clis: ['codex'], migration: { errors: [] }, tasks, sessions: [] });
+  routes['/api/cron'] = () => json([]);
+  routes['/api/docs-registry'] = () => json([]);
+
+  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-notify-deck-substates') }, async page => {
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    await page.send('Page.addScriptToEvaluateOnNewDocument', { source:
+      `try { localStorage.setItem('multicc_lang', 'zh'); localStorage.setItem('air:notify-heard', '${SEEDED_HEARD}'); } catch (_) {}` });
+    await page.navigate('/air?dir=d1');
+
+    assert.ok(await page.waitFor(`document.querySelectorAll('.task-notify-card').length === 3`,
+      { timeoutMs: 15000, intervalMs: 200 }), 'all three succeeded sub-state cards render');
+
+    const cards = await page.evaluate(`[...document.querySelectorAll('.task-notify-card')].map(el => ({
+      title: el.querySelector('.task-notify-title').textContent.trim(),
+      body: el.querySelector('.task-notify-body').textContent.trim(),
+      classes: el.className,
+      titleColor: getComputedStyle(el.querySelector('.task-notify-title')).color,
+      isTop: el.classList.contains('is-top'),
+    }))`);
+
+    const byBody = substr => cards.find(c => c.body.includes(substr));
+    const interactCard = byBody('确认方案');
+    const achievedCard = byBody('发小版本');
+    const mutedCard = byBody('刚跑完的活');
+    assert.ok(interactCard && achievedCard && mutedCard, 'each sub-state card is present');
+
+    assert.equal(interactCard.title, '需要交互 ·');
+    assert.equal(interactCard.body, '确认方案 需要交互');
+    assert.equal(interactCard.isTop, true, 'interact ranks above achieved/muted in the deck');
+    assert.match(interactCard.classes, /\bk-completed\b.*\bt-interact\b/);
+
+    assert.equal(achievedCard.title, '达成目标 ·');
+    assert.equal(achievedCard.body, '发小版本 已达成目标');
+    assert.match(achievedCard.classes, /\bk-completed\b.*\bt-achieved\b/);
+
+    assert.equal(mutedCard.title, '执行成功 ·');
+    assert.equal(mutedCard.body, '刚跑完的活 执行成功');
+    assert.match(mutedCard.classes, /\bk-completed\b.*\bt-muted\b/);
+
+    // 三种子状态对应不同标题色（黄 / 绿 / 灰），和对话内状态栏保持同源区分。
+    assert.equal(new Set([interactCard.titleColor, achievedCard.titleColor, mutedCard.titleColor]).size, 3,
+      `three succeeded sub-states should have distinct colours: ${JSON.stringify([interactCard.titleColor, achievedCard.titleColor, mutedCard.titleColor])}`);
+  });
+});

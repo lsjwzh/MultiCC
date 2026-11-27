@@ -66,7 +66,35 @@
     return null;
   }
   // Which of several simultaneous outcomes the one sentence is about.
-  const KIND_PRIORITY = { error: 3, waiting: 2, completed: 1 };
+  const KIND_PRIORITY = { error: 4, waiting: 3, interact: 2, completed: 1 };
+
+  // 与对话内状态栏（chat-live-ui.js renderAuxClassify）及 Air 任务行共用
+  // status-presentation.js 的 succeededSubLabel / succeededGoalTone 口径：
+  // 同一条 `completed`（runState=succeeded）细分成达成目标 / 需要交互 / 执行成功，
+  // 任务板人工标记 done 保持「任务已完成」。
+  function resolveOutcome(task, kind, statusOf, statusPresentation) {
+    if (kind === 'error') {
+      return { variant: 'error', titleKey: 'floatTitleError', bodyKey: 'errored', spokenKey: 'spokenErrored', priority: KIND_PRIORITY.error };
+    }
+    if (kind === 'waiting') {
+      return { variant: 'waiting', titleKey: 'floatTitleWaiting', bodyKey: 'waiting', spokenKey: 'spokenWaiting', priority: KIND_PRIORITY.waiting };
+    }
+    const rawStatus = typeof statusOf === 'function' ? statusOf(task) : (task?.runState || task?.status);
+    const status = String(rawStatus || '').trim().toLowerCase();
+    if (status === 'succeeded') {
+      const goal = String(task?.goalState || '').trim().toLowerCase();
+      const tone = statusPresentation?.succeededGoalTone?.('succeeded', task?.goalState)
+        ?? (goal === 'achieved' ? '' : goal === 'interact' ? 'interact' : 'muted');
+      if (goal === 'achieved') {
+        return { variant: 'achieved', titleKey: 'floatTitleAchieved', bodyKey: 'achieved', spokenKey: 'spokenAchieved', priority: KIND_PRIORITY.completed };
+      }
+      if (tone === 'interact') {
+        return { variant: 'interact', titleKey: 'floatTitleInteract', bodyKey: 'interact', spokenKey: 'spokenInteract', priority: KIND_PRIORITY.interact };
+      }
+      return { variant: 'succeeded', titleKey: 'floatTitleSucceeded', bodyKey: 'succeeded', spokenKey: 'spokenSucceeded', priority: KIND_PRIORITY.completed };
+    }
+    return { variant: 'completed', titleKey: 'floatTitle', bodyKey: 'completed', spokenKey: 'spokenCompleted', priority: KIND_PRIORITY.completed };
+  }
 
   // Before the server kept the mark, each page kept its own copy here. Those
   // copies disagreed between tabs (the cause of repeated reminders); dropped.
@@ -86,9 +114,15 @@
 
   const STRINGS = {
     completed: { zh: '{title} 已完成', en: '{title} done' },
+    achieved: { zh: '{title} 已达成目标', en: '{title} goal achieved' },
+    interact: { zh: '{title} 需要交互', en: '{title} needs input' },
+    succeeded: { zh: '{title} 执行成功', en: '{title} succeeded' },
     errored: { zh: '{title} 出错了', en: '{title} failed' },
     waiting: { zh: '{title} 在等你回复', en: '{title} needs your reply' },
     floatTitle: { zh: '任务已完成', en: 'Task complete' },
+    floatTitleAchieved: { zh: '达成目标', en: 'Goal achieved' },
+    floatTitleInteract: { zh: '需要交互', en: 'Needs input' },
+    floatTitleSucceeded: { zh: '执行成功', en: 'Succeeded' },
     floatTitleError: { zh: '任务出错', en: 'Task failed' },
     floatTitleWaiting: { zh: '任务等待回复', en: 'Task needs you' },
     floatOpen: { zh: '打开', en: 'Open' },
@@ -98,8 +132,11 @@
     deckCollapse: { zh: '收起 ✕', en: 'Collapse ✕' },
     deckClearAll: { zh: '全部消除', en: 'Clear all' },
     deckMore: { zh: '还有 {n} 条较早的', en: '{n} older' },
-    // 语音播报那一句：比弹窗标题多一个任务名，所以另开三条而不是复用 completed/errored/waiting。
+    // 语音播报那一句：比弹窗标题多一个任务名，所以另开一条而不是复用 completed/errored/waiting。
     spokenCompleted: { zh: '任务「{title}」已完成', en: 'Task "{title}" done' },
+    spokenAchieved: { zh: '任务「{title}」已达成目标', en: 'Task "{title}" goal achieved' },
+    spokenInteract: { zh: '任务「{title}」需要交互', en: 'Task "{title}" needs input' },
+    spokenSucceeded: { zh: '任务「{title}」执行成功', en: 'Task "{title}" succeeded' },
     spokenErrored: { zh: '任务「{title}」出错了', en: 'Task "{title}" failed' },
     spokenWaiting: { zh: '任务「{title}」在等你回复', en: 'Task "{title}" needs your reply' },
     // 一批多条时的后缀（sentence() 会拼在第一条后面），跟着播报那句的语言走。
@@ -154,7 +191,26 @@
           : (/^zh/i.test(win.navigator?.language || '') ? 'zh' : 'en');
       } catch (_) { return 'en'; }
     }
+    function statusPresentation() {
+      return win.MultiCCStatusPresentation || null;
+    }
     const translate = typeof opts.translate === 'function' ? opts.translate : (key, vars) => {
+      // 达成目标 / 需要交互 / 执行成功 的标题词与对话内状态栏（chat-live-ui.js）
+      // 及 Air 任务行共享同一份 status-presentation 词表，无注册表或无 i18n 时回退到 STRINGS。
+      const sp = statusPresentation();
+      const pageT = typeof win.t === 'function' ? win.t : null;
+      if (sp && pageT) {
+        if (key === 'floatTitleAchieved') {
+          const word = sp.succeededSubLabel?.('succeeded', 'achieved', pageT);
+          if (word) return word;
+        } else if (key === 'floatTitleInteract') {
+          const word = sp.succeededSubLabel?.('succeeded', 'interact', pageT);
+          if (word) return word;
+        } else if (key === 'floatTitleSucceeded') {
+          const word = sp.airStatusLabel?.('succeeded', pageT);
+          if (word) return word;
+        }
+      }
       const table = STRINGS[key] || {};
       // 语言判定只留 uiLang() 一处（上面那段就是它）：显式选择 ＞ 系统语言 ＞ 英文。
       const lang = uiLang();
@@ -176,7 +232,13 @@
     // runState. The page hands over the same status-presentation fold the
     // sidebar badge uses, so the reminder and the badge can never disagree.
     const statusOf = typeof opts.statusOf === 'function'
-      ? opts.statusOf : (task => task?.status);
+      ? opts.statusOf
+      : (task => {
+          const lifecycle = String(task?.status || '').trim().toLowerCase();
+          if (lifecycle === 'archived' || lifecycle === 'done') return lifecycle;
+          if (task?.runState) return statusPresentation()?.taskStatus?.(task) || task.runState;
+          return task?.status;
+        });
 
     // The server's marks as of the last snapshot (id → { kind, at }), minus
     // the task on screen and tasks opened here that the server has not caught
@@ -209,7 +271,7 @@
     function getDeck() {
       if (!deck && deckFactory?.create) {
         deck = deckFactory.create({
-          window: win, document: doc, translate, setTimeout: schedule, now,
+          window: win, document: doc, translate, setTimeout: schedule, now, statusOf,
           onOpen: task => { if (task && openTask) openTask(task); },
         });
       }
@@ -279,13 +341,14 @@
     // 播报的那一句必须跟着界面语言走（上面 STRINGS 里的 spoken*）：这里以前是
     // 中文字面量，英文页面上语音会突然说中文。有任务名就用 spoken*（带 {title}），
     // 没有名就退回和浮动条同款的那句 floatTitle*；多任务只加一条后缀。
-    const SPOKEN_KEY = { error: 'spokenErrored', waiting: 'spokenWaiting', completed: 'spokenCompleted' };
-    const FLOAT_KEY = { error: 'floatTitleError', waiting: 'floatTitleWaiting', completed: 'floatTitle' };
+    function outcomeOf(item) {
+      return resolveOutcome(item.task, item.kind, statusOf, statusPresentation());
+    }
     function sentence(items) {
       const [first] = items;
       const title = String(first.task?.title || '').slice(0, 40);
-      const kind = FLOAT_KEY[first.kind] ? first.kind : 'completed';
-      let text = title ? translate(SPOKEN_KEY[kind], { title }) : translate(FLOAT_KEY[kind]);
+      const outcome = outcomeOf(first);
+      let text = title ? translate(outcome.spokenKey, { title }) : translate(outcome.titleKey);
       if (items.length > 1) text += translate('spokenMore', { n: items.length - 1 });
       return text;
     }
@@ -304,7 +367,7 @@
       if (mode === 'off' && !remind) return false;
       const mine = claimSound(items);
       if (!mine.length) return false;
-      mine.sort((a, b) => KIND_PRIORITY[b.kind] - KIND_PRIORITY[a.kind]);
+      mine.sort((a, b) => outcomeOf(b).priority - outcomeOf(a).priority);
       lastVoiceAt = now();
       if (remind) playDing(mine[0].kind);
       const speakNow = mode === 'always' || (mode === 'away' && isAway());
@@ -323,13 +386,20 @@
     }
 
     // ── ① ② ③ —— one trigger, three consumers ────────────────────────────
-    function fireAttention(cards, sounds) {
+    function fireAttention(cards, sounds, refreshes) {
       for (const [task, kind, at] of sounds) queueSound(task, kind, at);   // ② sound (batched)
       if (sounds.length && !flushTimer) flushSound();
       // ③ every new mark lands on the deck (① is live via isUnseen → CSS class);
       //    提醒开关关掉时新卡片不再上桌（已上桌的不追着撤 —— 撤掉会把「还在等
       //    人看」的标记藏起来，开关管的是以后的提醒）。
       if (remindOn()) for (const [task, kind] of cards) getDeck()?.upsert(task, kind);
+      // 已在牌堆上的卡片若 goalState 异步更新（规则先提交 D → Aux 归因回来或用户
+      // 手动标记达成目标），原地刷新文案和色调；已被 ✕ 掉的卡不复活。
+      if (deck && refreshes && refreshes.length) {
+        for (const [task, kind] of refreshes) {
+          if (deck.has?.(task.id)) deck.upsert(task, kind, { preserveTime: true });
+        }
+      }
     }
 
     function markOpened(taskId) {
@@ -368,6 +438,7 @@
       let newest = Math.max(heard || 0, tabHeard || 0);
       const next = new Map();
       const cards = [];
+      const refreshes = [];
       const sounds = [];
       for (const task of list) {
         const id = String(task?.id || '').trim();
@@ -382,6 +453,8 @@
           if (shown.get(id) !== at) {         // once per mark: a ✕ stays off
             shown.set(id, at);
             cards.push([task, mark.kind]);
+          } else if (deck?.has?.(id)) {
+            refreshes.push([task, mark.kind]);
           }
           if (heard != null && at > heard) sounds.push([task, mark.kind, at]);
         }
@@ -396,7 +469,7 @@
       if (heard == null || newest > heard) {
         try { storage()?.setItem(LS_HEARD, String(newest)); } catch (_) {}
       }
-      fireAttention(cards, sounds);
+      fireAttention(cards, sounds, refreshes);
       return sounds.length > 0;      // what rung, not what is on screen
     }
 
