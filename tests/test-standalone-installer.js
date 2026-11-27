@@ -943,8 +943,14 @@ test('upgrading a loaded service unloads before stop and reloads only after swap
   assert.equal(fs.readdirSync(f.home).some(name => name.startsWith('MultiCC.old-')), false);
 });
 
-test('--no-start pauses a loaded service and leaves it registered without relaunching', { skip: PLATFORM !== 'darwin' }, () => {
+test('macOS 11 可识别独立包并在 --no-start 时暂停已注册的服务', { skip: PLATFORM !== 'darwin' }, () => {
   const f = serviceFixture();
+  write(path.join(f.target, 'MultiCC.app', 'Contents', 'Info.plist'),
+    bundleScript.macosInfoPlist({ version: '2.20.2' }));
+  write(path.join(f.bin, 'plutil'), `#!/bin/sh
+if [ "$1" = -extract ] && [ "$3" = raw ]; then exit 1; fi
+exec /usr/bin/plutil "$@"
+`, 0o755);
   const res = runInstaller(['--from', f.archive, '--dir', f.target, '--no-start'], { env: f.env });
   assert.equal(res.status, 0, `${res.stdout}\n${res.stderr}`);
   const events = fs.readFileSync(f.events, 'utf8');
