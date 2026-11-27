@@ -297,7 +297,10 @@ pub(super) fn check<'a>(s: L<'a>, name: L<'a>, opts: L<'a>) -> Result<L<'a>> {
             ("opts", opts),
             ("funnel", flag(s, funnel)?),
             ("port", port),
-            ("restarter", fallback(opts.get(c"restarter")?, V::Undefined)?),
+            (
+                "restarter",
+                fallback(opts.get(c"restarter")?, V::Undefined)?,
+            ),
         ],
     )?;
     st.set(c"checking", flag(s, true)?)?;

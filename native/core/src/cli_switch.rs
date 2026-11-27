@@ -1493,10 +1493,8 @@ mod tests {
 
     #[test]
     fn checkpoint_from_transcript_matches_in_memory_and_skips_excluded_turn() {
-        let dir = std::env::temp_dir().join(format!(
-            "multicc-cli-switch-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("multicc-cli-switch-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("history.json");

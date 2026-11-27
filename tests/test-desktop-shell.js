@@ -806,7 +806,8 @@ function stubRepoRoot(dir) {
   for (const rel of ['server.js', 'src/paths/index.js', 'public/chat.html', 'public/air.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'src/voice/asr-model-installer.js', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
-    'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md']) {
+    'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md',
+    'native/core/src/task_planning_status.json']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, '');
