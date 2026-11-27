@@ -434,7 +434,11 @@
       const list = Array.isArray(result && result.accounts)
         ? result.accounts.filter(item => item && AGY_ID_RE.test(String(item.id || '')))
         : [];
-      agyMeta = { active: (result && result.active) || null, local: (result && result.local) || null };
+      agyMeta = {
+        active: (result && result.active) || null,
+        local: (result && result.local) || null,
+        cli: (result && result.cli) || null,
+      };
       accountLists.set('agy', list);
       return list;
     }
@@ -588,8 +592,17 @@
       } else if (cli === 'agy') {
         loginRefresh.disabled = agyLoading;
         loginRefresh.textContent = tt('runConfigAccountRefresh', '刷新登录状态');
-        show(loginBtn, !!account);
-        if (account) {
+        const agyCliMissing = !!(agyMeta && agyMeta.cli && agyMeta.cli.installed === false);
+        const agyInstallCmd = (agyMeta && agyMeta.cli && agyMeta.cli.installCommand)
+          || 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
+        show(loginBtn, !!account && !agyCliMissing);
+        if (agyCliMissing && (!account || account.kind !== 'remote')) {
+          loginStatus.textContent = tt(
+            'airOfficialAcctAgyCliMissingRunConfig',
+            '本机尚未安装 Antigravity CLI（agy），请先运行 {command} 安装（或在 Provider 面板一键安装）。',
+            { command: agyInstallCmd },
+          );
+        } else if (account) {
           loginBtn.textContent = tt(account.loggedIn ? 'airOfficialAcctAgyRelogin' : 'airOfficialAcctAgyLogin',
             account.loggedIn ? '重新登录' : '登录');
           const expired = account.loggedIn && account.expiresAt && account.expiresAt <= Date.now();
@@ -692,7 +705,7 @@
           show(form, false);
           if (lane() === 'agy' && created) {
             setPick('agy', created.id);
-            openAgyLogin(created.id);
+            if (!(agyMeta && agyMeta.cli && agyMeta.cli.installed === false)) openAgyLogin(created.id);
           }
         }, cause => { note.textContent = cause.message; })
           .then(() => { saveBtn.disabled = importBtn.disabled = false; });

@@ -95,6 +95,7 @@ function knownDirs(env = process.env) {
   add(localAppData, 'npm');
   add(programFiles, 'nodejs');
   add(userProfile, '.local', 'bin');
+  add(localAppData, 'agy', 'bin');
   add(userProfile, '.opencode', 'bin');
   add(userProfile, '.bun', 'bin');
   add(localAppData, 'Programs', 'claude');
@@ -198,7 +199,13 @@ function refresh({
   fsImpl = fs,
   discover = discoverTools,
 } = {}) {
-  if (!windows) return Promise.resolve({ changed: false, supported: false });
+  if (!windows) {
+    // On macOS/Linux a CLI installed into ~/.local/bin or /opt/homebrew/bin
+    // after server boot must still invalidate cached command maps on an
+    // explicit refresh (e.g. post-install or manual refresh) without restart.
+    if (force) revision += 1;
+    return Promise.resolve({ changed: false, supported: false });
+  }
   if (inFlight) return inFlight;
   const time = now();
   if (!force && time - lastRefreshAt < maxAgeMs) {

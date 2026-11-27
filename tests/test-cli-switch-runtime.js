@@ -712,7 +712,7 @@ test('install-specs returns the static official command table', async () => {
     codebuddy: { auto: true, command: 'npm install -g @tencent-ai/codebuddy-code', display: 'npm install -g @tencent-ai/codebuddy-code' },
     dsh: { auto: true, command: 'npm install -g @deepseek-ai/dsh', display: 'npm install -g @deepseek-ai/dsh' },
     gemini: { auto: true, command: 'npm install -g @google/gemini-cli', display: 'npm install -g @google/gemini-cli' },
-    agy: { auto: false, manual: '请安装并登录官方 Antigravity CLI（agy）' },
+    agy: { auto: true, command: 'curl -fsSL https://antigravity.google/cli/install.sh | bash', display: 'curl -fsSL https://antigravity.google/cli/install.sh | bash' },
     grok: { auto: true, command: 'npm install -g @xai-official/grok', display: 'npm install -g @xai-official/grok' },
     commandcode: { auto: true, command: 'npm install -g command-code', display: 'npm install -g command-code' },
     pi: { auto: true, command: 'npm install -g @earendil-works/pi-coding-agent', display: 'npm install -g @earendil-works/pi-coding-agent' },
