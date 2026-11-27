@@ -5476,5 +5476,12 @@
   "rsRailShortBack": "返回",
   "rsRailShortPointer": "指针",
   "rsRailShortKeys": "键盘",
-  "rsRailShortMore": "更多"
+  "rsRailShortMore": "更多",
+  "spacesAllComputers": "所有电脑",
+  "spacesConnectedCount": "已连接 {count} 台电脑",
+  "spacesEntryComputer": "入口电脑",
+  "spacesRunningCount": "{count} 个任务运行中",
+  "spacesOpenDesktop": "点按进入独立桌面",
+  "secretsEdit": "编辑",
+  "secretsEditPrefill": "正在编辑 {name}，请填写新的密钥值。"
 }

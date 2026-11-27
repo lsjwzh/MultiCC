@@ -5478,7 +5478,14 @@ window.MULTICC_I18N_CATALOG = {
     "rsRailShortBack": "返回",
     "rsRailShortPointer": "指针",
     "rsRailShortKeys": "键盘",
-    "rsRailShortMore": "更多"
+    "rsRailShortMore": "更多",
+    "spacesAllComputers": "所有电脑",
+    "spacesConnectedCount": "已连接 {count} 台电脑",
+    "spacesEntryComputer": "入口电脑",
+    "spacesRunningCount": "{count} 个任务运行中",
+    "spacesOpenDesktop": "点按进入独立桌面",
+    "secretsEdit": "编辑",
+    "secretsEditPrefill": "正在编辑 {name}，请填写新的密钥值。"
   },
   "en": {
     "newDirectory": "New Workspace",
@@ -10944,6 +10951,27 @@ window.MULTICC_I18N_CATALOG = {
     "rsRailShortBack": "Back",
     "rsRailShortPointer": "Pad",
     "rsRailShortKeys": "Keys",
-    "rsRailShortMore": "More"
+    "rsRailShortMore": "More",
+    "spacesAllComputers": "All computers",
+    "spacesConnectedCount": "{count} connected computers",
+    "spacesEntryComputer": "Entry computer",
+    "spacesRunningCount": "{count} tasks running",
+    "spacesOpenDesktop": "Tap to open this desktop",
+    "rsErrClipboard": "This desktop Agent is too old. Update MultiCC Agent to sync the clipboard.",
+    "rsPanelClipboard": "Clipboard",
+    "rsWake": "Wake screen",
+    "rsWaking": "Waking…",
+    "rsWakeLocked": "The screen is locked. Tap “Wake screen” to restore the picture.",
+    "rsWakeChecking": "Checking automatic unlock status…",
+    "rsRetryLive": "Retry smooth mode",
+    "rsClipWriteRemote": "Write local clipboard to remote",
+    "rsClipCopied": "Copied {n} characters to the local clipboard",
+    "rsClipCopiedTruncated": "Copied the first {n} characters (text was too long)",
+    "rsClipSent": "Written to the remote clipboard. Press ⌘V to paste.",
+    "rsClipPasted": "Written to the remote clipboard and pasted",
+    "rsRailControl": "Enter control mode",
+    "rsGainStd": "Standard",
+    "secretsEdit": "Edit",
+    "secretsEditPrefill": "Editing {name}. Enter the new secret value."
   }
 };

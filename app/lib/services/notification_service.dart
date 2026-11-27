@@ -262,6 +262,11 @@ class NotificationService {
     }
   }
 
+  /// Do not retain an evicted desktop, or clear a newer desktop's router.
+  static void clearSelectHandler(void Function(String sessionId) handler) {
+    if (_onSelectSession == handler) _onSelectSession = null;
+  }
+
   static Future<void> show({
     required String title,
     required String body,

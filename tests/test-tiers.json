@@ -345,6 +345,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/computer_spaces_shell_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/connection_probe_service_test.dart",
       "tier": "flow",
       "lane": "flutter"

@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
-import 'package:provider/provider.dart';
 
-import 'providers/session_manager.dart';
 import 'i18n.dart';
 import 'theme.dart';
-import 'screens/main_shell.dart';
+import 'widgets/computer_spaces_shell.dart';
 import 'screens/setup_screen.dart';
 import 'services/notification_service.dart';
 import 'services/settings_service.dart';
@@ -48,10 +46,7 @@ class MultiCCApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final Widget home;
     if (settings.isConfigured) {
-      home = ChangeNotifierProvider(
-        create: (_) => SessionManager(settings: settings),
-        child: MainShell(settings: settings),
-      );
+      home = ComputerSpacesShell(settings: settings);
     } else {
       home = SetupScreen(settings: settings);
     }
