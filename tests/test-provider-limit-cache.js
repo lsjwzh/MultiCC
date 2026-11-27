@@ -362,7 +362,7 @@ function testRevokedParkAndRelease() {
   // hook is the release signal. Pinned here because the two halves live in
   // different modules — a rename on either side would otherwise leave the
   // account parked forever with every unit test still green.
-  const { createOfficialAccountStore } = require('../src/official-accounts');
+  const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
   const { accountProviderId } = require('../src/native/binding').officialCatalog;
   const store = createOfficialAccountStore({
     root: tmpDir('hook'),

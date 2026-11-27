@@ -186,12 +186,12 @@ test('buildSettingsConfig 在整个语料矩阵上与旧实现逐字节一致', 
 
 test('供应商宿主把 settingsConfig 的投影与组装交给 Rust', () => {
   const fs = require('node:fs');
-  const host = fs.readFileSync(require.resolve('../src/providers/host'), 'utf8');
-  assert.match(host, /providerRegistryService/);
+  const host = fs.readFileSync(require('node:path').join(__dirname, '../native/addon/src/providers_host_runtime/mod.rs'), 'utf8');
+  assert.match(host, /service::provider_registry_service/);
   const registry = fs.readFileSync(require('node:path').join(__dirname,
     '../native/addon/src/provider_service/registry.rs'), 'utf8');
   assert.match(registry, /provider_catalog_snapshot::host_summary/);
-  assert.doesNotMatch(host, /function (buildSettingsConfig|parseModelList|applyAliasMapToEnv|assertApiFormatMatchesAppType)/);
+  assert.doesNotMatch(host, /fn (build_settings_config|parse_model_list|apply_alias_map_to_env|assert_api_format_matches_app_type)\b/);
   const root = require('node:path').join(__dirname, '../native/core/src');
   assert.match(fs.readFileSync(root + '/provider_catalog_snapshot.rs', 'utf8'), /settings::is_zhipu_base_url/);
   assert.match(fs.readFileSync(root + '/provider_routing/spawn.rs', 'utf8'), /settings::ensure_zhipu_fable_alias/);

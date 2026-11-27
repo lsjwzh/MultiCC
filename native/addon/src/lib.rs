@@ -1,3 +1,8 @@
+mod providers_host_runtime;
+mod resident_provider_routes;
+mod codex_official_relay;
+mod codex_homes;
+mod cli_environment;
 mod folder_memory;
 mod docs_registry;
 mod docs_memory_host;

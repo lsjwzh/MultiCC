@@ -5,9 +5,9 @@
 // 经原生模块暴露。这里不再解析 JSON、也不自己拼路径 —— 任何账号读写规则都在 Rust。
 
 const path = require('node:path');
-const { getNative } = require('./native/binding');
+const { getNative } = require('../../../src/native/binding');
 
-const PLUGINS_DIR = path.resolve(__dirname, '..', 'plugins');
+const PLUGINS_DIR = path.resolve(__dirname, '../../../plugins');
 
 function missingAccountError(reason) {
   const error = new Error('所选 Antigravity 账户已不存在，请在运行配置里重新选择账户');

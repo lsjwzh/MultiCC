@@ -522,7 +522,7 @@ require('./test-claude-adapter');
 // CODEX_CMD 指向不存在的绝对路径时回退自动探测; 可执行/裸命令名原样保留
 {
   const assert = require('assert');
-  const { resolveCliCommands } = require('../src/cli-adapters/commands');
+  const { resolveCliCommands } = require('../src/native/binding').cliCommands;
   const quiet = { log() {}, warn() {} };
   const pick = cmd => resolveCliCommands({ env: { CODEX_CMD: cmd }, homeDir: '/nonexistent-home', logger: quiet }).codex;
   assert.notStrictEqual(pick('/nonexistent/codex'), '/nonexistent/codex');

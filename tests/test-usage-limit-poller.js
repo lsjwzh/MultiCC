@@ -85,7 +85,7 @@ test('native polling admission shares a request, retains null failures and relea
 });
 
 test('a synchronous provider lookup error does not strand the polling key', async t => {
-  const providers = require('../src/providers/host');
+  const providers = require('../src/native/binding').providersHost;
   let lookups = 0, attempts = 0;
   t.mock.method(providers, 'getProvider', () => {
     if (++lookups === 1) throw new Error('temporary lookup failure');

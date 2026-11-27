@@ -9,7 +9,7 @@ const {
   isOfficialCodexOAuthProvider,
   mountCodexOfficialRelay,
   readCodexOfficialCredential,
-} = require('../src/codex/official-relay');
+} = require('../src/native/binding').codexOfficialRelay;
 
 function officialProvider() {
   return {

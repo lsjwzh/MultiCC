@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { releaseResidentRoute, retainResidentRoute } = require('../codex/resident-route');
+const { releaseResidentRoute, retainResidentRoute } = require('../native/binding').codexResidentRoute;
 const { envDigest } = require('../secrets-vault');
 const { getWriterGroup } = require('../native/binding');
 

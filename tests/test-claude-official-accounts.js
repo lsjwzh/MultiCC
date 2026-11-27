@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const test = require('node:test');
 
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const oauth = require('../src/claude-auth/official-oauth');
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');

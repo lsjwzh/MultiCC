@@ -1,3 +1,6 @@
+mod window;
+pub(crate) use window::mark as mark_stage;
+
 use crate::route_response::*;
 use multicc_core::js::JsString as S;
 use napi_derive::napi;
@@ -18,7 +21,10 @@ fn redact(s: &[u16]) -> S {
 }
 #[napi]
 pub fn codex_trace_route(env: Env, url: Unknown<'_>) -> Result<sys::napi_value> {
-    let p = L::new(&env, url);
+    Ok(route(L::new(&env, url))?.raw())
+}
+
+fn route(p: L<'_>) -> Result<L<'_>> {
     let s = p.coerce_string()?;
     let path = s
         .as_units()
@@ -26,14 +32,16 @@ pub fn codex_trace_route(env: Env, url: Unknown<'_>) -> Result<sys::napi_value> 
         .next()
         .unwrap_or_default();
     let parts = path.split(|&c| c == 47).map(redact).collect::<Vec<_>>();
-    Ok(p.from_value(&V::String(
+    p.from_value(&V::String(
         S::join(&parts, &S::from("/")).truncate_units(300),
-    ))?
-    .raw())
+    ))
 }
 #[napi]
 pub fn codex_trace_parts(env: Env, url: Unknown<'_>) -> Result<sys::napi_value> {
-    let p = L::new(&env, url);
+    Ok(parts(L::new(&env, url))?.raw())
+}
+
+fn parts(p: L<'_>) -> Result<L<'_>> {
     let s = p.coerce_string()?;
     let mut parts = s
         .as_units()
@@ -55,15 +63,14 @@ pub fn codex_trace_parts(env: Env, url: Unknown<'_>) -> Result<sys::napi_value> 
     } else {
         null(p)?
     };
-    Ok(fields(
+    fields(
         p,
         &[
             ("providerId", provider),
             ("session", val(session)?),
             ("role", role),
         ],
-    )?
-    .raw())
+    )
 }
 #[napi]
 pub fn codex_trace_settle(
@@ -75,6 +82,10 @@ pub fn codex_trace_settle(
     let e = L::new(&env, entry);
     let r = L::new(&env, response);
     let p = L::new(&env, ports);
+    settle(e, r, || call(p, c"duration", &[e]))
+}
+
+fn settle<'a>(e: L<'a>, r: L<'a>, duration: impl FnOnce() -> Result<L<'a>>) -> Result<bool> {
     if e.get(c"ended")?.truthy()? {
         return Ok(false);
     }
@@ -103,7 +114,7 @@ pub fn codex_trace_settle(
             text(e, "proxy")?
         },
     )?;
-    e.set(c"durationMs", call(p, c"duration", &[e])?)?;
+    e.set(c"durationMs", duration()?)?;
     let aborted = r.truthy()? && r.get(c"writableFinished")?.is_false()?;
     e.set(c"aborted", flag(e, aborted)?)?;
     e.set(

@@ -8,7 +8,8 @@ const outbound = mode === 'legacy' ? require('./frozen-b10-network/outbound')
   : require('../../src/native/binding').outbound;
 const policy = require('../../src/native/binding').proxyPolicy;
 const close = outbound.close;
-const relayPath = require.resolve('../../src/codex/official-relay');
+const legacyRelayPath = require.resolve('./frozen-bc29761b/codex/official-relay');
+const binding = require('../../src/native/binding');
 const legacyPath = require.resolve('./legacy-official-fetch-entry');
 const trace = [];
 const fetchA = () => {};
@@ -36,10 +37,8 @@ Object.defineProperty(policy, 'parseMacSystemProxy', { configurable: true, enume
 const loadEntry = () => mode === 'legacy' ? require(legacyPath) : outbound.official;
 const previousLoad = Module._load;
 Module._load = function (request, parent, ...args) {
-  if (parent?.filename === relayPath) {
-    // The frozen old seam and its replacement both use the real relay body.
-    if (request === '../network/official-fetch') return loadEntry();
-    if (request === '../native/binding' && mode === 'legacy') {
+  if (mode === 'legacy' && parent?.filename === legacyRelayPath) {
+    if (request.endsWith('/native/binding')) {
       const binding = previousLoad.call(this, request, parent, ...args);
       return Object.create(binding, { outbound: { value: { get official() { return loadEntry(); } } } });
     }
@@ -47,7 +46,9 @@ Module._load = function (request, parent, ...args) {
   return previousLoad.call(this, request, parent, ...args);
 };
 async function main() {
-  let create = require(relayPath).createCodexOfficialRelayHandler;
+  const loadConsumer = () => mode === 'legacy' ? require(legacyRelayPath)
+    : binding.loadLegacyHostApi('codexOfficialRelay', {});
+  let create = loadConsumer().createCodexOfficialRelayHandler;
   assert.deepEqual(trace, [], 'importing the relay must not initialize the official entry');
   assert.equal(Object.keys(outbound).includes('official'), false, 'unrelated SDK export enumeration must not expose the lazy seam');
   create({ getProvider: () => null, fetch: fetchB });
@@ -78,8 +79,8 @@ async function main() {
   assert.equal(first.createOfficialFetch(options), factoryResult);
   assert.equal(first.createOfficialFetch(options).close, factoryResult.close);
   assert.deepEqual(first.parseMacProxy('fixture'), { httpProxy: 'http-A', httpsProxy: 'https-A' });
-  delete require.cache[relayPath];
-  create = require(relayPath).createCodexOfficialRelayHandler;
+  if (mode === 'legacy') delete require.cache[legacyRelayPath];
+  create = loadConsumer().createCodexOfficialRelayHandler;
   if (scenario === 'undefined') assert.throws(() => create({ getProvider: () => null }), /fetch required/);
   else create({ getProvider: () => null });
   create({ getProvider: () => null, fetch: fetchB });

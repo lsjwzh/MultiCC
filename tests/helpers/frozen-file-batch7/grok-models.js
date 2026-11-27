@@ -15,7 +15,7 @@
 // account's real catalog replaces it as soon as the user logs in.
 
 const { execFile } = require('child_process');
-const { resolveCliCommands } = require('../../../src/cli-adapters/commands');
+const { resolveCliCommands } = require('../frozen-bc29761b/cli-adapters/commands');
 
 const TTL_MS = 60 * 60 * 1000;
 const TIMEOUT_MS = Number(process.env.GROK_MODELS_TIMEOUT_MS || 10000);

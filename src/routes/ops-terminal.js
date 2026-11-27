@@ -1,8 +1,8 @@
 'use strict';
 
 const { spawn, execFile } = require('node:child_process');
-const { findExecutableOnPath } = require('../cli-adapters/commands');
-const windowsEnv = require('../windows-env');
+const { findExecutableOnPath } = require('../native/binding').cliCommands;
+const windowsEnv = require('../native/binding').windowsEnv;
 
 // Ops terminal — the repair surface for hosts whose environment is too broken
 // to create the first directory in: git missing on a bare cloud VM, commit

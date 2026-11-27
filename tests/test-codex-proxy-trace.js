@@ -5,7 +5,7 @@ const test = require('node:test');
 const { EventEmitter } = require('node:events');
 const {
   createCodexProxyTrace, markStage, traceParts, traceRoute,
-} = require('../src/codex/proxy-trace');
+} = require('../src/native/binding').codexProxyTrace;
 
 const CAPABILITY = 'pr1.dGFzay04OGE5NjkzNTNjMGI3MTY2MzZiNzE0YjMwMjQ4M2EzOQ.cHJveHktcm91dGVfN2FiY2U5YjMtODRhNy00MTBmLWFmYWYtYTJjN2U5MzgzYWNi';
 
@@ -146,6 +146,21 @@ test('the window is bounded and only anomalies reach the logger', () => {
   assert.equal(warnings[0][1].status, 502);
 });
 
+test('an evicted pending request still settles once with the current logger', () => {
+  const trace = createCodexProxyTrace({ capacity: 1, now: () => 100 });
+  const first = new FakeResponse();
+  trace.middleware(fakeRequest('/codex-proxy/p/first', { id: 'first' }), first);
+  trace.middleware(fakeRequest('/codex-proxy/p/second', { id: 'second' }), new FakeResponse());
+
+  const warnings = [];
+  trace.attachLogger({ warn: (name, entry) => warnings.push([name, entry.requestId]) });
+  first.statusCode = 502;
+  first.emit('finish');
+  first.emit('close');
+  assert.deepEqual(warnings, [['codex_proxy_trace', 'first']]);
+  assert.deepEqual(trace.snapshot().map(entry => [entry.requestId, entry.ended]), [['second', false]]);
+});
+
 require('node:test')('67f54869 differential: codex/proxy-trace', async () => {
   const { compare } = require('./helpers/compare-leaf-hosts');
   await compare('codex/proxy-trace.js', api => {
@@ -160,5 +175,5 @@ require('node:test')('67f54869 differential: codex/proxy-trace', async () => {
       rows.push(api.traceParts(url), trace.snapshot());
     }
     return rows;
-  });
+  }, require('../src/native/binding').codexProxyTrace);
 });

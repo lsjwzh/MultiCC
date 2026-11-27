@@ -6,7 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { createProviderBinding } = require('../src/native/binding').providerBinding;
 const { createTurnRuntimeStore } = require('../src/native/binding').stateOwner;
 const chatStream = require('../src/chat/chat-stream');
-const providers = require('../src/providers/host');
+const providers = require('../src/native/binding').providersHost;
 const prepareTurn = require('./helpers/claude-turn');
 const { createStreamRouter } = require('../src/chat/stream-router');
 

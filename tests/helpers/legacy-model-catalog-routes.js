@@ -88,7 +88,7 @@ function mountCodexModelRoutes(app, runtime, accountRuntime, providerModelsRunti
   if (!app || typeof app.get !== 'function') return;
   const isOfficialCodexOAuthProvider = typeof options.isOfficialCodexOAuthProvider === 'function'
     ? options.isOfficialCodexOAuthProvider
-    : repoModule('src/codex/official-relay').isOfficialCodexOAuthProvider;
+    : repoModule('tests/helpers/frozen-bc29761b/codex/official-relay').isOfficialCodexOAuthProvider;
   // Existing embedders may inject the legacy single-account runtime. The
   // production API uses the Rust account catalog; Express only projects its
   // snapshot and schedules work, never waits for a CLI discovery.

@@ -232,8 +232,8 @@ function mountSpeedtestRoute(app, deps) {
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const setTimeoutFn = deps.setTimeout || setTimeout;
   const clearTimeoutFn = deps.clearTimeout || clearTimeout;
-  const { isOfficialCodexOAuthProvider } = require('../../src/codex/official-relay');
-  const { officialAccountIdFromProvider } = require('../../src/official-accounts');
+  const { isOfficialCodexOAuthProvider } = require('./frozen-bc29761b/codex/official-relay');
+  const { officialAccountIdFromProvider } = require('./frozen-bc29761b/official-accounts');
 
   app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
     const startedAt = now();

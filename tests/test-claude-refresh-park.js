@@ -20,7 +20,7 @@ const {
   redactCliOutput,
 } = require('../src/claude-auth/oauth-refresh');
 const { createRefreshHealthStore } = require('../src/native/binding').refreshHealth;
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');
 
 const T0 = 1_700_000_000_000;

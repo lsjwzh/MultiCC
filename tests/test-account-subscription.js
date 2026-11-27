@@ -8,7 +8,7 @@ const { subscriptionFromBody, codexAuthSubscription } = require('../src/native/b
 const { mountAccountSubscriptionRoute } = require('./helpers/legacy-account-subscription-route');
 const { registerAccountSubscriptionReader } = require('../src/native/binding').accountReader;
 const subscriptions = require('../src/native/binding').accountSubscriptionCache;
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 
 const DATE = '2030-05-12T12:00:00Z';
 const MS = Date.parse(DATE);

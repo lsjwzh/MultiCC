@@ -17,7 +17,7 @@
 // cached in-process for a day; the browser mirrors the same TTL.
 
 const { execFile } = require('child_process');
-const { resolveCliCommands } = require('../../../src/cli-adapters/commands');
+const { resolveCliCommands } = require('../frozen-bc29761b/cli-adapters/commands');
 
 const QODER_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 // Deliberately looser than opencode's 2s: --list-models is a network call to

@@ -19,7 +19,7 @@ try {
   });
 } catch (_) { /* .env not found, skip */ }
 // Start every child from clean routing env; per-session providers re-apply theirs.
-const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers/host');
+const { ANTHROPIC_ROUTING_KEYS } = require('./src/native/binding').providersHost;
 for (const k of ANTHROPIC_ROUTING_KEYS) {
   if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
 }
@@ -64,7 +64,7 @@ const crypto = require('crypto');
 const bus = require('./src/native/binding').eventBus;
 const state = require('./src/native/binding').stateContainer;
 const artifacts = nativeBinding.artifacts, docsRegistry = nativeBinding.docsRegistry, secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
-const providers = require('./src/providers/host');
+const providers = require('./src/native/binding').providersHost;
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/native/binding').codexModelCatalog.startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
 const { createRoleTokenTracker } = nativeBinding.roleTokenTracker;
@@ -128,7 +128,7 @@ const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = nativeBinding.relayShares;
 const { mountModelCatalogsHostRoute } = require('./src/native/binding').modelCatalogsHost;
-const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = nativeBinding.codexAccountsRefresh; const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
+const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/native/binding').officialAccounts; const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = nativeBinding.codexAccountsRefresh; const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountQuotaHostRoute } = require('./src/routes/quota-host');
 const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance-host');
 const { createProviderRelayModelCatalogRuntime } = require('./src/native/binding').relayModelCatalog;
@@ -246,7 +246,7 @@ const { mountServerCoreHostRoute } = require('./src/routes/server-core-host');
 const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = nativeBinding.runtimeSecurity;
 const { createHostEnv } = nativeBinding.hostEnv;
 // Windows keeps its startup PATH: widen it from install dirs + registry now.
-const windowsEnv = require('./src/windows-env'); windowsEnv.prepare();
+const windowsEnv = require('./src/native/binding').windowsEnv; windowsEnv.prepare();
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
@@ -479,11 +479,11 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
 const CLAUDE_CMD = cliCommands.claude;
 
 function cliCommandAvailable(command) {
-  return require('./src/cli-adapters/commands').isCommandAvailable(command, { isWindows });
+  return require('./src/native/binding').cliCommands.isCommandAvailable(command, { isWindows });
 }
 
 // Re-resolve when the environment moved: a just-installed CLI must show up.
-const commandsForAvailability = require('./src/cli-adapters/commands').createCommandResolver({ isWindows, seed: cliCommands });
+const commandsForAvailability = require('./src/native/binding').cliCommands.createCommandResolver({ isWindows, seed: cliCommands });
 function cliAvailabilitySummary() {
   return getNative().cliAvailabilitySummary(CLIENT_CHAT_CLIS, commandsForAvailability(),
     bundledClaudeCodeBinary, providers, cliCommandAvailable);

@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
-const { createCodexProxyTrace } = require('../src/codex/proxy-trace');
+const { createCodexProxyTrace } = require('../src/native/binding').codexProxyTrace;
 const {
   REQUIRED_CAPABILITIES,
   createProviderRouterPort,

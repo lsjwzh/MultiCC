@@ -29,7 +29,7 @@ const {
   fetchUsage,
   waitForCallback,
 } = require('../claude-auth/official-oauth');
-const { officialAccountIdFromProvider } = require('../official-accounts');
+const { officialAccountIdFromProvider } = require('../native/binding').officialAccounts;
 const { accountProviderId } = require('../native/binding').officialCatalog;
 const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');
 

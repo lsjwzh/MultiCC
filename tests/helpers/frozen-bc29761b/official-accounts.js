@@ -22,9 +22,9 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { codexAuthSubscription } = require('./native/binding');
+const { codexAuthSubscription } = require('../../../src/native/binding');
 
-const { ensurePrivateDir, secureFile } = require('./native/binding').runtimeSecurity;
+const { ensurePrivateDir, secureFile } = require('../../../src/native/binding').runtimeSecurity;
 
 const DEFAULT_ROOT = path.join(os.homedir(), '.multicc', 'official-accounts');
 const ACCOUNT_ID_PATTERN = /^[a-f0-9]{16}$/;
@@ -95,7 +95,7 @@ function rewrittenSince(file, importedAt) {
   try { return fs.statSync(file).mtimeMs > at + 2000; } catch (_) { return false; }
 }
 
-const { credential } = require('./native/binding').providerCredentials;
+const { credential } = require('../../../src/native/binding').providerCredentials;
 function readJsonIfExists(file) { return credential({ operation: 'readJson', file }); }
 function writeAccountJson(file, data) { return credential({ operation: 'writeJson', file, data }); }
 

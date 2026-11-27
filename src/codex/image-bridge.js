@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
-const { isOfficialCodexOAuthProvider, readCodexOfficialCredential } = require('./official-relay');
+const { isOfficialCodexOAuthProvider, readCodexOfficialCredential } = require('../native/binding').codexOfficialRelay;
 const { ensurePrivateDir, secureFile } = require('../native/binding').runtimeSecurity;
 
 const MAX_PROMPT_LENGTH = 16 * 1024;

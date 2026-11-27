@@ -18,12 +18,12 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { officialAccountIdFromProvider } = require('../official-accounts');
-const { markStage } = require('./proxy-trace');
+const { markStage } = require('../../frozen-leaf-hosts/proxy-trace');
 const {
   normalizeResponsesHistory,
   repairRejectedResponsesHistory,
-} = require('../native/binding').modelHistoryConverter;
-const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../native/binding').upstreamError;
+} = require('../../../../src/native/binding').modelHistoryConverter;
+const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../../../../src/native/binding').upstreamError;
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');
 const DEFAULT_UPSTREAM_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -108,7 +108,7 @@ function readCodexOfficialCredential(options = {}) {
     try { input.auth = parseObject(options.readFileSync(input.file, 'utf8')); }
     catch (_) { return { ok: false, reason: 'credential_unreadable' }; }
   }
-  return require('../native/binding').providerCredentials.credential(input);
+  return require('../../../../src/native/binding').providerCredentials.credential(input);
 }
 
 function normalizeProxyPath(value) {
@@ -399,7 +399,7 @@ function finishResponseObservation(observer, context) {
 
 function createCodexOfficialRelayHandler(options = {}) {
   const getProvider = options.getProvider;
-  const fetchImpl = options.fetch || require('../native/binding').outbound.official.officialFetch;
+  const fetchImpl = options.fetch || require('../../../../src/native/binding').outbound.official.officialFetch;
   // Credential resolution is per-PROVIDER: a provider record marked with
   // settingsConfig.officialAccount.id borrows that account's auth.json (the
   // multicc-owned credential store) instead of the shared ~/.codex/auth.json.

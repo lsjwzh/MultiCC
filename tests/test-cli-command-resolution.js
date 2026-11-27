@@ -8,7 +8,7 @@ const {
   findExecutableOnPath,
   isCommandAvailable,
   resolveCliCommands,
-} = require('../src/cli-adapters/commands');
+} = require('../src/native/binding').cliCommands;
 
 function makeExecutable(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -203,14 +203,21 @@ try {
   assert.strictEqual(resolveCodexWith(onlyExisting(brewCodex)), brewCodex,
     'a machine that only has the homebrew copy resolves exactly as before');
 
-  const source = fs.readFileSync(require.resolve('../src/cli-adapters/commands'), 'utf8');
-  // qoder is the deliberate exception: choosing the newest install requires a
-  // synchronous `--version` probe, and resolveCliCommands() must stay sync.
-  assert.ok(!/\b(?:execSync|spawnSync)\b/.test(source), 'command resolution uses no other synchronous child process');
-  assert.strictEqual((source.match(/\bexecFileSync\(/g) || []).length, 1,
-    'only the qoder version probe runs a child synchronously');
-  assert.ok(/execFileSync\(candidate, \['--version'\]/.test(source),
-    'the synchronous probe is the qoder --version check');
+  const childProcess = require('node:child_process');
+  const qoder = path.join(fakeHome, '.qoder', 'bin', 'qoderclicn');
+  const calls = [];
+  const isolated = require('../src/native/binding').getNative().cliEnvironmentApi({
+    fs, path, homedir: os.homedir,
+    childProcess: { ...childProcess, execFileSync(...args) { calls.push(args); return '1.2.3'; } },
+    pluginsDir: path.join(__dirname, '../plugins'), hasCliRelayProvider: () => false,
+  });
+  const probe = { isWindows: false, env: { PATH: '' }, fsImpl: onlyExisting(qoder),
+    homeDir: fakeHome, logger: silentLogger() };
+  isolated.cliCommands.resolveCliCommands(probe);
+  isolated.cliCommands.resolveCliCommands(probe);
+  assert.deepStrictEqual(calls, [[qoder, ['--version'], {
+    timeout: 2000, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+  }]], 'only Qoder receives a bounded, shell-free version probe, once per set of candidates');
 
   console.log('CLI command resolution tests passed');
 } finally {

@@ -682,7 +682,7 @@ function specFor(group) {
       // the package root (src/paths.js `path.resolve(PKG_ROOT, raw)`), not cwd.
       process.env.MULTICC_DATA_DIR = group === 'relative-data-dir'
         ? path.relative(ROOT, dataRoot) : dataRoot;
-      const providers = require(path.join(ROOT, 'src/providers/host.js'));
+      const providers = require(path.join(ROOT, 'tests/helpers/frozen-bc29761b/providers/host'));
       providers.enableUnifiedOfficialProviders();
       const history = ORACLE.createLegacyProviderQuotaHistory({
         file: path.join(dataRoot, 'provider-quota-history.db'),
