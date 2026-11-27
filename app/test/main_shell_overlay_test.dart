@@ -7,7 +7,8 @@ import 'package:multicc_app/screens/chat_screen.dart';
 import 'package:multicc_app/screens/main_shell.dart';
 import 'package:multicc_app/services/onboarding_store.dart';
 import 'package:multicc_app/services/settings_service.dart';
-import 'package:multicc_app/widgets/air/air_sidebar.dart';
+import 'package:multicc_app/widgets/air/air_computers.dart';
+import 'package:multicc_app/widgets/input_bar.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -28,20 +29,26 @@ void main() {
   setUpAll(() => I18n.init('zh'));
 
   /// 一台 390×844、带刘海的手机，Air 首页上开着一个对话。
-  Future<SessionManager> pumpShell(WidgetTester tester) async {
+  Future<SessionManager> pumpShell(
+    WidgetTester tester, {
+    bool remote = false,
+  }) async {
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
-    tester.view.padding = const FakeViewPadding(
+    const safeArea = FakeViewPadding(
       top: statusBar * 3,
       bottom: 34 * 3,
     );
+    tester.view.viewPadding = safeArea;
+    tester.view.padding = safeArea;
     addTearDown(tester.view.reset);
 
     SharedPreferences.setMockInitialValues({
       'multicc_host': 'http://127.0.0.1:3000',
       OnboardingStore.doneKey: '1',
     });
-    final settings = await SettingsService.getInstance();
+    final entry = await SettingsService.getInstance();
+    final settings = remote ? entry.forMachine('machine_a', 'MacPro') : entry;
     final mgr = SessionManager(settings: settings);
     mgr.openSession(
       Session(
@@ -53,10 +60,19 @@ void main() {
     );
     mgr.switchToSession('sess-1');
 
+    final shell = ChangeNotifierProvider<SessionManager>.value(
+      value: mgr,
+      child: MainShell(settings: settings),
+    );
     await tester.pumpWidget(
-      ChangeNotifierProvider<SessionManager>.value(
-        value: mgr,
-        child: MaterialApp(home: MainShell(settings: settings)),
+      MaterialApp(
+        home: remote
+            ? ComputerTargetShell(
+                name: 'MacPro',
+                settings: settings,
+                child: shell,
+              )
+            : shell,
       ),
     );
     await tester.pump();
@@ -85,6 +101,36 @@ void main() {
     expect(find.text('收起'), findsNothing);
 
     mgr.dispose();
+  });
+
+  testWidgets('多电脑页头下的聊天输入栏避开底部安全区和软键盘', (tester) async {
+    final mgr = await pumpShell(tester, remote: true);
+    try {
+      final body = tester.getRect(chat());
+      final inputBar = find.byType(InputBar);
+      final textField = find.descendant(
+        of: inputBar,
+        matching: find.byType(TextField),
+      );
+      final inputBarRect = tester.getRect(inputBar);
+      expect(body.top, greaterThan(statusBar));
+      expect(body.bottom, 844);
+      expect(inputBarRect.top, greaterThanOrEqualTo(body.top));
+      expect(inputBarRect.bottom, lessThanOrEqualTo(844));
+      expect(tester.getRect(textField).bottom, lessThanOrEqualTo(844 - 34));
+      expect(textField.hitTestable(), findsOneWidget);
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300 * 3);
+      tester.view.padding = const FakeViewPadding(top: statusBar * 3);
+      await tester.pumpAndSettle();
+
+      expect(MediaQuery.viewInsetsOf(tester.element(chat())).bottom, 300);
+      expect(tester.getRect(chat()).bottom, 844);
+      expect(tester.getRect(inputBar).bottom, lessThanOrEqualTo(844 - 300));
+      expect(textField.hitTestable(), findsOneWidget);
+    } finally {
+      mgr.dispose();
+    }
   });
 
   testWidgets('标题区域往下拖就收起回首页', (tester) async {

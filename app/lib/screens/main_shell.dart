@@ -267,9 +267,14 @@ class _ChatSheetState extends State<_ChatSheet>
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(builder: _buildSheet);
+
+  Widget _buildSheet(BuildContext context, BoxConstraints constraints) {
     final mq = MediaQuery.of(context);
-    final h = mq.size.height;
+    // 多电脑页头已占用部分屏幕，浮层和拖动手势共用剩余的实际高度。
+    final h = constraints.maxHeight.isFinite && constraints.maxHeight > 0
+        ? constraints.maxHeight
+        : mq.size.height;
     final statusBar = mq.padding.top;
 
     return AnimatedBuilder(

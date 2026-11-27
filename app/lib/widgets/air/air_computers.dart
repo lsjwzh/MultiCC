@@ -529,6 +529,8 @@ class _ComputerTargetShellState extends State<ComputerTargetShell> {
   Widget build(BuildContext context) => Provider<SettingsService>.value(
     value: widget.settings,
     child: Scaffold(
+      // 由内层路由处理键盘，聊天页和底部弹层都需要原始 viewInsets。
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         automaticallyImplyLeading: false,
         leading: IconButton(
