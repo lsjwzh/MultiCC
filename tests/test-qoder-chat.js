@@ -12,7 +12,7 @@ const { randomUUID } = require('node:crypto');
 const WebSocket = require('ws');
 const { assertTestDir } = require('../src/paths');
 const { waitServerReady } = require('./helpers/wait-server-ready');
-const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+const { createQoderAdapter } = require('../src/native/binding').cliAdapters;
 
 // ── qoder: structured API-error fields ───────────────────────────────────
 // The CLI writes a synthetic assistant frame (isApiErrorMessage, with the HTTP

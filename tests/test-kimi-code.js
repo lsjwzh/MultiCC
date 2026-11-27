@@ -67,7 +67,7 @@ test('registration chain exposes kimi across every integration point', () => {
 // (~21886889), reportSessionOccupied (~21904943) and validateOptions (~19532882).
 
 test('kimi print invocation never combines --auto with -p', () => {
-  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const { createKimiAdapter } = require('../src/native/binding').cliAdapters;
   const adapter = createKimiAdapter({ cmd: '/fake/kimi' });
   const inv = adapter.buildInvocation({
     historyHandle: { isFirstTurn: true, cliSessionId: null },
@@ -81,7 +81,7 @@ test('kimi print invocation never combines --auto with -p', () => {
 });
 
 test('kimi decodes its fatal stdout error envelope', () => {
-  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const { createKimiAdapter } = require('../src/native/binding').cliAdapters;
   const adapter = createKimiAdapter({ cmd: 'kimi' });
   const decoded = adapter.decodeEvent({
     type: 'error',
@@ -100,7 +100,7 @@ test('kimi decodes its fatal stdout error envelope', () => {
 });
 
 test('kimi keeps a transient retry out of the error path', () => {
-  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const { createKimiAdapter } = require('../src/native/binding').cliAdapters;
   const adapter = createKimiAdapter({ cmd: 'kimi' });
   const decoded = adapter.decodeEvent({
     role: 'meta',
@@ -118,7 +118,7 @@ test('kimi keeps a transient retry out of the error path', () => {
 });
 
 test('a retried-then-successful kimi turn completes', () => {
-  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const { createKimiAdapter } = require('../src/native/binding').cliAdapters;
   const adapter = createKimiAdapter({ cmd: 'kimi' });
   const tracker = adapter.createCompletionTracker();
   const feed = (raw) => tracker.observe(raw, adapter.decodeEvent(raw));
@@ -133,7 +133,7 @@ test('a retried-then-successful kimi turn completes', () => {
 });
 
 test('a fatal kimi error envelope fails the turn', () => {
-  const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+  const { createKimiAdapter } = require('../src/native/binding').cliAdapters;
   const adapter = createKimiAdapter({ cmd: 'kimi' });
   const tracker = adapter.createCompletionTracker();
   const raw = { type: 'error', code: 'session.occupied', message: 'Session is already running.' };

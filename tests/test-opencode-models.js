@@ -36,7 +36,7 @@ const {
   _setCacheForTest,
   _resetCacheForTest,
 } = modelsRoute;
-const { createOpencodeAdapter } = require('../src/cli-adapters/opencode.js');
+const { createOpencodeAdapter } = require('../src/native/binding').cliAdapters;
 
 const CLI = parseOpenCodeStdout([
   'opencode/big-pickle',

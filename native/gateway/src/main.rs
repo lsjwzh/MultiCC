@@ -23,7 +23,7 @@ launches; the listening log reports the actual port."
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("acp-model-error") {
+    if args.first().map(String::as_str) == Some(multicc_core::acp_bridge::MODEL_ERROR_COMMAND) {
         let lane = args.get(1).map(String::as_str).unwrap_or("");
         let model = args.get(2).map(String::as_str).unwrap_or("");
         let suggestion = args.get(3).map(String::as_str).unwrap_or("");
@@ -34,7 +34,7 @@ fn main() {
         }
         return;
     }
-    if args.first().map(String::as_str) == Some("acp-bridge") {
+    if args.first().map(String::as_str) == Some(multicc_core::acp_bridge::BRIDGE_COMMAND) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -9,7 +9,7 @@ const { spawnSync } = require('node:child_process');
 
 const { accountEnv, hasAccount, hasRemoteAccount } = require('../src/agy-accounts');
 const { applyRouterMcpEnv } = require('../src/cli-adapters/router-mcp');
-const { createAgyAdapter } = require('../src/cli-adapters/index');
+const { createAgyAdapter } = require('../src/native/binding').cliAdapters;
 const { gatewayPath } = require('../src/native/binding');
 
 function mkTempDir(tag) {

@@ -1,6 +1,7 @@
 'use strict';
+// Frozen ACP adapter used by the Gemini/Grok launch comparison (3ce99615).
 
-const { supportsEffort, displayNameOf } = require('../native/binding').cliCapability;
+const { supportsEffort, displayNameOf } = require('../../src/native/binding').cliCapability;
 
 // Shared adapter for every CLI that speaks ACP (Agent Client Protocol). The
 // host starts the Rust gateway ACP bridge, which drives the agent's own `acp`/`stdio`
@@ -10,9 +11,9 @@ const { supportsEffort, displayNameOf } = require('../native/binding').cliCapabi
 // agent (agentArgs) and which argv carries the model when the agent cannot
 // switch it over ACP.
 
-const { errorFields } = require('../native/binding').providerError;
-const { createProtocolCompletionTracker } = require('../native/binding').cliCompletion;
-const { getNative, gatewayPath, messageComposer: { renderPrompt } } = require('../native/binding');
+const { errorFields } = require('../../src/native/binding').providerError;
+const { createProtocolCompletionTracker } = require('../../src/native/binding').cliCompletion;
+const { getNative, gatewayPath, messageComposer: { renderPrompt } } = require('../../src/native/binding');
 
 const BRIDGE = 'acp-bridge';
 

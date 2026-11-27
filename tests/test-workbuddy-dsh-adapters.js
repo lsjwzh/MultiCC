@@ -9,7 +9,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createCodebuddyAdapter, CODEBUDDY_REASONING_LEVELS } = require('../src/cli-adapters/codebuddy');
+const { createCodebuddyAdapter, CODEBUDDY_REASONING_LEVELS } = require('../src/native/binding').cliAdapters;
 const { createDshAdapter, ensureDshProfile, DSH_MODELS, DSH_PROFILE, DSH_PROFILE_VERSION } = require('../src/cli-adapters/dsh');
 
 const codebuddy = createCodebuddyAdapter({ cmd: 'codebuddy' });

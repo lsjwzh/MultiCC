@@ -16,7 +16,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { spawn } = require('node:child_process');
 const { createCodexAppStream } = require('../src/chat/codex-app-stream');
-const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
+const { createZcodeAdapter } = require('../src/native/binding').cliAdapters;
 const { createBackgroundTaskTracker } = require('../src/cli-adapters/zcode-app-server');
 const { writeFakeZcodeAppServer } = require('./helpers/fake-zcode-app-server');
 

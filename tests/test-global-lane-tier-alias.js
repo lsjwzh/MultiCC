@@ -35,7 +35,7 @@ const { createProviderBinding } = require('../src/native/binding').providerBindi
 const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
 const { createProviderInvocationFactory } = require('../src/native/binding').providerInvocation;
 const { normalizeTurnRequest, createTurnLifecycle } = require('../src/chat');
-const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+const { createKimiAdapter } = require('../src/native/binding').cliAdapters;
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 

@@ -1,6 +1,6 @@
 'use strict';
 
-const { createAcpAdapter } = require('../../src/cli-adapters/acp');
+const { createAcpAdapter } = require('./legacy-acp-adapter');
 const { displayNameOf } = require('../../src/cli/cli-capability');
 
 // Gemini CLI over ACP (`gemini --experimental-acp`). The model is fixed per

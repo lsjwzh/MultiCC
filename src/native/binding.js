@@ -832,6 +832,32 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+exposeHostApi('cliAdapters', () => {
+  const { displayNameOf, supportsEffort, effortOf } = module.exports.cliCapability;
+  const { createCompletionTracker, createStepCompletionTracker, createProtocolCompletionTracker } = module.exports.cliCompletion;
+  const { createResultCompletionTracker, isMainResult, resultCompletion } = module.exports.cliResultCompletion;
+  const { classifyProviderError, errorFields } = module.exports.providerError;
+  const { resolveCliCommands, createCommandResolver } = require('../cli-adapters/commands');
+  return getNative().cliAdaptersApi({
+    getNative, process, gatewayPath, createCliProviderRegistry, createClaudeAdapter,
+    createCodexAdapter: codexAdapter.createCodexAdapter, createCodexExpAdapter: codexAppAdapter.createCodexExpAdapter,
+    createDshAdapter: require('../cli-adapters/dsh').createDshAdapter,
+    resolveCliCommands, createCommandResolver,
+    claudeLikeMcpArgs: require('../cli-adapters/router-mcp').claudeLikeMcpArgs,
+    validateOpenCodeModel: require('../routes/opencode-models').validateOpenCodeModel,
+    extractUpstreamError: require('../upstream-error').extractUpstreamError,
+    messageComposer, renderPrompt: messageComposer.renderPrompt,
+    displayNameOf, supportsEffort, effortOf, classifyProviderError, errorFields, isZcodeSessionId,
+    createCompletionTracker, createStepCompletionTracker, createProtocolCompletionTracker,
+    createResultCompletionTracker, isMainResult, resultCompletion,
+    routerScript: path.join(__dirname, '../../scripts/multicc-router-mcp.js'),
+    zcodeBridgePath: path.join(__dirname, '../cli-adapters/zcode-bridge.cjs'),
+    zcodeTerminalPath: path.join(__dirname, '../cli-adapters/zcode-terminal.cjs'),
+    piExtensionPath: path.join(__dirname, '../cli-adapters/pi-router-extension.mjs'),
+    appendTerminalArg: (cmd, flag, value) => cmd + ` ${flag} ${value}`,
+  });
+});
+
 exposeHostApi('artifactRetention', () => {
   const rows = entries => JSON.stringify(entries.map(({ url, permanent, relatedArtifactIds }) => ({
     url: typeof url === 'string' ? url : null, permanent: !!permanent,

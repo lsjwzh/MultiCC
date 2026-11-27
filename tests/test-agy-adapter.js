@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createAgyAdapter } = require('../src/cli-adapters/index');
+const { createAgyAdapter } = require('../src/native/binding').cliAdapters;
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { getNative } = require('../src/native/binding');
 

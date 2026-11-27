@@ -24,8 +24,7 @@
 const { composeMessage, renderPrompt, normalizeVoiceInput } = require('../src/native/binding').messageComposer;
 const { buildAutoCommitStatusPrompt } = require('./helpers/legacy-message-composer');
 const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
-const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
-const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
+const { createOpencodeAdapter, createZcodeAdapter } = require('../src/native/binding').cliAdapters;
 
 let passed = 0;
 let failed = 0;

@@ -1979,7 +1979,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
       reasonCode: 'auto_initial_selection',
     });
     assert.equal(runtime.snapshot('wb-native').providerName, 'WorkBuddy');
-    const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
+    const { createCodebuddyAdapter } = require('../src/native/binding').cliAdapters;
     const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
     const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
     const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
@@ -2019,7 +2019,7 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
 });
 
 test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具仍阻止重放', () => {
-  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+  const { createQoderAdapter } = require('../src/native/binding').cliAdapters;
   const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
   const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
   const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
@@ -2063,8 +2063,8 @@ test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具
 });
 
 test('只有状态码时，适配器保留结果正文，不用正文证明自己是纯报错', () => {
-  const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
-  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+  const { createCodebuddyAdapter } = require('../src/native/binding').cliAdapters;
+  const { createQoderAdapter } = require('../src/native/binding').cliAdapters;
   const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
   const answer = '第一页已完成。';
   for (const [adapter, fields] of [
