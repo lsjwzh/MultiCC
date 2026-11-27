@@ -23,8 +23,8 @@ const {
 const {
   VENDOR_NATIVE_SET,
   syntheticVendorProvider,
-} = require('../providers/native-vendor');
-const { peekOpenCodeModels } = require('../routes/opencode-models');
+} = require('../native/binding').nativeVendor;
+const { peekOpenCodeModels } = require('../native/binding').openCodeModels;
 const { limitState } = require('../native/binding').getAutoProviderPolicy();
 const { createAutoProviderRouting } = require('./auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('../native/binding').getAutoProviderPricing();

@@ -23,7 +23,7 @@
 // of this oracle's corpus and throws loudly instead of silently drifting.
 
 const { getNative } = require('../../src/native/runtime');
-const { nativeVendorOf } = require('../../src/providers/native-vendor');
+const { nativeVendorOf } = require('./frozen-catalog-inputs/native-vendor');
 const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('./frozen-native-opencode');
 
 const API_FORMATS = Object.freeze({

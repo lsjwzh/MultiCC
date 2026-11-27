@@ -32,7 +32,7 @@ const {
   NATIVE_VENDOR_ID,
   NATIVE_VENDOR_SUFFIX,
   VENDOR_NATIVE_CLIS,
-} = require('./native-vendor');
+} = require('../native/binding').nativeVendor;
 
 const native = getNative();
 

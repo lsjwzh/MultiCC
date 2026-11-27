@@ -60,7 +60,7 @@ function enableUnifiedOfficialProviders() {
     const selection = getNative().providerInitialSelection(records, defaults);
     require('../native/binding').providerCredentials.credential({ operation: 'writeJson', file: selectionFile, data: selection });
   }
-  officialCatalog = require('./official-catalog').createOfficialCatalog({
+  officialCatalog = require('../native/binding').officialCatalog.createOfficialCatalog({
     readRecords: loadStore,
     readSelection() {
       return require('../native/binding').providerCredentials.credential({ operation: 'readStateJson', file: selectionFile }) || {};
@@ -77,7 +77,7 @@ function enableUnifiedOfficialProviders() {
 }
 // Built-in official identities: the vendor alias and every per-account id.
 function isOfficialProviderId(appType, id) {
-  return !!officialCatalog && require('./official-catalog').isOfficialProviderId(appType, id);
+  return !!officialCatalog && require('../native/binding').officialCatalog.isOfficialProviderId(appType, id);
 }
 function normalizeOfficialProviderId(type, id) { return officialCatalog ? officialCatalog.normalize(type, id) : id; }
 function getOfficialAccountSelection(type) { return officialCatalog ? officialCatalog.active(type) : null; }
@@ -147,7 +147,7 @@ function loadStore() { return providerRepository().read(); }
 const registry = getNative().providerRegistryService({
   get store() { return providerRepository(); },
   get catalog() { return officialCatalog; },
-  accountModels: (record, runtime) => (runtime || require('../codex/model-catalog').defaultRuntime)
+  accountModels: (record, runtime) => (runtime || require('../native/binding').codexModelCatalog.defaultRuntime)
     .peekProvider(record).models.map(item => item.model),
   uuid: () => crypto.randomUUID(), getPort: () => process.env.PORT || '3000',
   relayForced: () => process.env.MULTICC_CLI_RELAY_FORCE === '1',

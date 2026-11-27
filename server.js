@@ -65,7 +65,7 @@ const bus = require('./src/native/binding').eventBus;
 const state = require('./src/native/binding').stateContainer;
 const artifacts = nativeBinding.artifacts, docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
 const providers = require('./src/providers/host');
-providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
+providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/native/binding').codexModelCatalog.startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
 const { createRoleTokenTracker } = nativeBinding.roleTokenTracker;
 const {
@@ -127,11 +127,11 @@ const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host'
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
 const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = nativeBinding.relayShares;
-const { mountModelCatalogsHostRoute } = require('./src/routes/model-catalogs-host');
+const { mountModelCatalogsHostRoute } = require('./src/native/binding').modelCatalogsHost;
 const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = nativeBinding.codexAccountsRefresh; const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountQuotaHostRoute } = require('./src/routes/quota-host');
 const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance-host');
-const { createProviderRelayModelCatalogRuntime } = require('./src/providers/relay-model-catalog');
+const { createProviderRelayModelCatalogRuntime } = require('./src/native/binding').relayModelCatalog;
 const { createMemoryBrowserRoutes } = require('./src/routes/memory-browser');
 const { createDocsMemoryHost } = require('./src/routes/docs-memory-host');
 const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
@@ -655,7 +655,7 @@ const backfillReportedModels = reportedModelRuntime.backfill;
 // records keep their active top-level fields for backward compatibility; the
 // map is hydrated from those fields once and then maintained on every switch.
 for (const session of persistedSessions.values()) {
-  if (require('./src/providers/official-catalog').normalizeOfficialSessionReferences(session, providers.normalizeOfficialProviderId)) _state.needsSave = true;
+  if (require('./src/native/binding').officialCatalog.normalizeOfficialSessionReferences(session, providers.normalizeOfficialProviderId)) _state.needsSave = true;
   if (ensureCliStates(session)) _state.needsSave = true;
 }
 
@@ -1680,7 +1680,7 @@ const sessionDelivery = require('./src/native/binding').getSessionDeliveryApi().
   log: message => console.log('[multicc/delivery]', message),
 });
 const authHealth = nativeBinding.refreshHealth.createRefreshHealthStore({ root: OFFICIAL_ACCOUNTS_ROOT, logger }); const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger, health: authHealth, healthKey: 'claude-cli' });
-const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore({ onCredentialWritten: id => limitRecorder.releaseProviderFailure({ providerId: require('./src/providers/official-catalog').accountProviderId('claude', id) }) }); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger, health: authHealth }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive, onNeedsRefresh: id => claudeAccountRefresh.checkAccount(id, 'read-miss') }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
+const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore({ onCredentialWritten: id => limitRecorder.releaseProviderFailure({ providerId: require('./src/native/binding').officialCatalog.accountProviderId('claude', id) }) }); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger, health: authHealth }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive, onNeedsRefresh: id => claudeAccountRefresh.checkAccount(id, 'read-miss') }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
 const apiErrorHost = createApiErrorHost({ replay: chatReplay,
   policy: apiErrorPolicy, logger, persistedSessions, setTaskState, chatBroadcast,
   setSessionStatus, isShuttingDown: () => authSecurity.shuttingDown(),

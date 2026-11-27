@@ -1,7 +1,7 @@
 'use strict';
 
 // Frozen from src/routes/providers.js before moving native-line rules to Rust.
-const { nativeVendorOf } = require('../../src/providers/native-vendor');
+const { nativeVendorOf } = require('./frozen-catalog-inputs/native-vendor');
 const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('./frozen-native-opencode');
 
 function validProviderId(deps, cli, id) {

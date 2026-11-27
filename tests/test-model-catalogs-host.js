@@ -14,14 +14,14 @@ const {
   createModelCatalogsHost,
   mountModelCatalogsHostRoute,
   HOST_PATH,
-} = require('../src/routes/model-catalogs-host');
+} = require('../src/native/binding').modelCatalogsHost;
 
 const CLI_MODULES = {
-  opencode: require('../src/routes/opencode-models'),
-  qoder: require('../src/routes/model-catalogs-host').getVendorCatalog('qoder'),
-  grok: require('../src/routes/model-catalogs-host').getVendorCatalog('grok'),
-  commandcode: require('../src/routes/model-catalogs-host').getVendorCatalog('commandcode'),
-  codebuddy: require('../src/routes/model-catalogs-host').getVendorCatalog('codebuddy'),
+  opencode: require('../src/native/binding').openCodeModels,
+  qoder: require('../src/native/binding').modelCatalogsHost.getVendorCatalog('qoder'),
+  grok: require('../src/native/binding').modelCatalogsHost.getVendorCatalog('grok'),
+  commandcode: require('../src/native/binding').modelCatalogsHost.getVendorCatalog('commandcode'),
+  codebuddy: require('../src/native/binding').modelCatalogsHost.getVendorCatalog('codebuddy'),
 };
 const CLI_LIST_EXPORTS = {
   opencode: 'listOpenCodeModels',

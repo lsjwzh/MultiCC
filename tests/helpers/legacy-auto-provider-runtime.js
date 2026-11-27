@@ -24,8 +24,8 @@ const {
 const {
   VENDOR_NATIVE_SET,
   syntheticVendorProvider,
-} = require('../../src/providers/native-vendor');
-const { peekOpenCodeModels } = require('../../src/routes/opencode-models');
+} = require('./frozen-catalog-inputs/native-vendor');
+const { peekOpenCodeModels } = require('../../src/native/binding').openCodeModels;
 const {
   chooseCandidate,
   failoverSafety,

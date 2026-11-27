@@ -5,7 +5,7 @@ const http = require('node:http');
 const { executeAuxHttp, parseResponsesStream } = require('../src/aux-http');
 const { mountAuxGoalRoutes } = require('../src/routes/aux-goal');
 const { createCodexOfficialRelayHandler } = require('../src/codex/official-relay');
-const { createOfficialCatalog } = require('../src/providers/official-catalog');
+const { createOfficialCatalog } = require('../src/native/binding').officialCatalog;
 
 const done = text => `event: response.completed\r\ndata: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [{ content: [{ type: 'output_text', text }] }] } })}\r\n\r\n`;
 async function serve(t, handler) {

@@ -33,7 +33,7 @@ const test = require('node:test');
 const { createProviderRoutes } = require('../src/routes/providers');
 const legacy = require('./helpers/legacy-provider-cli-rules');
 const { fixtureDefaultsOwner } = require('./helpers/provider-defaults-owner');
-const { nativeVendorOf } = require('../src/providers/native-vendor');
+const { nativeVendorOf } = require('./helpers/frozen-catalog-inputs/native-vendor');
 const { NATIVE_OPENCODE_ID, nativeOpenCodeId } = require('./helpers/frozen-native-opencode');
 
 // ── corpus ──────────────────────────────────────────────────────────────────

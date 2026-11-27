@@ -26,7 +26,7 @@ const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-models-'));
 process.env.HOME = tmpHome;
 after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
 
-const modelsRoute = require('../src/routes/opencode-models.js');
+const modelsRoute = require('../src/native/binding').openCodeModels;
 const {
   mergeOpenCodeModels,
   parseOpenCodeStdout,

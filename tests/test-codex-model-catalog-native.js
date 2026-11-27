@@ -12,8 +12,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createCodexAccountModelCatalogRuntime } = require('../src/codex/model-catalog');
-const { createModelCatalogsHost } = require('../src/routes/model-catalogs-host');
+const { createCodexAccountModelCatalogRuntime } = require('../src/native/binding').codexModelCatalog;
+const { createModelCatalogsHost } = require('../src/native/binding').modelCatalogsHost;
 const { summarize } = require('../src/providers/host');
 
 let addon;

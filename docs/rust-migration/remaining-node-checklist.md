@@ -1,5 +1,34 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 9 批（2026-11-27，MacPro x86_64）
+
+从 `3cc11ba5` 迁移了模型目录与供应商适配调用链。[逐文件可达清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 295 / 90,155 | 285 / 88,040 |
+| server.js 与 src/ | 296 / 93,016 | 286 / 90,901 |
+| server.js、src/ 与 plugins/ | 308 / 96,935 | 298 / 94,820 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/codex/model-catalog.js` | 152 | Codex 账号目录的缓存、单次刷新和身份切换 |
+| `src/providers/official-catalog.js` | 215 | 官方账号目录与会话引用迁移 |
+| `src/providers/router-adapter.js` | 158 | CPR 路由与兼容回调 |
+| `src/providers/native-vendor.js` | 111 | 厂商原生线路、模型与合成供应商 |
+| `src/claude-models.js` | 96 | Claude 模型清单及同步缓存 |
+| `src/routes/agy-models.js` | 228 | AGY ACP 模型枚举与预热 |
+| `src/routes/model-catalogs-host.js` | 207 | 回环目录宿主及四个厂商 CLI 缓存 |
+| `src/routes/opencode-models.js` | 475 | OpenCode 模型发现与同步校验 |
+| `src/routes/provider-models.js` | 234 | 供应商模型抓取、缓存与回退 |
+| `src/providers/relay-model-catalog.js` | 290 | 借道目录同步、响应大小上限与身份校验 |
+
+十个生产文件共 2,166 行。Node 桥接提供宿主账号与网络接口、Express 请求对象和子进程回调。宿主继续使用这些接口期间，同步读取方通过 addon 取得同一批缓存，异步读取方按原回调次序取得结果。冻结的厂商数据适配仅供差分测试使用。
+
+整批复验使用源码指纹 `4605dbe5c7b99cf53878a1dd` 对应的五件 x64 产物。36 个关联测试文件通过 576 项，桌面打包通过 4 项，隔离真实网关 WebSocket 回环通过 1 项。Rust 核心通过 67 项，网关集成和单元测试共通过 30 项。源码行数、46 项写入治理及打包索引校验通过。npm 包含本批全部 25 个新增或改动的 Rust 源文件，十个旧生产路径已同时退出 npm 包和 Git 索引。
+
+Claude 模型与通用模型目录的 HTTP 差分分别得到 1,298 和 59 项一致响应，另有 4 项预期差异逐项核验。Claude 的本机已安装 CLI 样本因缺少相应二进制跳过，合成 bundle 与回退清单均通过。首轮发现的 AGY 子进程清理及命中缓存回调取值时机均已复验。浏览器测试使用独立 profile 和模拟钥匙串。AGY 的 SSH 与 HTTP 借道测试共享进程环境变量，在网关单元测试中串行执行。
+
 ## server.js 可达模块第 8 批（2026-11-27，MacPro x86_64）
 
 基线为 `e0732e88`。从 `server.js` 追踪语音宿主、语音网关和模型安装器。[逐文件调用方](reachable-current.tsv) · [依赖表](node-module-dependencies.md)

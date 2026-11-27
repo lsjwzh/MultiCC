@@ -7,7 +7,7 @@ const {
   catalogRevision,
   createProviderRelayModelCatalogRuntime,
   normalizeModels,
-} = require('../src/providers/relay-model-catalog');
+} = require('../src/native/binding').relayModelCatalog;
 const { mountProviderRelayHostRoute, PROVIDER_RELAY_PATH: HOST_PATH } = require('../src/routes/host-read-host');
 const { applyProviderRelayModelCatalog, summarize } = require('../src/providers/host');
 
