@@ -2704,7 +2704,7 @@ cronTasks.init({
   clis: CLIENT_CHAT_CLIS,
   ready: startupRepoReady,
   createTask: input => taskShellHost.createTask(input),
-  getTask: id => taskShellHost.taskEntry(id),
+  getTask: id => taskShellHost.taskEntry(id, { includeMessages: false }),
   sendTaskMessage: (id, text, options) => taskShellHost.sendTaskMessage(id, text, options),
   resolveTaskId: sessionId => taskShellHost.artifactTaskId(sessionId),
   taskSummary: id => taskShellHost.taskSummary(id),

@@ -2622,16 +2622,15 @@
     loading = true;
     let failed = false;
     try {
+      const prevCursor = data?.cursor;
       if (liveSync) { try { await liveSync.sync(); } catch { failed = true; return; } } // onIssue owns the notice.
-      const snapshot = liveSync ? { unchanged: true } : await apiConditional('/api/air');
-      if (!snapshot.unchanged) {
-        acceptSnapshot(snapshot);
-      }
+      const snapshot = liveSync ? { unchanged: !!prevCursor && data?.cursor === prevCursor } : await apiConditional('/api/air');
+      if (!liveSync && !snapshot.unchanged) acceptSnapshot(snapshot);
       const entryChanged = taskId && (refreshSelectedEntry || !$('task-details').hidden)
         ? await refreshEntry() : false;
       if (entryChanged === null) failed = true;
-      // 定时任务与控制台概览只在真的有新数据时重画，否则每 15 秒白建一遍 DOM。
-      if (snapshot.unchanged && !entryChanged) return;
+      // 定时任务与控制台概览只在真的有新数据或手动刷新时重画，否则每轮白建一遍 DOM。
+      if (snapshot.unchanged && !entryChanged && !refreshSelectedEntry) return;
       if (mode === 'schedules' || mode === 'overview') await window.MultiCCAirSchedules?.refresh();
       if (mode === 'schedules') void window.MultiCCAirCronCalendar?.refresh();
       if (mode === 'overview') window.MultiCCAirAdmin?.render('overview', adminContext());
