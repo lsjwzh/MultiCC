@@ -72,6 +72,7 @@
   })();
   let advancedOpen = !!requestedConnection;
   const latency = new Map();
+  const resetCardResults = new Map();
   const el = id => document.getElementById(id);
   const make = (tag, text, className) => {
     const node = document.createElement(tag);
@@ -603,6 +604,42 @@
     });
   }
 
+  function renderResetCards(provider) {
+    const host = make('div', null, 'air-provider-reset-cards');
+    host.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:12px;color:var(--muted);line-height:1.6';
+    const label = make('span');
+    const refresh = button(t('airProviderResetCardsQuery'), () => void loadCards());
+    refresh.style.cssText = 'font:inherit;color:inherit;background:transparent;border:1px solid var(--border);border-radius:6px;padding:2px 8px;cursor:pointer';
+    host.append(label, refresh);
+    const key = `${provider.appType}:${provider.id}`;
+    function paint() {
+      const result = resetCardResults.get(key);
+      if (!result) { label.textContent = t('airProviderResetCardsUnknown'); return; }
+      if (!result.ok) { label.textContent = t('airProviderResetCardsFailed'); return; }
+      const now = Date.now();
+      const cards = result.cards.filter(card => !card.expiresAt || card.expiresAt > now);
+      const count = cards.reduce((sum, card) => sum + card.count, 0);
+      const expiries = cards.filter(card => card.expiresAt).map(card =>
+        t('airProviderResetCardsExpiry', { count: card.count, date: new Date(card.expiresAt).toLocaleString() }));
+      const unknown = cards.some(card => !card.expiresAt) ? t('airProviderResetCardsExpiryUnknown') : '';
+      label.textContent = [t('airProviderResetCardsCount', { count }), ...expiries, unknown].filter(Boolean).join(' · ');
+      label.title = t('airProviderResetCardsUpdated', { time: new Date(result.fetchedAt).toLocaleString() });
+    }
+    async function loadCards() {
+      refresh.disabled = true; refresh.textContent = t('airProviderResetCardsLoading');
+      try {
+        const result = await context.api(`/api/providers/${encodeURIComponent(provider.appType)}/${encodeURIComponent(provider.id)}/reset-cards`, {}, 'POST');
+        if (!result || result.ok !== true || !Array.isArray(result.cards) || !Number.isFinite(result.fetchedAt)
+            || result.cards.some(card => !Number.isInteger(card.count) || card.count < 1 || (card.expiresAt != null && !Number.isFinite(card.expiresAt)))) throw new Error('invalid response');
+        resetCardResults.set(key, result);
+      } catch (_) { resetCardResults.set(key, { ok: false }); }
+      paint(); refresh.disabled = false; refresh.textContent = t('airProviderResetCardsQuery');
+    }
+    host._paintResetCards = paint;
+    paint();
+    return host;
+  }
+
   function renderProviderCard(provider) {
     const terminal = provider.id === `${provider.appType}-official` && !provider.officialAccountId;
     const account = !!provider.officialAccountId;
@@ -678,7 +715,7 @@
     const actions = make('div', null, 'air-provider-card-actions');
     if (account || terminal) {
       const subscription = make('div', null, 'air-provider-subscription');
-      card.append(subscription);
+      card.append(subscription, renderResetCards(provider));
       root.MultiCCProviderSubscription?.mount(subscription, { vendor: provider.appType,
         accountId: provider.officialAccountId, subscription: provider.subscription, api: path => context.api(path) });
     }
@@ -1898,6 +1935,7 @@
   // Repaint time tokens without fetching quotas or rebuilding card controls.
   root.setInterval(() => {
     if (document.hidden || !data) return;
+    document.querySelectorAll('.air-provider-reset-cards').forEach(host => host._paintResetCards?.());
     document.querySelectorAll('.air-provider-card[data-provider-id]').forEach(card => {
       const provider = data.providers.find(item => item.id === card.dataset.providerId);
       const limit = card.querySelector('.air-provider-limit');

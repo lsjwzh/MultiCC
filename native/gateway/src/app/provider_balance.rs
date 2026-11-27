@@ -21,10 +21,12 @@ pub const HOST_PATH: &str = "/api/__host/provider-balance";
 pub enum Route {
     All,
     One,
+    ResetCards,
     ClaudeRelay,
     CodexRelay,
     AllOptions,
     OneOptions,
+    ResetCardsOptions,
     ClaudeRelayOptions,
     CodexRelayOptions,
 }
@@ -65,6 +67,12 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         {
             (Route::One, Route::OneOptions)
         }
+        ["api", providers, _, _, reset]
+            if providers.eq_ignore_ascii_case("providers")
+                && reset.eq_ignore_ascii_case("reset-cards") =>
+        {
+            (Route::ResetCards, Route::ResetCardsOptions)
+        }
         [proxy, _, remote, quota]
             if proxy.eq_ignore_ascii_case("claude-proxy")
                 && remote.eq_ignore_ascii_case("remote")
@@ -80,14 +88,15 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
         _ => return None,
     };
     match method.as_str() {
-        "GET" | "HEAD" => Some(candidate.0),
+        "GET" | "HEAD" if candidate.0 != Route::ResetCards => Some(candidate.0),
+        "POST" if candidate.0 == Route::ResetCards => Some(candidate.0),
         "POST" if is_relay(candidate.0) => Some(candidate.0),
         "OPTIONS" => Some(candidate.1),
         _ => None,
     }
 }
 
-async fn host(port: u16, payload: Value) -> Result<Value, String> {
+pub(super) async fn host(port: u16, payload: Value) -> Result<Value, String> {
     let value = host_port::call(port, HOST_PATH, &payload)
         .await
         .map_err(|_| "provider balance host unavailable".to_string())?;
@@ -344,11 +353,15 @@ async fn query_all(app: &Arc<App>, port: u16) -> Result<Value, String> {
 
 pub async fn handle(app: &Arc<App>, route: Route, ctx: &RequestCtx, port: u16) -> Response<Body> {
     match route {
+        Route::ResetCardsOptions => return super::options(ctx, "POST"),
         Route::AllOptions | Route::OneOptions => return super::options(ctx, "GET,HEAD"),
         Route::ClaudeRelayOptions | Route::CodexRelayOptions => {
             return super::options(ctx, "GET,HEAD,POST")
         }
         _ => {}
+    }
+    if route == Route::ResetCards {
+        return super::provider_reset_cards::handle(ctx, port).await;
     }
     let relay = is_relay(route);
     let headers: &[(&str, &str)] = if relay {

@@ -63,7 +63,8 @@ function mountProviderBalanceHost(app, options) {
       }
     }
     if (body.op === 'facts') {
-      return { ok: true, found: true, provider: { appType: provider.appType, id: provider.id, virtual: !!provider.virtual },
+      return { ok: true, found: true, provider: { appType: provider.appType, id: provider.id, virtual: !!provider.virtual,
+        egressBinding: provider.egressBinding || null, egressIpAllowlist: provider.egressIpAllowlist || [] },
         target: provider.virtual ? null : deps.getProviderLimitTarget(appType, id),
         egress: require('../providers/egress-ip-policy').checkEgressIpAllowed(provider) };
     }

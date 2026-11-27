@@ -49,6 +49,7 @@ mod provider_balance_panels;
 mod provider_catalog_stats;
 pub mod provider_limit_history;
 pub mod provider_relay;
+mod provider_reset_cards;
 pub mod providers;
 pub mod push_routes;
 pub mod quota_guard;

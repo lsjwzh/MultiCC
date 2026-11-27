@@ -47,6 +47,16 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
       : { currentPeriodEnd: Date.parse('2030-06-12T12:00:00Z'), autoRenew: false, source: 'profile' },
   });
   routes['/api/codex/subscription'] = () => json({ status: 'ok', subscription: null });
+  const resetRequests = [];
+  routes['POST /api/providers/claude/claude-official-aaaaaaaaaaaaaaaa/reset-cards'] = () => {
+    resetRequests.push('claude');
+    return json({ ok: true, fetchedAt: now, count: 2, cards: [{ count: 2, expiresAt: now + 86400000 }] });
+  };
+  routes['POST /api/providers/codex/codex-official/reset-cards'] = () => {
+    resetRequests.push('codex');
+    return json({ ok: false, reason: 'unavailable' });
+  };
+
   routes['/api/providers'] = () => json({
     available: true,
     ccSwitchAvailable: false,
@@ -117,6 +127,18 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air?view=provider&dir=d1');
     assert.ok(await page.waitFor(`document.querySelectorAll('.air-provider-card').length===4`));
+
+    const claudeReset = '[data-provider-id="claude-official-aaaaaaaaaaaaaaaa"] .air-provider-reset-cards';
+    const codexReset = '[data-provider-id="codex-official"] .air-provider-reset-cards';
+    assert.equal(await page.evaluate(`document.querySelector('[data-provider-id="p1"] .air-provider-reset-cards') === null`), true);
+    assert.deepEqual(resetRequests, [], 'opening the page must not poll reset cards');
+    await page.evaluate(`document.querySelector('${claudeReset} button').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('${claudeReset}').textContent.includes('重置卡：2 张')`));
+    assert.ok(await page.evaluate(`document.querySelector('${claudeReset}').textContent.includes('到期')`));
+    await page.evaluate(`document.querySelector('${codexReset} button').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('${codexReset}').textContent.includes('暂时无法查询')`));
+    assert.deepEqual(resetRequests, ['claude', 'codex']);
+
     // Agy 账号拥有独立协议 tab，与 Anthropic Messages / OpenAI Responses 并列：
     // 全部线路显示双方；切 Anthropic / OpenAI 时隐藏 Agy；切 Agy 时只看 Agy 账号。
     assert.ok(await page.waitFor(`document.querySelector('.air-provider-tab[data-protocol="agy"]')?.hidden === false`));
@@ -185,9 +207,9 @@ test('Provider 更多连接方式以任务入口逐项展开，手机端保持�
     assert.equal(await page.evaluate(`document.querySelector('.air-provider-limit').textContent`),
       '5h 55% 1.5h · 1wk 64% 2d 23h · 更新于 31 分钟前');
 
-    const cardActions = await page.evaluate(`[...document.querySelectorAll('.air-provider-card-actions button')].map(node => node.textContent.trim())`);
+    const cardActions = await page.evaluate(`[...document.querySelectorAll('#air-provider-cards .air-provider-card-actions button')].map(node => node.textContent.trim())`);
     assert.ok(cardActions.includes('共享到其他设备'), JSON.stringify(cardActions));
-    assert.equal(cardActions.some(text => /借道/.test(text)), false);
+    assert.equal(cardActions.some(text => /借道/.test(text)), false, JSON.stringify(cardActions));
 
     await page.evaluate(`[...document.querySelectorAll('#admin-actions button')].find(node => node.textContent.includes('更多连接方式')).click()`);
     assert.ok(await page.waitFor(`document.querySelectorAll('.air-prov-adv-choice').length===2`));

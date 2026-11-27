@@ -271,7 +271,7 @@ async fn observed_ip(client: &reqwest::Client, url: &str) -> Option<String> {
     ip.parse::<std::net::IpAddr>().ok().map(|_| ip.to_owned())
 }
 
-async fn verify_exit(
+pub(super) async fn verify_exit(
     client: &reqwest::Client,
     allowed: &[String],
     urls: &[&str],
