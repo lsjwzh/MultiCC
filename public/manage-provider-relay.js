@@ -628,6 +628,7 @@ function importRelayProvider() {
               transport: 'ssh',
               sshTarget: payload.sshTarget,
               ...(payload.sshPort ? { sshPort: payload.sshPort } : {}),
+              ...(payload.hostAccountId ? { hostAccountId: payload.hostAccountId } : {}),
               fileMode: payload.fileMode || 'mutagen',
               identityKey: payload.identityKey,
             },

@@ -6,8 +6,12 @@ use super::{
     express::{self, RequestCtx},
 };
 use crate::agy_relay_client::{fetch_relay_quota, RelayQuotaError};
+use crate::agy_remote_bridge::run_ssh_script;
 use axum::{body::Body, http::Response};
 use multicc_core::agy_accounts::{self as agy_store, ResolvedAgyAccount};
+use multicc_core::agy_remote::{
+    build_remote_agy_command_script, RemoteAgyTarget, DEFAULT_REMOTE_AGY_BIN,
+};
 use multicc_core::egress_plugin::{EgressBinding, LOOPBACK_NO_PROXY};
 use serde_json::{json, Value};
 use std::{
@@ -345,6 +349,59 @@ async fn fetch_local_with_env(
     render(&data, now_ms)
 }
 
+fn parse_usage_json(stdout: &str) -> Option<Value> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+        return Some(v);
+    }
+    if let Some(start) = trimmed.find('{') {
+        if let Ok(v) = serde_json::from_str::<Value>(&trimmed[start..]) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// 通过 SSH 桥接向远端 Host 拉取反重力账号用量（复用与本地一致的 `agy -p /usage` 与渲染逻辑）。
+async fn fetch_ssh_quota(remote: &RemoteAgyTarget) -> Result<Value, String> {
+    let agy_bin = remote
+        .remote_agy_bin
+        .as_deref()
+        .unwrap_or(DEFAULT_REMOTE_AGY_BIN);
+    let script = build_remote_agy_command_script(
+        agy_bin,
+        remote.remote_home.as_deref(),
+        remote.host_account_id.as_deref(),
+        &["-p", "/usage", "--output-format", "json", "--print-timeout", "30s"],
+    );
+    let (code, stdout, stderr) = run_ssh_script(remote, &script, Duration::from_secs(35)).await?;
+    if code != 0 {
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        return Err(if detail.is_empty() {
+            format!("远端 agy /usage 执行失败（exit {code}）")
+        } else {
+            format!("远端 agy /usage 执行失败（exit {code}）：{detail}")
+        });
+    }
+    if stdout.len() as u64 > MAX_OUTPUT {
+        return Err("远端 agy /usage 输出超出大小限制".to_string());
+    }
+    let data = parse_usage_json(&stdout)
+        .ok_or_else(|| "无法解析远端 agy /usage 返回的 JSON 数据".to_string())?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "系统时间异常".to_string())?
+        .as_millis() as u64;
+    render(&data, now_ms).ok_or_else(|| "远端反重力用量数据不完整，请确认远端已登录 agy".to_string())
+}
+
 fn unavailable_bar() -> Value {
     json!({
         "status": "unavailable",
@@ -544,9 +601,22 @@ pub async fn handle(ctx: &RequestCtx) -> Response<Body> {
             })
             .await
         }
-        Ok(Some(ResolvedAgyAccount::Remote { .. })) => {
-            let msg = "当前为 SSH 远端反重力账号，暂不支持直接透传用量；请改用借道分享码或到远端 Host 查看。";
-            unavailable_bar_with("反重力：远端用量请走借道 · ⟳", msg, Some(msg))
+        Ok(Some(ResolvedAgyAccount::Remote { id, remote, .. })) => {
+            let cache_key = format!("ssh:{id}");
+            cached_query(&cache_key, force, || async {
+                match fetch_ssh_quota(&remote).await {
+                    Ok(v) => (v, true),
+                    Err(detail) => (
+                        unavailable_bar_with(
+                            "反重力：SSH 远端用量暂不可用 · ⟳ 重试",
+                            &detail,
+                            Some(&detail),
+                        ),
+                        false,
+                    ),
+                }
+            })
+            .await
         }
         Err(err) => unavailable_bar_with("反重力：账号不可用 · ⟳ 重试", &err, Some(&err)),
     };
@@ -784,6 +854,76 @@ printf '{"command":{"data":{"groups":[{"name":"Gemini Models","buckets":[{"windo
         std::env::remove_var("MULTICC_AGY_ACCOUNTS_HOME");
         std::env::remove_var("MULTICC_AGY_BIN");
         std::env::remove_var("MULTICC_EGRESS_PROXY_OVERRIDE");
+        invalidate().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ssh_remote_account_bridges_quota_over_ssh() {
+        use axum::http::Request;
+        use http_body_util::BodyExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "multicc-agy-ssh-quota-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let client_home = root.join("client");
+        std::fs::create_dir_all(&client_home).unwrap();
+
+        let fake_agy = root.join("fake-agy");
+        std::fs::write(
+            &fake_agy,
+            r#"#!/bin/sh
+printf '%s\n' '{"command":{"data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"5h","remaining_fraction":0.82,"reset_time":"2026-11-30T06:41:45Z"}]}]}}}'
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let fake_ssh = root.join("fake-ssh");
+        std::fs::write(&fake_ssh, "#!/bin/sh\nexec /bin/sh -s\n").unwrap();
+        std::fs::set_permissions(&fake_ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let ssh_acct = agy_store::create_remote_account(
+            &client_home,
+            "SSH 借用反重力",
+            &json!({
+                "transport": "ssh",
+                "sshTarget": "user@host.test",
+                "sshPort": 32303,
+                "remoteAgyBin": fake_agy.to_string_lossy(),
+                "fileMode": "mutagen",
+            }),
+        )
+        .unwrap();
+        let acct_id = ssh_acct["id"].as_str().unwrap();
+        agy_store::set_active(&client_home, Some(acct_id)).unwrap();
+        std::env::set_var("MULTICC_AGY_ACCOUNTS_HOME", &client_home);
+        std::env::set_var("MULTICC_SSH_BIN", &fake_ssh);
+        invalidate().await;
+
+        let (parts, _) = Request::builder()
+            .uri("/api/agy/quota")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let ctx = RequestCtx::new(&parts);
+        let resp = handle(&ctx).await;
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body = serde_json::from_slice::<Value>(&bytes).unwrap();
+        assert_eq!(body["status"], "ok");
+        assert!(body["bar"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Gemini: 5h 82%"));
+
+        std::env::remove_var("MULTICC_AGY_ACCOUNTS_HOME");
+        std::env::remove_var("MULTICC_SSH_BIN");
         invalidate().await;
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -910,6 +910,7 @@ pub fn encode_ssh_share_code(
     identity_key: &str,
     file_mode: &str,
     share_id: &str,
+    host_account_id: Option<&str>,
     models: &[String],
 ) -> String {
     let mut payload = Map::new();
@@ -924,6 +925,9 @@ pub fn encode_ssh_share_code(
     payload.insert("identityKey".into(), json!(identity_key));
     payload.insert("fileMode".into(), json!(file_mode));
     payload.insert("shareId".into(), json!(share_id));
+    if let Some(account_id) = host_account_id.map(str::trim).filter(|s| !s.is_empty()) {
+        payload.insert("hostAccountId".into(), json!(account_id));
+    }
     if let Some(first) = models.first().filter(|first| !first.is_empty()) {
         payload.insert("model".into(), json!(first));
         payload.insert("models".into(), json!(models));
