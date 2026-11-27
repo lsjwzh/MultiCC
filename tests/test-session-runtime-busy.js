@@ -18,7 +18,7 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const { sessionRuntimeIsChatStateBusy: isChatStateBusy, sessionRuntimeProcessAlive: processAlive } = require('../src/native/binding').getNative();
-const { createStateOwner } = require('../src/state/owner');
+const { createStateOwner } = require('../src/native/binding').stateOwner;
 const { createChatSessions } = require('../src/native/binding').chatSessions;
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }

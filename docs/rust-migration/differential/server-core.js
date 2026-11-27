@@ -59,8 +59,8 @@ const stateDir = process.env.MULTICC_DATA_DIR;
 // the real child opens it in src/gateway-child.js. Keep the security object on
 // globalThis exactly like the other differential stubs (the native runtime must
 // find it still alive when a later snapshot is requested).
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));

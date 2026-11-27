@@ -32,7 +32,7 @@
 
 const { jevTarget, validateProviderSelection } = require('../providers/auto-provider-config');
 const { createJevClient } = require('../providers/jev-client');
-const secretAudit = require('../secret-audit');
+const secretAudit = require('../native/binding').secretAudit;
 const { getNative } = require('../native/binding');
 
 const DEFAULTS = JSON.parse(getNative().autoProviderRoutingDefaults());

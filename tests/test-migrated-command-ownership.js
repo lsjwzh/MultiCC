@@ -48,7 +48,7 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
   const { createWaitService } = require('../src/wait/service');
   const { createOperationService } = require('../src/operation-service');
   const { createSessionWorkScheduler } = require('../src/session-work');
-  const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+  const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
   const now = () => 1000;
   const item = () => ({ id: 'entry', sessionId: 'session', state: 'pending', sequence: 1,
     attempts: 1, createdAt: 2, payload: { type: 'session.work', workKind: 'task', message: 'queued' } });

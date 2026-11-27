@@ -1,5 +1,32 @@
 # 剩余 Node 后端清单
 
+## server.js 与网关子进程第 3 批（2026-11-27，MacPro x86_64）
+
+以 `2d80fc0a` 为基线，从 `server.js` 及其网关子进程适配器追踪生产调用。物理行数计入没有换行符的末行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 355 / 97,413 | 345 / 96,845 |
+| server.js 与 src/ | 356 / 100,274 | 346 / 99,706 |
+| server.js、src/ 与 plugins/ | 368 / 104,193 | 358 / 103,625 |
+
+| 删除的生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/gateway-child.js` | 338 | 增量解析 PROXY v1 头、校验对端地址、断线重连与父进程退出处理 |
+| `src/task-shell/migration-gate.js` | 94 | 启动前检查任务数据库、执行迁移、等待维护页面释放端口 |
+| `src/providers/defaults-port.js` | 43 | 默认供应商存储实例复用、快照及配置读写 |
+| `src/providers/binding.js` | 62 | 校验供应商绑定、识别绑定对象、投影兼容视图 |
+| `src/provider-error.js` | 34 | 按字段白名单、递归层数和 UTF-16 长度提取错误信息 |
+| `src/secret-audit.js` | 67 | 写入操作开始和结束事件、过滤元数据、处理审计不可用 |
+| `src/state/owner.js` | 76 | 包装会话与目录记录，配置恢复和运行时存储 |
+| `src/ws/ws-host.js` | 49 | 接入原生连接注册表、会话重放和监听 |
+| `src/orchestration/json-store-host.js` | 41 | 包装编排存储的读取、快照和异步修改接口 |
+| `src/orchestration/sqlite-store.js` | 50 | 组装原生 SQLite 存储并传递损坏及版本冲突异常 |
+
+删除路径合计 854 行，保留的可达文件净增 286 行，合计净减 568 行。Node 桥接在加载源码 addon 之前验证网关子进程身份并清除控制通道环境变量。HTTP、socket、worker、AsyncLocalStorage、V8 异步函数和异常类仍由宿主提供，待启动器和下游调用方脱离这些接口后可移除相应桥接。
+
+一次 x64 Cargo 发布构建耗时 4 分 05 秒。五件产物均通过来源指纹 `0584add80c105440a9ddb467`、SHA-256 和架构校验。测试通过 `MULTICC_RUST_ADDON` 加载新绑定。67 个关联测试文件首轮 1,114 项通过，另 3 项在显式配置 SQLite 所有者二进制后全部通过。真实网关与宿主的回环 WebSocket 冒烟通过，未覆盖局域网客户端。模型目录差分有 59 项响应一致，另 2 项预期差异通过核对。构建工具测试首次发现短年份断言依赖 UTC，改用原 JS 本地日期函数计算期望值后，43 项全部通过。源码行数、46 项写入治理和 1,333 项打包索引检查均通过。
+
 ## server.js 直连模块第 2 批（2026-11-27，MacPro x86_64）
 
 从 `39a884cf` 的 `server.js` 静态追踪字面量模块依赖和脚本路径。物理行统计包括无末尾换行符的最后一行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)

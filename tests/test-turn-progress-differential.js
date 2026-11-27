@@ -28,7 +28,7 @@ const legacyTiming = require('./helpers/legacy-turn-timing');
 const legacyTimeline = require('./helpers/legacy-turn-timeline');
 const legacyProbe = require('./helpers/legacy-delivery-probe');
 const progress = require('../src/native/binding').getTurnProgress();
-const { createStateOwner } = require('../src/state/owner');
+const { createStateOwner } = require('../src/native/binding').stateOwner;
 const { createChatSessions } = require('../src/native/binding').chatSessions;
 
 const ROOT = path.join(__dirname, '..');

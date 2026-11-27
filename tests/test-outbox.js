@@ -5,9 +5,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const { createOutbox } = require('../src/outbox');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const Database = require('better-sqlite3');
 const crypto = require('node:crypto');
 

@@ -81,7 +81,7 @@ pub fn restart_generation() -> Option<&'static str> {
 }
 
 /// Version of the front-door ⇄ Node contract. Must match the probe in
-/// `scripts/build-rust-kernels.js` and `src/gateway-child.js`.
+/// `scripts/build-rust-kernels.js` and `src/native/binding.js`.
 pub const PROTOCOL_VERSION: u32 = 15;
 
 pub fn version_line() -> String {

@@ -7,7 +7,7 @@ const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const test = require('node:test');
 const Database = require('better-sqlite3');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
 test('real SQLite exposes the pending-queue event-loop cost of W completion', async t => {

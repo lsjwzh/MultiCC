@@ -153,8 +153,8 @@ const REPO = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [REPO] }));
 // The front door's auth gate asks this child for its token snapshot, exactly
 // like the real Node child (src/gateway-child.js).
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));

@@ -8,7 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 const Database = require('better-sqlite3');
 const { getNative } = require('../src/native/binding');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
 // Frozen pre-migration transition, retained only as a behavior oracle.

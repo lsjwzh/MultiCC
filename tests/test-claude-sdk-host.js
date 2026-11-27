@@ -3,8 +3,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { randomUUID } = require('node:crypto');
-const { createProviderBinding } = require('../src/providers/binding');
-const { createTurnRuntimeStore } = require('../src/state/owner');
+const { createProviderBinding } = require('../src/native/binding').providerBinding;
+const { createTurnRuntimeStore } = require('../src/native/binding').stateOwner;
 const chatStream = require('../src/chat/chat-stream');
 const providers = require('../src/providers/host');
 const prepareTurn = require('./helpers/claude-turn');

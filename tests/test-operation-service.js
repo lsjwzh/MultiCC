@@ -6,8 +6,8 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOperationService, OperationConflictError } = require('../src/operation-service');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const Database = require('better-sqlite3');
 const { createLegacyOperationAdmission } = require('./helpers/legacy-operation-admission');
 

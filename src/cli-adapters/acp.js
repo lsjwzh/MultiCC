@@ -10,7 +10,7 @@ const { supportsEffort, displayNameOf } = require('../native/binding').cliCapabi
 // agent (agentArgs) and which argv carries the model when the agent cannot
 // switch it over ACP.
 
-const { errorFields } = require('../provider-error');
+const { errorFields } = require('../native/binding').providerError;
 const { createProtocolCompletionTracker } = require('../native/binding').cliCompletion;
 const { getNative, gatewayPath, messageComposer: { renderPrompt } } = require('../native/binding');
 

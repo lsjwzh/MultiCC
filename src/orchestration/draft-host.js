@@ -5,7 +5,7 @@
 const {
   SCHEMA_VERSION, OrchestrationStoreCorruptError,
   _cloneJson: cloneJson, _deepFreeze: deepFreeze, _validateState: validateState,
-} = require('./json-store-host');
+} = require('../native/binding').orchestrationJson;
 const { types: { isProxy } } = require('node:util');
 
 const COLLECTIONS = Object.freeze([

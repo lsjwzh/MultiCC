@@ -1,6 +1,6 @@
 'use strict';
 
-const { connectAuthControl, applySourceAddonEnv } = require('./src/gateway-child');
+const { connectAuthControl, applySourceAddonEnv } = require('./src/native/binding').gatewayChild;
 applySourceAddonEnv(__dirname);
 
 {
@@ -30,7 +30,7 @@ for (const k of [
   'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ID',]) {
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
-require('./src/task-shell/migration-gate').runAtBoot();
+require('./src/native/binding').migrationGate.runAtBoot();
 require('./src/native/binding').globalProxy.installGlobalProxy();
 const express = require('express');
 const http = require('http');
@@ -102,7 +102,7 @@ const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlia
 // MULTICC_DATA_DIR owns state; stores use atomic writes.
 const stateStore = require('./src/state/store');
 const { createSessionRecords, createTaskStateStore } = require('./src/session/records');
-const { createStateOwner } = require('./src/state/owner');
+const { createStateOwner } = require('./src/native/binding').stateOwner;
 const { createChatSessions, createChatReplayRuntime } = nativeBinding.chatSessions;
 const { createDirectoryTable } = nativeBinding.directoryRecords;
 const mountPublicSessionAccessGuard = (app, options) =>
@@ -112,7 +112,7 @@ const { createOrchestrationRuntime } = require('./src/native/binding').orchestra
 const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = nativeBinding.officialImageBridgeRuntime;
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
-const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
+const gatewayChild = nativeBinding.gatewayChild; gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
 const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
 const { createMemoModule } = require('./src/memo');
 const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
@@ -2790,7 +2790,7 @@ app.use(safeErrorHandler(logger));
       process.exit(1);
     }
   }
-  // Behavior lives in src/gateway-child.js; this is only the wiring. Hidden
+  // The gateway adapter owns this behavior; this is only the wiring. Hidden
   // behind the front door we must not bind the public port: the Rust gateway
   // owns it and forwards one PROXY v1 line per connection to the loopback port.
   if (!gatewayChildMode) {

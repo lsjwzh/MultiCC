@@ -28,7 +28,7 @@ const { createProductionQuestionHost, createProductionWorkHost, createSessionWor
 const { createClassifyStateMachine } = require('../src/classify/task-attribution');
 const { createTaskStateStore } = require('../src/session/records');
 const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createOutbox } = require('../src/outbox');
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 const { classifyDisplay } = require('../src/classify/vocab');

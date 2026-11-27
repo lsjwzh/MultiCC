@@ -7,7 +7,7 @@ const {
   createProviderBinding,
   isProviderBinding,
   toLegacyProviderView,
-} = require('../src/providers/binding');
+} = require('../src/native/binding').providerBinding;
 const { SUPPORTED_CHAT_CLIS } = require('../src/cli-switch');
 
 test('ProviderBinding is narrow, immutable, and maps to a narrow legacy view', () => {
@@ -92,7 +92,7 @@ test('every production chat CLI can cross the narrow binding boundary', () => {
 });
 
 const legacy = require('./helpers/legacy-provider-binding');
-const current = require('../src/providers/binding');
+const current = require('../src/native/binding').providerBinding;
 
 function outcome(api, input) {
   try {

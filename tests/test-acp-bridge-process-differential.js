@@ -15,6 +15,7 @@ const virtualPath = path.join(root, 'src/cli-adapters/acp-bridge.cjs');
 const gateway = process.env.MULTICC_TEST_ACP_GATEWAY || require('../src/native/binding').gatewayPath();
 const wrapper = `const fs=require('node:fs'),Module=require('node:module'),path=require('node:path');
 const virtual=process.env.ACP_TEST_VIRTUAL, m=new Module(virtual,module);m.filename=virtual;m.paths=Module._nodeModulePaths(path.dirname(virtual));
+const load=m.require.bind(m);m.require=id=>id==='../provider-error'?load('../native/binding').providerError:load(id);
 process.argv=[process.execPath,virtual,...process.argv.slice(1)];m._compile(fs.readFileSync(process.env.ACP_TEST_ORACLE,'utf8')+'\\nmain();',virtual);`;
 const agent = `
 const readline=require('node:readline'), fs=require('node:fs');

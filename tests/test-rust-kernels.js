@@ -145,8 +145,9 @@ rustTest('Token 不完整 Unicode、非 ISO 时间、闰秒与短年份都由 Ru
       { overrides: { timestamp: 'July 19, 2026 12:00:00' }, day: day => day !== 'NaN-NaN-NaN' },
       // JS Date rejects leap seconds; the record stays in all/byDay as NaN.
       { overrides: { timestamp: '2016-12-31T23:59:60Z' }, day: day => day === 'NaN-NaN-NaN' },
-      // Four-digit years are not zero-padded by JS getFullYear().
-      { overrides: { timestamp: '0026-01-01T00:00:00Z' }, day: day => day === '26-01-01' },
+      // A UTC midnight can fall in the previous local year; JS does not pad that year.
+      { overrides: { timestamp: '0026-01-01T00:00:00Z' },
+        day: (day, timestamp) => day === usage.localDateKey(new Date(timestamp)) },
     ];
     for (const item of cases) {
       const row = { timestamp: '2026-07-19T01:00:00Z', requestId: 'extra',
@@ -155,7 +156,7 @@ rustTest('Token 不完整 Unicode、非 ISO 时间、闰秒与短年份都由 Ru
       const result = await usage._compute(fixture);
       assert.equal(result.windows.all.edge.inputTokens, 9);
       const day = Object.keys(result.byDay).find(key => result.byDay[key].edge === 9);
-      assert.ok(item.day(day), `${JSON.stringify(item.overrides)} → ${day}`);
+      assert.ok(item.day(day, row.timestamp), `${JSON.stringify(item.overrides)} → ${day}`);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

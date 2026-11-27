@@ -2,7 +2,7 @@
 
 const { renderPrompt } = require('../native/binding').messageComposer;
 const { supportsEffort } = require('../native/binding').cliCapability;
-const { errorFields } = require('../provider-error');
+const { errorFields } = require('../native/binding').providerError;
 const { createStepCompletionTracker } = require('../native/binding').cliCompletion;
 
 function createOpencodeLikeAdapter({

@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const secretAudit = require('./secret-audit');
+const secretAudit = require('./native/binding').secretAudit;
 // The terminal-target rules live in Rust (`native/addon/src/terminal_target.rs`);
 // only the live record map stays in Node and is passed in as a port.
 const { getNative } = require('./native/binding');

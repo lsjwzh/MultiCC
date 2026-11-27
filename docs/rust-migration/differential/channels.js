@@ -126,8 +126,8 @@ function upstreamScript() {
   return `'use strict';
 const net = require('node:net'); const http = require('node:http'); const path = require('node:path'); const fs = require('node:fs');
 const repo = ${JSON.stringify(path.resolve(__dirname, '../../..'))};
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));

@@ -626,7 +626,7 @@ const providerInvocation = {
   createProviderInvocationFactory(options = {}) {
     return getNative().createProviderInvocationFactory(options, {
       ProviderAttemptError: require('../chat/provider-attempt-runtime').ProviderAttemptError,
-      assertProviderBinding: require('../providers/binding').assertProviderBinding,
+      assertProviderBinding: module.exports.providerBinding.assertProviderBinding,
       TurnRequestError: require('../chat/turn-request').TurnRequestError,
     });
   },
@@ -831,6 +831,292 @@ function exposeHostApi(key, create) {
 }
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
+
+// These values must be captured before the source child selects its addon.
+// Consume the six control variables as soon as the gateway adapter is loaded.
+exposeHostApi('gatewayChild', () => {
+  const net = require('node:net');
+  const GATEWAY_PROTOCOL = 15;
+  const MAX_HEADER_BYTES = 107, HEADER_TIMEOUT_MS = 5000;
+  function isGatewayChild(env = process.env, ppid = process.ppid) {
+    return String(env?.MULTICC_GATEWAY_CHILD || '').trim() === '1'
+      && String(env?.MULTICC_GATEWAY_PID || '').trim() === String(ppid);
+  }
+  function capture(channel) {
+    const prefix = 'MULTICC_GATEWAY_' + channel;
+    const bootstrap = isGatewayChild() ? { port: Number(process.env[prefix + '_PORT']),
+      capability: process.env[prefix + '_CAPABILITY'] || '' } : null;
+    delete process.env[prefix + '_PORT'];
+    delete process.env[prefix + '_CAPABILITY'];
+    return bootstrap;
+  }
+  const auth = capture('AUTH'), source = capture('SOURCE'), chat = capture('CHAT');
+  function applySourceAddonEnv(root, env = process.env) {
+    if (isGatewayChild(env) && env.MULTICC_SOURCE_ROOT === root && env.MULTICC_DESKTOP !== '1') {
+      env.MULTICC_RUST_ADDON = require(path.join(root, 'scripts', 'ensure-source-rust')).addonForSourceChild(root);
+    }
+    delete env.MULTICC_SOURCE_ROOT;
+  }
+  function connectAuthControl(owner) {
+    if (!auth) return;
+    owner.connectGateway(auth.port, auth.capability);
+    auth.capability = '';
+  }
+  function connectWorkspaceControl(owner, directoryReader, contextReader, authSecurity) {
+    if (!source) return;
+    const args = [source.port, source.capability, directoryReader, contextReader];
+    if (authSecurity) authSecurity.connectWorkspaceGateway(owner, ...args);
+    else owner.connectGateway(...args);
+    source.capability = '';
+  }
+  function startChatBridge({ wss, logger = console, bootstrap = chat,
+    connect = require('../ws/gateway-chat-bridge').connectChatBridge } = {}) {
+    return getNative().startGatewayChatBridge({ wss, logger, bootstrap, connect });
+  }
+  function raiseSigint(platform = process.platform) {
+    if (platform === 'win32') process.emit('SIGINT', 'SIGINT');
+    else process.kill(process.pid, 'SIGINT');
+  }
+  function watchGatewayLifeline({ env = process.env, stdin = process.stdin, logger = console,
+    signal = () => raiseSigint(), hasHandler = () => process.listenerCount('SIGINT') > 0, retryMs = 1000 } = {}) {
+    if (!isGatewayChild(env) || !stdin || stdin.isTTY) return false;
+    const lost = getNative().gatewayLifeline({ logger, signal, hasHandler, retryMs });
+    for (const name of ['end', 'close', 'error']) stdin.on(name, lost);
+    stdin.resume();
+    return true;
+  }
+  function listenBehindGateway(httpServer, { port, logger = console, headerTimeoutMs = HEADER_TIMEOUT_MS, onListening } = {}) {
+    const host = '127.0.0.1';
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      logger.error('gateway_child_internal_port_invalid', { port });
+      process.exit(1);
+    }
+    const sockets = new Set(), awaiting = new Set();
+    let closing = false;
+    const Reader = getNative().GatewayProxyReader;
+    const listener = net.createServer({ pauseOnConnect: true }, socket => {
+      const reader = new Reader();
+      sockets.add(socket);
+      awaiting.add(socket);
+      const timer = setTimeout(() => socket.destroy(), headerTimeoutMs);
+      timer.unref();
+      socket.once('close', () => { clearTimeout(timer); sockets.delete(socket); awaiting.delete(socket); });
+      socket.on('error', () => {});
+      function onData(chunk) {
+        const result = reader.feed(chunk, null);
+        if (result === null) return;
+        socket.removeListener('data', onData);
+        clearTimeout(timer);
+        if (!result) return socket.destroy();
+        socket.pause();
+        if (chunk.length > result.offset) socket.unshift(chunk.subarray(result.offset));
+        for (const [name, value] of Object.entries(result.peer)) {
+          Object.defineProperty(socket, name, { value, enumerable: true, configurable: true, writable: false });
+        }
+        awaiting.delete(socket);
+        httpServer.emit('connection', socket);
+        socket.resume();
+      }
+      socket.on('data', onData);
+      socket.resume();
+    });
+    Object.defineProperty(httpServer, 'listening', { enumerable: true, configurable: true, get: () => listener.listening && !closing });
+    httpServer.address = () => listener.address();
+    httpServer.close = function close(callback) {
+      const done = typeof callback === 'function' ? callback : () => {};
+      if (closing) return void process.nextTick(done, Object.assign(new Error('Server is not running'), { code: 'ERR_SERVER_NOT_RUNNING' }));
+      closing = true;
+      for (const socket of awaiting) socket.destroy();
+      if (!listener.listening) return void process.nextTick(done);
+      listener.close(() => done());
+      httpServer.closeIdleConnections?.();
+    };
+    listener.once('error', error => {
+      logger.error('gateway_child_listen_failed', { host, port, error: error.message, code: error.code });
+      process.exit(error.code === 'EADDRINUSE' ? 75 : 1);
+    });
+    listener.listen(port, host, () => {
+      httpServer.emit('listening');
+      logger.info('gateway_child_listening', { host, port, protocol: GATEWAY_PROTOCOL });
+      if (typeof onListening === 'function') onListening();
+    });
+    return { listener, get port() { const address = listener.address(); return address && address.port; },
+      close(callback) { httpServer.close(callback); }, connectionCount: () => sockets.size };
+  }
+  return { GATEWAY_PROTOCOL, applySourceAddonEnv, connectAuthControl, connectWorkspaceControl, startChatBridge,
+    MAX_HEADER_BYTES, HEADER_TIMEOUT_MS, isGatewayChild,
+    internalPort: (env = process.env) => getNative().gatewayInternalPort(String(env?.MULTICC_GATEWAY_INTERNAL_PORT || '').trim()) ?? null,
+    parseProxyHeader: line => getNative().gatewayProxyPeer(line.toString('latin1')),
+    listenBehindGateway, watchGatewayLifeline, raiseSigint };
+});
+
+exposeHostApi('migrationGate', () => {
+  function startPage({ file, port, host, behindGateway = false }) {
+    const signal = new SharedArrayBuffer(4), flag = new Int32Array(signal);
+    let worker;
+    try {
+      const { Worker } = require('node:worker_threads');
+      worker = new Worker(path.join(__dirname, '../task-shell/migration-page-worker.js'), {
+        workerData: { signal, port, host: ['127.0.0.1', '::1', 'localhost'].includes(host) ? host : '127.0.0.1',
+          behindGateway, progressFile: file + '.migration.json' },
+      });
+    } catch { return null; }
+    worker.on('error', () => {});
+    Atomics.wait(flag, 0, 0, 3000);
+    if (Atomics.load(flag, 0) !== 1) { worker.terminate(); return null; }
+    return { fail(failure) { worker.postMessage({ type: 'failure', failure }); }, stop() {
+      worker.postMessage({ type: 'stop' }); Atomics.wait(flag, 0, 1, 3000); worker.unref();
+    } };
+  }
+  function runTaskStoreMigrationGate({ file, port, host, addon, logger = console, openPage = startPage, sleep }) {
+    const native = getNative();
+    return native.taskMigrationGate({ file, port, host, addon, logger, openPage, sleep }, addon === native);
+  }
+  function runAtBoot(env = process.env) {
+    const file = module.exports.appPaths.createPaths({ dataDir: env.MULTICC_DATA_DIR }).taskShellDbFile;
+    return runTaskStoreMigrationGate({ file, addon: getNative(), openPage() {
+      try {
+        const { port, host } = getNetworkPolicy().resolveNetworkPolicy(env);
+        const gateway = module.exports.gatewayChild;
+        if (!gateway.isGatewayChild(env)) return startPage({ file, port, host });
+        const internal = gateway.internalPort(env);
+        return internal ? startPage({ file, port: internal, host: '127.0.0.1', behindGateway: true }) : null;
+      } catch { return null; }
+    } });
+  }
+  return { runTaskStoreMigrationGate, startPage, runAtBoot };
+});
+
+exposeHostApi('providerDefaults', () => getNative().providerDefaultsApi({ path, Owner: getNative().RustProviderDefaultsStore }));
+
+exposeHostApi('providerBinding', () => {
+  class ProviderBindingError extends Error {
+    constructor(message, code = 'INVALID_PROVIDER_BINDING') { super(message); this.name = 'ProviderBindingError'; this.code = code; }
+  }
+  const SUPPORTED_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok', 'agy', 'commandcode', 'pi']);
+  const ROLE_KINDS = new Set(['main', 'sub', 'aux']), AGENT_ROLES = new Set(['default', 'worker', 'explorer', 'custom']);
+  const ports = { SUPPORTED_CLIS, ROLE_KINDS, AGENT_ROLES, ProviderBindingError, brand: Symbol('MultiCC.ProviderBinding') };
+  let api;
+  const methods = () => api ??= getNative().providerBindingMethods(ports);
+  return { AGENT_ROLES, ROLE_KINDS, SUPPORTED_CLIS, ProviderBindingError,
+    assertProviderBinding: value => methods().assertProviderBinding(value),
+    createProviderBinding: value => methods().createProviderBinding(value),
+    isProviderBinding: value => methods().isProviderBinding(value),
+    toLegacyProviderView: value => methods().toLegacyProviderView(value),
+  };
+});
+exposeHostApi('providerError', () => {
+  function errorFields(raw, depth = 0, budget = { nodes: 24, chars: 65536 }) {
+    return getNative().providerErrorFields(raw, depth, budget);
+  }
+  function classifyProviderError(raw, { provider, source } = {}) {
+    if (provider !== 'opencode') return null;
+    try { return JSON.parse(getNative().classifyProviderError(JSON.stringify({ provider, source, error: errorFields(raw) }))); }
+    catch { return null; }
+  }
+  return { errorFields, classifyProviderError };
+});
+
+exposeHostApi('secretAudit', () => {
+  const { AsyncLocalStorage } = require('node:async_hooks');
+  const scope = new AsyncLocalStorage();
+  const ports = { scope, auditFile: () => module.exports.appPaths.createPaths().secretAuditFile };
+  return {
+    call(operation, context, names, action) {
+      let native;
+      try { native = getNative(); } catch {
+        throw Object.assign(new Error('Secret audit is unavailable; vault access cannot continue.'),
+          { code: 'secret_audit_unavailable', statusCode: 503, secretToolError: true });
+      }
+      return native.auditedSecretCall(ports, operation, context, names, action);
+    },
+    withContext: (context, action) => scope.run({ ...scope.getStore(), ...context }, action),
+  };
+});
+
+exposeHostApi('stateOwner', () => {
+  const origins = new WeakMap();
+  function createStateOwner() {
+    const addon = getNative();
+    if (typeof addon.RustSessionRecords !== 'function') throw new Error('rust_session_records_unavailable');
+    const anchor = Object.create(null), native = new addon.RustSessionRecords(anchor);
+    Object.defineProperty(native, Symbol('host-value-anchor'), { value: anchor });
+    origins.set(native, addon);
+    const api = addon.recordOwnerFacade({ native, anchor, error: module.exports.directoryRecords.corruptedStateError });
+    const configure = api.configure;
+    api.configure = function (options) { configure(options); return this; };
+    return api;
+  }
+  return { createTurnRuntimeStore(options = {}) {
+    const addon = getNative(); return addon.turnRuntimeStore(options, createStateOwner, origins, addon);
+  }, createStateOwner };
+});
+exposeHostApi('wsHost', () => {
+  function createWsHost() {
+    const anchor = { stringifyWithFields: (value, fields) => JSON.stringify({ ...value, ...fields }) };
+    const host = new (getNative().RustWsHost)(anchor);
+    Object.defineProperty(host, Symbol('ws host anchor'), { value: anchor });
+    return host;
+  }
+  return { createWsHost, createChatReplayHub: ({ host }) => getNative().replayHub(host),
+    createChatReplayRuntime: sessions => getNative().chatReplayRuntime(createWsHost(), sessions) };
+});
+
+exposeHostApi('orchestrationJson', () => {
+  class OrchestrationStoreCorruptError extends Error {
+    constructor(message, meta = {}) {
+      super(message);
+      this.name = 'OrchestrationStoreCorruptError';
+      this.code = 'ORCHESTRATION_STORE_CORRUPT';
+      Object.assign(this, meta);
+    }
+  }
+  // Preserve the AsyncFunction surface for mutating callers.
+  const asyncMethods = store => ({
+    async mutate(mutator) { return store.mutate(mutator); },
+    async mutateIf(predicate, mutator, skippedResult) { return store.mutateIf(predicate, mutator, skippedResult); },
+  });
+  const publicStore = store => getNative().publicOrchestrationStore(store, asyncMethods);
+  const ports = orchestrationJsonPorts(createOrchestrationStore, { fs: require('node:fs'), path, publicStore, CorruptError: OrchestrationStoreCorruptError });
+  let api;
+  const native = () => api ??= getNative().orchestrationJsonApi(ports);
+  function createOrchestrationStore(options = {}) { return publicStore(native().createOrchestrationStore(options)); }
+  return { SCHEMA_VERSION: 3, OrchestrationStoreCorruptError, createOrchestrationStore,
+    _cloneJson: value => native()._cloneJson(value), _deepFreeze: value => native()._deepFreeze(value),
+    _initialState: () => native()._initialState(), _loadState: options => native()._loadState(options),
+    _validateState: (input, file) => native()._validateState(input, file), _writeAtomic: options => native()._writeAtomic(options),
+  };
+});
+
+exposeHostApi('orchestrationSqlite', () => {
+  class OrchestrationSqliteError extends Error {
+    constructor(message, meta = {}) {
+      super(message);
+      this.name = 'OrchestrationSqliteError';
+      this.code = 'ORCHESTRATION_SQLITE_ERROR';
+      Object.assign(this, meta);
+    }
+  }
+
+  class OrchestrationSqliteConflictError extends OrchestrationSqliteError {
+    constructor(file, expectedRevision, actualRevision) {
+      super(
+        `orchestration SQLite revision changed concurrently in ${file} (expected ${expectedRevision}, found ${actualRevision})`,
+        { file, expectedRevision, actualRevision },
+      );
+      this.name = 'OrchestrationSqliteConflictError';
+      this.code = 'ORCHESTRATION_SQLITE_CONFLICT';
+      this.retryable = true;
+    }
+  }
+  function createOrchestrationSqliteStore(options = {}) {
+    const { OrchestrationStoreCorruptError, _cloneJson: cloneJson, _deepFreeze: deepFreeze } = module.exports.orchestrationJson;
+    const { createDraft, COLLECTIONS } = require('../orchestration/draft-host');
+    return getNative().createSqliteHostStore(options, { createDraft, COLLECTIONS, cloneJson, deepFreeze, OrchestrationStoreCorruptError,
+      OrchestrationSqliteError, OrchestrationSqliteConflictError, createNativeStore: require('../orchestration/native-store-host').createNativeStore });
+  }
+  return { DATABASE_SCHEMA_VERSION: 2, OrchestrationSqliteConflictError, OrchestrationSqliteError, createOrchestrationSqliteStore };
+});
 
 exposeHostApi('runtimeSecurity', () => {
   const fs = require('node:fs');
@@ -1095,7 +1381,7 @@ exposeHostApi('chatSessions', () => {
     onForget(fn) { getNative().chatTableHook(slots.get(this), fn, true); return this; }
   }
   return { ChatSessionMap, createChatSessions: shared => new ChatSessionMap(shared), chatSessionsOwner,
-    get createChatReplayRuntime() { return require('../ws/ws-host').createChatReplayRuntime; } };
+    get createChatReplayRuntime() { return module.exports.wsHost.createChatReplayRuntime; } };
 });
 
 exposeHostApi('directoryRecords', () => {
@@ -1283,8 +1569,8 @@ exposeHostApi('tunnelMonitor', () => {
 });
 
 exposeHostApi('orchestrationHost', () => {
-  const { createOrchestrationStore } = require('../orchestration/json-store-host');
-  const { createOrchestrationSqliteStore } = require('../orchestration/sqlite-store');
+  const { createOrchestrationStore } = module.exports.orchestrationJson;
+  const { createOrchestrationSqliteStore } = module.exports.orchestrationSqlite;
   const { createOutbox } = require('../outbox');
   const { createWaitService } = require('../wait/service');
   const { createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES } = require('../operation-service');
@@ -1306,7 +1592,7 @@ exposeHostApi('orchestrationHost', () => {
 exposeHostApi('chatApi', () => getNative().chatHostExports([
   () => require('../chat/turn-request'), getRetryPolicy, () => module.exports.apiErrorPolicy,
   () => require('../chat/api-error-host'), () => module.exports.postTurnRouter,
-  () => ({ createTurnRuntimeStore: require('../state/owner').createTurnRuntimeStore }),
+  () => ({ createTurnRuntimeStore: module.exports.stateOwner.createTurnRuntimeStore }),
   () => require('../chat/turn-lifecycle'), () => require('../chat/provider-attempt-runtime'),
   () => providerInvocation, () => require('../chat/host-coordinator'), () => require('../chat/host-runtime'),
   () => module.exports.finalizationPlan, () => require('../chat/finalize-host'),
@@ -1336,7 +1622,7 @@ exposeHostApi('classifyVocab', () => {
 
 exposeHostApi('apiErrorPolicy', () => {
   const { extractUpstreamError } = require('../upstream-error');
-  const { errorFields } = require('../provider-error');
+  const { errorFields } = module.exports.providerError;
   policyBinding = { process, addonPath: process.env.MULTICC_RUST_ADDON, prebuiltDir: process.env.MULTICC_RUST_PREBUILT_DIR };
   return getNative().apiErrorPolicyApi(getNative, extractUpstreamError, errorFields, policyBinding);
 });

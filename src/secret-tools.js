@@ -15,7 +15,7 @@
 
 const fs = require('fs');
 const { spawn } = require('child_process');
-const secretAudit = require('./secret-audit');
+const secretAudit = require('./native/binding').secretAudit;
 
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const PLACEHOLDER_RE = /\{\{secret:([A-Za-z_][A-Za-z0-9_]{0,63})\}\}/g;

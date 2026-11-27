@@ -9,12 +9,12 @@ const { spawnSync } = require('node:child_process');
 const Database = require('better-sqlite3');
 const { createOperationService } = require('../src/operation-service');
 const { createOrchestrationRuntime } = require('../src/orchestration/host');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const {
   OrchestrationSqliteConflictError,
   OrchestrationSqliteError,
   createOrchestrationSqliteStore,
-} = require('../src/orchestration/sqlite-store');
+} = require('../src/native/binding').orchestrationSqlite;
 const { createWaitService } = require('../src/wait/service');
 const { createSessionWorkScheduler } = require('../src/session-work');
 
@@ -403,7 +403,7 @@ test('synchronous question creation and settlement survive an overlapping async 
   // is parked cannot hang the entire test runner.
   const script = `
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1], now: () => 10 });
       await store.mutate(draft => {
@@ -466,7 +466,7 @@ for (const variant of ['promise-returning callback', 'async callback with hooks'
     // instead of hanging the rest of the suite.
     const script = `
       const assert = require('node:assert/strict');
-      const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+      const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
       (async () => {
         const variant = process.argv[2];
         const store = createOrchestrationSqliteStore({ file: process.argv[1], now: () => 10,
@@ -630,7 +630,7 @@ test('question reads inside a detached draft keep its snapshot and protect its w
   const files = tempPaths(t, 'question-draft-footprint');
   const script = `
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1], now: () => 10 });
       const active = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'task' };
@@ -672,7 +672,7 @@ test('read-only asynchronous question observations retain the original Rust snap
   const files = tempPaths(t, 'question-read-footprint');
   const script = `
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1] });
       const active = { _activeTurn: { turnId: 'turn' }, isStreaming: true };
@@ -1231,7 +1231,7 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   assert.match(driver, /ccSwitchDatabaseApi/);
   assert.doesNotMatch(driver, /require\('node:sqlite'\)/);
   for (const file of ['src/task-shell/store.js',
-    'src/orchestration/sqlite-store.js']) {
+    'src/native/binding.js']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     // task-shell 仓储迁移后不再经 JS 打开 SQLite：整个 store 由原生
     // RustTaskStore 承载，同属“只用 Rust、绝不碰 npm addon”的边界。
@@ -1370,7 +1370,7 @@ test('large terminal history opens and selects active candidates under a bounded
   seed.close();
   const script = String.raw`
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require('./src/orchestration/sqlite-store');
+    const { createOrchestrationSqliteStore } = require('./src/native/binding').orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1] });
       assert.equal(await store.count('tasks', {}), 6001);

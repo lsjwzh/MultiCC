@@ -9,7 +9,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { createSessionWorkHost } = require('../src/session-work');
 const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 
 // Load the actual pre-migration host using its original import base. Its
 // dependencies remain shared, so this freezes the host, not those modules.

@@ -67,7 +67,7 @@ server.on('error', () => settle(2));
 if (workerData.behindGateway) {
   // The front door owns the public port; this worker must listen on the one
   // loopback port it reserved and parse the PROXY line just like server.js.
-  require('../gateway-child').listenBehindGateway(server, {
+  require('../native/binding').gatewayChild.listenBehindGateway(server, {
     port: workerData.port,
     logger: { info() {}, warn() {}, error() {} },
     onListening: () => settle(1),

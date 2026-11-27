@@ -29,7 +29,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const gatewayChild = require(path.join(__dirname, '..', '..', 'src', 'gateway-child'));
+const gatewayChild = require(path.join(__dirname, '..', '..', 'src', 'native', 'binding')).gatewayChild;
 
 const PORT = Number.parseInt(process.env.PORT || '0', 10);
 const READY_DELAY_MS = Number.parseInt(process.env.READY_DELAY_MS || '0', 10);

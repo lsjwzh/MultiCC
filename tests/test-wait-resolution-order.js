@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createWaitService } = require('../src/wait/service');
 const { legacyWaitResolver } = require('./helpers/legacy-wait-resolution');
 

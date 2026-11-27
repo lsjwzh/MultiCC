@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), net = require('node:net');
 const { spawn } = require('node:child_process');
 const { describeMigration } = require('../src/native/binding').getTaskStoreMigrationProgress();
-const { runTaskStoreMigrationGate } = require('../src/task-shell/migration-gate');
+const { runTaskStoreMigrationGate } = require('../src/native/binding').migrationGate;
 
 test('进度：各阶段折算成单调递增的总百分比，失败带上空间数字', () => {
   const at = 1_000_000;
@@ -57,7 +57,7 @@ function freePort() {
 function runChild(t, port, file, mode) {
   const script = `
     const fs = require('fs');
-    const { runTaskStoreMigrationGate } = require(${JSON.stringify(path.resolve(__dirname, '../src/task-shell/migration-gate'))});
+    const { runTaskStoreMigrationGate } = require(${JSON.stringify(path.resolve(__dirname, '../src/native/binding'))}).migrationGate;
     const block = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     const write = s => fs.writeFileSync(${JSON.stringify(file)} + '.migration.json', JSON.stringify({ startedAt: Date.now(), ...s }));
     runTaskStoreMigrationGate({ file: ${JSON.stringify(file)}, port: ${port}, host: '0.0.0.0', logger: { info() {}, error() {} },

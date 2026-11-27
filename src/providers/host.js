@@ -53,7 +53,7 @@ function enableUnifiedOfficialProviders() {
   if (officialCatalog) return;
   const selectionFile = path.join(RUNTIME_PATHS.root, 'official-provider-selection.json');
   if (!fs.existsSync(selectionFile)) {
-    const defaultsOwner = require('./defaults-port').getProviderDefaultsOwner(RUNTIME_PATHS.providerDefaultsFile);
+    const defaultsOwner = require('../native/binding').providerDefaults.getProviderDefaultsOwner(RUNTIME_PATHS.providerDefaultsFile);
     defaultsOwner.assertReadable();
     const defaults = defaultsOwner.snapshot();
     const records = loadStore();

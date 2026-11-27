@@ -279,9 +279,9 @@ const net = require('node:net'); const http = require('node:http'); const path =
 const repo = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [repo] }));
 const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/http-errors'));
-const { jsonCompression } = require(path.join(repo, 'src/http/json-compression'));
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { jsonCompression } = require(path.join(repo, 'src/native/binding')).jsonCompression;
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();

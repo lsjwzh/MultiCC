@@ -14,7 +14,7 @@ const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
-const { createStateOwner, createTurnRuntimeStore: createNativeRuntime } = require('../src/state/owner');
+const { createStateOwner, createTurnRuntimeStore: createNativeRuntime } = require('../src/native/binding').stateOwner;
 const { createChatSessions } = require('../src/native/binding').chatSessions;
 const { createTurnRuntimeStore: createLegacyRuntime } = require('./helpers/legacy-chat-runtime-store');
 const { createLegacyChatSession, createLegacyChatSessions } = require('./helpers/legacy-chat-sessions');
@@ -22,7 +22,7 @@ const { createLegacyChatSession, createLegacyChatSessions } = require('./helpers
 test('a runtime facade keeps its host anchor alive, then releases native/host cycles', () => {
   const result = spawnSync(process.execPath, ['--expose-gc', '-e', `
     const assert = require('node:assert/strict');
-    const { createStateOwner, createTurnRuntimeStore } = require('./src/state/owner');
+    const { createStateOwner, createTurnRuntimeStore } = require('./src/native/binding').stateOwner;
     (async () => {
       const fixture = (() => {
         const owner = createStateOwner();

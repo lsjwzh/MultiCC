@@ -21,8 +21,8 @@ test('fixed native command commits synchronously and never assimilates its resul
       return Reflect.get(target, key, receiver);
     },
   });
-  const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-  const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+  const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+  const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-native-sync-'));
   const sqlite = path.join(dir, 'state.sqlite');
   const stores = [createOrchestrationStore({ file: path.join(dir, 'state.json') }),
