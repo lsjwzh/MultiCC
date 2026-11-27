@@ -51,7 +51,7 @@ const chatStream = require('./chat-stream');
 const { spawnContractOf } = require('./held-turn-injection');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
-const providers = require('../providers/host');
+const providers = require('../native/binding').providersHost;
 const { claudeSettingsExtra, appendAdapterAssistantText, adapterReasoningProgressEvent,
   normalizeClaudeToolResultContent, normalizeClaudeAssistantSnapshot, closeOpenThinkingTool,
   markReplaySafeAssistantEnvelope, reconcileBoundaryErrorEnvelope } = getNative().chatTurnEventHelpers({

@@ -524,7 +524,7 @@ function mountProvidersHostRoute(app, options = {}) {
           found: true,
           kind: 'claude',
           official: id === 'claude-official'
-            || !!require('../official-accounts').officialAccountIdFromProvider(provider),
+            || !!require('../native/binding').officialAccounts.officialAccountIdFromProvider(provider),
           hasKey: !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN),
           env: {
             ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,

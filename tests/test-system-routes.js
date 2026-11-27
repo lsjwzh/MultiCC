@@ -232,7 +232,7 @@ test('host ls-remote keeps repo-actor semantics and fails soft', async () => {
 });
 
 test('host trace snapshots the shared codex proxy trace ring', async () => {
-  const proxyTrace = require('../src/codex/proxy-trace');
+  const proxyTrace = require('../src/native/binding').codexProxyTrace;
   const trace = proxyTrace.createCodexProxyTrace();
   proxyTrace.setSharedCodexProxyTrace(trace);
   try {

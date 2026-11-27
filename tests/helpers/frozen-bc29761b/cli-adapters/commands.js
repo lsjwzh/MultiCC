@@ -5,7 +5,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const windowsEnv = require('../windows-env');
-const { zcodeEngineCandidates } = require('../native/binding').zcodeEngine;
+const { zcodeEngineCandidates } = require('../../../../src/native/binding').zcodeEngine;
 
 const WINDOWS_DEFAULT_PATHEXT = '.COM;.EXE;.BAT;.CMD';
 

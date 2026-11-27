@@ -3,7 +3,7 @@
 
 const os = require('node:os');
 const path = require('node:path');
-const { officialAccountIdFromProvider } = require('../../../src/official-accounts');
+const { officialAccountIdFromProvider } = require('../frozen-bc29761b/official-accounts');
 // Capture the assembled ports without launching an image worker.
 const createOfficialImageBridge = ports => ports;
 

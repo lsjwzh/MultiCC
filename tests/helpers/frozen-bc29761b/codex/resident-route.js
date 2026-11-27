@@ -1,8 +1,8 @@
 'use strict';
 
 const fs = require('node:fs');
-const { protocolFamilyOf } = require('../native/binding').cliCapability;
-const { codexProviderHome } = require('../native/binding');
+const { protocolFamilyOf } = require('../../../../src/native/binding').cliCapability;
+const { codexProviderHome } = require('../../../../src/native/binding');
 
 // A resident lane keeps ONE child warm across turns, so its managed provider
 // route has to outlive a single turn. Claude's route lives in ANTHROPIC_* and the

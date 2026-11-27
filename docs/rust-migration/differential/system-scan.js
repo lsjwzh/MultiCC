@@ -83,7 +83,7 @@ async function main() {
         app.get('/api/debug/codex-proxy-trace', (req, res) => {
           const requested = Number(req.query && req.query.limit);
           const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, 200) : 100;
-          res.json({ entries: require(path.join(repo, 'src/codex/proxy-trace')).codexProxyTrace().snapshot(limit) });
+          res.json({ entries: require(path.join(repo, 'tests/helpers/frozen-leaf-hosts/proxy-trace')).codexProxyTrace().snapshot(limit) });
         });
         scan.mountScanRoutes(app, { scanHistory: { seq: 7, passes: PASSES }, maxPasses: 5 });
         upstreamText = upstream(repo, rootDir);

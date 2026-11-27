@@ -11,7 +11,7 @@ const { execFileSync } = require('node:child_process');
 
 const { createClaudeOAuthRefresher, credentialFingerprint, parseCredentials } = require('../src/claude-auth/oauth-refresh');
 const { createRefreshHealthStore } = require('../src/native/binding').refreshHealth;
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');
 
 let addon;

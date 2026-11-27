@@ -50,7 +50,7 @@ fs.writeFileSync(path.join(HOME, '.codex', 'config.toml'),
 
 // The host enables the unified official-provider catalog at boot; the official
 // id shape is only recognized after that. Isolated temp HOME keeps this local.
-require('../src/providers/host').enableUnifiedOfficialProviders();
+require('../src/native/binding').providersHost.enableUnifiedOfficialProviders();
 
 const { createSessionPolicy } = require('../src/cli/session-policy');
 const { createClaudeAdapter } = require('../src/native/binding');

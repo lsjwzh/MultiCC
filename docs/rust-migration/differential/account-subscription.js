@@ -483,7 +483,7 @@ function specFor(group, upstream, options = {}) {
   return {
     name: `account-subscription-${group}${options.tag || ''}`,
     mount(app, ctx) {
-      const { createOfficialAccountStore } = require(path.join(ROOT, 'src/official-accounts'));
+      const { createOfficialAccountStore } = require(path.join(ROOT, 'tests/helpers/frozen-bc29761b/official-accounts'));
       const { createClaudeAccountCredentialService } = require(path.join(ROOT, 'src/claude-auth/account-credentials'));
       const subscriptions = require(path.join(ROOT, 'src/native/binding')).accountSubscriptionCache;
       subscriptions.configure({ file: path.join(ctx.dataRoot, 'provider-limit-cache.db') });

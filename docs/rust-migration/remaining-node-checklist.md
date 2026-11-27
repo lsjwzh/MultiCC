@@ -1,5 +1,38 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 12 批（2026-11-27，MacPro x86_64）
+
+基线为 `bc29761b`。本批退役十个 CLI、供应商和 Codex 业务模块，共 3,585 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 265 / 82,657 | 255 / 79,137 |
+| server.js 与 src/ | 266 / 85,510 | 256 / 81,990 |
+| 含生产插件 | 278 / 89,429 | 268 / 85,909 |
+
+验收基线包含本机并发合入的提交，最终构建和全部测试在 `03406ac2ec17ec40978030464bec280d8cdc7c49` 上叠加本批改动完成。
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/cli-adapters/commands.js` | 430 | CLI 命令发现与版本选择 |
+| `src/windows-env.js` | 283 | Windows 工具路径与异步刷新 |
+| `src/agy-accounts.js` | 103 | Antigravity 账号环境与选择 |
+| `src/providers/host.js` | 450 | 供应商注册表和宿主 API |
+| `src/codex/attempt-home.js` | 591 | 每次尝试的 Codex 目录与租约清理 |
+| `src/codex/session-home.js` | 330 | 会话目录、历史迁移与线路同步 |
+| `src/codex/official-relay.js` | 677 | Codex 官方中继与流式响应 |
+| `src/official-accounts.js` | 394 | 官方账号存储与凭据回调 |
+| `src/codex/proxy-trace.js` | 131 | 代理追踪、结算与快照 |
+| `src/codex/resident-route.js` | 196 | 常驻子进程的线路持有与释放 |
+
+Rust 保存命令解析状态、会话目录的归属与清理规则，以及代理和中继状态。Node 继续提供 CLI SDK、可注入的 OS 端口、Fetch、Express 响应及事件回调。仍使用这些 JavaScript 对象的调用方迁移后，可移除相应宿主桥。
+
+x64 产物源码指纹为 `a1aec2bd8d0c7969f86ff904`。62 个关联 Node 入口通过 806 项，跳过 0 项。Rust 通过 133 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+4 组 HTTP 差分得到 226 项一致结果，并验证 4 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,495 个文件，覆盖本批 25 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `d357bf71da77bdffbd1cbfd42d1e92345e0784971af7788e04da312f9c90d601`。
+
 ## server.js 可达模块第 11 批（2026-11-27，MacPro x86_64）
 
 基线为 `06ebf5fa`。本批退役十个文档、笔记和记忆模块，共 3,079 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)

@@ -294,7 +294,7 @@ function mountSystemRoutes(app, rawDeps) {
   app.get('/api/debug/codex-proxy-trace', (req, res) => {
     const requested = Number(req.query && req.query.limit);
     const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, 200) : 100;
-    res.json({ entries: require('../../src/codex/proxy-trace').codexProxyTrace().snapshot(limit) });
+    res.json({ entries: require('./frozen-leaf-hosts/proxy-trace').codexProxyTrace().snapshot(limit) });
   });
 }
 

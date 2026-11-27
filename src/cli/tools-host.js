@@ -46,7 +46,7 @@ function createCliToolsHost(options) {
   const call = (op, input = {}) => state.request(op, input);
   const pinEnv = options.env || process.env;
   const envFile = options.envFile || path.join(__dirname, '..', '..', '.env');
-  const refresh = options.refreshCliEnvironment || require('../windows-env').refresh;
+  const refresh = options.refreshCliEnvironment || require('../native/binding').windowsEnv.refresh;
   const spawn = options.spawnProcess || require('node:child_process').spawn;
   const execFile = options.execFileVersion || require('node:child_process').execFile;
   const brewOwnerOf = options.homebrewOwnerOf || homebrewTakeover.homebrewOwnerOf;
@@ -58,7 +58,7 @@ function createCliToolsHost(options) {
   const realPath = cmd => { try { return fs.realpathSync(cmd); } catch (_) { return cmd; } };
   const commandMap = () => {
     if (options.cliCommands && typeof options.cliCommands === 'object') return options.cliCommands;
-    try { return require('../cli-adapters/commands').resolveCliCommands({ logger: { log() {}, warn() {} } }); }
+    try { return require('../native/binding').cliCommands.resolveCliCommands({ logger: { log() {}, warn() {} } }); }
     catch (_) { return {}; }
   };
   // The package descriptor is a Node module-resolution fact, not version policy.

@@ -158,7 +158,12 @@ test('production core initializes from prior default account, persists switches 
     // the host's real signed-in accounts out of the catalog.
     const fakeHome = path.join(root, 'fake-home');
     fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
-    const run = (script, extraEnv = {}) => execFileSync(process.execPath, ['-e', `(async()=>{const p=require('./src/providers/host');p.enableUnifiedOfficialProviders();${script}})().catch(error=>{console.error(error);process.exitCode=1;});`], { cwd: path.join(__dirname, '..'), env: { ...process.env, MULTICC_DATA_DIR: root, HOME: fakeHome, ...extraEnv }, encoding: 'utf8' }).trim();
+    const run = (script, extraEnv = {}) => execFileSync(process.execPath, ['-e', `(async()=>{const p=require('./src/native/binding').providersHost;p.enableUnifiedOfficialProviders();${script}})().catch(error=>{console.error(error);process.exitCode=1;});`], { cwd: path.join(__dirname, '..'), env: { ...process.env, MULTICC_DATA_DIR: root, HOME: fakeHome, ...extraEnv }, encoding: 'utf8' }).trim();
+    run(`
+      const baseline = require('./tests/helpers/frozen-bc29761b/providers/host');
+      const exportsOf = api => Object.keys(api).map(name => [name, typeof api[name]]);
+      require('node:assert/strict').deepEqual(exportsOf(p), exportsOf(baseline));
+    `);
     assert.equal(run("process.stdout.write(p.getOfficialAccountSelection('codex'));"), A);
     run(`p.selectOfficialAccount('codex','${B}');`);
     assert.equal(run("process.stdout.write(p.getOfficialAccountSelection('codex'));"), B);

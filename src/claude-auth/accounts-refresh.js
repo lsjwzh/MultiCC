@@ -37,7 +37,7 @@ const path = require('node:path');
 const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE, DEFAULT_MAX_PROBES_PER_WINDOW } = require('./oauth-refresh');
 const { parseCredentials } = require('../native/binding').claudeCliUsage;
 const { atomicWriteJson, ensurePrivateDir, secureFile } = require('../native/binding').runtimeSecurity;
-const { isCliCopy } = require('../official-accounts');
+const { isCliCopy } = require('../native/binding').officialAccounts;
 const { planClaudeExpiredRefresh } = require('../native/binding');
 
 // Narrower than the shared refresher's 15 min: each attempt seeds and clears a

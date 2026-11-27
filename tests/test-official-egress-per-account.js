@@ -27,7 +27,7 @@ fs.mkdirSync(accountsDir, { recursive: true });
 fs.writeFileSync(path.join(accountsDir, `${ACCOUNT_ID}.json`),
   JSON.stringify({ label: 'share', source: 'login', createdAt: 1 }));
 
-const providers = require('../src/providers/host');
+const providers = require('../src/native/binding').providersHost;
 providers.enableUnifiedOfficialProviders();
 
 const TERMINAL_ID = 'claude-official';

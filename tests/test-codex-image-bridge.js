@@ -166,7 +166,7 @@ test('bridge removes its copied auth material when the native worker fails', asy
 
 test('official runtime resolves current account credentials in list order on every call', () => {
   const native = require('../src/native/binding').getNative();
-  const { officialAccountIdFromProvider } = require('../src/official-accounts');
+  const { officialAccountIdFromProvider } = require('../src/native/binding').officialAccounts;
   const before = require('./helpers/frozen-state-leaves/image-bridge-runtime').createOfficialImageBridgeRuntime;
   const id = '0123456789abcdef';
   function trace(build) {

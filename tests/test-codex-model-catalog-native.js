@@ -14,7 +14,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { createCodexAccountModelCatalogRuntime } = require('../src/native/binding').codexModelCatalog;
 const { createModelCatalogsHost } = require('../src/native/binding').modelCatalogsHost;
-const { summarize } = require('../src/providers/host');
+const { summarize } = require('../src/native/binding').providersHost;
 
 let addon;
 try { addon = process.env.MULTICC_RUST_ADDON ? require(process.env.MULTICC_RUST_ADDON)

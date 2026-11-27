@@ -7,8 +7,8 @@ const {
   createProviderBinding,
   toLegacyProviderView,
 } = require('../native/binding').providerBinding;
-const { mountCodexOfficialRelay } = require('../codex/official-relay');
-const { codexProxyTrace } = require('../codex/proxy-trace');
+const { mountCodexOfficialRelay } = require('../native/binding').codexOfficialRelay;
+const { codexProxyTrace } = require('../native/binding').codexProxyTrace;
 const { createCodexHistoryHooks } = require('../native/binding').codexHistoryHooks;
 const { createClaudeOAuthProxyRecovery } = require('../claude-auth/proxy-recovery');
 const { createClaudeQuotaBridge } = require('../native/binding').claudeQuotaBridge;

@@ -23,8 +23,8 @@
 // the installer shares; this is only the HTTP handle and the job's progress.
 const { execFile, spawn } = require('node:child_process');
 const defaultPortableGit = require('../native/binding').portableGit;
-const windowsEnv = require('../windows-env');
-const { findExecutableOnPath } = require('../cli-adapters/commands');
+const windowsEnv = require('../native/binding').windowsEnv;
+const { findExecutableOnPath } = require('../native/binding').cliCommands;
 
 const PROBE_TIMEOUT_MS = 5000;
 const INSTALL_TIMEOUT_MS = 20000;

@@ -18,8 +18,8 @@ const {
   assertAccountId,
   sanitizeLoginEnv,
   codexAccountAuthFilePath,
-} = require('../src/official-accounts');
-const { createCodexOfficialRelayHandler } = require('../src/codex/official-relay');
+} = require('../src/native/binding').officialAccounts;
+const { createCodexOfficialRelayHandler } = require('../src/native/binding').codexOfficialRelay;
 const { createCodexAccountRefreshSupervisor } = require('../src/native/binding').codexAccountsRefresh;
 const poller = require('../src/usage-limit-poller');
 const { fetchCodexUsage } = require('../src/routes/codex-quota');

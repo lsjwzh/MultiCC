@@ -21,7 +21,7 @@ const { outboundFetch } = require('../native/binding').outbound;
 //   { status:'not_configured' }      — no Kimi provider configured (HTTP 404)
 //   { status:'unavailable', sites }  — configured but every fetch failed (HTTP 502)
 
-const providers = require('../providers/host');
+const providers = require('../native/binding').providersHost;
 const { keyHash } = require('../usage-limit-poller');
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 

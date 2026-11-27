@@ -186,6 +186,7 @@ pub fn provider_apply_relay_catalog(
     Ok(delta.get(c"result")?.raw())
 }
 mod registry;
+pub(crate) use registry::provider_registry_service;
 #[napi]
 pub fn provider_claude_routing_facts(env: Env, row: Unknown<'_>) -> Result<sys::napi_value> {
     let row = input(env, row)?;

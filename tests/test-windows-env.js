@@ -6,8 +6,8 @@
 // re-read from the registry (throttled, de-duplicated, never destructive).
 const { test } = require('node:test');
 const assert = require('node:assert');
-const windowsEnv = require('../src/windows-env');
-const { isCommandAvailable, createCommandResolver } = require('../src/cli-adapters/commands');
+const windowsEnv = require('../src/native/binding').windowsEnv;
+const { isCommandAvailable, createCommandResolver } = require('../src/native/binding').cliCommands;
 const { createCliAdapters } = require('../src/native/binding').cliAdapters;
 const { createOpsTerminalRoutes } = require('../src/routes/ops-terminal');
 

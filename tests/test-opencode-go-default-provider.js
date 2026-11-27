@@ -25,7 +25,7 @@ process.env.HOME = path.join(tmpRoot, 'home');
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 fs.mkdirSync(process.env.HOME, { recursive: true });
 
-const providers = require('../src/providers/host.js');
+const providers = require('../src/native/binding').providersHost;
 const { createSessionPolicy } = require('../src/cli/session-policy.js');
 const { createSessionProfileRoutes } = require('../src/routes/session-profile.js');
 

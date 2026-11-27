@@ -1350,7 +1350,7 @@ test('real Rust preparation retains and migrates an existing thread before a def
   assert.equal(h.session.cliSessionId, 'thread-1');
   assert.equal(h.session.pendingCliHandoff.reusedTarget, true);
   assert.equal(h.session.provider, 'chosen-provider');
-  const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
+  const { createCodexSessionHomeRuntime } = require('../src/native/binding').codexSessionHome;
   const canonical = createCodexSessionHomeRuntime({ sessionHomesDir: path.join(home, '.multicc/codex-session-homes') }).codexSessionHome('s1');
   assert.equal(fs.readFileSync(path.join(canonical, 'sessions/2026/11/07/rollout-now-thread-1.jsonl'), 'utf8'), 'original history');
   assert.equal(fs.readFileSync(source, 'utf8'), 'original history');
@@ -1366,7 +1366,7 @@ test('Codex profile preparation copies the requested rollout on the Rust worker'
     ...input, fromProviderId: null, toProviderId: 'managed',
   });
   assert.equal(prepared.synchronized, true);
-  const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
+  const { createCodexSessionHomeRuntime } = require('../src/native/binding').codexSessionHome;
   const canonical = createCodexSessionHomeRuntime({
     sessionHomesDir: path.join(home, '.multicc/codex-session-homes'),
   }).codexSessionHome('s1');

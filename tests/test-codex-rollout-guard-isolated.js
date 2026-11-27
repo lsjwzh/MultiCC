@@ -17,7 +17,7 @@ const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { createCodexSessionHomeRuntime } = require('../src/codex/session-home');
+const { createCodexSessionHomeRuntime } = require('../src/native/binding').codexSessionHome;
 const { assertTestDir } = require('../src/paths');
 const WebSocket = require('ws');
 

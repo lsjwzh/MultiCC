@@ -24,7 +24,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { buildChildEnv } = require('../providers/host');
+const { buildChildEnv } = require('../native/binding').providersHost;
 
 // Start trying well before the one-hour token dies: turns arriving inside the
 // buffer then find an already-fresh token and never touch the refresh path.

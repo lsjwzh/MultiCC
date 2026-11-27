@@ -23,7 +23,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createCliLoginDetector } = require('../src/official-accounts-cli-login');
 const { createCodexAccountRefreshSupervisor } = require('../src/native/binding').codexAccountsRefresh;
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');

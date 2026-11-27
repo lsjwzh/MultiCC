@@ -16,7 +16,7 @@ async function credentials(target) {
   if (target.strategy !== 'claude-oauth-usage') return null;
   if (target.officialAccountId) {
     const service = require('../claude-auth/account-credentials').createClaudeAccountCredentialService({
-      accounts: require('../official-accounts').createOfficialAccountStore(),
+      accounts: require('../native/binding').officialAccounts.createOfficialAccountStore(),
     });
     const read = await service.peekAccountToken(target.officialAccountId);
     if (!read?.token) throw new Error(`Claude quota credential unavailable: ${read?.reason || 'missing'}`);

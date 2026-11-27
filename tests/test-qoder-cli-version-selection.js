@@ -10,7 +10,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { resolveCliCommands } = require('../src/cli-adapters/commands');
+const { resolveCliCommands } = require('../src/native/binding').cliCommands;
 
 const POSIX = process.platform !== 'win32';
 

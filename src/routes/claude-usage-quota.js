@@ -354,7 +354,7 @@ function configureClaudeOAuthSource(source) {
 }
 
 function defaultOAuthSource() {
-  const { createOfficialAccountStore } = require('../official-accounts');
+  const { createOfficialAccountStore } = require('../native/binding').officialAccounts;
   const { createClaudeAccountCredentialService } = require('../claude-auth/account-credentials');
   const accounts = createOfficialAccountStore();
   return {

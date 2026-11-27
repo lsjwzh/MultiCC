@@ -266,7 +266,7 @@ function mountSystemHostRoute(app, options = {}) {
       return res.json({ ok: true, output: String(output || '') });
     } catch { return res.json({ ok: false }); }
   };
-  const trace = limit => require('../codex/proxy-trace').codexProxyTrace().snapshot(limit);
+  const trace = limit => require('../native/binding').codexProxyTrace.codexProxyTrace().snapshot(limit);
   app.post(SYSTEM_PATH, async (req, res) => {
     if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
     return getNative().systemHostOperation(objectBody(req), res, facts, lsRemote, trace);

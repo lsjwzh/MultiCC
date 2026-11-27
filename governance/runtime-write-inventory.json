@@ -82,12 +82,12 @@
       "migrationStrategy": "Version the materialized-home layout and add a per-provider copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/host.js",
-          "anchor": "const CODEX_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-homes');"
+          "file": "native/addon/src/providers_host_runtime/mod.rs",
+          "anchor": "\"codex-homes\""
         },
         {
-          "file": "src/codex/session-home.js",
-          "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-homes'));"
+          "file": "native/addon/src/codex_homes/mod.rs",
+          "anchor": "\"codex-homes\""
         }
       ]
     },
@@ -99,8 +99,8 @@
       "migrationStrategy": "Keep the root disposable, permission-restricted and capability-free in its pathname; prune abandoned overlays at startup without copying them forward.",
       "sources": [
         {
-          "file": "src/providers/host.js",
-          "anchor": "const CODEX_ATTEMPT_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-attempt-homes');"
+          "file": "native/addon/src/providers_host_runtime/mod.rs",
+          "anchor": "\"codex-attempt-homes\""
         }
       ]
     },
@@ -112,12 +112,12 @@
       "migrationStrategy": "Version the canonical layout; copy forward only a uniquely identified native rollout with durable atomic no-overwrite semantics, retain legacy sources for rollback, and fail closed on ambiguity.",
       "sources": [
         {
-          "file": "src/providers/host.js",
-          "anchor": "const CODEX_SESSION_HOMES_DIR = path.join(os.homedir(), '.multicc', 'codex-session-homes');"
+          "file": "native/addon/src/providers_host_runtime/mod.rs",
+          "anchor": "\"codex-session-homes\""
         },
         {
-          "file": "src/codex/session-home.js",
-          "anchor": "|| path.join(os.homedir(), '.multicc', 'codex-session-homes'));"
+          "file": "native/addon/src/codex_homes/mod.rs",
+          "anchor": "\"codex-session-homes\""
         }
       ]
     },
@@ -142,8 +142,8 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/host.js",
-          "anchor": "const ZCODE_HOMES_DIR = path.join(os.homedir(), '.multicc', 'zcode-homes');"
+          "file": "native/addon/src/providers_host_runtime/mod.rs",
+          "anchor": "\"zcode-homes\""
         }
       ]
     },
@@ -155,8 +155,8 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/host.js",
-          "anchor": "const KIMI_HOMES_DIR = path.join(os.homedir(), '.multicc', 'kimi-homes');"
+          "file": "native/addon/src/providers_host_runtime/mod.rs",
+          "anchor": "\"kimi-homes\""
         }
       ]
     },
@@ -168,8 +168,8 @@
       "migrationStrategy": "Version the generated-home layout, preserve restrictive permissions, and add a per-session copy-forward/rollback operation before changing its root.",
       "sources": [
         {
-          "file": "src/providers/host.js",
-          "anchor": "const GROK_HOMES_DIR = path.join(os.homedir(), '.multicc', 'grok-homes');"
+          "file": "native/addon/src/providers_host_runtime/mod.rs",
+          "anchor": "\"grok-homes\""
         }
       ]
     },
@@ -540,8 +540,8 @@
       "migrationStrategy": "Move the root behind a createPaths port and copy the whole account tree forward atomically (credentials are single-writer, so a directory-level move with a rollback marker suffices).",
       "sources": [
         {
-          "file": "src/official-accounts.js",
-          "anchor": "const DEFAULT_ROOT = path.join(os.homedir(), '.multicc', 'official-accounts');"
+          "file": "native/addon/src/codex_homes/accounts.rs",
+          "anchor": "\"official-accounts\""
         },
         {
           "file": "native/addon/src/refresh_health.rs",

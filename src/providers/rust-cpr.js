@@ -116,7 +116,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               const credential = official.readCredential
                 ? await official.readCredential({ provider, providerId: provider.id })
                 : accountId && !authFile ? { ok: false, reason: 'account_credential_unresolved' }
-                  : require('../codex/official-relay').readCodexOfficialCredential({ authFile });
+                  : require('../native/binding').codexOfficialRelay.readCodexOfficialCredential({ authFile });
               if (!credential?.ok) return credentialFailure(503, { error: 'Codex 官方账号凭据不可用，请重新登录',
                 code: 'CODEX_OFFICIAL_OAUTH_UNAVAILABLE', reason: credential?.reason || 'credential_unavailable' });
               input.codexCredential = credential;

@@ -24,8 +24,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { atomicWriteJson, ensurePrivateDir } = require('./native/binding').runtimeSecurity;
-const { DEFAULT_ROOT, ACCOUNT_ID_PATTERN } = require('./official-accounts');
-const { hasAccount: hasAgyAccountNative } = require('./agy-accounts');
+const { DEFAULT_ROOT, ACCOUNT_ID_PATTERN } = require('./native/binding').officialAccounts;
+const { hasAccount: hasAgyAccountNative } = require('./native/binding').agyAccounts;
 const { displayNameOf } = require('./native/binding').cliCapability;
 
 const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);

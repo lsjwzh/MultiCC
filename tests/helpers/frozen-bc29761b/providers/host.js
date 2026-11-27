@@ -8,9 +8,9 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const cliProviderRouter = require('cli-provider-router');
-const { createPaths } = require('../native/binding').appPaths;
-const { settingsOverrideFor } = require('../native/binding').claudeSettingsOverride;
-const { createOpencodeModelLimitResolver } = require('../native/binding').openCodeModelLimits;
+const { createPaths } = require('../../../../src/native/binding').appPaths;
+const { settingsOverrideFor } = require('../../../../src/native/binding').claudeSettingsOverride;
+const { createOpencodeModelLimitResolver } = require('../../../../src/native/binding').openCodeModelLimits;
 const { createCodexAttemptHome } = require('../codex/attempt-home');
 const { createCodexSessionHomeRuntime } = require('../codex/session-home');
 const { isOfficialCodexOAuthProvider } = require('../codex/official-relay');
@@ -21,7 +21,7 @@ const {
   prepareResidentChildEnv, releaseResidentRoute,
 } = require('../codex/resident-route');
 const { codexAccountAuthFilePath } = require('../official-accounts');
-const { getNative, nativeCode, codexProviderHome, createNativeProviderStore } = require('../native/binding');
+const { getNative, nativeCode, codexProviderHome, createNativeProviderStore } = require('../../../../src/native/binding');
 const {
   assertProxyConfigApplied: assertCodexProxyConfigApplied,
   proxyConfigRequired: evaluateCodexProxyConfigRequired,
@@ -53,19 +53,19 @@ function enableUnifiedOfficialProviders() {
   if (officialCatalog) return;
   const selectionFile = path.join(RUNTIME_PATHS.root, 'official-provider-selection.json');
   if (!fs.existsSync(selectionFile)) {
-    const defaultsOwner = require('../native/binding').providerDefaults.getProviderDefaultsOwner(RUNTIME_PATHS.providerDefaultsFile);
+    const defaultsOwner = require('../../../../src/native/binding').providerDefaults.getProviderDefaultsOwner(RUNTIME_PATHS.providerDefaultsFile);
     defaultsOwner.assertReadable();
     const defaults = defaultsOwner.snapshot();
     const records = loadStore();
     const selection = getNative().providerInitialSelection(records, defaults);
-    require('../native/binding').providerCredentials.credential({ operation: 'writeJson', file: selectionFile, data: selection });
+    require('../../../../src/native/binding').providerCredentials.credential({ operation: 'writeJson', file: selectionFile, data: selection });
   }
-  officialCatalog = require('../native/binding').officialCatalog.createOfficialCatalog({
+  officialCatalog = require('../../../../src/native/binding').officialCatalog.createOfficialCatalog({
     readRecords: loadStore,
     readSelection() {
-      return require('../native/binding').providerCredentials.credential({ operation: 'readStateJson', file: selectionFile }) || {};
+      return require('../../../../src/native/binding').providerCredentials.credential({ operation: 'readStateJson', file: selectionFile }) || {};
     },
-    writeSelection: selection => require('../native/binding').providerCredentials.credential({ operation: 'writeJson', file: selectionFile, data: selection }),
+    writeSelection: selection => require('../../../../src/native/binding').providerCredentials.credential({ operation: 'writeJson', file: selectionFile, data: selection }),
     ...(() => {
       const store = require('../official-accounts').createOfficialAccountStore();
       return {
@@ -77,7 +77,7 @@ function enableUnifiedOfficialProviders() {
 }
 // Built-in official identities: the vendor alias and every per-account id.
 function isOfficialProviderId(appType, id) {
-  return !!officialCatalog && require('../native/binding').officialCatalog.isOfficialProviderId(appType, id);
+  return !!officialCatalog && require('../../../../src/native/binding').officialCatalog.isOfficialProviderId(appType, id);
 }
 function normalizeOfficialProviderId(type, id) { return officialCatalog ? officialCatalog.normalize(type, id) : id; }
 function getOfficialAccountSelection(type) { return officialCatalog ? officialCatalog.active(type) : null; }
@@ -147,7 +147,7 @@ function loadStore() { return providerRepository().read(); }
 const registry = getNative().providerRegistryService({
   get store() { return providerRepository(); },
   get catalog() { return officialCatalog; },
-  accountModels: (record, runtime) => (runtime || require('../native/binding').codexModelCatalog.defaultRuntime)
+  accountModels: (record, runtime) => (runtime || require('../../../../src/native/binding').codexModelCatalog.defaultRuntime)
     .peekProvider(record).models.map(item => item.model),
   uuid: () => crypto.randomUUID(), getPort: () => process.env.PORT || '3000',
   relayForced: () => process.env.MULTICC_CLI_RELAY_FORCE === '1',
@@ -446,5 +446,5 @@ module.exports = {
   WIRE_DEFAULT_MODEL,
   probeRelayModels,
   claudeProbeRouteEnv,
-  ...require('../native/binding').claudeSettingsOverride,
+  ...require('../../../../src/native/binding').claudeSettingsOverride,
 };

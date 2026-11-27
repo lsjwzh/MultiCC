@@ -27,7 +27,7 @@ const { getNative, requestCodexUsage, readCodexAuth } = require('./native/bindin
 
 const crypto = require('crypto');
 const { publicTransportError } = require('./native/binding').upstreamError;
-const providers = require('./providers/host');
+const providers = require('./native/binding').providersHost;
 const { checkEgressIpAllowed } = require('./native/binding').egressIpPolicy;
 
 const POLL_TIMEOUT_MS = 6000;

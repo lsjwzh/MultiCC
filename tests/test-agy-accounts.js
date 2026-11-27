@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { accountEnv, hasAccount } = require('../src/agy-accounts');
+const { accountEnv, hasAccount } = require('../src/native/binding').agyAccounts;
 
 const REAL_HOME = process.env.HOME;
 
@@ -119,7 +119,7 @@ test('explicit accountId overrides global active and fails closed when missing',
 });
 
 test('login env may pin HOME and nothing else', () => {
-  const { sanitizeLoginEnv } = require('../src/official-accounts');
+  const { sanitizeLoginEnv } = require('../src/native/binding').officialAccounts;
   assert.deepEqual(
     sanitizeLoginEnv({ HOME: '/tmp/acc' }, 'agy-login'),
     { ok: true, env: { HOME: '/tmp/acc' } },

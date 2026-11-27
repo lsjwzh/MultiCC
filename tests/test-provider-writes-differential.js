@@ -415,9 +415,9 @@ test('deleteProvider：内置别名不可删、官方 id 走目录、普通 id �
 
 test('宿主直接导出 Rust 注册表的写入方法，保留并发检查使用的源数组', () => {
   const fs = require('node:fs');
-  const host = fs.readFileSync(require.resolve('../src/providers/host'), 'utf8');
-  assert.match(host, /providerRegistryService/);
-  assert.doesNotMatch(host, /function (createProvider|updateProvider|deleteProvider|runCommit|writeFacts|saveVirtualProvider)/);
+  const host = fs.readFileSync(require('node:path').join(__dirname, '../native/addon/src/providers_host_runtime/mod.rs'), 'utf8');
+  assert.match(host, /service::provider_registry_service/);
+  assert.doesNotMatch(host, /fn (create_provider|update_provider|delete_provider|run_commit|write_facts|save_virtual_provider)\b/);
   const native = fs.readFileSync(require('node:path').join(__dirname,
     '../native/addon/src/provider_service/registry.rs'), 'utf8');
   for (const op of ['create_provider', 'update_provider', 'delete_provider']) {

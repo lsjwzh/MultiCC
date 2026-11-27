@@ -106,7 +106,12 @@ function add(name, buildRequest, buildScenario, extra = {}) {
     },
     capture(response, side) {
       if (side.name !== 'node') return;
-      nodeCases.set(tag, nodeWorld.effects.slice());
+      const effects = nodeWorld.effects.slice();
+      const { session, chat } = nodeWorld.state.scenario;
+      if (chat?.streamReplay) {
+        effects.push({ replaySize: nodeWorld.state.chatSessions.get(session.id).streamReplay.length });
+      }
+      nodeCases.set(tag, effects);
     },
   };
   if (extra.expectedDifference) hooks.expectedDifference = extra.expectedDifference;
@@ -158,7 +163,7 @@ function corpus() {
   // noop: the same target CLI.
   add('same cli is a noop',
     tag => post(switchUrl(tag), { cli: 'claude' }),
-    tag => scenario(tag, chatSession(tag)));
+    tag => scenario(tag, chatSession(tag), { chat: { streamReplay: [{ type: 'stream_event' }] } }));
   add('noop ignores the already-set pending handoff',
     tag => post(switchUrl(tag), { cli: 'claude' }),
     tag => scenario(tag, chatSession(tag, { pendingCliHandoff: { id: 'handoff_old', fromCli: 'codex' } })));
@@ -217,6 +222,7 @@ function corpus() {
     tag => scenario(tag, chatSession(tag, { autoProviderLastRoute: 'codex' }), {
       chat: {
         cli: 'claude', isStreaming: false, claudeProc: null, _activeRunner: null,
+        streamReplay: [{ type: 'stream_event' }],
       },
     }));
   add('a busy background task defers instead of switching',
@@ -250,8 +256,9 @@ process.stdin.resume();
 const express = require(require.resolve('express', { paths: [REPO] }));
 const { createCliSwitchWorld } = require(path.join(REPO, 'tests/helpers/legacy-cli-switch-routes'));
 const { createCliSwitchRuntime } = require(path.join(REPO, 'src/cli/switch-runtime'));
+const { createWsHost, createChatReplayHub } = require(path.join(REPO, 'src/native/binding')).wsHost;
 const { asyncHandler } = require(path.join(REPO, 'src/http-errors'));
-const { mountPublicSessionAccessGuard } = require(path.join(REPO, 'src/session/public-session-access'));
+const { mountPublicSessionAccessGuard } = require(path.join(REPO, 'src/native/binding')).getNative().sessionPublicAccessApi();
 
 const worldPath = process.env.STUB_WORLD;
 const effectsPath = process.env.STUB_EFFECTS;
@@ -262,12 +269,28 @@ function readWorld() {
 }
 
 const world = createCliSwitchWorld();
-const runtime = createCliSwitchRuntime(world.deps);
+const replay = createChatReplayHub({ host: createWsHost() });
+const runtime = createCliSwitchRuntime({ ...world.deps, clearReplay: replay.clear });
+let activeCase;
 const app = express();
 app.use((req, res, next) => {
-  world.apply(readWorld());
+  const scenario = readWorld();
+  const frames = scenario.chat?.streamReplay;
+  if (frames) {
+    delete scenario.chat.streamReplay;
+    if (activeCase !== scenario.case) {
+      for (const frame of frames) {
+        if (!replay.push(scenario.session.id, frame)) throw new Error('无法初始化差分用例的回放缓冲');
+      }
+    }
+  }
+  activeCase = scenario.case;
+  world.apply(scenario);
   res.on('finish', () => {
     const effects = world.effects.splice(0);
+    if (frames && (req.body?.op === 'noop' || req.body?.op === 'switch')) {
+      effects.push({ replaySize: replay.size(scenario.session.id) });
+    }
     if (effects.length) {
       fs.appendFileSync(effectsPath,
         JSON.stringify({ case: world.state.scenario.case || null, effects }) + '\\n');
@@ -327,7 +350,7 @@ main({
     fs.writeFileSync(worldPath, JSON.stringify({ case: 'initial', session: null }));
     const helper = require(path.join(repo, 'tests/helpers/legacy-cli-switch-routes'));
     const { asyncHandler } = require(path.join(repo, 'src/http-errors'));
-    const { mountPublicSessionAccessGuard } = require(path.join(repo, 'src/session/public-session-access'));
+    const { mountPublicSessionAccessGuard } = require(path.join(repo, 'tests/helpers/legacy-public-session-access'));
     nodeWorld = helper.createCliSwitchWorld();
     app.use((req, _res, next) => {
       nodeWorld.apply(readWorld(worldPath));

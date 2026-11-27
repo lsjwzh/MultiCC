@@ -17,7 +17,7 @@ process.env.HOME = fakeHome;
 delete process.env.KIMI_API_KEY;
 delete process.env.KIMI_CODE_HOME;
 
-const providers = require('../src/providers/host');
+const providers = require('../src/native/binding').providersHost;
 const kimiAuth = require('../src/cli-adapters/kimi-auth');
 const { mountKimiAuthRoutes } = require('../src/routes/kimi-auth');
 
@@ -50,7 +50,7 @@ test('registration chain exposes kimi across every integration point', () => {
     display: 'npm install -g @moonshot-ai/kimi-code',
   });
 
-  const { resolveCliCommands } = require('../src/cli-adapters/commands');
+  const { resolveCliCommands } = require('../src/native/binding').cliCommands;
   const commands = resolveCliCommands({
     isWindows: false, env: { KIMI_CMD: '/custom/kimi', PATH: '' }, homeDir: fakeHome,
   });

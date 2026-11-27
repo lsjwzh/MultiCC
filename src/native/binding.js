@@ -981,7 +981,7 @@ exposeHostApi('cliAdapters', () => {
   const { createCompletionTracker, createStepCompletionTracker, createProtocolCompletionTracker } = module.exports.cliCompletion;
   const { createResultCompletionTracker, isMainResult, resultCompletion } = module.exports.cliResultCompletion;
   const { classifyProviderError, errorFields } = module.exports.providerError;
-  const { resolveCliCommands, createCommandResolver } = require('../cli-adapters/commands');
+  const { resolveCliCommands, createCommandResolver } = module.exports.cliCommands;
   return getNative().cliAdaptersApi({
     getNative, process, gatewayPath, createCliProviderRegistry, createClaudeAdapter,
     createCodexAdapter: codexAdapter.createCodexAdapter, createCodexExpAdapter: codexAppAdapter.createCodexExpAdapter,
@@ -1111,6 +1111,71 @@ exposeHostApi('modelConnectWatch', () => {
   });
   return { withModelConnectWatch: (context, fn) => scope.run(context, fn) };
 });
+
+let cliEnvironment;
+function getCliEnvironment() {
+  return cliEnvironment ??= getNative().cliEnvironmentApi({
+    fs: require('node:fs'),
+    path,
+    homedir: require('node:os').homedir,
+    childProcess: require('node:child_process'),
+    pluginsDir: path.resolve(__dirname, '../..', 'plugins'),
+    hasCliRelayProvider(cli) { return module.exports.providersHost.hasCliRelayProvider(cli); },
+  });
+}
+
+exposeHostApi('cliCommands', () => getCliEnvironment().cliCommands);
+exposeHostApi('windowsEnv', () => getCliEnvironment().windowsEnv);
+exposeHostApi('agyAccounts', () => getCliEnvironment().agyAccounts);
+
+exposeHostApi('codexAttemptHome', () => getNative().codexAttemptHomeApi({ path }));
+exposeHostApi('codexSessionHome', () => getNative().codexSessionHomeApi({ path, os: require('node:os') }));
+exposeHostApi('officialAccounts', () => getNative().officialAccountsApi({ path, os: require('node:os') }));
+
+exposeHostApi('codexResidentRoute', () => getNative().residentProviderRoutesApi({
+  exists: file => require('node:fs').existsSync(file),
+  providers: () => module.exports.providersHost,
+}));
+
+exposeHostApi('codexOfficialRelay', () => getNative().codexOfficialRelayApi({
+  authFile: path.join(require('node:os').homedir(), '.codex', 'auth.json'),
+  officialFetch: () => module.exports.outbound.official.officialFetch,
+  uuid: require('node:crypto').randomUUID,
+  history: module.exports.modelHistoryConverter,
+  errors: module.exports.upstreamError,
+  async pump(reader, isOpen, write) {
+    while (isOpen()) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      write(value);
+    }
+  },
+}));
+
+exposeHostApi('providersHost', () => getNative().providersHostApi({
+  sdk: require('cli-provider-router'), environment: process.env, homedir: require('node:os').homedir, home: require('node:os').homedir(),
+  paths: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }),
+  defaults: module.exports.providerDefaults, official: module.exports.officialCatalog,
+  accounts: module.exports.officialAccounts, settings: module.exports.claudeSettingsOverride,
+  modelLimits: module.exports.openCodeModelLimits.createOpencodeModelLimitResolver(),
+  sessionHomeApi: module.exports.codexSessionHome, attemptHome: module.exports.codexAttemptHome.createCodexAttemptHome,
+  resident: module.exports.codexResidentRoute, relay: module.exports.codexOfficialRelay,
+  codexHome: module.exports.codexProviderHome, exists: require('node:fs').existsSync,
+  nativeCode, uuid: require('node:crypto').randomUUID,
+  defaultModels: () => module.exports.codexModelCatalog.defaultRuntime,
+  runProbeChild: (command, args, env) => new Promise(resolve => {
+    const child = require('node:child_process').spawn(command, args, { env, windowsHide: true });
+    let output = '';
+    const capture = chunk => { if (output.length < 2048) output += chunk.toString(); };
+    child.stdout.on('data', capture);
+    child.stderr.on('data', capture);
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 25000);
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
+    child.on('close', () => { clearTimeout(timer); resolve(output); });
+  }),
+}));
+
+exposeHostApi('codexProxyTrace', () => getNative().codexProxyTraceApi());
 
 exposeHostApi('proxyOutcome', () => {
   function proxyRequestKind(protocol, req) {
@@ -1696,8 +1761,8 @@ exposeHostApi('officialUsage', () => ({
 exposeHostApi('virtualProvider', () => getNative().virtualProviderHost({
   now: () => Date.now(), subscriptions: module.exports.accountSubscriptionCache,
   egress: provider => module.exports.egressIpPolicy.checkEgressIpAllowed(provider),
-  listProviders: () => require('../providers/host').listProviders(),
-  routingView: (appType, id) => require('../providers/host').routingProviderView(appType, id),
+  listProviders: () => module.exports.providersHost.listProviders(),
+  routingView: (appType, id) => module.exports.providersHost.routingProviderView(appType, id),
 }));
 
 exposeHostApi('providerQuota', () => ({
@@ -1771,7 +1836,7 @@ exposeHostApi('roleTokenTracker', () => {
 exposeHostApi('officialImageBridgeRuntime', () => {
   const { createOfficialImageBridge } = require('../codex/image-bridge');
   const host = { home: require('node:os').homedir, path,
-    officialId: require('../official-accounts').officialAccountIdFromProvider };
+    officialId: module.exports.officialAccounts.officialAccountIdFromProvider };
   return { createOfficialImageBridgeRuntime: options =>
     createOfficialImageBridge(getNative().officialImageBridgePorts(options, host)) };
 });
@@ -2135,22 +2200,22 @@ exposeHostApi('claudeModels', () => getNative().claudeModelListApi({
   root: () => module.exports.appPaths.createPaths().root,
 }));
 exposeHostApi('officialCatalog', () => getNative().officialProviderCatalogApi({
-  officialCodex: provider => require('../codex/official-relay').isOfficialCodexOAuthProvider(provider),
+  officialCodex: provider => module.exports.codexOfficialRelay.isOfficialCodexOAuthProvider(provider),
 }));
 exposeHostApi('codexModelCatalog', () => getNative().codexAccountCatalogApi({
-  getNative, runNative, providers: () => require('../providers/host'),
-  createAccounts: () => require('../official-accounts').createOfficialAccountStore(),
-  accountId: provider => require('../official-accounts').officialAccountIdFromProvider(provider),
-  officialCodex: provider => require('../codex/official-relay').isOfficialCodexOAuthProvider(provider),
+  getNative, runNative, providers: () => module.exports.providersHost,
+  createAccounts: () => module.exports.officialAccounts.createOfficialAccountStore(),
+  accountId: provider => module.exports.officialAccounts.officialAccountIdFromProvider(provider),
+  officialCodex: provider => module.exports.codexOfficialRelay.isOfficialCodexOAuthProvider(provider),
   globalHome: () => path.join(require('node:os').homedir(), '.codex'), env: () => process.env,
   stripEnv: env => require('../codex/oauth-refresh').stripOpenAiEnv(env),
   childProxyEnv: env => module.exports.outbound.getChildProxyEnv(env),
   createEgress: () => require('../claude-auth/egress-agent').createClaudeEgressAgentResolver(),
-  commands: options => require('../cli-adapters/commands').resolveCliCommands(options),
+  commands: options => module.exports.cliCommands.resolveCliCommands(options),
 }));
 
 exposeHostApi('providerModels', () => getNative().providerModelsApi({
-  providers: () => require('../providers/host'),
+  providers: () => module.exports.providersHost,
 }));
 exposeHostApi('providerRouterAdapter', () => getNative().providerRouterAdapterApi({
   pathJoin: require('node:path').join,
@@ -2165,21 +2230,21 @@ exposeHostApi('openCodeModels', () => getNative().openCodeModelsApi({
   homedir: require('node:os').homedir, execFile: require('node:child_process').execFile,
 }));
 exposeHostApi('agyModels', () => getNative().agyModelsApi({
-  accountEnv: () => require('../agy-accounts').accountEnv(), read: getNative().agyCliCatalogRead,
+  accountEnv: () => module.exports.agyAccounts.accountEnv(), read: getNative().agyCliCatalogRead,
 }));
 exposeHostApi('modelCatalogsHost', () => getNative().modelCatalogsHostApi({
   openCode: () => module.exports.openCodeModels, VendorCatalog: getNative().RustVendorModelCatalog,
   execFile: require('node:child_process').execFile,
-  resolveCliCommands: () => require('../cli-adapters/commands').resolveCliCommands(),
+  resolveCliCommands: () => module.exports.cliCommands.resolveCliCommands(),
   providerRuntime: () => module.exports.providerModels.getSharedProviderModelsRuntime(),
   codexRuntime: () => module.exports.codexModelCatalog.defaultRuntime,
-  isOfficial: provider => require('../codex/official-relay').isOfficialCodexOAuthProvider(provider),
+  isOfficial: provider => module.exports.codexOfficialRelay.isOfficialCodexOAuthProvider(provider),
   isLocal: module.exports.requestLocality.isLocalRequest,
 }));
 
 exposeHostApi('relayModelCatalog', () => getNative().relayModelCatalogApi({
   outboundFetch: module.exports.outbound.outboundFetch,
-  officialAccountId: provider => require('../official-accounts').officialAccountIdFromProvider(provider),
+  officialAccountId: provider => module.exports.officialAccounts.officialAccountIdFromProvider(provider),
 }));
 
 exposeHostApi('voiceCorrector', () => {

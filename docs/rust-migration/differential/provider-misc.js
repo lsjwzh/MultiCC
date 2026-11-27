@@ -195,7 +195,7 @@ function stubProviders() {
         const provider = scenario.provider;
         return provider && provider.appType === appType && provider.id === id ? provider : null;
       },
-      isOfficialCodexOAuthProvider: p => require(path.join(REPO, 'src/codex/official-relay')).isOfficialCodexOAuthProvider(p),
+      isOfficialCodexOAuthProvider: p => require(path.join(REPO, 'src/native/binding')).codexOfficialRelay.isOfficialCodexOAuthProvider(p),
       resolveCodexDirectHttp() {
         return current().codexTarget || { canDirect: false };
       },

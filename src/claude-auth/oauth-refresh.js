@@ -29,7 +29,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { buildChildEnv } = require('../providers/host');
+const { buildChildEnv } = require('../native/binding').providersHost;
 const { planClaudeExpiredRefresh } = require('../native/binding');
 
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';

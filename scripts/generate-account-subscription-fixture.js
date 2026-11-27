@@ -203,7 +203,7 @@ async function collect(tls) {
   fs.mkdirSync(process.env.TMPDIR, { recursive: true });
   try {
     const express = require(require.resolve('express', { paths: [root] }));
-    const { createOfficialAccountStore } = require(path.join(root, 'src/official-accounts'));
+    const { createOfficialAccountStore } = require(path.join(root, 'tests/helpers/frozen-bc29761b/official-accounts'));
     const { createClaudeAccountCredentialService } = require(path.join(root, 'src/claude-auth/account-credentials'));
     const accounts = createOfficialAccountStore({});
     // The oracle itself owns the routes; Express only has to provide get/json.
