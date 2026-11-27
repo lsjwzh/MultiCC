@@ -129,6 +129,21 @@ function diagnostic(logger, event, fields) {
   try { if (typeof logger?.warn === 'function') logger.warn(event, fields); } catch (_) {}
 }
 
+// A structured error carries type, code or param. A bare body such as `{}`, or
+// a plain status line, is not an item rejection the converter could act on.
+function isStructuredRejection(rejected) {
+  return Boolean(rejected && (rejected.type || rejected.code || rejected.param));
+}
+
+// Why a rejected attempt was not repaired. Reached only when the repair
+// returned nothing, so it names the gate or the converter that declined.
+function repairSkipReason(attempt, status, rejected) {
+  if (attempt > 0) return 'attempt_limit';
+  if (status === 404 && !isStructuredRejection(rejected)) return 'unstructured_404';
+  if (status === 400 || status === 404) return 'converter_declined';
+  return 'status_not_repairable';
+}
+
 function normalizeCodexRole(value) {
   const raw = String(value || 'main').trim().toLowerCase();
   if (raw === 'main') {
@@ -522,6 +537,7 @@ function createCodexOfficialRelayHandler(options = {}) {
     let upstreamError;
     let firstRejection;
     let repairs = [];
+    let repairSkip = null;
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (clientClosed) return undefined;
@@ -544,10 +560,16 @@ function createCodexOfficialRelayHandler(options = {}) {
         // Every other status stays fail-fast (401/429/500 must never replay a
         // request); the converter still decides whether the rejection is
         // repairable at all, so an unrelated 404 breaks out below unchanged.
-        const repairableStatus = upstream.status === 400 || upstream.status === 404;
+        // A 404 without a structured body is a route miss, not an item
+        // rejection, so it never reaches the converter.
+        const repairableStatus = upstream.status === 400
+          || (upstream.status === 404 && isStructuredRejection(rejected));
         const repair = attempt === 0 && repairableStatus
           ? repairRejectedResponsesHistory(body, rejected) : null;
-        if (!repair) break;
+        if (!repair) {
+          repairSkip = repairSkipReason(attempt, upstream.status, rejected);
+          break;
+        }
         firstRejection = upstreamError;
         repairs = repair.changes;
         body = repair.body;
@@ -572,6 +594,7 @@ function createCodexOfficialRelayHandler(options = {}) {
       if (upstream.ok) upstreamError = { message: `Upstream returned HTTP ${upstream.status} without a response body` };
       diagnostic(options.logger, 'codex_official_upstream_rejected', {
         providerId, status: context.statusCode, error: upstreamError,
+        upstreamStatus: upstream.status || null, repairSkipped: repairSkip,
       });
       reportTerminal(context, null, {
         status: 'error', statusCode: context.statusCode, errorCode: 'UPSTREAM_HTTP_ERROR',
