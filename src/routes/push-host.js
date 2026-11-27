@@ -276,7 +276,7 @@ function mountPushHostRoute(app, options = {}) {
     throw new TypeError('[push-host] Express-compatible app is required');
   }
   const deps = assertDependencies(options);
-  const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+  const isLocal = options.isLocal || require('../native/binding').requestLocality.isLocalRequest;
   const logger = options.logger || console;
   const now = options.now || Date.now;
   const extra = {

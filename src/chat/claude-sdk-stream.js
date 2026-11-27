@@ -1,14 +1,14 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { isMainResult } = require('../cli-adapters/result-completion');
+const { isMainResult } = require('../native/binding').cliResultCompletion;
 const { managedRoute, createRouteRelay } = require('./claude-sdk-route');
 const { fingerprint, laneOptions } = require('./claude-sdk-config');
 const { envDigest } = require('../secrets-vault');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../native/binding').getMonitorAdmission();
 const { createBackgroundHold, processStale } = require('./background-hold');
 const { decideMissingResume } = require('./missing-resume-recovery');
-const { bundledClaudeCodeBinary } = require('../cli/cli-capability');
+const { bundledClaudeCodeBinary } = require('../native/binding').cliCapability;
 const { getWriterGroup, getNative } = require('../native/binding');
 
 // Native lane events are pushed from a ThreadsafeFunction callback, i.e. on the

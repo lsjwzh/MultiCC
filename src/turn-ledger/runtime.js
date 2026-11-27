@@ -22,7 +22,7 @@ const os = require('os');
 const { normalizeEnvelope } = require('../native/binding').getTurnLedgerContract();
 const { createTurnLedger } = require('./ledger');
 const { getNative } = require('../native/binding');
-const { supportsEffort } = require('../cli/cli-capability');
+const { supportsEffort } = require('../native/binding').cliCapability;
 const { createHookInstaller } = require('./hook-install');
 
 const HOOKED_CLIS = new Set(['claude', 'codex']);

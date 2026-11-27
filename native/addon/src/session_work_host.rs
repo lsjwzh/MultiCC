@@ -210,3 +210,17 @@ pub fn session_work_host_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_v
     })?;
     Ok(api.raw())
 }
+
+#[napi]
+pub fn session_work_api(
+    env: Env,
+    addon: Unknown<'_>,
+    load_ports: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let s = L::new(&env, addon);
+    let api = fields(s, &[])?;
+    api.spread_from(call(s, c"sessionWorkSchedulerApi", &[])?)?;
+    let ports = L::new(&env, load_ports).call_plain(&[])?;
+    api.spread_from(call(s, c"sessionWorkHostApi", &[ports])?)?;
+    Ok(api.raw())
+}

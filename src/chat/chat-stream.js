@@ -1,6 +1,6 @@
 'use strict';
 
-const { isMainResult } = require('../cli-adapters/result-completion');
+const { isMainResult } = require('../native/binding').cliResultCompletion;
 const { isMonitorHandoffResult } = require('../native/binding').getMonitorAdmission();
 const { createMonitorControl } = require('../native/binding').getMonitorControl();
 const { createBackgroundHold } = require('./background-hold');

@@ -11,7 +11,7 @@ const { createTurnTimingRecorder, createDeliveryProbeRegistry, createTurnTimelin
   shouldReexecutePersistedDelivery } = require('../native/binding').getTurnProgress();
 const { apiNetworkContinuePrompt, API_NETWORK_CONTINUE_MAX } = require('../cli/session-policy');
 const { createSessionNotices } = require('../native/binding').getSessionNotices();
-const { createAdapterCompletion } = require('../cli-adapters/completion');
+const { createAdapterCompletion } = require('../native/binding').cliCompletion;
 const { finalizeCompletionStream } = require('../native/binding').adapterCompletion;
 const { getWriterGroup, getNative, gatewayPath, deliveryClassForItem, historyFrame: { fitHistoryFrame } } = require('../native/binding');
 const {
@@ -26,7 +26,7 @@ const {
   createTurnFinalizationExecutor,
   isKnownHarmlessStderrLine,
   sanitizeMessage: sanitizeApiErrorMessage,
-} = require('./index');
+} = require('../native/binding').chatApi;
 const { createProviderAttemptRuntime, markHostErrorEnvelope, providerAttemptFields,
   tagProviderAttemptEvent } = require('./provider-attempt-runtime');
 const { createProviderInvocationFactory } = require('../native/binding').providerInvocation;
@@ -64,7 +64,7 @@ const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex
 const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context');
 const { providerSelectionDto } = require('../providers/auto-provider-config');
-const { isResident, isResidentSession } = require('../cli/cli-capability');
+const { isResident, isResidentSession } = require('../native/binding').cliCapability;
 
 const { chatRecoverDispatchFromHistory: recoverDispatchFromHistory,
   chatDeriveCloseTurnFacts: deriveCloseTurnFacts } = getNative();

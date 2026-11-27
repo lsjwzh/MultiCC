@@ -14,8 +14,8 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { getNative } = require('../native/binding');
-const { bundledClaudeCodeBinary } = require('../cli/cli-capability');
-const { isMainResult } = require('../cli-adapters/result-completion');
+const { bundledClaudeCodeBinary } = require('../native/binding').cliCapability;
+const { isMainResult } = require('../native/binding').cliResultCompletion;
 
 export function parseArgs(argv) {
   const options = { disallowedTools: [] };

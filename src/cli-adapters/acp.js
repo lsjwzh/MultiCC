@@ -1,6 +1,6 @@
 'use strict';
 
-const { supportsEffort, displayNameOf } = require('../cli/cli-capability');
+const { supportsEffort, displayNameOf } = require('../native/binding').cliCapability;
 
 // Shared adapter for every CLI that speaks ACP (Agent Client Protocol). The
 // host starts the Rust gateway ACP bridge, which drives the agent's own `acp`/`stdio`
@@ -11,7 +11,7 @@ const { supportsEffort, displayNameOf } = require('../cli/cli-capability');
 // switch it over ACP.
 
 const { errorFields } = require('../provider-error');
-const { createProtocolCompletionTracker } = require('./completion');
+const { createProtocolCompletionTracker } = require('../native/binding').cliCompletion;
 const { getNative, gatewayPath, messageComposer: { renderPrompt } } = require('../native/binding');
 
 const BRIDGE = 'acp-bridge';

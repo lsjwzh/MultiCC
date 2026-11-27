@@ -9,9 +9,9 @@ const { GLOBAL_VOICE_GATEWAY_ID, legacyGatewayProjection } = require('./gateway'
 const { createQwenAudioInstaller } = require('./qwen-audio-installer');
 const { createQwenAudioSupervisor } = require('./qwen-audio-supervisor');
 const { createVoiceLaunchRegistry } = require('./launch');
-const { createVoiceRouterProvisioner } = require('./router');
+const { createVoiceRouterProvisioner } = require('../native/binding').voiceRouter;
 const { createAsrModelInstaller } = require('./asr-model-installer');
-const { resolveDirectoryCommander } = require('../task-board/core/index');
+const { resolveDirectoryCommander } = require('../native/binding').taskBoardCore;
 
 const DEFAULT_MODEL = 'qwen-audio-3.0-realtime-plus';
 const DEFAULT_VOICE = 'longanqian';

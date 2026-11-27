@@ -17,7 +17,7 @@
 // 拒绝任何转发自真实远端客户端的请求，所以前门的公网端口也拿不到额外能力
 // （docs/gateway.md 的内网端口模型）。
 
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../native/binding').requestLocality;
 
 const HOST_PATH = '/api/__host/plugins';
 

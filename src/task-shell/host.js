@@ -79,7 +79,7 @@ function createTaskShellHost(deps) {
       store,
       taskShortCode: deps.taskShortCode,
       getDirectory: id => deps.directories?.get(id),
-      taskDirectory: task => require('../task-board/core/index').taskDirId(deps.getTaskBoard().getBoard(), task),
+      taskDirectory: task => require('../native/binding').taskBoardCore.taskDirId(deps.getTaskBoard().getBoard(), task),
       validateTaskRuntime: (dirId, config) => deps.createSessionRecord({ ...config, dir: deps.directories.get(dirId), kind: 'chat', validateOnly: true }),
       unifiedAdmission: true,
       taskFirst: true, defaultTaskRuntime: deps.defaultTaskRuntime,
@@ -162,7 +162,7 @@ function createTaskShellHost(deps) {
         if ((deps.loadHistory?.(sessionId) || []).length) return { ok: false, code: 'has_history' };
         const dir = deps.directories.get(record.dirId);
         if (record.worktreePath && record.branch && dir) {
-          await require('../git/service').gitWorktreeRollbackCreate(dir.path, record.worktreePath, record.branch, { sessionId });
+          await require('../native/binding').gitService.gitWorktreeRollbackCreate(dir.path, record.worktreePath, record.branch, { sessionId });
         }
         deps.persistRecords('task-shell.independent-cancel', map => map.delete(sessionId));
         deps.resetChatState?.(sessionId);
@@ -451,7 +451,7 @@ function createTaskShellHost(deps) {
     guardAdmission: (id, text, options = {}) => {
       const board = deps.getTaskBoard?.()?.getBoard?.();
       for (const taskId of [options.taskId, deps.records.get(id)?.taskBoundTaskId].filter(Boolean)) {
-        const task = board && require('../task-board/core/index').resolveTask(board, taskId);
+        const task = board && require('../native/binding').taskBoardCore.resolveTask(board, taskId);
         const code = board?.deletedTaskIds?.includes(taskId) ? 'task_deleted' : task?.deleting ? 'task_deleting'
           : task?.status === 'archived' ? 'task_archived' : deps.getTaskBoard?.()?.isTaskLifecycleBusy?.(taskId) ? 'task_busy' : null;
         if (code) return { ok: false, code };
@@ -526,7 +526,7 @@ const HOST_PATH = '/api/__host/task-shell';
 function mountTaskShellHostRoute(app, options = {}) {
   if (!app || typeof app.post !== 'function') throw new TypeError('[task-shell-host] Express-compatible app is required');
   if (typeof options.getRuntime !== 'function') throw new TypeError('[task-shell-host] dependency missing: getRuntime');
-  const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+  const isLocal = options.isLocal || require('../native/binding').requestLocality.isLocalRequest;
   app.post(HOST_PATH, (req, res) => {
     if (!isLocal(req)) return res.status(404).json({ error: 'not found' });
     const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};

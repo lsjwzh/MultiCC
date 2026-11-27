@@ -311,3 +311,29 @@ pub fn cli_catalog_views(env: Env) -> Result<sys::napi_value> {
     )?;
     Ok(binding.raw())
 }
+
+/// Complete the shared catalogue with compatibility queries. The host retains
+/// watchFile's listener identity and resolves optional packages from the CLI.
+#[napi]
+pub fn cli_catalog_queries(
+    env: Env,
+    addon: Unknown<'_>,
+    api: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let owner = L::new(&env, addon);
+    let api = L::new(&env, api);
+    api.set(
+        c"knownEffort",
+        crate::host_methods::function(owner, "knownEffort", 1, 1, |s, a| {
+            call(s, c"cliKnownEffort", a)
+        })?,
+    )?;
+    api.set(
+        c"supportsEffort",
+        crate::host_methods::function(owner, "supportsEffort", 3, 3, |s, a| {
+            a[1] = fallback(a[1], V::from(""))?;
+            call(s, c"cliSupportsEffort", a)
+        })?,
+    )?;
+    Ok(api.raw())
+}

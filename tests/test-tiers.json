@@ -6164,6 +6164,15 @@
       ]
     },
     {
+      "path": "tests/test-shared-host-exports.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:core"
+      ]
+    },
+    {
       "path": "tests/test-shell-chat-continuity.js",
       "tier": "core",
       "lane": "deterministic",

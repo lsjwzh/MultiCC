@@ -866,3 +866,4 @@ pub fn cli_step_tracker(
         .call_plain(&[fields(step, &[("observe", observe), ("close", close)])?])?
         .raw())
 }
+mod public_api;

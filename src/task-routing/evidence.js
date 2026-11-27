@@ -3,7 +3,7 @@
 const { createHash } = require('node:crypto');
 const { createTaskFactsRepository } = require('../native/binding');
 const { observeCodeRevision, captureCodeRevision } = require('./code-revision');
-const { defaultRepoActor } = require('../repo-actor');
+const { defaultRepoActor } = require('../native/binding').repoActor;
 const fail = code => Object.assign(new Error(code), { code });
 const key = (...parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 

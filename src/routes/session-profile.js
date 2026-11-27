@@ -1,6 +1,6 @@
 'use strict';
 
-const { nameOf } = require('../cli/cli-capability');
+const { nameOf } = require('../native/binding').cliCapability;
 
 const crypto = require('crypto');
 const { getNative, assignHostProperty, auxVerdictStaleness } = require('../native/binding');

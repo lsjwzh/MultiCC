@@ -259,3 +259,4 @@ pub fn responses_history_api(env: Env) -> Result<sys::napi_value> {
     }
     Ok(api.raw())
 }
+mod public_api;

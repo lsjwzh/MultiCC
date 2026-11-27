@@ -26,7 +26,7 @@ const path = require('node:path');
 const { atomicWriteJson, ensurePrivateDir } = require('./runtime-security');
 const { DEFAULT_ROOT, ACCOUNT_ID_PATTERN } = require('./official-accounts');
 const { hasAccount: hasAgyAccountNative } = require('./agy-accounts');
-const { displayNameOf } = require('./cli/cli-capability');
+const { displayNameOf } = require('./native/binding').cliCapability;
 
 const KEY_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode']);
 const SESSION_ACCOUNT_CLIS = Object.freeze(['commandcode', 'opencode', 'agy']);

@@ -60,8 +60,8 @@ const gitPush = require('./plugins/utils/git-push');
 const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/git/queue');
 
 const crypto = require('crypto');
-const bus = require('./src/bus');
-const state = require('./src/state/container');
+const bus = require('./src/native/binding').eventBus;
+const state = require('./src/native/binding').stateContainer;
 const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
 const providers = require('./src/providers/host');
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
@@ -78,7 +78,7 @@ const { getNative, findProviderReferences, messageComposer, bootstrapState,
 const { createCliAdapters } = require('./src/cli-adapters');
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
-const { isResidentSession, displayNameOf, isAlias, bundledClaudeCodeBinary, nameOf: canonicalCli, watchEffortCatalog } = require('./src/cli/cli-capability');
+const { isResidentSession, displayNameOf, isAlias, bundledClaudeCodeBinary, nameOf: canonicalCli, watchEffortCatalog } = require('./src/native/binding').cliCapability;
 const { cliHandoffSummary, createCliSwitchRuntime } = require('./src/cli/switch-runtime');
 const { renderPrompt } = messageComposer;
 const {
@@ -108,7 +108,7 @@ const { createDirectoryTable } = require('./src/directory/records');
 const mountPublicSessionAccessGuard = (app, options) =>
   require('./src/native/binding').getNative().sessionPublicAccessApi().mountPublicSessionAccessGuard(app, options);
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
-const { createOrchestrationRuntime } = require('./src/orchestration/host');
+const { createOrchestrationRuntime } = require('./src/native/binding').orchestrationHost;
 const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
@@ -183,7 +183,7 @@ const {
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/classify/vocab');
 const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/task-domain');
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
-const { createProductionQuestionHost, createProductionWorkHost } = require('./src/session-work');
+const { createProductionQuestionHost, createProductionWorkHost } = require('./src/native/binding').sessionWork;
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/binding').getHostPrompts();
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
@@ -192,7 +192,7 @@ const { createClassifyStateMachine } = require('./src/classify/task-attribution'
 const { createAuxRunLog } = require('./src/classify/aux-run-log');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
 const { createProcessProbe } = require('./src/liveness/process-probe');
-const { createRolloutPathResolver } = require('./src/liveness/rollout-path');
+const { createRolloutPathResolver } = require('./src/native/binding').rolloutPath;
 const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
 const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
 const { createProviderLogWatchdog } = require('./src/chat/provider-log-watchdog');
@@ -225,7 +225,7 @@ const {
   retryNotice,
   sanitizeMessage: sanitizeApiErrorMessage,
   claudeErrorEnvelope,
-} = require('./src/chat');
+} = require('./src/native/binding').chatApi;
 const {
   createErrorDto,
   createWsEnvelope,
@@ -239,7 +239,7 @@ const {
   escapeHtmlAttribute,
 } = require('./src/auth-security');
 const { envEnabled, resolveNetworkPolicy, selectListenPort } = getNetworkPolicy();
-const { isLocalRequest, isPrivateRequestPeer } = require('./src/request-locality');
+const { isLocalRequest, isPrivateRequestPeer } = require('./src/native/binding').requestLocality;
 const { createObservability, installConsoleRedaction } = require('./src/observability');
 const { mountWsConnectionRouter } = require('./src/ws/connection-router');
 const { mountServerCoreHostRoute } = require('./src/routes/server-core-host');
@@ -539,7 +539,7 @@ const {
   gitWorktreeAdd, gitWorktreeDetach, gitWorktreeValidate, gitWorktreeRollbackCreate, gitWorktreeRemove, gitRelocateWorktree, gitWorktreeMergeState, gitMergeBack,
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
-} = require('./src/git/service');
+} = require('./src/native/binding').gitService;
 const { slotOwnsWorktree } = require('./src/task-worktree');
 
 // RepoActor operations are retained in a bounded in-memory history. Destructive
@@ -876,7 +876,7 @@ const {
 const sessions = new Map();
 
 // Publish the three core Maps to the shared state registry (same references).
-// Extracted modules read these via require('./src/state/container') — no bespoke injection.
+// Extracted modules read these via require('./src/native/binding').stateContainer — no bespoke injection.
 Object.assign(state, { sessions, directories, persistedSessions });
 
 function resolveCwd(current, arg) {
@@ -1682,7 +1682,7 @@ webpush.setVapidDetails('mailto:multicc@localhost', vapidKeys.pubKey, vapidKeys.
 // to src/push/service.js. VAPID init above stays here; web-push is a shared singleton so
 // push.js sends through the instance configured by setVapidDetails() above.
 const push = require('./src/push/service');
-const tunnel = require('./src/tunnel');
+const tunnel = require('./src/native/binding').tunnelMonitor;
 function reportHostControlFailure(component, stage, category) {
   metrics.inc('multicc_host_control_failures_total');
   if (category === 'compensation_failed') metrics.inc('multicc_host_control_compensation_failures_total');
@@ -2398,7 +2398,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
   },
 });
 
-const airSync = require('./src/workspace/air-routes').mountAirRoutes(app, {
+const airSync = require('./src/native/binding').airRoutes.mountAirRoutes(app, {
   storageNotice: airNotices.storageNotice,
   admission: workspaceAdmission, hibernation: () => sessionHibernationRuntime,
   logger, send: sendWs, subscribe: workspaceRuntime.subscribe, registerSync: workspaceRuntime.setAirSync,

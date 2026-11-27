@@ -1,6 +1,6 @@
 'use strict';
 
-const { createStepCompletionTracker } = require('./completion');
+const { createStepCompletionTracker } = require('../native/binding').cliCompletion;
 
 // 专用 ZCode adapter —— 直接驱动官方 ZCode 桌面版内的 headless 引擎 zcode.cjs。
 //
@@ -18,7 +18,7 @@ const { isZcodeSessionId } = require('../native/binding');
 
 const BRIDGE = path.join(__dirname, 'zcode-bridge.cjs');
 const TERMINAL_BRIDGE = path.join(__dirname, 'zcode-terminal.cjs');
-const { displayNameOf } = require('../cli/cli-capability');
+const { displayNameOf } = require('../native/binding').cliCapability;
 const LABEL = displayNameOf('zcode');
 const shellArg = value => JSON.stringify(String(value));
 

@@ -34,7 +34,7 @@ const { createPluginInstaller } = require('../plugins/installer');
 const { createChannelHost, normalizeChannel } = require('../plugins/channel-host');
 const channelRegistry = require('../plugins/channel-registry');
 const { mountPluginsHostRoute } = require('./plugins-host');
-const { isLocalRequest: isLocalPeer } = require('../request-locality');
+const { isLocalRequest: isLocalPeer } = require('../native/binding').requestLocality;
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const COMMAND_PATTERN = /^[a-z][a-z0-9-]*$/i;

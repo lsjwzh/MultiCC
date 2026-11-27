@@ -11,7 +11,7 @@ const { gatewayPath } = require('../native/binding');
 // session/cancel. Session ids (ses_…) are the same ids `opencode run --session`
 // uses, so conversations started on the old JSON lane resume unchanged.
 // MULTICC_OPENCODE_LEGACY_JSON=1 restores the `run --format json` lane.
-const { displayNameOf, supportsEffort } = require('../cli/cli-capability');
+const { displayNameOf, supportsEffort } = require('../native/binding').cliCapability;
 
 const LABEL = displayNameOf('opencode');
 

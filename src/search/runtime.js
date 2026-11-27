@@ -351,7 +351,7 @@ function createSearchRuntime({
 // free of a new port and makes the default a no-op in tests, which never populate
 // the registry.
 function defaultResolveDirId(sessionId) {
-  const state = require('../state/container');
+  const state = require('../native/binding').stateContainer;
   const records = state.persistedSessions;
   if (!records || typeof records.get !== 'function') return '';
   const record = records.get(String(sessionId));

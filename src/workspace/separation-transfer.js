@@ -1,6 +1,6 @@
 'use strict';
 
-const { gitWorktreeSplitOff } = require('../git/service');
+const { gitWorktreeSplitOff } = require('../native/binding').gitService;
 
 // Task separation moves the source conversation's live checkout into the new
 // task (see gitWorktreeSplitOff for the Git side of the move). This module owns

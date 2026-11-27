@@ -1,6 +1,6 @@
 'use strict';
 
-const { nameOf } = require('../cli/cli-capability');
+const { nameOf } = require('../native/binding').cliCapability;
 
 const { getNative } = require('../native/binding');
 const { sanitizePublicText } = require('../native/binding').getSessionDto();

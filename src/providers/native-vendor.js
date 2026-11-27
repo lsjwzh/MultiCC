@@ -12,7 +12,7 @@
 // native providers, and its wire model carries the `<provider>/<model>` prefix.
 // The vendors here have a single catalog and a bare model id.
 
-const { displayNameOf } = require('../cli/cli-capability');
+const { displayNameOf } = require('../native/binding').cliCapability;
 const { getVendorCatalog } = require('../routes/model-catalogs-host');
 const { peekAgyModels } = require('../routes/agy-models');
 

@@ -1,9 +1,4 @@
 'use strict';
 
-const { getNative } = require('../../native/binding');
-module.exports = getNative().taskBoardCoreApi({
-  planning: require('../planning'),
-  normalize: require('../normalize'),
-  bridge: require('../native-bridge'),
-  routing: require('../routing'),
-});
+// Legacy import path used by external tools and pre-migration consumers.
+module.exports = require('../../native/binding').loadLegacyHostApi('taskBoardCore', module);

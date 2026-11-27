@@ -11,7 +11,7 @@
 
 const { getNative } = require('./native/binding');
 const { repairZcodeSessionState } = require('./native/binding');
-const { isResidentSession, providerlessClis, isDeprecated } = require('./cli/cli-capability');
+const { isResidentSession, providerlessClis, isDeprecated } = require('./native/binding').cliCapability;
 const { nativeVendorOf } = require('./providers/native-vendor');
 const { nativeOpenCodeId } = require('./native/binding').getNativeOpenCodeCatalog();
 

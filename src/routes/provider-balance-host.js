@@ -3,7 +3,7 @@
 // 迁移期宿主桥接：provider store、凭据/刷新器、额度缓存与通知。
 // 公开路由、厂商 HTTP、查询编排、去重和失败回退由 Rust 前门执行。
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
-const { isLocalRequest } = require('../request-locality');
+const { isLocalRequest } = require('../native/binding').requestLocality;
 const { outboundFetch } = require('../network/outbound');
 const { providerLimitSnapshot, getNative } = require('../native/binding');
 const HOST_PATH = '/api/__host/provider-balance';

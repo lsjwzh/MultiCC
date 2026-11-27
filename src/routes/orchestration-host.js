@@ -134,7 +134,7 @@ function createOrchestrationHost(deps = {}) {
     if (!expressApp || typeof expressApp.post !== 'function') {
       throw new TypeError('[orchestration-host] Express app is required');
     }
-    const isLocal = options.isLocal || require('../request-locality').isLocalRequest;
+    const isLocal = options.isLocal || require('../native/binding').requestLocality.isLocalRequest;
     expressApp.post(HOST_PATH, (req, res) => {
       // 只认回环。前门转发到内网端口时写的是真实对端地址，远端客户端在这里就被挡住。
       if (!isLocal(req)) return res.status(404).json({ error: 'not found' });

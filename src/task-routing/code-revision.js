@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { defaultRepoActor } = require('../repo-actor');
+const { defaultRepoActor } = require('../native/binding').repoActor;
 const { getNative, runNative } = require('../native/binding');
 const digest = value => createHash('sha256').update(value).digest('hex');
 

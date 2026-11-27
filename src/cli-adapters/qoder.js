@@ -1,6 +1,6 @@
 'use strict';
 
-const { createResultCompletionTracker, isMainResult, resultCompletion } = require('./result-completion');
+const { createResultCompletionTracker, isMainResult, resultCompletion } = require('../native/binding').cliResultCompletion;
 
 const { renderPrompt } = require('../native/binding').messageComposer;
 const { claudeLikeMcpArgs } = require('./router-mcp');
@@ -10,7 +10,7 @@ const { claudeLikeMcpArgs } = require('./router-mcp');
  * line and session lifecycle are distinct. Keep those details here instead of
  * teaching the host about another vendor protocol.
  */
-const { supportsEffort } = require('../cli/cli-capability');
+const { supportsEffort } = require('../native/binding').cliCapability;
 
 function qoderEffortLevel(session) {
   const value = String(session?.effort || '').trim().toLowerCase();

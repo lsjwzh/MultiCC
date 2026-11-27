@@ -22,10 +22,10 @@
 
 const { renderPrompt } = require('../native/binding').messageComposer;
 const { claudeLikeMcpArgs } = require('./router-mcp');
-const { createCompletionTracker } = require('./completion');
+const { createCompletionTracker } = require('../native/binding').cliCompletion;
 const { getNative } = require('../native/binding');
 
-const { displayNameOf } = require('../cli/cli-capability');
+const { displayNameOf } = require('../native/binding').cliCapability;
 const LABEL = displayNameOf('kimi');
 
 function numberOrUndefined(value) {

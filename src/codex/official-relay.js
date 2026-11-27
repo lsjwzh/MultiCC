@@ -22,7 +22,7 @@ const { markStage } = require('./proxy-trace');
 const {
   normalizeResponsesHistory,
   repairRejectedResponsesHistory,
-} = require('../model-history-converter');
+} = require('../native/binding').modelHistoryConverter;
 const { publicTransportError, publicUpstreamError, readUpstreamError } = require('../upstream-error');
 
 const DEFAULT_AUTH_FILE = path.join(os.homedir(), '.codex', 'auth.json');

@@ -107,7 +107,9 @@ test('isolated Rust completion handles 1,000 queued records without stalling Nod
 // clock observation; see test-scheduler-complete-order.js for that regression.
 test('scheduler completion is a Rust command with no JavaScript domain mutation', () => {
   const bridge = fs.readFileSync(path.join(__dirname, '../src/session-work/index.js'), 'utf8');
-  assert.match(bridge, /native\.sessionWorkSchedulerApi\(/);
+  assert.match(bridge, /loadLegacyHostApi\('sessionWork'/);
+  const owner = fs.readFileSync(path.join(__dirname, '../native/addon/src/session_work_host.rs'), 'utf8');
+  assert.match(owner, /call\(s, c"sessionWorkSchedulerApi",/);
   assert.doesNotMatch(bridge, /draft\.|compactJson|admitOutboxItem|stableEntryId/);
   assert.equal(fs.existsSync(path.join(__dirname, '../src/session-work/scheduler.js')), false);
   const command = fs.readFileSync(path.join(__dirname, '../native/addon/src/session_work_scheduler/operations.rs'), 'utf8');

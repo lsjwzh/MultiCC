@@ -22,7 +22,7 @@
 // held longer than expected, so a never-ending task cannot keep the turn open
 // silently.
 
-const { isMainResult } = require('../cli-adapters/result-completion');
+const { isMainResult } = require('../native/binding').cliResultCompletion;
 const { getNative } = require('../native/binding');
 
 const QUIET_MS = 5000;

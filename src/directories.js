@@ -8,9 +8,9 @@
 // by destructuring, so existing call sites are unchanged.
 const fs = require('fs');
 const path = require('path');
-const state = require('./state/container');
+const state = require('./native/binding').stateContainer;
 const { gitIsRepo, gitRun, WORKTREE_SUBDIR, isDeveloperToolsMissingGitError }
-  = require('./git/service');
+  = require('./native/binding').gitService;
 // Shared with src/paths.js — the robust, symlink-ancestor-aware implementations.
 // (Previously duplicated here with a bare fs.realpathSync that threw for
 // not-yet-existing paths and did not collapse ancestor symlinks.)

@@ -176,3 +176,68 @@ pub fn history_assert_deps(env: Env, deps: Unknown<'_>) -> Result<sys::napi_valu
     }
     Ok(d.raw())
 }
+
+#[napi]
+pub fn chat_history_service_api(env: Env, addon: Unknown<'_>) -> Result<sys::napi_value> {
+    let n = L::new(&env, addon);
+    let lazy = function(n, "withLazyMessages", 2, 2, |n, a| {
+        let owner = fields(n, &[("snapshot", call(a[1], c"slice", &[])?)])?;
+        let getter = function(owner, "get", 0, 0, |s, _| {
+            let value = s.get(c"cloned")?;
+            if !value.undefined()? {
+                return Ok(value);
+            }
+            let json = s.global()?.get(c"JSON")?;
+            let value = call(
+                json,
+                c"parse",
+                &[call(json, c"stringify", &[s.get(c"snapshot")?])?],
+            )?;
+            s.set(c"cloned", value)?;
+            Ok(value)
+        })?;
+        let desc = fields(n, &[("enumerable", flag(n, true)?), ("get", getter)])?;
+        call(
+            n.global()?.get(c"Object")?,
+            c"defineProperty",
+            &[a[0], text(n, "messages")?, desc],
+        )?;
+        a[0].freeze()
+    })?;
+    let owner = fields(n, &[("native", n), ("lazy", lazy)])?;
+    let api = fields(
+        n,
+        &[(
+            "cleanThinkingBlocks",
+            function(n, "cleanThinkingBlocks", 1, 1, |s, a| {
+                call(s, c"chatHistoryCleanThinkingBlocks", a)
+            })?,
+        )],
+    )?;
+    for (name, with_owner) in [
+        ("createChatHistoryService", false),
+        ("createChatHistoryServiceWithOwner", true),
+    ] {
+        api.set_key(
+            text(n, name)?,
+            function(owner, name, 0, 1, move |s, a| {
+                let n = s.get(c"native")?;
+                let result = call(
+                    n,
+                    c"historyServiceWithOwner",
+                    &[
+                        n,
+                        crate::host_methods::default_object(a[0])?,
+                        s.get(c"lazy")?,
+                    ],
+                )?;
+                if with_owner {
+                    Ok(result)
+                } else {
+                    result.get(c"service")
+                }
+            })?,
+        )?;
+    }
+    Ok(api.raw())
+}

@@ -179,7 +179,7 @@ function createTaskGraphContextService(deps) {
         const task = board.tasks?.[id];
         return task ? { ...task, dirId: task.dirId || board.modules?.[task.moduleId]?.dirId } : null;
       },
-      groupOf: id => require('../task-board/core/index').relatedTaskGroup(board, id),
+      groupOf: id => require('../native/binding').taskBoardCore.relatedTaskGroup(board, id),
       linkedTaskIds: () => links.sort((a, b) => (tasks.get(b)?.createdAt || 0) - (tasks.get(a)?.createdAt || 0)),
       snapshot: id => read(() => deps.getSnapshot?.(id), null),
       readTaskMemory: (dirId, id) => read(() => deps.readTaskMemory?.(dirId, id), ''),
