@@ -863,6 +863,17 @@ exposeHostApi('repoActor', () => {
   });
 });
 
+exposeHostApi('missingResumeRecovery', () => {
+  class MissingResumeRecoveryError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.name = 'MissingResumeRecoveryError';
+      this.code = code;
+    }
+  }
+  return getNative().missingResumeRecoveryApi(MissingResumeRecoveryError);
+});
+
 exposeHostApi('gitQueue', () => getNative().defaultGitQueue(module.exports.repoActor.defaultRepoActor));
 
 exposeHostApi('gitService', () => getNative().gitServiceApi(module.exports.repoActor.defaultRepoActor, process.execPath,
