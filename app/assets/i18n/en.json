@@ -328,6 +328,7 @@
   "workProgressIssue": "A processing step had an issue",
   "workProgressChecked": "Processing steps completed",
   "technicalDetailsCount": "Technical details · {n}",
+  "toolStepsProgress": "Progress · {done}/{total}",
   "clearConnectionHistory": "Clear Connection History",
   "clearConnectionHistoryBody": "This removes all remembered server addresses and tokens. The current connection is not affected.",
   "clearAction": "Clear",

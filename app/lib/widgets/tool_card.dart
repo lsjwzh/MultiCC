@@ -10,14 +10,25 @@ import 'run_config/run_labels.dart';
 
 const Map<String, String> _kToolIcons = {
   'Bash': '>_',
+  'run_command': '>_',
   'Read': '📄',
+  'read_file': '📄',
   'Edit': '✏️',
+  'edit_file': '✏️',
   'Write': '💾',
+  'write_file': '💾',
   'Glob': '🔍',
+  'find_by_name': '🔍',
   'Grep': '🔎',
+  'grep_search': '🔎',
   'Agent': '🤖',
+  'Task': '🤖',
+  'invoke_subagent': '🤖',
   'WebFetch': '🌐',
   'WebSearch': '🌐',
+  'search_web': '🌐',
+  'update_steps': '☑️',
+  'TodoWrite': '☑️',
 };
 
 String toolIconFor(String name) => _kToolIcons[name] ?? '⚙️';
