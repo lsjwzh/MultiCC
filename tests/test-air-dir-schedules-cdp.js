@@ -336,3 +336,24 @@ test('on a phone the sheet rises from the bottom and the toolbar wraps', async t
     await page.screenshot('mobile-sheet.png');
   });
 });
+
+test('direct /air?view=schedules loads rules under liveSync and header refresh reloads them', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const { routes, rules } = buildRoutes();
+  await withCdpHarness({ routes, screenshotDir: path.join(os.tmpdir(), 'multicc-air-schedules-direct') }, async page => {
+    await page.send('Network.setBlockedURLs', { urls: ['https://cdn.jsdelivr.net/*'] });
+    await page.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 860, deviceScaleFactor: 1, mobile: false });
+    await page.navigate('/air?view=schedules&dir=d1');
+
+    assert.ok(await page.waitFor(`document.getElementById('schedule-center')?.hidden === false`), '定时任务中心已展示');
+    assert.ok(await page.waitFor(`document.querySelectorAll('#schedule-list .schedule-card').length === 3`),
+      '直达 /air?view=schedules 在 liveSync 模式下必须拉取并渲染定时任务列表');
+    assert.equal(await page.evaluate(`document.querySelector('#schedule-list .schedule-card h3').textContent`), '每日投放数据');
+
+    // 手动点击页头刷新按钮（即使 /api/air/sync 游标未变）也应重拉 /api/cron。
+    rules[0].name = '每日投放数据（已刷新）';
+    await click(page, `document.getElementById('refresh')`);
+    assert.ok(await page.waitFor(`document.querySelector('#schedule-list .schedule-card h3')?.textContent === '每日投放数据（已刷新）'`),
+      '点击刷新按钮必须重拉定时任务列表');
+  });
+});
