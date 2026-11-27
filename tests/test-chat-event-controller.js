@@ -145,6 +145,8 @@ function controllerFixture(hostOverrides) {
     findByClientMsgId(clientMsgId) { return clientMessages.get(clientMsgId) || null; },
     visibleIds() { return []; },
     clearMessages() { calls.push('clear'); },
+    renderStepsProgress(_content, steps) { calls.push(['steps-progress', steps]); },
+    removeStepsProgress() { calls.push(['steps-remove']); },
   };
   const historyStore = {
     acceptHistory(message) { calls.push(['history', message.messages?.length || 0]); return { message }; },
@@ -2308,4 +2310,49 @@ test('cli_switched announces an inherited sub-agent route change in plain words'
   fixture.calls.length = 0;
   fixture.controller.handleEvent(base, generation);
   assert.equal(systemTexts().length, 1);
+});
+
+test('反重力工具摘要支持 PascalCase 字段，重连 adoptStreamingBubble 会恢复运行中工具与步骤进度', () => {
+  const fixture = controllerFixture();
+  const generation = fixture.controller.beginGeneration();
+  fixture.content.classList.add('streaming-dot');
+  fixture.controller.handleEvent({ type: 'stream_event', event: { type: 'message_start' } }, generation);
+
+  // Live agy run_command with PascalCase CommandLine + toolSummary
+  fixture.controller.handleEvent({
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use', id: 'agy_step_10', name: 'run_command',
+        input: { CommandLine: 'cargo test -- agy', toolSummary: '编译并跑 agy 测试' },
+      }],
+    },
+  }, generation);
+  const status = fixture.bubble.querySelectorAll('.msg-stream-tail-status')[0];
+  assert.equal(status.textContent, 'run_command · 编译并跑 agy 测试');
+
+  // Reconnect adoption restores running tool status and update_steps progress
+  const reconnect = controllerFixture();
+  reconnect.state.currentToolCards = new Map([
+    ['history:s1', {
+      id: 's1', name: 'update_steps', endedAt: 1000,
+      inputJson: JSON.stringify({ steps: [{ title: '步骤一', status: 'done' }, { title: '步骤二', status: 'in_progress' }] }),
+      card: { classList: { contains: () => false } },
+    }],
+    ['history:s2', {
+      id: 's2', name: 'run_command', endedAt: null,
+      inputJson: JSON.stringify({ CommandLine: 'npm run build:rust', toolSummary: '构建 Rust' }),
+      card: { classList: { contains: cls => cls === 'tool-running' } },
+    }],
+  ]);
+  reconnect.controller.adoptStreamingBubble(reconnect.bubble);
+  const adoptedStatus = reconnect.bubble.querySelectorAll('.msg-stream-tail-status')[0];
+  assert.equal(adoptedStatus.textContent, 'run_command · 构建 Rust', '重连后蓝点旁应立即恢复正在运行的工具');
+  const adoptedStepsCall = reconnect.calls.find(c => Array.isArray(c) && c[0] === 'steps-progress');
+  assert.equal(adoptedStepsCall?.[1]?.length, 2, '重连后应恢复最新 update_steps 进度清单');
+
+  // Finishing with text removes temporary live steps panel
+  fixture.state.currentTextContent = '已完成';
+  fixture.controller.finishStreaming();
+  assert.ok(fixture.calls.some(c => Array.isArray(c) && c[0] === 'steps-remove'));
 });

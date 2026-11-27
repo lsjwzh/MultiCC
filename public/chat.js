@@ -1114,9 +1114,9 @@ function applyHistoryPlan(plan) {
     if (tail.element) {
       isStreaming = true;
       currentMsgEl = tail.element;
-      chatEventController?.adoptStreamingBubble?.(tail.element);
       currentTextContent = tail.content;
       currentToolCards = tail.toolCards;
+      chatEventController?.adoptStreamingBubble?.(tail.element);
       hideThinking();
       startTitleAnimation();
       updateUI();
