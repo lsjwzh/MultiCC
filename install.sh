@@ -332,9 +332,16 @@ ok "Architecture: ${ARCH}"
 # The standalone .app is a shell launcher; the Electron .app is a different
 # product with a different signing identity and data root. Never infer its
 # kind from the name MultiCC.app or from the shared Resources layout.
+plist_value() {
+  local value
+  [ -f "$1" ] || return 0
+  # plutil 的 raw 输出从 macOS 12 才提供；独立包也支持 macOS 11。
+  value="$(/usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null)" || return 0
+  printf '%s\n' "$value"
+}
 app_identifier() {
-  [ "$PLATFORM" = darwin ] && [ -f "$1/Contents/Info.plist" ] || return 0
-  plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null || true
+  [ "$PLATFORM" = darwin ] || return 0
+  plist_value "$1/Contents/Info.plist" CFBundleIdentifier
 }
 desktop_release_url() {
   case "$VERSION" in
@@ -376,7 +383,7 @@ if [ -z "$INSTALL_DIR" ]; then
   find_standalone_choice "$PWD"
   find_standalone_choice "${MULTICC_STANDALONE_ROOT:-}"
   if [ "$PLATFORM" = darwin ]; then
-    configured_runtime="$(plutil -extract ProgramArguments.0 raw -o - "${HOME}/Library/LaunchAgents/com.multicc.server.plist" 2>/dev/null || true)"
+    configured_runtime="$(plist_value "${HOME}/Library/LaunchAgents/com.multicc.server.plist" ProgramArguments:0)"
     case "$configured_runtime" in
       */MultiCC.app/Contents/Resources/runtime/bin/node)
         find_standalone_choice "${configured_runtime%/MultiCC.app/Contents/Resources/runtime/bin/node}" ;;
@@ -579,7 +586,7 @@ INSTALL_LOCK_DIR="$installation_lock"
 pause_selected_service() {
   [ "$PLATFORM" = darwin ] && [ -f "$UPGRADE_PLIST" ] || return 0
   local configured loaded
-  configured="$(plutil -extract ProgramArguments.0 raw -o - "$UPGRADE_PLIST" 2>/dev/null || true)"
+  configured="$(plist_value "$UPGRADE_PLIST" ProgramArguments:0)"
   if [ "$configured" != "$INSTALL_DIR/$RUNTIME_REL" ]; then
     warn "开机服务属于另一个安装，本次保留其配置和运行状态。"
     NO_SERVICE=true
@@ -588,7 +595,7 @@ pause_selected_service() {
   # list -x gives the actual registered arguments, not merely the plist a user
   # may have edited after loading it. A loaded but unidentifiable job is unsafe.
   if launchctl list -x com.multicc.server > "$STAGE_DIR/loaded-service.plist" 2>/dev/null; then
-    loaded="$(plutil -extract ProgramArguments.0 raw -o - "$STAGE_DIR/loaded-service.plist" 2>/dev/null || true)"
+    loaded="$(plist_value "$STAGE_DIR/loaded-service.plist" ProgramArguments:0)"
     if [ "$loaded" != "$configured" ]; then
       err "已加载的开机服务与目标安装不一致，已停止升级，未替换文件。"
       exit 1
