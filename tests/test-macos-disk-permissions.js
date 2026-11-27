@@ -263,8 +263,8 @@ const NO_TOOLS = 'Command failed: git init\n'
   // ── wiring locks ──
   {
     const cli = read('scripts/standalone-cli.js');
-    ok(/dequarantine\(dest,\s*\{\s*platform/.test(cli),
-      'wiring: the packager strips quarantine from a freshly extracted bundle');
+    ok(/return runUnixInstaller\(\{[^}]*\bbundleRoot\b[^}]*\btargetVersion\b/.test(cli),
+      'wiring: the standalone updater delegates macOS bundle preparation to the Unix installer');
     ok(/translocationGuidance\(layout\.resources\)/.test(cli),
       'wiring: the CLI warns when it runs from an AppTranslocation path');
     ok(/<key>MULTICC_SERVICE<\/key><string>1<\/string>/.test(cli) && /Environment=MULTICC_SERVICE=1/.test(cli),
