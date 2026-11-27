@@ -11,6 +11,7 @@ import '../theme.dart';
 import '../utils/format.dart';
 import '../models/message.dart';
 import '../models/role_tokens.dart';
+import '../models/tool_input_view.dart';
 import '../providers/chat_provider.dart';
 import '../services/annotation_inbox.dart';
 import '../services/download_ticket_service.dart';
@@ -747,6 +748,8 @@ class _AssistantBubble extends StatelessWidget {
                       text: message.content,
                       isStreaming: message.isStreaming,
                     ),
+                  if (hasTools && (message.isStreaming || !hasText))
+                    _LiveStepsCard(toolCalls: message.toolCalls),
                   if (hasTools)
                     _BasicToolSummary(
                       toolCalls: message.toolCalls,
@@ -754,6 +757,8 @@ class _AssistantBubble extends StatelessWidget {
                       timeline: message.timeline,
                       showTrajectory: !advancedMode,
                     ),
+                  if (hasTools && message.isStreaming)
+                    _LiveRunningToolRow(toolCalls: message.toolCalls),
                   if ((hasTools || hasTimeline) && advancedMode)
                     ToolTrajectory(
                       toolCalls: message.toolCalls,
@@ -893,6 +898,149 @@ class _TaskAttributionTail extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Compact live step checklist surfaced above collapsed tool details when the
+/// model reports progress via `update_steps` or `TodoWrite` (mirrors Web's
+/// `.tool-steps-live`).
+class _LiveStepsCard extends StatelessWidget {
+  const _LiveStepsCard({required this.toolCalls});
+  final List<ToolCall> toolCalls;
+
+  List<ToolStepItem>? _latestSteps() {
+    for (var i = toolCalls.length - 1; i >= 0; i--) {
+      final tc = toolCalls[i];
+      if (!kStepToolNames.contains(tc.name)) continue;
+      final steps = normalizeStepItems(tc.parsedInput);
+      if (steps != null) return steps;
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final steps = _latestSteps();
+    if (steps == null || steps.isEmpty) return const SizedBox.shrink();
+    final done = steps.where((s) => s.status == 'done').length;
+    return Container(
+      key: const ValueKey('live-steps-card'),
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFf8fbff),
+        border: Border.all(color: const Color(0xFFdce6f1)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            t('toolStepsProgress', {'done': '$done', 'total': '${steps.length}'}),
+            style: const TextStyle(
+              color: Color(0xFF6f8096),
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          for (final step in steps)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 1.5),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 16,
+                    child: Text(
+                      kStepStatusIcons[step.status] ?? '○',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: switch (step.status) {
+                          'done' => const Color(0xFF1e8a55),
+                          'in_progress' => const Color(0xFF1267b5),
+                          'failed' => const Color(0xFFb64e43),
+                          _ => const Color(0xFF6f8096),
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      step.title,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.4,
+                        fontWeight: step.status == 'in_progress'
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                        color: switch (step.status) {
+                          'done' || 'skipped' => const Color(0xFF6f8096),
+                          'failed' => const Color(0xFFb64e43),
+                          _ => const Color(0xFF20364d),
+                        },
+                        decoration: step.status == 'skipped'
+                            ? TextDecoration.lineThrough
+                            : TextDecoration.none,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Surfaces the currently running non-Thinking tool under the collapsed summary
+/// while streaming so a tool-only turn never reads as an opaque blank box.
+class _LiveRunningToolRow extends StatelessWidget {
+  const _LiveRunningToolRow({required this.toolCalls});
+  final List<ToolCall> toolCalls;
+
+  ToolCall? _activeTool() {
+    for (var i = toolCalls.length - 1; i >= 0; i--) {
+      final tc = toolCalls[i];
+      if (!tc.isDone && tc.name != 'Thinking') return tc;
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active = _activeTool();
+    if (active == null) return const SizedBox.shrink();
+    final summary = active.description;
+    final label = summary.isNotEmpty ? '${active.name} · $summary' : active.name;
+    return Padding(
+      key: const ValueKey('live-running-tool-row'),
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            margin: const EdgeInsets.only(left: 2, right: 8),
+            decoration: const BoxDecoration(
+              color: Color(0xFF1267b5),
+              shape: BoxShape.circle,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Color(0xFF6f8096), fontSize: 12),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -15,8 +15,23 @@
     || (typeof globalThis !== 'undefined' && globalThis.MultiCCFormat)
     || (typeof require === 'function' ? require('./shared/format.js') : null);
   const TOOL_ICONS = Object.freeze({
-    Bash: '>', Read: '📄', Edit: '✎', Write: '💾',
-    Glob: '🔍', Grep: '🔎', Agent: '🤖',
+    Bash: '>', run_command: '>',
+    Read: '📄', read_file: '📄',
+    Edit: '✎', edit_file: '✎',
+    Write: '💾', write_file: '💾',
+    Glob: '🔍', find_by_name: '🔍',
+    Grep: '🔎', grep_search: '🔎',
+    WebFetch: '🌐', WebSearch: '🌐', search_web: '🌐',
+    Agent: '🤖', Task: '🤖', invoke_subagent: '🤖',
+    update_steps: '☑', TodoWrite: '☑',
+  });
+  const STEP_TOOL_NAMES = new Set(['update_steps', 'TodoWrite']);
+  const STEP_STATUS_ICONS = Object.freeze({
+    done: '✓',
+    in_progress: '▶',
+    failed: '✕',
+    skipped: '–',
+    pending: '○',
   });
 
   function asText(value) {
@@ -81,6 +96,60 @@
     return FMT.formatDuration(ms);
   }
 
+  function normalizeStepStatus(raw) {
+    const s = asText(raw).trim().toLowerCase();
+    if (s === 'done' || s === 'completed') return 'done';
+    if (s === 'in_progress' || s === 'running') return 'in_progress';
+    if (s === 'failed' || s === 'error') return 'failed';
+    if (s === 'skipped' || s === 'cancelled') return 'skipped';
+    return 'pending';
+  }
+
+  function normalizeStepItems(parsed) {
+    const p = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    if (!p) return null;
+    const raw = Array.isArray(p.steps) ? p.steps : (Array.isArray(p.todos) ? p.todos : null);
+    if (!raw || !raw.length) return null;
+    const items = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue;
+      const status = normalizeStepStatus(item.status);
+      const title = asText(
+        (status === 'in_progress' && item.activeForm)
+          ? item.activeForm
+          : (item.title || item.content || item.activeForm || '')
+      ).replace(/\s+/g, ' ').trim();
+      if (!title) continue;
+      items.push({ title, status });
+    }
+    return items.length ? items : null;
+  }
+
+  function formatStepsSummary(steps) {
+    if (!Array.isArray(steps) || !steps.length) return '';
+    const done = steps.filter(step => step.status === 'done').length;
+    const active = steps.find(step => step.status === 'in_progress');
+    if (active) return `${done}/${steps.length} · ${active.title}`;
+    const failed = steps.find(step => step.status === 'failed');
+    if (failed) return `${done}/${steps.length} · ${failed.title}`;
+    if (done === steps.length) return `${done}/${steps.length} 已完成`;
+    return `${done}/${steps.length}`;
+  }
+
+  function extractToolSummary(name, parsed) {
+    const p = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    if (STEP_TOOL_NAMES.has(name)) {
+      const steps = normalizeStepItems(p);
+      if (steps) return formatStepsSummary(steps);
+    }
+    const pick = p.description || p.toolSummary || p.command || p.CommandLine || p.cmd
+      || p.pattern || p.Query || p.query
+      || p.file_path || p.path || p.Path || p.TargetFile || p.AbsolutePath
+      || p.DirectoryPath || p.SearchPath
+      || p.url || p.prompt || p.Prompt || p.Role || '';
+    return asText(pick).replace(/\s+/g, ' ').trim();
+  }
+
   // Render a tool's input as a typed, human-readable preview instead of a raw
   // JSON blob (DSH ToolRow: terminal / file / diff / web / agent views). Every
   // field is coerced through asText and the result is assigned to textContent,
@@ -88,23 +157,34 @@
   // text, never parsed as HTML. Unknown tool names fall back to pretty JSON.
   function renderToolInput(name, parsed) {
     const p = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-    const file = asText(p.file_path || p.path);
+    const file = asText(p.file_path || p.path || p.Path || p.TargetFile || p.AbsolutePath || p.DirectoryPath || p.SearchPath);
     switch (name) {
       case 'Bash':
-        return '$ ' + asText(p.command || p.cmd || '');
+      case 'run_command':
+        return '$ ' + asText(p.command || p.CommandLine || p.cmd || '');
       case 'Read':
+      case 'read_file':
         return file + rangeSuffix(p);
       case 'Glob':
-        return asText(p.pattern || '') + (file ? '\nin ' + file : '');
+      case 'find_by_name':
+        return asText(p.pattern || p.Pattern || '') + (file ? '\nin ' + file : '');
       case 'Grep':
-        return '/' + asText(p.pattern || '') + '/' + (file ? '  ' + file : '')
+      case 'grep_search':
+        return '/' + asText(p.pattern || p.Query || '') + '/' + (file ? '  ' + file : '')
           + (p.include ? ' --include=' + asText(p.include) : '')
           + (p['-i'] || p.case_insensitive ? ' -i' : '');
       case 'Write':
-        return file + (p.content != null ? '\n' + asText(p.content) : '');
+      case 'write_file': {
+        const body = p.content != null ? p.content : p.Content;
+        return file + (body != null ? '\n' + asText(body) : '');
+      }
       case 'Edit':
-        return file + diffBlock(asText(p.old_string), asText(p.new_string))
+      case 'edit_file': {
+        const oldStr = p.old_string != null ? p.old_string : p.Target;
+        const newStr = p.new_string != null ? p.new_string : p.Replacement;
+        return file + diffBlock(asText(oldStr), asText(newStr))
           + (p.replace_all ? '\n(replace all)' : '');
+      }
       case 'MultiEdit': {
         const edits = Array.isArray(p.edits) ? p.edits : [];
         let out = file;
@@ -115,10 +195,21 @@
       }
       case 'WebFetch':
       case 'WebSearch':
-        return asText(p.url || p.query || '') + (p.prompt ? '\n' + asText(p.prompt) : '');
+      case 'search_web':
+        return asText(p.url || p.query || p.Query || '') + (p.prompt ? '\n' + asText(p.prompt) : '');
       case 'Agent':
       case 'Task':
-        return asText(p.description || '') + (p.prompt ? '\n' + asText(p.prompt) : '');
+      case 'invoke_subagent': {
+        const desc = asText(p.description || p.Role || '');
+        const prompt = p.prompt != null ? p.prompt : p.Prompt;
+        return desc + (prompt != null ? '\n' + asText(prompt) : '');
+      }
+      case 'update_steps':
+      case 'TodoWrite': {
+        const steps = normalizeStepItems(p);
+        if (!steps) return JSON.stringify(parsed, null, 2);
+        return steps.map(step => `[${STEP_STATUS_ICONS[step.status] || '○'}] ${step.title}`).join('\n');
+      }
       default:
         return JSON.stringify(parsed, null, 2);
     }
@@ -126,8 +217,13 @@
 
   function rangeSuffix(p) {
     const o = p.offset, l = p.limit;
-    if (o == null && l == null) return '';
-    return '\n(offset: ' + asText(o) + (l != null ? ', limit: ' + asText(l) : '') + ')';
+    if (o != null || l != null) {
+      return '\n(offset: ' + asText(o) + (l != null ? ', limit: ' + asText(l) : '') + ')';
+    }
+    const s = p.StartLine, e = p.EndLine;
+    if (s == null && e == null) return '';
+    if (s != null && e != null) return '\n(lines: ' + asText(s) + '-' + asText(e) + ')';
+    return '\n(line: ' + asText(s != null ? s : e) + ')';
   }
 
   function diffBlock(oldStr, newStr, tag) {
@@ -327,6 +423,62 @@
       return card;
     }
 
+    function findMsgContent(node) {
+      let cur = node;
+      while (cur) {
+        if (cur.classList && cur.classList.contains('msg-content')) return cur;
+        cur = cur.parentNode || null;
+      }
+      return null;
+    }
+
+    function removeStepsProgress(contentEl) {
+      if (!contentEl) return;
+      const existing = directChildByClass(contentEl, 'tool-steps-live');
+      if (existing) existing.remove();
+    }
+
+    function renderStepsProgress(contentEl, steps) {
+      if (!contentEl || !Array.isArray(steps) || !steps.length) return null;
+      let panel = directChildByClass(contentEl, 'tool-steps-live');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.className = 'tool-steps-live';
+        const stack = directChildByClass(contentEl, 'tool-stack');
+        if (stack && typeof contentEl.insertBefore === 'function') contentEl.insertBefore(panel, stack);
+        else contentEl.appendChild(panel);
+      }
+      const done = steps.filter(step => step.status === 'done').length;
+      const translated = translate ? translate('toolStepsProgress', { done, total: steps.length }) : '';
+      const headerText = (translated && translated !== 'toolStepsProgress')
+        ? translated
+        : `执行进度 · ${done}/${steps.length}`;
+      const children = [];
+      const header = document.createElement('div');
+      header.className = 'tool-steps-header';
+      header.textContent = headerText;
+      children.push(header);
+      for (const step of steps) {
+        const row = document.createElement('div');
+        row.className = `tool-step-row step-${step.status}`;
+        const icon = document.createElement('span');
+        icon.className = 'tool-step-icon';
+        icon.textContent = STEP_STATUS_ICONS[step.status] || '○';
+        const title = document.createElement('span');
+        title.className = 'tool-step-title';
+        title.textContent = step.title;
+        row.appendChild(icon);
+        row.appendChild(title);
+        children.push(row);
+      }
+      if (typeof panel.replaceChildren === 'function') panel.replaceChildren(...children);
+      else {
+        panel.textContent = '';
+        for (const child of children) panel.appendChild(child);
+      }
+      return panel;
+    }
+
     function updateToolInput(toolState) {
       if (!toolState || !toolState.card) return;
       const input = toolState.card.querySelector('.tool-input');
@@ -343,9 +495,14 @@
           if (description && !settled) description.textContent = truncate(parsed.text.replace(/\s+/g, ' ').trim(), 60);
           return;
         }
-        const summary = parsed.description || parsed.command || parsed.pattern || parsed.file_path || '';
+        const summary = extractToolSummary(toolState.name, parsed);
         if (summary && description && !settled) description.textContent = truncate(summary, 60);
         input.textContent = renderToolInput(toolState.name, parsed);
+        if (STEP_TOOL_NAMES.has(toolState.name)) {
+          const steps = normalizeStepItems(parsed);
+          const contentEl = findMsgContent(toolState.card);
+          if (steps && contentEl) renderStepsProgress(contentEl, steps);
+        }
       } catch (_) {
         input.textContent = asText(toolState.inputJson);
       }
@@ -492,7 +649,7 @@
       else {
         const description = card.querySelector('.tool-desc');
         const input = tool.input && typeof tool.input === 'object' ? tool.input : {};
-        const summary = input.description || input.command || input.pattern || input.file_path || '';
+        const summary = extractToolSummary(state.name, input);
         if (description && !summary) description.textContent = '?';
       }
       appendToolCard(contentEl, card);
@@ -597,7 +754,16 @@
       const contentEl = document.createElement('div');
       contentEl.className = 'msg-content';
       if (message.content) renderMarkdownInto(contentEl, message.content, true);
-      for (const tool of Array.isArray(message.tools) ? message.tools : []) hydrateTool(tool, contentEl);
+      const tools = Array.isArray(message.tools) ? message.tools : [];
+      for (const tool of tools) hydrateTool(tool, contentEl);
+      if (message.streaming || !asText(message.content).trim()) {
+        for (let i = tools.length - 1; i >= 0; i -= 1) {
+          const tool = tools[i];
+          if (!tool || !STEP_TOOL_NAMES.has(tool.name)) continue;
+          const steps = normalizeStepItems(tool.input);
+          if (steps) { renderStepsProgress(contentEl, steps); break; }
+        }
+      }
       if (message.cancelled) {
         const tag = document.createElement('div');
         tag.className = 'msg system-msg';
@@ -1215,8 +1381,10 @@
       pendingAnswerAnchor,
       prependMessages,
       removeById,
+      removeStepsProgress,
       renderCurrentText,
       renderMessage,
+      renderStepsProgress,
       renderToolTrajectory,
       tagLatestMessage,
       updateToolInput,
@@ -1227,5 +1395,6 @@
   return Object.freeze({
     createHistoryView, parseSystemInject,
     parseUnattendedMarker, stripUnattendedMarker, isUnattendedTrace, UNATTENDED_MARKER,
+    extractToolSummary, normalizeStepItems, renderToolInput,
   });
 });

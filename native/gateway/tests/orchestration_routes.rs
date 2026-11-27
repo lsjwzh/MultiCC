@@ -703,6 +703,131 @@ fn the_wait_registration_sees_the_clients_host_for_its_callback_url() {
 }
 
 #[test]
+fn only_wait_resolve_accepts_an_external_peer_without_machine_credentials() {
+    let gateway = Gateway::start("public-resolve", world(json!({})));
+    let headers = &[("X-Forwarded-For", EXTERNAL_IP)];
+    let response = gateway.exchange("POST", "/api/wait/w1/resolve?token=tok-ext", headers, None);
+    assert_eq!(response.status, 200);
+
+    for &(method, path, _, op) in ROUTES {
+        if op != "wait-resolve" {
+            let status = gateway.exchange(method, path, headers, None).status;
+            assert!(matches!(status, 401 | 403), "{method} {path}: {status}");
+        }
+    }
+    for (method, path) in [
+        ("OPTIONS", "/api/wait/w1/resolve"),
+        ("POST", "/api/wait/w1/resolve/"),
+    ] {
+        let status = gateway.exchange(method, path, headers, None).status;
+        assert!(matches!(status, 401 | 403), "{method} {path}: {status}");
+    }
+    let calls = gateway.calls();
+    assert_eq!(ops_sent(&calls), ["wait-resolve"]);
+    assert_eq!(calls[0]["wid"], "w1");
+    assert_eq!(calls[0]["query"]["token"], "tok-ext");
+    assert_eq!(calls[0]["local"], false);
+    assert!(gateway.session_admin_calls().is_empty());
+}
+
+#[test]
+fn registration_rewrites_only_the_callback_origin() {
+    let suffix = "/api/wait/w%2F1/resolve?token=tok%2Bext&key=1&key=2";
+    let local = "http://127.0.0.1:3000";
+    let tunnel = "https://tunnel.example.test";
+    let body =
+        json!({ "callbackUrl": format!("{local}{suffix}"), "id": "w/1", "status": "pending" });
+    let gateway = Gateway::start(
+        "callback-origin",
+        world(json!({ "session-wait-post": relay(200, body.clone()) })),
+    );
+    let forwarded = vec![
+        ("Host", "tunnel.example.test"),
+        ("X-Forwarded-Proto", " HTTPS , http"),
+    ];
+    for (mut headers, request, expected) in [
+        (
+            vec![
+                ("Host", "tunnel.example.test"),
+                ("X-Forwarded-Proto", "https"),
+            ],
+            json!({"mode":"callback"}),
+            tunnel,
+        ),
+        (forwarded.clone(), json!({"mode":"callback"}), tunnel),
+        (
+            vec![],
+            json!({"mode":"callback", "callbackBaseUrl":"https://tunnel.example.test/"}),
+            tunnel,
+        ),
+        (
+            forwarded,
+            json!({"callback_base_url":"http://[::1]:4000/"}),
+            "http://[::1]:4000",
+        ),
+        (vec![("X-Forwarded-Proto", "http, https")], json!({}), local),
+        (
+            vec![
+                ("X-Forwarded-Proto", "https"),
+                ("Host", "bad.example.test/path"),
+            ],
+            json!({}),
+            local,
+        ),
+        (vec![], json!({}), local),
+    ] {
+        if !headers.is_empty() {
+            headers.push(("X-Access-Token", TOKEN));
+        }
+        let response = gateway.exchange(
+            "POST",
+            "/api/sessions/s1/wait",
+            &headers,
+            Some(request.to_string().as_bytes()),
+        );
+        assert_eq!(response.status, 200, "{headers:?} {request}");
+        let mut expected_body = body.clone();
+        expected_body["callbackUrl"] = json!(format!("{expected}{suffix}"));
+        assert_eq!(response.json(), expected_body);
+    }
+}
+
+#[test]
+fn invalid_callback_origins_are_rejected_before_any_host_call() {
+    let gateway = Gateway::start("invalid-callback-origin", world(json!({})));
+    for value in [
+        json!(null),
+        json!(42),
+        json!(""),
+        json!("ftp://bad.example.test"),
+        json!("https://"),
+        json!("https://bad.example.test/extra/path"),
+        json!("https://bad.example.test/."),
+        json!("https://bad.example.test//"),
+        json!("https://bad.example.test?"),
+        json!("https://bad.example.test/#"),
+        json!("https://@bad.example.test"),
+        json!("https://user:pass@bad.example.test"),
+        json!("https://bad.example.test:65536"),
+        json!("https://bad.example.test:"),
+        json!("https://bad.example.test:abc"),
+        json!("https://bad\".example.test"),
+        json!("https://[::1"),
+        json!("https://bad.example.test\\path"),
+        json!("https://bad.example.test\n"),
+        json!("https://bad .example.test"),
+    ] {
+        for key in ["callbackBaseUrl", "callback_base_url"] {
+            let response = gateway.send("POST", "/api/sessions/s1/wait", &json!({key: value}));
+            assert_eq!(response.status, 400, "{key} = {value}");
+            assert_eq!(response.json(), json!({"error":"invalid callbackBaseUrl"}));
+        }
+    }
+    assert!(gateway.calls().is_empty());
+    assert!(gateway.session_admin_calls().is_empty());
+}
+
+#[test]
 fn a_malformed_body_is_the_json_parser_400_and_never_reaches_the_host() {
     let gateway = Gateway::start("bad-body", json!({ "orchestration": { "ops": {} } }));
     let response = gateway.exchange("POST", "/api/aux/enqueue", &[], Some(b"{bad"));

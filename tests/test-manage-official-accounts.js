@@ -432,3 +432,63 @@ test('反重力 import 路由把新建账号回传给前端（一键分享依赖
   assert.match(rust, /Route::ImportPost => match store::import_account\(&home, &label\(\)\) \{\s+Ok\(created\)/);
   assert.match(rust, /obj\.insert\("created"\.to_string\(\), created\)/);
 });
+
+test('反重力 CLI 未安装时展示友好提示与一键安装引导弹窗', async () => {
+  const id = '1122334455667788';
+  const installCmd = 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
+  const calls = [];
+  let installed = false;
+  const h = signinHarness(async (url, options) => {
+    calls.push({ url, method: options?.method || 'GET', body: options?.json });
+    if (url === '/api/codex/accounts' || url === '/api/claude/accounts') return { accounts: [] };
+    if (url === '/api/agy/accounts') {
+      return {
+        accounts: [{ id, label: '反重力号', loggedIn: false, kind: 'local' }],
+        active: null,
+        local: { loggedIn: false },
+        mutagen: { installed: true, version: '0.18.1' },
+        cli: { installed, bin: installed ? '/Users/test/.local/bin/agy' : null, installCommand: installCmd },
+      };
+    }
+    if (url === '/api/cli/agy/install') {
+      installed = true;
+      return { ok: true, jobId: 'job-agy-1', cli: 'agy', command: installCmd };
+    }
+    if (url === '/api/cli/install-status/job-agy-1') {
+      return { ok: true, job: { id: 'job-agy-1', cli: 'agy', status: 'done', logTail: 'installed ok' } };
+    }
+    return { ok: true };
+  });
+
+  await h.context.window.MultiCCOfficialAccounts.load();
+  await h.flush();
+  assert.match(h.body.innerHTML, /data-agy-cli-missing="1"/);
+  assert.match(h.body.innerHTML, /本机尚未安装 Antigravity CLI/);
+  assert.match(h.body.innerHTML, /一键安装 agy/);
+  assert.match(h.body.innerHTML, /antigravity\.google\/cli\/install\.sh/);
+
+  // 未安装时点「网页授权登录」应先弹友好安装引导，而不是直接报错
+  h.click({ target: { closest: () => ({ dataset: { act: 'agy-remote-login', id } }) } });
+  await h.flush();
+  assert.equal(calls.some(c => c.url.endsWith('/remote-login')), false, 'missing CLI opens install guide before remote-login');
+  const modal = h.overlays[h.overlays.length - 1];
+  assert.ok(modal, 'install guide modal should open');
+  assert.match(modal.innerHTML, /需要先安装 Antigravity CLI/);
+  assert.equal(modal.q('cmd').textContent, installCmd);
+
+  // 点击弹窗内「一键安装 agy」走官方安装接口并刷新账号状态
+  await modal.q('install').onclick();
+  await h.flush();
+  assert.ok(calls.some(c => c.url === '/api/cli/agy/install' && c.method === 'POST'));
+  assert.ok(calls.some(c => c.url === '/api/cli/install-status/job-agy-1'));
+  assert.match(modal.q('status').textContent, /已安装/);
+  assert.doesNotMatch(h.body.innerHTML, /data-agy-cli-missing="1"/, 'banner disappears once installed');
+
+  // Air provider 与 run-config 也具备同样的未安装检测与安装引导
+  const air = fs.readFileSync(path.join(ROOT, 'public', 'air-provider.js'), 'utf8');
+  assert.match(air, /function openAgyCliInstallModal/);
+  assert.match(air, /\/api\/cli\/agy\/install/);
+  assert.match(air, /agy_not_installed/);
+  const rc = fs.readFileSync(path.join(ROOT, 'public', 'run-config-controls.js'), 'utf8');
+  assert.match(rc, /airOfficialAcctAgyCliMissingRunConfig/);
+});

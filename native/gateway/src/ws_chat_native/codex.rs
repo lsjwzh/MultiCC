@@ -48,10 +48,7 @@ pub(super) enum Event {
 }
 
 pub(super) fn binary() -> OsString {
-    std::env::var_os("CODEX_BIN")
-        .or_else(|| std::env::var_os("CODEX_CMD"))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| if cfg!(windows) { "codex.exe" } else { "codex" }.into())
+    crate::cli_bin::resolve_codex_bin()
 }
 
 pub(super) fn valid_thread(id: &str) -> bool {

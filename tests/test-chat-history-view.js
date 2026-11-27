@@ -1293,3 +1293,68 @@ test('the rest of the chat UI treats an injected card as a system line', () => {
   // `.air-chat .msg.user` on load order, not on specificity.
   assert.ok(HTML.indexOf('chat-air.css') < HTML.indexOf('chat-system-inject.css'));
 });
+
+test('反重力工具参数（PascalCase）与 update_steps 能正确提取摘要和渲染详情', () => {
+  const { view } = fixture();
+  const cmdCard = view.createToolCard('run_command', 'agy_step_1');
+  view.updateToolInput({
+    card: cmdCard, id: 'agy_step_1', name: 'run_command',
+    inputJson: JSON.stringify({ CommandLine: 'cargo test -- agy', toolSummary: '运行 agy 单测' }),
+  });
+  assert.equal(cmdCard.querySelector('.tool-desc').textContent, '运行 agy 单测');
+  assert.equal(cmdCard.querySelector('.tool-input').textContent, '$ cargo test -- agy');
+
+  const readCard = view.createToolCard('read_file', 'agy_step_2');
+  view.updateToolInput({
+    card: readCard, id: 'agy_step_2', name: 'read_file',
+    inputJson: JSON.stringify({ Path: '/repo/src/a.rs', StartLine: 10, EndLine: 40 }),
+  });
+  assert.equal(readCard.querySelector('.tool-desc').textContent, '/repo/src/a.rs');
+  assert.equal(readCard.querySelector('.tool-input').textContent, '/repo/src/a.rs\n(lines: 10-40)');
+
+  const editCard = view.createToolCard('edit_file', 'agy_step_3');
+  view.updateToolInput({
+    card: editCard, id: 'agy_step_3', name: 'edit_file',
+    inputJson: JSON.stringify({ Path: '/repo/src/a.rs', Target: 'old', Replacement: 'new' }),
+  });
+  assert.equal(editCard.querySelector('.tool-input').textContent, '/repo/src/a.rs\n--- old\nold\n+++ new\nnew');
+
+  // Reconnect replay: streaming tool-only bubble surfaces latest update_steps above tool-stack
+  const streaming = view.renderMessage({
+    id: 'agy-live', role: 'assistant', content: '', streaming: true,
+    tools: [
+      {
+        id: 'agy_step_4', name: 'update_steps',
+        input: { steps: [
+          { title: '排查原因', status: 'done' },
+          { title: '执行编译与测试', status: 'in_progress' },
+        ] },
+        result: 'OK',
+      },
+      {
+        id: 'agy_step_5', name: 'run_command',
+        input: { CommandLine: 'npm test', toolSummary: '执行测试' },
+      },
+    ],
+  });
+  const stepsPanel = streaming.querySelector('.tool-steps-live');
+  assert.ok(stepsPanel, '流式无正文气泡应在折叠框外展示步骤进度清单');
+  assert.equal(stepsPanel.querySelector('.tool-steps-header').textContent, '执行进度 · 1/2');
+  assert.equal(stepsPanel.querySelectorAll('.tool-step-row').length, 2);
+  // Running tool with PascalCase input must show its summary rather than '?'
+  const runningDesc = streaming.querySelectorAll('.tool-desc')[1];
+  assert.equal(runningDesc.textContent, '执行测试');
+
+  // Completed bubble with prose text does not render the redundant live checklist
+  const completed = view.renderMessage({
+    id: 'agy-done', role: 'assistant', content: '全部修改已完成。', streaming: false,
+    tools: [
+      {
+        id: 'agy_step_6', name: 'update_steps',
+        input: { steps: [{ title: '排查原因', status: 'done' }] },
+        result: 'OK',
+      },
+    ],
+  });
+  assert.equal(completed.querySelector('.tool-steps-live'), null);
+});

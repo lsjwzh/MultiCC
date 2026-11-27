@@ -38,6 +38,8 @@
     agyLocal: null,
     agyMutagen: null,
     agyMutagenInstalling: false,
+    agyCli: null,
+    agyCliInstalling: false,
     agyAvailable: true,
     loading: false,
     quota: {}, // `${vendor}:${id}` → {status:'loading'} | {status:'ok'|'err', html}
@@ -246,9 +248,35 @@
       + '<span style="margin-left:auto;display:flex;gap:6px">' + buttons + '</span></div>';
   }
 
+  const AGY_DEFAULT_INSTALL_CMD = 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
+
+  function agyInstallCommand(explicit) {
+    return explicit || (state.agyCli && state.agyCli.installCommand) || AGY_DEFAULT_INSTALL_CMD;
+  }
+
+  function isAgyCliMissing() {
+    return !!(state.agyCli && state.agyCli.installed === false);
+  }
+
+  function isAgyNotInstalledError(err) {
+    return !!(err && (err.code === 'agy_not_installed' || (err.details && err.details.code === 'agy_not_installed')));
+  }
+
+  function agyCliMissingBannerHtml(noticeKey) {
+    if (!isAgyCliMissing()) return '';
+    const cmd = agyInstallCommand();
+    return '<div data-agy-cli-missing="1" style="border:1px solid #d2992266;background:#d2992214;border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;font-size:12px">'
+      + '<div style="color:#d29922;line-height:1.6">' + esc(tr(noticeKey || 'airOfficialAcctAgyCliMissingBanner')) + '</div>'
+      + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+      + '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="agy-cli-install"' + (state.agyCliInstalling ? ' disabled' : '') + '>' + esc(tr(state.agyCliInstalling ? 'airOfficialAcctAgyCliInstalling' : 'airOfficialAcctAgyCliInstall')) + '</button>'
+      + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="agy-cli-copy-cmd">' + esc(tr('airOfficialAcctAgyCliCopyCmd')) + '</button>'
+      + '<code style="flex:1;min-width:180px;overflow-x:auto;white-space:nowrap;user-select:all;font-size:11px;padding:4px 8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9">' + esc(cmd) + '</code>'
+      + '</div></div>';
+  }
+
   function agySection() {
     if (!state.agyAvailable) return '';
-    const rows = agyLocalRow() + state.agy.map(agyRow).join('');
+    const rows = agyCliMissingBannerHtml() + agyLocalRow() + state.agy.map(agyRow).join('');
     return '<div style="border-top:1px solid var(--border);margin:10px 0"></div>'
       + '<div style="display:flex;flex-direction:column;gap:8px">'
       + '<div style="font-size:12px;color:var(--muted);font-weight:600">' + esc(tr('airOfficialAcctAgySection'))
@@ -558,7 +586,145 @@
     state.agyActive = data.active || null;
     state.agyLocal = data.local || null;
     if (data.mutagen && typeof data.mutagen === 'object') state.agyMutagen = data.mutagen;
+    if (data.cli && typeof data.cli === 'object') state.agyCli = data.cli;
     state.agyAvailable = true;
+  }
+
+  function copyAgyInstallCmd(explicit) {
+    const cmd = agyInstallCommand(explicit);
+    if (navigator.clipboard && window.isSecureContext !== false) {
+      navigator.clipboard.writeText(cmd).then(
+        () => toast(tr('airOfficialAcctAgyCliCmdCopied')),
+        () => toast(tr('airOfficialAcctSigninCopyFailed'), true),
+      );
+    }
+  }
+
+  async function runAgyCliInstall({ onProgress, onDone, onError } = {}) {
+    state.agyCliInstalling = true;
+    const notify = (msg, log) => { if (typeof onProgress === 'function') onProgress(msg, log || ''); };
+    notify(tr('airOfficialAcctAgyCliInstalling'), '');
+    let jobId = null;
+    try {
+      const started = await api().json('/api/cli/agy/install', { method: 'POST', json: {} });
+      if (started && started.alreadyInstalled) {
+        state.agyCliInstalling = false;
+        try { applyAgyState(await api().json('/api/agy/accounts')); } catch (_) {}
+        paint();
+        if (typeof onDone === 'function') onDone();
+        return true;
+      }
+      jobId = started && started.jobId;
+    } catch (err) {
+      if (err && (err.jobId || (err.details && err.details.jobId))) {
+        jobId = err.jobId || err.details.jobId;
+      } else {
+        state.agyCliInstalling = false;
+        paint();
+        if (typeof onError === 'function') onError((err && err.message) || 'unknown', '');
+        return false;
+      }
+    }
+    if (!jobId) {
+      state.agyCliInstalling = false;
+      paint();
+      if (typeof onError === 'function') onError('missing jobId', '');
+      return false;
+    }
+    const deadline = Date.now() + 8 * 60 * 1000;
+    while (Date.now() < deadline) {
+      let job = null;
+      try {
+        const res = await api().json('/api/cli/install-status/' + encodeURIComponent(jobId));
+        job = res && res.job;
+      } catch (_) {
+        job = null;
+      }
+      if (job) {
+        if (job.status === 'done') {
+          state.agyCliInstalling = false;
+          try { applyAgyState(await api().json('/api/agy/accounts')); } catch (_) {}
+          paint();
+          if (typeof onDone === 'function') onDone(job.logTail || '');
+          return true;
+        }
+        if (job.status === 'error') {
+          state.agyCliInstalling = false;
+          paint();
+          const detail = [job.logTail, job.hint].filter(Boolean).join('\n\n');
+          if (typeof onError === 'function') onError(job.error || 'install failed', detail);
+          return false;
+        }
+        notify(tr('airOfficialAcctAgyCliInstalling'), job.logTail || '');
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+    state.agyCliInstalling = false;
+    paint();
+    if (typeof onError === 'function') onError(tr('airCliUpdateTimeout'), '');
+    return false;
+  }
+
+  function agyOpenCliInstallModal(onInstalled, explicitCmd) {
+    const cmd = agyInstallCommand(explicitCmd);
+    const btn = 'font-size:12px;padding:4px 10px;white-space:nowrap';
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    overlay.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:520px;max-width:94vw;max-height:90vh;overflow:auto;box-sizing:border-box;display:flex;flex-direction:column;gap:10px">'
+      + '<div style="font-size:14px;color:#c9d1d9;font-weight:600">' + esc(tr('airOfficialAcctAgyCliInstallTitle')) + '</div>'
+      + '<div style="font-size:12px;color:var(--faint);line-height:1.6">' + esc(tr('airOfficialAcctAgyCliInstallDesc')) + '</div>'
+      + '<div style="font-size:11px;color:var(--faint)">' + esc(tr('airOfficialAcctAgyCliManualHint')) + '</div>'
+      + '<div style="display:flex;gap:6px;align-items:center;min-width:0">'
+      + '<code data-k="cmd" style="flex:1;min-width:0;white-space:nowrap;overflow-x:auto;user-select:all;-webkit-user-select:all;font-size:12px;padding:6px 8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9"></code>'
+      + '<button class="btn" data-k="copy" style="' + btn + '">' + esc(tr('airOfficialAcctAgyCliCopyCmd')) + '</button>'
+      + '</div>'
+      + '<div data-k="status" style="font-size:12px;line-height:1.5"></div>'
+      + '<pre data-k="log" style="display:none;margin:0;padding:8px;max-height:160px;overflow:auto;font-size:11px;line-height:1.45;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;white-space:pre-wrap;word-break:break-word"></pre>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+      + '<button class="btn" data-k="close" style="' + btn + '">' + esc(tr('airOfficialAcctCancel')) + '</button>'
+      + '<button class="btn btn-green" data-k="install" style="' + btn + '">' + esc(tr('airOfficialAcctAgyCliInstall')) + '</button>'
+      + '<button class="btn btn-green" data-k="continue" style="' + btn + ';display:none">' + esc(tr('airOfficialAcctAgyCliContinueLogin')) + '</button>'
+      + '</div></div>';
+    document.body.appendChild(overlay);
+    const q = k => overlay.querySelector('[data-k="' + k + '"]');
+    q('cmd').textContent = cmd;
+    const close = () => overlay.remove();
+    overlay.onclick = e => { if (e.target === overlay) close(); };
+    q('close').onclick = close;
+    q('copy').onclick = () => copyAgyInstallCmd(cmd);
+    q('continue').onclick = () => {
+      close();
+      if (typeof onInstalled === 'function') onInstalled();
+    };
+    q('install').onclick = async () => {
+      const installBtn = q('install');
+      const statusEl = q('status');
+      const logEl = q('log');
+      installBtn.disabled = true;
+      installBtn.textContent = tr('airOfficialAcctAgyCliInstalling');
+      statusEl.style.color = '#d29922';
+      statusEl.textContent = tr('airOfficialAcctAgyCliInstalling');
+      await runAgyCliInstall({
+        onProgress: (text, log) => {
+          statusEl.textContent = text;
+          if (log) { logEl.style.display = ''; logEl.textContent = log; logEl.scrollTop = logEl.scrollHeight; }
+        },
+        onDone: () => {
+          statusEl.style.color = '#3fb950';
+          statusEl.textContent = tr('airOfficialAcctAgyCliInstalled');
+          installBtn.style.display = 'none';
+          if (typeof onInstalled === 'function') q('continue').style.display = '';
+          toast(tr('airOfficialAcctAgyCliInstalled'));
+        },
+        onError: (errMsg, detail) => {
+          installBtn.disabled = false;
+          installBtn.textContent = tr('airOfficialAcctAgyCliInstall');
+          statusEl.style.color = 'var(--danger)';
+          statusEl.textContent = tr('airOfficialAcctAgyCliInstallFailed', { message: errMsg });
+          if (detail) { logEl.style.display = ''; logEl.textContent = detail; logEl.scrollTop = logEl.scrollHeight; }
+        },
+      });
+    };
   }
 
   function mountEgressSelector(overlay, preselect) {
@@ -598,8 +764,20 @@
   function agyCreate() {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const cliWarnHtml = isAgyCliMissing()
+      ? '<div data-k="cli-warn" style="border:1px solid #d2992266;background:#d2992214;border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:6px;font-size:12px">'
+        + '<div data-k="cli-warn-msg" style="color:#d29922;line-height:1.5">' + esc(tr('airOfficialAcctAgyCliCreateNotice')) + '</div>'
+        + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+        + '<button class="btn btn-green" style="padding:2px 10px;font-size:11px" data-act="install-agy">' + esc(tr('airOfficialAcctAgyCliInstall')) + '</button>'
+        + '<button class="btn" style="padding:2px 10px;font-size:11px" data-act="copy-agy-cmd">' + esc(tr('airOfficialAcctAgyCliCopyCmd')) + '</button>'
+        + '</div>'
+        + '<code style="overflow-x:auto;white-space:nowrap;user-select:all;font-size:11px;padding:4px 8px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9">' + esc(agyInstallCommand()) + '</code>'
+        + '<pre data-k="cli-warn-log" style="display:none;margin:0;padding:6px;max-height:120px;overflow:auto;font-size:11px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;white-space:pre-wrap;word-break:break-word"></pre>'
+        + '</div>'
+      : '';
     overlay.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;width:440px;max-width:92vw;display:flex;flex-direction:column;gap:8px">'
       + '<div style="font-size:14px;color:#c9d1d9;font-weight:600">' + esc(tr('airOfficialAcctAgyCreateTitle')) + '</div>'
+      + cliWarnHtml
       + '<input data-k="label" type="text" placeholder="' + esc(tr('airOfficialAcctLabelPlaceholder')) + '" maxlength="64" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px;padding:7px 10px;outline:none">'
       + egressBlockHtml()
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">'
@@ -612,6 +790,37 @@
     const close = () => { egressCtl.destroy(); overlay.remove(); };
     overlay.onclick = e => { if (e.target === overlay) close(); };
     overlay.querySelector('[data-act="close"]').onclick = close;
+    const copyAgyBtn = overlay.querySelector('[data-act="copy-agy-cmd"]');
+    if (copyAgyBtn) copyAgyBtn.onclick = () => copyAgyInstallCmd();
+    const installAgyBtn = overlay.querySelector('[data-act="install-agy"]');
+    if (installAgyBtn) {
+      installAgyBtn.onclick = async () => {
+        const msgEl = overlay.querySelector('[data-k="cli-warn-msg"]');
+        const logEl = overlay.querySelector('[data-k="cli-warn-log"]');
+        installAgyBtn.disabled = true;
+        installAgyBtn.textContent = tr('airOfficialAcctAgyCliInstalling');
+        if (msgEl) msgEl.textContent = tr('airOfficialAcctAgyCliInstalling');
+        await runAgyCliInstall({
+          onProgress: (text, log) => {
+            if (msgEl) msgEl.textContent = text;
+            if (log && logEl) { logEl.style.display = ''; logEl.textContent = log; logEl.scrollTop = logEl.scrollHeight; }
+          },
+          onDone: () => {
+            const box = overlay.querySelector('[data-k="cli-warn"]');
+            if (box) { box.style.borderColor = '#3fb95066'; box.style.background = '#3fb95014'; }
+            if (msgEl) { msgEl.style.color = '#3fb950'; msgEl.textContent = tr('airOfficialAcctAgyCliInstalled'); }
+            installAgyBtn.style.display = 'none';
+            toast(tr('airOfficialAcctAgyCliInstalled'));
+          },
+          onError: (errMsg, detail) => {
+            installAgyBtn.disabled = false;
+            installAgyBtn.textContent = tr('airOfficialAcctAgyCliInstall');
+            if (msgEl) { msgEl.style.color = 'var(--danger)'; msgEl.textContent = tr('airOfficialAcctAgyCliInstallFailed', { message: errMsg }); }
+            if (detail && logEl) { logEl.style.display = ''; logEl.textContent = detail; logEl.scrollTop = logEl.scrollHeight; }
+          },
+        });
+      };
+    }
     overlay.querySelector('[data-act="ok"]').onclick = async () => {
       const st = overlay.querySelector('[data-k="status"]');
       st.textContent = tr('airOfficialAcctCreating'); st.className = 'status-text';
@@ -764,12 +973,23 @@
   }
 
   async function agyStartRemoteLogin(id, label) {
+    const account = state.agy.find(a => a.id === id);
+    const isRemote = !!(account && account.kind === 'remote' && account.remote);
+    if (!isRemote && isAgyCliMissing()) {
+      agyOpenCliInstallModal(() => agyStartRemoteLogin(id, label));
+      return;
+    }
     setStatus(tr('airOfficialAcctReopeningLogin'));
     try {
       const res = await api().json('/api/agy/accounts/' + encodeURIComponent(id) + '/remote-login', { method: 'POST', json: {} });
       setStatus('');
       agyOpenRemoteSigninSheet(id, res.oauthUrl || '', label);
     } catch (err) {
+      if (isAgyNotInstalledError(err)) {
+        setStatus('');
+        agyOpenCliInstallModal(() => agyStartRemoteLogin(id, label), err.installCommand || (err.details && err.details.installCommand));
+        return;
+      }
       setStatus(tr('airOfficialAcctAgyRemoteSigninFailed', { message: err.message }), true);
       toast(tr('airOfficialAcctAgyRemoteSigninFailed', { message: err.message }), true);
     }
@@ -906,12 +1126,20 @@
   }
 
   async function agyLogin(id) {
+    if (isAgyCliMissing()) {
+      agyOpenCliInstallModal(() => agyLogin(id));
+      return;
+    }
     try {
       const data = await api().json('/api/agy/accounts/' + encodeURIComponent(id) + '/login-terminal', { method: 'POST', json: {} });
       if (data.url) window.open(data.url, '_blank');
       toast(tr('airOfficialAcctAgyLoginOpened'));
       watchAgyLogin(id);
     } catch (err) {
+      if (isAgyNotInstalledError(err)) {
+        agyOpenCliInstallModal(() => agyLogin(id), err.installCommand || (err.details && err.details.installCommand));
+        return;
+      }
       setStatus(tr('airOfficialAcctAgyLoginFailed', { message: err.message }), true);
     }
   }
@@ -1160,6 +1388,8 @@
     else if (btn.dataset.act === 'agy-egress') agyEditEgress(btn.dataset.id);
     else if (btn.dataset.act === 'agy-remote-test') agyTestRemote(btn.dataset.id);
     else if (btn.dataset.act === 'agy-mutagen-install') agyInstallMutagen();
+    else if (btn.dataset.act === 'agy-cli-install') agyOpenCliInstallModal();
+    else if (btn.dataset.act === 'agy-cli-copy-cmd') copyAgyInstallCmd();
     else if (btn.dataset.act === 'agy-login') agyLogin(btn.dataset.id);
     else if (btn.dataset.act === 'agy-use-local') agyUseLocal();
   });

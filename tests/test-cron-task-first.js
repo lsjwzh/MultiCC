@@ -619,3 +619,76 @@ test('the shipped cron-script example turns board state into one merged WeChat a
     assert.equal(broken.status, 1);
     assert.match(broken.stderr, /连不上|Connection refused|ECONNREFUSED/i);
   });
+
+test('GET /api/cron and /api/cron/calendar skip full task-entry reload and disk save once migrated', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-fast-get-'));
+  const previous = process.env.MULTICC_DATA_DIR;
+  process.env.MULTICC_DATA_DIR = root;
+  const storePath = path.join(root, 'scheduled_tasks.json');
+  fs.writeFileSync(storePath, JSON.stringify([{
+    id: 'cron_fast', name: '小时巡检', dirId: 'dir-1', cli: 'claude',
+    cron: '0 * * * *', prompt: '巡检', enabled: true,
+    taskId: 'tsk_fast', taskSessionId: 'task-fast', taskBindingVersion: 1,
+    createdAt: '2026-09-01T00:00:00.000Z',
+  }]));
+  const modulePath = require.resolve('../plugins/cron/cron-tasks');
+  delete require.cache[modulePath];
+  const cron = require(modulePath);
+  t.after(() => {
+    cron.stop();
+    if (previous === undefined) delete process.env.MULTICC_DATA_DIR;
+    else process.env.MULTICC_DATA_DIR = previous;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  let getTaskCalls = 0;
+  let readOnly = false;
+  cron.init({
+    directories: new Map([['dir-1', { id: 'dir-1', name: '项目一', path: root }]]),
+    clis: ['claude'],
+    getTask: async id => {
+      getTaskCalls++;
+      return { ok: true, task: { id }, sessionId: 'task-fast', ownerShellId: 'shell-fast', readOnly };
+    },
+    createTask: async () => { throw new Error('already bound'); },
+    taskSummary: () => ({ id: 'tsk_fast', dirId: 'dir-1', title: '小时巡检', status: readOnly ? 'archived' : 'active', readOnly, sessionId: 'task-fast', runtime: { cli: 'claude' } }),
+  });
+  const routes = new Map();
+  const app = {};
+  for (const method of ['get', 'post', 'patch', 'delete']) app[method] = (route, handler) => routes.set(`${method.toUpperCase()} ${route}`, handler);
+  cron.mount(app);
+
+  // 首次读会等启动迁移收尾（只跑一次），之后 GET 不应再重复调 getTask 或写盘。
+  const first = response();
+  await routes.get('GET /api/cron')({}, first, error => { throw error; });
+  assert.equal(first.body[0].taskId, 'tsk_fast');
+  const callsAfterBoot = getTaskCalls;
+  const mtimeBefore = fs.statSync(storePath).mtimeMs;
+
+  const second = response();
+  await routes.get('GET /api/cron')({}, second, error => { throw error; });
+  assert.equal(second.body[0].taskBindingBroken, false);
+  assert.equal(getTaskCalls, callsAfterBoot, '已迁移规则再次 GET /api/cron 不得重查 getTask');
+  assert.equal(fs.statSync(storePath).mtimeMs, mtimeBefore, '无变更的 GET /api/cron 不得重复写盘');
+
+  const nextMonth = new Date();
+  nextMonth.setMonth(nextMonth.getMonth() + 1, 1);
+  const monthKey = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}`;
+  const cal = response();
+  await routes.get('GET /api/cron/calendar')({ query: { month: monthKey } }, cal, error => { throw error; });
+  assert.equal(cal.statusCode, 200);
+  assert.equal(getTaskCalls, callsAfterBoot, 'GET /api/cron/calendar 同样不得重查 getTask');
+
+  // 固定任务在运行期被归档时，仅靠内存 taskSummary 也能即时呈现绑定损坏。
+  readOnly = true;
+  const brokenView = response();
+  await routes.get('GET /api/cron')({}, brokenView, error => { throw error; });
+  assert.equal(brokenView.body[0].taskReadOnly, true);
+  assert.equal(brokenView.body[0].taskBindingBroken, true);
+  assert.match(brokenView.body[0].taskBindingError, /归档|只读/);
+  assert.equal(getTaskCalls, callsAfterBoot);
+
+  // server.js 注入 cronTasks.getTask 必须跳过全量聊天历史，防止加载百兆历史文件。
+  const serverSrc = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
+  assert.match(serverSrc, /getTask:\s*id\s*=>\s*taskShellHost\.taskEntry\(id,\s*\{\s*includeMessages:\s*false\s*\}\)/);
+});

@@ -46,31 +46,6 @@ fn quota(root: &Path, now: i64) -> (Value, Value) {
     (limits, subscriptions)
 }
 
-fn cli_available(name: &str, override_keys: &[&str]) -> bool {
-    let command = override_keys
-        .iter()
-        .find_map(|k| std::env::var_os(k).filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| format!("{name}{}", std::env::consts::EXE_SUFFIX).into());
-    let runnable = |p: &Path| {
-        let Ok(meta) = p.metadata() else { return false };
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            meta.is_file() && meta.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        {
-            meta.is_file()
-        }
-    };
-    let cmd = Path::new(&command);
-    if cmd.components().count() > 1 {
-        return runnable(cmd);
-    }
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .any(|p| runnable(&p.join(cmd)))
-}
-
 fn aux(root: &Path, mut groups: Value, facts: &Value) -> Value {
     let file = root.join("aux-config.json");
     let raw = provider_store::read(&file).ok().flatten();
@@ -104,7 +79,10 @@ fn aux(root: &Path, mut groups: Value, facts: &Value) -> Value {
             p["limit"] = limit;
         }
     }
-    result["cliAvailability"] = json!({"claude":cli_available("claude",&["MULTICC_CLAUDE_BIN"]),"codex":cli_available("codex",&["CODEX_BIN","CODEX_CMD"])});
+    result["cliAvailability"] = json!({
+        "claude": crate::cli_bin::is_resolved_runnable(&crate::cli_bin::resolve_claude_bin()),
+        "codex": crate::cli_bin::is_resolved_runnable(&crate::cli_bin::resolve_codex_bin()),
+    });
     result["protocols"] = json!([{"id":"anthropic","name":"Anthropic Messages"},{"id":"openai","name":"OpenAI Responses / Chat Completions"}]);
     result["providersByProtocol"] = groups;
     result

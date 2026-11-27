@@ -50,18 +50,17 @@ fn sessions_map() -> &'static Mutex<HashMap<String, Arc<LoginSession>>> {
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartLocalLoginError {
+    AgyNotInstalled,
+    Message(String),
+}
+
 fn ssh_bin() -> String {
     std::env::var("MULTICC_SSH_BIN")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "ssh".to_string())
-}
-
-fn local_agy_bin() -> String {
-    std::env::var("MULTICC_AGY_BIN")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_REMOTE_AGY_BIN.to_string())
 }
 
 fn build_ssh_args(target: &RemoteAgyTarget, script: &str) -> Vec<String> {
@@ -340,21 +339,28 @@ pub async fn start_local_login(
     account_id: &str,
     account_home: &Path,
     egress_binding: Option<&multicc_core::egress_plugin::EgressBinding>,
-) -> Result<Value, String> {
+) -> Result<Value, StartLocalLoginError> {
     if let Some(old) = sessions_map().lock().await.remove(account_id) {
         if let Some(tx) = old.cancel_tx.lock().await.take() {
             let _ = tx.send(());
         }
     }
 
+    let Some(agy_bin) = crate::app::agy_catalog::detect_local_agy() else {
+        return Err(StartLocalLoginError::AgyNotInstalled);
+    };
+
     let proxy_url = if let Some(binding) = egress_binding {
-        Some(crate::egress_runtime::resolve_egress_proxy_url(binding).await?)
+        Some(
+            crate::egress_runtime::resolve_egress_proxy_url(binding)
+                .await
+                .map_err(StartLocalLoginError::Message)?,
+        )
     } else {
         None
     };
 
     let _ = std::fs::remove_file(account_home.join(".gemini").join("oauth_creds.json"));
-    let agy_bin = local_agy_bin();
     let mut cmd = Command::new(&agy_bin);
     cmd.args(["acp", "--login"])
         .stdin(Stdio::piped())
@@ -378,11 +384,20 @@ pub async fn start_local_login(
             .env("no_proxy", no_proxy);
     }
 
-    let child = cmd
-        .spawn()
-        .map_err(|err| format!("无法启动本机 agy 网页授权登录（{agy_bin}）: {err}"))?;
+    let child = cmd.spawn().map_err(|err| {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            StartLocalLoginError::AgyNotInstalled
+        } else {
+            StartLocalLoginError::Message(format!(
+                "无法启动本机 agy 网页授权登录（{}）: {err}",
+                agy_bin.display()
+            ))
+        }
+    })?;
 
-    drive_login_child(home, account_id, child, true).await
+    drive_login_child(home, account_id, child, true)
+        .await
+        .map_err(StartLocalLoginError::Message)
 }
 
 /// 为传统纯 SSH 远端账号启动一次 SSH `agy acp --login` 授权流程并返回 Google 授权链接。
@@ -643,6 +658,132 @@ exit 0
 
         std::env::remove_var("MULTICC_AGY_BIN");
         std::env::remove_var("MULTICC_EGRESS_PROXY_OVERRIDE");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn local_host_login_returns_not_installed_error_when_agy_missing() {
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!(
+            "multicc-local-login-missing-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let host_home = root.join("host-home");
+        std::fs::create_dir_all(&host_home).unwrap();
+        let created =
+            store::create_account_with_egress(&host_home, "缺失测试", "created", None).unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        let acct_home = store::account_home(&host_home, &id).unwrap();
+
+        let missing = root.join("bin").join("does-not-exist-agy");
+        std::env::set_var("MULTICC_AGY_BIN", &missing);
+
+        let err = start_local_login(&host_home, &id, &acct_home, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err, StartLocalLoginError::AgyNotInstalled);
+        assert_eq!(
+            crate::app::agy_catalog::local_cli_status()["installed"],
+            json!(false)
+        );
+
+        std::env::remove_var("MULTICC_AGY_BIN");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, val: impl AsRef<std::ffi::OsStr>) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, val);
+            Self { key, prev }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(val) => std::env::set_var(self.key, val),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_host_login_finds_agy_in_home_local_bin_under_stripped_path() {
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
+        let root = std::env::temp_dir().join(format!(
+            "multicc-local-login-stripped-path-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let host_home = root.join("host-home");
+        let local_bin = host_home.join(".local/bin");
+        std::fs::create_dir_all(&local_bin).unwrap();
+
+        let fake_agy = local_bin.join("agy");
+        std::fs::write(
+            &fake_agy,
+            r#"#!/bin/sh
+echo "Open this link:"
+echo "  https://accounts.google.com/o/oauth2/auth?client_id=finder-client&state=finder123"
+read -r CODE
+if [ "$CODE" != "https://antigravity.google/oauth-callback?code=finder-ok" ]; then
+  echo "bad code" >&2
+  exit 3
+fi
+mkdir -p "$HOME/.gemini"
+printf '{"active":"finder-user@example.com"}' > "$HOME/.gemini/google_accounts.json"
+printf '{"access_token":"finder-tok"}' > "$HOME/.gemini/oauth_creds.json"
+exit 0
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let created = store::create_account(&host_home, "Finder本机号", "created").unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        let acct_home = store::account_home(&host_home, &id).unwrap();
+
+        // 模拟 Electron 从 macOS Finder 启动：PATH 不含 ~/.local/bin，且未设置 MULTICC_AGY_BIN/AGY_CMD。
+        let _g_bin = EnvVarGuard::remove("MULTICC_AGY_BIN");
+        let _g_cmd = EnvVarGuard::remove("AGY_CMD");
+        let _g_home = EnvVarGuard::set("HOME", &host_home);
+        let _g_path = EnvVarGuard::set("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+
+        let started = start_local_login(&host_home, &id, &acct_home, None)
+            .await
+            .unwrap();
+        assert_eq!(started["state"], "pending");
+        assert!(started["oauthUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://accounts.google.com/o/oauth2/auth?"));
+
+        let done = submit_callback(
+            &id,
+            "https://antigravity.google/oauth-callback?code=finder-ok",
+        )
+        .await
+        .unwrap();
+        assert_eq!(done["state"], "complete");
+        assert_eq!(done["email"], "finder-user@example.com");
+
         let _ = std::fs::remove_dir_all(&root);
     }
 }

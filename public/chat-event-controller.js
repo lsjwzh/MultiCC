@@ -1059,13 +1059,33 @@
 
     // 刷新 / 断线重连时，「正在生成」的那条回复是按历史消息重画出来的
     // （renderAssistant 只画定稿形态），这里把它恢复成和直播气泡一样：底部动态点
-    // + 自动选线时同一行最右端的归属。chat.js 的 applyHistoryPlan 接管流式尾巴时调用。
+    // + 当前仍在跑的工具状态 + 步骤进度清单 + 自动选线时同一行最右端的归属。
+    // chat.js 的 applyHistoryPlan 接管流式尾巴时调用。
     function adoptStreamingBubble(bubble) {
       const content = bubble?.querySelector?.('.msg-content');
       if (!content) return;
       content.classList.add('streaming-dot');
       liveUi.ensureStreamTail?.(bubble);
       attachLiveRouteAttribution(bubble);
+      const tools = state.currentToolCards ? Array.from(state.currentToolCards.values()) : [];
+      let activeTool = null;
+      let latestSteps = null;
+      for (const tool of tools) {
+        if (!tool) continue;
+        if ((tool.name === 'update_steps' || tool.name === 'TodoWrite') && tool.inputJson) {
+          try {
+            const parsed = JSON.parse(tool.inputJson);
+            const steps = normalizeStepsForLive(parsed);
+            if (steps) latestSteps = steps;
+          } catch (_) {}
+        }
+        if (tool.name === 'Thinking') continue;
+        const stillRunning = !Number.isFinite(tool.endedAt)
+          && (!tool.card?.classList || tool.card.classList.contains('tool-running'));
+        if (stillRunning) activeTool = tool;
+      }
+      if (latestSteps) historyView.renderStepsProgress?.(content, latestSteps);
+      if (activeTool) noteToolActivity(activeTool, bubble);
     }
 
     function createAssistantBubble() {
@@ -1177,19 +1197,65 @@
       host.maybeScrollToBottom?.();
     }
 
+    function normalizeStepsForLive(parsed) {
+      const helper = global.MultiCCChatHistoryView?.normalizeStepItems;
+      if (typeof helper === 'function') return helper(parsed);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const raw = Array.isArray(parsed.steps) ? parsed.steps : (Array.isArray(parsed.todos) ? parsed.todos : null);
+      if (!raw || !raw.length) return null;
+      const items = [];
+      for (const item of raw) {
+        if (!item || typeof item !== 'object') continue;
+        const rawStatus = String(item.status || '').trim().toLowerCase();
+        const status = (rawStatus === 'done' || rawStatus === 'completed') ? 'done'
+          : (rawStatus === 'in_progress' || rawStatus === 'running') ? 'in_progress'
+          : (rawStatus === 'failed' || rawStatus === 'error') ? 'failed'
+          : (rawStatus === 'skipped' || rawStatus === 'cancelled') ? 'skipped'
+          : 'pending';
+        const title = String(
+          (status === 'in_progress' && item.activeForm)
+            ? item.activeForm
+            : (item.title || item.content || item.activeForm || '')
+        ).replace(/\s+/g, ' ').trim();
+        if (title) items.push({ title, status });
+      }
+      return items.length ? items : null;
+    }
+
+    function extractToolSummaryForActivity(name, parsed) {
+      const helper = global.MultiCCChatHistoryView?.extractToolSummary;
+      if (typeof helper === 'function') return helper(name, parsed);
+      const p = parsed && typeof parsed === 'object' ? parsed : {};
+      if (name === 'update_steps' || name === 'TodoWrite') {
+        const steps = normalizeStepsForLive(p);
+        if (steps) {
+          const done = steps.filter(step => step.status === 'done').length;
+          const active = steps.find(step => step.status === 'in_progress');
+          if (active) return `${done}/${steps.length} · ${active.title}`;
+          if (done === steps.length) return `${done}/${steps.length} 已完成`;
+          return `${done}/${steps.length}`;
+        }
+      }
+      const pick = p.description || p.toolSummary || p.command || p.CommandLine || p.cmd
+        || p.pattern || p.Query || p.query
+        || p.file_path || p.path || p.Path || p.TargetFile || p.AbsolutePath
+        || p.DirectoryPath || p.SearchPath
+        || p.url || p.prompt || p.Prompt || p.Role || '';
+      return String(pick == null ? '' : pick).replace(/\s+/g, ' ').trim();
+    }
+
     // 主流程最近一次工具调用 → 底部状态行（没有后台任务时显示）。摘要字段与工具卡片
     // 标题（chat-history-view updateToolInput）取同一组，所以两处念的是同一句话。
     // Thinking 是推理过程不是动作，不覆盖上一条工具。
-    function noteToolActivity(tool) {
-      if (!tool || tool.name === 'Thinking' || !state.currentMsgEl) return;
+    function noteToolActivity(tool, targetBubble) {
+      const bubble = targetBubble || state.currentMsgEl;
+      if (!tool || tool.name === 'Thinking' || !bubble) return;
       let parsed = {};
       try { parsed = JSON.parse(tool.inputJson || '{}') || {}; } catch (_) { parsed = {}; }
-      const pick = parsed.description || parsed.command || parsed.pattern || parsed.file_path
-        || parsed.path || parsed.url || parsed.query || parsed.prompt || '';
-      const summary = String(pick == null ? '' : pick).replace(/\s+/g, ' ').trim();
       const name = String(tool.name || 'Tool');
+      const summary = extractToolSummaryForActivity(name, parsed);
       const text = summary ? `${name} · ${summary.length > 120 ? summary.slice(0, 119) + '…' : summary}` : name;
-      liveUi.setStreamStatus?.(state.currentMsgEl, 'tool', text, summary ? `${name} · ${summary}` : name);
+      liveUi.setStreamStatus?.(bubble, 'tool', text, summary ? `${name} · ${summary}` : name);
     }
 
     function updateToolInput(tool) {
@@ -1389,7 +1455,12 @@
         // 底部状态行（点 · 进度 · 归属）只属于生成中；归属由 result 挂回时间行。
         liveUi.removeStreamTail?.(state.currentMsgEl);
         state.currentMsgEl.querySelector('.streaming-dot')?.classList.remove('streaming-dot');
-        state.currentMsgEl.querySelector('.msg-content')?.classList.remove('streaming-dot');
+        const msgContent = state.currentMsgEl.querySelector('.msg-content');
+        msgContent?.classList.remove('streaming-dot');
+        // 正文已落定时收起临时步骤进度面板，避免已完成对话显得冗余；纯工具无正文气泡则保留。
+        if (String(state.currentTextContent || '').trim()) {
+          historyView.removeStepsProgress?.(msgContent);
+        }
         try { host.renderCurrentText?.(true); }
         catch (error) {
           host.warn?.('Failed to render final assistant text');

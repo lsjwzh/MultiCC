@@ -49,4 +49,48 @@ void main() {
       expect(find.byType(ToolCardWidget), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'streaming tool-only agy bubble surfaces live steps and running tool outside collapsed details',
+    (tester) async {
+      final message = ChatMessage(
+        role: MessageRole.assistant,
+        content: '',
+        isStreaming: true,
+        toolCalls: [
+          ToolCall(
+            id: 'agy_step_1',
+            name: 'update_steps',
+            inputJson:
+                '{"steps":[{"title":"定位原因","status":"done"},{"title":"执行编译测试","status":"in_progress"}]}',
+            result: 'OK',
+            isDone: true,
+          ),
+          ToolCall(
+            id: 'agy_step_2',
+            name: 'run_command',
+            inputJson:
+                '{"CommandLine":"cargo test -- agy","toolSummary":"运行 agy 测试"}',
+            isDone: false,
+          ),
+        ],
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(width: 390, child: MessageBubble(message: message)),
+          ),
+        ),
+      );
+
+      expect(find.byKey(const ValueKey('live-steps-card')), findsOneWidget);
+      expect(find.text('执行进度 · 1/2'), findsOneWidget);
+      expect(find.text('执行编译测试'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('live-running-tool-row')),
+        findsOneWidget,
+      );
+      expect(find.text('run_command · 运行 agy 测试'), findsOneWidget);
+    },
+  );
 }

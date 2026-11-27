@@ -211,7 +211,13 @@
           return { ...base, phase: 'flowing', rate: windowTokens / (span / 1000), phaseMs: 0, tone: 'flowing' };
         }
         if (ctx.toolRunning) {
-          return { ...base, phase: 'tool', rate: 0, phaseMs: t - Math.max(Number(ctx.toolSince) || 0, lastAt, beganAt), tone: 'busy' };
+          // A reconnected tool carries its server-stamped startedAt from before
+          // `begin()`, so never clamp a valid `toolSince` up to `beganAt`.
+          const toolSince = Number(ctx.toolSince);
+          const since = Number.isFinite(toolSince) && toolSince > 0
+            ? Math.max(toolSince, lastAt)
+            : Math.max(lastAt, beganAt);
+          return { ...base, phase: 'tool', rate: 0, phaseMs: Math.max(0, t - since), tone: 'busy' };
         }
         if (block === 'thinking') {
           return { ...base, phase: 'thinking', rate: 0, phaseMs: t - Math.max(blockAt, lastAt), tone: 'busy' };

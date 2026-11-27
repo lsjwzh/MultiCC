@@ -166,4 +166,63 @@ void main() {
       expect(toolDescriptionFor(t2), 'failed');
     });
   });
+
+  group('Antigravity (agy) PascalCase tool inputs and update_steps', () {
+    test('renderToolInput and ToolCall.description match Web formatting', () {
+      expect(
+        renderToolInput('run_command', {
+          'CommandLine': 'cargo test -- agy',
+          'toolSummary': '运行 agy 单测',
+        }),
+        r'$ cargo test -- agy',
+      );
+      expect(
+        renderToolInput('read_file', {
+          'Path': '/repo/src/a.rs',
+          'StartLine': 10,
+          'EndLine': 40,
+        }),
+        '/repo/src/a.rs\n(lines: 10-40)',
+      );
+      expect(
+        renderToolInput('edit_file', {
+          'Path': '/repo/src/a.rs',
+          'Target': 'old',
+          'Replacement': 'new',
+        }),
+        '/repo/src/a.rs\n--- old\nold\n+++ new\nnew',
+      );
+      expect(
+        renderToolInput('update_steps', {
+          'steps': [
+            {'title': '排查', 'status': 'done'},
+            {'title': '修复', 'status': 'in_progress'},
+          ],
+        }),
+        '[✓] 排查\n[▶] 修复',
+      );
+
+      final runCmd = ToolCall(
+        id: 'agy_1',
+        name: 'run_command',
+        inputJson: '{"CommandLine":"cargo test","toolSummary":"运行单测"}',
+      );
+      expect(runCmd.description, '运行单测');
+
+      final readFile = ToolCall(
+        id: 'agy_2',
+        name: 'read_file',
+        inputJson: '{"Path":"/repo/src/a.rs"}',
+      );
+      expect(readFile.description, '/repo/src/a.rs');
+
+      final stepsTool = ToolCall(
+        id: 'agy_3',
+        name: 'update_steps',
+        inputJson:
+            '{"steps":[{"title":"排查","status":"done"},{"title":"修复","status":"in_progress"}]}',
+      );
+      expect(stepsTool.description, '1/2 · 修复');
+    });
+  });
 }
