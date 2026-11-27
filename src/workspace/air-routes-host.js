@@ -592,7 +592,7 @@ function createAirRuntime(rawDeps) {
     const record = deps.records.get(entry.sessionId);
     const candidate = deps.shell.attributionCandidate(taskId);
     const separation = deps.shell.taskSeparation?.(taskId) || null;
-    const attribution = await require('../task-routing/delivery-view').deliveryView({ sessionId: entry.sessionId,
+    const attribution = await require('../native/binding').deliveryView({ sessionId: entry.sessionId,
       taskId, candidate, separation, admission: deps.admission, cwd: deps.directories.get(record?.dirId)?.path });
     let roleBindings = null;
     try { roleBindings = deps.shell.roleBindings(taskId); } catch (_) {}

@@ -792,6 +792,17 @@ Object.defineProperty(module.exports, 'adapterCompletion', {
   get: () => adapterCompletion ??= getNative().adapterCompletionApi(assignHostProperty),
 });
 
+async function deliveryView({ sessionId, taskId, candidate, separation, admission, cwd }) {
+  const native = getNative();
+  const { evidence, value } = native.beginDeliveryView(sessionId, taskId, candidate, separation, admission, cwd);
+  if (!evidence) return value;
+  let baseline = null;
+  try { baseline = await value; } catch {}
+  return native.projectDeliveryView(taskId, candidate, separation, evidence.run, evidence.integration, evidence.barrier, evidence.application, baseline);
+}
+
+module.exports.deliveryView = deliveryView;
+
 // CommonJS exposes stable, per-isolate Rust APIs. Deferring construction also
 // keeps the loader usable by standalone tooling before it needs an addon.
 const legacyHostApis = new Map();
