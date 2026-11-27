@@ -987,6 +987,19 @@ class ManageService {
         .cast<String, dynamic>();
   }
 
+  /// Opens macOS System Settings -> Sharing / Remote Login (localhost only).
+  Future<Map<String, dynamic>> openSshRemoteLoginSettings() async {
+    final res = await _send(
+      'POST',
+      '/api/tunnel/ssh/open-settings',
+      body: jsonEncode(const <String, dynamic>{}),
+      timeout: const Duration(seconds: 10),
+    );
+    if (res.statusCode >= 400) _throwWrite(res);
+    return (jsonDecode(utf8.decode(res.bodyBytes)) as Map)
+        .cast<String, dynamic>();
+  }
+
   // ── Voice settings (read-only: keys are sensitive, edit stays on web) ───────
 
   /// Returns the full voice-config shape (asr / tts / whisper / openrouter).

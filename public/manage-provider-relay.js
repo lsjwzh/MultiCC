@@ -450,9 +450,18 @@ function shareAgySshAccount(accountId, accountLabel) {
   overlay.querySelector('[data-act="close"]').onclick = () => close();
   copyBtn.onclick = async () => { _relayCopyResult(st, await _relayCopyText(codeEl.value, codeEl)); };
 
+  let sshPlatform = '';
+  let sshCanEdit = false;
+  let lastPreflight = null;
+
   el('egress').innerHTML = '对方要能直接连到这台机器的 SSH 端口：同一局域网填内网地址即可；跨公网请前往 <a href="/air?view=tunnel#air-tunnel-ssh" style="color:#58a6ff">外网穿透 → SSH（22 端口）出口配置</a> 填入公网映射地址。';
   providerApi.json('/api/tunnel/ssh').then((d) => {
     const snap = d && d.snapshot;
+    if (snap) {
+      sshPlatform = String(snap.platform || '').toLowerCase();
+      sshCanEdit = snap.canEdit !== false;
+      if (lastPreflight) renderPreflight(lastPreflight);
+    }
     const ep = snap && snap.suggested;
     if (!ep || !ep.sshTarget) return;
     const targetIn = el('sshTarget');
@@ -465,12 +474,23 @@ function shareAgySshAccount(accountId, accountLabel) {
   }).catch(() => {});
 
   const renderPreflight = (d) => {
+    lastPreflight = d;
     const rows = [];
     const sshd = d && d.sshd ? d.sshd : {};
+    const isMac = sshPlatform === 'macos';
     if (sshd.listening) {
-      rows.push('<span style="color:#3fb950">本机 SSH 正在监听 22 端口</span>');
+      rows.push('<span style="color:#3fb950">✓ 本机 SSH 正在监听 22 端口</span>');
+      if (isMac) {
+        rows.push(`<div style="margin-top:4px;padding:6px 9px;border:1px solid rgba(63,185,80,.35);background:rgba(63,185,80,.08);border-radius:6px;color:#b4e6be;font-size:11.5px;line-height:1.6">macOS 提醒：若对方需要读写下载/桌面目录，请在「远程登录 → ⓘ」勾选「允许远程用户拥有完全磁盘访问权限」。${sshCanEdit ? ' <button class="btn" data-open-ssh-settings style="font-size:11px;padding:1px 7px;margin-left:4px">打开设置</button>' : ''}</div>`);
+      }
     } else {
-      rows.push('<span style="color:#f85149">本机 22 端口没有在监听：先在「系统设置 → 通用 → 共享 → 远程登录」打开（macOS），或 <code>systemctl enable --now ssh</code>（Linux）。</span>');
+      const openBtnHtml = isMac && sshCanEdit
+        ? '<button class="btn" data-open-ssh-settings style="font-size:12px;padding:3px 10px">打开系统设置 → 远程登录</button>'
+        : '';
+      const guideBody = isMac
+        ? 'macOS 请打开「系统设置 → 通用 → 共享 → 远程登录」，并点右侧 ⓘ 勾选「允许远程用户拥有完全磁盘访问权限」（否则 SSH / Mutagen 无法访问下载或桌面目录）。'
+        : 'macOS 请在「系统设置 → 通用 → 共享 → 远程登录」打开并勾选完全磁盘访问权限；Linux 请运行 <code>sudo systemctl enable --now ssh</code>。';
+      rows.push(`<div style="border:1px solid #d29922;background:rgba(210,153,34,.1);border-radius:8px;padding:9px 11px;margin-bottom:6px;color:#f2cc60;line-height:1.65"><strong>⚠ 本机 22 端口未开启 SSH 服务（必须先开启）</strong><div style="margin-top:4px;color:#e6edf3">${guideBody}</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${openBtnHtml}<button class="btn" data-recheck-ssh style="font-size:12px;padding:3px 10px">我已开启，重新检测</button></div></div>`);
     }
     const aks = d && d.authorizedKeys ? d.authorizedKeys : {};
     if (aks.writable === false) {
@@ -492,6 +512,21 @@ function shareAgySshAccount(accountId, accountLabel) {
     .then(renderPreflight)
     .catch(err => { preflightEl.textContent = '无法检查本机 SSH 状态：' + err.message; });
   overlay.addEventListener('click', async (event) => {
+    const openBtn = event.target.closest('[data-open-ssh-settings]');
+    if (openBtn) {
+      try {
+        const res = await providerApi.json('/api/tunnel/ssh/open-settings', { method: 'POST', json: {} });
+        st.textContent = res.message || '已打开系统设置，请开启「远程登录」并勾选完全磁盘访问权限。';
+        st.className = 'status-text ok';
+      } catch (err) { st.textContent = '打开设置失败：' + err.message; st.className = 'status-text err'; }
+      return;
+    }
+    const recheckBtn = event.target.closest('[data-recheck-ssh]');
+    if (recheckBtn) {
+      st.textContent = '正在重新检测本机 22 端口…'; st.className = 'status-text';
+      await loadPreflight();
+      return;
+    }
     const btn = event.target.closest('[data-revoke]');
     if (!btn) return;
     try {

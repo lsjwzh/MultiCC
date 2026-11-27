@@ -212,6 +212,23 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
     }
   }
 
+  Future<void> _openSshRemoteLoginSettings() async {
+    setState(() => _sshBusy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final res = await _manage.openSshRemoteLoginSettings();
+      if (!mounted) return;
+      final msg = (res['message'] ?? '已打开系统设置，请开启「远程登录」').toString();
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      if (!mounted) return;
+      final text = e is LocalOnlyException ? '仅可在本机打开系统设置' : '打开设置失败：$e';
+      messenger.showSnackBar(SnackBar(content: Text(text)));
+    } finally {
+      if (mounted) setState(() => _sshBusy = false);
+    }
+  }
+
   Widget _sshTunnelCard() {
     final raw = _sshTunnel ?? {};
     final snap = raw['snapshot'] as Map?;
@@ -220,6 +237,8 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
     final remoteReachable = snap?['remoteReachable'] as bool?;
     final remoteBanner = snap?['remoteSshBanner'] == true;
     final canEdit = snap?['canEdit'] == true;
+    final platform = ((snap?['platform'] ?? '') as String).toLowerCase();
+    final localPort = snap?['localPort'] ?? 22;
     final config = (snap?['config'] as Map?) ?? {};
     final suggested = snap?['suggested'] as Map?;
     final sshTarget = (suggested?['sshTarget'] ?? '') as String;
@@ -279,7 +298,114 @@ class _TunnelSettingsScreenState extends State<TunnelSettingsScreen> {
               style: TextStyle(color: AppColors.muted, fontSize: 12),
             )
           else ...[
-            _row('本机 22 端口', sshdListening ? '正在监听' : '未在监听'),
+            if (!sshdListening) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.amber.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: AppColors.amber.withValues(alpha: 0.45),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '第 1 步 · 先开启本机 SSH 服务（必须）',
+                      style: TextStyle(
+                        color: AppColors.amber,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      platform == 'macos'
+                          ? 'macOS 请前往「系统设置 → 通用 → 共享 → 打开 远程登录」，并点击右侧 ⓘ 勾选「允许远程用户拥有完全磁盘访问权限」，否则远程 SSH / Mutagen 无法读写下载或桌面目录。'
+                          : (platform == 'windows'
+                                ? 'Windows 请在管理员 PowerShell 运行：Start-Service sshd; Set-Service -Name sshd -StartupType Automatic'
+                                : 'Linux 请在终端运行：sudo systemctl enable --now ssh'),
+                      style: const TextStyle(
+                        color: AppColors.text,
+                        fontSize: 11.5,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        if (canEdit && platform == 'macos')
+                          FilledButton.tonalIcon(
+                            onPressed: _sshBusy
+                                ? null
+                                : _openSshRemoteLoginSettings,
+                            icon: const Icon(Icons.settings_outlined, size: 16),
+                            label: const Text('打开远程登录设置'),
+                          ),
+                        OutlinedButton(
+                          onPressed: _sshBusy ? null : _refresh,
+                          child: const Text('我已开启，重新检测'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ] else if (platform == 'macos') ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.accent.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: AppColors.accent.withValues(alpha: 0.35),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '✓ 第 1 步已就绪：本机 SSH 正在监听端口 $localPort',
+                      style: const TextStyle(
+                        color: AppColors.accent,
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    const Text(
+                      'macOS 提醒：如需远程读写下载或桌面目录，请在「远程登录 → ⓘ」勾选「允许远程用户拥有完全磁盘访问权限」。',
+                      style: TextStyle(
+                        color: AppColors.muted,
+                        fontSize: 11,
+                        height: 1.4,
+                      ),
+                    ),
+                    if (canEdit)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: _sshBusy
+                              ? null
+                              : _openSshRemoteLoginSettings,
+                          child: const Text('打开远程登录设置'),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+            _row('本机 $localPort 端口', sshdListening ? '正在监听' : '未在监听'),
             if (active)
               _row(
                 '远端探测',

@@ -835,8 +835,10 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 方案 A 重构 SSH（22 端口）出口面板：命令行/网页引导标签、智能粘贴与通用探活提示（净增 11 组双语键），
     // 重跑生成器 countLines 口径实测 10880/709646。
     // b4aa339b 新增 8 个 airProviderResetCards 双语键，生成词典增加 16 行、983 字节。
-    maxLines: 10896,
-    maxBytes: 710629,
+    // SSH 22 端口配置第 1 步引导（开启本机远程登录 + 完全磁盘访问权限提示与一键打开系统设置）：
+    // 新增 13 组双语键（+26 行），重跑生成器 countLines 口径实测 10922/713464。
+    maxLines: 10922,
+    maxBytes: 713464,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

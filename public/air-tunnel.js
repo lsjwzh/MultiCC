@@ -212,8 +212,23 @@
             <div><span>${t('airTunnelSshLocalUser')}</span><strong id="air-ssh-user">${t('airTunnelReadingEllipsis')}</strong></div>
             <div class="wide"><span>${t('airTunnelSshProbeLabel')}</span><strong id="air-ssh-probe">—</strong></div>
           </div>
+          <div id="air-ssh-prereq" class="air-tunnel-ssh-prereq" hidden>
+            <div class="air-tunnel-ssh-prereq-head">
+              <strong id="air-ssh-prereq-title"></strong>
+            </div>
+            <p id="air-ssh-prereq-desc" class="air-tunnel-ssh-prereq-body"></p>
+            <p id="air-ssh-prereq-fda" class="air-tunnel-ssh-prereq-tip" hidden></p>
+            <div id="air-ssh-prereq-cmd-row" class="air-tunnel-ssh-cmd-row" hidden>
+              <code id="air-ssh-prereq-cmd"></code>
+              <button id="air-ssh-prereq-copy" type="button">${t('airTunnelSshCopyGuideCmd')}</button>
+            </div>
+            <div id="air-ssh-prereq-actions" class="air-tunnel-actions">
+              <button id="air-ssh-open-settings" class="primary" type="button" hidden>${t('airTunnelSshOpenSettingsBtn')}</button>
+              <button id="air-ssh-prereq-recheck" type="button">${t('airTunnelSshRecheckSshd')}</button>
+            </div>
+          </div>
           <div class="air-tunnel-ssh-guide">
-            <div class="air-tunnel-ssh-note"><strong>${t('airTunnelSshGuideTitle')}</strong></div>
+            <div class="air-tunnel-ssh-note"><strong>${t('airTunnelSshStep2Title')}</strong></div>
             <div class="air-tunnel-ssh-tabs" role="tablist">
               <button type="button" class="air-tunnel-ssh-tab active" data-ssh-guide="sakura">${t('airTunnelSshGuideSakura')}</button>
               <button type="button" class="air-tunnel-ssh-tab" data-ssh-guide="cpolar">${t('airTunnelSshGuideCpolar')}</button>
@@ -578,9 +593,62 @@
     else setChip('air-ssh-status', t('airTunnelSshStatusIdle'), 'neutral');
 
     setText('air-ssh-sshd', s.sshdListening
-      ? t('airTunnelSshSshdListening', { port: localPort })
-      : t('airTunnelSshSshdOff', { port: localPort }));
+      ? t('airTunnelSshSshdShortOn', { port: localPort })
+      : t('airTunnelSshSshdShortOff', { port: localPort }));
     setText('air-ssh-user', s.localUser || '—');
+
+    const canEdit = s.canEdit !== false;
+    const platform = String(s.platform || '').toLowerCase();
+    const prereq = byId('air-ssh-prereq');
+    if (prereq) {
+      prereq.hidden = false;
+      const descEl = byId('air-ssh-prereq-desc');
+      const fdaEl = byId('air-ssh-prereq-fda');
+      const cmdRow = byId('air-ssh-prereq-cmd-row');
+      const openBtn = byId('air-ssh-open-settings');
+      const recheckBtn = byId('air-ssh-prereq-recheck');
+      const actionsRow = byId('air-ssh-prereq-actions');
+      if (!s.sshdListening) {
+        prereq.className = 'air-tunnel-ssh-prereq';
+        setText('air-ssh-prereq-title', t('airTunnelSshStep1Title'));
+        if (descEl) descEl.hidden = false;
+        if (platform === 'macos') {
+          setText('air-ssh-prereq-desc', t('airTunnelSshStep1MacSteps'));
+          if (fdaEl) { fdaEl.hidden = false; fdaEl.textContent = t('airTunnelSshStep1MacFdaHint'); }
+          if (cmdRow) cmdRow.hidden = true;
+          if (openBtn) { openBtn.hidden = !canEdit; openBtn.className = 'primary'; }
+        } else if (platform === 'windows') {
+          setText('air-ssh-prereq-desc', t('airTunnelSshStep1WinSteps'));
+          if (fdaEl) fdaEl.hidden = true;
+          if (cmdRow) cmdRow.hidden = false;
+          setText('air-ssh-prereq-cmd', 'Start-Service sshd; Set-Service -Name sshd -StartupType Automatic');
+          if (openBtn) openBtn.hidden = true;
+        } else {
+          setText('air-ssh-prereq-desc', t('airTunnelSshStep1LinuxSteps'));
+          if (fdaEl) fdaEl.hidden = true;
+          if (cmdRow) cmdRow.hidden = false;
+          setText('air-ssh-prereq-cmd', 'sudo systemctl enable --now ssh');
+          if (openBtn) openBtn.hidden = true;
+        }
+        if (recheckBtn) recheckBtn.hidden = false;
+        if (actionsRow) actionsRow.hidden = false;
+      } else {
+        prereq.className = 'air-tunnel-ssh-prereq ready';
+        setText('air-ssh-prereq-title', t('airTunnelSshStep1Ready', { port: localPort }));
+        if (descEl) descEl.hidden = true;
+        if (cmdRow) cmdRow.hidden = true;
+        if (recheckBtn) recheckBtn.hidden = true;
+        if (platform === 'macos') {
+          if (fdaEl) { fdaEl.hidden = false; fdaEl.textContent = t('airTunnelSshStep1MacReadyHint'); }
+          if (openBtn) { openBtn.hidden = !canEdit; openBtn.className = ''; }
+          if (actionsRow) actionsRow.hidden = !canEdit;
+        } else {
+          if (fdaEl) fdaEl.hidden = true;
+          if (openBtn) openBtn.hidden = true;
+          if (actionsRow) actionsRow.hidden = true;
+        }
+      }
+    }
 
     if (!s.active) setText('air-ssh-probe', '—');
     else if (s.remoteReachable && s.remoteSshBanner) setText('air-ssh-probe', t('airTunnelSshProbeSshOk'));
@@ -592,7 +660,6 @@
     setValue('air-ssh-local-port', localPort);
     setValue('air-ssh-username', config.username || '');
 
-    const canEdit = s.canEdit !== false;
     for (const id of ['air-ssh-save', 'air-ssh-stop']) {
       const btn = byId(id);
       if (btn) btn.disabled = !canEdit;
@@ -793,6 +860,11 @@
     setMessage('air-ssh-message', result.message || t('airTunnelSshStopped'), 'success');
   }
 
+  async function openSshRemoteLoginSettings() {
+    const result = await context.api('/api/tunnel/ssh/open-settings', {}, 'POST');
+    setMessage('air-ssh-message', result.message || t('airTunnelSshOpenSettingsBtn'), 'info');
+  }
+
   async function copyRawSshText(text) {
     if (!text) return;
     try {
@@ -836,6 +908,9 @@
       btn.onclick = () => selectSshGuide(btn.dataset.sshGuide);
     });
     byId('air-ssh-guide-copy').onclick = () => copyRawSshText(SSH_GUIDES[activeSshGuide]?.cmd || '');
+    byId('air-ssh-prereq-copy').onclick = () => copyRawSshText(byId('air-ssh-prereq-cmd')?.textContent || '');
+    byId('air-ssh-open-settings').onclick = event => runAction(event.currentTarget, t('airTunnelSshOpeningSettings'), 'air-ssh-message', openSshRemoteLoginSettings);
+    byId('air-ssh-prereq-recheck').onclick = event => runAction(event.currentTarget, t('airTunnelDetecting'), 'air-ssh-message', load);
     byId('air-ssh-paste').oninput = handleSshPasteInput;
     byId('air-ssh-save').onclick = event => runAction(event.currentTarget, t('airTunnelSaving'), 'air-ssh-message', saveSshTunnel);
     byId('air-ssh-stop').onclick = event => runAction(event.currentTarget, t('airTunnelSshStopping'), 'air-ssh-message', stopSshTunnel);

@@ -85,6 +85,7 @@ pub struct SuggestedSshEndpoint {
 #[serde(rename_all = "camelCase")]
 pub struct SshTunnelSnapshot {
     pub can_edit: bool,
+    pub platform: String,
     pub local_user: String,
     pub local_port: u16,
     pub sshd_listening: bool,
@@ -396,6 +397,31 @@ pub fn build_suggested_endpoint(
     })
 }
 
+/// Open macOS System Settings → Sharing (Remote Login) pane on the local machine.
+pub fn open_remote_login_settings() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        for url in [
+            "x-apple.systempreferences:com.apple.Sharing-Settings.extension",
+            "x-apple.systempreferences:com.apple.preferences.sharing",
+        ] {
+            if let Ok(status) = Command::new("/usr/bin/open").arg(url).status() {
+                if status.success() {
+                    return Ok(
+                        "已打开系统设置「共享」：请开启「远程登录」，并点开右侧 ⓘ 勾选「允许远程用户拥有完全磁盘访问权限」"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        Err("无法打开 macOS 系统设置，请手动前往「系统设置 → 通用 → 共享 → 远程登录」".to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("仅 macOS 支持一键打开系统设置，请按引导命令在本机开启 SSH 服务".to_string())
+    }
+}
+
 pub fn gather_snapshot_blocking(state_dir: &Path, can_edit: bool) -> SshTunnelSnapshot {
     let config = load_config(state_dir);
     let local_port = if config.local_port == 0 {
@@ -416,6 +442,7 @@ pub fn gather_snapshot_blocking(state_dir: &Path, can_edit: bool) -> SshTunnelSn
     let suggested = build_suggested_endpoint(&config, &local_user);
     SshTunnelSnapshot {
         can_edit,
+        platform: std::env::consts::OS.to_string(),
         local_user,
         local_port,
         sshd_listening,
