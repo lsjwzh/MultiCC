@@ -14,7 +14,7 @@ const {
   normalizeManualMemory,
   parseMemoryEntries,
   trimMemoryEntries,
-} = require('../src/memory/runtime');
+} = require('../src/native/binding').memoryRuntime;
 
 function deferred() {
   let resolve;

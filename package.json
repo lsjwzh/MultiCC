@@ -108,6 +108,9 @@
   "files": [
     "Makefile",
     "scripts/stage-rust-runtime.sh",
+    "skills/multicc-artifact/references/registration-rule.md",
+    "skills/multicc-secrets/references/secret-vault-rule.md",
+    "skills/multicc-workspaces/references/shared-files-rule.md",
     ".cargo/config.toml",
     "native/Cargo.toml",
     "native/Cargo.lock",

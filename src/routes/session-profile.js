@@ -11,7 +11,7 @@ const { selectionKey } = require('../native/binding').autoProviderConfig;
 const fs = require('fs');
 const path = require('path');
 
-const { normalizeManualMemory } = require('../memory/runtime');
+const { normalizeManualMemory } = require('../native/binding').memoryRuntime;
 const { taskShortCode } = require('../native/binding').taskDomainHost;
 const { isGoalState } = require('../native/binding').classifyVocab;
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../native/binding').autoProviderConfig;

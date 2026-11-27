@@ -615,11 +615,8 @@ test('/api events, triggers and annotation-live routes are owned by the Rust fro
 
 test('/api docs, memory, memo and directory-event routes are owned by the Rust front door', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  const docs = fs.readFileSync(path.join(ROOT, 'src', 'docs-registry.js'), 'utf8');
-  const memory = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'memory-browser.js'), 'utf8');
-  const notes = fs.readFileSync(path.join(ROOT, 'src', 'notes-store.js'), 'utf8');
-  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'docs-memory-host.js'), 'utf8');
-  assert.ok(source.includes("require('./src/routes/docs-memory-host')"),
+  const { docsMemoryHost } = require('../src/native/binding');
+  assert.ok(source.includes("nativeBinding.docsMemoryHost"),
     'server.js requires the docs-memory host port');
   assert.ok(source.includes('createDocsMemoryHost({'), 'and mounts it once');
   assert.ok(source.includes('memo: memoModule.controller'),
@@ -634,16 +631,22 @@ test('/api docs, memory, memo and directory-event routes are owned by the Rust f
     'the memo module no longer exposes a router');
   assert.equal(source.includes('memoryBrowser.mountRoutes(app)'), false,
     'the memory browser no longer mounts public routes');
-  for (const [file, text] of [
-    ['src/docs-registry.js', docs],
-    ['src/routes/memory-browser.js', memory],
-    ['src/notes-store.js', notes],
-  ]) {
-    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false,
-      `${file} must not register routes`);
+  for (const file of ['src/docs-registry.js', 'src/routes/memory-browser.js', 'src/notes-store.js', 'src/routes/docs-memory-host.js']) {
+    assert.equal(fs.existsSync(path.join(ROOT, file)), false, file);
   }
-  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
-  assert.ok(host.includes("'/api/__host/docs-memory'"), 'and it is not a public path');
+  const routes = new Map();
+  let probes = 0;
+  const host = docsMemoryHost.createDocsMemoryHost({
+    docs: { startProbeLoop() { probes += 1; } },
+    artifactExists: () => false,
+    isLocal: () => false,
+  });
+  host.mount({ post(path, handler) { routes.set(path, handler); } });
+  assert.equal(docsMemoryHost.HOST_PATH, '/api/__host/docs-memory');
+  assert.deepEqual([...routes.keys()], [docsMemoryHost.HOST_PATH]);
+  assert.equal(probes, 1);
+  const res = { status(code) { assert.equal(code, 404); return this; }, json(data) { return data; } };
+  assert.deepEqual(routes.get(docsMemoryHost.HOST_PATH)({}, res), { error: 'not found' });
   // The store file keeps its historical underscore spelling: the kernel and the
   // host agree on `docs_registry.json`, not `docs-registry.json`.
   assert.ok(source.includes('docsRegistry'), 'the registry runtime is still the host dependency');

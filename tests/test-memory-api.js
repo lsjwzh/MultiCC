@@ -8,8 +8,8 @@ const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 const { assertTestDir } = require('../src/paths');
-const { DOCS_REGISTRY_RULE, SECRET_VAULT_RULE, SHARED_FILES_RULE } = require('../src/memory/builtin-rules');
-const { ENTRY_DELIMITER } = require('../src/memory-store');
+const { DOCS_REGISTRY_RULE, SECRET_VAULT_RULE, SHARED_FILES_RULE } = require('../src/native/binding').builtinMemoryRules;
+const { ENTRY_DELIMITER } = require('../src/native/binding').curatedMemoryStore;
 const SEED_RULES = DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n';
 
 const ROOT = path.join(__dirname, '..');

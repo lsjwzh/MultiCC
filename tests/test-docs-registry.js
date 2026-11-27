@@ -19,13 +19,13 @@ const test = require('node:test');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'docsreg-test-'));
 process.env.MULTICC_DATA_DIR = tmp;
-const reg = require('../src/docs-registry');
+const reg = require('../src/native/binding').docsRegistry;
 const { assertTestDir } = require('../src/paths');
 assertTestDir(tmp);
 
 function reset() { reg._resetForTests([]); }
 
-const { createDocsMemoryHost } = require('../src/routes/docs-memory-host');
+const { createDocsMemoryHost } = require('../src/native/binding').docsMemoryHost;
 
 /** The host port the front door calls; `handle(body)` runs one operation. */
 function host(overrides = {}) {

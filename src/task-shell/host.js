@@ -405,7 +405,7 @@ function createTaskShellHost(deps) {
         relations: () => getRuntime().relations,
         independent: () => getRuntime().independent,
         artifacts: createArtifactsMemo(async id =>
-          collectTaskArtifacts(await getRuntime().taskEntry(id), require('../docs-registry').list(), artifactFileExists)),
+          collectTaskArtifacts(await getRuntime().taskEntry(id), require('../native/binding').docsRegistry.list(), artifactFileExists)),
         history: (id, options) => shellHistoryPage(getRuntime().chatScope(id),
           deps.displayHistory || deps.loadHistory, deps.getChatState, { ...options, overlay: taskOperations().overlay.apply }) });
       // 独立继续的等待队列由服务端推进：重启后恢复，不依赖页面开着。

@@ -13,7 +13,7 @@ const { selectionKey } = require('../frozen-b10-network/auto-provider-config');
 const fs = require('fs');
 const path = require('path');
 
-const { normalizeManualMemory } = require('../../../src/memory/runtime');
+const { normalizeManualMemory } = require('./manual-memory');
 const { taskShortCode } = require('../frozen-batch10').frozen('native/task-domain');
 const { auxVerdictStaleness } = require('../legacy-aux-verdict-health');
 const { isGoalState } = require('../../../src/classify/vocab');

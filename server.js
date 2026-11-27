@@ -63,7 +63,7 @@ const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/nativ
 const crypto = require('crypto');
 const bus = require('./src/native/binding').eventBus;
 const state = require('./src/native/binding').stateContainer;
-const artifacts = nativeBinding.artifacts, docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
+const artifacts = nativeBinding.artifacts, docsRegistry = nativeBinding.docsRegistry, secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
 const providers = require('./src/providers/host');
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/native/binding').codexModelCatalog.startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
@@ -87,7 +87,7 @@ const {
   atomicWrite: atomicWriteMemoryFile,
   readMemoryFolder: readFolderMemory,
   scanMemoryContent,
-} = require('./src/memory-store');
+} = nativeBinding.curatedMemoryStore;
 const {
   SUPPORTED_CHAT_CLIS,
   ensureCliStates,
@@ -132,9 +132,9 @@ const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACC
 const { mountQuotaHostRoute } = require('./src/routes/quota-host');
 const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance-host');
 const { createProviderRelayModelCatalogRuntime } = require('./src/native/binding').relayModelCatalog;
-const { createMemoryBrowserRoutes } = require('./src/routes/memory-browser');
-const { createDocsMemoryHost } = require('./src/routes/docs-memory-host');
-const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
+const { createMemoryBrowserRoutes } = nativeBinding.memoryBrowser;
+const { createDocsMemoryHost } = nativeBinding.docsMemoryHost;
+const { mountSessionMemoryRoutes } = nativeBinding.sessionMemoryRoutes;
 const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
 const { mountSecretsVaultHostRoute } = require('./src/routes/secrets-vault-host');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
@@ -153,18 +153,18 @@ const { createSessionLifecycleRuntime } = require('./src/routes/session-lifecycl
 const { createServerRestartRoute } = require('./src/routes/server-restart-route');
 const { createUpdateRoute } = require('./src/routes/update-route');
 const { createAuthRuntime } = require('./src/routes/auth');
-const { createNotesStore } = require('./src/notes-store');
+const { createNotesStore } = nativeBinding.workspaceNotes;
 const {
   listInstalledSkills,
   listClaudeHistory,
   removeClaudeHistorySession,
 } = require('./src/skills');
-const { createFolderMemoryService } = require('./src/memory/folder-service');
+const { createFolderMemoryService } = nativeBinding.folderMemoryService;
 const {
   createMemoryRuntime,
   getMemoryEntries,
   normalizeManualMemory,
-} = require('./src/memory/runtime');
+} = nativeBinding.memoryRuntime;
 const createTaskHistoryRetention = deps => require('./src/native/binding').getNative().createTaskHistoryRetention(deps);
 const taskHistoryRefusal = error => require('./src/native/binding').getNative().taskHistoryRefusal(error);
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history/index');
@@ -730,14 +730,8 @@ async function destroySessionCascade(s, d, opts = {}) {
   };
 }
 
-// Notes/events store (src/notes-store.js): event ring + append-only per-dir
-// logs and the shared inter-agent notes pool. Owns its mutable `notes` array
-// (never exported by reference) and hydrates it here at boot, exactly where the
-// inline loadNotes() ran before extraction. Created before every consumer —
-// seedCommanderSession/destroySessionCascade/directoryModule all take
-// appendEvent/purgeNotesForSession by value. The events route itself is served
-// by the Rust front door; src/routes/docs-memory-host.js only answers its
-// `notes-events` host lookup against the directory map composed below.
+// Hydrate notes before session and directory consumers capture appendEvent and
+// purgeNotesForSession. The workspace event ring gets its broadcast port later.
 const notesStore = createNotesStore({
   eventsDir: MULTICC_PATHS.eventsDir,
   notesFile: MULTICC_PATHS.notesFile,
@@ -1506,6 +1500,7 @@ mountSessionMemoryRoutes(sessionRoutesHost.app, {
 // Session-level curated memory routes above retain their separate semantics.
 // This object is the filesystem half of the docs/memory host port below.
 const memoryBrowser = createMemoryBrowserRoutes({
+  nativeMemoryScan: true,
   fs,
   path,
   memoryStoreRoot: MEMORY_STORE_ROOT,
@@ -1601,9 +1596,6 @@ const updateRoute = createUpdateRoute({
 });
 
 // ── Per-session metadata: inter-agent notes + liveness ──
-// Handler logic lives in the native session meta routes; only host wiring stays
-// here. `notes` lives inside src/notes-store.js and is never exposed by
-// reference — the module receives getNotes()/saveNotes()/pendingNotesFor().
 createSessionMetaRuntime({
   persistedSessions,
   asyncHandler,

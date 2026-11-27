@@ -16,7 +16,8 @@ const { promisify } = require('util');
 const { gitExportSessionBundle, gitImportSessionBundle } = require('../../../src/git/service');
 const { createHandoffEnvService } = require('../../../src/session/handoff-env');
 const { createZip, readZip, looksLikeZip } = require('../legacy-handoff-zip');
-const { DOCS_REGISTRY_RULE } = require('../../../src/memory/builtin-rules');
+const DOCS_REGISTRY_RULE = fs.readFileSync(path.join(__dirname,
+  '../../../skills/multicc-artifact/references/registration-rule.md'), 'utf8').trim();
 
 const execFileAsync = promisify(execFile);
 const PROJECT_DOC_FILES = ['CLAUDE.md', 'AGENTS.md'];

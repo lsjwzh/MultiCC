@@ -75,7 +75,7 @@ test('scopeDirFor resolves the task scope from taskBoundTaskId or taskState', ()
 
 test('detectSkillReferences matches whole names in memories and messages, not substrings', () => {
   const root = tempRoot();
-  const { DOCS_REGISTRY_RULE } = require('../src/memory/builtin-rules');
+  const { DOCS_REGISTRY_RULE } = require('../src/native/binding').builtinMemoryRules;
   const service = createHandoffEnvService({ agentsSkillsDir: path.join(root, 'skills'),
                                             builtinRuleText: DOCS_REGISTRY_RULE });
   const installed = [
