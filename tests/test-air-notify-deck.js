@@ -280,3 +280,84 @@ test('notifier: 全部消除 is remembered, the same pending marks do not come b
   ctrl.onSnapshot(tasks, '');
   assert.deepEqual(ctrl.deckIds(), []);
 });
+
+test('succeeded sub-states render achieved / interact / muted tones and rank interact above achieved', () => {
+  const dom = fakeDom();
+  const deck = makeDeck(dom);
+  deck.upsert({ id: 'ach', title: 'Ach', status: 'active', runState: 'succeeded', goalState: 'achieved' }, 'completed');
+  deck.upsert({ id: 'und', title: 'Und', status: 'active', runState: 'succeeded', goalState: null }, 'completed');
+  deck.upsert({ id: 'int', title: 'Int', status: 'active', runState: 'succeeded', goalState: 'interact' }, 'completed');
+  deck.upsert({ id: 'ask', title: 'Ask', status: 'active', runState: 'waiting' }, 'waiting');
+  deck.upsert({ id: 'err', title: 'Err', status: 'active', runState: 'error' }, 'error');
+
+  assert.deepEqual(deck.ids(), ['err', 'ask', 'int', 'und', 'ach']);
+  const titleOf = id => dom.card(id).find(dom.has('task-notify-title')).textContent;
+  const bodyOf = id => dom.card(id).find(dom.has('task-notify-body')).textContent;
+  assert.equal(titleOf('Ach'), 'floatTitleAchieved: ·');
+  assert.equal(bodyOf('Ach'), 'achieved:Ach');
+  assert.ok(dom.card('Ach').classList.contains('k-completed'));
+  assert.ok(dom.card('Ach').classList.contains('t-achieved'));
+
+  assert.equal(titleOf('Int'), 'floatTitleInteract: ·');
+  assert.equal(bodyOf('Int'), 'interact:Int');
+  assert.ok(dom.card('Int').classList.contains('k-completed'));
+  assert.ok(dom.card('Int').classList.contains('t-interact'));
+
+  assert.equal(titleOf('Und'), 'floatTitleSucceeded: ·');
+  assert.equal(bodyOf('Und'), 'succeeded:Und');
+  assert.ok(dom.card('Und').classList.contains('k-completed'));
+  assert.ok(dom.card('Und').classList.contains('t-muted'));
+});
+
+test('notifier: live goalState update refreshes an open card in place without reviving a dismissed one', () => {
+  const dom = fakeDom();
+  const store = new Map();
+  dom.win.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: k => store.delete(k),
+  };
+  dom.win.speechSynthesis = null;
+  loadDeck(dom);
+  new Function('window', 'document', NOTIFY_SRC)(dom.win, dom.doc);
+  const ctrl = dom.win.MultiCCTaskNotify.create({
+    window: dom.win, document: dom.doc, presence: null, now,
+    setTimeout: dom.win.setTimeout, clearTimeout: dom.win.clearTimeout,
+    openTask() {},
+  });
+
+  // 规则先提交 D（goalState 为空），Aux 稍后回填成 interact / achieved，attention.at 不变。
+  const openTask = {
+    id: 'live1', title: '发布版本', status: 'active', runState: 'succeeded',
+    goalState: null, attention: { kind: 'completed', at: 100 },
+  };
+  const dismissedTask = {
+    id: 'gone1', title: '已关掉的活', status: 'active', runState: 'succeeded',
+    goalState: null, attention: { kind: 'completed', at: 101 },
+  };
+  ctrl.onSnapshot([openTask, dismissedTask], '');
+  assert.equal(dom.card('发布版本').find(dom.has('task-notify-title')).textContent, '执行成功 ·');
+  assert.ok(dom.card('发布版本').classList.contains('t-muted'));
+
+  // 用户手动 ✕ 关掉 gone1
+  dom.button(dom.card('已关掉的活'), 'task-complete-close').onclick({ stopPropagation() {} });
+  dom.runTimers();
+  assert.deepEqual(ctrl.deckIds(), ['live1']);
+
+  // Aux 归因回来：两条都拿到了 goalState，但 attention.at 还是 100 / 101
+  openTask.goalState = 'interact';
+  dismissedTask.goalState = 'achieved';
+  ctrl.onSnapshot([openTask, dismissedTask], '');
+  assert.deepEqual(ctrl.deckIds(), ['live1'], 'dismissed card stays dismissed');
+  assert.equal(dom.card('发布版本').find(dom.has('task-notify-title')).textContent, '需要交互 ·');
+  assert.equal(dom.card('发布版本').find(dom.has('task-notify-body')).textContent, '发布版本 需要交互');
+  assert.ok(dom.card('发布版本').classList.contains('t-interact'));
+
+  // 随后用户把 live1 标记成达成目标：卡片原地变成绿色的「达成目标」
+  openTask.goalState = 'achieved';
+  ctrl.onSnapshot([openTask, dismissedTask], '');
+  assert.equal(dom.card('发布版本').find(dom.has('task-notify-title')).textContent, '达成目标 ·');
+  assert.equal(dom.card('发布版本').find(dom.has('task-notify-body')).textContent, '发布版本 已达成目标');
+  assert.ok(dom.card('发布版本').classList.contains('t-achieved'));
+  assert.equal(dom.card('发布版本').classList.contains('t-interact'), false);
+});

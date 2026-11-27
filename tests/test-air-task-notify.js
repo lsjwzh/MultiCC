@@ -380,6 +380,54 @@ test('waiting: a question marks the row; answered elsewhere clears it; then done
   assert.equal(h.ctrl.unseenKind('q'), 'completed');
 });
 
+test('succeeded sub-states narrate 达成目标 / 需要交互 / 执行成功 and prioritize interact', () => {
+  const h = soundHarness({ away: true });
+  h.ctrl.onSnapshot([], '');
+  h.ctrl.onSnapshot([
+    { id: 'g', title: 'Alpha', status: 'active', runState: 'succeeded', goalState: 'achieved', attention: { kind: 'completed', at: 100 } },
+    { id: 'i', title: 'Beta', status: 'active', runState: 'succeeded', goalState: 'interact', attention: { kind: 'completed', at: 101 } },
+  ], '');
+  h.advance(1000);
+  assert.deepEqual(h.spoken, ['任务「Beta」需要交互，另有 1 个任务有新结果']);
+
+  h.advance(10000);
+  h.ctrl.onSnapshot([
+    { id: 'g', title: 'Alpha', status: 'active', runState: 'succeeded', goalState: 'achieved', attention: { kind: 'completed', at: 100 } },
+    { id: 'i', title: 'Beta', status: 'active', runState: 'succeeded', goalState: 'interact', attention: { kind: 'completed', at: 101 } },
+    { id: 'a2', title: 'Gamma', status: 'active', runState: 'succeeded', goalState: 'achieved', attention: { kind: 'completed', at: 200 } },
+  ], '');
+  h.advance(1000);
+  assert.equal(h.spoken[1], '任务「Gamma」已达成目标');
+
+  h.advance(10000);
+  h.ctrl.onSnapshot([
+    { id: 's2', title: 'Delta', status: 'active', runState: 'succeeded', goalState: null, attention: { kind: 'completed', at: 300 } },
+  ], '');
+  h.advance(1000);
+  assert.equal(h.spoken[2], '任务「Delta」执行成功');
+});
+
+test('floatTitle* uses status-presentation vocabulary when loaded and honors language', () => {
+  const SP = require('../public/status-presentation.js');
+  const zh = loadModule({ navigatorLanguage: 'zh-CN' });
+  zh.win.MultiCCStatusPresentation = SP;
+  zh.win.t = key => ({
+    statusGoalAchieved: '达成目标',
+    statusGoalInteract: '需要交互',
+    airStateSucceeded: '执行成功',
+  }[key] || key);
+  const trZh = captureTranslate(zh.win, zh.api).translate;
+  assert.equal(trZh('floatTitleAchieved'), '达成目标');
+  assert.equal(trZh('floatTitleInteract'), '需要交互');
+  assert.equal(trZh('floatTitleSucceeded'), '执行成功');
+
+  const en = loadModule({ navigatorLanguage: 'en-US' });
+  const trEn = captureTranslate(en.win, en.api).translate;
+  assert.equal(trEn('floatTitleAchieved'), 'Goal achieved');
+  assert.equal(trEn('floatTitleInteract'), 'Needs input');
+  assert.equal(trEn('floatTitleSucceeded'), 'Succeeded');
+});
+
 // ── shared/user-presence.js ────────────────────────────────────────────────
 const Presence = require('../public/shared/user-presence.js');
 

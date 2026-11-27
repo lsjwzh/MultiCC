@@ -2424,17 +2424,21 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
   bottom: 10px;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: var(--success, #2f8f5b);
+  background: var(--st-success, var(--success, #2f8f5b));
 }
 .task-notify-card.k-error { border-color: #e7c3bf; }
 .task-notify-card.k-error::before { background: var(--danger, #b64e43); }
-.task-notify-card.k-waiting::before { background: #b7791f; }
+.task-notify-card.k-waiting::before { background: var(--st-waiting, #b7791f); }
+.task-notify-card.t-interact::before { background: var(--st-interact, #b8960c); }
+.task-notify-card.t-muted::before { background: var(--st-muted, #8a9aab); }
 .task-notify-deck.is-multi .task-notify-card.is-top:not(.is-leaving) { cursor: pointer; }
 .task-notify-deck:not(.is-open) .task-notify-card:not(.is-top) .task-notify-text, .task-notify-deck:not(.is-open) .task-notify-card:not(.is-top) .task-notify-actions { visibility: hidden; }
 .task-notify-text { min-width: 0; flex: 1; }
-.task-notify-title { font-weight: 700; font-size: 12px; margin-bottom: 2px; color: var(--success, #2f8f5b); }
+.task-notify-title { font-weight: 700; font-size: 12px; margin-bottom: 2px; color: var(--st-success, var(--success, #2f8f5b)); }
 .k-error .task-notify-title { color: var(--danger, #b64e43); }
-.k-waiting .task-notify-title { color: #b7791f; }
+.k-waiting .task-notify-title { color: var(--st-waiting, #b7791f); }
+.t-interact .task-notify-title { color: var(--st-interact, #b8960c); }
+.t-muted .task-notify-title { color: var(--st-muted, #8a9aab); }
 .task-notify-body {
   overflow: hidden;
   display: -webkit-box;
