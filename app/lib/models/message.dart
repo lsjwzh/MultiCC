@@ -4,6 +4,7 @@ import 'package:flutter/material.dart' show Color;
 
 import '../utils/cli_display.dart';
 import 'role_tokens.dart';
+import 'tool_input_view.dart';
 
 enum MessageRole { user, assistant, system }
 
@@ -327,12 +328,7 @@ class ToolCall {
   String get description {
     final p = parsedInput;
     if (p == null) return '';
-    return (p['description'] ??
-            p['command'] ??
-            p['pattern'] ??
-            p['file_path'] ??
-            '')
-        .toString();
+    return extractToolSummary(name, p);
   }
 }
 
