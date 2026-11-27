@@ -233,3 +233,15 @@ fn system_cache_ttl_and_error_handling_match_the_javascript() {
         );
     }
 }
+
+#[test]
+fn gateway_keeps_its_bracket_normalization_when_sharing_node_matching() {
+    let url = Url::parse("https://example.com").unwrap();
+    assert!(bypass_proxy(&url, &["[[example.com]]".to_string()]));
+    assert!(!matches_proxy_entry(
+        "example.com",
+        "443",
+        "[[example.com]]",
+        EntrySyntax::Node
+    ));
+}

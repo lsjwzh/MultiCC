@@ -174,6 +174,8 @@ test('cb0263ed differential: token reuse, 401 invalidation, stale token classifi
           { '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError', errorCode: 'UNREGISTERED' }] } };
         return { ok: status === 200, status, json: async () => body };
       } });
+    results.push(await Promise.all([client.send('concurrent-a', {}), client.send('concurrent-b', {})]));
+    assert.equal(calls.filter(call => !Array.isArray(call)).length, 1);
     for (status of [200, 401, 200]) results.push(await client.send('test', { title: 't' }));
     return [client.projectId, calls, results];
   });

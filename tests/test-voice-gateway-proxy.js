@@ -202,3 +202,17 @@ test('wireUpgrade routes voice upgrades to the proxy and chat upgrades to the ws
     child.server.close();
   }
 });
+
+require('node:test')('67f54869 differential: routes/voice-gateway-proxy', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('routes/voice-gateway-proxy.js', async api => {
+    const outcomes = [];
+    for (const url of [null, 'broken', 'https://example.test']) {
+      const proxy = api.createVoiceGatewayWebProxy({ runtime: { statusGlobal: () => ({ url }) } });
+      const res = { status(n) { outcomes.push(n); return this; }, json(body) { outcomes.push(body); } };
+      proxy.mountRoutes({ use(prefix, handler) { outcomes.push(prefix); handler({}, res); } });
+      proxy.handleUpgrade({}, { destroy() { outcomes.push('destroy'); } }, Buffer.alloc(0));
+    }
+    return outcomes;
+  });
+});

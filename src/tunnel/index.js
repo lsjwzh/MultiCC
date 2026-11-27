@@ -1,10 +1,9 @@
 'use strict';
 
 const path = require('node:path');
-const { getNative } = require('../native/binding');
+const { getNative, findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp } = require('../native/binding');
 const { atomicWriteJson } = require('../runtime-security');
 const { createTailscaleFunnelProbe } = require('../tailscale-funnel-health');
-const { findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp } = require('../tunnel-sakurafrp');
 const { readLauncherToken, getUserInfo, discoverAccess } = require('../tunnel-sakurafrp-api');
 
 module.exports = getNative().tunnelMonitorApi({

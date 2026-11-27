@@ -2,10 +2,9 @@
 
 const { randomUUID } = require('node:crypto');
 const { WebSocket } = require('ws');
-const { installNativeQueue } = require('./native-queue');
 const { createWsHost } = require('./ws-host');
 const { startChatBridge } = require('../gateway-child');
-const { getNative } = require('../native/binding');
+const { getNative, assignHostProperty } = require('../native/binding');
 const isInternalExecutionSlot = record => getNative().sessionIsInternalExecutionSlot(record);
 
 const WS_PING_INTERVAL_MS = 30_000;
@@ -202,7 +201,7 @@ function mountWsConnectionRouter(wss, deps) {
     for (const step of JSON.parse(getNative().wsAdmissionPlan(JSON.stringify(facts)))) {
       if (step.op === 'metric') { metrics.inc(step.name); continue; }
       if (step.op === 'installSendQueue') {
-        installNativeQueue(ws, wsHost, connId, wsPorts, connPortsById);
+        getNative().installWsQueue(ws, wsHost, connId, wsPorts, connPortsById, assignHostProperty);
         continue;
       }
       if (step.op === 'machineGrant') { ws._machineGrantId = step.value; continue; }

@@ -1,14 +1,13 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 // Retire user-facing role sessions without deleting the executions that own
 // native handles, pending replies, transcripts, or unmerged workspaces.
 function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports }) {
   let flight;
-  function promote(task) {
-    if (!task.taskFirst) store.set('task', task.id, { ...task, taskFirst: true });
-    roles.snapshot(task.id);
-    return store.get('task', task.id);
-  }
+  const owner = { store, roles, open, adopt, ports };
+  function promote(task) { return getNative().taskFirstPromote(owner, task); }
   function migrate(records) {
     if (flight) return flight;
     flight = (async () => {
@@ -45,16 +44,7 @@ function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports 
       const bound = [];
       for (const record of list) bound.push(record?.taskBoundTaskId, known.get(record?.id)?.id);
       bulk = await loadDeleted(bound);
-      for (const record of list) {
-        if (record.kind !== 'chat' || record.taskExecutionSlot || record.experimentalMode
-          || ['aux', 'gateway'].includes(record.type) || !ports.getDirectory?.(record.dirId)) continue;
-        if (isDeleted(record.taskBoundTaskId) || isDeleted(known.get(record.id)?.id)) continue;
-        if (known.get(record.id)?.taskFirst && indexed.has(known.get(record.id).id)) continue;
-        try {
-          const owner = open(record.id), task = adopt(owner.id, record.id);
-          all.set(task.id, promote(task));
-        } catch (error) { errors.push({ sessionId: record.id, code: error.code || 'task_migration_failed' }); }
-      }
+      getNative().taskFirstAdopt(owner, list, all, known, indexed, isDeleted, errors);
       // 第一轮领养出来的新行到这里才进 all。老实现是进第二轮循环时逐条现问，
       // 所以这里要用最终的键集再问一次（已问过的 id 结果不变，取并集即可）。
       if (bulk) bulk = await loadDeleted([...all.keys()]);
@@ -66,9 +56,8 @@ function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports 
           // （四读一写、还会重算角色快照哈希）加一次回读，稳态下全是空转，
           // 而 Air 快照每 15 秒就要问一次迁移 —— 线上 514 行任务每轮白跑一遍。
           // 上面那个循环早就用同一个条件跳过它们了，这里只是对齐。
-          const promoted = original.taskFirst && indexed.has(original.id);
-          const task = promoted ? original : promote(original);
-          if (!promoted && !indexed.has(task.id)) {
+          const { task, index } = getNative().taskFirstIndexPlan(owner, original, indexed);
+          if (index) {
             const result = await indexTask(task);
             if (!result?.ok) throw Object.assign(new Error(), { code: result?.error || 'task_index_failed' });
             store.set('task-first:indexed', task.id, { taskId: task.id, sessionId: task.sessionId, version: 1 });

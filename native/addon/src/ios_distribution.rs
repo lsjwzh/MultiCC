@@ -187,3 +187,176 @@ pub fn ios_distribution_info(env: Env, local: Unknown<'_>) -> Result<sys::napi_v
     }
     Ok(r.raw())
 }
+
+use crate::host_methods::{arg, env as host_env, function, raw};
+fn read_local(p: L<'_>) -> Result<L<'_>> {
+    let path = call(
+        p.get(c"path")?,
+        c"join",
+        &[
+            p.get(c"rootDir")?,
+            text(p, "public")?,
+            text(p, "multicc-ios.ipa")?,
+        ],
+    )?;
+    let r = fields(p, &[("exists", flag(p, false)?), ("ipaPath", path)])?;
+    let stat = match p.catch(|| call(p.get(c"fs")?, c"lstatSync", &[path]))? {
+        Some(v) => v,
+        None => return Ok(r),
+    };
+    if !call(stat, c"isFile", &[])?.truthy()? || stat.get(c"size")?.explicit_number()? <= 0. {
+        return Ok(r);
+    }
+    r.set(c"exists", flag(p, true)?)?;
+    r.set(c"size", stat.get(c"size")?)?;
+    r.set(c"mtime", call(stat.get(c"mtime")?, c"toISOString", &[])?)?;
+    let side = p
+        .catch(|| {
+            let mut path = path.coerce_string()?;
+            path.push_str(".json");
+            let file = p.from_value(&V::String(path))?;
+            let stat = call(p.get(c"fs")?, c"lstatSync", &[file])?;
+            if call(stat, c"isFile", &[])?.truthy()?
+                && stat.get(c"size")?.explicit_number()? > 0.
+                && stat.get(c"size")?.explicit_number()? <= 16384.
+            {
+                return call(
+                    p.global()?.get(c"JSON")?,
+                    c"parse",
+                    &[call(
+                        p.get(c"fs")?,
+                        c"readFileSync",
+                        &[file, text(p, "utf8")?],
+                    )?],
+                );
+            }
+            null(p)
+        })?
+        .unwrap_or(null(p)?);
+    let iso = function(p, "", 1, 1, |p, a| {
+        let date = p.global()?.get(c"Date")?;
+        if !call(date, c"parse", &[a[0]])?.number()?.is_finite() {
+            return null(p);
+        }
+        call(date.construct(&[a[0]])?, c"toISOString", &[])
+    })?;
+    ios_sidecar(host_env(p), arg(r)?, arg(side)?, arg(iso)?)?;
+    Ok(r)
+}
+fn header(v: L<'_>) -> Result<JsString> {
+    let v = if v.is_array()? { v.element(0)? } else { v };
+    let s = string(fallback(v, "".into())?)?.coerce_string()?;
+    Ok(JsString::from_units(
+        s.as_units()
+            .split(|&c| c == 44)
+            .next()
+            .unwrap_or_default()
+            .to_vec(),
+    )
+    .trim()
+    .to_lowercase())
+}
+fn base_url(req: L<'_>) -> Result<L<'_>> {
+    let h = fallback(req.optional(c"headers")?, V::Object(vec![]))?;
+    let mut proto = header(h.get(c"x-forwarded-proto")?)?;
+    if proto.is_empty() {
+        proto = string(fallback(req.optional(c"protocol")?, "".into())?)?
+            .coerce_string()?
+            .to_lowercase();
+    }
+    let mut host = header(h.get(c"x-forwarded-host")?)?;
+    if host.is_empty() {
+        host = header(h.get(c"host")?)?;
+    }
+    text(
+        req,
+        &ios_origin(proto.to_string_lossy(), host.to_string_lossy()),
+    )
+}
+fn manifest_for<'a>(meta: L<'a>, base: L<'a>) -> Result<L<'a>> {
+    let mut url = base.coerce_string()?;
+    url.push_str("/multicc-ios.ipa");
+    let title = fallback(meta.get(c"title")?, "MultiCC".into())?;
+    let code = meta.get(c"versionCode")?;
+    let version = if code.truthy()? {
+        code
+    } else {
+        meta.get(c"versionName")?
+    };
+    let asset = meta.from_value(&V::String(url))?;
+    Ok(raw(
+        meta,
+        ios_manifest(
+            host_env(meta),
+            arg(asset)?,
+            arg(string(meta.get(c"bundleId")?)?)?,
+            arg(string(version)?)?,
+            arg(string(title)?)?,
+        )?,
+    ))
+}
+#[napi]
+pub fn ios_read_local(env: Env, deps: Unknown<'_>) -> Result<sys::napi_value> {
+    Ok(read_local(L::new(&env, deps))?.raw())
+}
+#[napi]
+pub fn ios_absolute_url(env: Env, req: Unknown<'_>) -> Result<sys::napi_value> {
+    Ok(base_url(L::new(&env, req))?.raw())
+}
+#[napi]
+pub fn ios_build_manifest(
+    env: Env,
+    meta: Unknown<'_>,
+    base: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    Ok(manifest_for(L::new(&env, meta), L::new(&env, base))?.raw())
+}
+#[napi]
+pub fn ios_ota_api(env: Env, deps: Unknown<'_>) -> Result<sys::napi_value> {
+    let p = L::new(&env, deps);
+    if !p.truthy()?
+        || !p.get(c"fs")?.truthy()?
+        || !p.get(c"path")?.truthy()?
+        || !p.get(c"rootDir")?.truthy()?
+    {
+        return Err(p.type_error("iOS OTA distribution requires fs, path, and rootDir"));
+    }
+    let info = function(p, "info", 0, 0, |p, _| {
+        Ok(raw(
+            p,
+            ios_distribution_info(host_env(p), arg(read_local(p)?)?)?,
+        ))
+    })?;
+    let handler = function(p, "manifestHandler", 2, 2, |p, a| {
+        let m = read_local(p)?;
+        let r = a[1];
+        call(
+            r,
+            c"set",
+            &[
+                text(r, "Cache-Control")?,
+                text(r, "no-store, no-cache, must-revalidate")?,
+            ],
+        )?;
+        call(r, c"set", &[text(r, "Pragma")?, text(r, "no-cache")?])?;
+        if !m.get(c"exists")?.truthy()?
+            || !m.get(c"bundleId")?.truthy()?
+            || !m.get(c"versionName")?.truthy()?
+        {
+            return call(call(r, c"status", &[num(p, 404.)?])?, c"end", &[]);
+        }
+        call(
+            r,
+            c"set",
+            &[
+                text(r, "Content-Type")?,
+                text(r, "text/xml; charset=utf-8")?,
+            ],
+        )?;
+        let target = call(r, c"status", &[num(r, 200.)?])?;
+        call(target, c"send", &[manifest_for(m, base_url(a[0])?)?])
+    })?;
+    Ok(fields(p, &[("info", info), ("manifestHandler", handler)])?
+        .freeze()?
+        .raw())
+}

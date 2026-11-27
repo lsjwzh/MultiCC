@@ -78,3 +78,30 @@ pub fn unlock_probe_reply(
     };
     Ok(value.raw())
 }
+
+#[napi]
+pub fn unlock_probe_command(env: Env, method: String, ui: Unknown<'_>) -> Result<sys::napi_value> {
+    let v = L::new(&env, ui);
+    let (args, timeout) = match method.as_str() {
+        "status" => (vec!["status"], 3000.),
+        "ping" => (vec!["ping"], 3000.),
+        _ => {
+            let mut args = vec!["probe-unlock", "8"];
+            if v.truthy()? {
+                args.push("--allow-ui");
+            }
+            (args, 10000.)
+        }
+    };
+    Ok(fields(
+        v,
+        &[
+            (
+                "args",
+                v.from_value(&V::Array(args.into_iter().map(V::from).collect()))?,
+            ),
+            ("timeout", num(v, timeout)?),
+        ],
+    )?
+    .raw())
+}

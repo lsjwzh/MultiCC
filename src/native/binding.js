@@ -56,6 +56,267 @@ function createTaskFactsRepository(store) {
     pendingEvents: api.pendingEvents, acknowledge: api.acknowledge, getProposal: api.getProposal, getFact: api.getFact });
 }
 
+// Host functions retain Node's injectable clocks, filesystem and process APIs.
+const MIB = 1024 * 1024;
+const DEFAULT_RUNTIME_HOME_TTL_DAYS = 14;
+const MAX_UNLOCK_PASSWORD_LENGTH = 2048;
+const UPLOAD_LIMITS = Object.freeze({
+  fileSize: 25 * MIB,
+  files: 1,
+  fields: 0,
+  // Busboy emits partsLimit when the counter reaches the configured value;
+  // use 2 so exactly one multipart part succeeds and a second is rejected.
+  parts: 2,
+  fieldNameSize: 64,
+  headerPairs: 100,
+  maxActive: 4,
+  tempFiles: 200,
+  tempBytes: 512 * MIB,
+});
+
+class UploadPolicyError extends Error {
+  constructor(message, code, status) {
+    super(message);
+    this.name = 'UploadPolicyError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+const uploadPorts = { ErrorType: UploadPolicyError, assign: assignHostProperty };
+function createAdmissionGate(maxActive) {
+  return getNative().voiceUploadWrapper(uploadPorts, active => active >= maxActive);
+}
+function createUploadSuite({ multerImpl = require('multer'), fileSize = UPLOAD_LIMITS.fileSize, maxActive = UPLOAD_LIMITS.maxActive } = {}) {
+  return getNative().voiceUploadSuite(uploadPorts, multerImpl, fileSize, active => active >= maxActive);
+}
+function createRuntimeHomesJanitor({ homesRoot, fsImpl = require('node:fs'), now = Date.now,
+  ttlDays = DEFAULT_RUNTIME_HOME_TTL_DAYS, log = console.log } = {}) {
+  const root = String(homesRoot || path.join(require('node:os').homedir(), '.multicc'));
+  return getNative().runtimeHomeSweeper({
+    path, now: () => now(), log: message => log(message), join: path.join,
+    stat: p => fsImpl.lstatSync(p), list: p => fsImpl.readdirSync(p),
+    remove: p => fsImpl.rmSync(p, { recursive: true, force: true }),
+    newer: (a, b) => a > b, recent: (a, b) => a >= b,
+  }, root, ttlDays);
+}
+function startRuntimeHomesJanitor({ homesRoot, ttlDays, trackTimer, log }) {
+  const sweep = createRuntimeHomesJanitor({ homesRoot, ttlDays, log });
+  sweep();
+  trackTimer(setInterval(sweep, 6 * 3600 * 1000));
+  return sweep;
+}
+
+function createUnlockPassword({ platform = process.platform, execFileFn = require('node:child_process').execFile,
+  account = process.env.USER || require('node:os').userInfo().username || 'root',
+  agentAppPath = process.env.MULTICC_AGENT_APP || '/Applications/MultiCC Agent.app' } = {}) {
+  const isAvailable = () => platform === 'darwin';
+  async function execute(operation, password) {
+    if (!isAvailable() && operation !== 'set') return operation === 'find' ? false : undefined;
+    const native = getNative();
+    const args = native.unlockKeychainPlan(operation, isAvailable(), account, agentAppPath, password,
+      typeof password === 'string' ? password.length : 0);
+    if (!args) return operation === 'find' ? false : undefined;
+    const result = await new Promise(resolve => execFileFn('/usr/bin/security', args, { timeout: 8000 }, (error, stdout, stderr) => {
+      resolve({ ok: !error, code: error?.code, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    }));
+    const error = native.unlockKeychainError(operation, result.ok, result.code === 44);
+    if (error) throw new Error(error);
+    if (operation === 'find') return result.ok;
+  }
+  return { isAvailable, hasPassword: () => execute('find'), setPassword: password => execute('set', password),
+    clearPassword: () => execute('clear') };
+}
+
+function createUnlockProbe({ platform = process.platform, execFileFn = require('node:child_process').execFile,
+  agentBin = process.env.MULTICC_AGENT_BIN || path.join(require('node:os').homedir(), '.multicc', 'bin', 'multicc-agent') } = {}) {
+  const isAvailable = () => platform === 'darwin';
+  const unavailable = () => ({ state: 'unavailable', detail: 'not-macos' });
+  function invoke(method, ui, receive) {
+    const { args, timeout } = getNative().unlockProbeCommand(method, ui);
+    return new Promise(resolve => execFileFn(agentBin, args, { timeout }, (error, stdout) => resolve(receive(error, stdout))));
+  }
+  async function desktopPermissions() {
+    if (!isAvailable()) return unavailable();
+    return invoke('status', false, (error, stdout) => {
+      let data;
+      try { data = JSON.parse(String(stdout)); } catch {}
+      return getNative().unlockDesktopReply(data, error);
+    });
+  }
+  async function probe({ allowUI = false } = {}) {
+    if (!isAvailable()) return unavailable();
+    const desktop = await desktopPermissions();
+    if (desktop.state !== 'authorized') return desktop;
+    const reply = await invoke('probe', allowUI, (error, stdout) => ({ error, stdout: String(stdout || '') }));
+    let data = null;
+    try { data = JSON.parse(reply.stdout.trim()); } catch {}
+    return getNative().unlockProbeReply(data, reply.error);
+  }
+  async function runtimeReady() {
+    if (!isAvailable()) return false;
+    return invoke('ping', false, (error, stdout) => {
+      try { return !error && JSON.parse(String(stdout)).powerProtocol === 1; } catch { return false; }
+    });
+  }
+  return { isAvailable, probe, runtimeReady, desktopPermissions };
+}
+
+function createWorktreeOrphanScanner(deps = {}) {
+  const {
+    records, directories, repoActor, logger = console, now = Date.now, deleteOrphans = false,
+    setTimeoutFn = setTimeout, setIntervalFn = setInterval, startupDelayMs = 45000,
+    intervalMs = 86400000, listTaskWorktreePaths = () => [],
+  } = deps;
+  const native = getNative();
+  function canon(value) {
+    try { return require('node:fs').realpathSync(value); } catch { return path.normalize(value); }
+  }
+
+  async function scanDirectory(dir, claimed) {
+    const root = path.join(canon(dir.path), '.multicc-worktrees');
+    return repoActor.run(dir.path, 'worktree-orphan-scan', async ({ execGit }) => {
+      const out = await execGit(dir.path, ['worktree', 'list', '--porcelain']);
+      const rows = [];
+      for (const entry of native.parseOrphanWorktrees(String(out || ''))) {
+        if (!native.orphanCandidates(entry, root + path.sep, claimed, canon)) continue;
+        const ahead = Number(await execGit(entry.path, ['rev-list', '--count', `${dir.baseBranch || 'main'}..HEAD`]).catch(() => '0')) || 0;
+        const dirty = !!(await execGit(entry.path, ['status', '--porcelain']).catch(() => ''));
+        rows.push({ dirId: dir.id, path: entry.path, branch: entry.branch, ahead, dirty, removed: false });
+      }
+      return rows;
+    });
+  }
+
+  async function collect(claimed, finish) {
+    const orphans = [];
+    for (const dir of directories.values()) {
+      if (!dir?.path) continue;
+      try { orphans.push(...await scanDirectory(dir, claimed)); }
+      catch (error) { logger.warn?.('worktree_orphan_scan_failed', { dirId: dir.id, code: error?.code || 'scan_failed' }); }
+    }
+    if (deleteOrphans) {
+      for (const orphan of orphans) {
+        if (!native.orphanRemovable(orphan.dirty, orphan.ahead)) continue;
+        const dir = directories.get(orphan.dirId);
+        if (!dir) continue;
+        try {
+          await repoActor.run(dir.path, 'worktree-orphan-remove', async ({ execGit }) => {
+            await execGit(dir.path, ['worktree', 'remove', orphan.path]);
+            await execGit(dir.path, ['worktree', 'prune']).catch(() => '');
+          });
+          orphan.removed = true;
+        } catch (error) { orphan.removeError = error?.code || 'remove_failed'; }
+      }
+    }
+    return finish(orphans);
+  }
+  return native.worktreeOrphanScanner({
+    records, directories, repoActor, deleteOrphans, listTaskWorktreePaths, canon, collect,
+    setTimeoutFn, setIntervalFn, startupDelayMs, intervalMs, clear: timer => clearTimeout(timer),
+    stamp: () => new Date(now()).toISOString(), warn: (...args) => logger.warn?.(...args),
+    tick: scan => () => { scan().catch(() => {}); },
+  });
+}
+
+function createFcmTransport({ credentialsFile = process.env.MULTICC_FCM_CREDENTIALS,
+  fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 10000 } = {}) {
+  const disabledSend = async function send(token, data) { return { ok: false, code: 'not_configured' }; };
+  let native, credentials;
+  try {
+    credentials = JSON.parse(require('node:fs').readFileSync(credentialsFile, 'utf8'));
+    native = getNative();
+  } catch { return { projectId: '', send: disabledSend }; }
+  async function post(url, headers, body) {
+    const response = await fetchImpl(url, { method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
+    return { response, body: await response.json() };
+  }
+  return native.fcmTransport({
+    read: () => credentials,
+    now: () => now(), fresh: expires => expires > now() + 60000, add: (a, b) => a + b,
+    async refresh(credentials, cache) {
+      const iat = Math.floor(now() / 1000);
+      const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const input = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode(native.fcmTokenClaims(credentials.client_email, iat))}`;
+      const signature = require('node:crypto').createSign('RSA-SHA256').update(input).sign(credentials.private_key, 'base64url');
+      const { response, body } = await post('https://oauth2.googleapis.com/token', { 'Content-Type': 'application/x-www-form-urlencoded' },
+        new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${input}.${signature}` }).toString());
+      return cache.remember(response, body);
+    },
+    // The first reader awaits inside finally. Followers directly adopt the
+    // shared Promise, preserving the order in which their sends resume.
+    tokenReader: (acquire, release) => async function accessToken() {
+      const token = acquire();
+      if (!token.started) return token.value;
+      try { return await token.value; } finally { release(); }
+    },
+    disabled: () => disabledSend,
+    sender: (url, accessToken, invalidate) => async function send(token, data) {
+      try {
+        const bearer = await accessToken();
+        const { response, body } = await post(url, { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' },
+          JSON.stringify(native.fcmMessage(token, data)));
+        return native.fcmDelivery(response, body, invalidate);
+      } catch { return { ok: false, code: 'unavailable' }; }
+    },
+  });
+}
+
+function createArkQuotaHost() {
+  const fs = require('node:fs');
+  const exec = require('node:child_process').execFile;
+  const owner = getNative().arkCliOwner({ env: process.env, find(name) {
+    for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+      if (!dir) continue;
+      const file = path.join(dir, name);
+      try { fs.accessSync(file, fs.constants.X_OK); return file; } catch {}
+    }
+    return null;
+  } });
+  const run = plan => new Promise(resolve => exec(plan.cmd, plan.args, plan.options,
+    (err, stdout, stderr) => resolve({ err, stdout: stdout || '', stderr: stderr || '' })));
+  return {
+    resolveArkcliBin: owner.resolveArkcliBin,
+    async fetchArkUsage(nowMs = Date.now()) {
+      const plan = owner.usagePlan();
+      const result = await (plan ? run(plan) : Promise.resolve({ err: { code: 'ENOENT' }, stdout: '', stderr: '' }));
+      return owner.result(result, nowMs);
+    },
+    async installArkcli() {
+      const plan = owner.installation();
+      return plan.cmd ? owner.installed(await run(plan)) : plan;
+    },
+    parseArkcliJsonStream: stream => getNative().arkcliJson(String(stream || '')),
+  };
+}
+let arkCli;
+function getArkQuotaHost() { return arkCli ??= createArkQuotaHost(); }
+
+function findSakuraLauncher({ platform = process.platform, home = require('node:os').homedir(),
+  exists = require('node:fs').existsSync } = {}) {
+  if (platform !== 'darwin') return null;
+  return getNative().sakuraFindApp(['/Applications/SakuraLauncher.app', path.join(home, 'Applications/SakuraLauncher.app')], path.join, exists);
+}
+async function restartSakuraLauncher(app, { run, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+  const native = getNative();
+  const binaries = native.sakuraLauncherPaths().map(name => path.join(app, name));
+  const state = new native.SakuraRestart();
+  for (;;) {
+    const command = state.command(app, binaries);
+    let outcome;
+    if (command.delay) await wait(command.delay);
+    else outcome = await run(command.cmd, command.args);
+    const ok = !!command.delay || !!outcome.ok;
+    const terminal = state.advance(ok, !ok && command.checkMissing && outcome.code === 1);
+    if (terminal) { if (terminal.ok) return terminal.message; throw new Error(terminal.message); }
+  }
+}
+function diagnoseSakurafrp({ home = require('node:os').homedir(), logDir = path.join(home, 'Library', 'Containers',
+  'com.natfrp.launcher', 'Data', 'Library', 'Application Support', 'natfrp-service', 'Logs'),
+  readdirSync = require('node:fs').readdirSync, readFileSync = require('node:fs').readFileSync, now = Date.now } = {}) {
+  return getNative().sakuraLogResult(logDir, { list: readdirSync, read: readFileSync, join: path.join, now });
+}
+
 let sessionNotices;
 function getSessionNotices() { return sessionNotices ??= getNative().sessionNoticesApi(getNative()); }
 let networkPolicy;
@@ -490,7 +751,7 @@ function orchestrationJsonPorts(factory, ports) {
   return jsonStorePorts.get(factory);
 }
 
-module.exports = { createTaskFactsRepository, createErrorPersister, getTurnProgress, getWriterGroup, getVendorLogin, getMonitorControl, getProcessCloser, getAutoProviderPricing, getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, orchestrationJsonPorts, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
+module.exports = { DEFAULT_RUNTIME_HOME_TTL_DAYS, MAX_UNLOCK_PASSWORD_LENGTH, createWorktreeOrphanScanner, createFcmTransport, createArkQuotaHost, getArkQuotaHost, findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp, createUploadSuite, createAdmissionGate, UploadPolicyError, UPLOAD_LIMITS, createRuntimeHomesJanitor, startRuntimeHomesJanitor, createUnlockPassword, createUnlockProbe, createTaskFactsRepository, createErrorPersister, getTurnProgress, getWriterGroup, getVendorLogin, getMonitorControl, getProcessCloser, getAutoProviderPricing, getAutoProviderPolicy, getRetryPolicy, getSessionNotices, getNetworkPolicy, getSessionDto, getApiContract, getPublicSafety, getTranscriptPruning, planClaudeExpiredRefresh, invokeNativeCommand, commandEnvelope, orchestrationJsonPorts, getTurnEventReplay, createCandidateStore, syncWorktreeOnWake, prepareCliSwitchRoute, synchronizeCodexProfileRoute,
   getTurnState, quickCommitMessage, createFsDirectoryRepository, createNativeProviderStore, getHostPrompts, getTaskRelations, openCodeModelLimits, getMonitorAdmission, getNativeOpenCodeCatalog, voiceSpeech, getTaskStoreMigrationProgress, getEventPolicy, getQuotaBarView, providerLimitSnapshot, connectProviderLimitSync, getPushNotificationCopy, getTurnLedgerContract, rerankSearchHits, searchTokenizer, addonPath, gatewayPath, getNative, getSessionDeliveryApi, SESSION_DELIVERY_SYSTEM_PREFIX, assignHostProperty, pendingDesiredSession, findProviderReferences, record, status, runNative, nativeCode, deliveryClassForItem,
   installAuxHealthProvider, auxVerdictStaleness, fanOutAuxVerdictStaleness, taskStateSeed, taskStatePayload,
   artifactReference, getContextSelection, decodeRecoveryEvents, providerInvocation, createAutoProviderHandoff,

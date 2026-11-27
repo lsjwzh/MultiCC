@@ -211,7 +211,7 @@ function deletedAmongFrom(deleted) {
   return async ids => ids.filter(id => typeof id === 'string' && table.has(id));
 }
 
-async function runDifferential(kind) {
+async function runDifferential(kind, create = createTaskFirstMigration) {
   const world = differentialWorld();
   const store = memoryStore(world.tasks, world.indexed);
   const calls = [];
@@ -220,7 +220,7 @@ async function runDifferential(kind) {
     isDeletedTask: id => world.deleted.has(id),
   };
   if (kind === 'batch') ports.deletedAmong = async ids => { calls.push(ids); return deletedAmongFrom(world.deleted)(ids); };
-  const migration = (kind === 'frozen' ? createFrozenMigration : createTaskFirstMigration)({
+  const migration = (kind === 'frozen' ? createFrozenMigration : create)({
     store,
     open: sessionId => ({ id: `sh_${sessionId}` }),
     adopt: (shellId, sessionId) => {
@@ -301,3 +301,8 @@ test('migrate asks the resident board once per batch instead of once per task', 
   assert.ok(!second.errors.length);
 });
 
+
+require('node:test')('67f54869 differential: task-shell/task-first', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('task-shell/task-first.js', api => runDifferential('batch', api.createTaskFirstMigration));
+});

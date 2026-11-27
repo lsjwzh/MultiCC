@@ -470,3 +470,29 @@ test('the native queue exposes live stats while attached and a closed tombstone 
     queueBytes: 0, queueMessages: 0, sending: false, congested: false, closed: true,
   }, 'detach turns stats into the closed tombstone instead of throwing');
 });
+
+require('node:test')('67f54869 differential: ws/native-queue', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('ws/native-queue.js', api => {
+    const sent = [], registry = new Map();
+    const ws = { send(data, options, cb) { sent.push(data); cb(new Error('transport')); } };
+    const host = {
+      send(id, data, options, cb, ports) {
+        if (data === 'reject') throw new Error('queue');
+        ports.sendFrame(ws, data, {});
+      },
+      sendResult(id, error) { sent.push([id, error]); },
+      stats() { throw Error('detached'); }, flush() { throw Error('closed'); },
+    };
+    const installed = api.installNativeQueue(ws, host, 'id', {}, registry);
+    ws.send('first');
+    ws.send('reject', error => sent.push(error.message));
+    installed.flush();
+    const invalid = { send() {} };
+    api.installNativeQueue(invalid, {}, 'no-send', {});
+    invalid.send('data', err => sent.push([err.name, err.message]));
+    try { api.installNativeQueue(Object.freeze({ send() {} }), host, 'frozen', {}); }
+    catch (error) { sent.push([error.name, error.message]); }
+    return [sent, registry.size, installed === api.installNativeQueue(ws, host, 'id'), installed.stats()];
+  });
+});

@@ -834,8 +834,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +2 双语键：桌面侧边栏的自动隐藏与固定操作。
     // 方案 A 重构 SSH（22 端口）出口面板：命令行/网页引导标签、智能粘贴与通用探活提示（净增 11 组双语键），
     // 重跑生成器 countLines 口径实测 10880/709646。
-    maxLines: 10880,
-    maxBytes: 709646,
+    // b4aa339b 新增 8 个 airProviderResetCards 双语键，生成词典增加 16 行、983 字节。
+    maxLines: 10896,
+    maxBytes: 710629,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 // Append-only per-session turn event journal (#110, tranche 3+4).
 //
 // Every event a chat client can see — stream events, tool calls/results,
@@ -27,7 +29,6 @@
 const fs = require('fs');
 const path = require('path');
 
-const MAX_LINE_BYTES = 16 * 1024;
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_KEEP = 2;
 
@@ -47,7 +48,7 @@ function createTurnEventJournal(deps = {}) {
   let corruptLines = 0;
 
   function fileFor(sessionId, suffix) {
-    const safe = String(sessionId || '').replace(/[^A-Za-z0-9._-]/g, '_');
+    const safe = getNative().journalFileStem(String(sessionId || ''), true);
     return path.join(dirFor(), safe + '.events.jsonl' + (suffix || ''));
   }
 
@@ -109,16 +110,8 @@ function createTurnEventJournal(deps = {}) {
     const state = stateFor(sessionId);
     state.seq += 1;
     const seq = state.seq;
-    let record = { seq, ts: now(), event };
-    let line = JSON.stringify(record);
-    if (line.length > MAX_LINE_BYTES) {
-      // Oversized payload (cumulative snapshot, huge tool result): keep the
-      // identity and the shape marker, drop the payload. Never slice the
-      // JSON — a half-line is unparseable and poisons the whole file.
-      record = { seq, ts: now(), event: { type: event.type, journaled: 'stub', payloadBytes: line.length } };
-      line = JSON.stringify(record);
-      if (line.length > MAX_LINE_BYTES) return;
-    }
+    const line = getNative().journalEventLine(seq, event, now);
+    if (line === null) return;
     enqueue(sessionId, () => appendLine(sessionId, line)
       .catch(() => { dropped += 1; })
       .then(() => {
@@ -136,14 +129,9 @@ function createTurnEventJournal(deps = {}) {
     const file = fileFor(sessionId);
     let raw;
     try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { return []; }
-    const out = [];
-    for (const line of raw.split('\n')) {
-      if (!line) continue;
-      // A single corrupt line (partial write, disk hiccup) must not retire the
-      // rest of the file's events - skip it, count it, keep replaying.
-      try { out.push(JSON.parse(line)); } catch (_) { corruptLines += 1; }
-    }
-    return out;
+    const { rows, corrupt } = getNative().journalDecode(raw, false);
+    corruptLines += corrupt;
+    return rows;
   }
 
   function stats() {
@@ -171,10 +159,9 @@ function createTurnEventJournal(deps = {}) {
     for (const suffix of suffixes) {
       let raw;
       try { raw = fs.readFileSync(fileFor(sessionId, suffix), 'utf8'); } catch (_) { continue; }
-      for (const line of raw.split('\n')) {
-        if (!line) continue;
-        try { out.push(JSON.parse(line)); } catch (_) { corruptLines += 1; }
-      }
+      const { rows, corrupt } = getNative().journalDecode(raw, false);
+      corruptLines += corrupt;
+      for (const row of rows) out.push(row);
     }
     return out;
   }

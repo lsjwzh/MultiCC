@@ -3,9 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { getNative } = require('../native/binding');
-const { createUnlockPassword } = require('../macos-unlock-password');
-const { createUnlockProbe } = require('../macos-unlock-probe');
+const { getNative, createUnlockPassword, createUnlockProbe, MAX_UNLOCK_PASSWORD_LENGTH } = require('../native/binding');
 
 function createPowerPreferences({ dir = process.env.MULTICC_AGENT_DIR || path.join(os.homedir(), '.multicc', 'agent') } = {}) {
   return getNative().hostPowerPreferences(fs, path, dir, process.pid);
@@ -26,7 +24,6 @@ async function readPowerSettings(deps, req) {
   }
   return state.value;
 }
-const { MAX_PASSWORD_LENGTH } = require('../macos-unlock-password');
 const { mapError } = require('../http-errors');
 
 const passwordService = deps => deps.unlockPassword || getUnlockPassword();
@@ -99,7 +96,7 @@ function mountPowerWriteRoutes(app, deps) {
         }
         const value = req.body?.password;
         if (typeof value !== 'string' || !value.length) return res.status(400).json({ error: 'password is required' });
-        if (value.length > MAX_PASSWORD_LENGTH) return res.status(400).json({ error: 'password is too long' });
+        if (value.length > MAX_UNLOCK_PASSWORD_LENGTH) return res.status(400).json({ error: 'password is too long' });
         // Freeze legacy consent before adding a credential. Saving alone does
         // not switch on a feature the user has not finished configuring.
         const preferences = preferencesService(deps);
