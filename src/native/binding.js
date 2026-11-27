@@ -852,8 +852,13 @@ exposeHostApi('cliCapability', () => {
   });
 });
 
+exposeHostApi('portableGit', () => getNative().portableGitApi({
+  fs: require('node:fs'), os: require('node:os'), process, path, pkgRoot: path.resolve(__dirname, '../..'),
+  setPath(env, value) { env.PATH = value; },
+}));
+
 exposeHostApi('repoActor', () => {
-  require('../portable-git').addToPath();
+  module.exports.portableGit.addToPath();
   return getNative().repoActorApi({
     process, path, fs: require('node:fs'), randomBytes: require('node:crypto').randomBytes,
     execFile: require('node:util').promisify(require('node:child_process').execFile),

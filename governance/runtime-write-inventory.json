@@ -359,7 +359,11 @@
       "migrationStrategy": "Owned by install-git.sh: a newer pinned release replaces the directory through a staged rename, and deleting the directory only means the next install or the one-click fix downloads it again.",
       "sources": [
         {
-          "file": "src/portable-git.js",
+          "file": "native/addon/src/portable_git.rs",
+          "anchor": "&[home, text(ports, \".multicc\")?, text(ports, \"git\")?]"
+        },
+        {
+          "file": "src/native/bootstrap-apis.js",
           "anchor": "return env.MULTICC_PORTABLE_GIT_DIR || path.join(os.homedir(), '.multicc', 'git');"
         }
       ]
