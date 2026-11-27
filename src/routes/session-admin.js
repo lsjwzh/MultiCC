@@ -2,7 +2,7 @@
 
 const { createSessionQueryService } = require('../session/query-service');
 const { createWorkspaceService } = require('../session/workspace-service');
-const { classifyDisplay } = require('../classify/vocab');
+const { classifyDisplay } = require('../native/binding').classifyVocab;
 const { taskShortCode } = require('../native/task-domain');
 const { auxVerdictStaleness } = require('../native/binding');
 const { markTaskAchievedFacts, markTaskAchievedWrite } = require('./task-goal');

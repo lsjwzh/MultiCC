@@ -7,7 +7,7 @@ const { createHash } = require('node:crypto');
 // job). This preview is read-only and deliberately conservative — see
 // src/routes/session-git.js for the narrower "can this worktree be synced now"
 // question, which lets W through because nothing is running.
-const { isProcessingLetter, isParkedLetter } = require('../classify/vocab');
+const { isProcessingLetter, isParkedLetter } = require('../native/binding').classifyVocab;
 const values = value => value instanceof Map ? [...value.values()]
   : Array.isArray(value) ? value : Object.values(value || {});
 const absolute = value => typeof value === 'string' && path.isAbsolute(value) ? path.normalize(value) : null;

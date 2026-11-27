@@ -1,6 +1,6 @@
 'use strict';
 
-const { isProcessingLetter } = require('../classify/vocab');
+const { isProcessingLetter } = require('../native/binding').classifyVocab;
 
 const DEFAULT_INTERVAL_MS = 5_000;
 const DEFAULT_START_GRACE_MS = 12_000;

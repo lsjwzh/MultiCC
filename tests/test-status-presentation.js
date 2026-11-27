@@ -720,7 +720,7 @@ test('no surface keeps a hand copy of either set', () => {
   // 服务端那个守卫读 vocab 的同一个函数。
   for (const file of ['src/task-board/lifecycle-host.js']) {
     const src = read(file);
-    assert.match(src, /require\('\.\.\/classify\/vocab'\)/);
+    assert.ok(src.includes("const { isOpenRunState } = require('../native/binding').classifyVocab"));
     assert.match(src, /isOpenRunState\(/, `${file} must read the shared open-run list`);
     assert.doesNotMatch(src, /'queued', 'running', 'waiting', 'background'/);
   }

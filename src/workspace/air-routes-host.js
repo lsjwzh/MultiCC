@@ -27,7 +27,7 @@ const crypto = require('node:crypto');
 const nodePath = require('node:path');
 const core = require('../native/binding').taskBoardCore;
 const { taskDomain, taskDomainAsync, createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../native/task-domain');
-const { isAbnormalLetter } = require('../classify/vocab');
+const { isAbnormalLetter } = require('../native/binding').classifyVocab;
 const { createAirCardCache } = require('./air-card-cache');
 
 const HOST_PATH = '/api/__host/air';

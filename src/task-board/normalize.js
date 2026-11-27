@@ -1,7 +1,7 @@
 'use strict';
 const crypto = require('crypto');
 const planning = require('./planning');
-const { TURN_RUN_STATES } = require('../classify/vocab');
+const { TURN_RUN_STATES } = require('../native/binding').classifyVocab;
 const { boardRule, MAX_TASKS_IN_PROMPT } = require('./native-bridge');
 const MAX_TAGS_PER_TURN = 3;
 const MAX_AREAS_PER_TASK = 8;

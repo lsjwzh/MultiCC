@@ -10,7 +10,7 @@ const { getNative } = require('../native/binding');
 const { createArtifactsMemo, collectTaskArtifacts, artifactFileExists } = require('./artifacts');
 const { clearShellHistory, shellHistoryPage, watchShellHistory } = require('./chat-history');
 const { createAttributionSettingsFromEnv } = require('../native/task-domain');
-const { isTerminalLetter } = require('../classify/vocab');
+const { isTerminalLetter } = require('../native/binding').classifyVocab;
 
 function createTaskShellHost(deps) {
   let runtime, store, candidates, transfer;

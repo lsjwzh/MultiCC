@@ -1,8 +1,8 @@
 'use strict';
 
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
-const { isSettledLetter } = require('../classify/vocab');
-const { apiErrorSignaturesQuoted } = require('../chat/api-error-policy');
+const { isSettledLetter } = require('../native/binding').classifyVocab;
+const { apiErrorSignaturesQuoted } = require('../native/binding').apiErrorPolicy;
 const { notificationCopy } = require('../native/binding').getPushNotificationCopy();
 const channelRegistry = require('../plugins/channel-registry');
 

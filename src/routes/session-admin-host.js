@@ -19,7 +19,7 @@
 // 这不是一条公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest`
 // 拒绝任何转发自真实远端客户端的请求。
 
-const { GOAL_STATES } = require('../classify/vocab');
+const { GOAL_STATES } = require('../native/binding').classifyVocab;
 const { providerSelectionDto } = require('../providers/auto-provider-config');
 
 const HOST_PATH = '/api/__host/session-admin';

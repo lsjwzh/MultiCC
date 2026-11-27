@@ -6,7 +6,7 @@
 // 等待期间用 message_admission_progress 显示进度；HTTP/WS 接收回执
 // 不依赖这些步骤完成。这里统一维护进度事件和失败后继续投递的规则。
 
-const { sanitizeMessage: sanitizeApiErrorMessage } = require('./api-error-policy');
+const { sanitizeMessage: sanitizeApiErrorMessage } = require('../native/binding').apiErrorPolicy;
 
 function admissionRootCause(value) {
   const raw = value instanceof Error

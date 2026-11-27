@@ -26,7 +26,7 @@ function getAutoProviderPricing() { return autoProviderPricing ??= getNative().a
 let autoProviderPolicy;
 function getAutoProviderPolicy() { return autoProviderPolicy ??= getNative().autoProviderPolicyApi(getNative()); }
 let retryPolicy;
-function getRetryPolicy() { return retryPolicy ??= getNative().retryPolicyApi(require('../chat/api-error-policy').policyPorts); }
+function getRetryPolicy() { return retryPolicy ??= getNative().retryPolicyApi(module.exports.apiErrorPolicy.policyPorts); }
 // The host adopts append's original thenable and preserves V8 coercion/exception identity.
 function createErrorPersister({ appendChatMessage, now = Date.now, windowMs = 10000, logger = console }) {
   return getNative().chatErrorPersister({
@@ -940,7 +940,7 @@ exposeHostApi('orchestrationHost', () => {
 });
 
 exposeHostApi('chatApi', () => getNative().chatHostExports([
-  () => require('../chat/turn-request'), getRetryPolicy, () => require('../chat/api-error-policy'),
+  () => require('../chat/turn-request'), getRetryPolicy, () => module.exports.apiErrorPolicy,
   () => require('../chat/api-error-host'), () => module.exports.postTurnRouter,
   () => ({ createTurnRuntimeStore: require('../state/owner').createTurnRuntimeStore }),
   () => require('../chat/turn-lifecycle'), () => require('../chat/provider-attempt-runtime'),
@@ -963,3 +963,14 @@ exposeHostApi('taskBoardRouting', () => getNative().taskBoardRoutingApi({
     return { records: entries, dirId, contextTerms: [...contextTerms], affinitySessionIds: [...affinitySessionIds], availability, activities };
   },
 }));
+
+exposeHostApi('classifyVocab', () => {
+  const { apiErrorSignaturesQuoted } = module.exports.apiErrorPolicy;
+  return getNative().classifyVocabApi(apiErrorSignaturesQuoted);
+});
+
+exposeHostApi('apiErrorPolicy', () => {
+  const { extractUpstreamError } = require('../upstream-error');
+  const { errorFields } = require('../provider-error');
+  return getNative().apiErrorPolicyApi(getNative, extractUpstreamError, errorFields);
+});

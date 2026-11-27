@@ -49,7 +49,7 @@
 // misclassified as an API error; a reply that was already persisted stays
 // persisted.
 
-const { isProcessingLetter } = require('../classify/vocab');
+const { isProcessingLetter } = require('../native/binding').classifyVocab;
 
 const DEFAULT_INTERVAL_MS = 30_000;
 const DEFAULT_CONFIRMATIONS = 2;

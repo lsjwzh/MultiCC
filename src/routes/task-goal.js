@@ -20,7 +20,7 @@
 // 写入）；老任务没有绑定字段时退回 classify 落在 taskState.taskId 上的归属。
 // 只认普通 chat 会话，aux / gateway / 终端不参与。
 
-const { isTerminalLetter, GOAL_STATES } = require('../classify/vocab');
+const { isTerminalLetter, GOAL_STATES } = require('../native/binding').classifyVocab;
 
 const EXCLUDED_TYPES = new Set(['aux', 'gateway']);
 
