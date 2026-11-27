@@ -10,7 +10,7 @@
 const crypto = require('node:crypto');
 const dns = require('node:dns').promises;
 const fs = require('node:fs');
-const { atomicWriteJson } = require('../../src/runtime-security');
+const { atomicWriteJson } = require('../../src/native/binding').runtimeSecurity;
 
 const SCHEMA_VERSION = 1;
 const TOKEN_RE = /^fleet_share_[A-Za-z0-9_-]{24,96}$/;

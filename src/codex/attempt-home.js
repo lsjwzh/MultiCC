@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { ensurePrivateDir, secureFile } = require('../runtime-security');
+const { ensurePrivateDir, secureFile } = require('../native/binding').runtimeSecurity;
 const { writeTextAtomic } = require('../state/store');
 
 const ATTEMPT_OWNER_FILE = '.multicc-attempt-owner.json';

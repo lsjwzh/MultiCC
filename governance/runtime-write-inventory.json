@@ -10,8 +10,8 @@
       "migrationStrategy": "Introduce an explicit config root, copy forward atomically, keep a read-only legacy fallback for one release, then remove package-root writes.",
       "sources": [
         {
-          "file": "src/host-env.js",
-          "anchor": ": path.join(__dirname, '..', '.env');"
+          "file": "src/native/binding.js",
+          "anchor": "envPath: () => process.env.MULTICC_ENV_FILE"
         }
       ]
     },
@@ -544,8 +544,8 @@
           "anchor": "const DEFAULT_ROOT = path.join(os.homedir(), '.multicc', 'official-accounts');"
         },
         {
-          "file": "src/claude-auth/refresh-health.js",
-          "anchor": "const dir = path.join(root, 'refresh-health');"
+          "file": "native/addon/src/refresh_health.rs",
+          "anchor": "refresh-health"
         }
       ]
     },

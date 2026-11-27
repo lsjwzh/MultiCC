@@ -101,7 +101,9 @@ function probeAddon(file, node = process.execPath) {
   // The path rides an env var: the script is written to a temp file (see below),
   // so argv[1] is the script itself, not the addon.
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
-    if(['taskBoardCoreApi','taskBoardStateApi','taskBoardProjectionApi','taskBoardLifecycleApi','taskBoardRoutePorts','taskBoardWorktreePorts','repoActorApi','gitServiceApi','tunnelMonitorApi','appPathsApi','sessionWorkHostApi','sessionWorkSchedulerApi','orchestrationRuntimeApi','orchestrationJsonApi','createNativeQueue','createOpencodeLimitResolver','openCodeCatalogApi','eventPolicyApi',
+    if(['secureRuntimePaths','runtimePrivatePath','runtimeAtomicText','hostEnvApi','globalProxyApi','authTicketProjection',
+      'jsonCompressionMiddleware','providerQuotaRuntime','taskMemoryRecorder','refreshHealthStore','accountReaderApi','quotaSelfHealApi',
+      'taskBoardCoreApi','taskBoardStateApi','taskBoardProjectionApi','taskBoardLifecycleApi','taskBoardRoutePorts','taskBoardWorktreePorts','repoActorApi','gitServiceApi','tunnelMonitorApi','appPathsApi','sessionWorkHostApi','sessionWorkSchedulerApi','orchestrationRuntimeApi','orchestrationJsonApi','createNativeQueue','createOpencodeLimitResolver','openCodeCatalogApi','eventPolicyApi',
       'contextSelectionApi','monitorAdmissionApi','createCliProviderRegistry','providerSelectionDtoValue',
       'commandEnvelope','orchestrationCommandSync','codexMaterializeValue','codexStripOfficialEnv',
       'normalizeNativeError','turnStateApi','postTurnApi','finalizationApi',

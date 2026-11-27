@@ -9,7 +9,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const os = require('os');
-const { atomicWriteJson } = require('../runtime-security');
+const { atomicWriteJson } = require('../native/binding').runtimeSecurity;
 const { createEventHub } = require('./hub');
 const { createEventRuleEngine } = require('./engine');
 

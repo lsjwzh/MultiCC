@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const http = require('http');
 const zlib = require('zlib');
 const express = require('express');
-const { createJsonCompression } = require('../src/http/json-compression');
+const { createJsonCompression } = require('../src/native/binding').jsonCompression;
 
 const BIG = { items: Array.from({ length: 400 }, (_, i) => ({ id: `item-${i}`, label: '运行配置 provider 列表' })) };
 

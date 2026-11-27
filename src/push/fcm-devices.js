@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
-const { atomicWriteJson } = require('../runtime-security');
+const { atomicWriteJson } = require('../native/binding').runtimeSecurity;
 const { createFcmTransport } = require('../native/binding');
 const ID = /^[a-zA-Z0-9_-]{16,128}$/;
 const validId = value => typeof value === 'string' && ID.test(value);

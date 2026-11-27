@@ -273,7 +273,7 @@ test('source control callback cycles are collectible and do not keep a child ali
     (async () => {
       let weak;
       (() => {
-        const holder = { auth: require('./src/auth-security').createAuthSecurity({ secret: 'gc-fixture' }) };
+        const holder = { auth: require('./src/native/binding').authSecurity.createAuthSecurity({ secret: 'gc-fixture' }) };
         holder.sharing = createFleetSharing({ sharesFile: path.join(root, 'shares.json'),
           getDirectory: () => holder.sharing ? { id: 'source' } : null, listSessions: () => [], authSecurity: holder.auth });
         weak = new WeakRef(holder);
@@ -301,7 +301,7 @@ function stateSeed() {
 function comparableState(response, method) {
   const result = comparable(response);
   if (result.headers['set-cookie']) {
-    const security = require('../src/auth-security').createAuthSecurity({ secret: 'fixture-token' });
+    const security = require('../src/native/binding').authSecurity.createAuthSecurity({ secret: 'fixture-token' });
     result.headers['set-cookie'] = result.headers['set-cookie'].map(cookie => {
       assert.equal(security.verifyCookie(cookie.slice('multicc_auth='.length).split(';')[0]), true);
       return cookie.replace(/^multicc_auth=[^;]+/, 'multicc_auth=COOKIE');

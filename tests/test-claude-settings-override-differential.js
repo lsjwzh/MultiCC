@@ -15,7 +15,7 @@ const legacy = { exports: {} };
 new Function('require', 'module', source)(name => {
   if (name === 'os') return { homedir: () => path.join(fixture, 'node') };
   if (name === 'path') return path;
-  return require('../src/runtime-security');
+  return require('../src/native/binding').runtimeSecurity;
 }, legacy);
 const native = getNative();
 const directory = path.join(fixture, 'rust', '.multicc', 'claude-settings-overrides');

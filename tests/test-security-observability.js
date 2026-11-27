@@ -11,12 +11,12 @@ const {
   createAuthSecurity,
   normalizeRedirect,
   timingSafeEqualText,
-} = require('../src/auth-security');
+} = require('../src/native/binding').authSecurity;
 const { resolveNetworkPolicy, selectListenPort } = require('../src/native/binding').getNetworkPolicy();
 const {
   createExactSecretStreamRedactor, createLogger, createMetrics, redact, redactProviderRouteCapability,
 } = require('../src/observability');
-const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security');
+const { atomicWriteJson, secureRuntimeData } = require('../src/native/binding').runtimeSecurity;
 const { createPaths } = require('../src/paths');
 const { installWsBackpressure } = require('./helpers/legacy-ws-backpressure');
 const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/http-errors');

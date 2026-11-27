@@ -10,7 +10,7 @@ const test = require('node:test');
 const { execFileSync } = require('node:child_process');
 
 const { createClaudeOAuthRefresher, credentialFingerprint, parseCredentials } = require('../src/claude-auth/oauth-refresh');
-const { createRefreshHealthStore } = require('../src/claude-auth/refresh-health');
+const { createRefreshHealthStore } = require('../src/native/binding').refreshHealth;
 const { createOfficialAccountStore } = require('../src/official-accounts');
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');
 
@@ -336,7 +336,7 @@ test('原生模块不可用时续期入口直接报错，强制调用也不会�
     const done = fields => process.stdout.write(JSON.stringify({ ...fields, calls }));
     try {
       const { createClaudeOAuthRefresher } = require(process.argv[1]);
-      const { createRefreshHealthStore } = require(process.argv[2]);
+      const { createRefreshHealthStore } = require(process.argv[2]).refreshHealth;
       const refresher = createClaudeOAuthRefresher({
         platform: 'linux', claudeBin: '/fake/claude',
         credentialsFile: process.argv[3],
@@ -353,7 +353,7 @@ test('原生模块不可用时续期入口直接报错，强制调用也不会�
   const stdout = execFileSync(process.execPath, [
     '-e', script,
     require.resolve('../src/claude-auth/oauth-refresh'),
-    require.resolve('../src/claude-auth/refresh-health'),
+    require.resolve('../src/native/binding'),
     h.credentialsFile, h.root,
   ], {
     encoding: 'utf8', timeout: 10_000,

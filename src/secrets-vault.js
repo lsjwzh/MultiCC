@@ -22,7 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const { createPaths } = require('./native/binding').appPaths;
-const { atomicWriteJson } = require('./runtime-security');
+const { atomicWriteJson } = require('./native/binding').runtimeSecurity;
 const secretAudit = require('./secret-audit');
 
 const STORE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).secretsFile;

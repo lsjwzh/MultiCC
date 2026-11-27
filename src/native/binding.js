@@ -832,6 +832,171 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+exposeHostApi('runtimeSecurity', () => {
+  const fs = require('node:fs');
+  const store = require('../state/store');
+  function write(file, body, options = {}) {
+    const opts = { mode: 0o600, dirMode: 0o700, ...options };
+    // StateStore supports live beforeRename hooks and Node-specific fs argument
+    // validation. Ordinary string writes use Rust's durable replacement.
+    if (typeof file !== 'string' || typeof body !== 'string' || typeof opts.beforeRename === 'function'
+      || opts.enforceDirMode || !Number.isInteger(opts.mode) || !Number.isInteger(opts.dirMode)) {
+      return store.writeTextAtomic(file, body, opts);
+    }
+    getNative().runtimeAtomicText(file, body, opts.mode, opts.dirMode, store.reportFailure);
+  }
+  return {
+    ensurePrivateDir(dir) {
+      if (typeof dir === 'string') return getNative().runtimePrivatePath(dir, true);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    },
+    secureFile(file) {
+      if (typeof file === 'string') return getNative().runtimePrivatePath(file, false);
+      try { fs.chmodSync(file, 0o600); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    },
+    secureRuntimeData: paths => getNative().secureRuntimePaths(paths),
+    atomicWriteJson: (file, value, options) => write(file, JSON.stringify(value, null, 2), options),
+    atomicWriteText: (file, value, options) => write(file, String(value), options),
+  };
+});
+
+exposeHostApi('hostEnv', () => getNative().hostEnvApi({
+  environment: process.env, reportFailure: require('../state/store').reportFailure,
+  envPath: () => process.env.MULTICC_ENV_FILE ? path.resolve(process.env.MULTICC_ENV_FILE) : path.resolve(__dirname, '../..', '.env'),
+}));
+
+exposeHostApi('refreshHealth', () => ({
+  KEY_PATTERN: /^[a-z0-9_-]{1,64}$/i,
+  createRefreshHealthStore: options => getNative().refreshHealthStore(options, { path, reportFailure: require('../state/store').reportFailure }),
+}));
+
+exposeHostApi('taskDistill', () => {
+  const fs = require('node:fs');
+  return {
+    AUTO_SECTION: '## 自动蒸馏', DEFAULT_MAX_AUTO_LINES: 24,
+    cleanMemoryCandidate: value => getNative().cleanTaskMemory(String(value ?? '')),
+    similar: (a, b) => getNative().similarTaskMemory(String(a || '').trim(), String(b || '').trim()),
+    mergeAutoSection: (content, candidate, { maxAutoLines = 24 } = {}) =>
+      getNative().mergeTaskMemory(String(content || '').trim(), `- ${candidate}`, () => String(candidate || ''), () => +(-maxAutoLines)),
+    createTaskMemoryDistiller(deps) {
+      const max = Number.isInteger(deps.maxAutoLines) && deps.maxAutoLines > 0 ? deps.maxAutoLines : 24;
+      return { record: getNative().taskMemoryRecorder({ deps, max, path: deps.path || path,
+        fs: deps.fs && deps.fs !== fs ? deps.fs : undefined, logger: deps.logger || console }) };
+    },
+  };
+});
+
+// The control task holds a weak JS callback. Keep the runtime and its owner
+// visible to V8 so metadata may refer to the facade without rooting a cycle.
+function authTicketReader(anchor) {
+  const weak = new WeakRef(anchor);
+  return (_error, slot) => {
+    const slots = weak.deref()?.slots;
+    if (!slots || !Object.hasOwn(slots, slot)) return null;
+    const value = slots[slot];
+    delete slots[slot];
+    return getNative().authTicketProjection(value);
+  };
+}
+exposeHostApi('authSecurity', () => ({
+  COOKIE_VERSION: 1, DEFAULT_COOKIE_TTL_MS: 30 * 86400000, DEFAULT_TICKET_TTL_MS: 30000,
+  createAuthSecurity(options) {
+    const anchor = {};
+    const runtime = new (getNative().RustAuthSecurity)(options, anchor);
+    Object.defineProperty(runtime, Symbol('auth host references'), { value: anchor });
+    return {
+      accessToken: runtime.accessToken.bind(runtime), setAccessToken: runtime.setAccessToken.bind(runtime),
+      shuttingDown: runtime.shuttingDown.bind(runtime), setShuttingDown: runtime.setShuttingDown.bind(runtime),
+      connectGateway: (port, capability) => runtime.connectGateway(port, capability, authTicketReader(anchor)),
+      connectWorkspaceGateway: (owner, ...args) => owner.connectGateway(...args, runtime),
+      createCookie: runtime.createCookie.bind(runtime), verifyCookie: runtime.verifyCookie.bind(runtime),
+      verifyAccessToken: runtime.verifyAccessToken.bind(runtime), issueWsTicket: (p, metadata) => runtime.issueWsTicket(p, metadata),
+      consumeWsTicket: (ticket, p) => runtime.consumeWsTicket(ticket, p), pruneTickets: runtime.pruneTickets.bind(runtime),
+      ticketCount: runtime.ticketCount.bind(runtime),
+    };
+  },
+  timingSafeEqualText: (a,b) => getNative().authTimingSafeEqualText(a,b),
+  normalizeRedirect: (v, fallback) => getNative().authNormalizeRedirect(v, fallback),
+  normalizeWsPath: v => getNative().authNormalizeWsPath(v),
+  escapeHtmlAttribute: v => getNative().authEscapeHtmlAttribute(v),
+}));
+
+exposeHostApi('globalProxy', () => {
+  const network = require('../network/outbound');
+  const http = require('node:http'), https = require('node:https');
+  return getNative().globalProxyApi({ ...require('../network/proxy-policy'),
+    outbound: options => Object.keys(options).length ? network.createOutbound(options) : network,
+    log: message => console.log(`[multicc] ${message}`),
+    agents: () => ({ fetch: globalThis.fetch, http: http.globalAgent, https: https.globalAgent }),
+    installAgents(shared) {
+      globalThis.fetch = shared.outboundFetch;
+      http.globalAgent = https.globalAgent = shared.outboundAgent;
+    },
+    restoreAgents(shared, previous) {
+      if (globalThis.fetch === shared.outboundFetch) globalThis.fetch = previous.fetch;
+      if (http.globalAgent === shared.outboundAgent) http.globalAgent = previous.http;
+      if (https.globalAgent === shared.outboundAgent) https.globalAgent = previous.https;
+    },
+  });
+});
+
+exposeHostApi('jsonCompression', () => {
+  const zlib = require('node:zlib');
+  function createJsonCompression({ minBytes = 1024, level = zlib.constants.Z_DEFAULT_COMPRESSION } = {}) {
+    return getNative().jsonCompressionMiddleware({
+      get: (res, key) => res.getHeader(key), set: (res, key, value) => res.setHeader(key, value),
+      below200: value => value < 200,
+      largeEnough: (chunk, enc) => (Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), enc || 'utf8')) >= minBytes,
+      buffer: (chunk, enc) => Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), enc || 'utf8'),
+      gzip: (body, done) => zlib.gzip(body, { level }, done),
+    });
+  }
+  return { DEFAULT_MIN_BYTES: 1024, createJsonCompression, jsonCompression: createJsonCompression() };
+});
+
+function defaultCodexAuth() { return path.join(require('node:os').homedir(), '.codex', 'auth.json'); }
+exposeHostApi('providerQuota', () => ({
+  createProviderQuotaRuntime: options => getNative().providerQuotaRuntime(options, {
+    history: require('../quota/provider-quota-history').createProviderQuotaHistory,
+    limitCache: require('../quota/provider-limit-cache-native-host').createNativeProviderLimitCache,
+    recorder: require('../quota/limit-cache-recorder').createLimitRecorder,
+    connect: module.exports.connectProviderLimitSync, barCache: require('../quota/quota-bar-cache').createQuotaBarCache,
+    guard: require('../quota/quota-guard').createQuotaGuard,
+    subscriptions: opts => require('../quota/account-subscription-cache').configure(opts),
+    virtualProvider: opts => require('../providers/virtual-provider').configure(opts),
+  }),
+}));
+exposeHostApi('quotaSelfHeal', () => getNative().quotaSelfHealApi({
+  defaultCodexAuth,
+  setCodexAuthRefresher: fn => require('../usage-limit-poller').setCodexAuthRefresher(fn),
+  setVirtualRefresher: fn => require('../providers/virtual-provider').setRefresher(fn),
+}));
+
+exposeHostApi('accountReader', () => {
+  const native = getNative();
+  const { policy } = require('../network/outbound');
+  // HTTP policy and parsing belong to the native query. AbortSignal and the
+  // injected fetch/Response pair must be created in the caller's JS realm.
+  async function query(input, { fetch } = {}) {
+    const { mode, result, plan, request, timeout } = JSON.parse(await native.accountSubscriptionStart(JSON.stringify(input), !!fetch));
+    if (mode === 'done') return result;
+    if (mode === 'proxy') {
+      plan.proxyUrl = await policy.proxyForUrl(plan.url) || null;
+      return JSON.parse(await native.queryAccountSubscription(JSON.stringify(plan)));
+    }
+    let status = 0, body = null;
+    try {
+      const response = await fetch(plan.url, { ...request, signal: AbortSignal.timeout(timeout) });
+      status = response.status;
+      if (response.ok) body = await response.json();
+    } catch { status = 0; }
+    return JSON.parse(native.accountSubscriptionResult(JSON.stringify({ plan, status, body, now: Date.now() })));
+  }
+  return native.accountReaderApi({ defaultCodexAuth, query, cache: require('../quota/account-subscription-cache'),
+    readCliCredentials: () => require('../quota/claude-cli-oauth').readCliCredentials() });
+});
+
 exposeHostApi('artifacts', () => getNative().artifactCleanupApi({
   artifactsDir: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).artifactsDir,
   environment: process.env, path, fs: require('node:fs'), home: require('node:os').homedir(),
@@ -1106,7 +1271,7 @@ exposeHostApi('rolloutPath', () => getNative().rolloutPathApi(getNative(), (deps
 })));
 
 exposeHostApi('tunnelMonitor', () => {
-  const { atomicWriteJson } = require('../runtime-security');
+  const { atomicWriteJson } = module.exports.runtimeSecurity;
   const { createTailscaleFunnelProbe } = require('../tailscale-funnel-health');
   const { readLauncherToken, getUserInfo, discoverAccess } = require('../tunnel-sakurafrp-api');
   return getNative().tunnelMonitorApi({

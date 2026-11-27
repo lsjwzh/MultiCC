@@ -23,7 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { atomicWriteJson } = require('../../src/runtime-security');
+const { atomicWriteJson } = require('../../src/native/binding').runtimeSecurity;
 const { PKG_ROOT } = require('../../src/native/binding').appPaths;
 
 const MIGRATION_ID = 'cron-fanout-cleanup';

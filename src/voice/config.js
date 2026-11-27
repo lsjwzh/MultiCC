@@ -8,7 +8,7 @@
 // stale-binding bug that splitting server.js could have introduced).
 const fs = require('fs');
 const { createPaths } = require('../native/binding').appPaths;
-const { atomicWriteJson } = require('../runtime-security');
+const { atomicWriteJson } = require('../native/binding').runtimeSecurity;
 const { stripAliases } = require('./hotword-corrector');
 const { createHotwordLearner } = require('./hotword-learner');
 

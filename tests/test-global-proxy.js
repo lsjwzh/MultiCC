@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const {
   installGlobalProxy, resolveProxyEnv, parseMacSystemProxy, cidrToRange,
   latestChildProxyEnv, latestProxyMode, systemProxyHijackHint, resetLatestForTests,
-} = require('../src/network/global-proxy');
+} = require('../src/native/binding').globalProxy;
 const { ensureLoopbackNoProxyEnv, mergeLoopbackNoProxy } = require('../src/network/proxy-policy');
 
 const SCUTIL = `<dictionary> {

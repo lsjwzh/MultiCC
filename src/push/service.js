@@ -12,7 +12,7 @@
 //    the mutable `cfg` singleton (read as `push.cfg.X`, never destructured).
 const fs = require('fs');
 const { createPaths } = require('../native/binding').appPaths;
-const { atomicWriteJson } = require('../runtime-security');
+const { atomicWriteJson } = require('../native/binding').runtimeSecurity;
 const { createBusinessPushService } = require('./business');
 const { createFcmDevices } = require('./fcm-devices');
 const { createBarkDevices } = require('./bark-devices');

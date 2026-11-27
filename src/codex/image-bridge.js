@@ -14,7 +14,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const { isOfficialCodexOAuthProvider, readCodexOfficialCredential } = require('./official-relay');
-const { ensurePrivateDir, secureFile } = require('../runtime-security');
+const { ensurePrivateDir, secureFile } = require('../native/binding').runtimeSecurity;
 
 const MAX_PROMPT_LENGTH = 16 * 1024;
 const MAX_REFERENCE_IMAGES = 4;

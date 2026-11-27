@@ -147,7 +147,7 @@ test('throws when required deps are missing', () => {
 
 test('the guard\'s stale release re-reads the provider through the balance refresh port', async () => {
   const { createQuotaGuard } = require('../src/quota/quota-guard');
-  const { wireQuotaSelfHeal } = require('../src/quota/quota-self-heal');
+  const { wireQuotaSelfHeal } = require('../src/native/binding').quotaSelfHeal;
   const NOW = 1_800_000_000_000;
   const quotaGuard = createQuotaGuard({
     cache: {
@@ -178,7 +178,7 @@ test('the guard\'s stale release re-reads the provider through the balance refre
 });
 
 test('a codex 401 routes to the shared or per-account OAuth refresher, never to a cliCopy', async (t) => {
-  const { wireCodexAuthRefresher } = require('../src/quota/quota-self-heal');
+  const { wireCodexAuthRefresher } = require('../src/native/binding').quotaSelfHeal;
   const poller = require('../src/usage-limit-poller');
   t.after(() => poller.setCodexAuthRefresher(null));
   const attempts = [];
