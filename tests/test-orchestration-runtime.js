@@ -1636,21 +1636,21 @@ test('permanent dispatch identity failures settle once and return a durable fail
 // restored before any asynchronous work begins.
 function runtimeWithStoreFactory(factory) {
   const runtimePath = require.resolve('../src/orchestration/host');
-  const storePath = require.resolve('../src/orchestration/json-store-host');
+  const storeApi = require('../src/native/binding').orchestrationJson;
   const savedRuntime = require.cache[runtimePath];
-  const savedStore = require.cache[storePath];
+  const savedFactory = storeApi.createOrchestrationStore;
   try {
-    require.cache[storePath] = { ...savedStore, exports: { ...savedStore.exports, createOrchestrationStore: factory } };
+    storeApi.createOrchestrationStore = factory;
     delete require.cache[runtimePath];
     return require(runtimePath).createOrchestrationRuntime;
   } finally {
     require.cache[runtimePath] = savedRuntime;
-    require.cache[storePath] = savedStore;
+    storeApi.createOrchestrationStore = savedFactory;
   }
 }
 
 test('保留维护不占住当前投递轮次，重复轮次不重入且关闭等待维护结束', async t => {
-  const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
+  const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-retention-lifecycle-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let release;
@@ -1683,7 +1683,7 @@ test('保留维护不占住当前投递轮次，重复轮次不重入且关闭�
 });
 
 test('编排统计用数据库计数，不读取终态记录或正文', async t => {
-  const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
+  const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-bounded-stats-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const makeRuntime = runtimeWithStoreFactory(options => {

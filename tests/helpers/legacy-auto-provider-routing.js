@@ -36,7 +36,7 @@
 
 const { jevTarget, validateProviderSelection } = require('../../src/providers/auto-provider-config');
 const { createJevClient } = require('../../src/providers/jev-client');
-const secretAudit = require('../../src/secret-audit');
+const secretAudit = require('../../src/native/binding').secretAudit;
 
 const DEFAULT_TTL_MS = 10 * 60_000;
 const MAX_ENTRIES = 256;

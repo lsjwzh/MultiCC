@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 
 function frozenScheduler() {
   const Module = require('node:module');

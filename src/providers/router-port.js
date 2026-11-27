@@ -6,7 +6,7 @@ const {
   assertProviderBinding,
   createProviderBinding,
   toLegacyProviderView,
-} = require('./binding');
+} = require('../native/binding').providerBinding;
 const { mountCodexOfficialRelay } = require('../codex/official-relay');
 const { codexProxyTrace } = require('../codex/proxy-trace');
 const { createCodexHistoryHooks } = require('../native/binding').codexHistoryHooks;

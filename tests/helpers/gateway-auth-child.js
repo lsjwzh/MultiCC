@@ -1,7 +1,7 @@
 'use strict';
 // Isolated transport fixture using the real Rust authentication owner. No user
 // settings, providers, sessions, or external network requests are loaded.
-const gateway = require('../../src/gateway-child');
+const gateway = require('../../src/native/binding').gatewayChild;
 const http = require('node:http');
 const express = require('express');
 const WebSocket = require('ws');

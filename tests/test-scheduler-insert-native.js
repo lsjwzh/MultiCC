@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const Database = require('better-sqlite3');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
 test('immediate insertion persists active-task lineage and keeps the admitted payload unchanged', async t => {

@@ -219,8 +219,8 @@ const repo = ${JSON.stringify(repo)};
 const log = ${JSON.stringify(log)};
 // The front door's auth gate needs a live control channel before it answers;
 // the real child opens it in src/gateway-child.js.
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.on('error', () => process.exit(0));

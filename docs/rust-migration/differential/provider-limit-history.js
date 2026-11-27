@@ -287,8 +287,8 @@ const path = require('node:path');
 // serving, otherwise every claimed route answers 503 "authentication runtime
 // unavailable". Reuse the production wiring and a real RustAuthSecurity.
 const REPO = ${JSON.stringify(ROOT)};
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 // Keep the security object alive: dropping it aborts the napi control task and
 // the gateway sees EOF on the auth stream. A CommonJS top-level const is not
 // retained after module evaluation, so pin it on the global object.

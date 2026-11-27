@@ -12,7 +12,7 @@
 // in `tests/helpers/legacy-chat-runtime-store.js`; `tests/test-chat-runtime-native.js`
 // replays randomized lifecycles against both.
 
-const { createStateOwner } = require('../../../src/state/owner');
+const { createStateOwner } = require('../../../src/native/binding').stateOwner;
 
 // `options.owner` is the process-wide state owner from `src/state/owner.js`.
 // A store created without one (unit fixtures) gets its own native owner: there

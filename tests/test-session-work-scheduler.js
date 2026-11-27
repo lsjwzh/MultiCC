@@ -6,8 +6,8 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createOutbox } = require('../src/outbox');
 const {
   FREEZE_REASON_CLASSIFY,

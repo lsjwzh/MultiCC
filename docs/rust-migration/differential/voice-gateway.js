@@ -51,8 +51,8 @@ function upstream(repo) {
 const net = require('node:net'); const http = require('node:http'); const path = require('node:path');
 const repo = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [repo] }));
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();

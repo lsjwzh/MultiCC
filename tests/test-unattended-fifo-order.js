@@ -23,7 +23,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createOutbox, admitOutboxItem } = require('../src/outbox');
 const { createSessionWorkScheduler, createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work');
 const { createUnattendedHost } = require('../src/unattended/native-host');

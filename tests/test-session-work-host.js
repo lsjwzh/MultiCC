@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createSessionWorkHost, createSessionWorkScheduler, createProductionQuestionHost, createProductionWorkHost } = require('../src/session-work');
 const { createShellWorkspaceHost } = require('../src/task-shell/workspace');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 function fixture(options = {}) {

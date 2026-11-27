@@ -49,7 +49,7 @@ function createProviderRoutes(rawDeps) {
   const deps = assertProviderRouteDeps(rawDeps);
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const log = deps.logger || console;
-  const defaultsPort = require('../providers/defaults-port');
+  const defaultsPort = require('../native/binding').providerDefaults;
   const defaultsOwner = deps.providerDefaultsOwner || defaultsPort.getProviderDefaultsOwner(deps.providerDefaultsFile);
   const providerDefaults = defaultsPort.providerDefaultsView(defaultsOwner);
 

@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const test = require('node:test');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
 // These two tests reproduce the constraints on real SQLite without claiming

@@ -9,7 +9,7 @@ const {
   REQUIRED_CAPABILITIES,
   createProviderRouterPort,
 } = require('../src/providers/router-port');
-const { createProviderBinding } = require('../src/providers/binding');
+const { createProviderBinding } = require('../src/native/binding').providerBinding;
 
 const HOST_PATHS = Object.freeze({
   cprPaths: Object.freeze({

@@ -93,7 +93,7 @@ test('isolated legacy defaults replay: 15 operations, identical snapshots and 6 
 test('real host HTTP calls share and persist the native defaults owner', async t => {
   const express = require('express');
   const { mountProvidersHostRoute } = require('../src/routes/providers-host');
-  const { getProviderDefaultsOwner, providerDefaultsView } = require('../src/providers/defaults-port');
+  const { getProviderDefaultsOwner, providerDefaultsView } = require('../src/native/binding').providerDefaults;
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-defaults-http-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'defaults.json');

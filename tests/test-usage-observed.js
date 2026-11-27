@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createProviderBinding } = require('../src/providers/binding');
+const { createProviderBinding } = require('../src/native/binding').providerBinding;
 const {
   UsageObservedError,
   createUsageObserved,

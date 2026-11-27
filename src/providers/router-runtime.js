@@ -12,7 +12,7 @@ const {
   createProviderStoreAdapter,
   createReadOnlyShadowRouter,
 } = require('./router-adapter');
-const { toLegacyProviderView } = require('./binding');
+const { toLegacyProviderView } = require('../native/binding').providerBinding;
 const { VENDOR_NATIVE_SET } = require('./native-vendor');
 const { applyCliKeyAccountEnv, selectedAccountId } = require('../cli-key-accounts');
 const { ensureLoopbackNoProxyEnv, hasProxyEnv } = require('../network/proxy-policy');

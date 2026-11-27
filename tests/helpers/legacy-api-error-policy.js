@@ -8,7 +8,7 @@
 
 const crypto = require('crypto');
 const { extractUpstreamError } = require('../../src/upstream-error');
-const { classifyProviderError } = require('../../src/provider-error');
+const { classifyProviderError } = require('../../src/native/binding').providerError;
 const { getNative } = require('../../src/native/runtime');
 
 const CATEGORIES = Object.freeze([

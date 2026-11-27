@@ -9,5 +9,7 @@ const virtualPath = path.resolve(__dirname, '../../src/cli-adapters/acp-bridge.c
 const legacy = new Module(virtualPath, module);
 legacy.filename = virtualPath;
 legacy.paths = Module._nodeModulePaths(path.dirname(virtualPath));
+const load = legacy.require.bind(legacy);
+legacy.require = id => id === '../provider-error' ? require('../../src/native/binding').providerError : load(id);
 legacy._compile(fs.readFileSync(path.join(__dirname, 'legacy-acp-bridge.cjs'), 'utf8'), virtualPath);
 module.exports = legacy.exports;

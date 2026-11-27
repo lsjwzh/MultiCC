@@ -10,7 +10,7 @@ const { getNative } = require('../src/native/binding');
 const { createWaitService } = require('../src/wait/service');
 const { legacyWaitResolver } = require('./helpers/legacy-wait-resolution');
 const { OutboxConflictError } = require('../src/outbox');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 
 function fixture(mode = 'callback', status = 'pending') {
   return { waits: { w: { id: 'w', sessionId: 's', mode, status, injectPrefix: 'prefix',

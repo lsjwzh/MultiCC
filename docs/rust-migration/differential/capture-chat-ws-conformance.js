@@ -714,7 +714,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       } finally {
         taskStore.close();
       }
-      const { createOrchestrationSqliteStore } = require('../../../src/orchestration/sqlite-store');
+      const { createOrchestrationSqliteStore } = require('../../../src/native/binding').orchestrationSqlite;
       const queueStore = createOrchestrationSqliteStore({ file: path.join(dataDir, 'orchestration.sqlite') });
       try {
         await queueStore.mutate(draft => {

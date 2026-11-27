@@ -13,7 +13,7 @@ const { EventEmitter } = require('node:events');
 const { createSessionPersistence, PersistenceError } = require('../src/native/binding');
 const { createTaskStateStore } = require('../src/session/records');
 const { createStore, CorruptedStateError } = require('../src/state/store');
-const { createStateOwner } = require('../src/state/owner');
+const { createStateOwner } = require('../src/native/binding').stateOwner;
 const { createSessionRecords, recordsOf, appendClassifyHistory, resetTaskState } = require('./helpers/session-records');
 
 function tempRoot(t) {
