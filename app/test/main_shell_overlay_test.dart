@@ -122,7 +122,7 @@ void main() {
 
       tester.view.viewInsets = const FakeViewPadding(bottom: 300 * 3);
       tester.view.padding = const FakeViewPadding(top: statusBar * 3);
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(MediaQuery.viewInsetsOf(tester.element(chat())).bottom, 300);
       expect(tester.getRect(chat()).bottom, 844);
