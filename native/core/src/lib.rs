@@ -60,6 +60,7 @@ pub mod git_history;
 pub mod goal_precheck;
 pub mod handoff_zip;
 pub mod host_battery;
+pub mod macos_power;
 pub mod macos_agent_build;
 pub mod host_exec;
 pub mod host_ops_routes;

@@ -136,7 +136,7 @@ test('client: installed only when the plist exists and the intent is writable', 
 });
 
 test('setLidSleepPrevention prefers the daemon: no sudo, no password prompt', async () => {
-  const macosPower = require('../plugins/utils/macos-power');
+  const macosPower = require('../src/native/binding').macosPower;
   let value = '0';
   const seen = [];
   const execFile = (file, args, options, cb) => {
@@ -165,7 +165,7 @@ test('setLidSleepPrevention prefers the daemon: no sudo, no password prompt', as
 });
 
 test('turning off releases saved intent even when another app keeps system sleep disabled', async () => {
-  const macosPower = require('../plugins/utils/macos-power');
+  const macosPower = require('../src/native/binding').macosPower;
   for (const previous of ['on', 'off']) {
     let intent = previous;
     const powerd = { readIntent: () => intent, setIntent: value => { intent = value ? 'on' : 'off'; return true; } };

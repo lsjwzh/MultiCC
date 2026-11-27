@@ -832,6 +832,18 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+exposeHostApi('macosPower', () => getNative().macosPowerApi({
+  platform: process.platform, fs: require('node:fs'), DomainError: require('../http-errors').DomainError,
+  installer: path.resolve(__dirname, '../../scripts/install-powerd.sh'),
+  username: () => require('node:os').userInfo().username,
+  executeInjected: (run, file, args, options) => new Promise((resolve, reject) => {
+    run(file, args, options, (error, stdout, stderr) => {
+      if (error) { error.stderr = stderr; reject(error); }
+      else resolve(stdout);
+    });
+  }),
+}));
+
 exposeHostApi('appPaths', () => getNative().appPathsPublicApi({
   fs: require('node:fs'), os: require('node:os'), path, process, pkgRoot: path.resolve(__dirname, '../..'),
 }, pathSafety));
