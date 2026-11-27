@@ -27,7 +27,7 @@ const {
   arkPlanFromBaseUrl,
   arkWindowLabel,
 } = require('./legacy-quota-bar-view');
-const { accountProviderId, accountIdOfProviderId } = require('../../src/providers/official-catalog');
+const { accountProviderId, accountIdOfProviderId } = require('./frozen-catalog-inputs/official-account-ids');
 const { claudeQuota } = require('./legacy-claude-header-quota');
 
 const PROVIDER_FAILURE_COOLDOWN_MS = 5 * 60_000;

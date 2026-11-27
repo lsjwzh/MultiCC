@@ -646,6 +646,7 @@ function frozenInvocationFactory() {
   legacy.filename = filename;
   legacy.paths = Module._nodeModulePaths(path.dirname(filename));
   legacy.require = name => {
+    if (name === '../providers/native-vendor') return require('./helpers/frozen-catalog-inputs/native-vendor');
     if (name === '../providers/native-opencode') return require('./helpers/frozen-native-opencode');
     if (name === './model-request-policy') return require('./helpers/legacy-model-request-policy');
     return Module.prototype.require.call(legacy, name);

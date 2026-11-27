@@ -30,7 +30,7 @@ const {
   waitForCallback,
 } = require('../claude-auth/official-oauth');
 const { officialAccountIdFromProvider } = require('../official-accounts');
-const { accountProviderId } = require('../providers/official-catalog');
+const { accountProviderId } = require('../native/binding').officialCatalog;
 const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');
 
 function sanitizeLabel(value) {

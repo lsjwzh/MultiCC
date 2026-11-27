@@ -19,7 +19,7 @@ const { auxVerdictStaleness } = require('../legacy-aux-verdict-health');
 const { isGoalState } = require('../../../src/classify/vocab');
 const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../../../src/providers/auto-provider-config');
 const { mergeCliAccountsPatch, retainExistingCliAccounts, sharedCliKeyAccountStore } = require('../../../src/cli-key-accounts');
-const { nativeVendorName, nativeVendorOf } = require('../../../src/providers/native-vendor');
+const { nativeVendorName, nativeVendorOf } = require('../frozen-catalog-inputs/native-vendor');
 const { nativeOpenCodeId, nativeOpenCodeName } = require('../frozen-native-opencode');
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/

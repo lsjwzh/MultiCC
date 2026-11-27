@@ -17,7 +17,7 @@ const assert = require('node:assert/strict');
 const {
   createProviderModelsRuntime,
   modelsFromPayload,
-} = require('../src/routes/provider-models');
+} = require('../src/native/binding').providerModels;
 
 const FAKE_KEY = 'fake-relay-key-do-not-leak';
 

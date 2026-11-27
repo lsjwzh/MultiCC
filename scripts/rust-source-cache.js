@@ -118,6 +118,8 @@ function probeAddon(file, node = process.execPath) {
       'createCodexExpAdapter','createAutoProviderHandoff','taskRelationsApi','taskStoreProgressApi',
       'turnLedgerApi','createCodexBackgroundEvents','accountSubscriptionValue','providerCredentialValue',
       'readProviderCliValue','wakeSyncResult','hostPromptsApi','pushNotificationApi','searchRankLive','RustNativeCounters',
+      'openCodeModelsApi','agyModelsApi','agyCliCatalogRead','modelCatalogsHostApi','providerModelsApi',
+      'providerRouterAdapterApi','nativeVendorApi','codexAccountCatalogApi','claudeModelListApi','officialProviderCatalogApi','relayModelCatalogApi',
       'voiceWordsScan','voiceConfigApi','voiceCorrectorApi','voiceLearnerApi','voiceMinerApi','voiceLaunchRegistryApi',
       'voiceGatewayDomainApi','voiceGatewayHostApi','voiceRuntimeHostApi','voiceSettingsHostApi','asrModelInstallerApi',
       'voiceSpeechValue','switchRouteResult','taskShellReferenceValue','taskShellContextApi',

@@ -1525,7 +1525,7 @@ function opencodeProviders() {
 }
 
 test('a native OpenCode line is a pool candidate whose models come from the opencode cache', async () => {
-  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/opencode-models');
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/native/binding').openCodeModels;
   _setCacheForTest(Date.now(), [
     { provider: 'opencode', model: 'big-pickle', label: 'opencode/big-pickle' },
     { provider: 'opencode', model: 'grok-code', label: 'opencode/grok-code' },
@@ -1573,7 +1573,7 @@ test('a native OpenCode line is a pool candidate whose models come from the open
 });
 
 test('a native OpenCode line without a cached model list still routes on its default', () => {
-  const { _resetCacheForTest } = require('../src/routes/opencode-models');
+  const { _resetCacheForTest } = require('../src/native/binding').openCodeModels;
   _resetCacheForTest();
   const providers = opencodeProviders();
   const events = [];
@@ -1908,7 +1908,7 @@ test('a remembered line on another lane moves a fresh failover session there bef
 });
 
 test('a Command Code native line runs as a provider-less lane with the vendor model', () => {
-  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/model-catalogs-host').getVendorCatalog('commandcode');
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/native/binding').modelCatalogsHost.getVendorCatalog('commandcode');
   _setCacheForTest(Date.now(), [
     { model: 'deepseek/deepseek-v4-flash', group: 'Open Source' },
     { model: 'claude-sonnet-5-5', group: 'Anthropic' },
@@ -1950,7 +1950,7 @@ test('a Command Code native line runs as a provider-less lane with the vendor mo
 });
 
 test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () => {
-  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/model-catalogs-host').getVendorCatalog('codebuddy');
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/native/binding').modelCatalogsHost.getVendorCatalog('codebuddy');
   _setCacheForTest(Date.now(), [{ model: 'hy4-preview-f', label: 'hy4-preview-f' }]);
   try {
     const backup = { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'good-model', modelOptions: ['good-model'] };

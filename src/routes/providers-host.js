@@ -533,7 +533,7 @@ function mountProvidersHostRoute(app, options = {}) {
             ANTHROPIC_DEFAULT_SONNET_MODEL: env.ANTHROPIC_DEFAULT_SONNET_MODEL,
           },
           summary: deps.providerRouterRuntime.getProviderSummary('claude', id) || {},
-          fallbackModels: require('../claude-models').CLAUDE_MODELS_FALLBACK.map(entry => entry.model),
+          fallbackModels: require('../native/binding').claudeModels.CLAUDE_MODELS_FALLBACK.map(entry => entry.model),
           wireDefaultModel: deps.providers.WIRE_DEFAULT_MODEL,
         };
       } catch (error) {

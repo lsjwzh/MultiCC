@@ -3,7 +3,7 @@
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 
 const DEFAULT_PROVIDER_IDS = Object.freeze({ claude: null, codex: null });
-const { VENDOR_NATIVE_CLIS, NATIVE_VENDOR_SUFFIX } = require('../providers/native-vendor');
+const { VENDOR_NATIVE_CLIS, NATIVE_VENDOR_SUFFIX } = require('../native/binding').nativeVendor;
 const { NATIVE_OPENCODE_PREFIX } = require('../native/binding').getNativeOpenCodeCatalog();
 
 function publicError(error, fallback) {

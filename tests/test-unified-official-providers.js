@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { createOfficialCatalog, normalizeOfficialSessionReferences } = require('../src/providers/official-catalog');
+const { createOfficialCatalog, normalizeOfficialSessionReferences } = require('../src/native/binding').officialCatalog;
 const { mountCodexAccountRoutes } = require('../src/routes/codex-accounts');
 const { mountClaudeAccountRoutes } = require('../src/routes/claude-accounts');
 const A = 'aaaaaaaaaaaaaaaa', B = 'bbbbbbbbbbbbbbbb';
@@ -172,7 +172,7 @@ test('production core initializes from prior default account, persists switches 
       { slug: 'gpt-5', visibility: 'list', priority: 2 },
       { slug: 'hidden-draft', visibility: 'hide', priority: 0 },
     ] }));
-    run(`await require('./src/codex/model-catalog').defaultRuntime.hydrate();const a=require('node:assert/strict');const target=p.resolveAuxHttpTarget('openai','codex-official',{port:9111});a.equal(target.available,true);a.equal(target.wireApi,'responses');a.match(target.url,/codex-proxy\\/codex-official\\/responses$/);let native=null;try{native=require('./src/native/binding').getNative()}catch{}a.deepEqual(target.modelOptions,native?['gpt-5-codex','gpt-5']:[]);a.equal(target.apiKey,'multicc-aux');a.equal(p.resolveAuxHttpTarget('openai','codex-official').available,false);`, { HOME: fakeHome });
+    run(`await require('./src/native/binding').codexModelCatalog.defaultRuntime.hydrate();const a=require('node:assert/strict');const target=p.resolveAuxHttpTarget('openai','codex-official',{port:9111});a.equal(target.available,true);a.equal(target.wireApi,'responses');a.match(target.url,/codex-proxy\\/codex-official\\/responses$/);let native=null;try{native=require('./src/native/binding').getNative()}catch{}a.deepEqual(target.modelOptions,native?['gpt-5-codex','gpt-5']:[]);a.equal(target.apiKey,'multicc-aux');a.equal(p.resolveAuxHttpTarget('openai','codex-official').available,false);`, { HOME: fakeHome });
     // Two signed-in Claude accounts in the store → two per-account providers,
     // each routed through the proxy with its own account marker.
     for (const id of [A, B]) {

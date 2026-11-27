@@ -363,7 +363,7 @@ function testRevokedParkAndRelease() {
   // different modules — a rename on either side would otherwise leave the
   // account parked forever with every unit test still green.
   const { createOfficialAccountStore } = require('../src/official-accounts');
-  const { accountProviderId } = require('../src/providers/official-catalog');
+  const { accountProviderId } = require('../src/native/binding').officialCatalog;
   const store = createOfficialAccountStore({
     root: tmpDir('hook'),
     onCredentialWritten: id => recorder.releaseProviderFailure({ providerId: accountProviderId('claude', id) }),

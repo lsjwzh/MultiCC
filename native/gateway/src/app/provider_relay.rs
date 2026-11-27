@@ -9,7 +9,9 @@ use multicc_core::http_gate::{query_value, QueryValue};
 use multicc_core::js::serde::{js_string, truthy};
 use multicc_core::js::string::js_trim;
 use multicc_core::provider_registry::relay_models_of;
+use multicc_core::relay_model_catalog::{normalize_models, revision};
 use serde_json::{json, Map, Value};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
 use crate::app::express::{self, RequestCtx};
@@ -151,28 +153,6 @@ fn text(value: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
-fn normalize_models(values: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut models = Vec::new();
-    for raw in values {
-        let model = js_trim(&raw);
-        let valid = model
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphanumeric)
-            && model.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric()
-                    || matches!(byte, b'.' | b'_' | b':' | b'/' | b'-' | b'[' | b']')
-            });
-        if model.len() <= 160 && valid && !models.iter().any(|seen| seen == model) {
-            models.push(model.to_string());
-            if models.len() == 100 {
-                break;
-            }
-        }
-    }
-    models
-}
-
 fn should_refresh(app_type: &str, method: &Method, url: &str) -> bool {
     app_type == "codex"
         && *method == Method::GET
@@ -239,7 +219,7 @@ fn source_catalog(facts: &Value, app_type: &str, id: &str, now: i64) -> (u16, Va
     let revision_input =
         serde_json::to_vec(&json!({"preferredModel": preferred, "models": models}))
             .expect("model catalog serializes");
-    let revision = format!("{:x}", Sha256::digest(revision_input));
+    let revision = revision(&revision_input);
     let fetched_at = catalog
         .and_then(|catalog| catalog.get("fetchedAt"))
         .filter(|value| truthy(value))
@@ -251,7 +231,7 @@ fn source_catalog(facts: &Value, app_type: &str, id: &str, now: i64) -> (u16, Va
         200,
         json!({
             "ok": true, "version": 1, "appType": app_type, "providerId": id,
-            "preferredModel": preferred, "models": models, "revision": &revision[..24],
+            "preferredModel": preferred, "models": models, "revision": revision,
             "generatedAt": now, "catalogFetchedAt": fetched_at,
         }),
     )

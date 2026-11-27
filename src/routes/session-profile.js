@@ -21,7 +21,7 @@ const {
   retainExistingCliAccounts,
   sharedCliKeyAccountStore,
 } = require('../cli-key-accounts');
-const { nativeVendorName, nativeVendorOf } = require('../providers/native-vendor');
+const { nativeVendorName, nativeVendorOf } = require('../native/binding').nativeVendor;
 const { nativeOpenCodeId, nativeOpenCodeName } = require('../native/binding').getNativeOpenCodeCatalog();
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/

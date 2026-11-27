@@ -11,8 +11,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const agy = require('../src/routes/agy-models');
-const { nativeVendorModels, syntheticVendorProvider } = require('../src/providers/native-vendor');
+const agy = require('../src/native/binding').agyModels;
+const { nativeVendorModels, syntheticVendorProvider } = require('../src/native/binding').nativeVendor;
 
 const ENV = process.env.AGY_CMD;
 
@@ -35,14 +35,20 @@ const SESSION = {
 
 // A fake `agy acp`: answers initialize and session/new on stdin, ignores the
 // `acp` argument the real binary receives.
-function fakeAgy(session, { spawnsFile } = {}) {
+function fakeAgy(session, { spawnsFile, recordTermination = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-acp-'));
   const file = path.join(dir, 'agy');
   const marker = spawnsFile ? `\nfs.appendFileSync(${JSON.stringify(spawnsFile)}, 'x');` : '';
+  const onTerm = recordTermination ? `
+setTimeout(() => process.exit(1), 5000);
+process.once('SIGTERM', () => {
+  fs.writeFileSync(${JSON.stringify(path.join(dir, 'terminated'))}, 'SIGTERM');
+  process.exit(0);
+});` : '';
   const reply = session === null ? 'reply(msg.id, {});' : `reply(msg.id, ${JSON.stringify(session)});`;
   fs.writeFileSync(file, `#!/usr/bin/env node
 const fs = require('fs');
-const readline = require('readline');${marker}
+const readline = require('readline');${marker}${onTerm}
 const rl = readline.createInterface({ input: process.stdin });
 function reply(id, result) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');
@@ -102,6 +108,19 @@ test('a session without a model option fails and backs off for 30 seconds', asyn
   assert.deepEqual(await list(), { models: [], source: 'unavailable' });
   assert.equal(fs.readFileSync(marker, 'utf8').length, spawned);
 });
+
+test('the host gives the ACP child a chance to clean up after catalog discovery',
+  { skip: process.platform === 'win32' }, async (t) => {
+    const { file, dir } = fakeAgy(SESSION, { recordTermination: true });
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    process.env.AGY_CMD = file;
+    assert.equal((await list()).source, 'cli');
+    const marker = path.join(dir, 'terminated');
+    for (let i = 0; i < 100 && !fs.existsSync(marker); i++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'SIGTERM');
+  });
 
 test('refresh skips the cache and a cold peek warms in the background', async () => {
   process.env.AGY_CMD = fakeAgy(SESSION).file;

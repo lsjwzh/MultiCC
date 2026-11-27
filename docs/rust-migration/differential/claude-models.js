@@ -33,7 +33,7 @@ const { run, send } = require('./lib');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const ORACLE = require(path.join(ROOT, 'tests/helpers/legacy-claude-models-route.js'));
-const { listClaudeModelsSync, _resetCacheForTest } = require(path.join(ROOT, 'src/claude-models.js'));
+const { listClaudeModelsSync, _resetCacheForTest } = require(path.join(ROOT, 'src/native/binding')).claudeModels;
 
 const GROUP = process.argv[5] || '';
 const BASE = process.env.CM_WORK || '/tmp/claude-models-port';

@@ -33,7 +33,7 @@ use crate::app::express::{self, RequestCtx};
 use crate::host_port;
 
 /// The host port the Node child serves (`src/routes/model-catalogs-host.js`).
-const HOST_PATH: &str = "/api/__host/model-catalogs";
+use multicc_core::cli_catalog_host::HOST_PATH;
 
 /// The legacy Codex path (`GET /api/codex/models` without `providerId`/`poll`)
 /// waits for a full native refresh; Node had no timeout on it.

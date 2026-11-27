@@ -58,7 +58,7 @@ const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
 const { createCodexExpAdapter } = require('../src/native/binding').codexAppAdapter;
 const { settingsOverrideFor } = require('../src/native/binding').claudeSettingsOverride;
 const { claudeSettingsExtra } = require('../src/chat/turn-engine-host');
-const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/claude-models');
+const { CLAUDE_MODELS_FALLBACK, _resetCacheForTest } = require('../src/native/binding').claudeModels;
 
 _resetCacheForTest();
 const CLAUDE_FIRST = CLAUDE_MODELS_FALLBACK[0].model;

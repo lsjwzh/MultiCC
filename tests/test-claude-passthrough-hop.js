@@ -38,7 +38,7 @@ fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 process.env.CLAUDE_OFFICIAL_VIA_PROXY = '1';
 
 const providers = require('../src/providers/host');
-const { createProviderStoreAdapter } = require('../src/providers/router-adapter');
+const { createProviderStoreAdapter } = require('../src/native/binding').providerRouterAdapter;
 const { createHandler } = require('cli-provider-router/proxy/claude');
 
 test.after(() => {

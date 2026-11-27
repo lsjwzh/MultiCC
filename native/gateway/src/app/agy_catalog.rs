@@ -106,15 +106,7 @@ fn clean_id(value: Option<&Value>) -> Option<&str> {
 fn model_options(session: &Value) -> AgyCatalog {
     let mut models = Vec::new();
     let mut family_current = None;
-    if let Some(model) = session
-        .get("configOptions")
-        .and_then(Value::as_array)
-        .and_then(|options| {
-            options
-                .iter()
-                .find(|item| item["id"] == "model" || item["category"] == "model")
-        })
-    {
+    if let Some(model) = multicc_core::cli_catalog_host::agy_model_option(session) {
         for item in model
             .get("options")
             .and_then(Value::as_array)
@@ -252,7 +244,12 @@ async fn fetch_local_with_env(
         .unwrap_or_else(|_| std::env::temp_dir())
         .to_string_lossy()
         .into_owned();
-    run_acp_model_query(command, &cwd, "未读到反重力模型，请确认本机已安装并登录 agy").await
+    run_acp_model_query(
+        command,
+        &cwd,
+        "未读到反重力模型，请确认本机已安装并登录 agy",
+    )
+    .await
 }
 
 /// 通过 SSH 桥接向远端 Host 拉取反重力模型目录（复用与本地一致的 ACP `initialize` + `session/new`）。

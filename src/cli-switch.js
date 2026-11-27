@@ -12,7 +12,7 @@
 const { getNative } = require('./native/binding');
 const { repairZcodeSessionState } = require('./native/binding');
 const { isResidentSession, providerlessClis, isDeprecated } = require('./native/binding').cliCapability;
-const { nativeVendorOf } = require('./providers/native-vendor');
+const { nativeVendorOf } = require('./native/binding').nativeVendor;
 const { nativeOpenCodeId } = require('./native/binding').getNativeOpenCodeCatalog();
 
 // No Node fallback: these kernels are Rust-only.

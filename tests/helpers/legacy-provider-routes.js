@@ -15,8 +15,8 @@ const { detachProviderReferences } = require('./legacy-provider-force-detach');
 const { isValidIp } = require('../../src/providers/egress-ip');
 const { reassignProviderSessions } = require('../../src/provider-reassign');
 const { parseCredential, relayRouteFromBaseUrl } = require('../../src/native/binding').relayShares;
-const { nativeVendorOf } = require('../../src/providers/native-vendor');
-const { CLAUDE_MODELS_FALLBACK } = require('../../src/claude-models');
+const { nativeVendorOf } = require('./frozen-catalog-inputs/native-vendor');
+const { CLAUDE_MODELS_FALLBACK } = require('./legacy-claude-models-route');
 
 // Frozen copy of the retired src/providers/relay-share-code.js. The live
 // encoder is native/core/src/provider_registry.rs; this baseline must stay

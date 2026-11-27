@@ -12,9 +12,9 @@
 // native providers, and its wire model carries the `<provider>/<model>` prefix.
 // The vendors here have a single catalog and a bare model id.
 
-const { displayNameOf } = require('../native/binding').cliCapability;
-const { getVendorCatalog } = require('../routes/model-catalogs-host');
-const { peekAgyModels } = require('../routes/agy-models');
+const { displayNameOf } = require('../../../src/native/binding').cliCapability;
+const { getVendorCatalog } = require('../../../src/native/binding').modelCatalogsHost;
+const { peekAgyModels } = require('../../../src/native/binding').agyModels;
 
 // Lanes that own a vendor catalog. dsh/grok are additionally managed-capable
 // (they can run MultiCC provider lines); their native line is still a valid

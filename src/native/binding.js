@@ -844,7 +844,7 @@ exposeHostApi('cliAdapters', () => {
     createDshAdapter: require('../cli-adapters/dsh').createDshAdapter,
     resolveCliCommands, createCommandResolver,
     claudeLikeMcpArgs: require('../cli-adapters/router-mcp').claudeLikeMcpArgs,
-    validateOpenCodeModel: require('../routes/opencode-models').validateOpenCodeModel,
+    validateOpenCodeModel: module.exports.openCodeModels.validateOpenCodeModel,
     extractUpstreamError: require('../upstream-error').extractUpstreamError,
     messageComposer, renderPrompt: messageComposer.renderPrompt,
     displayNameOf, supportsEffort, effortOf, classifyProviderError, errorFields, isZcodeSessionId,
@@ -1519,7 +1519,7 @@ exposeHostApi('officialUsage', () => ({
   createOfficialAccountUsageSweeper: ({ accounts, recorder, logger = console, now = Date.now, intervalMs = 600000,
     pollCodex = require('../usage-limit-poller').pollCodexUsage } = {}) => getNative().officialUsageSweeper({
     accounts, recorder, logger, now, intervalMs, pollCodex, authFile: dir => path.join(dir, 'auth.json'),
-    accountProviderId: require('../providers/official-catalog').accountProviderId,
+    accountProviderId: module.exports.officialCatalog.accountProviderId,
   }),
 }));
 exposeHostApi('virtualProvider', () => getNative().virtualProviderHost({
@@ -1910,6 +1910,57 @@ exposeHostApi('eventBus', () => getNative().sharedEventBus(require('node:events'
 exposeHostApi('airRoutes', () => getNative().airMountApi(require('../workspace/air-routes-host').createAirRuntime));
 
 exposeHostApi('chatHistoryService', () => getNative().chatHistoryServiceApi(getNative()));
+
+exposeHostApi('claudeModels', () => getNative().claudeModelListApi({
+  root: () => module.exports.appPaths.createPaths().root,
+}));
+exposeHostApi('officialCatalog', () => getNative().officialProviderCatalogApi({
+  officialCodex: provider => require('../codex/official-relay').isOfficialCodexOAuthProvider(provider),
+}));
+exposeHostApi('codexModelCatalog', () => getNative().codexAccountCatalogApi({
+  getNative, runNative, providers: () => require('../providers/host'),
+  createAccounts: () => require('../official-accounts').createOfficialAccountStore(),
+  accountId: provider => require('../official-accounts').officialAccountIdFromProvider(provider),
+  officialCodex: provider => require('../codex/official-relay').isOfficialCodexOAuthProvider(provider),
+  globalHome: () => path.join(require('node:os').homedir(), '.codex'), env: () => process.env,
+  stripEnv: env => require('../codex/oauth-refresh').stripOpenAiEnv(env),
+  childProxyEnv: env => require('../network/outbound').getChildProxyEnv(env),
+  createEgress: () => require('../claude-auth/egress-agent').createClaudeEgressAgentResolver(),
+  commands: options => require('../cli-adapters/commands').resolveCliCommands(options),
+}));
+
+exposeHostApi('providerModels', () => getNative().providerModelsApi({
+  providers: () => require('../providers/host'),
+}));
+exposeHostApi('providerRouterAdapter', () => getNative().providerRouterAdapterApi({
+  pathJoin: require('node:path').join,
+}));
+exposeHostApi('nativeVendor', () => getNative().nativeVendorApi({
+  displayNameOf: module.exports.cliCapability.displayNameOf,
+  getVendorCatalog: cli => module.exports.modelCatalogsHost.getVendorCatalog(cli),
+  peekAgyModels: () => module.exports.agyModels.peekAgyModels(),
+}));
+
+exposeHostApi('openCodeModels', () => getNative().openCodeModelsApi({
+  homedir: require('node:os').homedir, execFile: require('node:child_process').execFile,
+}));
+exposeHostApi('agyModels', () => getNative().agyModelsApi({
+  accountEnv: () => require('../agy-accounts').accountEnv(), read: getNative().agyCliCatalogRead,
+}));
+exposeHostApi('modelCatalogsHost', () => getNative().modelCatalogsHostApi({
+  openCode: () => module.exports.openCodeModels, VendorCatalog: getNative().RustVendorModelCatalog,
+  execFile: require('node:child_process').execFile,
+  resolveCliCommands: () => require('../cli-adapters/commands').resolveCliCommands(),
+  providerRuntime: () => module.exports.providerModels.getSharedProviderModelsRuntime(),
+  codexRuntime: () => module.exports.codexModelCatalog.defaultRuntime,
+  isOfficial: provider => require('../codex/official-relay').isOfficialCodexOAuthProvider(provider),
+  isLocal: module.exports.requestLocality.isLocalRequest,
+}));
+
+exposeHostApi('relayModelCatalog', () => getNative().relayModelCatalogApi({
+  outboundFetch: require('../network/outbound').outboundFetch,
+  officialAccountId: provider => require('../official-accounts').officialAccountIdFromProvider(provider),
+}));
 
 exposeHostApi('voiceCorrector', () => {
   const native = getNative();

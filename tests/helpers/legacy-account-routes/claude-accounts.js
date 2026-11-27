@@ -35,7 +35,7 @@ const {
   waitForCallback,
 } = require('../../../src/claude-auth/official-oauth');
 const { officialAccountIdFromProvider } = require('../../../src/official-accounts');
-const { accountProviderId } = require('../../../src/providers/official-catalog');
+const { accountProviderId } = require('../frozen-catalog-inputs/official-account-ids');
 const { createAccountEgressFetch, parseEgressBinding } = require('../../../src/network/egress-fetch');
 
 function sanitizeLabel(value) {

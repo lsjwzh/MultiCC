@@ -11,7 +11,7 @@ const { isChatStateBusy } = require('./session-runtime-busy-oracle');
 const { selectionKey } = require('../../src/providers/auto-provider-config');
 const capability = require('../../src/cli/cli-capability');
 const { nativeSessionExists } = require('../../src/cli/native-session-exists');
-const { nativeVendorOf } = require('../../src/providers/native-vendor');
+const { nativeVendorOf } = require('./frozen-catalog-inputs/native-vendor');
 const { createCliToolsHost, OFFICIAL_INSTALL_SPECS } = require('../../src/cli/tools-host');
 
 function call(op, input) {
