@@ -110,7 +110,7 @@ pub(super) fn bearer(token: &str) -> Vec<(String, String)> {
     vec![("Authorization".into(), format!("Bearer {token}"))]
 }
 
-async fn credentials(host: u16, target: &Value) -> Result<Value, String> {
+pub(super) async fn credentials(host: u16, target: &Value) -> Result<Value, String> {
     let result = host_port::call(host, HOST, &json!({"op":"credentials","target":target}))
         .await
         .map_err(|_| "quota credential runtime unavailable".to_string())?;
