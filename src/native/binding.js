@@ -1009,3 +1009,21 @@ exposeHostApi('apiErrorPolicy', () => {
   policyBinding = { process, addonPath: process.env.MULTICC_RUST_ADDON, prebuiltDir: process.env.MULTICC_RUST_PREBUILT_DIR };
   return getNative().apiErrorPolicyApi(getNative, extractUpstreamError, errorFields, policyBinding);
 });
+
+// Preserve the public object's identity on Rust cache hits and the frozen
+// fallback shared by the old CommonJS entry. Rust owns probe scheduling.
+const hostBatteryUnavailable = Object.freeze({ available: false });
+function createHostBatteryReader() {
+  let reader, generation, reading;
+  return async function readBattery() {
+    reader ??= new (getNative().HostBatteryReader)();
+    const sample = await reader.read();
+    if (sample.generation !== generation) {
+      generation = sample.generation;
+      reading = sample.reading ?? hostBatteryUnavailable;
+    }
+    return reading;
+  };
+}
+module.exports.createHostBatteryReader = createHostBatteryReader;
+module.exports.hostBatteryUnavailable = hostBatteryUnavailable;

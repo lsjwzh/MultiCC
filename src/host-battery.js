@@ -1,6 +1,6 @@
 'use strict';
 
-const { getNative } = require('./native/binding');
+const { getNative, hostBatteryUnavailable: UNAVAILABLE } = require('./native/binding');
 const fs = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 
@@ -8,7 +8,6 @@ const { execFile } = require('node:child_process');
 // opens the page, so remote clients see the host laptop's charge.
 const CACHE_MS = 5000;
 const PROBE_TIMEOUT_MS = 3000;
-const UNAVAILABLE = Object.freeze({ available: false });
 
 // `pmset -g batt` prints e.g. "-InternalBattery-0 (id=1)\t25%; discharging; 1:26 remaining present: true".
 // Desktops answer with no InternalBattery line at all, which is "no battery", not an error.

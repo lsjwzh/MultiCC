@@ -24,9 +24,8 @@
 
 const { isLocalRequest } = require('../native/binding').requestLocality;
 const { readPowerSettings } = require('./host-power');
-const { createBatteryReader } = require('../host-battery');
 
-const { getNative } = require('../native/binding');
+const { getNative, createHostBatteryReader } = require('../native/binding');
 const AGENT_RESOURCES_PATH = '/api/__host/agent-resources';
 const SCAN_HISTORY_PATH = '/api/__host/scan-history';
 const TOKEN_USAGE_PATH = '/api/__host/token-usage';
@@ -61,7 +60,7 @@ function createHostReadHost(options) {
   if (!deps.push || !deps.tunnel || !deps.macosPower) {
     throw new TypeError('[host-read-host] service dependencies are required');
   }
-  const readBattery = typeof deps.readBattery === 'function' ? deps.readBattery : createBatteryReader();
+  const readBattery = typeof deps.readBattery === 'function' ? deps.readBattery : createHostBatteryReader();
 
   return async function handle(body) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false };
