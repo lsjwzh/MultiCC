@@ -376,8 +376,10 @@ function resolveAgy(context) {
   const { env, homeDir, isWindows } = context;
   if (env.AGY_CMD) return env.AGY_CMD;
   const name = isWindows ? 'agy.exe' : 'agy';
+  const localAppData = isWindows ? (env.LOCALAPPDATA || env.localappdata) : null;
   return firstRunnable([
     path.join(homeDir, '.local', 'bin', name),
+    ...(localAppData ? [path.join(localAppData, 'agy', 'bin', name)] : []),
     ...(!isWindows ? ['/opt/homebrew/bin/agy', '/usr/local/bin/agy'] : []),
   ], context) || findExecutableOnPath('agy', context) || name;
 }

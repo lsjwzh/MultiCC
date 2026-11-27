@@ -64,7 +64,94 @@ fn accounts_home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub(super) fn executable() -> OsString {
+pub(crate) const AGY_INSTALL_COMMAND: &str =
+    "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+
+pub(crate) fn install_command() -> &'static str {
+    AGY_INSTALL_COMMAND
+}
+
+fn has_path_separator(raw: &std::ffi::OsStr) -> bool {
+    let text = raw.to_string_lossy();
+    text.contains('/') || (cfg!(windows) && text.contains('\\'))
+}
+
+fn resolve_command_on_path(raw: &std::ffi::OsStr) -> Option<PathBuf> {
+    if has_path_separator(raw) {
+        let candidate = PathBuf::from(raw);
+        return candidate.is_file().then_some(candidate);
+    }
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let candidate = dir.join(raw);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            let text = raw.to_string_lossy();
+            if !text.contains('.') {
+                for ext in [".exe", ".cmd", ".bat"] {
+                    let with_ext = dir.join(format!("{text}{ext}"));
+                    if with_ext.is_file() {
+                        return Some(with_ext);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Live detection of the local `agy` binary — never cached across requests so
+/// installing `agy` via `/api/cli/agy/install` (or manually) takes effect
+/// immediately without restarting MultiCC.
+pub(crate) fn detect_local_agy() -> Option<PathBuf> {
+    if let Some(cmd) = std::env::var_os("MULTICC_AGY_BIN").filter(|v| !v.is_empty()) {
+        return resolve_command_on_path(&cmd);
+    }
+    if let Some(cmd) = std::env::var_os("AGY_CMD").filter(|v| !v.is_empty()) {
+        return resolve_command_on_path(&cmd);
+    }
+    let binary = if cfg!(windows) { "agy.exe" } else { "agy" };
+    let mut candidates = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        candidates.push(PathBuf::from(home).join(".local/bin").join(binary));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(profile) = std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()) {
+            candidates.push(PathBuf::from(profile).join(".local/bin").join(binary));
+        }
+        if let Some(local_app) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
+            candidates.push(PathBuf::from(local_app).join("agy/bin").join(binary));
+        }
+    }
+    if cfg!(target_os = "macos") {
+        // Mirrors resolveAgy() in src/cli-adapters/commands.js: Homebrew installs
+        // are not always on the service PATH.
+        candidates.push(PathBuf::from("/opt/homebrew/bin").join(binary));
+        candidates.push(PathBuf::from("/usr/local/bin").join(binary));
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .or_else(|| resolve_command_on_path(std::ffi::OsStr::new(binary)))
+}
+
+pub(crate) fn local_cli_status() -> Value {
+    let detected = detect_local_agy();
+    json!({
+        "installed": detected.is_some(),
+        "bin": detected.as_ref().map(|path| path.to_string_lossy().into_owned()),
+        "installCommand": install_command(),
+    })
+}
+
+pub(crate) fn executable() -> OsString {
     if let Some(cmd) = std::env::var_os("MULTICC_AGY_BIN").filter(|v| !v.is_empty()) {
         return cmd;
     }
@@ -72,24 +159,8 @@ pub(super) fn executable() -> OsString {
         return cmd;
     }
     let binary = if cfg!(windows) { "agy.exe" } else { "agy" };
-    let mut candidates = Vec::new();
-    if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(
-            std::path::PathBuf::from(home)
-                .join(".local/bin")
-                .join(binary),
-        );
-    }
-    if cfg!(target_os = "macos") {
-        // Mirrors resolveAgy() in src/cli-adapters/commands.js: Homebrew installs
-        // are not always on the service PATH.
-        candidates.push(std::path::PathBuf::from("/opt/homebrew/bin").join(binary));
-        candidates.push(std::path::PathBuf::from("/usr/local/bin").join(binary));
-    }
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .map(|path| path.into_os_string())
+    detect_local_agy()
+        .map(PathBuf::into_os_string)
         .unwrap_or_else(|| binary.into())
 }
 
