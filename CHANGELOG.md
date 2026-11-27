@@ -4,6 +4,23 @@ All notable changes to MultiCC are documented in this file.
 
 ## Unreleased
 
+## v2.25.0 - Unified SSH tunnel endpoints, Flutter share-code import, Air UI refinements, and deep Rust runtime consolidation (2026-11-27)
+
+- Add unified SSH port 22 endpoint configuration and guided tunnel setup across Rust (`native/core/src/ssh_tunnel.rs`, `native/gateway/src/app/ssh_tunnel.rs`), Air (`public/air-tunnel.js`), and the Flutter mobile app (`tunnel_settings_screen.dart`), plus Flutter share-code parsing and import (`share_code.dart`, `import_share_code_sheet.dart`, `manage_service.dart`, `provider_screen.dart`) with unit test coverage (`share_code_test.dart`).
+
+- Improve the Air web UI and provider visibility:
+  - Add on-demand provider reset-card lookup in the Rust gateway (`provider_reset_cards.rs`) and Air provider panel (`air-provider.js`), displaying available reset-card counts, expiry dates, and last-checked timestamps.
+  - Add sidebar pin / auto-hide controls and edge trigger button in Air (`air.html`, `air-sidebar.js`, `air-navigation.css`).
+
+- Streamline standalone installation, upgrades, and startup recovery:
+  - Unify standalone updates across Web UI and CLI (including dedicated Windows standalone updater `windows-standalone-update.js` / `windows-standalone-update.ps1`), keeping user data untouched while fetching and verifying the selected release archive.
+  - Reconcile interrupted session hibernation/thawing states cleanly on startup (`session_hibernation_reclaimer.rs`, `src/session/hibernation.js`), surface workspace recovery status during desktop supervisor and `install.sh` readiness probes, and avoid echoing raw `ACCESS_TOKEN` to non-TTY stdout in `install.sh`.
+
+- Continue sweeping backend consolidation from Node.js into Rust (`multicc-core`, `multicc-addon`, and `multicc-gateway`):
+  - Migrate macOS power management (retiring the legacy plugin), host battery probing & caching, macOS Agent build/digest inspection, delivery-card evidence selection & sync projection, portable Git & Git queue entrypoints, session recovery & startup tmux restoration, shared paths, dispatch busy checks, unattended supervisor policies, Monitor control protocol, bounded task-history snapshots & CLI checkpoints, chat turn engine & history hooks, Responses history normalization, Claude/Codex usage ledgers & token estimation, auto-provider policy/pricing facades, Commander startup migration, and 20+ leaf domain modules directly into Rust.
+
+- Update the Flutter mobile app to **2.47.0 (build 200)** with unified SSH tunnel setup, share-code import, and updated i18n copy so Android APK upgrades cleanly replace `2.46.0+199`.
+
 ## v2.24.0 - Revocable SSH account sharing for agy, broad Rust backend consolidation, and hardened CI release pipelines (2026-11-25)
 
 - Share `agy` accounts over SSH with revocable one-time ed25519 keys (`mcssh1.` share codes). Generating an SSH share mints a dedicated key pair, installs the public key into `~/.ssh/authorized_keys` behind `restrict` with a `multicc-relay:<shareId>` tag, and passes the private key to the borrower (stored locally at `~/.multicc/ssh-keys/agy-<id>.key` with `0600` permissions while keeping only the path in metadata). Revoking a share or deleting the account removes that exact tagged key line. The web share dialog adds explicit security warnings, a preflight check panel (`sshd` listener, `authorized_keys` writability, active loans with per-row revocation), and tunnel guidance when no public SSH endpoint is configured.

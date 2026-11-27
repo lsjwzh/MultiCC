@@ -25,12 +25,12 @@
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.24.0/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.25.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.24.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.25.0/install.ps1 | iex
 ```
 
 URL 里的 tag 就是安装的版本。两个脚本只负责各系统必须不同的下载、校验和解压；装好后全部进入同一个包内 `multicc` CLI。整条链路一次完成：下载对应平台的独立包 → 校验 `.sha256` → 解压到稳定的 `~/MultiCC`（Windows 为 `%USERPROFILE%\MultiCC`）→ 在 macOS 清除下载隔离标记 → 用**包内自带的** `multicc` 写配置（访问令牌、端口）→ 可选注册登录自启 → 启动并等待 `/readyz` → 打开浏览器。命令返回时界面已经能用；目标机器不需要 Node、npm、Homebrew、Visual Studio 或 Xcode。安装脚本本身不需要 git，但 MultiCC 会在解压后检查运行时必需的 git，缺少时给出安装指引。
@@ -48,7 +48,7 @@ curl -sSL .../install.sh | bash -s -- --no-service
 curl -sSL .../install.sh | bash -s -- --version latest
 
 # 用本地的包离线安装（跳过下载，仍然校验 .sha256）
-curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.24.0-darwin-arm64.tar.gz
+curl -sSL .../install.sh | bash -s -- --from ./multicc-standalone-2.25.0-darwin-arm64.tar.gz
 
 # 自动化/服务器：只安装不启动，或启动但不打开浏览器
 curl -sSL .../install.sh | bash -s -- --no-start
@@ -183,7 +183,7 @@ cd multicc-standalone-<版本>-darwin-x64
 已发布的旧版本仍按各自的升级规则运行。旧版在 macOS 11 上识别独立包失败时，可在终端指定目标版本，例如：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- --dir "$HOME/MultiCC" --version v2.24.0 --no-open
+curl -fsSL https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh | bash -s -- --dir "$HOME/MultiCC" --version v2.25.0 --no-open
 ```
 
 同名多装、独立版与桌面版并存时：一行命令（未给 `--dir`）会先枚举已有安装并让你选编号（`0` = 在 `~/MultiCC` 新装一个独立包，保留其他安装），不会替你猜；非交互运行必须显式传 `--target standalone --dir <路径>` 或 `--target desktop`。网页升级和 `multicc update` 属于「已知是哪一个实例」，直接按自己的安装目录走。`--dir` 指向桌面版（Electron）时安装脚本会拒绝覆盖，只提示去下载桌面安装包——这条同时兜住旧版桌面 App 把自己当成独立包点「升级」的情况。
