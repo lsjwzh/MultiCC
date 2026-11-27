@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { createPaths } = require('./paths');
+const { createPaths } = require('./native/binding').appPaths;
 
 const paths = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const CONFIG = paths.root === paths.pkgRoot

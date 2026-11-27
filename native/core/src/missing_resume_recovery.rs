@@ -473,21 +473,43 @@ pub fn catalog() -> Result<String, String> {
     .to_string())
 }
 
+#[derive(Clone, Copy)]
+pub enum Operation {
+    ClassifyResult,
+    Decide,
+    ProbeTranscript,
+    ResumePlan,
+}
+
+impl Operation {
+    fn evaluate(self, input: &Value) -> Value {
+        match self {
+            Self::ClassifyResult => {
+                let event = input.get("event").unwrap_or(&Value::Null);
+                json!({ "missing": is_missing_resume_result(event) })
+            }
+            Self::Decide => decide_action(input),
+            Self::ProbeTranscript => {
+                let evidence = match session_id_of(input) {
+                    Some(session_id) => probe_session(&session_id, input.get("configDir")),
+                    None => Evidence::Present,
+                };
+                json!({ "evidence": evidence.as_str() })
+            }
+            Self::ResumePlan => resume_plan(input),
+        }
+    }
+    pub fn evaluate_value(self, input: &crate::js::JsValue) -> crate::js::JsValue {
+        tags::to_js(&self.evaluate(&tags::from_js(input)))
+    }
+}
+
 fn dispatch(op: &str, input: &Value) -> Result<Value, Failure> {
-    let value = match op {
-        "classifyResult" => {
-            let event = input.get("event").unwrap_or(&Value::Null);
-            json!({ "missing": is_missing_resume_result(event) })
-        }
-        "decide" => decide_action(input),
-        "probeTranscript" => {
-            let evidence = match session_id_of(input) {
-                Some(session_id) => probe_session(&session_id, input.get("configDir")),
-                None => Evidence::Present,
-            };
-            json!({ "evidence": evidence.as_str() })
-        }
-        "resumePlan" => resume_plan(input),
+    let op = match op {
+        "classifyResult" => Operation::ClassifyResult,
+        "decide" => Operation::Decide,
+        "probeTranscript" => Operation::ProbeTranscript,
+        "resumePlan" => Operation::ResumePlan,
         _ => {
             return Err(Failure::new(
                 "unknown_op",
@@ -495,7 +517,7 @@ fn dispatch(op: &str, input: &Value) -> Result<Value, Failure> {
             ))
         }
     };
-    Ok(value)
+    Ok(op.evaluate(input))
 }
 
 fn envelope(result: Result<Value, Failure>) -> Value {

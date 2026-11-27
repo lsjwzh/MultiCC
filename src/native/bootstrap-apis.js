@@ -12,6 +12,16 @@ function bootstrapApi(key, create, unavailable) {
     return f;
   };
   switch (key) {
+    case 'appPaths': {
+      const { pathSafety } = require('./binding');
+      return {
+        createPaths(options = {}) { return ready().createPaths(options); },
+        resolveDataDir(dir) { return ready().resolveDataDir(dir); },
+        assertTestDir(dir) { return ready().assertTestDir(dir); },
+        isHomeOrAbove: pathSafety.isHomeOrAbove, realPathOf: pathSafety.realPathOf,
+        PKG_ROOT: require('node:path').resolve(__dirname, '../..'),
+      };
+    }
     case 'cliResultCompletion':
       return { isMainResult: forward('isMainResult',1), resultCompletion: forward('resultCompletion',1),
         createResultCompletionTracker: forward('createResultCompletionTracker',0) };
@@ -71,6 +81,17 @@ function bootstrapApi(key, create, unavailable) {
         if (typeof sessionsDirFor !== 'function') throw new TypeError('[rollout-path] sessionsDirFor is required');
         return ready().createRolloutPathResolver({ fs, path, sessionsDirFor, now, missTtlMs });
       }, DEFAULT_MISS_TTL_MS: 30_000 };
+    case 'portableGit': {
+      const path = require('node:path');
+      const os = require('node:os');
+      function portableGitDir(env = process.env) {
+        return env.MULTICC_PORTABLE_GIT_DIR || path.join(os.homedir(), '.multicc', 'git');
+      }
+      function portableGitBin(env = process.env) { return path.join(portableGitDir(env), 'bin'); }
+      function installScriptPath() { return path.resolve(__dirname, '../../install-git.sh'); }
+      return { portableGitDir, portableGitBin, installScriptPath,
+        isInstalled: forward('isInstalled', 0), addToPath: forward('addToPath', 0) };
+    }
     case 'orchestrationHost':
       return { createOrchestrationRuntime: forward('createOrchestrationRuntime',0), publicWait: forward('publicWait',1),
         get DEFAULTS() { return ready().DEFAULTS; } };

@@ -73,7 +73,7 @@ function runTaskStoreMigrationGate({ file, port, host, addon, logger = console,
 function runAtBoot(env = process.env) {
   let addon = null;
   try { addon = require('../native/binding').getNative(); } catch {}
-  const file = require('../paths').createPaths({ dataDir: env.MULTICC_DATA_DIR }).taskShellDbFile;
+  const file = require('../native/binding').appPaths.createPaths({ dataDir: env.MULTICC_DATA_DIR }).taskShellDbFile;
   return runTaskStoreMigrationGate({ file, addon, openPage: () => {
     try {
       const { port, host } = require('../native/binding').getNetworkPolicy().resolveNetworkPolicy(env);

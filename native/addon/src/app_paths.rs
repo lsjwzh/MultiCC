@@ -197,7 +197,28 @@ fn assert_test_dir<'a>(ports: L<'a>, dir: L<'a>) -> Result<L<'a>> {
 #[napi]
 pub fn app_paths_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
     let s = L::new(&env, ports);
-    Ok(fields(
+    Ok(path_methods(s)?.raw())
+}
+
+#[napi]
+pub fn app_paths_public_api(
+    env: Env,
+    ports: Unknown<'_>,
+    safety: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let ports = L::new(&env, ports);
+    let safety = L::new(&env, safety);
+    let api = path_methods(ports)?;
+    // Share the function objects also used by the directory API.
+    for key in [c"isHomeOrAbove", c"realPathOf"] {
+        api.set(key, safety.get(key)?)?;
+    }
+    api.set(c"PKG_ROOT", ports.get(c"pkgRoot")?)?;
+    Ok(api.raw())
+}
+
+fn path_methods(s: L<'_>) -> Result<L<'_>> {
+    fields(
         s,
         &[
             (
@@ -215,8 +236,7 @@ pub fn app_paths_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
                 function(s, "assertTestDir", 1, 1, |s, a| assert_test_dir(s, a[0]))?,
             ),
         ],
-    )?
-    .raw())
+    )
 }
 
 const ROOT_SETTINGS: &[(&str, &[&str])] = &[

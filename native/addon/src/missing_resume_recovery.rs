@@ -1,3 +1,5 @@
+mod public_api;
+
 use crate::js_live::LiveValue as L;
 use multicc_core::missing_resume_recovery;
 use napi::bindgen_prelude::{JsValue as _, ToNapiValue, Unknown};

@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { exec } = require('child_process');
-const { createPaths } = require('../../src/paths');
+const { createPaths } = require('../../src/native/binding').appPaths;
 const { atomicWriteJson } = require('../../src/runtime-security');
 const fanoutMigration = require('./fanout-migration');
 

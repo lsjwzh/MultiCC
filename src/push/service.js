@@ -11,7 +11,7 @@
 //  • Bark/Webhook URLs are hot-reloaded from the settings route; they live in
 //    the mutable `cfg` singleton (read as `push.cfg.X`, never destructured).
 const fs = require('fs');
-const { createPaths } = require('../paths');
+const { createPaths } = require('../native/binding').appPaths;
 const { atomicWriteJson } = require('../runtime-security');
 const { createBusinessPushService } = require('./business');
 const { createFcmDevices } = require('./fcm-devices');

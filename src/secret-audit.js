@@ -3,7 +3,7 @@
 // Compatibility bridge only. Rust owns the schema, outcome policy, timestamps,
 // private permissions, locking and durable append. No request text reaches it.
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { createPaths } = require('./paths');
+const { createPaths } = require('./native/binding').appPaths;
 const { getNative } = require('./native/binding');
 const scope = new AsyncLocalStorage();
 

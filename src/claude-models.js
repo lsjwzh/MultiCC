@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { createPaths } = require('./paths');
+const { createPaths } = require('./native/binding').appPaths;
 
 // Mirrors multicc_core::claude_models::FALLBACK / the retired route's
 // CLAUDE_MODELS_FALLBACK. tests/test-claude-models-fallback.js and the gateway

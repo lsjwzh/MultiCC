@@ -821,6 +821,10 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+exposeHostApi('appPaths', () => getNative().appPathsPublicApi({
+  fs: require('node:fs'), os: require('node:os'), path, process, pkgRoot: path.resolve(__dirname, '../..'),
+}, pathSafety));
+
 exposeHostApi('requestLocality', () => getNative().requestLocalityApi(getNative()));
 
 exposeHostApi('cliResultCompletion', () => getNative().cliResultApi(getNative()));
@@ -848,8 +852,13 @@ exposeHostApi('cliCapability', () => {
   });
 });
 
+exposeHostApi('portableGit', () => getNative().portableGitApi({
+  fs: require('node:fs'), os: require('node:os'), process, path, pkgRoot: path.resolve(__dirname, '../..'),
+  setPath(env, value) { env.PATH = value; },
+}));
+
 exposeHostApi('repoActor', () => {
-  require('../portable-git').addToPath();
+  module.exports.portableGit.addToPath();
   return getNative().repoActorApi({
     process, path, fs: require('node:fs'), randomBytes: require('node:crypto').randomBytes,
     execFile: require('node:util').promisify(require('node:child_process').execFile),
@@ -857,6 +866,17 @@ exposeHostApi('repoActor', () => {
       constructor(options = {}) { initialize(this, options); }
     },
   });
+});
+
+exposeHostApi('missingResumeRecovery', () => {
+  class MissingResumeRecoveryError extends Error {
+    constructor(code, message) {
+      super(message);
+      this.name = 'MissingResumeRecoveryError';
+      this.code = code;
+    }
+  }
+  return getNative().missingResumeRecoveryApi(MissingResumeRecoveryError);
 });
 
 exposeHostApi('gitQueue', () => getNative().defaultGitQueue(module.exports.repoActor.defaultRepoActor));

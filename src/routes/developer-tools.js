@@ -22,7 +22,7 @@
 // no Homebrew and therefore no tmux. The work itself lives in the shell script
 // the installer shares; this is only the HTTP handle and the job's progress.
 const { execFile, spawn } = require('node:child_process');
-const defaultPortableGit = require('../portable-git');
+const defaultPortableGit = require('../native/binding').portableGit;
 const windowsEnv = require('../windows-env');
 const { findExecutableOnPath } = require('../cli-adapters/commands');
 
