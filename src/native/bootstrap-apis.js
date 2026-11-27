@@ -12,6 +12,13 @@ function bootstrapApi(key, create, unavailable) {
     return f;
   };
   switch (key) {
+    case 'taskPlanningRoutes': {
+      // Packaging diagnostics can report a planning refusal without a platform binary.
+      const { codes, defaultStatus } = require('../../native/core/src/task_planning_status.json');
+      return { responseStatus: code => Object.hasOwn(codes, code) ? codes[code] : defaultStatus,
+        expectedRevision: body => body?.expectedRevision ?? body?.revision,
+        createTaskPlanningRuntime: forward('createTaskPlanningRuntime', 0) };
+    }
     case 'relayShares':
       return { MAX_SECRET_LENGTH: 128, MIN_SECRET_LENGTH: 8, TOKEN_PREFIX: 'mcr1',
         createProviderRelayShareStore(options = {}) {

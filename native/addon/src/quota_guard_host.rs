@@ -1,5 +1,5 @@
 //! Three guard entry points share preparation, throttle state and logging.
-use crate::quota_host::*;
+use crate::host_api::*;
 use napi_derive::napi;
 fn config(p: L<'_>) -> Result<L<'_>> {
     call(p.get(c"guard")?, c"config", &[p.get(c"env")?, now(p)?])?.freeze()

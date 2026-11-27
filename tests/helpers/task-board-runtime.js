@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createTaskBoardRuntime } = require('../../src/routes/task-board');
+const { createTaskBoardRuntime } = require('../../src/native/binding').taskBoardRuntime;
 
 function mkRuntime(overrides = {}, createRuntime = createTaskBoardRuntime) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-'));

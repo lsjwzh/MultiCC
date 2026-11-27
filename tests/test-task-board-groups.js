@@ -5,7 +5,7 @@ const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const core = require('../src/task-board/core');
-const { createTaskBoardRuntime } = require('../src/routes/task-board');
+const { createTaskBoardRuntime } = require('../src/native/binding').taskBoardRuntime;
 const { mkRuntime } = require('./helpers/task-board-runtime');
 
 test('related task grouping persists a separate family without merging task identity', () => {
@@ -151,7 +151,7 @@ test('group linking matches the frozen runtime across refusal, failed save, retr
 });
 
 test('required board ports preserve validation order, missing values and getter exceptions', () => {
-  const { assertTaskBoardDeps } = require('../src/routes/task-board');
+  const { assertTaskBoardDeps } = require('../src/native/binding').taskBoardRuntime;
   const frozen = require('./helpers/legacy-task-board-runtime-helpers').assertTaskBoardDeps;
   function trace(validate, missing, value) {
     const reads = [];

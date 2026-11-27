@@ -375,7 +375,7 @@ function mountLegacy(app, bag) {
 /** The live host-port composition over one bag. */
 function currentHostOptions(bag) {
   const deps = bag.deps;
-  const board = require('../../src/routes/task-board')
+  const board = require('../../src/native/binding').taskBoardRuntime
     .createTaskBoardRuntime(deps);
   bag.runtime = board;
   const search = require('../../src/routes/task-search')

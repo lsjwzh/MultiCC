@@ -190,10 +190,10 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
   assert.match(gateway, /active: !!isTargetBusy\(s\.id\)/);
   assert.doesNotMatch(gateway, /activeChat\.isStreaming|clients\.size > 0/);
   for (const file of [
-    'native/addon/src/task_board_runtime/core.rs', 'src/task-board/core/index.js', 'src/task-board/normalize.js',
-    'src/task-board/native-bridge.js', 'src/task-board/routing.js', 'native/addon/src/task_board_runtime/routing.rs',
-    'native/addon/src/task_board_view.rs', 'src/task-board/planning.js',
-    'src/routes/task-board/index.js', 'native/addon/src/task_board_runtime/projection/events.rs',
+    'native/addon/src/task_board_runtime/core.rs', 'src/task-board/core/index.js', 'native/addon/src/board_domain_facade/normalize.rs',
+    'native/addon/src/board_domain_facade/bridge.rs', 'src/task-board/routing.js', 'native/addon/src/task_board_runtime/routing.rs',
+    'native/addon/src/task_board_view.rs', 'native/addon/src/board_domain_facade/planning.rs',
+    'native/addon/src/task_board_runtime/setup.rs', 'native/addon/src/task_board_runtime/projection/events.rs',
     'native/addon/src/task_board_runtime/projection/view.rs',
   ]) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);

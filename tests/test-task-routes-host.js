@@ -11,7 +11,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { responseStatus } = require('../src/routes/task-planning');
+const { responseStatus } = require('../src/native/binding').taskPlanningRoutes;
 
 const { mountTaskRoutesHostRoute, HOST_PATH } = require('../src/routes/task-routes-host');
 

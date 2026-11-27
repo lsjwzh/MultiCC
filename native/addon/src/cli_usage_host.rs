@@ -1,5 +1,5 @@
 //! Read-only Claude CLI usage. The caller injects the outbound transport and the credential store.
-use crate::quota_host::*;
+use crate::host_api::*;
 use napi_derive::napi;
 const SKEW: f64 = 60_000.;
 const SERVICE: &str = "Claude Code-credentials";
