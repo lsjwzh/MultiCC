@@ -12,12 +12,12 @@ Set `ACCESS_TOKEN`, `HOST`, a writable persistent `MULTICC_DATA_DIR` and `MULTIC
 
 ```bash
 # macOS / Linux
-curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.24.0/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.25.0/install.sh | bash
 ```
 
 ```powershell
 # Windows PowerShell
-irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.24.0/install.ps1 | iex
+irm https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.25.0/install.ps1 | iex
 ```
 
 The tag in the URL **is** the version. The script downloads that release's

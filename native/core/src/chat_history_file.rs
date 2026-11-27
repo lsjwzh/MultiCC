@@ -654,10 +654,8 @@ mod tests {
 
     #[test]
     fn reverse_tail_and_projected_offsets_handle_multichunk_bom_and_torn_tail() {
-        let dir = std::env::temp_dir().join(format!(
-            "multicc-history-file-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("multicc-history-file-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("sess.json");
@@ -678,7 +676,13 @@ mod tests {
         assert!(offsets[0].value.get("tools").is_none());
 
         let mut file = File::open(&path).unwrap();
-        let full = read_jsonl_record_projected(&mut file, offsets[1].start, offsets[1].end, &["id", "content"]).unwrap();
+        let full = read_jsonl_record_projected(
+            &mut file,
+            offsets[1].start,
+            offsets[1].end,
+            &["id", "content"],
+        )
+        .unwrap();
         assert_eq!(full.get("content"), Some(&JsValue::from("second")));
 
         let mut seen = Vec::new();
@@ -692,7 +696,9 @@ mod tests {
 
         let legacy_path = dir.join("legacy.json");
         fs::write(&legacy_path, "[{\"role\":\"user\",\"content\":\"old\"}]").unwrap();
-        assert!(scan_jsonl_projected_offsets(&legacy_path, &["id"]).unwrap().is_none());
+        assert!(scan_jsonl_projected_offsets(&legacy_path, &["id"])
+            .unwrap()
+            .is_none());
         assert!(!visit_jsonl_tail_reverse_projected(&legacy_path, &["role"], |_| true).unwrap());
         let _ = fs::remove_dir_all(&dir);
     }

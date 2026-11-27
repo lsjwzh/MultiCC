@@ -191,10 +191,7 @@ impl SnapshotPairTracker {
         self.pending_user = None;
     }
 
-    pub fn finish_from_pairs<E>(
-        self,
-        mut load: impl FnMut(usize) -> Result<V, E>,
-    ) -> Result<V, E> {
+    pub fn finish_from_pairs<E>(self, mut load: impl FnMut(usize) -> Result<V, E>) -> Result<V, E> {
         let mut kept: Vec<(V, V)> = Vec::new();
         let mut bytes = 0_usize;
         for (user_index, assistant_index) in self.pairs.iter().rev() {
@@ -311,7 +308,8 @@ pub fn snapshot_from_transcript(
     }
     match tracker.finish_from_pairs(|pos| -> Result<V, LoadOutcome> {
         let rec = &records[pos];
-        let missing_id = js::truthy_opt(rec.value.get("role")) && !js::truthy_opt(rec.value.get("id"));
+        let missing_id =
+            js::truthy_opt(rec.value.get("role")) && !js::truthy_opt(rec.value.get("id"));
         if !missing_id {
             let row = read_jsonl_record_projected(&mut file, rec.start, rec.end, &SNAPSHOT_FIELDS)
                 .map_err(LoadOutcome::Io)?;
@@ -320,7 +318,8 @@ pub fn snapshot_from_transcript(
         if !synthesize_legacy_id {
             return Err(LoadOutcome::NeedsHostId);
         }
-        let mut full = read_jsonl_record_full(&mut file, rec.start, rec.end).map_err(LoadOutcome::Io)?;
+        let mut full =
+            read_jsonl_record_full(&mut file, rec.start, rec.end).map_err(LoadOutcome::Io)?;
         legacy_message_id(&mut full, session, rec.index);
         Ok(project_snapshot_fields(&full))
     }) {
@@ -388,10 +387,8 @@ mod tests {
 
     #[test]
     fn snapshot_from_transcript_matches_builder_with_oversized_tools_and_legacy_ids() {
-        let dir = std::env::temp_dir().join(format!(
-            "multicc-ref-snapshot-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("multicc-ref-snapshot-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("s1.json");
@@ -426,7 +423,12 @@ mod tests {
             .iter()
             .map(|r| js::json_parse(&r.to_string()).unwrap())
             .collect();
-        let expected = snapshot(&V::from("tsk_1"), &parsed, Some(&V::from("t3")), SNAPSHOT_BYTES);
+        let expected = snapshot(
+            &V::from("tsk_1"),
+            &parsed,
+            Some(&V::from("t3")),
+            SNAPSHOT_BYTES,
+        );
         assert_eq!(disk, expected);
         assert_eq!(disk.get("omittedExchanges"), Some(&V::Number(1.0)));
 
