@@ -11,7 +11,7 @@ const {
   readBattery,
   setLidSleepPrevention,
   sleepNow,
-} = require('../plugins/utils/macos-power');
+} = require('../src/native/binding').macosPower;
 
 // The daemon path is covered in test-powerd.js; here it is always absent so
 // these cases never touch a real intent file on a machine that has it installed.

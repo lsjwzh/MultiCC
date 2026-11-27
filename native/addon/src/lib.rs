@@ -102,6 +102,7 @@ mod chat_error_history;
 mod claude_usage_queue;
 mod memory_distill;
 mod workspace_notes;
+mod macos_power;
 mod power_daemon;
 mod portable_git;
 mod voice_router;

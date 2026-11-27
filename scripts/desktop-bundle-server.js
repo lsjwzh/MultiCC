@@ -39,9 +39,7 @@ const MACOS_AGENT_FILES = [
   'scripts/macos-agent/agent-build.json',
 ];
 // The root power reconciler 「关盖运行」installs inside its one administrator
-// prompt (plugins/utils/macos-power.js). Without these two files in the staged
-// tree that prompt would silently fall back to a plain pmset call, and the
-// setting would go back to asking for a password on every switch.
+// prompt. The native power controls resolve the installer inside the staged tree.
 const POWERD_FILES = [
   'scripts/install-powerd.sh',
   'scripts/multicc-powerd.sh',

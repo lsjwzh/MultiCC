@@ -662,7 +662,7 @@ test('power settings preserve success and validation responses and redact thrown
 });
 
 test('power route releases off intent and presents expected failures without leaking command output', async () => {
-  const power = require('../plugins/utils/macos-power');
+  const power = require('../src/native/binding').macosPower;
   let intent = 'off';
   const options = { platform: 'darwin', powerdWaitMs: 0,
     powerd: { readIntent: () => intent, setIntent: value => { intent = value ? 'on' : 'off'; return true; } },

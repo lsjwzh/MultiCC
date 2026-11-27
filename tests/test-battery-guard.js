@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { createBatteryGuardRuntime } = require('../src/battery-guard');
-const { parseBatteryStatus } = require('../plugins/utils/macos-power');
+const { parseBatteryStatus } = require('../src/native/binding').macosPower;
 
 function fakeMacosPower(overrides = {}) {
   const calls = { sleepNow: 0 };

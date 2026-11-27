@@ -7,9 +7,13 @@ const LABEL = 'com.multicc.powerd';
 const DATA_DIR = '/Library/Application Support/multicc';
 const PLIST_PATH = `/Library/LaunchDaemons/${LABEL}.plist`;
 
-function createPowerd({ platform = process.platform, dataDir = DATA_DIR, plistPath = PLIST_PATH, fsImpl = fs } = {}) {
+function createPowerd({ platform = process.platform, dataDir = DATA_DIR, plistPath = PLIST_PATH, fsImpl } = {}) {
   const intentPath = path.join(dataDir, 'power-intent');
   const statusPath = path.join(dataDir, 'powerd-status.json');
+  if (fsImpl === undefined && typeof plistPath === 'string') {
+    return getNative().systemPowerDaemon(platform, fs, intentPath, statusPath, plistPath);
+  }
+  if (fsImpl === undefined) fsImpl = fs;
   return getNative().powerDaemon({
     platform, intentPath, statusPath,
     checkAccess() {

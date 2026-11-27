@@ -64,7 +64,7 @@ multicc/
 │   │   └── slack-bridge.js       # Slack Socket Mode bridge
 │   ├── cron/cron-tasks.js        # Recurring scheduled chat tasks
 │   ├── voice/voice-asr.js        # Whisper-compatible STT integration
-│   └── utils/                    # git-push.js, macos-power.js
+│   └── utils/                    # git-push.js
 │
 ├── public/                       # Zero-build static frontend
 │   ├── index.html / client.js    # Terminal mode UI (xterm.js)
