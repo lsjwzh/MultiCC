@@ -392,14 +392,7 @@ For desktop handoff, install and authorize the [host agent](skills/multicc-compu
 ./multicc update --check   # just compare versions
 ```
 
-Installed from a package, that is the whole story: `update` downloads the new
-standalone archive for your platform, verifies its SHA-256, unpacks it next to your
-install, and swaps the directory in place — a detached helper waits for the running
-server to exit, renames the old tree aside, moves the new one in, and restarts. If
-any of that fails, the previous version is restored. Sessions, providers and chat
-history live in the per-user data directory, so an update never touches them (and the
-in-app update entry is disabled for packaged installs on purpose: for those, the
-package *is* the upgrade).
+Standalone installations support updates from the web UI and the terminal. Both fetch the platform installer from the official repository’s `main` branch. It verifies and installs the standalone archive for the selected release and continues using the existing user data directory.
 
 <details>
 <summary>Running from a source checkout (git semantics)</summary>

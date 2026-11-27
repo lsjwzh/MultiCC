@@ -430,7 +430,7 @@ function Invoke-MultiCC([string[]]$Arguments, [switch]$IgnoreFailure) {
     & $script:MultiCCCommand @Arguments
     $code = $LASTEXITCODE
     if ($code -ne 0 -and -not $IgnoreFailure) {
-        throw "multicc.cmd $($Arguments -join ' ') failed with exit code $code"
+        throw "multicc.cmd $($Arguments[0]) failed with exit code $code"
     }
     return $code
 }
@@ -468,10 +468,7 @@ $adoptDir = ''
 $adoptCopy = -not $NoData.IsPresent
 $adoptExplicit = $false
 $adoptDataLeftBehind = $false
-# Whether this run replaces an installation that is already there. An upgrade in
-# place already has whatever history matters; only a first install goes looking
-# for a second installation elsewhere on the machine.
-$targetHadInstall = (Test-Path -LiteralPath $InstallDir -PathType Container) -and (Test-StandaloneInstall $InstallDir)
+$installLock = $null
 # -AdoptData: an old installation the user named. Checked here, before anything
 # is downloaded, so a wrong path costs nothing.
 if (-not [string]::IsNullOrWhiteSpace($AdoptData)) {
@@ -490,6 +487,14 @@ Write-Host "MultiCC Windows One-Click Installer (v$ResolvedVersion)" -Foreground
 Write-Host 'No Node, npm, git, Visual Studio or administrator access required.'
 
 try {
+    $parent = Split-Path -Parent $InstallDir
+    [IO.Directory]::CreateDirectory($parent) | Out-Null
+    $lockPath = Join-Path $parent ('.' + (Split-Path -Leaf $InstallDir) + '.upgrade-lock')
+    # Web and terminal updates may select the same target. Keep the lock
+    # outside the tree being replaced; closing the handle removes it.
+    $installLock = [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate,
+        [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+    $targetHadInstall = (Test-Path -LiteralPath $InstallDir -PathType Container) -and (Test-StandaloneInstall $InstallDir)
     New-Item -ItemType Directory -Path $work | Out-Null
     Write-Step 'Downloading and verifying the standalone package'
     Get-Archive $From $archive $checksum
@@ -509,8 +514,6 @@ try {
     Assert-Bundle $staged
 
     Write-Step 'Installing'
-    $parent = Split-Path -Parent $InstallDir
-    New-Item -ItemType Directory -Path $parent -Force | Out-Null
     if (Test-Path -LiteralPath $InstallDir) {
         $children = @(Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue)
         if ($children.Count -gt 0 -and -not (Test-StandaloneInstall $InstallDir)) {
@@ -589,6 +592,7 @@ try {
             Write-Info 'Existing standalone installation found; stopping it before replacement.'
             $existingCommand = Join-Path $InstallDir 'multicc.cmd'
             & $existingCommand stop 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Could not stop the existing installation at $InstallDir." }
             $oldDir = "$InstallDir.old-$PID"
             Move-Item -LiteralPath $InstallDir -Destination $oldDir
         } else {
@@ -798,5 +802,6 @@ try {
     Write-Error $_
     exit 1
 } finally {
+    if ($null -ne $installLock) { $installLock.Dispose() }
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
 }

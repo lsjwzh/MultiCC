@@ -114,21 +114,31 @@ test('standalone updater compares SemVer and never mistakes an older release for
   assert.equal(cliScript.compareVersions('not-a-version', '2.0.4'), null);
 });
 
-test('standalone updater hands the replacement to install.sh of the target release', () => {
-  // The rules for replacing a running install (pause the login service, prove
-  // the old process is gone, roll back) live in install.sh only. The terminal
-  // updater must fetch that script from the release being installed — never
-  // from the bundle it is about to replace — and point it at its own tree.
-  assert.equal(cliScript.installerScriptUrl('2.0.4'),
-    'https://raw.githubusercontent.com/lsjwzh/MultiCC/v2.0.4/install.sh');
-  assert.equal(cliScript.installerScriptUrl('v2.0.4'), cliScript.installerScriptUrl('2.0.4'));
-  assert.deepEqual(cliScript.installerDelegateArgs({ bundleRoot: '/opt/MultiCC', tag: '2.0.4' }),
-    ['--dir', '/opt/MultiCC', '--version', 'v2.0.4', '--no-open']);
-  const source = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'standalone-cli.js'), 'utf8');
-  assert.match(source, /runInstallerScript\(\{ layout, release, env, workDir, logger: log \}\)/,
-    'cmdUpdate must try install.sh first');
-  assert.match(source, /if \(delegated !== null\) return delegated;/,
-    'a failed install.sh run must not be followed by the in-bundle swap');
+test('终端从 main 取安装器，安装目录和版本作为独立参数传给脚本', { skip: process.platform === 'win32' }, async t => {
+  const scratch = tmpdir('multicc-main-installer-');
+  t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
+  const output = path.join(scratch, 'installer-arguments');
+  const bundleRoot = path.join(scratch, "install 'with spaces'");
+  const env = { ...process.env, CAPTURE: output };
+  const script = 'printf "%s\\n" "$@" > "$CAPTURE"\nexit 13\n';
+  const options = { bundleRoot, targetVersion: 'v2.0.4', port: 3001, env };
+  const code = await cliScript.runUnixInstaller({ ...options, fetchImpl: async url => {
+    assert.equal(url, 'https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh');
+    return new Response(script);
+  } });
+  assert.equal(code, 13);
+  assert.deepEqual(fs.readFileSync(output, 'utf8').trimEnd().split('\n'), [
+    '--target', 'standalone', '--dir', bundleRoot, '--version', 'v2.0.4', '--no-open', '--port', '3001',
+  ]);
+  fs.unlinkSync(output);
+  for (const response of [
+    new Response(script, { status: 404 }),
+    new Response(script, { headers: { 'Content-Length': String(script.length + 1) } }),
+    new Response(''),
+  ]) {
+    await assert.rejects(cliScript.runUnixInstaller({ ...options, fetchImpl: async () => response }));
+    assert.equal(fs.existsSync(output), false);
+  }
 });
 
 test('macOS shell: app layout, plist floor and wrapper indirection', () => {
@@ -973,42 +983,35 @@ test('upgrade: a plugin that cannot be read is reported, the rest still copied, 
   }
 });
 
-test('upgrade: the in-bundle swap carries plugins across, and keeps the old tree when it cannot', () => {
-  const scratch = tmpdir('multicc-carry-swap-');
-  const env = { ...process.env, MULTICC_STANDALONE_HOME: path.join(scratch, 'home') };
-  const swap = (root, staged) => spawnSync(process.execPath, [
-    path.join(ROOT, 'scripts', 'standalone-cli.js'), '__swap', '--wait-pid', '0', '--root', root, '--staged', staged, '--version', '9.9.9',
-  ], { encoding: 'utf8', env });
-  const platform = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';
-
-  const root = path.join(scratch, 'MultiCC');
-  pluginTree(root, platform, { 'chrome-proxy-launcher': '1.6.3', 'gapaw-creator-workbench': '0.10.0' }, { manifest: { version: '2.12.0', builtinPlugins: ['chrome-proxy-launcher'] } });
-  const staged = path.join(scratch, 'staged');
-  pluginTree(staged, platform, { 'chrome-proxy-launcher': '1.7.0' });
-  const ok = swap(root, staged);
-  assert.equal(ok.status, 0, ok.stderr);
-  const installed = path.join(cliScript.bundleResources(root, platform), 'app-server', 'plugins');
-  assert.equal(pluginVersion(installed, 'gapaw-creator-workbench'), '0.10.0');
-  assert.equal(pluginVersion(installed, 'chrome-proxy-launcher'), '1.7.0');
-  assert.deepEqual(fs.readdirSync(scratch).filter(name => name.includes('.old-')), [], 'the previous bundle is removed after copying');
-
-  // A plugin that cannot be read: the new version still lands, the old tree stays.
-  if (process.platform !== 'win32' && process.getuid && process.getuid() !== 0) {
-    const staged2 = path.join(scratch, 'staged2');
-    pluginTree(staged2, platform, { 'chrome-proxy-launcher': '1.8.0' });
-    const locked = path.join(installed, 'gapaw-creator-workbench', 'bin');
-    fs.chmodSync(locked, 0o000);
-    const kept = swap(root, staged2);
-    fs.readdirSync(scratch).filter(name => name.includes('.old-')).forEach(name => {
-      fs.chmodSync(path.join(cliScript.bundleResources(path.join(scratch, name), platform), 'app-server', 'plugins', 'gapaw-creator-workbench', 'bin'), 0o755);
-    });
-    assert.equal(kept.status, 0, kept.stderr);
-    assert.equal(pluginVersion(path.join(cliScript.bundleResources(root, platform), 'app-server', 'plugins'), 'chrome-proxy-launcher'), '1.8.0');
-    const left = fs.readdirSync(scratch).filter(name => name.includes('.old-'));
-    assert.equal(left.length, 1, 'the previous bundle stays when a plugin could not be copied');
-    assert.equal(pluginVersion(path.join(cliScript.bundleResources(path.join(scratch, left[0]), platform), 'app-server', 'plugins'), 'gapaw-creator-workbench'), '0.10.0');
-  }
-  fs.rmSync(scratch, { recursive: true, force: true });
+test('旧终端交接给新包的 __swap 仍可使用同一安装器重验已下载的归档', { skip: process.platform === 'win32' }, t => {
+  const scratch = tmpdir('multicc-update-handoff-');
+  t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
+  const archive = path.join(scratch, `multicc-standalone-9.9.9-${process.platform}-${process.arch}.tar.gz`);
+  fs.writeFileSync(archive, '');
+  fs.writeFileSync(`${archive}.sha256`, '');
+  const root = path.join(scratch, 'installed');
+  const data = path.join(scratch, 'data');
+  const logPath = path.join(data, 'logs', 'update.log');
+  const preload = path.join(scratch, 'test-network.js');
+  const script = 'printf "%s\\n" "$@"\n';
+  fs.writeFileSync(preload, `require.cache[${JSON.stringify(require.resolve('../src/network/outbound'))}] = {
+    exports: {
+      getChildProxyEnv: async env => env,
+      outboundFetch: async url => {
+        if (url !== 'https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh') throw Error(url);
+        return new Response(${JSON.stringify(script)});
+      }
+    }
+  };\n`);
+  const run = spawnSync(process.execPath, [
+    '--require', preload, path.join(ROOT, 'scripts', 'standalone-cli.js'), '__swap',
+    '--root', root, '--staged', path.join(scratch, 'staged'), '--wait-pid', '0', '--version', '9.9.9',
+  ], { env: { ...process.env, MULTICC_STANDALONE_HOME: data, MULTICC_UPDATE_LOG: logPath }, encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(fs.readFileSync(logPath, 'utf8').trimEnd().split('\n'), [
+    '--target', 'standalone', '--dir', root, '--version', 'v9.9.9', '--no-open',
+    '--from', archive, '--no-start', '__MULTICC_UPDATE_EXIT__ 0',
+  ]);
 });
 
 test('packaging: the manifest lists the shipped plugins, and a plugin git does not track is left out', () => {

@@ -256,6 +256,77 @@ test('a standalone install is recognised, and its log lives outside the bundle i
   assert.equal(detectStandaloneUpdate({ rootDir: createFixture(), env: fixture.env }), null);
 });
 
+test('Windows 网页升级从包目录外启动 PowerShell 并保留目标版本和端口配置', async t => {
+  const fixture = createStandaloneFixture();
+  t.after(() => fs.rmSync(fixture.base, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(fixture.resources, 'runtime', 'node.exe'), '');
+  let invoked = false;
+  await startDetachedUpdate({
+    rootDir: fixture.rootDir, platform: 'win32', targetVersion: '2.24.0', port: 4321,
+    env: { ...fixture.env, PORT: '4321', MULTICC_STANDALONE_DETACHED: '1' },
+    getChildProxyEnv: async env => env,
+    spawn(command, args, options) {
+      invoked = true;
+      assert.equal(command, 'powershell.exe');
+      const worker = args[args.indexOf('-File') + 1];
+      const workspace = path.dirname(worker);
+      t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+      assert.equal(args.at(-1), '-Launch');
+      assert.equal(options.cwd, os.tmpdir());
+      assert.equal(options.env.PORT, undefined);
+      assert.equal(options.env.MULTICC_STANDALONE_DETACHED, undefined);
+      const request = JSON.parse(fs.readFileSync(path.join(workspace, 'request.json'), 'utf8'));
+      assert.equal(request.bundleRoot, fixture.base);
+      assert.equal(request.targetVersion, '2.24.0');
+      assert.equal(parseUpdateLog(fs.readFileSync(request.logPath, 'utf8')).targetVersion, '2.24.0');
+      const child = createChild();
+      process.nextTick(() => child.emit('exit', 0));
+      return child;
+    },
+  });
+  assert.equal(invoked, true);
+});
+
+test('PowerShell 把安装器的完成状态写回升级日志', t => {
+  const command = 'powershell.exe';
+  const probe = spawnSync(command, ['-NoProfile', '-Command', 'exit 0']);
+  if (probe.error?.code === 'ENOENT' && process.platform !== 'win32') return t.skip('未安装 PowerShell');
+  assert.equal(probe.status, 0);
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "MultiCC update test-"));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const bundleRoot = path.join(fixture, 'my MultiCC');
+  const expectedVersion = 'v2.24.0';
+  const stub = path.join(fixture, 'fixture-installer.ps1');
+  fs.writeFileSync(stub, `param($InstallDir, $Version, [switch]$Yes, [switch]$NoOpen, [switch]$NoShortcut, [switch]$NoService)
+if ($InstallDir -ne $env:TEST_BUNDLE -or $Version -ne $env:TEST_VERSION) { exit 79 }
+Write-Output "fixture installer ran"
+exit ([int]$env:TEST_EXIT)
+`);
+  const entry = `function Invoke-WebRequest($Uri, $OutFile, [switch]$UseBasicParsing) {
+    if ($Uri -ne 'https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.ps1') { throw 'wrong installer URL' }
+    if ($env:TEST_EMPTY -eq '1') { [IO.File]::WriteAllText($OutFile, '') }
+    else { Copy-Item -LiteralPath $env:TEST_STUB -Destination $OutFile }
+  }
+  & $env:TEST_WORKER
+  exit $LASTEXITCODE`;
+  for (const expected of [0, 37, 1]) {
+    const workspace = fs.mkdtempSync(path.join(fixture, 'worker-'));
+    const worker = path.join(workspace, 'update.ps1');
+    const logPath = path.join(fixture, `update-${expected}.log`);
+    fs.copyFileSync(path.join(__dirname, '../src/windows-standalone-update.ps1'), worker);
+    fs.writeFileSync(path.join(workspace, 'request.json'), JSON.stringify({ bundleRoot, logPath, targetVersion: expectedVersion }));
+    const result = spawnSync(command, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', entry], {
+      env: { ...process.env, TEST_STUB: stub, TEST_WORKER: worker, TEST_VERSION: expectedVersion,
+        TEST_BUNDLE: bundleRoot, TEST_EXIT: String(expected), TEST_EMPTY: expected === 1 ? '1' : '0' },
+      encoding: 'utf8', timeout: 30000,
+    });
+    const log = fs.readFileSync(logPath, 'utf8').trimEnd();
+    assert.equal(result.status, expected, result.stderr + log);
+    assert.ok(log.endsWith(`${EXIT_MARKER} ${expected}`), log);
+    assert.equal(log.includes('fixture installer ran'), expected !== 1, log);
+  }
+});
+
 test('a standalone update fetches install.sh and points it at the bundle root, and is admitted in desktop mode', async () => {
   const fixture = createStandaloneFixture();
   const spawned = [];
@@ -303,11 +374,11 @@ test('a standalone update fetches install.sh and points it at the bundle root, a
   assert.equal(spawned[0].options.detached, true);
 });
 
-test('a standalone update with a known target version pins the installer to that release tag', () => {
+test('指定目标版本时，从 main 下载安装器并用版本参数选择发布包', () => {
   const fixture = createStandaloneFixture();
   const standalone = detectStandaloneUpdate({ rootDir: fixture.rootDir, env: fixture.env, platform: 'darwin' });
   const script = buildInstallScriptShellCommand({ standalone, targetVersion: '1.4.2', port: 3000 });
-  assert.match(script, /curl -fsSL 'https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/v1\.4\.2\/install\.sh' -o "\$TMP"/);
+  assert.match(script, /curl -fsSL 'https:\/\/raw\.githubusercontent\.com\/lsjwzh\/MultiCC\/main\/install\.sh' -o "\$TMP"/);
   assert.match(script, /--version 'v1\.4\.2'/);
   assert.ok(script.includes('target=1.4.2'), 'the run records the version it is installing for later reattachment');
 });
@@ -332,37 +403,6 @@ test('a declared plan replaces the default steps and download progress rides on 
 
   const finished = parseUpdateSteps(`${log}${STEP_MARKER} download done 1010 48.0 MB\n`);
   assert.equal(finished.find(step => step.id === 'download').progress, null);
-});
-
-test('the standalone CLI streams a download and reports its progress', async () => {
-  const cli = require('../scripts/standalone-cli.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-download-'));
-  const chunks = [Buffer.alloc(1024, 1), Buffer.alloc(1024, 2), Buffer.alloc(512, 3)];
-  const fakeFetch = (declared) => async () => ({
-    ok: true,
-    status: 200,
-    headers: { get: name => (name === 'content-length' ? String(declared) : null) },
-    body: new ReadableStream({
-      start(controller) { chunks.forEach(chunk => controller.enqueue(new Uint8Array(chunk))); controller.close(); },
-    }),
-  });
-  const reports = [];
-  let clock = 0;
-  const dest = path.join(dir, 'pkg.tar.gz');
-  await cli.downloadTo('https://example.invalid/pkg', dest, {
-    fetchImpl: fakeFetch(2560), logger: { log() {} }, progressEveryMs: 0,
-    now: () => (clock += 250), onProgress: progress => reports.push(progress),
-  });
-  assert.equal(fs.statSync(dest).size, 2560);
-  assert.deepEqual(reports.map(report => report.received), [1024, 2048, 2560, 2560]);
-  assert.equal(reports.at(-1).total, 2560);
-  assert.match(cli.downloadProgressText({ received: 1310720, total: 2621440, elapsedMs: 1000 }), /^1\.3 \/ 2\.5 MB · 50% · 1\.3 MB\/s$/);
-
-  await assert.rejects(
-    cli.downloadTo('https://example.invalid/pkg', path.join(dir, 'short.tar.gz'), { fetchImpl: fakeFetch(4096), logger: { log() {} } }),
-    /incomplete download/,
-    'a connection cut short must not be treated as a complete package',
-  );
 });
 
 test('preflight refuses an install the update cannot possibly work on', () => {
