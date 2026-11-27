@@ -274,6 +274,7 @@ async fn state_with_mutagen(home: &Path) -> Value {
         "active": store::active_id(home).map_or(Value::Null, |id| json!(id)),
         "local": store::local_status(home),
         "mutagen": crate::agy_remote_bridge::mutagen_status_for(Some(home)).await,
+        "cli": super::agy_catalog::local_cli_status(),
     })
 }
 
@@ -579,7 +580,21 @@ pub async fn handle(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> 
                         Ok(payload) => {
                             express::json(ctx, 200, &payload, &[("Cache-Control", "no-store")])
                         }
-                        Err(error) => failure(400, error),
+                        Err(crate::agy_remote_login::StartLocalLoginError::AgyNotInstalled) => {
+                            express::json(
+                                ctx,
+                                400,
+                                &json!({
+                                    "error": "本机尚未安装 Antigravity CLI（agy），请先安装后再进行网页授权登录",
+                                    "code": "agy_not_installed",
+                                    "installCommand": super::agy_catalog::install_command(),
+                                }),
+                                &[("Cache-Control", "no-store")],
+                            )
+                        }
+                        Err(crate::agy_remote_login::StartLocalLoginError::Message(error)) => {
+                            failure(400, error)
+                        }
                     }
                 }
                 Ok(Some(store::ResolvedAgyAccount::Remote { remote, .. })) => {
