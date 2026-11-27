@@ -143,3 +143,77 @@ pub fn fcm_token_cache(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> 
     )?
     .raw())
 }
+
+use crate::host_methods::{arg, env as host_env, raw};
+
+/// V8 retains one credentials object and one refresh Promise for each transport.
+/// Signing, cancellable fetch and Promise adoption stay on their originating loop.
+#[napi]
+pub fn fcm_transport(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
+    let p = L::new(&env, ports);
+    let credentials = p
+        .catch(|| {
+            let c = call(p, c"read", &[])?;
+            if fcm_credentials(host_env(p), arg(c)?)? {
+                Ok(c)
+            } else {
+                null(p)
+            }
+        })?
+        .unwrap_or(null(p)?);
+    let project = fallback(credentials.optional(c"project_id")?, "".into())?;
+    let send = if credentials.truthy()? {
+        let cache = raw(p, fcm_token_cache(host_env(p), arg(p)?)?);
+        let state = fields(
+            p,
+            &[
+                ("cache", cache),
+                ("ports", p),
+                ("credentials", credentials),
+                ("pending", null(p)?),
+            ],
+        )?;
+        let acquire = function(state, "acquire", 0, 0, |state, _| {
+            let cache = state.get(c"cache")?;
+            let cached = call(cache, c"lookup", &[])?;
+            let (value, started) = if !cached.undefined()? {
+                (cached, false)
+            } else {
+                let pending = state.get(c"pending")?;
+                if pending.truthy()? {
+                    (pending, false)
+                } else {
+                    let promise = call(
+                        state.get(c"ports")?,
+                        c"refresh",
+                        &[state.get(c"credentials")?, cache],
+                    )?;
+                    state.set(c"pending", promise)?;
+                    (promise, true)
+                }
+            };
+            fields(
+                state,
+                &[("value", value), ("started", flag(state, started)?)],
+            )
+        })?;
+        let release = function(state, "release", 0, 0, |state, _| {
+            state.set(c"pending", null(state)?)?;
+            state.from_value(&V::Undefined)
+        })?;
+        let token = call(p, c"tokenReader", &[acquire, release])?;
+        let url = multicc_core::js::JsString::concat(&[
+            &"https://fcm.googleapis.com/v1/projects/".into(),
+            &project.coerce_string()?,
+            &"/messages:send".into(),
+        ]);
+        call(
+            p,
+            c"sender",
+            &[p.from_value(&V::String(url))?, token, cache.get(c"clear")?],
+        )?
+    } else {
+        call(p, c"disabled", &[])?
+    };
+    Ok(fields(p, &[("projectId", project), ("send", send)])?.raw())
+}

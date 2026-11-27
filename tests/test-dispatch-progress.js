@@ -175,3 +175,23 @@ test('dispatch progress subscription filters by session and operation lineage, t
 test('dispatch progress subscription requires a real bus', () => {
   assert.throws(() => createDispatchProgressSubscription({}), /requires a bus/);
 });
+
+require('node:test')('67f54869 differential: dispatch/progress', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('dispatch/progress.js', api => {
+    const trace = [];
+    const reducer = api.createSafeProgressReducer(update => { trace.push(update); if (trace.length === 1) throw Error('listener'); });
+    for (const text of ['x','x','xy','']) {
+      reducer.push({ type: 'assistant', message: { textSnapshot: true, content: [{ type: 'text', text }] } });
+      reducer.push({ type: 'part_delta', delta: { type: 'thinking_delta', thinking: text } });
+    }
+    reducer.push({ type: 'assistant', message: {
+      content: [{ type: 'text', text: 'ab' }],
+      get textSnapshot() {
+        reducer.push({ type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } });
+        return true;
+      },
+    } });
+    return trace;
+  });
+});

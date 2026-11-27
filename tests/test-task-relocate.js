@@ -4,7 +4,7 @@ const assert = require('assert');
 const test = require('node:test');
 const { createTaskRelocate } = require('../src/task-board/relocate');
 
-function fixture(overrides = {}) {
+function fixture(overrides = {}, create = createTaskRelocate) {
   const board = { tasks: {}, revision: 1 };
   const task = {
     id: 'tsk_1', dirId: 'dir-a', title: 'Move me', status: 'active',
@@ -29,7 +29,7 @@ function fixture(overrides = {}) {
     ['dir-b', { id: 'dir-b', path: '/b', baseBranch: 'main' }],
   ]);
   const calls = { notify: [], shell: [], commits: 0 };
-  const relocate = createTaskRelocate({
+  const relocate = create({
     deps: {
       records, directories,
       assertTaskIdle: async () => {},
@@ -147,4 +147,18 @@ test('task relocate without a bound session moves only metadata and ledger workt
   assert.equal(ledgerCalls[0].session.worktreePath, '/a/.multicc-worktrees/task-1');
   assert.equal(ledgerCalls[0].opts.carry, true);
   assert.equal(board.tasks.tsk_1.worktreePath, '/b/.multicc-worktrees/tsk_1');
+});
+
+require('node:test')('67f54869 differential: task-board/relocate', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('task-board/relocate.js', async api => {
+    const rows = [];
+    for (const [overrides, target] of [[{}, 'dir-b'], [{ task: { status: 'archived' } }, 'dir-b'], [{}, 'missing']]) {
+      const { relocate, calls, task } = fixture(overrides, api.createTaskRelocate);
+      const res = mockRes();
+      await relocate.relocate({ params: { taskId: task.id }, body: { dirId: target } }, res);
+      rows.push([res.statusCode, res.body, calls, task.refs.map(ref => [ref.sessionId, ref.dirId])]);
+    }
+    return rows;
+  });
 });

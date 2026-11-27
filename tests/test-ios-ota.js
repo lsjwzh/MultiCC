@@ -192,7 +192,7 @@ test('wiring: manifest + IPA bypass auth, strangers’ binaries stay hidden, rou
   assert.equal(calls[2][1], manifest);
 
   const serverSource = fs.readFileSync(path.join(__dirname, '..', 'server.js'), 'utf8');
-  assert.ok(serverSource.includes("require('./src/ios-ota').createIosOta"));
+  assert.ok(serverSource.includes("getNative().iosOtaApi"));
   // 发布资产一条都不在真实 app 上了：`/multicc.apk` 的三种出口（本地文件
   // fellThrough / 302 / 空 404）与其余三条、ios-udid 的三条都经 release-history
   // 宿主端口，本地文件由前门的 static_web_root 用同一套 send 引擎发出。
@@ -352,7 +352,7 @@ test('cb0263ed differential: IPA metadata boundaries and byte-exact request-spec
     for (const versionCode of [7, 0, 'abc', '\uFEFF2', 2 ** 54]) {
       const meta = { title: 'x'.repeat(79) + '😀', versionName: ' 1 ', bundleId: 'a.b', versionCode,
         builtAt: '2021-09-09', sha256: 'a'.repeat(64) };
-      const io = { lstatSync: () => ({ isFile: () => true, size: 16, mtime: new Date(0) }),
+      const io = { lstatSync: () => ({ isFile: () => true, size: versionCode === 7 ? 16n : 16, mtime: new Date(0) }),
         readFileSync: () => JSON.stringify(meta) };
       const deps = { rootDir: '/example', path, fs: io };
       const data = api.readLocalIpa(deps);

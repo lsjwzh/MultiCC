@@ -144,3 +144,17 @@ test('session ids are sanitised into a single flat filename', () => {
   assert.equal(safeSessionName('../../etc/passwd'), '______etc_passwd');
   assert.equal(safeSessionName(''), '_default');
 });
+
+require('node:test')('67f54869 differential: classify/aux-run-log', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('classify/aux-run-log.js', api => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aux-leaf-'));
+    try {
+      const log = api.createAuxRunLog({ dir, now: () => 42, maxFieldChars: 3 });
+      const saved = log.record('a/🚀', { runId: 'one', at: Infinity, prompt: '好🚀text', parsed: { phase: 1 } });
+      const file = fs.readdirSync(dir)[0];
+      fs.appendFileSync(path.join(dir, file), '{oops');
+      return [file, saved, log.get('a/🚀', 'one')];
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});

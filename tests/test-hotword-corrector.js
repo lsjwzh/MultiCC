@@ -131,3 +131,13 @@ test('nearSyllable covers accent pairs and rejects unrelated sounds', () => {
 
 if (failed) { console.error(`\n${failed} failed`); process.exit(1); }
 console.log('\nall passed');
+
+require('node:test')('67f54869 differential: voice/hotword-corrector', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('voice/hotword-corrector.js', api => {
+    const lexicon = '权限、测试权限, Claude Code=克劳德/克劳德,权限,🚀';
+    return [api.parseHotwords(lexicon), api.stripAliases(lexicon),
+      ...['🚀测试权线，权线', 'CLAUDE CODE /claude code', '克劳德'].map(text => api.correctWithHotwords(text, lexicon)),
+      ...[['zhan','zang'], ['shi','si'], ['量','量']].map(pair => api.nearSyllable(...pair))];
+  });
+});

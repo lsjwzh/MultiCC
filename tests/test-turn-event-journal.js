@@ -220,3 +220,19 @@ test('server.js wires the journal into the single chatBroadcast funnel', async (
   assert.ok(emitIdx > noteIdx, 'journaled before bus fan-out');
   assert.ok(hostIdx > noteIdx, 'journaled before taskContextHost fan-out (subagent/monitor events)');
 });
+
+require('node:test')('67f54869 differential: chat/turn-event-journal', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('chat/turn-event-journal.js', async api => {
+    const dir = tmpDir();
+    try {
+      const journal = api.createTurnEventJournal({ dir: () => dir, now: () => 23 });
+      for (const event of [{ type: 'part_delta' }, { type: 'assistant', text: '声🙂'.repeat(30000) }, { type: 'result' }]) {
+        journal.note('s/🙂', event);
+      }
+      await until(() => journal.read('s/🙂').length === 2, 'ordered journal');
+      const files = fs.readdirSync(dir);
+      return { files, raw: fs.readFileSync(path.join(dir, files[0]), 'utf8'), read: journal.read('s/🙂') };
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});

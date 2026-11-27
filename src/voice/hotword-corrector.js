@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 // Hotword post-correction for ASR engines with no decode-time biasing.
 //
 // sherpa-onnx's contextual biasing only exists for transducer models, and the
@@ -19,13 +21,8 @@
 // skipped and the ASCII half keeps working, because a missing dependency must
 // never take voice input down.
 
-const MAX_ENTRIES = 200;
-const MAX_TERM_LEN = 40;
 const CJK_ONLY = /^[一-鿿]+$/;
 const CJK_RUN = /[一-鿿]+/g;
-const ENTRY_SPLIT = /[\n\r,，;；、]+/;
-const ALIAS_SPLIT = /[/|]/;
-
 let _pinyin;
 function pinyinFn() {
   if (_pinyin !== undefined) return _pinyin;
@@ -35,36 +32,8 @@ function pinyinFn() {
 
 // ── Entry parsing ──
 // "React, Claude=克劳德/克拉德\n哈勃" → [{term, aliases}]
-function parseHotwords(raw) {
-  if (typeof raw !== 'string' || !raw.trim()) return [];
-  const byKey = new Map();
-  for (const item of raw.split(ENTRY_SPLIT)) {
-    const eq = item.indexOf('=');
-    const term = (eq < 0 ? item : item.slice(0, eq)).trim();
-    if (!term || term.length > MAX_TERM_LEN) continue;
-    const entry = byKey.get(term.toLowerCase()) || { term, aliases: [] };
-    if (eq >= 0) {
-      for (const a of item.slice(eq + 1).split(ALIAS_SPLIT)) {
-        const alias = a.trim();
-        if (alias && alias.length <= MAX_TERM_LEN && alias !== term && !entry.aliases.includes(alias)) {
-          entry.aliases.push(alias);
-        }
-      }
-    }
-    byKey.set(term.toLowerCase(), entry);
-    if (byKey.size >= MAX_ENTRIES) break;
-  }
-  return [...byKey.values()];
-}
-
-// The same list as it should be shown to a cloud recogniser: aliases are our
-// own bookkeeping and would only confuse a prompt.
-function stripAliases(raw) {
-  if (typeof raw !== 'string') return '';
-  return raw.replace(/=[^\n\r,，;；、]*/g, '');
-}
-
-// ── Pinyin similarity ──
+function parseHotwords(raw) { return getNative().hotwordEntries(raw); }
+function stripAliases(raw) { return getNative().hotwordStripped(raw); }
 const INITIALS = ['zh', 'ch', 'sh', 'b', 'p', 'm', 'f', 'd', 't', 'n', 'l', 'g', 'k', 'h', 'j', 'q', 'x', 'r', 'z', 'c', 's'];
 // Initials a regional accent commonly merges: flat/retroflex, n/l, f/h, l/r.
 const INITIAL_CLASSES = [['z', 'zh'], ['c', 'ch'], ['s', 'sh'], ['n', 'l'], ['f', 'h'], ['l', 'r']];
@@ -83,31 +52,12 @@ function nasalPair(a, b) {
   return l === `${s}g` && /(an|en|in)$/.test(s);
 }
 function nearSyllable(a, b) {
+  if (typeof a === 'string' && typeof b === 'string') return getNative().hotwordNear(a, b);
+  // Non-string extension objects may implement their own startsWith/slice methods.
   const [ia, fa] = splitSyllable(a);
   const [ib, fb] = splitSyllable(b);
   if (!sameInitial(ia, ib)) return false;
   return fa === fb || nasalPair(fa, fb);
-}
-
-// How many near-but-not-equal syllables a pattern of `len` characters may
-// absorb. Two-character terms are too common in ordinary speech to be loose.
-function fuzzBudget(len) {
-  if (len >= 6) return 2;
-  if (len >= 3) return 1;
-  return 0;
-}
-
-// -1 = no match, otherwise the number of near (non-identical) syllables.
-function windowCost(patternSyl, textSyl, offset) {
-  let fuzz = 0;
-  const budget = fuzzBudget(patternSyl.length);
-  for (let k = 0; k < patternSyl.length; k++) {
-    const t = textSyl[offset + k];
-    const p = patternSyl[k];
-    if (t === p) continue;
-    if (++fuzz > budget || !nearSyllable(t, p)) return -1;
-  }
-  return fuzz;
 }
 
 function toSyllables(zh) {
@@ -153,6 +103,7 @@ function createMatcher(entries) {
   // Longest first so "哈勃望远镜" claims its span before "哈勃" can.
   zhPatterns.sort((a, b) => b.len - a.len);
 
+  const windows = new (getNative().HotwordWindows)(zhPatterns.map(p => p.syl));
   function correctChinese(text) {
     if (!zhPatterns.length) return text;
     const spans = [];
@@ -161,17 +112,9 @@ function createMatcher(entries) {
       const base = m.index;
       const syl = toSyllables(run);
       if (!syl) continue;
-      const found = [];
-      for (const p of zhPatterns) {
-        for (let i = 0; i + p.len <= run.length; i++) {
-          const cost = windowCost(p.syl, syl, i);
-          if (cost >= 0) found.push({ start: base + i, end: base + i + p.len, p, cost, same: run.startsWith(p.form, i) });
-        }
-      }
-      // Claim spans best-first: longer, then fewer near-syllables, then earlier.
-      found.sort((a, b) => (b.p.len - a.p.len) || (a.cost - b.cost) || (a.start - b.start));
-      for (const c of found) {
-        if (!spans.some(s => c.start < s.end && s.start < c.end)) spans.push(c);
+      for (const [index, start, end] of windows.find(syl)) {
+        const p = zhPatterns[index];
+        spans.push({ start: base + start, end: base + end, p, same: run.startsWith(p.form, start) });
       }
     }
     if (!spans.length) return text;

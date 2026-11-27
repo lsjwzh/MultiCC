@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 // Reverse-proxy the loopback-only Qwen voice child through this server.
 //
 // The child (qwen-audio-agent) binds 127.0.0.1:<port>, so the launch URL the
@@ -27,33 +29,8 @@ function createVoiceGatewayWebProxy({ runtime, log = console } = {}) {
     throw new TypeError('voice web proxy requires the qwen audio supervisor');
   }
 
-  function childTarget() {
-    const status = runtime.statusGlobal();
-    const raw = status && status.url;
-    if (!raw) return null;
-    try {
-      const url = new URL(raw);
-      if (url.protocol !== 'http:') return null;
-      return { hostname: url.hostname, port: Number(url.port) };
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // /voice-gateway/web[/...]?query → /[...]?query (express already strips the
-  // mount prefix for HTTP handlers; the raw upgrade path needs it stripped).
-  function stripPrefix(url) {
-    const rest = String(url || '').slice(PROXY_PREFIX.length) || '/';
-    return rest.startsWith('/') ? rest : `/${rest}`;
-  }
-
-  function childHeaders(req, target) {
-    const headers = { ...req.headers };
-    delete headers.origin;
-    delete headers.referer;
-    headers.host = `${target.hostname}:${target.port}`;
-    return headers;
-  }
+  const native = getNative();
+  const childTarget = () => native.voiceProxyTarget(runtime);
 
   function mountRoutes(app) {
     app.use(PROXY_PREFIX, (req, res) => {
@@ -64,7 +41,7 @@ function createVoiceGatewayWebProxy({ runtime, log = console } = {}) {
       }
       // Inside app.use(PREFIX) req.url is already prefix-stripped and keeps the
       // query string — forward it verbatim.
-      const headers = childHeaders(req, target);
+      const headers = native.voiceProxyHeaders(req, target);
       // express.json runs before this mount and consumes JSON bodies, leaving a
       // drained stream whose Content-Length the child would still wait on.
       // Re-serialize a parsed body; pipe everything else verbatim.
@@ -109,17 +86,12 @@ function createVoiceGatewayWebProxy({ runtime, log = console } = {}) {
     const proxyReq = http.request({
       hostname: target.hostname,
       port: target.port,
-      path: stripPrefix(req.url),
+      path: native.voiceProxyPath(req.url),
       method: 'GET',
-      headers: childHeaders(req, target),
+      headers: native.voiceProxyHeaders(req, target),
     });
     proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
-      let responseHead = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
-      for (const [name, value] of Object.entries(proxyRes.headers)) {
-        const values = Array.isArray(value) ? value : [value];
-        for (const v of values) responseHead += `${name}: ${v}\r\n`;
-      }
-      responseHead += '\r\n';
+      const responseHead = native.voiceUpgradeHead(proxyRes, false);
       socket.write(responseHead);
       if (proxyHead && proxyHead.length) proxySocket.unshift(proxyHead);
       if (head && head.length) socket.unshift(head);
@@ -131,13 +103,7 @@ function createVoiceGatewayWebProxy({ runtime, log = console } = {}) {
     proxyReq.on('response', (proxyRes) => {
       // The child refused the upgrade (403/401/…): relay its plain response so
       // the browser shows the real reason instead of a dead socket.
-      let responseHead = `HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n`;
-      for (const [name, value] of Object.entries(proxyRes.headers)) {
-        if (name.toLowerCase() === 'transfer-encoding') continue;
-        const values = Array.isArray(value) ? value : [value];
-        for (const v of values) responseHead += `${name}: ${v}\r\n`;
-      }
-      responseHead += 'connection: close\r\n\r\n';
+      const responseHead = native.voiceUpgradeHead(proxyRes, true);
       socket.write(responseHead);
       proxyRes.pipe(socket);
       proxyRes.on('end', () => socket.end());

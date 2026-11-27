@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative, assignHostProperty } = require('../native/binding');
+
 // Task-level relocate (Air 任务「移动」). Moves a board task to another
 // directory: the bound chat session's worktree is relocated through the
 // session-lifecycle runtime with carry, so uncommitted changes (tracked diff
@@ -21,20 +23,12 @@ function createTaskRelocate({
   const relocateShellTask = typeof deps.relocateShellTask === 'function' ? deps.relocateShellTask : null;
   const fail = (res, body, status = 409) => res.status(status).json({ ok: false, ...body });
 
+  const policy = { resolveTask, taskDirId, isBusy, directories };
   async function relocate(req, res) {
-    const task = resolveTask(req.params.taskId);
-    if (!task) return fail(res, { error: 'task_not_found' }, 404);
-    if (task.deleting) return fail(res, { error: 'task_deleting' });
-    if (task.status === 'archived') return fail(res, { error: 'task_archived' });
-    if (isBusy(task.id)) return fail(res, { error: 'task_busy' });
-
-    const targetDirId = String(req.body?.dirId || '').trim();
-    if (!targetDirId) return fail(res, { error: 'dirId required' }, 400);
-    const targetDir = directories.get(targetDirId);
-    if (!targetDir) return fail(res, { error: 'target directory not found' }, 404);
-    const currentDirId = taskDirId(task);
-    if (currentDirId === targetDirId) return res.json({ ok: true, unchanged: true, task: taskDto(task) });
-
+    const plan = getNative().taskRelocatePlan(policy, req);
+    if (plan.status) return fail(res, plan.body, plan.status);
+    if (plan.unchanged) return res.json({ ok: true, unchanged: true, task: taskDto(plan.task) });
+    const { task, targetDirId, targetDir, currentDirId } = plan;
     const ids = taskIdentityIds(task);
     try { await deps.assertTaskIdle?.(task, ids); }
     catch (error) { return fail(res, { error: error.code || 'task_busy' }); }
@@ -79,32 +73,7 @@ function createTaskRelocate({
       return fail(res, { error: error.code || 'task_relocate_failed' }, error.status || 500);
     }
 
-    const result = commit(board => {
-      const current = board.tasks[task.id];
-      if (!current) return { ok: false, error: 'task_not_found' };
-      current.dirId = targetDirId;
-      if (record) {
-        current.worktreePath = records.get(record.id)?.worktreePath || null;
-        current.branch = records.get(record.id)?.branch || null;
-      } else if (ledgerMoved) {
-        current.worktreePath = ledgerMoved.worktreePath;
-        current.branch = ledgerMoved.branch;
-      }
-      // Refs snapshot the directory each turn ran in; sessions that physically
-      // moved with the task (their record now lives in the target) must not
-      // keep the task listed in the source directory's views via dirIds.
-      for (const ref of current.refs || []) {
-        if (ref?.dirId && ref.dirId !== targetDirId && ref.sessionId
-          && records.get(ref.sessionId)?.dirId === targetDirId) {
-          ref.dirId = targetDirId;
-        }
-      }
-      // Modules are directory-scoped; a module of the source directory can
-      // never group the task under the target.
-      if (current.moduleId) current.moduleId = null;
-      current.updatedAt = Date.now();
-      return { ok: true };
-    });
+    const result = commit(board => getNative().taskRelocateCommit(board, plan, records, record, ledgerMoved, assignHostProperty));
     if (!result.ok) return fail(res, { error: result.error || 'persistence_failed' }, 500);
     relocateShellTask?.(task.id, targetDirId);
     notify(currentDirId, ids, 'relocated');

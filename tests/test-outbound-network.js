@@ -244,3 +244,19 @@ test('HTTPS 和加密 WebSocket 使用代理隧道并正常校验证书', { time
   assert.match(result.stdout, /加密长连接成功/);
   assert.equal(hits, 3);
 });
+
+require('node:test')('67f54869 differential: network/proxy-policy', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('network/proxy-policy.js', api => {
+    const rows = [];
+    for (const env of [{}, { https_proxy: '', ALL_PROXY: 'http://local:9', NO_PROXY: 'a, a b' }, { ALL_PROXY: 'socks5://x' }]) {
+      try { rows.push(api.resolveProxyConfig(env, { exceptions: ['.example'] })); }
+      catch (error) { rows.push([error.name, error.message]); }
+      rows.push(api.mergeLoopbackNoProxy(env));
+    }
+    for (const host of ['[[::1]]', 'localHost', '10.01.1.3', '\ud800', 'a.example']) {
+      rows.push(api.isLoopback(host), api.bypassProxy({ hostname: host, protocol: 'https:', port: '' }, ['10.0.0.0/8', '.example:443', '\ud801']));
+    }
+    return rows;
+  });
+});

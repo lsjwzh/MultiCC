@@ -44,3 +44,48 @@ pub fn unlock_keychain_error(operation: String, ok: bool, missing: bool) -> Opti
         .into(),
     )
 }
+
+use crate::route_response::*;
+#[napi]
+pub fn unlock_keychain_plan(
+    env: Env,
+    operation: String,
+    available: bool,
+    account: Unknown<'_>,
+    app: Unknown<'_>,
+    password: Unknown<'_>,
+    length: f64,
+) -> Result<sys::napi_value> {
+    let p = L::new(&env, account);
+    if operation == "set" {
+        if let Some(error) = unlock_password_error(available, length) {
+            return Err(p
+                .global()?
+                .get(c"Error")?
+                .construct(&[text(p, &error)?])?
+                .throw_error());
+        }
+    } else if !available {
+        return Ok(null(p)?.raw());
+    }
+    let args = p.from_value(&V::Array(
+        unlock_keychain_prefix(operation.clone())
+            .iter()
+            .map(|x| V::from(x.as_str()))
+            .collect(),
+    ))?;
+    call(args, c"push", &[p])?;
+    if operation == "set" {
+        call(
+            args,
+            c"push",
+            &[
+                text(p, "-T")?,
+                L::new(&env, app),
+                text(p, "-w")?,
+                L::new(&env, password),
+            ],
+        )?;
+    }
+    Ok(args.raw())
+}

@@ -41,7 +41,7 @@ const os = require('os');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
 const { spawn, execFile } = require('child_process');
-const { createUploadSuite } = require('./src/upload-middleware');
+const { createUploadSuite } = require('./src/native/binding');
 const chokidar = require('chokidar');
 const cron = require('node-cron');
 const upload = createUploadSuite();
@@ -1716,7 +1716,7 @@ const {
 } = apiErrorHost;
 const { createDetached } = require('./src/detached');
 const detached = createDetached({ baseDir: MULTICC_PATHS.detachedDir });
-const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = require('./src/ios-ota').createIosOta({ fs, path, rootDir: __dirname });
+const apkDistribution = createApkDistribution({ fs, path, https, rootDir: __dirname }); const iosOta = getNative().iosOtaApi({ fs, path, rootDir: __dirname });
 const share = require('./src/share');
 // The Rust front door owns the 21 share / machines / workspaces routes. Its
 // Node child keeps the runtime facts — the machine registry (already
@@ -2835,7 +2835,7 @@ app.use(safeErrorHandler(logger));
     skillSyncRuntime.start();
     triggerRuntime.start(); eventsHost.start();
     sessionHibernationRuntime.start();
-    worktreeOrphanScanner = require('./src/workspace/orphan-scan').createWorktreeOrphanScanner({
+    worktreeOrphanScanner = require('./src/native/binding').createWorktreeOrphanScanner({
       records: persistedSessions, directories, repoActor: defaultRepoActor, logger,
       deleteOrphans: process.env.MULTICC_WORKTREE_ORPHAN_DELETE === '1',
       listTaskWorktreePaths: () => Object.values(taskBoardRuntime?.getBoard?.()?.tasks || {}).map(task => task?.worktreePath),
@@ -2861,8 +2861,8 @@ const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsR
       const retention = new (getNative().AssistSnapshotRetention)(MULTICC_PATHS.assistDir);
       shutdownCoordinator.onClose(() => retention.stop());
     }
-    const runtimeHomesJanitor = require('./src/runtime-homes-janitor');
-    runtimeHomesJanitor.startRuntimeHomesJanitor({ ttlDays: envNumber(process.env.MULTICC_RUNTIME_HOME_TTL_DAYS, runtimeHomesJanitor.DEFAULT_TTL_DAYS), trackTimer: trackServiceTimer, log: (message) => logger.info('runtime_home_cleanup', { message }) });
+    const { startRuntimeHomesJanitor, DEFAULT_RUNTIME_HOME_TTL_DAYS } = require('./src/native/binding');
+    startRuntimeHomesJanitor({ ttlDays: envNumber(process.env.MULTICC_RUNTIME_HOME_TTL_DAYS, DEFAULT_RUNTIME_HOME_TTL_DAYS), trackTimer: trackServiceTimer, log: (message) => logger.info('runtime_home_cleanup', { message }) });
     // Keep the official OAuth credential alive. The check is a credential read;
     // it only runs the CLI once the expiry is close, so the router never has to
     // report "run `claude` once to refresh the Keychain" to a user. Boot counts

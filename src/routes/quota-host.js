@@ -36,7 +36,7 @@ function defaultDeps() {
   const opencode = require('./opencode-quota');
   const qoder = require('./qoder-quota');
   const codex = require('./codex-quota');
-  const ark = require('./ark-quota');
+  const ark = require('../native/binding').getArkQuotaHost();
   const kimi = require('./kimi-quota');
   const claude = require('./claude-usage-quota');
   const aliyun = require('./aliyun-quota');

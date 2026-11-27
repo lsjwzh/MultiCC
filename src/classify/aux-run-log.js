@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 const fs = require('fs');
 const path = require('path');
 
@@ -32,15 +34,10 @@ const DEFAULT_MAX_RUNS_PER_SESSION = 200;
 const DEFAULT_MAX_FIELD_CHARS = 20_000;
 
 function safeSessionName(sessionId) {
-  return String(sessionId || '').replace(/[^A-Za-z0-9_-]/g, '_') || '_default';
+  return getNative().journalFileStem(String(sessionId || ''), false);
 }
 
-function clip(value, limit) {
-  if (value == null) return null;
-  const text = typeof value === 'string' ? value : String(value);
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n…[truncated ${text.length - limit} chars]`;
-}
+const clipArithmetic = { within: (length, limit) => length <= limit, over: (length, limit) => length - limit };
 
 function createAuxRunLog(options = {}) {
   const {
@@ -80,18 +77,7 @@ function createAuxRunLog(options = {}) {
       }
       return [];
     }
-    const runs = [];
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        runs.push(JSON.parse(line));
-      } catch (_) {
-        // An append is not atomic, so a crash can leave one partial trailing
-        // line. Evidence is best-effort by construction — skip and keep going
-        // rather than failing a diagnostic read over a torn write.
-      }
-    }
-    return runs;
+    return getNative().journalDecode(text, true).rows;
   }
 
   // Rewrite keeping only the newest entries. Called after an append discovers
@@ -121,39 +107,8 @@ function createAuxRunLog(options = {}) {
   function record(sessionId, run = {}) {
     const key = String(sessionId || '');
     if (!key) return null;
-    const entry = {
-      runId: run.runId || null,
-      at: Number.isFinite(run.at) ? run.at : now(),
-      kind: run.kind || 'intent_classify',
-      sessionId: key,
-      source: run.source || null,
-      turnId: run.turnId || null,
-      // The business task this verdict belongs to — the same value carried on
-      // `message.taskId`, which is what makes runs groupable by task.
-      taskId: run.taskId || null,
-      // The task pointer before attribution. It differs when Aux starts a new
-      // task or reconnects the turn to an older task.
-      priorTaskId: run.priorTaskId || null,
-      // The last message the classifier saw. Reverse lookup from a rendered
-      // message back to the verdict that judged it goes through this field.
-      anchorMessageId: run.anchorMessageId || null,
-      // The anchor observed when the delayed result returned.  A different
-      // value proves that a newer user/assistant message had already become
-      // current, so the result was retained for audit but not applied live.
-      observedAnchorMessageId: run.observedAnchorMessageId || null,
-      model: run.model || null,
-      latencyMs: Number.isFinite(run.latencyMs) ? run.latencyMs : null,
-      systemPrompt: clip(run.systemPrompt, maxFieldChars),
-      prompt: clip(run.prompt, maxFieldChars),
-      // Verbatim, before `parseClassifyResult` strips thinking blocks. Replaying
-      // a parser change against history is only meaningful against raw text.
-      rawText: clip(run.rawText, maxFieldChars),
-      parsed: run.parsed || null,
-      error: run.error ? String(run.error) : null,
-      cancelled: run.cancelled === true,
-      superseded: run.superseded === true,
-      supersededReason: run.supersededReason || null,
-    };
+    const entry = getNative().auxLogRecord(key, run, now,
+      value => getNative().auxLogClip(value, maxFieldChars, clipArithmetic));
     if (!ensureDir()) return entry;
     try {
       fileSystem.appendFileSync(fileFor(key), `${JSON.stringify(entry)}\n`, { mode: 0o600 });

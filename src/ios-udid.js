@@ -3,7 +3,9 @@
 const { randomBytes, randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const express = require('express');
-const { absoluteBaseUrl, xmlEscape } = require('./ios-ota');
+const { getNative } = require('./native/binding');
+const absoluteBaseUrl = req => getNative().iosAbsoluteUrl(req);
+const xmlEscape = value => getNative().iosEscape(String(value));
 
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/;
 const UDID_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{8}-[a-f0-9]{16})$/i;

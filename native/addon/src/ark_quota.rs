@@ -143,3 +143,136 @@ pub fn ark_quota_result(env: Env, rs: Unknown<'_>, at: Unknown<'_>) -> Result<sy
     };
     Ok(result.raw())
 }
+
+use crate::host_methods::{arg, env as host_env, function, raw};
+fn ark_bin(p: L<'_>) -> Result<L<'_>> {
+    let old = p.get(c"bin")?;
+    if old.truthy()? {
+        return Ok(old);
+    }
+    let ports = p.get(c"ports")?;
+    let env = ports.get(c"env")?;
+    let cmd = if env.get(c"ARKCLI_BIN")?.truthy()? {
+        env.get(c"ARKCLI_BIN")?
+    } else {
+        call(ports, c"find", &[text(p, "arkcli")?])?
+    };
+    if !cmd.truthy()? {
+        return null(p);
+    }
+    let bin = fields(
+        p,
+        &[("cmd", cmd), ("prefix", p.from_value(&V::Array(vec![]))?)],
+    )?;
+    p.set(c"bin", bin)?;
+    Ok(bin)
+}
+fn ark_options(p: L<'_>, timeout: f64) -> Result<L<'_>> {
+    fields(
+        p,
+        &[
+            ("windowsHide", flag(p, true)?),
+            ("timeout", num(p, timeout)?),
+            ("maxBuffer", num(p, 8388608.)?),
+            ("encoding", text(p, "utf8")?),
+        ],
+    )
+}
+#[napi]
+pub fn ark_cli_owner(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
+    let v = L::new(&env, ports);
+    let p = fields(v, &[("ports", v), ("bin", null(v)?)])?;
+    let resolve = function(p, "resolveArkcliBin", 0, 0, |p, _| ark_bin(p))?;
+    let usage = function(p, "usagePlan", 0, 0, |p, _| {
+        let bin = ark_bin(p)?;
+        if !bin.truthy()? {
+            return null(p);
+        }
+        let args = p.from_value(&V::Array(vec![]))?;
+        bin.get(c"prefix")?.for_each(|v| {
+            call(args, c"push", &[v])?;
+            Ok(())
+        })?;
+        for a in ["usage", "plan", "--format", "json"] {
+            call(args, c"push", &[text(p, a)?])?;
+        }
+        fields(
+            p,
+            &[
+                ("cmd", bin.get(c"cmd")?),
+                ("args", args),
+                ("options", ark_options(p, 45000.)?),
+            ],
+        )
+    })?;
+    let install = function(p, "installation", 0, 0, |p, _| {
+        let npm = call(p.get(c"ports")?, c"find", &[text(p, "npm")?])?;
+        if !npm.truthy()? {
+            return fields(p,&[("ok",flag(p,false)?),("error",text(p,"未找到 npm，无法自动安装。请手动安装 Node.js 后重试，或自行安装 @volcengine/ark-cli。")?)]);
+        }
+        fields(
+            p,
+            &[
+                ("cmd", npm),
+                (
+                    "args",
+                    p.from_value(&V::Array(
+                        ["install", "-g", "@volcengine/ark-cli"]
+                            .into_iter()
+                            .map(V::from)
+                            .collect(),
+                    ))?,
+                ),
+                ("options", ark_options(p, 240000.)?),
+            ],
+        )
+    })?;
+    let installed = function(p, "installed", 1, 1, |p, a| {
+        let result = a[0];
+        let err = result.get(c"err")?;
+        if err.truthy()? {
+            let stderr = result.get(c"stderr")?;
+            let msg = if stderr.truthy()? {
+                stderr
+            } else {
+                fallback(err.get(c"message")?, "".into())?
+            };
+            let lines = call(call(msg, c"trim", &[])?, c"split", &[text(p, "\n")?])?;
+            let detail = call(
+                call(lines, c"slice", &[num(p, 0.)?, num(p, 3.)?])?,
+                c"join",
+                &[text(p, " ")?],
+            )?;
+            let m = JsString::concat(&[
+                &"npm install -g @volcengine/ark-cli 失败：".into(),
+                &fallback(detail, "未知错误".into())?.coerce_string()?,
+            ]);
+            return fields(
+                p,
+                &[
+                    ("ok", flag(p, false)?),
+                    ("error", p.from_value(&V::String(m))?),
+                ],
+            );
+        }
+        p.set(c"bin", null(p)?)?;
+        fields(p, &[("ok", flag(p, true)?)])
+    })?;
+    let finish = function(p, "result", 2, 2, |p, a| {
+        Ok(raw(
+            p,
+            ark_quota_result(host_env(p), arg(a[0])?, arg(a[1])?)?,
+        ))
+    })?;
+    Ok(fields(
+        p,
+        &[
+            ("resolveArkcliBin", resolve),
+            ("usagePlan", usage),
+            ("installation", install),
+            ("installed", installed),
+            ("result", finish),
+        ],
+    )?
+    .raw())
+}

@@ -145,3 +145,20 @@ test('the window is bounded and only anomalies reach the logger', () => {
   assert.equal(warnings[0][0], 'codex_proxy_trace');
   assert.equal(warnings[0][1].status, 502);
 });
+
+require('node:test')('67f54869 differential: codex/proxy-trace', async () => {
+  const { compare } = require('./helpers/compare-leaf-hosts');
+  await compare('codex/proxy-trace.js', api => {
+    const rows = [];
+    const trace = api.createCodexProxyTrace({ capacity: 2, now: () => 42, logger: { warn: (...args) => rows.push(args) } });
+    for (const url of ['/not-a-prefix', '/codex-proxy/p/pr1.abc.def/main/responses?foo=2', '/codex-proxy/p/🚀/quota']) {
+      const res = new FakeResponse();
+      trace.middleware(fakeRequest(url), res, () => {});
+      res.statusCode = 404;
+      res.emit('close');
+      res.emit('finish');
+      rows.push(api.traceParts(url), trace.snapshot());
+    }
+    return rows;
+  });
+});

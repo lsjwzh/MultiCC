@@ -89,3 +89,170 @@ pub fn voice_upload_gate(env: Env, at_limit: Unknown<'_>) -> Result<sys::napi_va
     })?
     .raw())
 }
+
+use crate::host_methods::{arg, env as host_env, raw};
+fn mapped<'a>(p: L<'a>, err: L<'a>) -> Result<L<'a>> {
+    if err.instance_of(p.get(c"ErrorType")?)? {
+        return fields(
+            p,
+            &[
+                ("status", err.get(c"status")?),
+                ("code", err.get(c"code")?),
+                ("error", err.get(c"message")?),
+            ],
+        );
+    }
+    let code = if err.truthy()? {
+        err.get(c"code")?
+    } else {
+        err
+    };
+    Ok(raw(p, voice_upload_error(host_env(p), arg(code)?)?))
+}
+fn send_mapped<'a>(r: L<'a>, mapped: L<'a>) -> Result<L<'a>> {
+    let target = call(r, c"status", &[mapped.get(c"status")?])?;
+    call(
+        target,
+        c"json",
+        &[fields(
+            r,
+            &[
+                ("error", mapped.get(c"error")?),
+                ("code", mapped.get(c"code")?),
+            ],
+        )?],
+    )?;
+    r.from_value(&V::Undefined)
+}
+fn wrap<'a>(ports: L<'a>, admit: L<'a>, parser: L<'a>) -> Result<L<'a>> {
+    let ctx = fields(
+        ports,
+        &[("ports", ports), ("admit", admit), ("parser", parser)],
+    )?;
+    function(ctx, "", 3, 3, |ctx, a| {
+        let p = ctx.get(c"ports")?;
+        let r = a[1];
+        let release = ctx.get(c"admit")?.call_plain(&[])?;
+        if !release.truthy()? {
+            call(
+                r,
+                c"setHeader",
+                &[text(p, "Connection")?, text(p, "close")?],
+            )?;
+            return send_mapped(
+                r,
+                fields(
+                    p,
+                    &[
+                        ("status", num(p, 429.)?),
+                        ("code", text(p, "UPLOAD_BUSY")?),
+                        ("error", text(p, "too many concurrent uploads")?),
+                    ],
+                )?,
+            );
+        }
+        for key in ["finish", "close"] {
+            call(r, c"once", &[text(p, key)?, release])?;
+        }
+        let state = fields(
+            p,
+            &[("p", p), ("res", r), ("next", a[2]), ("release", release)],
+        )?;
+        let done = function(state, "", 1, 1, |s, a| {
+            if a[0].truthy()? {
+                s.get(c"release")?.call_plain(&[])?;
+                return send_mapped(s.get(c"res")?, mapped(s.get(c"p")?, a[0])?);
+            }
+            s.get(c"next")?.call_plain(&[])?;
+            s.from_value(&V::Undefined)
+        })?;
+        ctx.get(c"parser")?.call_plain(&[a[0], r, done])?;
+        p.from_value(&V::Undefined)
+    })
+}
+#[napi]
+pub fn voice_upload_wrapper(
+    env: Env,
+    ports: Unknown<'_>,
+    at_limit: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let p = L::new(&env, ports);
+    let admit = raw(p, voice_upload_gate(env, at_limit)?);
+    let ctx = fields(p, &[("p", p), ("admit", admit)])?;
+    Ok(function(ctx, "wrap", 1, 1, |s, a| {
+        wrap(s.get(c"p")?, s.get(c"admit")?, a[0])
+    })?
+    .raw())
+}
+#[napi]
+pub fn voice_upload_suite(
+    env: Env,
+    ports: Unknown<'_>,
+    multer: Unknown<'_>,
+    file_size: Unknown<'_>,
+    at_limit: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let p = L::new(&env, ports);
+    let m = L::new(&env, multer);
+    let size = L::new(&env, file_size);
+    let wrapper = raw(p, voice_upload_wrapper(host_env(p), arg(p)?, at_limit)?);
+    let storage = call(m, c"memoryStorage", &[])?;
+    let limits = fields(
+        p,
+        &[
+            ("fileSize", size),
+            ("files", num(p, 1.)?),
+            ("fields", num(p, 0.)?),
+            ("parts", num(p, 2.)?),
+            ("fieldNameSize", num(p, 64.)?),
+            ("headerPairs", num(p, 100.)?),
+        ],
+    )?;
+    let filter = function(p, "", 3, 3, |p, a| {
+        let f = a[1];
+        let cb = a[2];
+        let reject = |msg: &str, code: &str, status: f64| {
+            cb.call_plain(&[p.get(c"ErrorType")?.construct(&[
+                text(p, msg)?,
+                text(p, code)?,
+                num(p, status)?,
+            ])?])
+        };
+        if !f.get(c"fieldname")?.is_string("file")? {
+            return reject("unexpected upload field", "UPLOAD_UNEXPECTED_FIELD", 400.);
+        }
+        let name = string(fallback(f.get(c"originalname")?, "upload.bin".into())?)?;
+        let name = raw(p, voice_upload_name(host_env(p), arg(name)?)?);
+        p.get(c"assign")?
+            .call_plain(&[f, text(p, "originalname")?, name])?;
+        let mime = string(fallback(
+            f.get(c"mimetype")?,
+            "application/octet-stream".into(),
+        )?)?
+        .coerce_string()?;
+        if !voice_upload_mime(mime.to_string_lossy()) {
+            return reject(
+                "unsupported upload media type",
+                "UPLOAD_UNSUPPORTED_MEDIA_TYPE",
+                415.,
+            );
+        }
+        cb.call_plain(&[null(p)?, flag(p, true)?])?;
+        p.from_value(&V::Undefined)
+    })?;
+    let parser = call(
+        m.call_plain(&[fields(
+            p,
+            &[
+                ("storage", storage),
+                ("limits", limits),
+                ("fileFilter", filter),
+            ],
+        )?])?,
+        c"single",
+        &[text(p, "file")?],
+    )?;
+    Ok(fields(p, &[("voice", wrapper.call_plain(&[parser])?)])?
+        .freeze()?
+        .raw())
+}

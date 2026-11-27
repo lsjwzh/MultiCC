@@ -105,8 +105,12 @@ test('cb0263ed differential: porcelain preserves UTF-16 and a failed repo leaves
     } };
     const scan = api.createWorktreeOrphanScanner({ records: new Map(), directories: new Map([
       ['b', { id: 'b', path: '/bad' }], ['g', { id: 'g', path: '/fake' }]]),
-      logger: { warn: (...args) => calls.push(args) }, repoActor, now: () => 0, deleteOrphans: true });
-    const result = await scan.scan();
-    return [api.parseWorktreeList(input), calls, result, result === scan.report(), Object.isFrozen(result)];
+      logger: { warn: (...args) => calls.push(args) }, repoActor, now: () => 0, deleteOrphans: true,
+      setTimeoutFn: (_fn, delay) => ({ unref: () => calls.push(['timeout', delay]) }),
+      setIntervalFn: (_fn, delay) => ({ unref: () => calls.push(['interval', delay]) }), });
+    const first = scan.start(), second = scan.start();
+    const [result, simultaneous] = await Promise.all([scan.scan(), scan.scan()]);
+    scan.stop();
+    return [first, second, scan.start(), simultaneous === result, api.parseWorktreeList(input), calls, result, result === scan.report(), Object.isFrozen(result)];
   });
 });

@@ -345,19 +345,25 @@ fn format_ipv4(number: f64) -> String {
         .join(".")
 }
 
+fn unbracket(name: &str) -> &str {
+    let name = name.strip_prefix('[').unwrap_or(name);
+    name.strip_suffix(']').unwrap_or(name)
+}
+
 /// `isLoopback(host)`.
 pub fn is_loopback(host: &str) -> bool {
-    let name = host
-        .to_ascii_lowercase()
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
+    let lower = host.to_ascii_lowercase();
+    is_loopback_name(lower.trim_start_matches('[').trim_end_matches(']'))
+}
+
+/// Check a lower-case hostname after the caller has removed its brackets.
+pub fn is_loopback_name(name: &str) -> bool {
     name == "localhost"
         || name.ends_with(".localhost")
         || name == "::1"
         || name.starts_with("127.")
         || name.starts_with("::ffff:127.")
-        || is_mapped_loopback(&name)
+        || is_mapped_loopback(name)
 }
 
 fn is_mapped_loopback(name: &str) -> bool {
@@ -390,43 +396,66 @@ pub fn bypass_proxy(url: &Url, entries: &[String]) -> bool {
         .map(|port| port.to_string())
         .unwrap_or_else(|| default_port.to_string());
     entries.iter().any(|raw| {
-        let mut item = raw.to_ascii_lowercase();
-        if item == "*" {
-            return true;
-        }
-        if item == "<local>" {
-            return !host.contains('.') && !host.contains(':');
-        }
-        if let Ok(regex) = regex::Regex::new(r"^(\[[^\]]+\]|[^:]+):(\d+)$") {
-            if let Some(found) = regex.captures(&item) {
-                if found[2] != port {
-                    return false;
-                }
-                item = found[1].to_string();
-            }
-        }
-        item = item
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .to_string();
-        let range = cidr_to_range(&item).unwrap_or_else(|| item.clone());
-        if range.contains('-') {
-            let mut parts = range.split('-');
-            let start = parts.next().and_then(ipv4);
-            let end = parts.next().and_then(ipv4);
-            let ip = ipv4(&host);
-            if let (Some(start), Some(end), Some(ip)) = (start, end, ip) {
-                return ip >= start && ip <= end;
-            }
-        }
-        if let Some(suffix) = item.strip_prefix("*.") {
-            return host.ends_with(&format!(".{suffix}"));
-        }
-        if let Some(suffix) = item.strip_prefix('.') {
-            return host == suffix || host.ends_with(&item);
-        }
-        host == item
+        matches_proxy_entry(
+            &host,
+            &port,
+            &raw.to_ascii_lowercase(),
+            EntrySyntax::Gateway,
+        )
     })
+}
+
+pub enum EntrySyntax {
+    Gateway,
+    Node,
+}
+
+pub fn matches_proxy_entry(host: &str, port: &str, item: &str, syntax: EntrySyntax) -> bool {
+    let mut item = item.to_string();
+    if item == "*" {
+        return true;
+    }
+    if item == "<local>" {
+        return !host.contains('.') && !host.contains(':');
+    }
+    static NODE_PORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(\[[^\]]+\]|[^:]+):([0-9]+)$").expect("proxy host and port pattern")
+    });
+    static GATEWAY_PORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(\[[^\]]+\]|[^:]+):(\d+)$").expect("gateway host and port pattern")
+    });
+    let pattern = match syntax {
+        EntrySyntax::Node => &NODE_PORT,
+        EntrySyntax::Gateway => &GATEWAY_PORT,
+    };
+    if let Some(found) = pattern.captures(&item) {
+        if &found[2] != port {
+            return false;
+        }
+        item = found[1].to_string();
+    }
+    item = match syntax {
+        EntrySyntax::Node => unbracket(&item),
+        EntrySyntax::Gateway => item.trim_start_matches('[').trim_end_matches(']'),
+    }
+    .to_owned();
+    let range = cidr_to_range(&item).unwrap_or_else(|| item.clone());
+    if range.contains('-') {
+        let mut parts = range.split('-');
+        let start = parts.next().and_then(ipv4);
+        let end = parts.next().and_then(ipv4);
+        let ip = ipv4(host);
+        if let (Some(start), Some(end), Some(ip)) = (start, end, ip) {
+            return ip >= start && ip <= end;
+        }
+    }
+    if let Some(suffix) = item.strip_prefix("*.") {
+        return host.ends_with(&format!(".{suffix}"));
+    }
+    if let Some(suffix) = item.strip_prefix('.') {
+        return host == suffix || host.ends_with(&item);
+    }
+    host == item
 }
 
 /// The proxy `proxyForUrl` returns for an already-resolved configuration

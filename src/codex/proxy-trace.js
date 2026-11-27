@@ -1,5 +1,7 @@
 'use strict';
 
+const { getNative } = require('../native/binding');
+
 // /codex-proxy is not served from one place: the attempt guard, the ChatGPT
 // OAuth relay and the router's generic Codex proxy all mount on the same
 // prefix, in that order. When a CLI reports `unexpected status 404 … <url>`,
@@ -16,46 +18,14 @@
 // one. The attempt-scoped capability in the path is a bearer-like secret, so it
 // is redacted before it reaches an entry.
 
-const MAX_ROUTE = 300;
-const CAPABILITY_SEGMENT = /^(?:pr1|mcr1|mcp1)\./;
 const DEFAULT_CAPACITY = 200;
-
-function redactSegment(segment) {
-  const value = String(segment || '');
-  return CAPABILITY_SEGMENT.test(value) ? `${value.slice(0, 4)}<redacted>` : value;
-}
-
-function traceRoute(rawUrl) {
-  const path = String(rawUrl || '').split('?')[0].split('#')[0];
-  return path.split('/').map(redactSegment).join('/').slice(0, MAX_ROUTE);
-}
-
-// /codex-proxy/<provider>/<session>/<role>/responses is the attempt form;
-// /codex-proxy/<provider>/responses the session-less one. Anything else on the
-// prefix keeps only the provider so unknown routes stay recognizable.
-function traceParts(rawUrl) {
-  const segments = String(rawUrl || '').split('?')[0].split('/').filter(Boolean);
-  const at = segments.indexOf('codex-proxy');
-  if (at < 0) return { providerId: null, session: null, role: null };
-  const tail = segments.slice(at + 1);
-  const providerId = tail[0] ? redactSegment(tail[0]) : null;
-  const rest = tail.slice(1);
-  if (!rest.length || rest[0] === 'responses') return { providerId, session: null, role: null };
-  const session = redactSegment(rest[0]);
-  const role = rest[2] === 'responses' && rest[1] ? redactSegment(rest[1]) : null;
-  return { providerId, session, role };
-}
+function traceRoute(rawUrl) { return getNative().codexTraceRoute(String(rawUrl || '')); }
+function traceParts(rawUrl) { return getNative().codexTraceParts(String(rawUrl || '')); }
 
 function traceModel(req) {
   const body = req && req.body;
   if (!body || typeof body !== 'object' || Array.isArray(body) || Buffer.isBuffer(body)) return null;
   return typeof body.model === 'string' ? body.model.slice(0, 80) : null;
-}
-
-function stageOf(res) {
-  const locals = res && res.locals;
-  const stage = locals && typeof locals === 'object' ? locals.multiccProxyStage : null;
-  return typeof stage === 'string' && stage ? stage : 'proxy';
 }
 
 // Stage labels a responder writes before it answers:
@@ -83,20 +53,9 @@ function createCodexProxyTrace(options = {}) {
     return logger;
   }
 
+  const clock = { duration: entry => Math.max(0, now() - entry.startedAt) };
   function settle(entry, res) {
-    if (entry.ended) return;
-    entry.ended = true;
-    entry.status = res && Number.isInteger(res.statusCode) ? res.statusCode : null;
-    entry.stage = stageOf(res);
-    entry.durationMs = Math.max(0, now() - entry.startedAt);
-    entry.aborted = res ? res.writableFinished === false : false;
-    // Mirrors what the caller can see on the wire: a host-owned Express
-    // response always carries x-powered-by, a forwarded/foreign one need not.
-    entry.expressResponded = res && typeof res.getHeader === 'function'
-      ? Boolean(res.getHeader('x-powered-by')) : null;
-    // Only the states that sent someone looking: a miss, a 5xx, a client gone.
-    if (!logger) return;
-    if (entry.stage !== 'unmatched' && !entry.aborted && entry.status !== 404 && !(entry.status >= 500)) return;
+    if (!getNative().codexTraceSettle(entry, res, clock) || !logger) return;
     try {
       logger.warn('codex_proxy_trace', {
         requestId: entry.requestId, method: entry.method, route: entry.route,
