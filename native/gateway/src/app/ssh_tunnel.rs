@@ -12,9 +12,9 @@ use axum::body::Body;
 use axum::http::{Method, Response};
 use multicc_core::http_gate;
 use multicc_core::ssh_tunnel::{
-    gather_snapshot_blocking, load_config, now_epoch_ms, parse_ssh_endpoint, save_config,
-    state_dir, validate_host, validate_note, validate_port, validate_username, SshTunnelConfig,
-    SshTunnelSnapshot, DEFAULT_SSH_PORT,
+    gather_snapshot_blocking, load_config, now_epoch_ms, open_remote_login_settings,
+    parse_ssh_endpoint, save_config, state_dir, validate_host, validate_note, validate_port,
+    validate_username, SshTunnelConfig, SshTunnelSnapshot, DEFAULT_SSH_PORT,
 };
 use serde_json::{json, Value};
 
@@ -26,6 +26,7 @@ pub enum Route {
     StatusGet,
     ApplyPost,
     StopPost,
+    OpenSettingsPost,
     Options,
 }
 
@@ -50,6 +51,11 @@ static LAYERS: &[Layer] = &[
         segs: &["tunnel", "ssh", "stop"],
         method: "POST",
         kind: Route::StopPost,
+    },
+    Layer {
+        segs: &["tunnel", "ssh", "open-settings"],
+        method: "POST",
+        kind: Route::OpenSettingsPost,
     },
 ];
 
@@ -227,15 +233,25 @@ async fn apply_post(
         .await
         .map_err(|_| (500, "检测 SSH 映射连通性失败".to_string()))?;
 
-    let message = match (snapshot.remote_reachable, snapshot.remote_ssh_banner) {
-        (Some(true), Some(true)) => {
+    let message = match (
+        snapshot.sshd_listening,
+        snapshot.remote_reachable,
+        snapshot.remote_ssh_banner,
+    ) {
+        (false, Some(true), Some(false)) => {
+            format!("已保存 {remote_host}:{remote_port}：公网穿透端口已通，但本机 {local_port} 端口尚未开启 SSH 服务，请先完成第 1 步开启本机远程登录后再检测")
+        }
+        (false, _, _) => {
+            format!("已保存 {remote_host}:{remote_port}，但本机 {local_port} 端口尚未监听 SSH，请先完成第 1 步开启本机远程登录")
+        }
+        (true, Some(true), Some(true)) => {
             format!("已保存并验证通过：{remote_host}:{remote_port}（已检测到 SSH 服务）")
         }
-        (Some(true), _) => {
-            format!("已保存：{remote_host}:{remote_port} TCP 端口可达（未读到 SSH 协议头，请确认已指向本机 {local_port}）")
+        (true, Some(true), _) => {
+            format!("已保存：{remote_host}:{remote_port} TCP 端口可达（未读到 SSH 协议头，请确认穿透本地端口指向 {local_port}）")
         }
-        _ => {
-            format!("已保存 {remote_host}:{remote_port}，当前尚未探测通（请确认本机穿透客户端与 SSH 22 均已启动）")
+        (true, _, _) => {
+            format!("已保存 {remote_host}:{remote_port}，本机 SSH 正常但公网暂未探测通（请确认穿透客户端已启动）")
         }
     };
     Ok((snapshot, message))
@@ -341,6 +357,28 @@ pub async fn handle(
                 }
             }
         }
+        Route::OpenSettingsPost => {
+            if !can_edit {
+                return express::json(ctx, 403, &json!({ "error": "仅可在本机打开系统设置" }), &[]);
+            }
+            match tokio::task::spawn_blocking(open_remote_login_settings).await {
+                Ok(Ok(message)) => express::json(
+                    ctx,
+                    200,
+                    &json!({ "ok": true, "message": message }),
+                    &[("Cache-Control", "no-store")],
+                ),
+                Ok(Err(error)) => {
+                    express::json(ctx, 400, &json!({ "ok": false, "error": error }), &[])
+                }
+                Err(_) => express::json(
+                    ctx,
+                    500,
+                    &json!({ "ok": false, "error": "打开系统设置失败" }),
+                    &[],
+                ),
+            }
+        }
         Route::Options => unreachable!(),
     }
 }
@@ -378,7 +416,12 @@ mod tests {
             claim(&Method::POST, "/api/tunnel/ssh/stop"),
             Some(Route::StopPost)
         );
+        assert_eq!(
+            claim(&Method::POST, "/api/tunnel/ssh/open-settings"),
+            Some(Route::OpenSettingsPost)
+        );
         assert_eq!(claim(&Method::GET, "/api/tunnel/ssh/stop"), None);
+        assert_eq!(claim(&Method::GET, "/api/tunnel/ssh/open-settings"), None);
         assert_eq!(
             claim(&Method::OPTIONS, "/api/tunnel/ssh"),
             Some(Route::Options)
@@ -391,6 +434,10 @@ mod tests {
         );
         assert_eq!(
             options_share("/api/tunnel/ssh/stop").as_deref(),
+            Some("POST")
+        );
+        assert_eq!(
+            options_share("/api/tunnel/ssh/open-settings").as_deref(),
             Some("POST")
         );
         assert_eq!(options_share("/api/tunnel/funnel"), None);
@@ -414,6 +461,7 @@ mod tests {
             .unwrap();
             assert!(msg.contains("3.tcp.cpolar.top:12345"));
             assert!(snap.active);
+            assert!(!snap.platform.is_empty());
             let ep = snap.suggested.unwrap();
             assert_eq!(ep.ssh_target, "alice@3.tcp.cpolar.top");
             assert_eq!(ep.ssh_port, 12345);

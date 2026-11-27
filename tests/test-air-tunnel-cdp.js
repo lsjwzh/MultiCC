@@ -81,14 +81,16 @@ test('Air renders and operates the regional tunnel page without the legacy manag
   };
   routes['/api/tunnel/ipv6'] = () => json({ directReady: true, host: { hasGlobalV6: true, addresses: [] }, tailscale: { ipv6: true } });
   let sshState = { enabled: false, remoteHost: '', remotePort: 22, localPort: 22, username: '', note: '' };
+  let sshdListening = false;
   const sshSnapshot = () => ({
     ok: true,
     message: sshState.enabled ? `已保存并验证通过：${sshState.remoteHost}:${sshState.remotePort}（已检测到 SSH 服务）` : '已停用 SSH 映射配置',
     snapshot: {
+      platform: 'macos',
       canEdit: true,
       localUser: 'me',
       localPort: sshState.localPort,
-      sshdListening: true,
+      sshdListening,
       remoteReachable: sshState.enabled ? true : null,
       remoteSshBanner: sshState.enabled ? true : null,
       active: sshState.enabled,
@@ -99,6 +101,10 @@ test('Air renders and operates the regional tunnel page without the legacy manag
     },
   });
   routes['/api/tunnel/ssh'] = () => json(sshSnapshot());
+  routes['POST /api/tunnel/ssh/open-settings'] = () => {
+    sshdListening = true;
+    return json({ ok: true, message: '已打开「系统设置 → 共享」，请开启「远程登录」并点右侧 ⓘ 勾选「允许远程用户拥有完全磁盘访问权限」。' });
+  };
   routes['POST /api/tunnel/ssh'] = ({ body }) => {
     const req = JSON.parse(body.toString('utf8'));
     sshState = {
@@ -133,6 +139,16 @@ test('Air renders and operates the regional tunnel page without the legacy manag
     assert.equal(await page.evaluate(`document.getElementById('air-sf-recheck') !== null`), true, 'step 2 must keep a re-check action');
     assert.equal(await page.evaluate(`document.getElementById('air-access-status').textContent`), '已保护');
     assert.match(await page.evaluate(`document.getElementById('air-ts-ipv6').textContent`), /直连已就绪/);
+    assert.equal(await page.evaluate(`document.getElementById('air-ssh-prereq').hidden`), false, 'step 1 SSH setup guide must be visible when sshd is off');
+    assert.equal(await page.evaluate(`document.getElementById('air-ssh-prereq').classList.contains('ready')`), false);
+    assert.match(await page.evaluate(`document.getElementById('air-ssh-prereq').textContent`), /远程登录.*完全磁盘访问权限/s);
+    assert.equal(await page.evaluate(`document.getElementById('air-ssh-open-settings').hidden`), false, 'macOS local view must expose one-click Remote Login settings button');
+    await page.evaluate(`document.getElementById('air-ssh-open-settings').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-ssh-message').textContent.includes('远程登录')`));
+    assert.equal(page.requests.filter(item => item.method === 'POST' && item.path === '/api/tunnel/ssh/open-settings').length, 1);
+    await page.evaluate(`document.getElementById('air-ssh-prereq-recheck').click()`);
+    assert.ok(await page.waitFor(`document.getElementById('air-ssh-prereq').classList.contains('ready')`), 'recheck must collapse step 1 into ready state once sshd listens');
+    assert.match(await page.evaluate(`document.getElementById('air-ssh-sshd').textContent`), /监听中/);
     await page.evaluate(`document.querySelector('[data-ssh-guide="cpolar"]').click()`);
     assert.equal(await page.evaluate(`document.getElementById('air-ssh-guide-cmd').textContent`), 'cpolar tcp 22');
     await page.evaluate(`(() => { const el = document.getElementById('air-ssh-paste'); el.value = 'tcp://3.tcp.cpolar.top:12345'; el.dispatchEvent(new Event('input')); })()`);
