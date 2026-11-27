@@ -35,7 +35,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE, DEFAULT_MAX_PROBES_PER_WINDOW } = require('./oauth-refresh');
-const { parseCredentials } = require('../quota/claude-cli-oauth');
+const { parseCredentials } = require('../native/binding').claudeCliUsage;
 const { atomicWriteJson, ensurePrivateDir, secureFile } = require('../native/binding').runtimeSecurity;
 const { isCliCopy } = require('../official-accounts');
 const { planClaudeExpiredRefresh } = require('../native/binding');

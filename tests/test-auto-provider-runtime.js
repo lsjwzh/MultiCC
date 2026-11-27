@@ -1783,7 +1783,7 @@ test('preferMaxQuota (byQuota) only intervenes when a line runs low on quota', (
 });
 
 test('official account usage sweeper records every signed-in codex account under its own provider id', async () => {
-  const { createOfficialAccountUsageSweeper, claudeUsageWindows } = require('../src/quota/official-account-usage');
+  const { createOfficialAccountUsageSweeper, claudeUsageWindows } = require('../src/native/binding').officialUsage;
   assert.deepEqual(claudeUsageWindows({ five_hour: { utilization: 42, resets_at: null }, seven_day: { utilization: null } }),
     [{ window: '5h', label: 'Current session', usedPercent: 42, resetMs: null }]);
   const recorded = [];

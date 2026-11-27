@@ -21,7 +21,7 @@
 
 const { isLocalRequest } = require('../native/binding').requestLocality;
 const { safeCode, sanitizePublicText } = require('../native/binding').getPublicSafety();
-const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+const { STALE_MS_DEFAULT } = require('../native/binding').providerLimitCache;
 const { providerLimitBar } = require('../native/binding').getQuotaBarView();
 const { detachProviderReferences } = require('../providers/force-detach');
 const { reassignProviderSessions } = require('../provider-reassign');
@@ -151,7 +151,7 @@ function mountProvidersHostRoute(app, options = {}) {
       if (!provider.virtual) continue;
       const key = provider.appType + ':' + provider.id;
       try {
-        const virtual = require('../providers/virtual-provider');
+        const virtual = require('../native/binding').virtualProvider;
         virtualInputs[key] = cache?.isAsync
           ? await virtual.snapshotAsync(provider, deps.providers.listProviders())
           : virtual.snapshot(provider, deps.providers.listProviders());

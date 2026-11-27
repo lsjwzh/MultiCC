@@ -89,7 +89,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             }
           }
           const virtual = provider?.virtual ? provider : null;
-          const virtualRuntime = options.virtualProviders || require('./virtual-provider');
+          const virtualRuntime = options.virtualProviders || require('../native/binding').virtualProvider;
           if (virtual) {
             if (!refreshed) { await (options.getProviderAsync ? virtualRuntime.refreshAsync(virtual) : virtualRuntime.refresh(virtual)); refreshed = true; }
             provider = options.getProviderAsync
@@ -128,7 +128,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               const arg = accountId ? { provider, providerId: route.providerId, accountId, keychainService } : keychainService;
               const credential = await (options.readOfficialCredential || (async service => {
                 if (service && typeof service === 'object') return { token: null, reason: 'account_credential_unresolved' };
-                const value = await require('../quota/claude-cli-oauth').readCliCredentials({ keychainService: service });
+                const value = await require('../native/binding').claudeCliUsage.readCliCredentials({ keychainService: service });
                 return value.ok && (value.expiresAt == null || value.expiresAt > Date.now())
                   ? { token: value.accessToken } : { token: null, reason: value.reason || 'access_token_expired' };
               }))(arg);

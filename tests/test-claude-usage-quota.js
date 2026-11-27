@@ -502,7 +502,7 @@ test('fetchClaudeUsage prefers the OAuth source and never drives a browser', asy
 });
 
 // ── source 1b: the Claude Code CLI's own credential store ───────────────────
-const cliOauth = require('../src/quota/claude-cli-oauth');
+const cliOauth = require('../src/native/binding').claudeCliUsage;
 
 test('parseCredentials accepts both the wrapped and the flat shape', () => {
   const wrapped = cliOauth.parseCredentials(JSON.stringify({
@@ -725,7 +725,7 @@ test('the claude quota op reads the queue and only scrapes for force', async () 
   // across sessions — which the front door can only learn through this op.
   const { createQuotaRuntime } = require('../src/routes/quota-host');
   const Queue = require('../src/native/binding').claudeUsageQueue;
-  const BarState = require('../src/quota/claude-bar-state');
+  const BarState = require('../src/native/binding').claudeBarState;
   Queue.resetClaudeUsageQueue();
   BarState.resetClaudeBarState();
   const scrapes = [];

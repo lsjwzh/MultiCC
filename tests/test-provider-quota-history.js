@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createProviderQuotaHistory } = require('../src/quota/provider-quota-history');
+const { createProviderQuotaHistory } = require('../src/native/binding').quotaHistory;
 const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
 const { getNative, runNative } = require('../src/native/binding');
 
@@ -122,4 +122,21 @@ test('the limit cache feeds the history through onRecord', async t => {
   assert.ok(entry, 'a successful cache write must produce one sample');
   assert.equal(entry.series['5h'].last, 75);
   assert.equal(entry.samples, 1, 'failures never add samples');
+});
+
+test('无效采样短路，历史库构造异常仅在有效采样时降级一次', async () => {
+  let attempts = 0;
+  const warnings = [];
+  const history = createProviderQuotaHistory({ file: 'unused',
+    native: { get RustQuotaHistory() { attempts++; throw Error('unavailable'); } },
+    logger: { warn: message => warnings.push(message) },
+  });
+  assert.equal(await history.recordEntry({ appType: '', get summary() { throw Error('unexpected read'); } }), null);
+  assert.equal(attempts, 0);
+  const sample = { appType: 'claude', providerId: 'one', summary: { kind: 'balance' } };
+  assert.equal(await history.recordEntry(sample), null);
+  assert.equal(await history.recordEntry(sample), null);
+  assert.equal(attempts, 1);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /unavailable/);
 });

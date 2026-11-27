@@ -22,7 +22,7 @@ async function credentials(target) {
     if (!read?.token) throw new Error(`Claude quota credential unavailable: ${read?.reason || 'missing'}`);
     return { accessToken: read.token };
   }
-  const read = await require('../quota/claude-cli-oauth').readCliCredentials();
+  const read = await require('../native/binding').claudeCliUsage.readCliCredentials();
   if (!read?.ok || !read.accessToken || (read.expiresAt != null && read.expiresAt <= Date.now())) {
     throw new Error('Claude quota CLI credential unavailable or expired');
   }
@@ -51,7 +51,7 @@ function mountProviderBalanceHost(app, options) {
       return { ok: true, found: true, entry, snapshot: providerLimitSnapshot(entry, body.now) };
     }
     if (body.op === 'virtualMember') {
-      const virtual = require('../providers/virtual-provider');
+      const virtual = require('../native/binding').virtualProvider;
       const asyncCache = deps.lookupCached && deps.asyncLimitCache === true;
       await (asyncCache ? virtual.refreshAsync(provider) : virtual.refresh(provider));
       try {

@@ -29,7 +29,7 @@ const { limitState } = require('../native/binding').getAutoProviderPolicy();
 const { createAutoProviderRouting } = require('./auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('../native/binding').getAutoProviderPricing();
 const { createRoutingAdmissionPhase } = require('./admission-progress');
-const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+const { STALE_MS_DEFAULT } = require('../native/binding').providerLimitCache;
 const { selectionKey } = require('../providers/auto-provider-config');
 const { getNative } = require('../native/binding');
 

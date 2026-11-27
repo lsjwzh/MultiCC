@@ -103,6 +103,8 @@ function probeAddon(file, node = process.execPath) {
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
     if(['artifactIdFromRegistryUrl','retainedArtifactIds','retainedArtifactIdsAsync','claudeSdkFingerprint','claudeSdkLaneOptions',
       'workspaceResidencyApi','egressIpPolicyApi','outboundSystemProxy','outboundPolicyInstance','outboundBypassUrl','modelConnectTimers',
+      'usageLimitWiring','claudeBarState','quotaBarCacheApi','quotaBarCacheStore','cliUsageHost','officialUsageWindows',
+      'officialUsageSweeper','limitRecorderHost','providerCacheHost','quotaGuardHost','quotaHistoryHost','virtualProviderHost',
       'observeProxyResponse','claudeQuotaHeaderHooks','accountCacheHost','claudeUsageQueueApi','gatewayProxyPeer','GatewayProxyReader','gatewayInternalPort','gatewayLifeline','startGatewayChatBridge','taskMigrationGate',
       'auditedSecretCall','replayHub','chatReplayRuntime','recordOwnerFacade','publicOrchestrationStore','createSqliteHostStore',
       'providerBindingMethods','providerDefaultsApi','providerErrorFields','secureRuntimePaths','runtimePrivatePath','runtimeAtomicText','hostEnvApi','globalProxyApi','authTicketProjection',

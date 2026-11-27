@@ -383,7 +383,7 @@ function createProviderRoutes(rawDeps) {
         ccSwitchStatus,
         providers: providersWithLimits.map(provider => {
           if (!provider.virtual) return provider;
-          try { return { ...provider, virtualStatus: require('../../src/providers/virtual-provider').status(provider, deps.providers.listProviders()) }; }
+          try { return { ...provider, virtualStatus: require('../../src/native/binding').virtualProvider.status(provider, deps.providers.listProviders()) }; }
           catch (_) { return { ...provider, virtualStatus: { availableCount: 0, error: '请更新 Rust 模块并手动重启服务' } }; }
         }),
         defaults: providerDefaults,

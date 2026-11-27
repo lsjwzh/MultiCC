@@ -14,7 +14,7 @@ const addonPath = process.env.MULTICC_RUST_ADDON || path.join(
   process.env.MULTICC_RUST_PREBUILT_DIR || path.resolve(__dirname, '../native/prebuilt'),
   `${process.platform}-${process.arch}`, 'multicc_core.node',
 );
-const { createQuotaGuard } = require('../src/quota/quota-guard');
+const { createQuotaGuard } = require('../src/native/binding').quotaGuard;
 const NOW = 1_800_000_000_000;
 
 async function mount(t, extra = {}) {

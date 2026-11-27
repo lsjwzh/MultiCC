@@ -54,7 +54,7 @@ function readCodexCliLogin(file) {
 function createCliLoginDetector({
   accounts,
   fetchImpl = outboundFetch,
-  readClaudeCli = () => require('./quota/claude-cli-oauth').readCliCredentials(),
+  readClaudeCli = () => require('./native/binding').claudeCliUsage.readCliCredentials(),
   fetchProfile = require('./claude-auth/official-oauth').fetchProfile,
   codexAuthFile = defaultCodexAuthFile(),
   intervalMs = DEFAULT_INTERVAL_MS,
