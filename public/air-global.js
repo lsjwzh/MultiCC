@@ -17,6 +17,8 @@
   // （同 air-secrets.js）：它由 air.js 每次渲染递进来。
   let context = null;
   let setupFromShortcut = null;
+  const permissions = () => root.MultiCCAirAgentPermissions;
+  const checkAgentPermissions = autoOpen => permissions().show(context.api, autoOpen);
   let styleNode = null;
 
   // 样式跟模块走：这页是后加的，不去动 air.css（那份是外壳和各面板共用的）。
@@ -48,13 +50,6 @@
         .air-global-sep { padding-top: 4px; border-top: 1px solid var(--hairline); }
         .air-global-block { display: grid; gap: 7px; }
         #air-global-unlock-password { width: auto; min-width: 0; flex: 1 1 240px; }
-        .air-global-permission-dialog { max-width: min(460px, calc(100vw - 28px)); border: 1px solid var(--hairline);
-          border-radius: 14px; padding: 22px; color: #25445e; box-shadow: 0 16px 50px rgba(18,45,70,.22); }
-        .air-global-permission-dialog::backdrop { background: rgba(14,32,48,.48); }
-        .air-global-permission-dialog h3 { margin: 0 0 8px; }
-        .air-global-permission-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
-        .air-global-permission-status { display: grid; gap: 6px; }
-        .air-global-permission-dialog .air-global-foot { margin-top: 15px; }
       `;
     }
     host.append(styleNode); // replaceChildren 会把它一起清掉，每次重绘都挂回去
@@ -103,7 +98,7 @@
     const permissionRestartDirect = make('button', t('airGlobalPermissionsRestart'));
     permissionRestartDirect.type = 'button';
     permissionRestartDirect.id = 'air-global-permission-restart-direct';
-    permissionRestartDirect.onclick = () => { void restartAgentFromCard(); };
+    permissionRestartDirect.onclick = () => { void permissions().restartFromCard(context.api, permissionRestartDirect); };
     const permissionTools = make('div', null, 'air-global-foot');
     permissionTools.append(permissionButton, permissionRestartDirect);
     // 一台 Mac 只有一个 Agent，几份 MultiCC（桌面版 / 独立包 / 源码）共用它：
@@ -121,40 +116,6 @@
     const agentInstallFoot = make('div', null, 'air-global-foot');
     agentInstallFoot.append(agentReplace);
     agentInstall.append(agentInstallText, agentInstallFoot);
-    const permissionDialog = make('dialog', null, 'air-global-permission-dialog');
-    permissionDialog.id = 'air-global-permission-dialog';
-    const permissionTitle = make('h3', t('airGlobalPermissionsTitle'));
-    const permissionBody = make('p', '', 'air-global-permission-body');
-    permissionBody.id = 'air-global-permission-body';
-    const permissionRecovery = make('p', t('airGlobalPermissionsRecovery'));
-    permissionRecovery.id = 'air-global-permission-recovery';
-    const permissionResult = make('p');
-    permissionResult.id = 'air-global-permission-result';
-    permissionResult.setAttribute('role', 'status');
-    const permissionStatus = make('div', null, 'air-global-permission-status');
-    permissionStatus.id = 'air-global-permission-status';
-    const permissionTarget = make('p');
-    permissionTarget.id = 'air-global-permission-target';
-    const permissionActions = make('div', null, 'air-global-foot');
-    const permissionOpen = make('button', t('airGlobalPermissionsOpen'));
-    permissionOpen.type = 'button';
-    permissionOpen.id = 'air-global-permission-open';
-    permissionOpen.onclick = () => { void openAgentPermission(); };
-    const permissionCheck = make('button', t('airGlobalPermissionsRecheck'));
-    permissionCheck.type = 'button';
-    permissionCheck.id = 'air-global-permission-check';
-    permissionCheck.onclick = () => { void checkAgentPermissions(false); };
-    const permissionRestart = make('button', t('airGlobalPermissionsRestart'));
-    permissionRestart.type = 'button';
-    permissionRestart.id = 'air-global-permission-restart';
-    permissionRestart.hidden = true;
-    permissionRestart.onclick = () => { void restartAgentPermissions(); };
-    const permissionClose = make('button', t('airGlobalPermissionsClose'));
-    permissionClose.type = 'button';
-    permissionClose.onclick = () => permissionDialog.close();
-    permissionActions.append(permissionOpen, permissionCheck, permissionRestart, permissionClose);
-    permissionDialog.append(permissionTitle, permissionResult, permissionStatus, permissionBody,
-      permissionTarget, permissionRecovery, permissionActions);
 
     // Password setup is shared by both switches; saved credentials survive disabling.
     const unlockToggle = make('input');
@@ -212,7 +173,6 @@
       foot,
       permissionTools,
       agentInstall,
-      permissionDialog,
       make('div', null, 'air-global-sep'),
       unlockLabel,
       make('p', t('airGlobalUnlockDesc'), 'air-global-desc'),
@@ -225,117 +185,6 @@
   let powerState = null;
   let powerBusy = false;
   let pendingPowerAction = null;
-  let nextPermission = null;
-  let permissionLocal = false;
-  let permissionRestarting = false;
-  let permissionReadEpoch = 0;
-  const permissionNames = {
-    accessibility: 'airGlobalPermissionsAccessibility',
-    screenRecording: 'airGlobalPermissionsRecording',
-  };
-
-  async function restartAgentFromCard() {
-    const button = el('air-global-permission-restart-direct');
-    if (!button || button.disabled || permissionRestarting) return;
-    button.disabled = true;
-    try {
-      const data = await checkAgentPermissions(false);
-      if (data?.local === true) await restartAgentPermissions();
-      else if (data?.local === false) {
-        el('air-global-permission-result').textContent = t('airGlobalPermissionsRestartLocal');
-      }
-    } finally { button.disabled = false; }
-  }
-
-  async function restartAgentPermissions() {
-    if (!permissionLocal || permissionRestarting) return;
-    permissionRestarting = true;
-    permissionReadEpoch++;
-    const dialog = el('air-global-permission-dialog');
-    const buttons = ['restart', 'restart-direct', 'check', 'open'].map(name => el('air-global-permission-' + name));
-    buttons.forEach(button => { button.disabled = true; });
-    el('air-global-permission-result').textContent = t('airGlobalPermissionsRestarting');
-    try {
-      const data = await context.api('/api/system/agent-permissions/restart', {}, 'POST');
-      if (dialog !== el('air-global-permission-dialog')) return;
-      if (!data.ok) throw new Error(data.error || t('airGlobalPermissionsAgentUnavailable'));
-      await checkAgentPermissions(false, data);
-      el('air-global-permission-result').textContent = t('airGlobalPermissionsRestarted');
-    } catch (error) {
-      if (dialog !== el('air-global-permission-dialog')) return;
-      el('air-global-permission-result').textContent = t('airGlobalPermissionsRestartFailed', { message: error.message });
-    } finally {
-      permissionRestarting = false;
-      buttons.forEach(button => { button.disabled = false; });
-    }
-  }
-
-  async function openAgentPermission() {
-    if (!nextPermission) return;
-    const button = el('air-global-permission-open');
-    button.disabled = true;
-    try {
-      await context.api('/api/system/agent-permissions/open', { permission: nextPermission }, 'POST');
-      el('air-global-permission-body').textContent = t('airGlobalPermissionsGuide', {
-        name: t(permissionNames[nextPermission]),
-      });
-    } catch (error) {
-      el('air-global-permission-body').textContent = t('airGlobalPermissionsOpenFailed', { message: error.message });
-    } finally { button.disabled = false; }
-  }
-
-  async function checkAgentPermissions(autoOpen, snapshot) {
-    const dialog = el('air-global-permission-dialog');
-    if (!dialog) return;
-    const epoch = ++permissionReadEpoch;
-    el('air-global-permission-result').textContent = '';
-    el('air-global-permission-status').replaceChildren();
-    el('air-global-permission-target').textContent = '';
-    el('air-global-permission-recovery').hidden = false;
-    let checked = null;
-    try {
-      const data = snapshot || await context.api('/api/system/agent-permissions');
-      if (epoch !== permissionReadEpoch || dialog !== el('air-global-permission-dialog')) return;
-      checked = data;
-      permissionLocal = data.local === true;
-      el('air-global-permission-restart').hidden = !permissionLocal || data.applicable === false;
-      el('air-global-permission-target').textContent = data.agentApp
-        ? t('airGlobalPermissionsTarget', { path: data.agentApp }) : '';
-      if (!data.ok) {
-        nextPermission = null;
-        el('air-global-permission-body').textContent = t('airGlobalPermissionsAgentUnavailable');
-      } else if (data.applicable === false) {
-        nextPermission = null;
-        if (dialog.open) dialog.close();
-        return;
-      } else {
-        for (const [key, label] of Object.entries(permissionNames)) {
-          const row = make('span', `${t(label)}：${t(data[key] === true ? 'airGlobalPermissionsGranted'
-            : data[key] === false ? 'airGlobalPermissionsNotDetected' : 'airGlobalPermissionsUnknown')}`);
-          row.dataset.permission = key;
-          el('air-global-permission-status').append(row);
-        }
-        nextPermission = !data.accessibility ? 'accessibility' : !data.screenRecording
-          ? 'screenRecording' : null;
-        const ready = !nextPermission;
-        el('air-global-permission-recovery').hidden = ready;
-        el('air-global-permission-body').textContent = nextPermission
-          ? t(data.local ? 'airGlobalPermissionsMissing' : 'airGlobalPermissionsLocal', { name: t(permissionNames[nextPermission]) })
-          : t('airGlobalPermissionsDesktopReady');
-        if (autoOpen && ready) { if (dialog.open) dialog.close(); return; }
-        if (autoOpen && data.local && nextPermission) await openAgentPermission();
-      }
-    } catch (error) {
-      if (epoch !== permissionReadEpoch || dialog !== el('air-global-permission-dialog')) return;
-      nextPermission = null;
-      permissionLocal = false;
-      el('air-global-permission-restart').hidden = true;
-      el('air-global-permission-body').textContent = t('airGlobalPermissionsCheckFailed', { message: error.message });
-    }
-    el('air-global-permission-open').hidden = !nextPermission || !permissionLocal;
-    if (!dialog.open) dialog.showModal();
-    return checked;
-  }
 
   function setPowerBusy(busy) {
     powerBusy = busy;

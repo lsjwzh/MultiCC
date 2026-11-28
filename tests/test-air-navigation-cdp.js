@@ -30,6 +30,7 @@ function fixture() {
   routes['/api/docs-registry'] = () => json([]);
   routes['/api/aux/config'] = () => json({ providerId: configured ? 'p1' : '', cliAvailability: { claude: true, codex: true } });
   routes['/api/settings/power'] = () => json({ available: true, enabled: false, unlockPassword: { available: true, enabled: false, set: false } });
+  routes['/api/system/agent-permissions'] = () => json({ ok: true, applicable: false });
   routes['/api/providers'] = () => json({ available: true, defaults: {}, providers: [] });
   routes['/api/token-usage/global'] = () => json({ windows: { today: {}, week: {}, month: {}, all: {} }, byDay: {} });
   routes['/api/token-usage/by-role'] = () => json({});
@@ -77,6 +78,7 @@ test('Air preserves recent tasks and uses one settings home with browser-consist
     await page.evaluate(`document.querySelector('[data-category="airSettingsComputer"]').click()`);
     assert.equal(await page.evaluate(`document.querySelectorAll('#air-lid-sleep').length`), 1);
     assert.ok(await page.waitFor(`!document.querySelector('#air-lid-sleep').hidden`));
+    assert.equal(await page.evaluate(`document.querySelector('#air-remote-control-settings').hidden`), true);
     await page.evaluate(`document.querySelector('[data-air-card="global"]').click(); document.querySelector('#page-back').click()`);
     assert.ok(await page.waitFor(`document.querySelector('#admin-content #air-lid-sleep') !== null`));
     await page.evaluate(`document.querySelector('#library').click()`);
@@ -100,9 +102,25 @@ test('Air preserves recent tasks and uses one settings home with browser-consist
   });
 });
 
-test('the three-step guide can be resumed after dismissing and reflects real setup state', async t => {
+test('the three-step guide stays resumable and offers skippable macOS remote control', async t => {
   if (!findChromeBinary()) return t.skip('Chrome required');
   const state = fixture(); state.tasks.length = 0; state.directories.length = 0; state.unconfigure();
+  const opens = [];
+  let agentAvailable = false;
+  state.routes['/api/system/agent-permissions'] = () => json({ applicable: true, local: true,
+    agentApp: '/Applications/MultiCC Agent.app', ...(agentAvailable
+      ? { ok: true, accessibility: false, screenRecording: false }
+      : { ok: false, error: 'agent-unavailable' }) });
+  state.routes['POST /api/system/agent-permissions/open'] = req => {
+    opens.push(JSON.parse(req.body).permission);
+    return json({ ok: true });
+  };
+  state.routes['POST /api/air/tasks'] = req => {
+    const { dirId, title } = JSON.parse(req.body);
+    state.tasks.push({ id: 'first-task', dirId, title, status: 'active', runState: 'idle', updatedAt: Date.now() });
+    return json({ taskId: 'first-task' });
+  };
+  state.routes['POST /api/task-shell-tasks/first-task/messages'] = () => json({ ok: true });
   await withCdpHarness({ routes: state.routes, screenshotDir: shots }, async page => {
     await page.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 980, deviceScaleFactor: 1, mobile: false });
     await page.navigate('/air');
@@ -110,6 +128,13 @@ test('the three-step guide can be resumed after dismissing and reflects real set
     assert.equal(await page.evaluate(`document.querySelectorAll('.setup-step.current').length`), 1);
     assert.equal(await page.evaluate(`document.querySelector('#onboarding-progress').textContent`), '0 / 3');
     assert.equal(await page.evaluate(`document.querySelector('#setup-first-task').disabled`), true);
+    assert.ok(await page.waitFor(`document.querySelector('#setup-step-2').nextElementSibling.id === 'setup-step-remote' &&
+      !document.querySelector('#setup-step-remote').hidden`));
+    await page.evaluate(`document.querySelector('#setup-remote-configure').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#air-global-permission-dialog')?.open &&
+      document.querySelector('#air-global-permission-body').textContent === t('airGlobalPermissionsAgentUnavailable')`));
+    await page.evaluate(`document.querySelector('#air-global-permission-dialog').close()`);
+    agentAvailable = true;
     await page.evaluate(`document.querySelector('#setup-dismiss').click(); document.querySelector('#side-more').click(); document.querySelector('#onboarding-entry').click()`);
     assert.equal(await page.evaluate(`document.querySelector('#setup-card').hidden`), false);
     await page.evaluate(`document.querySelector('#setup-provider').click()`);
@@ -131,8 +156,30 @@ test('the three-step guide can be resumed after dismissing and reflects real set
     assert.ok(await page.waitFor(`document.querySelector('#onboarding-progress').textContent === '2 / 3'`), 'returning after saving rechecks configuration');
     await page.evaluate(`document.querySelector('#setup-first-task').click()`);
     assert.equal(await page.evaluate(`document.querySelector('#quick-task-dialog').open`), true);
-
-
+    await page.evaluate(`document.querySelector('#quick-task-input').value = '查看项目文件';
+      document.querySelector('#quick-task-form').requestSubmit()`);
+    assert.ok(await page.waitFor(`location.search.includes('task=first-task')`));
+    assert.equal(await page.evaluate(`document.querySelector('#onboarding-progress').textContent`), '3 / 3');
+    assert.ok(await page.evaluate(`document.querySelector('#onboarding-entry-remote').checkVisibility()`));
+    assert.deepEqual(opens, []);
+    await page.evaluate(`document.querySelector('#onboarding-entry').click(); document.querySelector('#setup-remote-configure').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#air-global-permission-dialog')?.open`));
+    assert.equal(await page.evaluate(`document.querySelectorAll('#air-global-permission-status [data-permission]').length`), 2);
+    assert.deepEqual(opens, [], 'opening the guide only reads the permissions');
+    await page.evaluate(`document.querySelector('#air-global-permission-open').click()`);
+    assert.ok(await page.waitFor(`!document.querySelector('#air-global-permission-open').disabled`));
+    assert.deepEqual(opens, ['accessibility']);
+    await page.evaluate(`document.querySelector('#air-global-permission-dialog').close(); document.querySelector('#setup-remote-skip').click()`);
+    assert.equal(await page.evaluate(`document.querySelector('#setup-card').hidden`), true);
+    await page.navigate('/air?view=overview');
+    assert.ok(await page.waitFor(`document.querySelector('#onboarding-progress').textContent === '3 / 3' &&
+      !document.querySelector('#air-remote-control-settings').hidden`));
+    assert.equal(await page.evaluate(`document.querySelector('#onboarding-entry').hidden`), true, 'skip survives reload');
+    await page.evaluate(`document.querySelector('#side-more').click();
+      document.querySelector('[data-category="airSettingsComputer"]').click();
+      document.querySelector('#air-remote-control-settings').click()`);
+    assert.ok(await page.waitFor(`document.querySelector('#air-global-permission-dialog')?.open`));
+    assert.deepEqual(opens, ['accessibility'], 'settings opens the same guide without requesting a grant');
   });
 });
 

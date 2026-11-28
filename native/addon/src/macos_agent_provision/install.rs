@@ -158,35 +158,8 @@ fn installed<'a>(f: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
         c"log",
         &format!("[multicc-agent] {} done", fold_string(action)?),
     )?;
-    if !action.is_string("install")? {
-        return ping(f);
-    }
-    then(
-        run(
-            s,
-            s.get(c"bin")?,
-            list(f, &[text(f, "request-permissions")?])?,
-        )?,
-        f,
-        |f, a| {
-            if !a[0].get(c"code")?.equals(num(f, 0.)?)? {
-                let tail = call(
-                    call(a[0].get(c"output")?, c"trim", &[])?,
-                    c"slice",
-                    &[num(f, -200.)?],
-                )?;
-                write_log(
-                    f.get(c"s")?,
-                    c"warn",
-                    &format!(
-                        "[multicc-agent] permission request failed: {}",
-                        fold_string(tail)?
-                    ),
-                )?;
-            }
-            ping(f)
-        },
-    )
+    // The user can request each permission from the onboarding or settings guide.
+    ping(f)
 }
 fn provision<'a>(s: L<'a>, options: L<'a>) -> Result<L<'a>> {
     let checked = (|| {

@@ -100,7 +100,7 @@ $MCU snap-hires /absolute/assist/detail.png 400 240 100 80
 
 **backend 不是 agent 时**：
 - `not installed`：MultiCC 每次启动会自动安装/更新 agent（发行包自带预编译程序；源码运行时需要 Xcode 命令行工具）。原因看 MultiCC 日志里的 `[multicc-agent]` 行；用户卸载过（`install-agent.sh uninstall`）则不会自动装回，需在 MultiCC 目录手动跑 `scripts/install-agent.sh install`。
-- `lacks ... grant`：让用户按 `status.platform.settingsApp` 所说的设置页给 **MultiCC Agent** 开辅助功能 + 屏幕录制（首次安装时系统已弹过提示、App 已在列表里，只需打开开关；若列表里没有，点 + 添加 `~/Applications/MultiCC Agent.app`），授权后 `launchctl kickstart -k gui/$(id -u)/com.multicc.agent`。输入监控现在既不需要也不提醒。
+- `lacks ... grant`：让用户在 Mac 上打开「设置 → 电脑与电源 → 屏幕录制与远程控制」，按提示给 **MultiCC Agent** 开启辅助功能和屏幕录制。若系统列表中找不到 Agent，点「+」添加引导里显示的 App，授权后回到引导点击「重启 Agent 并重新检测」。
 - 报 `not installed` / `not running`，但 `~/Applications/MultiCC Agent.app` 明明在：多半是二进制丢了执行位（老版安装脚本复制预编译程序的现场），每一次调用都会失败。**别手工 chmod**，让用户重启一次 MultiCC —— 启动时会自己重跑安装脚本修好（`[multicc-agent] install (not-executable)`）；不方便重启就在 MultiCC 目录跑 `scripts/install-agent.sh install`。修完 `$MCU status` 应当能回话。
 - 当下仍可用 legacy：先跑 `bash <skill_dir>/scripts/init.sh`（检查依赖、打印进程名），授权问题用 **computer-use-permissions** 技能。legacy 没有 see/元素操作，也没有上面的安全机制。
 

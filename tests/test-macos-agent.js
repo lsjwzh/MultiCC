@@ -1147,7 +1147,7 @@ test('agent provisioning: decides install / update / skip from what is on disk',
   fs.rmSync(f.tmp, { recursive: true, force: true });
 });
 
-test('agent provisioning: runs the installer in the background, asks for grants only on first install, never throws', async () => {
+test('agent provisioning: installs in the background and leaves permissions to the user', async () => {
   const f = provisionFixture();
   let nested;
   const p = f.make({ logger: { log() { nested ??= p.ensure(); }, warn() {} } });
@@ -1156,7 +1156,7 @@ test('agent provisioning: runs the installer in the background, asks for grants 
   assert.equal(nested, a, 'synchronous logger reentry shares the installation');
   const first = await a;
   assert.equal(first.ok, true);
-  assert.deepEqual(f.calls, [['sh', 'install'], ['MultiCCAgent', 'request-permissions'], ['MultiCCAgent', 'ping']]);
+  assert.deepEqual(f.calls, [['sh', 'install'], ['MultiCCAgent', 'ping']]);
   assert.equal(first.ready, true, 'a half-install must be visible here, not only as "unlock is not ready" later');
 
   f.calls.length = 0;

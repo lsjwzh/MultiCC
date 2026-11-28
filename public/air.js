@@ -153,8 +153,7 @@
 
   // ── 首启配置卡：AI Assistant 配没配，由服务端那份配置说话 ──
   // null = 还没查到（页面刚起或查询失败），false = 未配置（亮卡），true = 已配置。
-  // 离开 aux 设置页时重查一次：在那儿保存过之后，这张卡应该当场消失，而不是
-  // 等下次刷新。跳过只记在本机 —— 跳过的是「这张卡」，不是「这个配置」。
+  // 离开 aux 设置页时重查，保存后的进度当场更新。引导的跳过状态留在浏览器里。
   let auxConfigured = null;
   async function refreshAuxConfigured() {
     let config = null;
@@ -186,7 +185,7 @@
     } catch (_) { /* 取不到命令就留空，不打断引导 */ }
   }
   function renderSetupCard() {
-    window.MultiCCAirOnboarding?.render({ data, auxConfigured, setMode,
+    window.MultiCCAirOnboarding?.render({ data, auxConfigured, setMode, api,
       example: () => window.MultiCCAirSettings.directory(async directory => { await refresh(); navigate(directory.id); }, { example: true }) });
   }
   function rememberTask(id) {
@@ -479,8 +478,7 @@
   }
   function setMode(next) {
     saveDraft();
-    // 从 AI Assistant 设置页离开时重查配置：刚在那儿保存过的话，首启配置卡
-    // 会在这次渲染里自己消失。
+    // 离开 AI Assistant 或线路设置时刷新首启进度。
     if (['aux', 'provider'].includes(mode) && next !== mode) void refreshAuxConfigured();
     mode = next;
     taskId = null;
@@ -2782,6 +2780,7 @@
   });
   $('add-directory').onclick = () => window.MultiCCAirSettings.directory(async directory => { await refresh(); navigate(directory.id); });
   void refreshAuxConfigured();
+  window.MultiCCAirAgentPermissions?.attach(api);
   $('quick-task-form').onsubmit = submitQuickTask;
   $('quick-task-attach').onclick = () => $('quick-task-file-input').click();
   $('quick-task-file-input').onchange = event => void uploadQuickTaskFiles(event.target.files);
