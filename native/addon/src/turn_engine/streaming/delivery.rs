@@ -245,6 +245,9 @@ pub(super) fn send<'a>(
                 c"markFirstByte",
                 &[st.session, st.turn.get(c"turnId")?],
             )?;
+            if agy::defer(st, a[0])? {
+                return undefined(st.state);
+            }
             st.port(
                 c"applyAdapterChatEvent",
                 &[
@@ -285,6 +288,9 @@ pub(super) fn send<'a>(
                 "finalize",
                 st.callback("finalize", 0, |st, _| {
                     let s = st.state;
+                    if agy::retry(st)? {
+                        return undefined(s);
+                    }
                     st.port(
                         c"finalizeStreamingTurn",
                         &[

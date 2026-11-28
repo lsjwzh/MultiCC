@@ -57,25 +57,29 @@ pub fn workspace_residency(env: Env, ports: Unknown<'_>) -> Result<sys::napi_val
             ),
             (
                 "track",
-                function(p, "track", 3, 3, |p, a| {
+                function(p, "track", 3, 4, |p, a| {
                     assert_send(p, a[0])?;
                     let old = entry(p, a[0])?;
-                    if old.truthy()? {
-                        if !old.get(c"path")?.equals(call(p, c"location", &[a[1]])?)? {
-                            return Err(busy(p)?);
-                        }
+                    let target = call(p, c"location", &[a[1]])?;
+                    if old.truthy()? && old.get(c"path")?.equals(target)? {
                         if !a[2].undefined()? {
                             call(p, c"setActivity", &[old, a[2]])?;
                         }
                     } else {
-                        store(
-                            p,
-                            a[0],
-                            call(p, c"location", &[a[1]])?,
-                            null(p)?,
-                            flag(p, false)?,
-                            a[2],
-                        )?;
+                        if old.truthy()? {
+                            // 新位置的首轮 send 会 join 此关闭屏障。活跃、已停放以及
+                            // 仍承担后台工作的旧租约，继续由原工作区的许可流程管理。
+                            if a[3].kind()? != sys::ValueType::napi_function
+                                || !idle(p, a[0])?
+                                || call(p, c"status", &[a[0]])?
+                                    .optional(c"backgroundActive")?
+                                    .truthy()?
+                            {
+                                return Err(busy(p)?);
+                            }
+                            a[3].call_plain(&[])?;
+                        }
+                        store(p, a[0], target, null(p)?, flag(p, false)?, a[2])?;
                     }
                     p.from_value(&V::Undefined)
                 })?,

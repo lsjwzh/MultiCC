@@ -108,7 +108,7 @@ pub const CAPABILITIES: &[(&str, Capability)] = &[
         cap("command-code-json", "per-turn", "process"),
     ),
     ("grok", cap("acp", "per-turn", "process")),
-    ("agy", cap("agy-stream-json", "per-turn", "process")),
+    ("agy", cap("agy-stream-json", "resident", "process")),
 ];
 
 /// 可调档位和模型限制随 Provider 目录下发，启动参数也查同一份数据。
@@ -1027,7 +1027,14 @@ mod tests {
 
     #[test]
     fn lanes_and_lifecycle() {
-        for cli in ["claude", "claude-exp", "codex-exp", "zcode", " Claude-EXP "] {
+        for cli in [
+            "claude",
+            "claude-exp",
+            "codex-exp",
+            "zcode",
+            "agy",
+            " Claude-EXP ",
+        ] {
             assert!(is_resident(cli), "{cli}");
             assert_eq!(transport_of(cli), "claude-stream");
         }

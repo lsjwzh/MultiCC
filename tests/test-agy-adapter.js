@@ -250,7 +250,10 @@ test('Agy 终端命令和启动参数与冻结适配器一致', () => {
         const options = { model, effort, sessionId, first: !sessionId };
         const session = { model, effort, cliSessionId: sessionId };
         assert.equal(current.buildTerminalCmd(session), previous.buildTerminalCmd(session));
-        assert.deepEqual(current.buildInvocation(envelope(options)), previous.buildInvocation(envelope(options)));
+        assert.deepEqual(current.buildInvocation(envelope(options)), {
+          ...previous.buildInvocation(envelope(options)), streamBackend: 'agy-stream-json',
+          nativeKey: 'cliSessionId', clientAllocatesNativeId: false,
+        });
       }
     }
   }

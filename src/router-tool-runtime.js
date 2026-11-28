@@ -1350,6 +1350,7 @@ function createRouterToolRuntime({
 
   return Object.freeze({
     issueContext,
+    capabilityExpiresAt: token => capabilities.get(token)?.expiresAt,
     revoke,
     clear,
     execute,
