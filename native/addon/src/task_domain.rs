@@ -34,7 +34,7 @@ pub struct CacheJob {
     inner: Arc<Mutex<CardCache>>,
     input: String,
     prepare: Option<u32>,
-    board: Option<Arc<Mutex<BoardState>>>,
+    board: Option<(u64, Arc<Mutex<BoardState>>)>,
 }
 impl Task for CacheJob {
     type Output = String;
@@ -49,12 +49,14 @@ impl Task for CacheJob {
             let mut cache = lock_cache(&inner);
             match (prepare, board) {
                 // 锁序固定为卡片缓存 → 任务板；主线程只单独锁任务板，不会成环。
-                (Some(token), Some(board)) => {
+                (Some(token), Some((identity, board))) => {
                     let state = lock_board(&board);
                     if state.is_stale() {
                         Err("TASK_BOARD_RESYNC_REQUIRED".to_string())
                     } else {
-                        cache.prepare_on(&input, state.board(), state.version(), token)
+                        cache.capture_board(identity, &state);
+                        drop(state);
+                        cache.prepare_on(&input, token)
                     }
                 }
                 (Some(token), None) => cache.prepare(&input, token),
@@ -114,7 +116,7 @@ impl RustAirCardCache {
             inner: self.inner.clone(),
             input,
             prepare: Some(known_token),
-            board: Some(board.shared()),
+            board: Some((board.identity, board.shared())),
         })
     }
 }

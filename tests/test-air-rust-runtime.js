@@ -93,3 +93,62 @@ run('原生更新失败保留已发布快照与游标，恢复后完整重试', 
   assert.equal(delta.tasks[0].runState, 'error'); assert.notEqual(runtime.index.cursor(), before);
   assert.deepEqual(socket.frames.at(-1), { type: 'air_status', degraded: false });
 });
+run('归档发布后，排队的快照读和默认首屏隐藏归档行，归档页仍能找到', async t => {
+  const index = createAirIndex({ backend: 'rust' });
+  t.after(() => index.close());
+  const input = snapshot([task('tsk_old'), task('tsk_open')]);
+  input.taskPins = ['tsk_old'];
+  await index.apply(input);
+  const first = await index.serialized();
+  const archived = task('tsk_old', { status: 'archived', attention: { at: 5 } });
+  const writing = index.publish({ ...input, tasks: [archived] }, { partial: true }, []);
+  const reading = index.serialized();
+  await writing;
+  const next = await reading;
+  assert.notEqual(next.etag, first.etag);
+  assert.deepEqual(JSON.parse(next.body).tasks.map(t => t.id), ['tsk_open']);
+  const boot = await index.bootstrap({});
+  assert.deepEqual(boot.tasks.map(t => t.id), ['tsk_open']);
+  assert.deepEqual(boot.attentionTasks, []);
+  assert.deepEqual((await index.page({ status: 'archived' })).tasks.map(t => t.id), ['tsk_old']);
+  assert.ok((await index.bootstrap({ include: ['tsk_old'] })).tasks.some(t => t.id === 'tsk_old'));
+});
+
+run('手动归档仅向任务板提交已完成、可见且无近期活动的任务', async () => {
+  const old = 1;
+  const rows = Object.fromEntries(['eligible', 'recent', 'busy', 'hidden', 'active', 'seen'].map(id =>
+    [id, { id, title: id, status: id === 'active' ? 'active' : 'done', updatedAt: old, chatSessionId: id }]));
+  rows.seen.seenAt = Date.now();
+  const writes = [];
+  const air = require('./helpers/air-host').mountAir({
+    getBoard: () => ({ tasks: rows }),
+    records: new Map(['busy', 'recent'].map(id => [id, { id, kind: 'chat', lastWorkAt: id === 'recent' ? new Date().toISOString() : old }])),
+    getSessionRunState: id => id === 'busy' ? 'running' : 'idle',
+    shell: { listTasks: () => [{ id: 'hidden', embedded: true }] },
+    archiveInactive(ids) {
+      writes.push([...ids]);
+      for (const id of ids) rows[id].status = 'archived';
+      return { ok: true, archived: ids, skipped: [] };
+    },
+  });
+  assert.equal(writes.length, 0);
+  assert.deepEqual((await air.ok({ op: 'archive-inactive' })).archived, ['eligible']);
+  assert.deepEqual((await air.ok({ op: 'archive-inactive' })).archived, []);
+});
+
+test('网页批量归档取消时不提交，确认后提交一次并刷新结果', async () => {
+  const button = { disabled: false };
+  const window = { confirm: () => false };
+  const script = require('node:fs').readFileSync(require.resolve('../public/air-archive'), 'utf8');
+  require('node:vm').runInNewContext(script, { window, document: { getElementById: () => button } });
+  const events = [];
+  const deps = { t: (key, args) => args ? String(args.n) : key,
+    async api(path) { events.push(path); return { archived: ['a', 'b'] }; },
+    async refresh() { events.push('refresh'); }, notice(value) { events.push(value); } };
+  await window.MultiCCArchiveInactive(deps);
+  assert.deepEqual(events, []);
+  window.confirm = () => true;
+  await window.MultiCCArchiveInactive(deps);
+  assert.deepEqual(events, ['/api/air/archive-inactive', 'refresh', '2']);
+  assert.equal(button.disabled, false);
+});

@@ -130,7 +130,7 @@ test('任务库的变化只让权限结果真变了的那张卡重建，不再�
   const f = fixture();
   await f.get(); await f.get();
   assert.equal(f.state.builds, 2);
-  f.state.access.tsk_2 = { readOnly: true, status: 'archived' };   // 只有 tsk_2 的权限变了
+  f.state.access.tsk_2 = { readOnly: true, status: 'active' };   // 只有 tsk_2 的权限变了
   const json = (await f.get()).json;
   assert.equal(f.state.builds, 3, '只重建 tsk_2');
   assert.equal(card(json, 'tsk_2').readOnly, true);

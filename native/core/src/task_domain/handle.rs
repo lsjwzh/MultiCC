@@ -196,6 +196,7 @@ fn dispatch(
             .iter()
             .map(|t| t["id"].clone())
             .collect::<Vec<_>>())),
+        "airInactiveDone" => Ok(air::inactive_done(b, v)),
         "airInputs" => Ok(air::run_on(b, v)),
         "deletedAmong" => Ok(json!(deleted::among(b, &v["ids"]))),
         _ => Err("TASK_BOARD_UNSUPPORTED_OP".into()),
@@ -210,6 +211,9 @@ impl BoardState {
         &self.board
     }
     /// 常驻副本每变一次就递增；派生缓存（卡片输入）按它失效。
+    pub fn task_hashes(&self) -> &HashMap<String, u64> {
+        &self.shadow.hashes[0]
+    }
     pub fn version(&self) -> u64 {
         self.version
     }

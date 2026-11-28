@@ -48,14 +48,17 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
   }
   // 整页卡片一次原生调用算完权限（与逐卡 access 同一套规则）。规则判定需要补写
   // 任务壳的卡（新建壳、回填 standalone）标成 pending，回到逐卡路径，写入行为不变。
-  function accessBatch(tasks) {
+  function accessBatch(tasks, asynchronous = false) {
     const byId = store.cachedById ? store.cachedById('task') : null;
     const rows = tasks.map(t => byId?.get(t.id) || t);
     const records = {};
     for (const task of rows) for (const id of sessionIdsOf(task)) if (!Object.hasOwn(records, id)) records[id] = recordFacts(getRecord(id));
-    const results = store.rule({ action: 'accessBatch', records, taskFirst: ports.taskFirst,
-      items: rows.map(task => ({ task: { ...ownerFacts(task), ...accessFacts(task) }, lifecycle: lifecycleFacts(getTask(task.id) || task) })) });
-    return new Map(tasks.map((t, i) => [t.id, results[i]?.pending ? access(t) : results[i]]));
+    const command = { action: 'accessBatch', records, taskFirst: ports.taskFirst,
+      items: rows.map(task => ({ task: { ...ownerFacts(task), ...accessFacts(task) }, lifecycle: lifecycleFacts(getTask(task.id) || task) })) };
+    const finish = results => new Map(tasks.map((t, i) => [t.id, results[i]?.pending ? access(t) : results[i]]));
+    return asynchronous
+      ? store.airAccessAsync(command).then(results => results && finish(results))
+      : finish(store.rule(command));
   }
   async function taskEntry(id, { includeMessages = true, messageScope = false } = {}) {
     const task = findTask(id), lifecycle = getTask(id) || task;
@@ -246,6 +249,6 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     forks.set(key, operation);
     try { return await operation; } finally { forks.delete(key); }
   }
-  return { ownerOf, taskEntry, bindPlannedTask, taskAccess: access, taskAccessBatch: accessBatch, assertBoardWritable, forkTask, createStandalone };
+  return { ownerOf, taskEntry, bindPlannedTask, taskAccess: access, taskAccessBatch: accessBatch, taskAccessBatchAsync: tasks => accessBatch(tasks, true), assertBoardWritable, forkTask, createStandalone };
 }
 module.exports = { createTaskActions };

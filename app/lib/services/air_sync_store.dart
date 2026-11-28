@@ -84,7 +84,8 @@ class AirSyncStore {
     final retained = {
       ...keep,
       ..._recent,
-      for (final id in metadata?['taskPins'] as List? ?? []) '$id',
+      for (final id in metadata?['taskPins'] as List? ?? [])
+        if (rows['$id']?['status'] != 'archived') '$id',
     };
     rows.removeWhere((id, _) => !retained.contains(id));
     _versions.removeWhere((id, _) => !retained.contains(id));

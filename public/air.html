@@ -186,6 +186,7 @@
              图标沿用原来那一个（.air-tool-icon）；原来只有文字的按钮，图标平时不
              显示（.air-tool-icon-panel），只有浮层里需要它站到第一列。 -->
         <button id="schedule-create" class="primary" type="button" hidden><span class="air-tool-icon" aria-hidden="true">＋</span> <span data-i18n="airNewScheduledTask">新建定时任务</span></button>
+        <button id="archive-inactive" type="button" data-i18n="airArchiveInactive">归档旧任务</button>
         <div id="admin-actions" hidden></div>
         <!-- Two of the frame's most-used More-menu actions stay one click away
              (the menu keeps the full list). Each shortcut clicks the chat
@@ -877,6 +878,7 @@
   <script src="air-task-todo.js"></script>
   <script src="air-mobile.js"></script>
   <script src="air-sync.js"></script>
+  <script src="air-archive.js"></script>
   <script src="air.js"></script>
   <!-- 要晚于 air.js：它先给输入框填好内容，折叠才有东西可以念在杠上。 -->
   <script src="air-quick-fold.js"></script>

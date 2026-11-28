@@ -154,11 +154,7 @@ pub(super) fn build<'a>(p: L<'a>, ids: L<'a>) -> Result<L<'a>> {
         let t = timer(p)?;
         let ctx = fields(p, &[("p", p), ("timer", t)])?;
         then(
-            snapshot::start(
-                p,
-                t,
-                fields(p, &[("ids", ids), ("cooperative", flag(p, true)?)])?,
-            )?,
+            snapshot::start(p, t, fields(p, &[("ids", ids)])?)?,
             ctx,
             |c, a| {
                 report(c.get(c"p")?, c.get(c"timer")?)?;
@@ -181,6 +177,10 @@ pub(super) fn snapshot_value<'a>(p: L<'a>, header: L<'a>) -> Result<L<'a>> {
             then(snapshot::start(p, t, fields(p, &[])?)?, ctx, |c, a| {
                 let p = c.get(c"p")?;
                 let t = c.get(c"timer")?;
+                let visible = function(p, "visible", 1, 1, |p, a| {
+                    flag(p, !a[0].get(c"status")?.is_string("archived")?)
+                })?;
+                a[0].set(c"tasks", call(a[0].get(c"tasks")?, c"filter", &[visible])?)?;
                 let body = json_call(p, c"stringify", a[0])?;
                 call(t, c"lap", &[text(p, "jsonMs")?])?;
                 let tag = etag(p, body)?;

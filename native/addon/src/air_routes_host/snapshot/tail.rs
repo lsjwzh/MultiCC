@@ -142,7 +142,7 @@ pub(super) fn finish<'a>(ctx: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
             ("tasks", tasks),
         ],
     )?;
-    out.spread_from(lists::snapshot(p, prepared.get(c"tasks")?)?)?;
+    out.spread_from(lists::snapshot(p, prepared)?)?;
     out.set(c"budgets", ctx.get(c"admission")?.get(c"budgets")?)?;
     out.set(c"clis", deps(p)?.get(c"clis")?)?;
     out.set(c"migration", ctx.get(c"migration")?)?;

@@ -114,6 +114,7 @@ fn run_value(v: &Value) -> Result<Value, String> {
     let result = match text(&v["op"]) {
         "planning" => planning::run(v)?,
         "board" => board::run(v)?,
+        "airInactiveDone" => air::inactive_done(&v["board"], v),
         "airInputs" => air::run(v),
         "airVisible" => json!(air::visible(&v["board"], &v["shellTasks"])
             .iter()

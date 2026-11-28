@@ -132,7 +132,9 @@ fn prepare<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
             let v = if v.truthy()? {
                 v
             } else {
-                f.get(c"held")?.get(c"value")?
+                let previous = spread(f.get(c"held")?.get(c"value")?)?;
+                previous.set(c"signatureBuilds", num(f, 0.)?)?;
+                previous
             };
             f.get(c"s")?.set(
                 c"prepared",
@@ -153,7 +155,6 @@ fn snapshot<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
             &[],
         )?;
         then(planned, f, |f, a| {
-            let s = f.get(c"s")?;
             let ticket = a[0].get(c"ticket")?;
             f.set(c"ticket", ticket)?;
             let r = async_result(f, || {

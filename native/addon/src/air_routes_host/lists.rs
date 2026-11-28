@@ -25,6 +25,13 @@ pub(super) fn ids_for_session<'a>(p: L<'a>, id: L<'a>) -> Result<L<'a>> {
     Ok(out)
 }
 fn visible(p: L<'_>) -> Result<L<'_>> {
+    let ids = p.get(c"snapshotIds")?;
+    if ids.truthy()? {
+        let tasks = call(deps(p)?, c"getBoard", &[])?.get(c"tasks")?;
+        let out = array(p)?;
+        ids.for_each(|id| append(out, tasks.get_key(id)?))?;
+        return Ok(out);
+    }
     let held = p.get(c"taskSnapshot")?;
     if held.truthy()? {
         return Ok(held);
@@ -204,6 +211,10 @@ fn list<'a>(p: L<'a>, name: &str) -> Result<L<'a>> {
         options.set(
             c"listTaskIds",
             function(p, "listTaskIds", 0, 0, |p, _| {
+                let ids = p.get(c"snapshotIds")?;
+                if ids.truthy()? {
+                    return Ok(ids);
+                }
                 let out = array(p)?;
                 visible(p)?.for_each(|t| append(out, t.get(c"id")?))?;
                 Ok(out)
@@ -214,7 +225,10 @@ fn list<'a>(p: L<'a>, name: &str) -> Result<L<'a>> {
     p.set(slot, value)?;
     Ok(value)
 }
-pub(super) fn snapshot<'a>(p: L<'a>, tasks: L<'a>) -> Result<L<'a>> {
+pub(super) fn snapshot<'a>(p: L<'a>, prepared: L<'a>) -> Result<L<'a>> {
+    let prev_ids = p.get(c"snapshotIds")?;
+    p.set(c"snapshotIds", prepared.get(c"taskIds")?)?;
+    let tasks = prepared.get(c"tasks")?;
     let prev = p.get(c"taskSnapshot")?;
     p.set(c"taskSnapshot", tasks)?;
     let result = (|| {
@@ -229,6 +243,7 @@ pub(super) fn snapshot<'a>(p: L<'a>, tasks: L<'a>) -> Result<L<'a>> {
     })();
     if let Err(err) = result {
         let thrown = p.exception_value()?;
+        p.set(c"snapshotIds", prev_ids)?;
         p.set(c"taskSnapshot", prev)?;
         return Err(if let Some(e) = thrown {
             e.throw_error()
@@ -236,6 +251,7 @@ pub(super) fn snapshot<'a>(p: L<'a>, tasks: L<'a>) -> Result<L<'a>> {
             err
         });
     }
+    p.set(c"snapshotIds", prev_ids)?;
     p.set(c"taskSnapshot", prev)?;
     result
 }

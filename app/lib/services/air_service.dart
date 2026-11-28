@@ -1107,6 +1107,9 @@ class AirService {
     return ids.toList();
   }
 
+  Future<Map<String, dynamic>> archiveInactive() =>
+      _post('/api/air/archive-inactive', {});
+
   Future<AirSnapshot> load() async {
     final data = await _getSnapshot();
     // 远端工作区是第二个请求。它不该拖垮整个快照：这台服务要是还没有这条路由

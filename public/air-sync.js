@@ -27,7 +27,7 @@
       const recent = [...initialIds].map(id => pool.get(id)).filter(t => t && t.status !== 'archived')
         .sort((a, b) => Number(b.lastMessageAt || b.updatedAt || 0) - Number(a.lastMessageAt || a.updatedAt || 0)).slice(0, 30);
       initialIds.clear(); for (const task of recent) initialIds.add(task.id);
-      const keep = new Set([...initialIds, ...getInclude(), ...(snapshot?.taskPins || [])]);
+      const keep = new Set([...initialIds, ...getInclude(), ...(snapshot?.taskPins || []).filter(id => pool.get(id)?.status !== 'archived')]);
       for (const value of pages.values()) for (const task of value.tasks) keep.add(task.id);
       for (const id of pool.keys()) if (!keep.has(id)) { pool.delete(id); versions.delete(id); }
     }
@@ -49,7 +49,7 @@
       if (event.taskStats) snapshot.taskStats = event.taskStats;
       for (const task of event.tasks || []) {
         put(task, cursor); initialIds.add(task.id);
-        if (task.attention) attention.set(task.id, task); else attention.delete(task.id);
+        if (task.status !== 'archived' && task.attention) attention.set(task.id, task); else attention.delete(task.id);
       }
       for (const id of event.deleted || []) {
         pool.delete(id); versions.delete(id); initialIds.delete(id); attention.delete(id);

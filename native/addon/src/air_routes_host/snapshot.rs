@@ -1,6 +1,7 @@
 //! Snapshot preparation and card overlays. V8 objects stay on their owning thread; the card cache runs the Rust read model asynchronously.
 use super::*;
 use std::time::Instant;
+mod capture;
 mod tail;
 pub(super) fn lap(c: L<'_>, name: &str) -> Result<()> {
     let t = c.get(c"timing")?;
@@ -43,40 +44,36 @@ pub(super) fn start<'a>(p: L<'a>, timing: L<'a>, options: L<'a>) -> Result<L<'a>
         )
     })
 }
-fn last_runtime(p: L<'_>) -> Result<L<'_>> {
+fn note_runtime<'a>(ctx: L<'a>, r: L<'a>) -> Result<()> {
+    let p = ctx.get(c"p")?;
+    let cron = ctx.get(c"cronIds")?;
+    if !r.get(c"kind")?.is_string("chat")?
+        || !r.get(c"cli")?.truthy()?
+        || call(cron, c"has", &[r.get(c"id")?])?.truthy()?
+        || ports(p)?
+            .get(c"abnormal")?
+            .call_plain(&[r.get(c"taskState")?.optional(c"classifyState")?])?
+            .truthy()?
+    {
+        return Ok(());
+    }
+    let worked = r.get(c"lastWorkAt")?;
+    let at = if worked.truthy()? {
+        worked
+    } else {
+        js_or(r.get(c"createdAt")?, text(p, "")?)?
+    };
+    let date = ctx.get(c"lastDate")?;
+    if date.undefined()?
+        || string(at)?.coerce_string()?.into_units() > string(date)?.coerce_string()?.into_units()
+    {
+        ctx.set(c"lastDate", at)?;
+        ctx.set(c"lastRecord", r)?;
+    }
+    Ok(())
+}
+fn last_runtime<'a>(p: L<'a>, last: L<'a>) -> Result<L<'a>> {
     let d = deps(p)?;
-    let cron = p
-        .global()?
-        .get(c"Set")?
-        .construct(&[js_or(lookup(d, c"cronSessionIds", &[])?, array(p)?)?])?;
-    let mut last = null(p)?;
-    let mut date = undef(p)?;
-    call(d.get(c"records")?, c"values", &[])?.for_each(|r| {
-        if !r.get(c"kind")?.is_string("chat")?
-            || !r.get(c"cli")?.truthy()?
-            || call(cron, c"has", &[r.get(c"id")?])?.truthy()?
-            || ports(p)?
-                .get(c"abnormal")?
-                .call_plain(&[r.get(c"taskState")?.optional(c"classifyState")?])?
-                .truthy()?
-        {
-            return Ok(());
-        }
-        let worked = r.get(c"lastWorkAt")?;
-        let at = if worked.truthy()? {
-            worked
-        } else {
-            js_or(r.get(c"createdAt")?, text(p, "")?)?
-        };
-        if last.nullish()?
-            || string(at)?.coerce_string()?.into_units()
-                > string(date)?.coerce_string()?.into_units()
-        {
-            date = at;
-            last = r;
-        }
-        Ok(())
-    })?;
     if last.nullish()? {
         return Ok(last);
     }
@@ -108,57 +105,6 @@ fn last_runtime(p: L<'_>) -> Result<L<'_>> {
         ],
     )
 }
-fn record_facts(p: L<'_>) -> Result<L<'_>> {
-    let d = deps(p)?;
-    let names = map(p)?;
-    let out = fields(p, &[])?;
-    d.get(c"records")?.for_each(|pair| {
-        let (id, r) = pair.iterator_pair()?;
-        let projection = fields(p, &[])?;
-        for key in [
-            c"id",
-            c"dirId",
-            c"kind",
-            c"type",
-            c"cli",
-            c"provider",
-            c"worktreePath",
-            c"branch",
-            c"workspaceOwnerSessionId",
-            c"workspaceState",
-            c"taskBoundTaskId",
-            c"taskExecutionSlot",
-            c"experimentalMode",
-        ] {
-            let value = r.get(key)?;
-            if !value.undefined()? {
-                projection.set(key, value)?;
-            }
-        }
-        let key = call(
-            text(p, "")?,
-            c"concat",
-            &[r.get(c"cli")?, text(p, "\u{0}")?, r.get(c"provider")?],
-        )?;
-        if r.get(c"provider")?.truthy()? && !call(names, c"has", &[key])?.truthy()? {
-            call(
-                names,
-                c"set",
-                &[key, nullable(lookup(d, c"providerName", &[r])?)?],
-            )?;
-        }
-        projection.set(c"providerName", nullable(get(names, key)?)?)?;
-        projection.set(
-            c"taskState",
-            fields(
-                p,
-                &[("goalState", r.get(c"taskState")?.optional(c"goalState")?)],
-            )?,
-        )?;
-        out.define_key(id, projection)
-    })?;
-    Ok(out)
-}
 fn prepare<'a>(ctx: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     let p = ctx.get(c"p")?;
     let d = deps(p)?;
@@ -169,29 +115,48 @@ fn prepare<'a>(ctx: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     }
     ctx.set(c"migration", migration)?;
     lap(ctx, "migrateMs")?;
-    ctx.set(c"lastRuntime", last_runtime(p)?)?;
-    lap(ctx, "recordsMs")?;
+    let cron = p
+        .global()?
+        .get(c"Set")?
+        .construct(&[js_or(lookup(d, c"cronSessionIds", &[])?, array(p)?)?])?;
+    ctx.set(c"cronIds", cron)?;
+    ctx.set(c"lastRecord", null(p)?)?;
     let board = call(d, c"getBoard", &[])?;
     lap(ctx, "boardMs")?;
     ctx.set(c"now", now_ms(p)?)?;
     let admission = call(d.get(c"admission")?, c"snapshot", &[])?;
     ctx.set(c"admission", admission)?;
     lap(ctx, "admissionMs")?;
-    ctx.set(c"index", detail::admission_index(p, admission)?)?;
-    let records = record_facts(p)?;
-    ctx.set(c"records", records)?;
+
+    ctx.set(c"board", board)?;
+    capture::records(ctx)
+}
+fn records_ready(ctx: L<'_>) -> Result<L<'_>> {
+    let p = ctx.get(c"p")?;
+    let board = ctx.get(c"board")?;
+    let admission = ctx.get(c"admission")?;
+    let records = ctx.get(c"records")?;
+    ctx.set(c"lastRuntime", last_runtime(p, ctx.get(c"lastRecord")?)?)?;
+    lap(ctx, "recordsMs")?;
     let shell_tasks = array(p)?;
     js_or(lookup(shell(p)?, c"listTasks", &[])?, array(p)?)?.for_each(|t| {
-        append(
-            shell_tasks,
-            pick(t, &[c"id", c"embedded", c"separatedFromTaskId", c"ready"])?,
-        )
+        if t.get(c"embedded")?.truthy()?
+            || (t.get(c"separatedFromTaskId")?.truthy()? && !t.get(c"ready")?.truthy()?)
+        {
+            append(
+                shell_tasks,
+                pick(t, &[c"id", c"embedded", c"separatedFromTaskId", c"ready"])?,
+            )?;
+        }
+        Ok(())
     })?;
     let cache = p.get(c"cache")?;
     let input = fields(
         p,
         &[
             ("op", text(p, "airInputs")?),
+            ("ids", ctx.get(c"options")?.get(c"ids")?),
+            ("resourceIndex", flag(p, true)?),
             ("board", board),
             ("records", records),
             ("admission", admission),
@@ -213,6 +178,7 @@ fn prepared<'a>(ctx: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     let d = deps(p)?;
     let prepared = a[0];
     ctx.set(c"prepared", prepared)?;
+    mark(ctx, "signatureBuilds", prepared.get(c"signatureBuilds")?)?;
     let policy = p
         .catch(|| lookup(lookup(d, c"hibernation", &[])?, c"policy", &[]))?
         .unwrap_or(null(p)?);
@@ -224,29 +190,49 @@ fn prepared<'a>(ctx: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     } else {
         ids
     };
-    let cards = array(p)?;
-    prepared.get(c"tasks")?.for_each(|t| {
-        if !selected.truthy()? || call(selected, c"has", &[t.get(c"id")?])?.truthy()? {
-            append(cards, t)?;
-        }
-        Ok(())
-    })?;
+    let cards = if prepared.get(c"resourceIndex")?.truthy()? {
+        prepared.get(c"tasks")?
+    } else {
+        ctx.set(
+            c"index",
+            detail::admission_index(p, ctx.get(c"admission")?)?,
+        )?;
+        let cards = array(p)?;
+        prepared.get(c"tasks")?.for_each(|t| {
+            if !selected.truthy()? || call(selected, c"has", &[t.get(c"id")?])?.truthy()? {
+                append(cards, t)?;
+            }
+            Ok(())
+        })?;
+        cards
+    };
     ctx.set(c"prune", flag(p, !selected.truthy()?)?)?;
     ctx.set(c"cards", cards)?;
     mark(ctx, "cardCount", cards.get(c"length")?)?;
     lap(ctx, "cardListMs")?;
+    let shell = shell(p)?;
+    if callable(shell.get(c"taskAccessBatchAsync")?)? {
+        return capture::access(ctx);
+    }
     let access = measured(ctx, "accessMs", || {
-        let s = shell(p)?;
-        if s.get(c"taskAccessBatch")?.truthy()? {
-            return call(s, c"taskAccessBatch", &[cards]);
+        if callable(shell.get(c"taskAccessBatch")?)? {
+            return call(shell, c"taskAccessBatch", &[cards]);
         }
         let map = map(p)?;
         cards.for_each(|t| {
-            call(map, c"set", &[t.get(c"id")?, call(s, c"taskAccess", &[t])?])?;
+            call(
+                map,
+                c"set",
+                &[t.get(c"id")?, call(shell, c"taskAccess", &[t])?],
+            )?;
             Ok(())
         })?;
         Ok(map)
     })?;
+    begin_cards(ctx, access)
+}
+fn begin_cards<'a>(ctx: L<'a>, access: L<'a>) -> Result<L<'a>> {
+    let p = ctx.get(c"p")?;
     ctx.set(c"access", access)?;
     lap(ctx, "cardSignatureMs")?;
     let h = ports(p)?;
@@ -266,28 +252,40 @@ fn prepared<'a>(ctx: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     ctx.set(c"cursor", num(p, 0.)?)?;
     card_loop(ctx)
 }
+fn links<'a>(ctx: L<'a>, id: L<'a>, session: L<'a>, record: L<'a>) -> Result<(L<'a>, L<'a>)> {
+    let index = ctx.get(c"prepared")?.get(c"resourceIndex")?;
+    if !index.truthy()? {
+        return detail::links(ctx.get(c"index")?, session, record);
+    }
+    let pair = index.get_key(id)?;
+    let row = |key, i| {
+        let idx = pair.element(i)?;
+        if idx.nullish()? {
+            null(ctx)
+        } else {
+            ctx.get(c"admission")?.get(key)?.get_key(idx)
+        }
+    };
+    Ok((row(c"workspaces", 0)?, row(c"leases", 1)?))
+}
 fn card_inputs<'a>(ctx: L<'a>, t: L<'a>) -> Result<()> {
     let p = ctx.get(c"p")?;
     let d = deps(p)?;
     let id = t.get(c"id")?;
     let session = event_session(t)?;
     let r = ctx.get(c"records")?.get_key(session)?;
-    let (ws, lease) = detail::links(ctx.get(c"index")?, session, r)?;
+    let (ws, lease) = links(ctx, id, session, r)?;
     let sig = ctx.get(c"prepared")?.get(c"signatures")?.get_key(id)?;
-    let sig = if sig.nullish()? {
-        sig
-    } else {
-        let access = get(ctx.get(c"access")?, id)?;
-        let json = json_call(
-            p,
-            c"stringify",
-            if access.nullish()? { null(p)? } else { access },
-        )?;
-        call(text(p, "")?, c"concat", &[sig, text(p, ":")?, json])?
-    };
     append(
         ctx.get(c"items")?,
-        fields(p, &[("key", id), ("signature", sig)])?,
+        fields(
+            p,
+            &[
+                ("key", id),
+                ("signature", sig),
+                ("access", nullable(get(ctx.get(c"access")?, id)?)?),
+            ],
+        )?,
     )?;
     lists::facts_for(p, t, ctx.get(c"facts")?, Some(ports(p)?.get(c"factKeys")?))?;
     let residency = detail::residency(ws, r)?;
@@ -336,10 +334,11 @@ fn card_loop(ctx: L<'_>) -> Result<L<'_>> {
     let cards = ctx.get(c"cards")?;
     let limit = cards.get(c"length")?.number()? as u32;
     let mut i = ctx.get(c"cursor")?.number()? as u32;
+    let at = Instant::now();
     while i < limit {
         card_inputs(ctx, cards.element(i)?)?;
         i += 1;
-        if i % 24 == 0 && ctx.get(c"options")?.get(c"cooperative")?.truthy()? {
+        if at.elapsed().as_millis() >= 4 && i < limit {
             ctx.set(c"cursor", num(p, i as f64)?)?;
             let wait =
                 p.global()?
@@ -364,42 +363,59 @@ fn card_loop(ctx: L<'_>) -> Result<L<'_>> {
         ],
     )?;
     let bases = function(ctx, "", 1, 1, |ctx, a| {
-        let out = array(ctx)?;
-        a[0].for_each(|index| {
-            let t = ctx.get(c"cards")?.get_key(index)?;
-            let id = t.get(c"id")?;
-            let sid = event_session(t)?;
-            let record = ctx.get(c"records")?.get_key(sid)?;
-            let (ws, lease) = detail::links(ctx.get(c"index")?, sid, record)?;
-            let base = fields(
-                ctx,
-                &[
-                    ("task", t),
-                    ("record", nullable(record)?),
-                    ("workspace", ws),
-                    ("lease", lease),
-                    (
-                        "dirId",
-                        ctx.get(c"prepared")?.get(c"taskDirs")?.get_key(id)?,
-                    ),
-                    ("access", get(ctx.get(c"access")?, id)?),
-                    (
-                        "providerName",
-                        if record.optional(c"provider")?.truthy()? {
-                            record.get(c"providerName")?
-                        } else {
-                            null(ctx)?
-                        },
-                    ),
-                ],
-            )?;
-            append(out, fields(ctx, &[("key", id), ("base", base)])?)
-        })?;
-        Ok(out)
+        ctx.set(c"needed", a[0])?;
+        ctx.set(c"baseRows", array(ctx)?)?;
+        ctx.set(c"baseCursor", num(ctx, 0.)?)?;
+        base_chunk(ctx, &mut [])
     })?;
     then(
         call(p.get(c"cache")?, c"snapshotAsync", &[args, bases])?,
         ctx,
         tail::finish,
     )
+}
+
+fn base_chunk<'a>(ctx: L<'a>, _: &mut [L<'a>]) -> Result<L<'a>> {
+    let indices = ctx.get(c"needed")?;
+    let out = ctx.get(c"baseRows")?;
+    let end = indices.get(c"length")?.number()? as u32;
+    let mut i = ctx.get(c"baseCursor")?.number()? as u32;
+    let at = Instant::now();
+    while i < end {
+        let t = ctx.get(c"cards")?.get_key(indices.element(i)?)?;
+        let id = t.get(c"id")?;
+        let sid = event_session(t)?;
+        let record = ctx.get(c"records")?.get_key(sid)?;
+        let (ws, lease) = links(ctx, id, sid, record)?;
+        let base = fields(
+            ctx,
+            &[
+                ("task", t),
+                ("record", nullable(record)?),
+                ("workspace", ws),
+                ("lease", lease),
+                (
+                    "dirId",
+                    ctx.get(c"prepared")?.get(c"taskDirs")?.get_key(id)?,
+                ),
+                ("access", get(ctx.get(c"access")?, id)?),
+                (
+                    "providerName",
+                    if record.optional(c"provider")?.truthy()? {
+                        record.get(c"providerName")?
+                    } else {
+                        null(ctx)?
+                    },
+                ),
+            ],
+        )?;
+        append(out, fields(ctx, &[("key", id), ("base", base)])?)?;
+
+        i += 1;
+        if at.elapsed().as_millis() >= 4 && i < end {
+            ctx.set(c"baseCursor", num(ctx, i as f64)?)?;
+            return capture::later(ctx, base_chunk);
+        }
+    }
+    Ok(out)
 }

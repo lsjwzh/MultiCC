@@ -20,6 +20,7 @@ pub fn lock_board(inner: &Arc<Mutex<BoardState>>) -> MutexGuard<'_, BoardState> 
 
 #[napi]
 pub struct RustTaskBoard {
+    pub(crate) identity: u64,
     inner: Arc<Mutex<BoardState>>,
 }
 
@@ -47,7 +48,9 @@ impl Default for RustTaskBoard {
 impl RustTaskBoard {
     #[napi(constructor)]
     pub fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            identity: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             inner: Arc::new(Mutex::new(BoardState::default())),
         }
     }

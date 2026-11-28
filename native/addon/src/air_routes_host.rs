@@ -2,6 +2,7 @@
 use crate::host_api::*;
 use napi_derive::napi;
 use std::ffi::CStr;
+mod archive;
 mod detail;
 mod lists;
 mod snapshot;
@@ -119,6 +120,7 @@ fn invoke<'a>(p: L<'a>, b: L<'a>) -> Result<L<'a>> {
         .map(|s| s.to_string_lossy())
         .unwrap_or_default();
     match op.as_str() {
+        "archive-inactive" => archive::archive(p),
         "snapshot" => timing::snapshot_value(p, b.get(c"ifNoneMatch")?),
         "task-detail-scope" | "task-open" => detail::task(p, b.get(c"taskId")?, op == "task-open"),
         "resolve" => detail::resolve(p, b),

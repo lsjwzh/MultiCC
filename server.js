@@ -2383,7 +2383,8 @@ const airSync = require('./src/native/binding').airRoutes.mountAirRoutes(app, {
   // 知道。按引用传，所以每轮快照读到的都是当下的事实。
   sessions,
   directories,
-  shell: taskShellHost,
+  isSessionBusy: dispatchTargetBusy, currentTaskId: id => chatSessions.get(id)?._currentTaskId,
+  shell: taskShellHost, archiveInactive: ids => taskBoardRuntime.archiveInactive(ids),
   getBoard: () => taskBoardRuntime.getBoard(), markTaskSeen: id => taskBoardRuntime.markTaskSeen(id),
   clis: CLIENT_CHAT_CLIS,
   providerName: sessionProviderName,

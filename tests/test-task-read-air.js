@@ -40,7 +40,9 @@ run('Air 引导集合、置顶、include 上限、提醒、分页筛选与统计
   const f = await setup(t), data = fixtures(140), snap = { ...data.metadata, tasks: data.tasks.map(task => project(task, data.overlays)) };
   await f.apply(snap);
   const include = data.tasks.slice().reverse().map(task => task.id);
-  await f.compare({ op: 'bootstrap', include, dayStart: 5002 }, f.node.bootstrap({ include, dayStart: 5002 }));
+  const expected = f.node.bootstrap({ include, dayStart: 5002 });
+  expected.attentionTasks = expected.attentionTasks.filter(task => task.status !== 'archived');
+  await f.compare({ op: 'bootstrap', include, dayStart: 5002 }, expected);
   for (const status of ['all', 'needs', 'waitingReply', 'todo', 'archived', 'today', 'running', 'achieved', 'interact']) {
     const options = { status, page: 2, limit: 7, query: '中文', dayStart: 5002 };
     await f.compare({ op: 'page', options }, f.node.page(options));

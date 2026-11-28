@@ -75,22 +75,7 @@ impl Snapshot {
                     .collect()
             })
             .unwrap_or_default();
-        cards.sort_by(|a, b| {
-            at(b)
-                .total_cmp(&at(a))
-                .then_with(|| {
-                    number(&b["updatedAt"])
-                        .unwrap_or(0.0)
-                        .total_cmp(&number(&a["updatedAt"]).unwrap_or(0.0))
-                })
-                .then_with(|| {
-                    if ranks.is_empty() {
-                        text(a, "id").cmp(text(b, "id"))
-                    } else {
-                        ranks[text(a, "id")].cmp(&ranks[text(b, "id")])
-                    }
-                })
-        });
+        Self::sort(&mut cards, &ranks);
         let positions = cards
             .iter()
             .enumerate()
@@ -109,6 +94,40 @@ impl Snapshot {
             memo: HashMap::new(),
             order: VecDeque::new(),
         }
+    }
+    fn sort(cards: &mut [Value], ranks: &HashMap<String, usize>) {
+        cards.sort_by(|a, b| {
+            at(b)
+                .total_cmp(&at(a))
+                .then_with(|| {
+                    number(&b["updatedAt"])
+                        .unwrap_or(0.0)
+                        .total_cmp(&number(&a["updatedAt"]).unwrap_or(0.0))
+                })
+                .then_with(|| {
+                    if ranks.is_empty() {
+                        text(a, "id").cmp(text(b, "id"))
+                    } else {
+                        ranks[text(a, "id")].cmp(&ranks[text(b, "id")])
+                    }
+                })
+        });
+    }
+    pub fn replace_cards(&mut self, changed: &[Value], metadata: Value, revision: u64) {
+        let mut reorder = false;
+        for card in changed {
+            let i = self.positions[text(card, "id")];
+            let old = &self.cards[i];
+            reorder |= at(old) != at(card) || old["updatedAt"] != card["updatedAt"];
+            self.cards[i].clone_from(card);
+        }
+        if reorder {
+            Self::sort(&mut self.cards, &self.ranks);
+            for (i, row) in self.cards.iter().enumerate() {
+                *self.positions.get_mut(text(row, "id")).unwrap() = i;
+            }
+        }
+        self.update_metadata(metadata, revision);
     }
     fn needs(&self, card: &Value) -> bool {
         text(card, "status") != "archived"

@@ -123,6 +123,12 @@ impl TaskStore {
     }
     // 整页批量：link、link 索引与任务壳从按写入读数缓存的内存映射里取，一页只在这三类
     // 真被写过时重读一次。索引缺失或失效的卡回到 link_by_task（写否定缓存/清失效索引）。
+    pub fn air_access(&mut self, command: &Value) -> Result<String> {
+        if !self.frames.is_empty() {
+            return Ok("null".into());
+        }
+        Ok(self.access_batch(command)?.to_string())
+    }
     fn access_batch(&mut self, v: &Value) -> Result<Value> {
         let records = &v["records"];
         let task_first = v["taskFirst"] == true;

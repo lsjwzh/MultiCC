@@ -44,6 +44,14 @@ function createTaskShellStore(file) {
   }
   return {
     backend: 'rust',
+    airAccessAsync: async command => JSON.parse(await native.airAccessAsync(JSON.stringify(command))),
+    async warmMigrationRows() {
+      for (const [indexed, key] of [[false, 'rows:task'], [true, 'entries:task-first:indexed']]) {
+        const held = mirrors.get(key);
+        const reply = JSON.parse(await native.migrationRowsAsync(indexed, held?.token));
+        if (reply.rows && mirrors.get(key) === held) mirrors.set(key, { token: reply.token, rows: reply.rows });
+      }
+    },
     rule: command => commandWithRules({ ...command, op: 'rule' }),
     registerChatShell: facts => commandWithRules({ ...facts, op: 'registerChatShell' }),
     adoptChatShell: facts => commandWithRules({ ...facts, op: 'adoptChatShell' }),

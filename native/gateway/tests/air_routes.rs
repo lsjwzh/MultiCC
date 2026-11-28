@@ -316,6 +316,23 @@ fn world() -> Value {
 }
 
 #[test]
+fn bulk_archive_uses_server_criteria_and_keeps_the_archived_page_addressable() {
+    let mut script = world();
+    script["air"]["ops"]["archive-inactive"] =
+        ok(json!({"ok":true,"archived":["old"],"skipped":[]}));
+    let gateway = Gateway::start("archive-inactive", script);
+    let result = gateway.send(
+        "POST",
+        "/api/air/archive-inactive",
+        &json!({"taskIds":["active"],"days":0}),
+    );
+    assert_eq!(result.status, 200);
+    assert_eq!(result.json()["archived"], json!(["old"]));
+    assert_eq!(gateway.calls(), vec![json!({"op":"archive-inactive"})]);
+    assert_eq!(gateway.get("/api/air/page?status=archived").status, 200);
+    assert_eq!(gateway.calls().last().unwrap()["status"], "archived");
+}
+#[test]
 fn snapshot_forwards_the_host_body_and_etag_without_reserializing() {
     let gateway = Gateway::start("snapshot", world());
     let snapshot = gateway.get("/api/air");
