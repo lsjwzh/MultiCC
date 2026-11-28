@@ -92,7 +92,13 @@ function loadBridge(name, sdk, agent) {
     createGatewayLifecycle: () => gateway,
     createChatWsClient: () => ({ connect: noop, disconnect: noop }),
   };
-  const exports = loadIsolated(`plugins/bridges/${name}-bridge.js`, {
+  const exports = name === 'feishu' ? require('../src/native/binding').imChannelHost.createFeishuBridge({
+    fs: core.deps.fs,
+    bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
+    bridgeGateway: core,
+    loadLark: () => sdk(captured)['@larksuiteoapi/node-sdk'],
+    createLarkHttpInstance: () => ({}), outboundAgent: agent,
+  }) : loadIsolated(`plugins/bridges/${name}-bridge.js`, {
     '../../src/native/binding': { outbound: { outboundAgent: agent, outboundFetch: noop } },
     './secure-config': { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
     './gateway-core': core,

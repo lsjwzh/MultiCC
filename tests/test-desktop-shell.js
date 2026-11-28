@@ -768,7 +768,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     // without the Command Line Tools (src/portable-git.js looks for it here).
     'install-git.sh',
     'src/native/binding.js',
-    'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
+    'src/network/sdk-bridges.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
     'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
@@ -812,7 +812,7 @@ function stubRepoRoot(dir) {
   for (const rel of ['server.js', 'src/paths/index.js', 'public/chat.html', 'public/air.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'src/native/binding.js', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
-    'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md',
+    'src/network/sdk-bridges.js', 'skills/multicc-artifact/references/registration-rule.md',
     'native/core/src/task_planning_status.json']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });

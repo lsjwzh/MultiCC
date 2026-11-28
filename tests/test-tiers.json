@@ -4050,6 +4050,15 @@
       ]
     },
     {
+      "path": "tests/test-im-channels-native.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:bridges",
+      "entrypoints": [
+        "npm:test:bridges"
+      ]
+    },
+    {
       "path": "tests/test-ios-ota.js",
       "tier": "core",
       "lane": "deterministic",
