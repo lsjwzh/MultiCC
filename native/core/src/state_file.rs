@@ -20,7 +20,11 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Unique sibling name for native writes and the public Node fs adapter.
 pub fn temporary_suffix() -> String {
-    format!(".tmp.{}.{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed))
+    format!(
+        ".tmp.{}.{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 pub const FILE_MODE: u32 = 0o600;
@@ -161,7 +165,10 @@ pub fn write_bytes_atomic_traced_before_rename(
     dir_mode: u32,
     before_rename: impl FnOnce() -> io::Result<()>,
 ) -> Result<(), WriteFailure> {
-    let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let existed = dir.exists();
     // `writeTextAtomic` swallows EEXIST from the recursive mkdir and lets the
     // temp-file open surface the real failure (a file where a directory

@@ -1,7 +1,5 @@
 use super::*;
-use crate::task_routing::{
-    normalize_host_attribution_mode, HostAttributionSettings,
-};
+use crate::task_routing::{normalize_host_attribution_mode, HostAttributionSettings};
 use multicc_core::task_routing::{DEFAULT_MODE, MODES};
 use std::rc::Rc;
 

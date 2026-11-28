@@ -1,6 +1,7 @@
 use super::*;
 use multicc_core::provider_registry::{
-    NATIVE_OPENCODE_ID_PATTERN, NATIVE_VENDOR_MODEL_PATTERN, NATIVE_VENDOR_SUFFIX, VENDOR_NATIVE_CLIS,
+    NATIVE_OPENCODE_ID_PATTERN, NATIVE_VENDOR_MODEL_PATTERN, NATIVE_VENDOR_SUFFIX,
+    VENDOR_NATIVE_CLIS,
 };
 
 fn strings<'a>(p: L<'a>, items: &[&str]) -> Result<L<'a>> {

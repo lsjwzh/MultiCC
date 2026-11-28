@@ -5,8 +5,7 @@ use futures_util::{stream, StreamExt};
 use multicc_core::artifact_retention::retained;
 use multicc_core::{
     docs_memory_routes::{
-        artifact_id_from_url, normalize_dir, sort_views, task_id_for, valid_artifact_id, view,
-        ViewFacts,
+        normalize_dir, sort_views, task_id_for, valid_artifact_id, view, ViewFacts,
     },
     task_store::TaskStore,
 };

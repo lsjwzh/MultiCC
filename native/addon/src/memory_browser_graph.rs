@@ -230,7 +230,8 @@ fn finish<'a>(
         finish_inherited_edges(dto)?;
     } else {
         // JS accepts integer-valued Numbers above usize::MAX as display limits.
-        dto.get(c"meta")?.set(c"maxFiles", owner.get(c"treeLimit")?)?;
+        dto.get(c"meta")?
+            .set(c"maxFiles", owner.get(c"treeLimit")?)?;
     }
     let mut visible = Vec::new();
     dto.get(c"projects")?.for_each(|project| {

@@ -235,6 +235,9 @@ pub fn plugins_routes_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_valu
         ],
     )?;
     api.set(c"HOST_PATH", text(p, internal::HOST_PATH)?)?;
-    api.set(c"DEFAULT_UI", text(p, multicc_core::plugin_routes::DEFAULT_UI)?)?;
+    api.set(
+        c"DEFAULT_UI",
+        text(p, multicc_core::plugin_routes::DEFAULT_UI)?,
+    )?;
     Ok(api.raw())
 }
