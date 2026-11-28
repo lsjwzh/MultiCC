@@ -168,12 +168,68 @@ Future<PickedAttachment> prepareChatAttachment(
   }
 }
 
+const _imageAttachmentExts = {
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+  'heic',
+  'heif',
+};
+
+/// Whether [pathOrName] (or optional [mimeType]) refers to an image attachment
+/// that can be previewed inline or edited in the image crop/annotate editor.
+bool isImageAttachmentPath(String pathOrName, {String? mimeType}) {
+  final mime = mimeType?.trim().toLowerCase() ?? '';
+  if (mime.startsWith('image/')) return true;
+  final clean = pathOrName.split('?').first.split('#').first.trim();
+  final dot = clean.lastIndexOf('.');
+  if (dot < 0 || dot == clean.length - 1) return false;
+  final ext = clean.substring(dot + 1).toLowerCase();
+  return _imageAttachmentExts.contains(ext);
+}
+
 /// One uploaded attachment: the server-side path plus the name to show on its chip.
+///
+/// Preserves optional local bytes / non-temporary local file path / mimeType so
+/// the composer can immediately render thumbnails, open confirmation previews,
+/// and launch crop/edit/annotate without a redundant round-trip download.
 class UploadedAttachment {
-  const UploadedAttachment({required this.path, required this.name});
+  const UploadedAttachment({
+    required this.path,
+    required this.name,
+    this.localBytes,
+    this.localPath,
+    this.mimeType,
+  });
 
   final String path;
   final String name;
+  final Uint8List? localBytes;
+  final String? localPath;
+  final String? mimeType;
+
+  bool get isImage =>
+      isImageAttachmentPath(name, mimeType: mimeType) ||
+      isImageAttachmentPath(path, mimeType: mimeType);
+
+  UploadedAttachment copyWith({
+    String? path,
+    String? name,
+    Uint8List? localBytes,
+    String? localPath,
+    String? mimeType,
+    bool clearLocalBytes = false,
+    bool clearLocalPath = false,
+  }) => UploadedAttachment(
+    path: path ?? this.path,
+    name: name ?? this.name,
+    localBytes: clearLocalBytes ? null : (localBytes ?? this.localBytes),
+    localPath: clearLocalPath ? null : (localPath ?? this.localPath),
+    mimeType: mimeType ?? this.mimeType,
+  );
 }
 
 /// 上传一个附件到 `/api/upload`，换回它的服务端路径。
@@ -225,6 +281,9 @@ Future<UploadedAttachment> uploadChatAttachment({
     return UploadedAttachment(
       path: path,
       name: json['name'] as String? ?? prepared.filename,
+      localBytes: prepared.bytes,
+      localPath: prepared.temporary ? null : prepared.path,
+      mimeType: prepared.mimeType,
     );
   } finally {
     if (prepared.temporary && prepared.path != null) {

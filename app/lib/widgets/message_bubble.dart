@@ -19,6 +19,7 @@ import '../services/message_quote.dart';
 import '../services/session_service.dart';
 import '../services/settings_service.dart';
 import '../utils/code_highlight.dart';
+import '../utils/user_message_media.dart';
 import '../screens/remote_screen_screen.dart';
 import 'image_annotate_screen.dart';
 import 'tool_card.dart';
@@ -634,6 +635,18 @@ class _UserBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final parsed = parseUserMessageMedia(message.content);
+    final images = parsed.hasMedia
+        ? parsed.media
+            .where((m) => m.kind == UserMessageMediaKind.image)
+            .toList(growable: false)
+        : const <UserMessageMediaRef>[];
+    final files = parsed.hasMedia
+        ? parsed.media
+            .where((m) => m.kind == UserMessageMediaKind.file)
+            .toList(growable: false)
+        : const <UserMessageMediaRef>[];
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final laneWidth = constraints.maxWidth.isFinite
@@ -661,14 +674,46 @@ class _UserBubble extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    message.content,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 14,
-                      height: 1.5,
-                    ),
-                  ),
+                  if (!parsed.hasMedia)
+                    Text(
+                      message.content,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        height: 1.5,
+                      ),
+                    )
+                  else ...[
+                    if (parsed.displayText.isNotEmpty)
+                      Text(
+                        parsed.displayText,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          height: 1.5,
+                        ),
+                      ),
+                    if (images.isNotEmpty) ...[
+                      if (parsed.displayText.isNotEmpty)
+                        const SizedBox(height: 8),
+                      _UserMessageImages(images: images),
+                    ],
+                    if (files.isNotEmpty) ...[
+                      if (parsed.displayText.isNotEmpty || images.isNotEmpty)
+                        const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          for (var i = 0; i < files.length; i++)
+                            _UserMessageFileChip(
+                              key: ValueKey('user-message-file-$i'),
+                              ref: files[i],
+                            ),
+                        ],
+                      ),
+                    ],
+                  ],
                   _TaskAttributionTail(message: message, isUser: true),
                 ],
               ),
@@ -1552,11 +1597,31 @@ final _localImgRe = RegExp(
   r'^(?:file:///|/(?:tmp|Users|home|var|private|opt|Volumes|mnt|root|data)/|[A-Za-z]:[\\/])',
 );
 
+String _unwrapLocalImagePath(String rawPath) {
+  final fromDownload = extractDownloadPathFromUrl(rawPath);
+  if (fromDownload != null) return fromDownload;
+  if (rawPath.startsWith('file://')) {
+    var rest = rawPath.substring('file://'.length);
+    if (RegExp(r'^/[A-Za-z]:[\\/]').hasMatch(rest)) {
+      rest = rest.substring(1);
+    }
+    return rest;
+  }
+  return rawPath;
+}
+
+bool _isRelativeDownloadImageUrl(String raw) {
+  final trimmed = raw.trim();
+  if (!trimmed.startsWith('/')) return false;
+  return extractDownloadPathFromUrl(trimmed) != null;
+}
+
 /// Build the request for a local-filesystem image routed through the multicc
 /// server. Authentication stays in the header and never enters the image URL.
 MulticcDownloadRequest? _localImageRequest(String rawPath, SettingsService? s) {
-  if (s == null) return null;
-  final p = rawPath.replaceFirst(RegExp(r'^file://'), '');
+  if (s == null || s.host.trim().isEmpty) return null;
+  final p = _unwrapLocalImagePath(rawPath).trim();
+  if (p.isEmpty) return null;
   return MulticcDownloadRequest(
     uri: Uri.parse(s.buildHttpUrl('/api/download')).replace(
       queryParameters: {'path': p, 'inline': '1'},
@@ -1580,15 +1645,22 @@ class _MarkdownContent extends StatelessWidget {
           builders: {'code': _FencedCodeBuilder()},
           sizedImageBuilder: (config) {
             final raw = config.uri.toString();
-            final isLocal = _localImgRe.hasMatch(raw);
-            final localRequest = isLocal ? _localImageRequest(raw, context.read<SettingsService?>() ?? SettingsService.current) : null;
+            final isLocal =
+                _localImgRe.hasMatch(raw) || _isRelativeDownloadImageUrl(raw);
+            final localRequest = isLocal
+                ? _localImageRequest(
+                    raw,
+                    context.read<SettingsService?>() ?? SettingsService.current,
+                  )
+                : null;
             final url = isLocal ? localRequest?.uri.toString() : raw;
             if (url == null || url.isEmpty) {
               return _ImageErrorNote(name: config.alt ?? raw);
             }
             return _InlineImage(
               url: url,
-              name: config.alt ?? (isLocal ? raw : 'image'),
+              name:
+                  config.alt ?? (isLocal ? _unwrapLocalImagePath(raw) : 'image'),
               headers: localRequest?.headers ?? const {},
             );
           },
@@ -2207,6 +2279,295 @@ class _ImageZoomScreenState extends State<_ImageZoomScreen> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Clickable image preview(s) rendered inside a user message bubble.
+class _UserMessageImages extends StatelessWidget {
+  final List<UserMessageMediaRef> images;
+  const _UserMessageImages({required this.images});
+
+  @override
+  Widget build(BuildContext context) {
+    if (images.length == 1) {
+      return _UserMessageImageTile(
+        key: const ValueKey('user-message-image-0'),
+        ref: images.first,
+        single: true,
+      );
+    }
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (var i = 0; i < images.length; i++)
+          _UserMessageImageTile(
+            key: ValueKey('user-message-image-$i'),
+            ref: images[i],
+            single: false,
+          ),
+      ],
+    );
+  }
+}
+
+class _UserMessageImageTile extends StatelessWidget {
+  final UserMessageMediaRef ref;
+  final bool single;
+  const _UserMessageImageTile({
+    super.key,
+    required this.ref,
+    required this.single,
+  });
+
+  String? _resolveFallbackHttpUrl() {
+    final raw = ref.remoteUrl?.trim();
+    if (raw == null || raw.isEmpty) return null;
+    if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+    return null;
+  }
+
+  void _handleTap(
+    BuildContext context, {
+    required String? url,
+    required Map<String, String> headers,
+    required SettingsService? settings,
+  }) {
+    if (url != null && url.isNotEmpty) {
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => _ImageZoomScreen(
+            url: url,
+            name: ref.displayName,
+            headers: headers,
+            sessionId: _currentSessionId(context),
+          ),
+          fullscreenDialog: true,
+        ),
+      );
+      return;
+    }
+    if (settings != null && settings.host.trim().isNotEmpty) {
+      _openLocalFile(context, ref.path, settings);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.read<SettingsService?>() ?? SettingsService.current;
+    final req = _localImageRequest(ref.path, settings);
+    final url = req?.uri.toString() ?? _resolveFallbackHttpUrl();
+    final headers = req?.headers ?? const <String, String>{};
+    final radius = single ? 10.0 : 8.0;
+
+    Widget fallbackWidget() {
+      if (single) {
+        return _UserMediaFallbackChip(
+          icon: Icons.image_outlined,
+          label: ref.displayName,
+          trailingIcon:
+              url != null ? Icons.zoom_in_rounded : Icons.open_in_new_rounded,
+        );
+      }
+      return Container(
+        width: 100,
+        height: 100,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(radius),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.28)),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.image_outlined, size: 22, color: Colors.white),
+            const SizedBox(height: 6),
+            Text(
+              ref.displayName,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                height: 1.25,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    Widget content;
+    if (url == null || url.isEmpty) {
+      content = fallbackWidget();
+    } else {
+      final image = Image.network(
+        url,
+        headers: headers,
+        width: single ? null : 100,
+        height: single ? null : 100,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        loadingBuilder: (ctx, child, progress) {
+          if (progress != null) {
+            return Container(
+              width: single ? 160 : 100,
+              height: single ? 120 : 100,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(radius),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.24),
+                ),
+              ),
+              alignment: Alignment.center,
+              child: const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white70,
+                ),
+              ),
+            );
+          }
+          final framed = Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(radius),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.28)),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(radius - 1),
+              child: Stack(
+                alignment: Alignment.bottomRight,
+                children: [
+                  child,
+                  if (single)
+                    Container(
+                      margin: const EdgeInsets.all(6),
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.48),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Icon(
+                        Icons.zoom_in_rounded,
+                        size: 14,
+                        color: Colors.white,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+          if (!single) return framed;
+          return ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 220, maxHeight: 220),
+            child: framed,
+          );
+        },
+        errorBuilder: (ctx, err, _) => fallbackWidget(),
+      );
+      content = single
+          ? ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220, maxHeight: 220),
+              child: image,
+            )
+          : SizedBox(width: 100, height: 100, child: image);
+    }
+
+    return Semantics(
+      button: true,
+      label: t('attachTapToPreview'),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _handleTap(
+          context,
+          url: url,
+          headers: headers,
+          settings: settings,
+        ),
+        child: content,
+      ),
+    );
+  }
+}
+
+class _UserMediaFallbackChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final IconData trailingIcon;
+  const _UserMediaFallbackChip({
+    required this.icon,
+    required this.label,
+    required this.trailingIcon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: Colors.white),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Icon(
+            trailingIcon,
+            size: 13,
+            color: Colors.white.withValues(alpha: 0.85),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Clickable chip for a non-image uploaded attachment inside a user bubble.
+class _UserMessageFileChip extends StatelessWidget {
+  final UserMessageMediaRef ref;
+  const _UserMessageFileChip({super.key, required this.ref});
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.read<SettingsService?>() ?? SettingsService.current;
+    return Semantics(
+      button: true,
+      label: t('attachOpenFile'),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (settings != null && settings.host.trim().isNotEmpty) {
+            _openLocalFile(context, ref.path, settings);
+          }
+        },
+        child: _UserMediaFallbackChip(
+          icon: Icons.insert_drive_file_outlined,
+          label: ref.displayName,
+          trailingIcon: Icons.open_in_new_rounded,
         ),
       ),
     );

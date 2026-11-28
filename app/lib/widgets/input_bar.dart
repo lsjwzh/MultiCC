@@ -11,6 +11,8 @@ import '../services/attachment_picker.dart';
 import '../services/chat_service.dart';
 import '../services/voice_launch_service.dart';
 import '../utils/dispatch_hint.dart';
+import 'attachment_image_editor_screen.dart';
+import 'attachment_preview.dart';
 import 'chat_runtime_panels.dart';
 import 'dispatch_mode_selector.dart';
 import 'scheduled_send_dock.dart';
@@ -50,8 +52,9 @@ class _InputBarState extends State<InputBar> {
   late final _focusNode = widget.focusNode ?? FocusNode();
   bool _hasText = false;
 
-  // Attachments: list of {path, name} from server upload
-  final List<Map<String, String>> _attachments = [];
+  // Pending uploaded attachments ready to be sent with the next message.
+  final List<UploadedAttachment> _attachments = [];
+  final Set<UploadedAttachment> _replacingAttachments = {};
   bool _uploading = false;
 
   // 语音输入（流式听写 /ws/voice，起不来回退整段 m4a → /api/voice/stt）。
@@ -120,7 +123,7 @@ class _InputBarState extends State<InputBar> {
       );
       if (mounted) {
         setState(() {
-          _attachments.add({'path': uploaded.path, 'name': uploaded.name});
+          _attachments.add(uploaded);
         });
       }
     } catch (e) {
@@ -134,6 +137,75 @@ class _InputBarState extends State<InputBar> {
       }
     } finally {
       if (mounted) setState(() => _uploading = false);
+    }
+  }
+
+  Future<void> _previewAttachment(UploadedAttachment att) async {
+    if (_replacingAttachments.contains(att)) return;
+    final settings = context.read<ChatProvider>().settings;
+    final result = await openUploadedAttachmentPreview(
+      context,
+      attachment: att,
+      settings: settings,
+    );
+    if (!mounted || result == null) return;
+    if (result.deleted) {
+      setState(() => _attachments.remove(att));
+      return;
+    }
+    final edited = result.editedImage;
+    if (edited != null) {
+      await _replaceEditedAttachment(att, edited);
+    }
+  }
+
+  Future<void> _editAttachment(UploadedAttachment att) async {
+    if (_replacingAttachments.contains(att) || !att.isImage) return;
+    final settings = context.read<ChatProvider>().settings;
+    final edited = await openUploadedAttachmentEditor(
+      context,
+      attachment: att,
+      settings: settings,
+    );
+    if (!mounted || edited == null) return;
+    await _replaceEditedAttachment(att, edited);
+  }
+
+  Future<void> _replaceEditedAttachment(
+    UploadedAttachment target,
+    EditedAttachmentImage edited,
+  ) async {
+    final settings = context.read<ChatProvider>().settings;
+    setState(() => _replacingAttachments.add(target));
+    try {
+      final uploaded = await uploadChatAttachment(
+        settings: settings,
+        picked: PickedAttachment(
+          bytes: edited.bytes,
+          filename: edited.filename,
+          mimeType: 'image/png',
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        final idx = _attachments.indexOf(target);
+        if (idx >= 0) {
+          _attachments[idx] = uploaded;
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(t('attachEditorSaveFailed', {'error': '$e'})),
+            backgroundColor: const Color(0xFFb64e43),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _replacingAttachments.remove(target));
+      }
     }
   }
 
@@ -284,7 +356,7 @@ class _InputBarState extends State<InputBar> {
     final voiceRaw = _voice.pendingVoiceRaw;
     // Append attachment paths
     if (_attachments.isNotEmpty) {
-      final paths = _attachments.map((a) => a['path']!).join(' ');
+      final paths = _attachments.map((a) => a.path).join(' ');
       text = text.isEmpty ? paths : '$text $paths';
     }
     if (text.isEmpty) return;
@@ -333,7 +405,7 @@ class _InputBarState extends State<InputBar> {
     text: _ctrl.text,
     attachmentPaths: [
       for (final attachment in _attachments)
-        if (attachment['path'] != null) attachment['path']!,
+        if (attachment.path.isNotEmpty) attachment.path,
     ],
     decorate: (text) =>
         decorateDispatchHint(text, enabled: commander, mode: _dispatchMode),
@@ -453,7 +525,10 @@ class _InputBarState extends State<InputBar> {
     final isConnected =
         provider.connectionState == ChatConnectionState.connected;
     // 无人值守 active 不拦输入：消息进调度器 FIFO，本轮正常结束后由无人值守提交。
-    final canSend = (_hasText || _attachments.isNotEmpty) && isConnected;
+    final canSend =
+        (_hasText || _attachments.isNotEmpty) &&
+        isConnected &&
+        _replacingAttachments.isEmpty;
     // 语音输入要跟着当前会话的设置走（切会话后 token/host/lang 都会换）。
     _voice.syncSettings(provider.settings);
 
@@ -496,54 +571,21 @@ class _InputBarState extends State<InputBar> {
                 padding: const EdgeInsets.only(bottom: 6),
                 child: Wrap(
                   spacing: 6,
-                  runSpacing: 4,
-                  children: _attachments.asMap().entries.map((e) {
-                    final idx = e.key;
-                    final att = e.value;
-                    return Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
+                  runSpacing: 6,
+                  children: [
+                    for (final att in _attachments)
+                      UploadedAttachmentChip(
+                        attachment: att,
+                        settings: provider.settings,
+                        busy: _replacingAttachments.contains(att),
+                        onTap: () => _previewAttachment(att),
+                        onEdit: att.isImage
+                            ? () => _editAttachment(att)
+                            : null,
+                        onRemove: () =>
+                            setState(() => _attachments.remove(att)),
                       ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFf8fbff),
-                        border: Border.all(color: const Color(0xFFdce6f1)),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.attach_file,
-                            size: 12,
-                            color: Color(0xFF6f8096),
-                          ),
-                          const SizedBox(width: 4),
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 150),
-                            child: Text(
-                              att['name']!,
-                              style: const TextStyle(
-                                color: Color(0xFF233249),
-                                fontSize: 12,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 4),
-                          GestureDetector(
-                            onTap: () =>
-                                setState(() => _attachments.removeAt(idx)),
-                            child: const Icon(
-                              Icons.close,
-                              size: 12,
-                              color: Color(0xFF6f8096),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
+                  ],
                 ),
               ),
 

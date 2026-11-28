@@ -205,6 +205,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/attachment_image_editor_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/attachment_video_compression_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -972,6 +977,11 @@
     {
       "path": "app/test/usage_timing_line_test.dart",
       "tier": "other",
+      "lane": "flutter"
+    },
+    {
+      "path": "app/test/user_message_media_test.dart",
+      "tier": "flow",
       "lane": "flutter"
     },
     {
@@ -3452,6 +3462,11 @@
       "path": "tests/test-cross-cli-dispatch.js",
       "tier": "other",
       "lane": "live"
+    },
+    {
+      "path": "tests/test-cross-machine-dispatch.js",
+      "tier": "flow",
+      "lane": "deterministic"
     },
     {
       "path": "tests/test-danmaku-dock.js",

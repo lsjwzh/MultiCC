@@ -12,6 +12,8 @@ import '../../services/goal_precheck.dart';
 import '../../services/settings_service.dart';
 import '../../theme.dart';
 import '../../utils/cli_display.dart';
+import '../attachment_image_editor_screen.dart';
+import '../attachment_preview.dart';
 import '../marquee_text.dart';
 import '../run_config/run_config_presets.dart';
 import '../voice_composer.dart';
@@ -812,6 +814,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
   /// 已经传上去的附件（服务端路径 + 展示名）。创建时按 Web 的写法拼进正文，
   /// 不是单独发一份附件列表。
   final List<UploadedAttachment> _attachments = [];
+  final Set<UploadedAttachment> _replacingAttachments = {};
   bool _uploading = false;
   String _attachError = '';
 
@@ -1040,6 +1043,75 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
     }
   }
 
+  Future<void> _previewAttachment(UploadedAttachment file) async {
+    if (_replacingAttachments.contains(file)) return;
+    _focus.unfocus();
+    final result = await openUploadedAttachmentPreview(
+      context,
+      attachment: file,
+      settings: widget.settings,
+    );
+    if (!mounted || result == null) return;
+    if (result.deleted) {
+      setState(() => _attachments.remove(file));
+      return;
+    }
+    final edited = result.editedImage;
+    if (edited != null) {
+      await _replaceEditedAttachment(file, edited);
+    }
+  }
+
+  Future<void> _editAttachment(UploadedAttachment file) async {
+    if (_replacingAttachments.contains(file) || !file.isImage) return;
+    _focus.unfocus();
+    final edited = await openUploadedAttachmentEditor(
+      context,
+      attachment: file,
+      settings: widget.settings,
+    );
+    if (!mounted || edited == null) return;
+    await _replaceEditedAttachment(file, edited);
+  }
+
+  Future<void> _replaceEditedAttachment(
+    UploadedAttachment target,
+    EditedAttachmentImage edited,
+  ) async {
+    setState(() {
+      _replacingAttachments.add(target);
+      _attachError = '';
+    });
+    try {
+      final uploaded = await uploadChatAttachment(
+        settings: widget.settings,
+        picked: PickedAttachment(
+          bytes: edited.bytes,
+          filename: edited.filename,
+          mimeType: 'image/png',
+        ),
+        httpClient: widget.httpClient,
+      );
+      if (!mounted) return;
+      setState(() {
+        final idx = _attachments.indexOf(target);
+        if (idx >= 0) {
+          _attachments[idx] = uploaded;
+        }
+      });
+    } catch (error) {
+      if (mounted) {
+        final msg = t('attachEditorSaveFailed', {'error': '$error'});
+        setState(() => _attachError = msg);
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: AppColors.danger),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _replacingAttachments.remove(target));
+    }
+  }
+
   /// 给新任务挑 CLI、线路、模型和推理强度。结果先留在这一层，等创建任务时随
   /// `POST /api/air/tasks` 一起写下去 —— 第一条消息就按它执行（同 Web Air）。
   Future<void> _editRuntime() async {
@@ -1075,6 +1147,7 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
 
   /// 提交草稿（收起条的发送键和展开面板的「创建并执行」走同一条流水线）。
   Future<void> _submit() async {
+    if (_replacingAttachments.isNotEmpty) return;
     final text = _controller.text.trim();
     if (text.isEmpty) return;
     final sent = await widget.onSubmit(
@@ -1256,15 +1329,27 @@ class _AirQuickComposerState extends State<AirQuickComposer> {
                 runSpacing: 6,
                 children: [
                   for (final file in _attachments)
-                    _FileChip(
-                      label: file.name,
+                    UploadedAttachmentChip(
+                      attachment: file,
+                      settings: widget.settings,
+                      busy: _replacingAttachments.contains(file),
+                      onTap: widget.busy
+                          ? null
+                          : () => _previewAttachment(file),
+                      onEdit: widget.busy || !file.isImage
+                          ? null
+                          : () => _editAttachment(file),
                       onRemove: widget.busy
                           ? null
                           : () => setState(() => _attachments.remove(file)),
                     ),
                   if (_uploading) const _FileChip(label: '处理并上传中…', busy: true),
                   if (_attachError.isNotEmpty)
-                    _FileChip(label: _attachError, failed: true),
+                    _FileChip(
+                      label: _attachError,
+                      failed: true,
+                      onRemove: () => setState(() => _attachError = ''),
+                    ),
                 ],
               ),
             ),
