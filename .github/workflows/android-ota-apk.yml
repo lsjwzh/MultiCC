@@ -1,0 +1,180 @@
+name: Android OTA APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ota-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  android-ota-apk:
+    name: Build and sign Android OTA APK
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: android-release
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.32.2'
+          cache: true
+
+      - name: Prepare official signing key
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+          ANDROID_RELEASE_CERT_SHA256: ${{ secrets.ANDROID_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in \
+            ANDROID_RELEASE_KEYSTORE_BASE64 \
+            ANDROID_RELEASE_STORE_PASSWORD \
+            ANDROID_RELEASE_KEY_ALIAS \
+            ANDROID_RELEASE_KEY_PASSWORD \
+            ANDROID_RELEASE_CERT_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required android-release secret $name is missing"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          signer="$(printf '%s' "$ANDROID_RELEASE_CERT_SHA256" \
+            | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')"
+          if ! [[ "$signer" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::ANDROID_RELEASE_CERT_SHA256 is not a SHA-256 certificate digest"
+            exit 1
+          fi
+          pinned_signer="$(tr -d '[:space:]:' < app/android/release-cert.sha256 \
+            | tr '[:upper:]' '[:lower:]')"
+          if [ "$signer" != "$pinned_signer" ]; then
+            echo "::error::Signing secret does not match app/android/release-cert.sha256"
+            exit 1
+          fi
+
+          keystore="$RUNNER_TEMP/multicc-release-keystore"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          if [ ! -s "$keystore" ]; then
+            echo "::error::Decoded Android release keystore is empty"
+            exit 1
+          fi
+          chmod 600 "$keystore"
+
+          keystore_signer="$(
+            keytool -exportcert \
+              -storetype PKCS12 \
+              -keystore "$keystore" \
+              -storepass "$ANDROID_RELEASE_STORE_PASSWORD" \
+              -alias "$ANDROID_RELEASE_KEY_ALIAS" \
+            | openssl dgst -sha256 -r \
+            | awk '{ print $1 }' \
+            | tr -d '[:space:]:' \
+            | tr '[:upper:]' '[:lower:]'
+          )"
+          if [ "$keystore_signer" != "$signer" ]; then
+            echo "::error::Decoded Android release keystore certificate does not match app/android/release-cert.sha256"
+            exit 1
+          fi
+
+          {
+            printf 'MULTICC_ANDROID_KEYSTORE_PATH=%s\n' "$keystore"
+            printf 'MULTICC_ANDROID_STORE_PASSWORD=%s\n' "$ANDROID_RELEASE_STORE_PASSWORD"
+            printf 'MULTICC_ANDROID_KEY_ALIAS=%s\n' "$ANDROID_RELEASE_KEY_ALIAS"
+            printf 'MULTICC_ANDROID_KEY_PASSWORD=%s\n' "$ANDROID_RELEASE_KEY_PASSWORD"
+            printf 'MULTICC_APK_EXPECTED_SIGNER_SHA256=%s\n' "$signer"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Android build dependencies
+        run: |
+          set -euo pipefail
+          cd app
+          flutter pub get --enforce-lockfile
+
+      - name: Prepare optional Firebase client config
+        env:
+          MULTICC_FIREBASE_ANDROID_CONFIG_JSON: ${{ secrets.MULTICC_FIREBASE_ANDROID_CONFIG_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$MULTICC_FIREBASE_ANDROID_CONFIG_JSON" ]; then
+            config_file="$RUNNER_TEMP/multicc-google-services.json"
+            printf '%s' "$MULTICC_FIREBASE_ANDROID_CONFIG_JSON" > "$config_file"
+            chmod 600 "$config_file"
+            echo "MULTICC_FIREBASE_ANDROID_CONFIG=$config_file" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build and verify signed OTA APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          export MULTICC_RELEASE_TAG="v$PKG_VERSION"
+          export MULTICC_RELEASE_VERSION="$PKG_VERSION"
+          export MULTICC_RELEASE_COMMIT="$GITHUB_SHA"
+          ./scripts/publish-apk.sh
+
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const apk = 'public/multicc.apk';
+          const metadata = JSON.parse(fs.readFileSync(`${apk}.json`, 'utf8'));
+          const digest = crypto.createHash('sha256').update(fs.readFileSync(apk)).digest('hex');
+          const size = fs.statSync(apk).size;
+          assert.equal(metadata.schemaVersion, 1);
+          assert.equal(metadata.gitCommit, process.env.GITHUB_SHA.toLowerCase());
+          assert.equal(metadata.sha256, digest);
+          assert.equal(metadata.size, size);
+          assert.equal(fs.readFileSync(`${apk}.sha256`, 'utf8').trim(), digest);
+          metadata.distribution = 'ota';
+          metadata.ref = process.env.GITHUB_REF_NAME || '';
+          fs.writeFileSync(`${apk}.json`, `${JSON.stringify(metadata)}\n`);
+          NODE
+
+      - name: Upload diagnostic artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-ota-apk-failure-diagnostics
+          path: |
+            public/multicc.apk*
+            app/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload verified OTA APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ota-android-apk
+          path: public/multicc.apk*
+          if-no-files-found: error
+          retention-days: 7
