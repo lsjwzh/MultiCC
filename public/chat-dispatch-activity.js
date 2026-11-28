@@ -73,6 +73,9 @@
         // name the panel can show for them.
         targetLabel: raw.targetLabel == null ? '' : String(raw.targetLabel),
         targetTaskBoundTaskId: raw.targetTaskBoundTaskId == null ? '' : String(raw.targetTaskBoundTaskId),
+        machineId: raw.machineId == null ? '' : String(raw.machineId),
+        machineName: raw.machineName == null ? '' : String(raw.machineName),
+        remoteOperationId: raw.remoteOperationId == null ? '' : String(raw.remoteOperationId),
         executionSessionId: raw.executionSessionId == null ? '' : String(raw.executionSessionId),
         mode: raw.mode == null ? '' : String(raw.mode),
         queueState: String(raw.queueState || 'unknown'),
@@ -111,11 +114,12 @@
     return candidates[0] || '';
   }
 
-  function buildSessionUrl(currentHref, target) {
+  function buildSessionUrl(currentHref, target, machineId) {
     var url = new URL('chat.html', currentHref);
     url.search = '';
     url.hash = '';
     url.searchParams.set('session', target);
+    if (machineId) url.searchParams.set('machine', machineId);
     return url.toString();
   }
 
@@ -248,12 +252,17 @@
 
     function displayName(id, entry) {
       if (!id) return text('dispatchUnknownSession', null, 'Unknown session');
-      return names.get(id)
+      var base = (entry && entry.machineId ? '' : names.get(id))
         // Task-bound workers are absent from /api/sessions (names stays empty
         // for them); the projection-carried label「任务 · …」is their only
         // friendly name, so it backfills the display instead of a bare id.
         || (entry && id === entry.targetSessionId && entry.targetLabel ? entry.targetLabel : '')
         || id;
+      if (entry && entry.machineId) {
+        var prefix = entry.machineName || entry.machineId;
+        return '[' + prefix + '] ' + base;
+      }
+      return base;
     }
 
     function modeLabel(mode) {
@@ -296,11 +305,11 @@
       return 'is-unknown';
     }
 
-    function jump(target) {
+    function jump(target, machineId) {
       if (!target) return;
       // Keep the current observer alive (especially for sync dispatch) and open
       // the worker beside it. noopener prevents the new chat from controlling us.
-      win.open(buildSessionUrl(win.location.href, target), '_blank', 'noopener');
+      win.open(buildSessionUrl(win.location.href, target, machineId), '_blank', 'noopener');
     }
 
     function rowFor(entry) {
@@ -342,7 +351,7 @@
       row.appendChild(body);
       row.appendChild(status);
       row.appendChild(chevron);
-      if (target) row.addEventListener('click', function () { jump(target); });
+      if (target) row.addEventListener('click', function () { jump(target, entry.machineId); });
       return row;
     }
 

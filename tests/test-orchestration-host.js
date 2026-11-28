@@ -82,14 +82,14 @@ async function call(handler, body, req = {}) {
   return { status, payload };
 }
 
-test('the op table names exactly the 30 retired routes and every one is registered', () => {
-  assert.equal(Object.keys(OPS).length, 30);
+test('the op table names exactly the 36 host routes and every one is registered', () => {
+  assert.equal(Object.keys(OPS).length, 36);
   const { host } = build();
-  assert.equal(new Set(Object.values(OPS).map(spec => `${spec.method} ${spec.path}`)).size, 30);
+  assert.equal(new Set(Object.values(OPS).map(spec => `${spec.method} ${spec.path}`)).size, 36);
   for (const [op, spec] of Object.entries(OPS)) {
     assert.equal(typeof host.handlers.get(`${spec.method} ${spec.path}`), 'function', `${op} has no handler`);
   }
-  assert.equal(host.handlers.size, 30, 'the capture app holds nothing but the 30 routes');
+  assert.equal(host.handlers.size, 36, 'the capture app holds nothing but the 36 routes');
 });
 
 test('the wait injector and detached set are ops on the capture app, with no public mount left', () => {

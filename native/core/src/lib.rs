@@ -53,6 +53,7 @@ pub mod cli_switch_runtime;
 pub mod cli_tools_runtime;
 pub mod code_revision;
 pub mod codex_homes;
+pub mod cross_machine_dispatch;
 pub mod curated_memory;
 pub mod directory_routes;
 pub mod docs_memory_routes;

@@ -14,11 +14,18 @@ const TARGET_SCHEMA = {
   required: ['message'],
   oneOf: [{ required: ['target_session_id'] }, { required: ['new_task'] }],
   properties: {
+    machine_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+      description: 'Optional paired remote machine id from list_machines. Omit (or pass self id) for local dispatch. When set, dispatches to that remote machine and streams receipts back automatically.',
+    },
     new_task: {
       type: 'object', additionalProperties: false, required: ['title'],
-      description: 'Create an independent task plus its execution session in the caller directory and dispatch in one call. Mutually exclusive with target_session_id.',
+      description: 'Create an independent task plus its execution session (in the caller directory locally, or in new_task.dir_id on a remote machine) and dispatch in one call. Mutually exclusive with target_session_id.',
       properties: {
         title: { type: 'string', minLength: 1, maxLength: 120 },
+        dir_id: { type: 'string', minLength: 1, maxLength: 128 },
         cli: { type: 'string', minLength: 1, maxLength: 256 },
         model: { type: 'string', minLength: 1, maxLength: 256 },
         provider: { type: 'string', minLength: 1, maxLength: 256 },
@@ -29,7 +36,7 @@ const TARGET_SCHEMA = {
       type: 'string',
       minLength: 1,
       maxLength: 256,
-      description: 'Same-directory session for work belonging to its existing task (task identity is preserved). Prefer available over busy targets unless the user named one. Terminal targets need allow_terminal=true.',
+      description: 'Target session id for work belonging to its existing task (same-directory locally, or a remote session from list_machines({machine_id})). Prefer available over busy targets unless the user named one. Terminal targets need allow_terminal=true.',
     },
     message: {
       type: 'string',
@@ -91,6 +98,19 @@ const DISPATCH_CANCEL_SCHEMA = {
       type: 'boolean',
       default: false,
       description: 'Also interrupt the target turn if the task is already running.',
+    },
+  },
+};
+
+const LIST_MACHINES_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    machine_id: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 128,
+      description: 'Omit to list this machine and all paired remote machines. Pass a machine_id to inspect that remote machine\'s directories and dispatchable sessions.',
     },
   },
 };
@@ -415,9 +435,21 @@ const TOOLS = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: 'list_machines',
+    title: 'List paired machines and remote targets',
+    description: 'Discover paired MultiCC machines (omit machine_id) or list a remote machine\'s directories and dispatchable sessions (pass machine_id) before calling route_task/dispatch_master with machine_id.',
+    inputSchema: LIST_MACHINES_SCHEMA,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'route_task',
     title: 'Route task (one way)',
-    description: 'Durably queue one-way work; returns after admission and never collects the result. Use new_task for independent work, target_session_id for an existing task. Never pre-create tasks through management HTTP APIs. Unless the user named the target, prefer available over busy chats.',
+    description: 'Durably queue one-way work (locally, or on a paired remote machine via machine_id); returns after admission and never collects the result. Use new_task for independent work, target_session_id for an existing task. Never pre-create tasks through management HTTP APIs. Unless the user named the target, prefer available over busy chats.',
     inputSchema: TARGET_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -429,7 +461,7 @@ const TOOLS = [
   {
     name: 'dispatch_cancel',
     title: 'Cancel a dispatched task',
-    description: 'Cancel a task this session queued via route_task/dispatch_master; required before re-routing. A queued task is removed silently; a running one needs cancel_running=true. Idempotent.',
+    description: 'Cancel a task this session queued via route_task/dispatch_master (local or remote); required before re-routing. A queued task is removed silently; a running one needs cancel_running=true. Idempotent.',
     inputSchema: DISPATCH_CANCEL_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -441,7 +473,7 @@ const TOOLS = [
   {
     name: 'dispatch_status',
     title: 'Recover dispatch status',
-    description: 'Authoritative state of this session\'s dispatches. Use after any timeout, terminated stream, network error or missing receipt — those do not prove the worker stopped; never re-route until this shows a terminal state or dispatch_cancel confirms.',
+    description: 'Authoritative state of this session\'s dispatches (local or remote). Use after any timeout, terminated stream, network error or missing receipt — those do not prove the worker stopped; never re-route until this shows a terminal state or dispatch_cancel confirms.',
     inputSchema: DISPATCH_STATUS_SCHEMA,
     annotations: {
       readOnlyHint: true,
@@ -453,7 +485,7 @@ const TOOLS = [
   {
     name: 'dispatch_master',
     title: 'Dispatch to worker',
-    description: 'Durably dispatch to a same-directory worker: new_task for independent work, target_session_id for an existing task. Never pre-create tasks through management HTTP APIs. Unless the user named the target, prefer an available chat over a busy one (a busy target is queued, never interrupted). sync returns the result inline; async: do not poll the worker, continue independent work and end the turn — the result arrives as a new message. Errors do not prove the task stopped: check dispatch_status before re-routing.',
+    description: 'Durably dispatch to a local same-directory worker or a paired remote machine worker (pass machine_id from list_machines): new_task for independent work, target_session_id for an existing task. Never pre-create tasks through management HTTP APIs. Unless the user named the target, prefer an available chat over a busy one (a busy target is queued, never interrupted). sync returns the result inline; async: do not poll the worker, continue independent work and end the turn — the receipt streams back and wakes this session automatically. Errors do not prove the task stopped: check dispatch_status before re-routing.',
     inputSchema: DISPATCH_MASTER_SCHEMA,
     annotations: {
       readOnlyHint: false,

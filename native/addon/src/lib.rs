@@ -55,6 +55,7 @@ mod bridge_config;
 mod bridge_gateway;
 pub mod code_revision;
 pub mod context_excerpt;
+pub mod cross_machine_dispatch;
 pub mod delivery_class;
 mod detached_result;
 pub mod doctor_host;

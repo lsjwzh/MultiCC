@@ -49,7 +49,7 @@ fn detached_delivery<'a>(op: L<'a>, result: L<'a>, label: L<'a>) -> Result<L<'a>
 fn dispatch_delivery<'a>(op: L<'a>, result: L<'a>, opts: L<'a>, status: L<'a>) -> Result<L<'a>> {
     let spec = op.get(c"spec")?;
     let target = spec.get(c"targetId")?;
-    let label = if spec.get(c"targetLabel")?.truthy()? {
+    let base_label = if spec.get(c"targetLabel")?.truthy()? {
         join(
             op,
             &[
@@ -61,6 +61,18 @@ fn dispatch_delivery<'a>(op: L<'a>, result: L<'a>, opts: L<'a>, status: L<'a>) -
         )?
     } else {
         target
+    };
+    let label = if spec.optional(c"remoteMachineName")?.truthy()? {
+        join(
+            op,
+            &[
+                spec.get(c"remoteMachineName")?,
+                text(op, " / ")?,
+                base_label,
+            ],
+        )?
+    } else {
+        base_label
     };
     let body = fallback(
         call(
@@ -118,6 +130,7 @@ fn dispatch_delivery<'a>(op: L<'a>, result: L<'a>, opts: L<'a>, status: L<'a>) -
     };
     if spec.get(c"oneWay")?.equals(flag(op, true)?)?
         || spec.get(c"resultMode")?.is_string("sync")?
+        || spec.optional(c"remoteMasterMachineId")?.truthy()?
     {
         return null(op);
     }

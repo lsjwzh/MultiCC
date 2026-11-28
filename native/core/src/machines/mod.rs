@@ -1,12 +1,29 @@
 //! Computer identities, revocable pair grants, private persistence and transport.
 //! The host only adapts HTTP/WebSocket objects; no credential enters a child env.
-mod network;
+pub(crate) mod network;
 mod store;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 use store::{Grant, Locked, Peer};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorizedGrant {
+    pub id: String,
+    pub owner_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PeerHandle {
+    pub id: String,
+    pub name: String,
+    pub origin: String,
+    pub grant: String,
+}
 
 #[derive(Debug)]
 pub struct Error {
@@ -37,7 +54,12 @@ fn grant_dto(grant: &Grant) -> Value {
     json!({ "id": grant.id, "name": grant.name, "ownerId": grant.owner_id, "createdAt": grant.created_at })
 }
 
-pub fn authorize(root: &str, credential: &str, method: &str, path: &str) -> Option<String> {
+pub fn authorize_grant(
+    root: &str,
+    credential: &str,
+    method: &str,
+    path: &str,
+) -> Option<AuthorizedGrant> {
     if !credential.starts_with("mcg_")
         || credential.len() != 52
         || !network::api_path(path)
@@ -53,7 +75,39 @@ pub fn authorize(root: &str, credential: &str, method: &str, path: &str) -> Opti
         .grants
         .iter()
         .find(|g| store::constant_eq(&g.digest, &digest))
-        .map(|g| g.id.clone())
+        .map(|g| AuthorizedGrant {
+            id: g.id.clone(),
+            owner_id: g.owner_id.clone(),
+            name: g.name.clone(),
+        })
+}
+
+pub fn authorize(root: &str, credential: &str, method: &str, path: &str) -> Option<String> {
+    authorize_grant(root, credential, method, path).map(|g| g.id)
+}
+
+pub(crate) fn peer_handle(root: &str, id: &str) -> Result<PeerHandle, Error> {
+    let found = peer(root, id)?;
+    Ok(PeerHandle {
+        id: found.id,
+        name: found.name,
+        origin: found.origin,
+        grant: found.grant,
+    })
+}
+
+pub(crate) fn self_identity(root: &str) -> Result<(String, String), Error> {
+    let locked = Locked::open(root)?;
+    locked.save()?;
+    Ok((locked.registry.id.clone(), locked.registry.name.clone()))
+}
+
+pub(crate) fn error_reply(error: Error) -> Value {
+    reply(Err(error))
+}
+
+pub(crate) fn error_reply_err(status: u16, code: &'static str, message: &'static str) -> Error {
+    fail(status, code, message)
 }
 
 pub fn grant_active(root: &str, id: &str) -> bool {

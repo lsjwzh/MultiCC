@@ -32,6 +32,8 @@ fn options<'a>(h: L<'a>, opts: L<'a>) -> Result<L<'a>> {
         c"detachedAdapter",
         c"recoverDispatchResult",
         c"replayRecoveredDispatchEffects",
+        c"onRemoteDispatchSettled",
+        c"onRecoverRemoteDispatch",
         c"getSessionRecoveryState",
         c"getSessionRecoveryFacts",
         c"getSessionRecoveryStateAsync",

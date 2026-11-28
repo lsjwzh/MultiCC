@@ -306,7 +306,11 @@ pub fn operation_admit_live(
         assign_key(operations, id, operation)?;
         operation
     };
-    if action == "dispatch" && !operation.get(c"requestOutboxId")?.truthy()? {
+    let is_remote = operation
+        .get(c"spec")?
+        .optional(c"remoteMachineId")?
+        .truthy()?;
+    if action == "dispatch" && !is_remote && !operation.get(c"requestOutboxId")?.truthy()? {
         let item = admit_outbox(draft, operation, clock, default_crypto, outbox_conflict)?;
         operation.assign(c"requestOutboxId", item.get(c"id")?)?;
         operation.assign(c"updatedAt", now(draft, clock)?)?;

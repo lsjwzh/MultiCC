@@ -465,8 +465,14 @@ function createGatewayHost(rawDeps) {
         chatId,
         message,
         replyTo: opts.replyTo || null,
-        gateway: !opts.replyTo && !opts.oneWay,
+        gateway: !opts.replyTo && !opts.oneWay && !opts.remoteMaster,
         oneWay: !!opts.oneWay,
+        ...(opts.remoteMaster ? {
+          remoteMasterMachineId: opts.remoteMaster.machineId,
+          remoteMasterGrantId: opts.remoteMaster.grantId,
+          remoteMasterName: opts.remoteMaster.name || '',
+          remoteMasterSessionId: opts.remoteMaster.ownerSessionId || '',
+        } : {}),
         ...getTaskContextHost().dispatchSpec(opts),
       },
     });

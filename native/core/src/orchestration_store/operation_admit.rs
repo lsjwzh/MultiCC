@@ -262,7 +262,9 @@ fn execute(store: &mut Store, input: &Value, planning: bool) -> Result<Value> {
     };
     let mut outbox_write = None;
     let mut next_sequence = None;
-    if kind == "dispatch" && !truthy(&field(&operation, "requestOutboxId")) {
+    let is_remote_dispatch =
+        kind == "dispatch" && truthy(&field(&field(&operation, "spec"), "remoteMachineId"));
+    if kind == "dispatch" && !is_remote_dispatch && !truthy(&field(&operation, "requestOutboxId")) {
         let current_spec = field(&operation, "spec");
         let session = field(&current_spec, "chatId");
         if !matches!(&session, JsValue::String(s) if !s.is_empty()) {

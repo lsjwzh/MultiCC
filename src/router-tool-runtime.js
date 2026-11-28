@@ -17,7 +17,7 @@ const TOOL_NAMES = new Set([
   'generate_image',
   'wait_for_external_result', 'get_external_wait', 'cancel_external_wait',
   'route_task', 'dispatch_master', 'dispatch_slave', 'dispatch_cancel',
-  'dispatch_status', 'detached_result',
+  'dispatch_status', 'detached_result', 'list_machines',
 ]);
 const MAX_MESSAGE_LENGTH = 256 * 1024;
 const MAX_RESULT_LENGTH = 512 * 1024;
@@ -182,6 +182,8 @@ function createRouterToolRuntime({
   cancelActiveTurnFn = null,
   onDispatchCancelled = () => {},
   imageBridge = null,
+  dataRoot = null,
+  crossMachineBridge = null,
 } = {}) {
   if (!records || typeof records.get !== 'function') {
     throw new TypeError('[router-tool-runtime] records map is required');
@@ -246,8 +248,52 @@ function createRouterToolRuntime({
     if (token) capabilities.delete(String(token));
   }
 
+  const remoteWatches = new Map();
+  const remoteProgressListeners = new Map();
+
+  function getCrossMachine() {
+    if (crossMachineBridge) return crossMachineBridge;
+    const root = dataRoot ? String(dataRoot) : '';
+    if (!root) return null;
+    return {
+      async listMachines() {
+        const raw = await getNative().machineOperation(root, 'list', '{}');
+        return JSON.parse(raw);
+      },
+      async requestJson(machineId, method, apiPath, body) {
+        const raw = await getNative().crossMachineRequestJson(
+          root,
+          machineId,
+          method,
+          apiPath,
+          body == null ? null : JSON.stringify(body),
+        );
+        return JSON.parse(raw);
+      },
+      watchStart(machineId, onEvent) {
+        return getNative().crossMachineWatchStart(root, machineId, onEvent);
+      },
+      watchStop(watchId) {
+        return getNative().crossMachineWatchStop(watchId);
+      },
+    };
+  }
+
+  function stopAllRemoteWatches() {
+    const cm = getCrossMachine();
+    for (const entry of remoteWatches.values()) {
+      if (entry.stopTimer) clearTimeoutFn(entry.stopTimer);
+      if (cm && entry.watchId != null) {
+        try { cm.watchStop(entry.watchId); } catch (_) {}
+      }
+    }
+    remoteWatches.clear();
+    remoteProgressListeners.clear();
+  }
+
   function clear() {
     capabilities.clear();
+    stopAllRemoteWatches();
   }
 
   function contextFor(token) {
@@ -502,13 +548,291 @@ function createRouterToolRuntime({
     };
   }
 
+  function releaseRemoteWatchOp(machineId, operationId) {
+    const entry = remoteWatches.get(machineId);
+    if (!entry) return;
+    entry.ops.delete(operationId);
+    if (entry.ops.size > 0 || entry.stopTimer) return;
+    entry.stopTimer = setTimeoutFn(() => {
+      entry.stopTimer = null;
+      if (entry.ops.size > 0) return;
+      remoteWatches.delete(machineId);
+      const cm = getCrossMachine();
+      if (cm && entry.watchId != null) {
+        try { cm.watchStop(entry.watchId); } catch (_) {}
+      }
+    }, 15_000);
+    if (entry.stopTimer && typeof entry.stopTimer.unref === 'function') entry.stopTimer.unref();
+  }
+
+  async function settleRemoteReceipt(machineId, payload) {
+    if (!payload || typeof payload !== 'object') return;
+    const opId = typeof payload.operationId === 'string' ? payload.operationId.trim() : '';
+    if (!opId) return;
+    const operation = await operations.get(opId);
+    if (!operation || operation.kind !== 'dispatch' || operation.spec?.remoteMachineId !== machineId) {
+      return;
+    }
+    const status = String(payload.status || 'failed');
+    if (!TERMINAL_OPERATION_STATES.has(status)) return;
+    const rawResult = payload.result && typeof payload.result === 'object' ? payload.result : {};
+    const resultPayload = {
+      ...rawResult,
+      status,
+      sessionName: operation.spec?.chatId || operation.spec?.targetId || opId,
+      ...(payload.lastError && !rawResult.error ? { error: String(payload.lastError) } : {}),
+    };
+    const isAlreadyTerminal = TERMINAL_OPERATION_STATES.has(operation.status);
+    const shouldResettle = payload.resettle === true || isAlreadyTerminal;
+    try {
+      await completeDispatch(
+        opId,
+        resultPayload,
+        shouldResettle ? { resettle: true } : undefined,
+      );
+    } catch (err) {
+      if (err?.code !== 'OPERATION_CONFLICT') throw err;
+    }
+    releaseRemoteWatchOp(machineId, opId);
+    const cm = getCrossMachine();
+    if (cm) {
+      const settle = Math.max(1, Number(payload.settle || 1) || 1);
+      cm.requestJson(machineId, 'POST', '/api/cross-machine/receipts/ack', {
+        operationId: opId,
+        settle,
+      }).catch(() => {});
+    }
+  }
+
+  function handleRemoteEvent(machineId, rawJson) {
+    let parsed;
+    try {
+      parsed = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
+    } catch (_) { return true; }
+    if (!parsed || typeof parsed !== 'object') return true;
+    if (parsed.event === 'progress') {
+      const opId = parsed.data?.operationId;
+      const listeners = opId ? remoteProgressListeners.get(opId) : null;
+      if (listeners) {
+        for (const fn of listeners) {
+          try { fn(parsed.data.progress); } catch (_) {}
+        }
+      }
+      return true;
+    }
+    if (parsed.event === 'receipt') {
+      settleRemoteReceipt(machineId, parsed.data).catch(() => {});
+    }
+    return true;
+  }
+
+  function ensureRemoteWatch(machineId, operationId) {
+    const cm = getCrossMachine();
+    if (!cm || !machineId) return;
+    let entry = remoteWatches.get(machineId);
+    if (!entry) {
+      const watchId = cm.watchStart(machineId, (first, second) => {
+        if (first instanceof Error) return true;
+        const raw = second !== undefined ? second : first;
+        return handleRemoteEvent(machineId, raw);
+      });
+      entry = { watchId, ops: new Set(), stopTimer: null };
+      remoteWatches.set(machineId, entry);
+    } else if (entry.stopTimer) {
+      clearTimeoutFn(entry.stopTimer);
+      entry.stopTimer = null;
+    }
+    if (operationId) entry.ops.add(operationId);
+  }
+
+  function recoverRemoteDispatch(operation) {
+    const machineId = operation?.spec?.remoteMachineId;
+    if (!machineId || !operation?.id) return;
+    ensureRemoteWatch(machineId, operation.id);
+    const cm = getCrossMachine();
+    if (!cm) return;
+    cm.requestJson(
+      machineId,
+      'GET',
+      `/api/cross-machine/dispatches/${encodeURIComponent(operation.id)}`,
+      null,
+    ).then(res => {
+      if (res?.status === 200 && res?.data?.dispatch?.terminal) {
+        return settleRemoteReceipt(machineId, res.data.dispatch);
+      }
+    }).catch(() => {});
+  }
+
+  async function listMachines(context, args) {
+    rejectUnknownArguments(args, new Set(['machine_id']));
+    const cm = getCrossMachine();
+    if (!cm) {
+      throw new RouterToolError('machines_unavailable', 'multi-machine runtime is not configured on this host', 503);
+    }
+    const rawMachineId = args.machine_id == null ? '' : String(args.machine_id).trim();
+    if (!rawMachineId) {
+      const res = await cm.listMachines();
+      if (!res || res.status >= 400) {
+        throw new RouterToolError(res?.data?.code || 'machines_list_failed', res?.data?.error || 'failed to list machines', res?.status || 500);
+      }
+      return {
+        ok: true,
+        self: res.data?.self || null,
+        machines: Array.isArray(res.data?.machines) ? res.data.machines : [],
+      };
+    }
+    const machineId = cleanId(rawMachineId, 'machine_id');
+    const res = await cm.requestJson(machineId, 'GET', '/api/cross-machine/targets', null);
+    if (!res || res.status >= 400) {
+      throw new RouterToolError(
+        res?.data?.code || 'remote_targets_failed',
+        res?.data?.error || `failed to list targets on machine ${machineId}`,
+        res?.status || 502,
+      );
+    }
+    return {
+      ok: true,
+      machine_id: res.peer?.id || machineId,
+      machine_name: res.peer?.name || machineId,
+      directories: Array.isArray(res.data?.directories) ? res.data.directories : [],
+      sessions: Array.isArray(res.data?.sessions) ? res.data.sessions : [],
+    };
+  }
+
+  async function admitRemote(context, tool, args, resultMode) {
+    const cm = getCrossMachine();
+    if (!cm) {
+      throw new RouterToolError('machines_unavailable', 'multi-machine dispatch is not configured on this host', 503);
+    }
+    const machineId = cleanId(args.machine_id, 'machine_id');
+    const message = cleanText(args.message, 'message', MAX_MESSAGE_LENGTH);
+    const hasTarget = args.target_session_id !== undefined;
+    const hasNewTask = args.new_task !== undefined;
+    if (hasTarget === hasNewTask) {
+      throw new RouterToolError('invalid_arguments', 'pass either target_session_id or new_task (not both)');
+    }
+    let targetSessionId = null;
+    let newTask = null;
+    let targetKey = '';
+    if (hasTarget) {
+      targetSessionId = cleanId(args.target_session_id, 'target_session_id');
+      targetKey = `${machineId}:${targetSessionId}`;
+    } else {
+      if (!args.new_task || typeof args.new_task !== 'object' || Array.isArray(args.new_task)) {
+        throw new RouterToolError('invalid_arguments', 'new_task must be an object');
+      }
+      rejectUnknownArguments(args.new_task, new Set(['title', 'dir_id', 'cli', 'model', 'provider', 'effort']));
+      const title = cleanText(args.new_task.title, 'new_task.title', 120);
+      const dirId = args.new_task.dir_id != null ? cleanId(args.new_task.dir_id, 'new_task.dir_id') : undefined;
+      newTask = {
+        title,
+        ...(dirId ? { dirId } : {}),
+        ...(args.new_task.cli ? { cli: cleanText(args.new_task.cli, 'new_task.cli', 256) } : {}),
+        ...(args.new_task.model ? { model: cleanText(args.new_task.model, 'new_task.model', 256) } : {}),
+        ...(args.new_task.provider ? { provider: cleanText(args.new_task.provider, 'new_task.provider', 256) } : {}),
+        ...(args.new_task.effort ? { effort: cleanText(args.new_task.effort, 'new_task.effort', 256) } : {}),
+      };
+      targetKey = `${machineId}:new_task:${dirId || ''}:${title}`;
+    }
+    const identity = admissionIdentity(context, tool, targetKey, message, args.idempotency_key);
+    const operationId = `op_${stableSuffix([
+      'dispatch-remote', tool, context.sessionId, machineId, targetKey, identity.idempotencyKey,
+    ], cryptoImpl)}`;
+    const caller = records.get(context.sessionId);
+    const masterLabel = (caller && (caller.label || caller.name)) || context.sessionId || 'master';
+    const remoteRes = await cm.requestJson(machineId, 'POST', '/api/cross-machine/dispatches', {
+      operationId,
+      idempotencyKey: identity.idempotencyKey,
+      mode: resultMode,
+      ...(targetSessionId ? { targetSessionId } : {}),
+      ...(newTask ? { newTask } : {}),
+      allowTerminal: args.allow_terminal === true,
+      message,
+      masterSessionId: context.sessionId,
+      masterLabel,
+    });
+    if (!remoteRes || remoteRes.status >= 400 || remoteRes.data?.ok !== true) {
+      throw new RouterToolError(
+        remoteRes?.data?.code || 'remote_dispatch_failed',
+        remoteRes?.data?.error || `remote dispatch to ${machineId} failed`,
+        remoteRes?.status || 502,
+      );
+    }
+    const remoteData = remoteRes.data;
+    const remoteMachineName = remoteRes.peer?.name || machineId;
+    const remoteTargetId = remoteData.targetSessionId || targetSessionId || remoteData.executionSessionId;
+    const remoteExecId = remoteData.executionSessionId || remoteTargetId;
+    const localAdmitted = await operations.admitDispatch({
+      ownerSessionId: context.sessionId,
+      resultSessionId: context.sessionId,
+      idempotencyKey: identity.idempotencyKey,
+      operationId,
+      spec: {
+        targetId: remoteTargetId,
+        targetLabel: remoteData.targetLabel || '',
+        chatId: remoteExecId,
+        message,
+        replyTo: resultMode === 'sync' || resultMode === 'async' ? context.sessionId : null,
+        gateway: false,
+        oneWay: resultMode === 'none',
+        resultMode,
+        taskId: remoteData.taskId || null,
+        remoteMachineId: machineId,
+        remoteMachineName,
+        remoteOperationId: remoteData.operationId || operationId,
+      },
+    });
+    if (resultMode === 'async' || resultMode === 'sync') {
+      ensureRemoteWatch(machineId, localAdmitted.id);
+    }
+    return {
+      ok: true,
+      operationId: localAdmitted.id,
+      remoteOperationId: remoteData.operationId || localAdmitted.id,
+      remoteMachineId: machineId,
+      remoteMachineName,
+      status: remoteData.status || localAdmitted.status || 'admitted',
+      targetSessionId: remoteTargetId,
+      chatId: remoteExecId,
+      taskId: remoteData.taskId || null,
+      duplicate: localAdmitted.idempotent === true || remoteData.duplicate === true,
+      queue: remoteData.queue || null,
+      idempotencyKey: identity.idempotencyKey,
+    };
+  }
+
+  async function resolveSelfMachineId() {
+    const cm = getCrossMachine();
+    if (!cm) return '';
+    try {
+      const res = await cm.listMachines();
+      return res?.data?.self?.id || '';
+    } catch (_) { return ''; }
+  }
+
+  async function shouldDispatchRemote(args) {
+    if (args.machine_id == null) return false;
+    const mid = String(args.machine_id).trim();
+    if (!mid) return false;
+    const selfId = await resolveSelfMachineId();
+    return !selfId || mid !== selfId;
+  }
+
   async function routeTask(context, args) {
-    rejectUnknownArguments(args, new Set(['target_session_id', 'new_task', 'message', 'idempotency_key', 'allow_terminal']));
-    const admitted = await admit(context, 'route_task', args, 'none');
+    rejectUnknownArguments(args, new Set(['machine_id', 'target_session_id', 'new_task', 'message', 'idempotency_key', 'allow_terminal']));
+    const isRemote = await shouldDispatchRemote(args);
+    const admitted = isRemote
+      ? await admitRemote(context, 'route_task', args, 'none')
+      : await admit(context, 'route_task', args, 'none');
     return {
       ok: true,
       status: admitted.status,
       operation_id: admitted.operationId,
+      ...(admitted.remoteMachineId ? {
+        machine_id: admitted.remoteMachineId,
+        machine_name: admitted.remoteMachineName,
+        remote_operation_id: admitted.remoteOperationId,
+      } : {}),
       target_session_id: admitted.targetSessionId,
       execution_session_id: admitted.chatId || admitted.targetSessionId,
       task_id: admitted.taskId,
@@ -538,12 +862,36 @@ function createRouterToolRuntime({
   }
 
   async function dispatchOperationSummary(operation) {
+    const remoteMachineId = operation.spec?.remoteMachineId || '';
     const chatId = operation.spec?.chatId || operation.spec?.targetId || null;
     const entryId = operation.requestOutboxId || `operation:${operation.id}:request`;
-    let queueState = TERMINAL_OPERATION_STATES.has(operation.status)
+    let currentOp = operation;
+    let queueState = TERMINAL_OPERATION_STATES.has(currentOp.status)
       ? 'terminal' : 'unknown';
     let queuePosition = null;
-    if (queueState !== 'terminal' && chatId) {
+    if (remoteMachineId && queueState !== 'terminal') {
+      const cm = getCrossMachine();
+      if (cm) {
+        try {
+          const res = await cm.requestJson(
+            remoteMachineId,
+            'GET',
+            `/api/cross-machine/dispatches/${encodeURIComponent(currentOp.id)}`,
+            null,
+          );
+          const remote = res?.status === 200 ? res?.data?.dispatch : null;
+          if (remote) {
+            queueState = remote.queueState || queueState;
+            if (Number.isFinite(remote.queuePosition)) queuePosition = remote.queuePosition;
+            if (remote.terminal) {
+              await settleRemoteReceipt(remoteMachineId, remote);
+              currentOp = (await operations.get(currentOp.id)) || currentOp;
+              queueState = 'terminal';
+            }
+          }
+        } catch (_) { /* durable local record remains authoritative when peer is unreachable */ }
+      }
+    } else if (queueState !== 'terminal' && chatId) {
       try {
         const schedule = await schedulerStatus(chatId);
         const queued = (schedule?.queued || []).find(item => item.entryId === entryId);
@@ -554,28 +902,33 @@ function createRouterToolRuntime({
             && (schedule.active.entryId === entryId
               || schedule.active.deliveryId === entryId)) {
           queueState = 'started';
-        } else if (operation.status === 'running') {
+        } else if (currentOp.status === 'running') {
           queueState = 'running';
         }
       } catch (_) { /* the durable operation remains authoritative */ }
     }
-    const result = operation.result && typeof operation.result === 'object'
-      ? operation.result : {};
-    const resultText = String(result.text || result.error || operation.lastError || '').trim();
+    const result = currentOp.result && typeof currentOp.result === 'object'
+      ? currentOp.result : {};
+    const resultText = String(result.text || result.error || currentOp.lastError || '').trim();
     return {
-      operation_id: operation.id,
-      status: operation.status,
-      terminal: TERMINAL_OPERATION_STATES.has(operation.status),
-      target_session_id: operation.spec?.targetId || null,
+      operation_id: currentOp.id,
+      status: currentOp.status,
+      terminal: TERMINAL_OPERATION_STATES.has(currentOp.status),
+      ...(remoteMachineId ? {
+        machine_id: remoteMachineId,
+        machine_name: currentOp.spec?.remoteMachineName || remoteMachineId,
+        remote_operation_id: currentOp.spec?.remoteOperationId || currentOp.id,
+      } : {}),
+      target_session_id: currentOp.spec?.targetId || null,
       execution_session_id: chatId,
-      task_id: operation.spec?.taskId || null,
-      mode: operation.spec?.resultMode || (operation.spec?.oneWay ? 'one_way' : null),
+      task_id: currentOp.spec?.taskId || null,
+      mode: currentOp.spec?.resultMode || (currentOp.spec?.oneWay ? 'one_way' : null),
       queue_state: queueState,
       ...(queuePosition == null ? {} : { queue_position: queuePosition }),
-      created_at: operation.createdAt || null,
-      started_at: operation.startedAt || null,
-      completed_at: operation.completedAt || null,
-      updated_at: operation.updatedAt || null,
+      created_at: currentOp.createdAt || null,
+      started_at: currentOp.startedAt || null,
+      completed_at: currentOp.completedAt || null,
+      updated_at: currentOp.updatedAt || null,
       ...(resultText ? { result: resultText } : {}),
     };
   }
@@ -647,7 +1000,7 @@ function createRouterToolRuntime({
 
   async function dispatchMaster(context, args, options = {}) {
     rejectUnknownArguments(args, new Set([
-      'target_session_id', 'new_task', 'message', 'idempotency_key', 'allow_terminal',
+      'machine_id', 'target_session_id', 'new_task', 'message', 'idempotency_key', 'allow_terminal',
       'mode', 'timeout_seconds',
     ]));
     const mode = String(args.mode || '');
@@ -661,9 +1014,12 @@ function createRouterToolRuntime({
       );
     }
     if (mode === 'sync') boundedTimeout(args.timeout_seconds);
+    const isRemote = await shouldDispatchRemote(args);
     let admitted;
     try {
-      admitted = await admit(context, 'dispatch_master', args, mode);
+      admitted = isRemote
+        ? await admitRemote(context, 'dispatch_master', args, mode)
+        : await admit(context, 'dispatch_master', args, mode);
     } catch (e) {
       const code = (e && e.code) || 'dispatch_rejected';
       if (code !== 'dispatch_rejected' && code !== 'target_busy') throw e;
@@ -677,6 +1033,11 @@ function createRouterToolRuntime({
         retryable: true,
       };
     }
+    const remoteFields = admitted.remoteMachineId ? {
+      machine_id: admitted.remoteMachineId,
+      machine_name: admitted.remoteMachineName,
+      remote_operation_id: admitted.remoteOperationId,
+    } : {};
     if (mode === 'async') {
       return {
         ok: true,
@@ -684,6 +1045,7 @@ function createRouterToolRuntime({
         admitted: true,
         status: admitted.status,
         operation_id: admitted.operationId,
+        ...remoteFields,
         target_session_id: admitted.targetSessionId,
         execution_session_id: admitted.chatId || admitted.targetSessionId,
         task_id: admitted.taskId,
@@ -696,11 +1058,22 @@ function createRouterToolRuntime({
     const timeoutMs = boundedTimeout(args.timeout_seconds);
     let unsubscribe = () => {};
     try {
-      unsubscribe = subscribeDispatchProgress({
-        operationId: admitted.operationId,
-        targetSessionId: admitted.targetSessionId,
-        onProgress: typeof options.onProgress === 'function' ? options.onProgress : () => {},
-      }) || (() => {});
+      const progressCb = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+      if (admitted.remoteMachineId) {
+        let set = remoteProgressListeners.get(admitted.operationId);
+        if (!set) { set = new Set(); remoteProgressListeners.set(admitted.operationId, set); }
+        set.add(progressCb);
+        unsubscribe = () => {
+          set.delete(progressCb);
+          if (set.size === 0) remoteProgressListeners.delete(admitted.operationId);
+        };
+      } else {
+        unsubscribe = subscribeDispatchProgress({
+          operationId: admitted.operationId,
+          targetSessionId: admitted.targetSessionId,
+          onProgress: progressCb,
+        }) || (() => {});
+      }
       const operation = await waitForOperation(admitted.operationId, timeoutMs, options.signal);
       if (!operation) {
         return {
@@ -709,6 +1082,7 @@ function createRouterToolRuntime({
           status: 'pending',
           timed_out: true,
           operation_id: admitted.operationId,
+          ...remoteFields,
           target_session_id: admitted.targetSessionId,
           execution_session_id: admitted.chatId || admitted.targetSessionId,
           task_id: admitted.taskId,
@@ -717,7 +1091,10 @@ function createRouterToolRuntime({
           instruction: 'The worker is still running. Retry dispatch_master with the same idempotency_key and mode="sync" to reattach without creating a duplicate operation.',
         };
       }
-      return dispatchResult(operation, admitted);
+      return {
+        ...dispatchResult(operation, admitted),
+        ...remoteFields,
+      };
     } finally {
       try { unsubscribe(); } catch (_) {}
     }
@@ -758,6 +1135,49 @@ function createRouterToolRuntime({
         status: operation.status,
         already_terminal: true,
         note: 'the operation already reached a terminal state; nothing was cancelled',
+      };
+    }
+    const remoteMachineId = operation.spec?.remoteMachineId || '';
+    if (remoteMachineId) {
+      const cm = getCrossMachine();
+      if (!cm) {
+        throw new RouterToolError('cancel_unavailable', 'cross-machine cancel is not configured', 503);
+      }
+      const remoteRes = await cm.requestJson(
+        remoteMachineId,
+        'POST',
+        `/api/cross-machine/dispatches/${encodeURIComponent(operationId)}/cancel`,
+        { reason, cancelRunning: args.cancel_running === true },
+      );
+      if (!remoteRes || remoteRes.status >= 400 || remoteRes.data?.ok !== true) {
+        throw new RouterToolError(
+          remoteRes?.data?.code || 'remote_cancel_failed',
+          remoteRes?.data?.error || `failed to cancel remote dispatch ${operationId}`,
+          remoteRes?.status || 502,
+        );
+      }
+      releaseRemoteWatchOp(remoteMachineId, operationId);
+      if (remoteRes.data.alreadyTerminal) {
+        return {
+          ok: true,
+          operation_id: operationId,
+          machine_id: remoteMachineId,
+          status: remoteRes.data.status || operation.status,
+          already_terminal: true,
+          note: 'the remote task already reached a terminal state',
+        };
+      }
+      const settled = await operations.cancelDispatch(operationId, {
+        reason,
+        disposition: remoteRes.data.disposition || 'remote',
+      });
+      return {
+        ok: true,
+        operation_id: operationId,
+        machine_id: remoteMachineId,
+        status: settled?.raced ? settled.status : 'cancelled',
+        disposition: remoteRes.data.disposition || 'remote',
+        note: 'cancelled on remote machine',
       };
     }
     const chatId = operation.spec?.chatId || operation.spec?.targetId;
@@ -1328,6 +1748,7 @@ function createRouterToolRuntime({
     if (tool === 'cancel_external_wait') {
       return cancelExternalWaitForContext(context, args);
     }
+    if (tool === 'list_machines') return listMachines(context, args);
     if (tool === 'route_task') return routeTask(context, args);
     if (tool === 'dispatch_master') return dispatchMaster(context, args, options);
     if (tool === 'dispatch_status') return dispatchStatus(context, args);
@@ -1355,6 +1776,7 @@ function createRouterToolRuntime({
     clear,
     execute,
     contextFor,
+    recoverRemoteDispatch,
   });
 }
 

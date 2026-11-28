@@ -60,6 +60,9 @@ function createOrchestrationRoutes(rawDeps) {
     // show a friendly name without a second lookup. Absent for ordinary
     // targets keeps the DTO minimal.
     const targetRecord = targetId ? deps.records.get(targetId) : null;
+    const remoteMachineId = operation.spec?.remoteMachineId || '';
+    const targetLabel = (targetRecord && typeof targetRecord.label === 'string' && targetRecord.label)
+      || (remoteMachineId && typeof operation.spec?.targetLabel === 'string' ? operation.spec.targetLabel : '');
     return {
       operationId: operation.id,
       status: operation.status,
@@ -68,10 +71,14 @@ function createOrchestrationRoutes(rawDeps) {
         ? (operation.spec?.chatId === sessionId ? 'self' : 'owner') : 'target',
       ownerSessionId: operation.ownerSessionId,
       targetSessionId: targetId,
-      ...(targetRecord && typeof targetRecord.label === 'string' && targetRecord.label
-        ? { targetLabel: targetRecord.label } : {}),
+      ...(targetLabel ? { targetLabel } : {}),
       ...(targetRecord && typeof targetRecord.taskBoundTaskId === 'string' && targetRecord.taskBoundTaskId
         ? { targetTaskBoundTaskId: targetRecord.taskBoundTaskId } : {}),
+      ...(remoteMachineId ? {
+        machineId: remoteMachineId,
+        ...(operation.spec?.remoteMachineName ? { machineName: operation.spec.remoteMachineName } : {}),
+        ...(operation.spec?.remoteOperationId ? { remoteOperationId: operation.spec.remoteOperationId } : {}),
+      } : {}),
       executionSessionId: operation.spec?.chatId || operation.spec?.targetId || null,
       taskId: operation.spec?.taskId || null,
       mode: operation.spec?.resultMode || (operation.spec?.oneWay ? 'one_way' : null),
@@ -659,6 +666,312 @@ function createOrchestrationRoutes(rawDeps) {
       const operations = await listOperationReferences({ kind: 'detached' });
       const operation = operations.find(entry => entry.externalId === req.params.taskId);
       res.json(operation ? { ...state, operationId: operation.id, status: operation.status } : state);
+    });
+
+    // ── Cross-machine dispatch host-port ops (served behind Rust gateway /api/cross-machine/*) ──
+    const remoteSyncUnsubscribers = new Map();
+    const buildRemoteReceiptPayload = (operation, resettle = false) => ({
+      operationId: operation.id,
+      status: operation.status,
+      terminal: terminalDispatchStates.has(operation.status),
+      result: operation.result && typeof operation.result === 'object' ? operation.result : {},
+      lastError: operation.lastError || null,
+      settle: Number(operation.resultSettles || 1),
+      resettle: resettle === true,
+      targetSessionId: operation.spec?.targetId || null,
+      targetLabel: operation.spec?.targetLabel || '',
+      executionSessionId: operation.spec?.chatId || operation.spec?.targetId || null,
+      taskId: operation.spec?.taskId || null,
+      completedAt: operation.completedAt || operation.updatedAt || Date.now(),
+    });
+
+    const formatRemoteDispatchText = (body, grant) => {
+      const mode = String(body.mode || 'none');
+      const opId = String(body.operationId || '');
+      const masterName = String(grant.name || grant.ownerId || 'remote');
+      const masterLabel = String(body.masterLabel || body.masterSessionId || 'remote-session');
+      const verb = mode === 'none' ? 'Dispatched from machine' : 'Dispatched (two-way) from machine';
+      let text = `[${verb} "${masterName}" by: ${masterLabel}${body.masterSessionId ? ` · ${body.masterSessionId}` : ''}]\n\n${String(body.message || '')}`;
+      if (mode === 'async') {
+        text += [
+          '',
+          '---',
+          '[Receipt required] When this task is done, you must call the dispatch_slave tool to return the result:',
+          `dispatch_slave({operation_id:"${opId}", result:"<summary of conclusion / changes / evidence / risks>", status:"completed"})`,
+          'Use status:"failed" on failure. Without a receipt the master never receives the result: as soon as the dispatched turn ends, the system marks the operation failed automatically;',
+          'you can still submit a late receipt any time with the operation_id above and the system corrects the record. The operation_id is stable across turns',
+          'and remains valid no matter how many times the task is interrupted or continued.',
+          'This is an async receipt: do not poll, read, or wait on the master session.',
+        ].join('\n');
+      } else if (mode === 'sync') {
+        text += [
+          '',
+          '---',
+          '[Sync relay] The host is streaming the reasoning/thinking this turn emits explicitly, plus safe dialogue progress, straight back to the dispatcher.',
+          'Just complete the task normally and give your final answer; no receipt tool call is needed.',
+        ].join('\n');
+      }
+      return text;
+    };
+
+    app.get('/api/cross-machine/targets', (req, res) => {
+      if (!req.grant?.ownerId) return res.status(403).json({ ok: false, code: 'machine_grant_required', error: 'grant required' });
+      const dirList = typeof deps.listDirectories === 'function' ? deps.listDirectories() : [];
+      const dirNames = new Map(dirList.map(d => [d.id, d.name || d.path || d.id]));
+      const sessions = [];
+      for (const [id, rec] of deps.records.entries()) {
+        if (!rec || ['aux', 'gateway', 'commander'].includes(rec.type)) continue;
+        if (rec.taskExecutionSlot === true || rec.archived === true) continue;
+        if (rec.kind === 'chat' && typeof id === 'string' && id.endsWith('-gw-chat')) continue;
+        sessions.push({
+          id,
+          label: rec.label || rec.name || id,
+          kind: rec.kind || 'chat',
+          cli: rec.cli || null,
+          dirId: rec.dirId || null,
+          dirName: rec.dirId ? (dirNames.get(rec.dirId) || null) : null,
+          busy: typeof deps.isTargetBusy === 'function' ? !!deps.isTargetBusy(id) : false,
+          ...(rec.taskBoundTaskId ? { taskId: rec.taskBoundTaskId } : {}),
+        });
+        if (sessions.length >= 60) break;
+      }
+      return res.json({
+        ok: true,
+        directories: dirList.slice(0, 40).map(d => ({ id: d.id, name: d.name || d.path || d.id, path: d.path || null })),
+        sessions,
+      });
+    });
+
+    app.post('/api/cross-machine/dispatches', async (req, res) => {
+      const grant = req.grant;
+      if (!grant?.ownerId) return res.status(403).json({ ok: false, code: 'machine_grant_required', error: 'grant required' });
+      if (typeof deps.dispatchToSession !== 'function') {
+        return res.status(503).json({ ok: false, code: 'dispatch_unavailable', error: 'remote dispatch is not configured on this host' });
+      }
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const mode = String(body.mode || '');
+      const operationId = String(body.operationId || '').trim();
+      const idempotencyKey = String(body.idempotencyKey || '').trim();
+      if (!operationId || !idempotencyKey || !['none', 'sync', 'async'].includes(mode)) {
+        return res.status(400).json({ ok: false, code: 'invalid_payload', error: 'operationId, idempotencyKey and mode are required' });
+      }
+      let targetId = typeof body.targetSessionId === 'string' ? body.targetSessionId.trim() : '';
+      let createdTaskId = null;
+      try {
+        if (!targetId && body.newTask && typeof body.newTask === 'object') {
+          if (typeof deps.createTask !== 'function') {
+            return res.status(503).json({ ok: false, code: 'task_create_unavailable', error: 'new_task is not supported on this host' });
+          }
+          const dirList = typeof deps.listDirectories === 'function' ? deps.listDirectories() : [];
+          const dirId = String(body.newTask.dirId || body.newTask.dir_id || dirList[0]?.id || '').trim();
+          if (!dirId) {
+            return res.status(400).json({ ok: false, code: 'dir_id_required', error: '目标电脑上没有可用工作目录，请在 new_task.dir_id 指定目录' });
+          }
+          const created = await deps.createTask({
+            dirId,
+            title: String(body.newTask.title || '').trim(),
+            cli: body.newTask.cli || undefined,
+            model: body.newTask.model || undefined,
+            provider: body.newTask.provider || undefined,
+            effort: body.newTask.effort || undefined,
+            clientMsgId: `cm_${grant.ownerId.slice(0, 12)}_${operationId}`,
+          });
+          if (!created?.sessionId) {
+            return res.status(500).json({ ok: false, code: 'task_create_failed', error: 'failed to create remote task session' });
+          }
+          targetId = created.sessionId;
+          createdTaskId = created.taskId || null;
+        }
+        const target = targetId ? deps.records.get(targetId) : null;
+        if (!target) return res.status(404).json({ ok: false, code: 'target_not_found', error: `target session "${targetId}" was not found` });
+        if (['aux', 'gateway', 'commander'].includes(target.type)) {
+          return res.status(403).json({ ok: false, code: 'target_forbidden', error: `cannot dispatch to ${target.type} session "${targetId}"` });
+        }
+        if (target.kind === 'terminal' && body.allowTerminal !== true) {
+          return res.status(403).json({ ok: false, code: 'terminal_requires_opt_in', error: `target "${targetId}" is a terminal session; pass allow_terminal=true` });
+        }
+        const delivered = formatRemoteDispatchText(body, grant);
+        const ownerSessionId = `__remote_machine__:${grant.ownerId}`;
+        const result = await deps.dispatchToSession(targetId, delivered, {
+          ownerSessionId,
+          replyTo: null,
+          oneWay: mode === 'none',
+          resultMode: mode,
+          requireIdle: false,
+          idempotencyKey: `cm:${grant.ownerId}:${idempotencyKey}`,
+          operationId,
+          remoteMaster: {
+            machineId: grant.ownerId,
+            grantId: grant.id,
+            name: grant.name || grant.ownerId,
+            ownerSessionId: String(body.masterSessionId || ''),
+          },
+        });
+        if (!result || result.ok !== true) {
+          return res.status(409).json({
+            ok: false,
+            code: result?.code || 'dispatch_rejected',
+            error: result?.error || 'dispatch rejected on remote machine',
+          });
+        }
+        if (mode === 'sync' && typeof deps.subscribeDispatchProgress === 'function' && typeof deps.notifyRemoteEvent === 'function') {
+          const prev = remoteSyncUnsubscribers.get(result.operationId);
+          if (typeof prev === 'function') { try { prev(); } catch (_) {} }
+          const unsub = deps.subscribeDispatchProgress({
+            operationId: result.operationId,
+            targetSessionId: targetId,
+            onProgress: progress => {
+              deps.notifyRemoteEvent({
+                masterMachineId: grant.ownerId,
+                event: 'progress',
+                payload: { operationId: result.operationId, progress },
+              });
+            },
+          });
+          if (typeof unsub === 'function') remoteSyncUnsubscribers.set(result.operationId, unsub);
+        }
+        return res.json({
+          ok: true,
+          operationId: result.operationId,
+          status: result.status || 'admitted',
+          targetSessionId: targetId,
+          targetLabel: target.label || target.name || '',
+          executionSessionId: result.chatId || targetId,
+          taskId: result.taskId || createdTaskId || target.taskBoundTaskId || null,
+          duplicate: result.duplicate === true,
+          queue: result.queue || null,
+        });
+      } catch (error) {
+        const status = Number.isInteger(error?.statusCode) ? error.statusCode : (error?.code === 'OPERATION_CONFLICT' ? 409 : 500);
+        return res.status(status).json({
+          ok: false,
+          code: error?.code || 'cross_machine_admit_failed',
+          error: error?.message || String(error),
+        });
+      }
+    });
+
+    app.get('/api/cross-machine/dispatches/:opId', async (req, res) => {
+      const grant = req.grant;
+      if (!grant?.ownerId) return res.status(403).json({ ok: false, code: 'machine_grant_required', error: 'grant required' });
+      const op = await deps.runtime.operations.get(req.params.opId);
+      if (!op || op.kind !== 'dispatch' || op.spec?.remoteMasterMachineId !== grant.ownerId) {
+        return res.status(404).json({ ok: false, code: 'dispatch_not_found', error: 'remote dispatch not found' });
+      }
+      const chatId = op.spec?.chatId || op.spec?.targetId || null;
+      const schedule = chatId && deps.runtime.sessionScheduler
+        ? await deps.runtime.sessionScheduler.status(chatId).catch(() => null) : null;
+      const entryId = op.requestOutboxId || `operation:${op.id}:request`;
+      const queued = (schedule?.queued || []).find(item => item.entryId === entryId);
+      const started = !!schedule?.active && (schedule.active.entryId === entryId || schedule.active.deliveryId === entryId);
+      const terminal = terminalDispatchStates.has(op.status);
+      const queueState = terminal ? 'terminal' : queued ? 'queued' : started ? 'started' : (op.status === 'running' ? 'running' : 'unknown');
+      return res.json({
+        ok: true,
+        dispatch: {
+          ...buildRemoteReceiptPayload(op, false),
+          queueState,
+          ...(queued && Number.isFinite(queued.position) ? { queuePosition: queued.position } : {}),
+          ...(queued ? { queueLength: (schedule?.queued || []).length } : {}),
+          createdAt: op.createdAt || null,
+          startedAt: op.startedAt || null,
+          updatedAt: op.updatedAt || null,
+        },
+      });
+    });
+
+    app.post('/api/cross-machine/dispatches/:opId/cancel', async (req, res) => {
+      const grant = req.grant;
+      if (!grant?.ownerId) return res.status(403).json({ ok: false, code: 'machine_grant_required', error: 'grant required' });
+      const opId = req.params.opId;
+      const op = await deps.runtime.operations.get(opId);
+      if (!op || op.kind !== 'dispatch' || op.spec?.remoteMasterMachineId !== grant.ownerId) {
+        return res.status(404).json({ ok: false, code: 'dispatch_not_found', error: 'remote dispatch not found' });
+      }
+      if (terminalDispatchStates.has(op.status)) {
+        return res.json({ ok: true, operationId: opId, status: op.status, alreadyTerminal: true });
+      }
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const reason = String(body.reason || 'cancelled by remote dispatcher').slice(0, 500);
+      const chatId = op.spec?.chatId || op.spec?.targetId;
+      const entryId = op.requestOutboxId || `operation:${opId}:request`;
+      const finishCancel = async (disposition) => {
+        const unsub = remoteSyncUnsubscribers.get(opId);
+        if (typeof unsub === 'function') { remoteSyncUnsubscribers.delete(opId); try { unsub(); } catch (_) {} }
+        const settled = await deps.runtime.operations.cancelDispatch(opId, { reason, disposition });
+        if (typeof deps.onDispatchCancelled === 'function') { try { deps.onDispatchCancelled(opId); } catch (_) {} }
+        if (settled?.operation && typeof deps.notifyRemoteEvent === 'function') {
+          deps.notifyRemoteEvent({
+            masterMachineId: grant.ownerId,
+            event: 'receipt',
+            payload: buildRemoteReceiptPayload(settled.operation, false),
+          });
+        }
+        return res.json({
+          ok: true,
+          operationId: opId,
+          status: settled?.raced ? settled.status : 'cancelled',
+          alreadyTerminal: settled?.raced === true,
+          disposition,
+        });
+      };
+      if (deps.runtime.sessionScheduler) {
+        const removed = await deps.runtime.sessionScheduler.cancelQueued(chatId, entryId, { actor: `remote:${grant.ownerId}`, reason });
+        if (removed?.ok) return finishCancel('queued');
+        const schedule = await deps.runtime.sessionScheduler.status(chatId).catch(() => null);
+        const active = schedule?.active || null;
+        if (active && (active.entryId === entryId || active.deliveryId === entryId)) {
+          if (body.cancelRunning !== true && body.cancel_running !== true) {
+            return res.status(409).json({
+              ok: false,
+              code: 'already_running',
+              error: 'the task already left the FIFO and is running on the remote target; pass cancel_running=true to interrupt that turn',
+            });
+          }
+          if (typeof deps.cancelActiveTurn !== 'function') {
+            return res.status(503).json({ ok: false, code: 'cancel_unavailable', error: 'running-turn cancellation unavailable' });
+          }
+          await deps.cancelActiveTurn(chatId, { source: 'dispatch_cancel', reason });
+          return finishCancel('running');
+        }
+      }
+      return finishCancel('untrackable');
+    });
+
+    app.post('/api/cross-machine/receipts/ack', async (req, res) => {
+      const grant = req.grant;
+      if (!grant?.ownerId) return res.status(403).json({ ok: false, code: 'machine_grant_required', error: 'grant required' });
+      const opId = String(req.params.opId || req.body?.operationId || '').trim();
+      const op = opId ? await deps.runtime.operations.get(opId) : null;
+      if (!op || op.kind !== 'dispatch' || op.spec?.remoteMasterMachineId !== grant.ownerId) {
+        return res.status(404).json({ ok: false, code: 'dispatch_not_found', error: 'remote dispatch not found' });
+      }
+      const settle = Math.max(1, Number(req.settle ?? req.body?.settle ?? 1) || 1);
+      const unsub = remoteSyncUnsubscribers.get(opId);
+      if (typeof unsub === 'function') { remoteSyncUnsubscribers.delete(opId); try { unsub(); } catch (_) {} }
+      const acked = typeof deps.runtime.operations.ackRemoteReceipt === 'function'
+        ? await deps.runtime.operations.ackRemoteReceipt(opId, settle)
+        : { ok: true, ackedSettle: settle };
+      return res.json({ ok: true, operationId: opId, ackedSettle: acked.ackedSettle || settle });
+    });
+
+    app.get('/api/cross-machine/receipts/pending', async (req, res) => {
+      const grant = req.grant;
+      if (!grant?.ownerId) return res.status(403).json({ ok: false, code: 'machine_grant_required', error: 'grant required' });
+      const ownerSessionId = `__remote_machine__:${grant.ownerId}`;
+      const refs = await listOperationReferences({ kind: 'dispatch', ownerSessionId });
+      const receipts = [];
+      for (const ref of refs) {
+        if (!terminalDispatchStates.has(ref.status)) continue;
+        const settles = Number(ref.resultSettles || 1);
+        const acked = Number(ref.remoteReceiptAckedSettle || 0);
+        if (acked >= settles) continue;
+        const full = await deps.runtime.operations.get(ref.id);
+        if (!full || full.spec?.remoteMasterMachineId !== grant.ownerId) continue;
+        receipts.push(buildRemoteReceiptPayload(full, settles > 1));
+        if (receipts.length >= 100) break;
+      }
+      return res.json({ ok: true, receipts });
     });
   }
 

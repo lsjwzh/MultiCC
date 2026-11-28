@@ -40,6 +40,8 @@ function createRouterToolHost({
     listSecrets,
     secretTools,
     imageBridge: configuredImageBridge,
+    dataRoot,
+    crossMachineBridge,
   } = {}) {
     imageBridge = configuredImageBridge || null;
     configuredRecords = records || null;
@@ -48,7 +50,9 @@ function createRouterToolHost({
       dispatchToSession,
       createTask,
       operations: orchestrationRuntime?.operations,
-      completeDispatch: (id, result) => orchestrationRuntime.completeDispatch(id, result),
+      completeDispatch: (id, result, opts) => orchestrationRuntime.completeDispatch(id, result, opts),
+      dataRoot,
+      crossMachineBridge,
       detachedResult: (sessionId, operationId, version) => orchestrationRuntime.sessionScheduler.detachedResult(sessionId, operationId, version),
       schedulerStatus: id => orchestrationRuntime.sessionScheduler.status(id),
       cancelQueuedEntry: (id, entryId, opts) => orchestrationRuntime.sessionScheduler.cancelQueued(id, entryId, opts),
@@ -299,6 +303,9 @@ function createRouterToolHost({
     configure,
     mount,
     processContext,
+    recoverRemoteDispatch(operation) {
+      return runtime?.recoverRemoteDispatch?.(operation);
+    },
     prepareResidentMcp(env, cli, cwd) {
       env.MULTICC_IMAGE_BRIDGE = imageMarker(env.MULTICC_SESSION_ID);
       applyRouterMcpEnv(env, cli, routerMcpNode, routerMcpScript, { cwd });

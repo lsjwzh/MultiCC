@@ -2511,6 +2511,13 @@ const heldTurnInjection = require('./src/chat/held-turn-injection').createHeldTu
   log: message => console.log('[multicc/held-turn]', message),
 });
 
+const notifyRemoteEvent = event => {
+  const gatewayPort = Number(process.env.PORT || 0);
+  const gatewayCap = String(process.env.MULTICC_GATEWAY_AUTH_CAPABILITY || '');
+  if (!gatewayPort || !gatewayCap || !event?.masterMachineId) return;
+  getNative().crossMachineNotifyGateway(gatewayPort, gatewayCap, JSON.stringify(event)).catch(() => {});
+};
+
 orchestrationRuntime = createOrchestrationRuntime({
   file: MULTICC_PATHS.orchestrationFile, databaseFile: MULTICC_PATHS.orchestrationDbFile,
   runChatTurn: chatTurnEngine.runChatTurn,
@@ -2528,6 +2535,29 @@ orchestrationRuntime = createOrchestrationRuntime({
   detachedAdapter: detached,
   recoverDispatchResult: chatTurnEngine.recoverDispatchOperation,
   replayRecoveredDispatchEffects: () => {},
+  onRemoteDispatchSettled: (op, opts) => {
+    const masterMachineId = op?.spec?.remoteMasterMachineId;
+    if (!masterMachineId) return;
+    notifyRemoteEvent({
+      masterMachineId,
+      event: 'receipt',
+      payload: {
+        operationId: op.id,
+        status: op.status,
+        terminal: true,
+        result: op.result && typeof op.result === 'object' ? op.result : {},
+        lastError: op.lastError || null,
+        settle: Number(op.resultSettles || 1),
+        resettle: opts?.resettle === true,
+        targetSessionId: op.spec?.targetId || null,
+        targetLabel: op.spec?.targetLabel || '',
+        executionSessionId: op.spec?.chatId || op.spec?.targetId || null,
+        taskId: op.spec?.taskId || null,
+        completedAt: op.completedAt || op.updatedAt || Date.now(),
+      },
+    });
+  },
+  onRecoverRemoteDispatch: op => routerToolHost.recoverRemoteDispatch(op),
   // Check task-bound workspace locks before claiming delivery.
   isDeliveryLocked: sid => !!persistedSessions.get(sid)?.taskBoundTaskId
     && !!sessionHibernationRuntime?.isLocked?.(taskShellHost.workspaceGroup(sid)),
@@ -2568,7 +2598,7 @@ const providerLogWatchdog = createProviderLogWatchdog({ replay: chatReplay, list
   recordLimit: limitRecorder.recordSession });
 const logHousekeeping = createLogHousekeeping({ logsDir: path.join(__dirname, 'logs'), logger,
   retainDays: envNumber(process.env.MULTICC_LOG_RETAIN_DAYS), keepTailBytes: envNumber(process.env.MULTICC_LOG_KEEP_TAIL_BYTES) });
-routerToolHost.configure({ records: persistedSessions, dispatchToSession, createTask: input => taskShellHost.createTask(input), orchestrationRuntime, taskBoard: taskBoardRuntime,
+routerToolHost.configure({ records: persistedSessions, dispatchToSession, createTask: input => taskShellHost.createTask(input), orchestrationRuntime, taskBoard: taskBoardRuntime, dataRoot: MULTICC_PATHS.root,
   recordUserInput: signal => sessionWorkHost.recordInputAsync(signal), listSecrets: () => secretsVault.list(), secretTools: createSecretTools({ vault: secretsVault, resolveSessionCwd: id => { const rec = persistedSessions.get(id); return rec ? cwdForSession(rec) : null; } }),
   cancelActiveTurn: (id, opts) => sessionWorkHost.cancelActiveTurn(id, opts), onDispatchCancelled: id => cancelDispatchRun(id), subscribeDispatchProgress, recordRouterAdmission, imageBridge: createOfficialImageBridgeRuntime({ paths: MULTICC_PATHS, resolveSessionCwd: cwdForSession, providers, officialAccounts, registerArtifact: docsRegistry.register, codexCommand: cliCommands.codex }), getTaskContext: (context, query) => taskShellHost.refillContext(context.sessionId, { ...query, receiptId: context.requestId }) });
 
@@ -2603,6 +2633,13 @@ const orchestrationRoutes = createOrchestrationRoutes({
   busyReasons: dispatchTargetBusyReasons,
   // "Cancel did not take" gets one more move: stop the writer holding it.
   unstickBlocked: (id, opts) => workspaceAdmission?.escalate(id, opts),
+  listDirectories: () => [...directories.values()],
+  isTargetBusy: dispatchTargetBusy,
+  dispatchToSession,
+  createTask: input => taskShellHost.createTask(input),
+  subscribeDispatchProgress,
+  onDispatchCancelled: id => cancelDispatchRun(id),
+  notifyRemoteEvent,
 });
 orchestrationRoutes.mountHostRoutes(orchestrationHost.app);
 orchestrationHost.mountRoute(app);

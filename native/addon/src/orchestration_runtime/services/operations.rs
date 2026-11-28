@@ -122,6 +122,56 @@ fn cancel<'a>(p: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     })
 }
 
+fn ack_remote_receipt<'a>(p: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
+    async_result(p, || {
+        let raw_settle = a[1].number().unwrap_or(1.);
+        let settle = if raw_settle.is_finite() {
+            raw_settle.max(1.).floor()
+        } else {
+            1.
+        };
+        transaction(
+            p,
+            &[("id", a[0]), ("settle", num(p, settle)?)],
+            c"mutate",
+            |f, a| {
+                let p = f.get(c"state")?;
+                let op = a[0].get(c"operations")?.get_key(f.get(c"id")?)?;
+                if !op.truthy()? || !op.get(c"kind")?.is_string("dispatch")? {
+                    return missing(f);
+                }
+                let prev_raw = op.optional(c"remoteReceiptAckedSettle")?;
+                let prev = if prev_raw.truthy()? {
+                    let n = prev_raw.number().unwrap_or(0.);
+                    if n.is_finite() {
+                        n
+                    } else {
+                        0.
+                    }
+                } else {
+                    0.
+                };
+                let next = f.get(c"settle")?.number()?;
+                if next > prev {
+                    op.assign(c"remoteReceiptAckedSettle", num(f, next)?)?;
+                    op.assign(c"updatedAt", at(p)?)?;
+                }
+                fields(
+                    f,
+                    &[
+                        ("ok", flag(f, true)?),
+                        (
+                            "ackedSettle",
+                            num(f, if next > prev { next } else { prev })?,
+                        ),
+                        ("operation", public(op, OP_PRIVATE, true)?),
+                    ],
+                )
+            },
+        )
+    })
+}
+
 pub(in crate::orchestration_runtime) fn create<'a>(ports: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     api(state(ports, a[0], false)?)
 }
@@ -144,6 +194,7 @@ pub(in crate::orchestration_runtime) fn api(p: L<'_>) -> Result<L<'_>> {
                 completion::complete(p, a, false)
             }),
             ("cancelDispatch", 1, 2, cancel),
+            ("ackRemoteReceipt", 2, 2, ack_remote_receipt),
             ("observeTask", 0, 1, tasks::observe),
             ("interruptActiveTasks", 0, 0, tasks::interrupt),
             ("get", 1, 1, |p, a| queries::get(p, a[0], false)),

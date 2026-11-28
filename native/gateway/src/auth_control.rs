@@ -62,6 +62,7 @@ impl Client {
 pub struct Bridge {
     client: Mutex<Option<Arc<Client>>>,
     generation: AtomicU64,
+    active_capability: Mutex<Option<String>>,
     /// `--no-node`: this process owns the authentication runtime itself
     /// (access token, shutdown flag, revision and WS tickets). It is never
     /// installed while a Node child exists: two owners could mint tickets
@@ -88,6 +89,26 @@ impl Bridge {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_some()
+    }
+    /// Constant-time verification of the active Node child's loopback capability.
+    pub fn verify_capability(&self, candidate: &str) -> bool {
+        if candidate.is_empty() {
+            return false;
+        }
+        let guard = self
+            .active_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_deref()
+            .is_some_and(|expected| auth_security::timing_safe_equal_text(expected, candidate))
+    }
+    /// Installs a deterministic loopback capability for gateway integration tests.
+    pub fn set_internal_capability(&self, capability: Option<String>) {
+        *self
+            .active_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = capability;
     }
     /// `--no-node` stop: publish `shutting_down` so in-flight requests that
     /// need a snapshot answer 503 `SERVER_SHUTTING_DOWN` before the process
@@ -172,6 +193,10 @@ impl Bridge {
         listener.set_nonblocking(true)?;
         let listener = TcpListener::from_std(listener)?;
         let capability = auth_security::random_base64url(32).map_err(|_| io::ErrorKind::Other)?;
+        *self
+            .active_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(capability.clone());
         let key = capability.clone();
         let bridge = Arc::clone(self);
         let task = tokio::spawn(async move {
@@ -223,6 +248,11 @@ impl Drop for Registration {
         if self.bridge.generation.load(Ordering::SeqCst) == self.generation {
             self.bridge.generation.fetch_add(1, Ordering::SeqCst);
             *current = None;
+            *self
+                .bridge
+                .active_capability
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
 }

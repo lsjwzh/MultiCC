@@ -5,11 +5,24 @@ use super::*;
 fn terminal(s: L<'_>, status: L<'_>) -> Result<bool> {
     call(s.get(c"TERMINAL_OPERATION_STATES")?, c"has", &[status])?.truthy()
 }
-fn complete<'a>(s: L<'a>, id: L<'a>, result: L<'a>) -> Result<L<'a>> {
-    let done = service(s, c"operations", c"completeDispatch", &[id, result])?;
-    after(s, done, |s, out| {
+fn complete<'a>(s: L<'a>, id: L<'a>, result: L<'a>, opts: L<'a>) -> Result<L<'a>> {
+    let done = if opts.truthy()? {
+        service(s, c"operations", c"completeDispatch", &[id, result, opts])?
+    } else {
+        service(s, c"operations", c"completeDispatch", &[id, result])?
+    };
+    let frame = saved(s, &[("opts", opts)])?;
+    after(frame, done, |f, out| {
+        let s = f.get(c"runtime")?;
         if !out.optional(c"ok")?.truthy()? {
             return Ok(out);
+        }
+        let op = out.optional(c"operation")?;
+        let remote_master = op.optional(c"spec")?.optional(c"remoteMasterMachineId")?;
+        if remote_master.truthy()?
+            && s.get(c"onRemoteDispatchSettled")?.kind()? == sys::ValueType::napi_function
+        {
+            let _ = port(s, c"onRemoteDispatchSettled", &[op, f.get(c"opts")?]);
         }
         after(out, lifecycle::tick(s)?, |out, _| Ok(out))
     })
@@ -246,6 +259,15 @@ fn recover_dispatch<'a>(s: L<'a>, op: L<'a>) -> Result<L<'a>> {
 }
 pub(super) fn reconcile_dispatches(s: L<'_>) -> Result<L<'_>> {
     reconcile(s, "dispatch", |s, r| {
+        if r.optional(c"spec")?
+            .optional(c"remoteMachineId")?
+            .truthy()?
+        {
+            if s.get(c"onRecoverRemoteDispatch")?.kind()? == sys::ValueType::napi_function {
+                let _ = port(s, c"onRecoverRemoteDispatch", &[r]);
+            }
+            return undef(s);
+        }
         let frame = saved(s, &[("id", r.get(c"id")?)])?;
         let req = r.get(c"requestOutboxId")?;
         let request = if req.truthy()? {
@@ -455,7 +477,7 @@ fn interrupt<'a>(s: L<'a>, id: L<'a>, options: L<'a>) -> Result<L<'a>> {
                 ("source", bounded(c"source", "session_cancel", 80.)?),
             ],
         )?;
-        complete(s, f.get(c"id")?, result)
+        complete(s, f.get(c"id")?, result, undef(s)?)
     })
 }
 pub(super) fn install(s: L<'_>, api: L<'_>) -> Result<()> {
@@ -486,8 +508,8 @@ pub(super) fn install(s: L<'_>, api: L<'_>) -> Result<()> {
             Ok(v)
         })
     })?;
-    async_method(s, api, c"completeDispatch", 2, 2, |s, a| {
-        complete(s, a[0], a[1])
+    async_method(s, api, c"completeDispatch", 3, 2, |s, a| {
+        complete(s, a[0], a[1], a[2])
     })?;
     async_method(s, api, c"interruptDispatch", 2, 1, |s, a| {
         interrupt(s, a[0], a[1])

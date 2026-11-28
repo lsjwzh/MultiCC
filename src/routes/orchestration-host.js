@@ -81,6 +81,12 @@ const OPS = {
   'run-detached': { method: 'POST', path: '/api/sessions/:id/run-detached', params: ['id'] },
   'session-detached': { method: 'GET', path: '/api/sessions/:id/detached', params: ['id'] },
   'detached-task': { method: 'GET', path: '/api/detached/:taskId', params: ['taskId'] },
+  'cross-machine-targets': { method: 'GET', path: '/api/cross-machine/targets', params: [] },
+  'cross-machine-admit': { method: 'POST', path: '/api/cross-machine/dispatches', params: [] },
+  'cross-machine-status': { method: 'GET', path: '/api/cross-machine/dispatches/:opId', params: ['operationId'] },
+  'cross-machine-cancel': { method: 'POST', path: '/api/cross-machine/dispatches/:opId/cancel', params: ['operationId'] },
+  'cross-machine-ack': { method: 'POST', path: '/api/cross-machine/receipts/ack', params: [] },
+  'cross-machine-pending-receipts': { method: 'GET', path: '/api/cross-machine/receipts/pending', params: [] },
 };
 
 async function invoke(handlers, body) {
@@ -90,6 +96,7 @@ async function invoke(handlers, body) {
   if (typeof handler !== 'function') return UNKNOWN;
   const params = {};
   for (const name of spec.params) params[name] = body[name];
+  if (body.operationId != null && params.opId == null) params.opId = body.operationId;
   const headers = body.headers && typeof body.headers === 'object' ? body.headers : {};
   const local = body.local === true;
   const requestId = typeof body.requestId === 'string' ? body.requestId : undefined;
@@ -100,6 +107,8 @@ async function invoke(handlers, body) {
     params,
     query: body.query && typeof body.query === 'object' ? body.query : {},
     body: body.body === undefined ? null : body.body,
+    grant: body.grant && typeof body.grant === 'object' ? body.grant : null,
+    settle: body.settle,
     headers,
     protocol: 'http',
     local,

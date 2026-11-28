@@ -27,6 +27,7 @@ mod cron_create;
 pub(crate) mod cron_list;
 pub(crate) mod cron_runtime;
 mod cron_script;
+pub mod cross_machine_dispatch;
 pub mod directory_list;
 mod directory_routes;
 pub mod docs_memory_routes;
@@ -214,6 +215,7 @@ pub enum Route {
     HostReadOptions(host_read::Route),
     HostOps(host_ops_routes::Route),
     Orchestration(orchestration_routes::Route),
+    CrossMachine(cross_machine_dispatch::Route),
     ReleaseHistory(release_history_routes::Route),
     StaticAssets(static_assets_routes::Route),
     /// The `public/` static web root. The filesystem resolution happens in
@@ -312,6 +314,7 @@ static OPTIONS_SOURCES: &[fn(&str) -> Option<String>] = &[
     // own multi-method paths here so a future overlap unions instead of
     // shadowing.
     orchestration_routes::options_share,
+    cross_machine_dispatch::options_share,
     release_history_routes::options_share,
     // Release assets, iOS OTA and chat history: every path is single-source
     // today (measured), registered so a future overlap unions.
@@ -525,6 +528,9 @@ pub fn claim(method: &Method, path: &str) -> Option<Route> {
     // `share/:token`), which own the rest of `/api/sessions/:id`.
     if let Some(route) = share_machine_routes::claim(method, path) {
         return Some(Route::ShareMachine(route));
+    }
+    if let Some(route) = cross_machine_dispatch::claim(method, path) {
+        return Some(Route::CrossMachine(route));
     }
     if let Some(route) = event_routes::claim(method, path) {
         return Some(Route::Events(route));
@@ -759,6 +765,7 @@ pub struct App {
     /// `.env` writes, macOS settings, shell jobs).
     pub host_ops_write: tokio::sync::Mutex<()>,
     pub orchestration_write: tokio::sync::Mutex<()>,
+    pub cross_machine_hub: Arc<multicc_core::cross_machine_dispatch::CrossMachineHub>,
     /// Serializes the release-asset/chat-history writes (the one-time UDID
     /// token issue and consume, and the transcript message delete).
     pub release_history_write: tokio::sync::Mutex<()>,
@@ -921,6 +928,9 @@ impl App {
             share_machine_write: tokio::sync::Mutex::new(()),
             host_ops_write: tokio::sync::Mutex::new(()),
             orchestration_write: tokio::sync::Mutex::new(()),
+            cross_machine_hub: Arc::new(
+                multicc_core::cross_machine_dispatch::CrossMachineHub::new(),
+            ),
             release_history_write: tokio::sync::Mutex::new(()),
             task_routes_write: tokio::sync::Mutex::new(()),
             push_write: tokio::sync::Mutex::new(()),
@@ -1137,6 +1147,9 @@ pub async fn handle(
         provider_relay::append_headers(&mut response, &headers);
         return response;
     }
+    if let Route::CrossMachine(cross_machine_dispatch::Route::InternalEventPost) = route {
+        return cross_machine_dispatch::handle_internal_event(&app, &ctx, body, &peer).await;
+    }
     // §8.1: every route below needs the authentication snapshot. With `--node`
     // it lives in the Node child; with `--no-node` the front door owns a local
     // copy when `.env` supplied an ACCESS_TOKEN. Only when neither owner exists
@@ -1199,6 +1212,10 @@ pub async fn handle(
     // guard (both envelopes) itself.
     if let Route::Orchestration(route) = route {
         return orchestration_routes::handle(&app, route, &ctx, body, &peer, &snapshot, host).await;
+    }
+    if let Route::CrossMachine(route) = route {
+        return cross_machine_dispatch::handle(&app, route, &ctx, body, &peer, &snapshot, host)
+            .await;
     }
     // Release assets / iOS OTA / chat history: the OTA fetchers cannot log in, so
     // this cluster decides gate-or-not itself from the shared HTTP-entry rule.

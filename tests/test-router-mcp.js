@@ -111,7 +111,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     'wait_for_user_answer', 'request_secret_input', 'list_secrets',
     'run_with_secrets', 'http_request_with_secret',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait', 'detached_result',
-    'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
+    'list_machines', 'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',
   ]);
   const contextTool = listed.result.tools.find(tool => tool.name === 'get_task_context');
@@ -224,7 +224,7 @@ test('stdio MCP advertises scoped tools and bridges calls with the capability', 
     'wait_for_user_answer', 'request_secret_input', 'list_secrets',
     'run_with_secrets', 'http_request_with_secret',
     'wait_for_external_result', 'get_external_wait', 'cancel_external_wait', 'detached_result',
-    'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
+    'list_machines', 'route_task', 'dispatch_cancel', 'dispatch_status', 'dispatch_master',
     'dispatch_slave',
   ]);
 });
