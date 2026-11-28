@@ -275,7 +275,13 @@ void main() {
     });
   });
 
+  final messageViewports = ValueVariant<Size>({
+    const Size(800, 600),
+    const Size(360, 600),
+  });
   testWidgets('任务消息从最近页向前滚动，展开时只取选中的消息', (tester) async {
+    await tester.binding.setSurfaceSize(messageViewports.currentValue!);
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     SharedPreferences.setMockInitialValues({
       'multicc_host': 'http://localhost:3000',
     });
@@ -329,14 +335,21 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(requests, [isEmpty]);
-    await tester.scrollUntilVisible(
-      find.byType(AirTaskMessages),
-      320,
-      scrollable: find.byType(Scrollable).first,
+    final panel = tester.getRect(
+      find.byKey(const ValueKey('air-details-panel')),
     );
-    await tester.ensureVisible(find.text('展开完整内容'));
+    final expand = find.widgetWithText(TextButton, '展开完整内容').hitTestable();
+    // 从外层列表的左侧留白起手，避免手势被消息列表接走。
+    for (var i = 0; i < 10 && expand.evaluate().isEmpty; i++) {
+      await tester.dragFrom(
+        Offset(panel.left + 8, panel.center.dy),
+        Offset(0, -panel.height / 2),
+      );
+      await tester.pumpAndSettle();
+    }
+    expect(expand, findsOneWidget);
     expect(find.textContaining('工具结果末尾'), findsNothing);
-    await tester.tap(find.text('展开完整内容'));
+    await tester.tap(expand);
     await tester.pumpAndSettle();
     expect(find.textContaining('工具结果末尾'), findsOneWidget);
     expect(requests.last, {'messageId': 'm14'});
@@ -351,7 +364,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('前一页'), findsOneWidget);
     expect(requests.length, 3);
-  });
+  }, variant: messageViewports);
 
   testWidgets('任务详情面板：交付卡说清本轮发生了什么，核验按钮只交付时出现', (tester) async {
     SharedPreferences.setMockInitialValues({
