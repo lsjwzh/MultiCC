@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { createTaskReadModel } = require('../src/native/task-read-model');
+const { createTaskReadModel } = require('../src/native/binding').taskReadModel;
 const { getNative } = require('../src/native/binding');
 const { createAirReadIndex } = require('./helpers/legacy-air-read-index');
 const { fixtures, project } = require('./helpers/task-read-model');

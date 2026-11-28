@@ -1534,6 +1534,62 @@ exposeHostApi('httpErrors', () => {
   };
 });
 
+exposeHostApi('airIndexPort', () => {
+  const addon = getNative();
+  return addon.airIndexHostApi({ getAddon: () => module.exports.getNative(),
+    describe: addon.airDescribeIssue, record: addon.airRecordStorageNotice,
+    uuid: require('node:crypto').randomUUID, createModel: module.exports.taskReadModel.createTaskReadModel });
+});
+exposeHostApi('airSyncRuntime', () => getNative().airSyncHostApi({
+  createIndex: module.exports.airIndexPort.createAirIndex, describe: module.exports.airIndexPort.describeAirIssue,
+}));
+
+function addonWithMethod(name) {
+  const addon = getNative();
+  if (typeof addon[name] !== 'function') throw new Error('rust_backend_unavailable');
+  return addon;
+}
+exposeHostApi('macosAgentProvision', () => addonWithMethod('macosAgentProvisionApi').macosAgentProvisionApi({
+  fs: require('node:fs'), path, os: require('node:os'), spawn: require('node:child_process').spawn,
+  platform: process.platform, env: process.env, logger: console,
+}));
+
+exposeHostApi('claudeEgress', () => getNative().claudeEgressHost({
+  process, pluginsDir: path.resolve(__dirname, '../..', 'plugins'),
+  pluginsFactory: () => module.exports.pluginsRoutes.createPluginsRoutes,
+  proxyClass: () => require('proxy-agent').ProxyAgent,
+}));
+exposeHostApi('channelHost', () => getNative().channelHostApi({
+  process, path, spawn: require('node:child_process').spawn,
+}));
+exposeHostApi('channelRegistry', () => getNative().channelRegistryApi({}));
+
+exposeHostApi('pluginCatalog', () => getNative().pluginCatalogApi({
+  process, crypto: require('node:crypto'), os: require('node:os'), path: require('node:path'),
+  execFile: require('node:child_process').execFile, rootDir: path.resolve(__dirname, '../..'),
+  version: require('../../package.json').version,
+  agent: rootDir => module.exports.macosAgentProvision.sharedMacosAgentProvisioner({ rootDir }).inspect(),
+}));
+exposeHostApi('pluginInstaller', () => {
+  class PluginInstallError extends Error {
+    constructor(code, message) { super(message); this.code = code; }
+  }
+  return getNative().pluginInstallerApi({ process, PluginInstallError, crypto: require('node:crypto') });
+});
+exposeHostApi('pluginsRoutes', () => getNative().pluginsRoutesApi({
+  process, catalog: module.exports.pluginCatalog, installer: module.exports.pluginInstaller,
+  channel: module.exports.channelHost, registry: module.exports.channelRegistry,
+  mountHost: require('../routes/plugins-host').mountPluginsHostRoute,
+  local: module.exports.requestLocality.isLocalRequest,
+  fetch: (...args) => module.exports.outbound.outboundFetch(...args),
+  spawn: require('node:child_process').spawn, path: require('node:path'),
+}));
+
+exposeHostApi('taskReadModel', () => {
+  const addon = addonWithMethod('taskReadModelHostApi');
+  return addon.taskReadModelHostApi({ addon, Owner: addon.RustTaskReadModel, runNative });
+});
+
 exposeHostApi('taskWorktree', () => getNative().taskWorktreeApi({ crypto: require('node:crypto'), existsSync: require('node:fs').existsSync }));
 
 exposeHostApi('airCardCache', () => getNative().airCardCacheApi({ Owner: getNative().RustAirCardCache, runNative, boardStoreOf: module.exports.taskDomainHost.boardStoreOf }));
@@ -1572,7 +1628,7 @@ exposeHostApi('codexImageBridge', () => {
 exposeHostApi('airRoutesHost', () => getNative().airRoutesHostApi({
   domain: module.exports.taskDomainHost, boardCore: module.exports.taskBoardCore,
   cache: module.exports.airCardCache, abnormal: module.exports.classifyVocab.isAbnormalLetter,
-  createSync: options => require('../workspace/air-sync-runtime').createAirSyncRuntime(options),
+  createSync: options => module.exports.airSyncRuntime.createAirSyncRuntime(options),
   deliveryView: module.exports.deliveryView, local: module.exports.requestLocality.isLocalRequest,
   path: require('node:path'), crypto: require('node:crypto'), process,
 }));
@@ -2392,7 +2448,7 @@ exposeHostApi('codexModelCatalog', () => getNative().codexAccountCatalogApi({
   globalHome: () => path.join(require('node:os').homedir(), '.codex'), env: () => process.env,
   stripEnv: env => module.exports.codexOAuthRefresh.stripOpenAiEnv(env),
   childProxyEnv: env => module.exports.outbound.getChildProxyEnv(env),
-  createEgress: () => require('../claude-auth/egress-agent').createClaudeEgressAgentResolver(),
+  createEgress: () => module.exports.claudeEgress.createClaudeEgressAgentResolver(),
   commands: options => module.exports.cliCommands.resolveCliCommands(options),
 }));
 

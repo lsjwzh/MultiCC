@@ -10,7 +10,7 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { atomicWriteJson } = require('../native/binding').runtimeSecurity;
-const registry = require('../plugins/channel-registry');
+const registry = require('../native/binding').channelRegistry;
 
 const MAX_SUBSCRIPTIONS = 50;
 

@@ -20,7 +20,7 @@
 const { matchesAny } = require('../native/binding').getEventPolicy().catalog;
 const { ACTIONS } = require('./actions');
 const { validateEventRule, matchesFilter, channelActions, channelProblem } = require('../native/binding').getEventPolicy().rules;
-const channelRegistry = require('../plugins/channel-registry');
+const channelRegistry = require('../native/binding').channelRegistry;
 
 const MAX_FANOUT = 20;
 const MAX_DEPTH = 2;

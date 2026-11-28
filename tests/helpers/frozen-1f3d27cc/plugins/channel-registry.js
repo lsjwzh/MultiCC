@@ -10,7 +10,7 @@
 //
 // 这里没有任何具体渠道（微信……）的代码，也不保存投递：队列、重试、发送记录都在插件里。
 
-const { isBackgroundLetter } = require('../native/binding').classifyVocab;
+const { isBackgroundLetter } = require('../../../../src/native/binding').classifyVocab;
 
 const CATEGORIES = Object.freeze(['done', 'question', 'background', 'error']);
 const DEFAULT_CATEGORIES = Object.freeze(['error', 'question']);

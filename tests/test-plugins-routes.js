@@ -18,7 +18,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/routes/plugins');
+const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/native/binding').pluginsRoutes;
 const { mountPluginsHostRoute, HOST_PATH } = require('../src/routes/plugins-host');
 
 function makeStubPluginsDir() {

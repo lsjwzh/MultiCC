@@ -21,7 +21,7 @@
 // 这不是一条公开 API：前门只在内部端口上以回环身份调用它。`isLocalRequest`
 // 拒绝任何转发自真实远端客户端的请求。
 
-const channelRegistry = require('../plugins/channel-registry');
+const channelRegistry = require('../native/binding').channelRegistry;
 const { isLocalRequest } = require('../native/binding').requestLocality;
 
 const HOST_PATH = '/api/__host/events';

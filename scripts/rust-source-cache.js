@@ -102,6 +102,8 @@ function probeAddon(file, node = process.execPath) {
   // so argv[1] is the script itself, not the addon.
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
     if(['assertSessionMemoryDependencies','mountSessionMemoryRoutes','sessionMemoryRuntimeApi','memoryBrowserApi',
+      'taskReadModelHostApi','macosAgentProvisionApi','airSyncHostApi','airIndexHostApi','claudeEgressHost',
+      'channelHostApi','channelRegistryApi','pluginsRoutesApi','pluginCatalogApi','pluginInstallerApi',
       'docsRegistryApi','workspaceNotesApi','docsMemoryHostApi','folderMemoryApis','artifactIdFromRegistryUrl','retainedArtifactIds','retainedArtifactIdsAsync','claudeSdkFingerprint','claudeSdkLaneOptions',
       'workspaceResidencyApi','egressIpPolicyApi','outboundSystemProxy','outboundPolicyInstance','outboundBypassUrl','modelConnectTimers',
       'usageLimitWiring','claudeBarState','quotaBarCacheApi','quotaBarCacheStore','cliUsageHost','officialUsageWindows',

@@ -898,7 +898,7 @@ test('agent: installer build, client/server protocol and chrome watchdog', { ski
 });
 
 // ── Auto-provisioning: installing/updating MultiCC installs/updates the agent ──
-const { createMacosAgentProvisioner } = require('../src/macos-agent-provision');
+const { createMacosAgentProvisioner } = require('../src/native/binding').macosAgentProvision;
 const { sourceHash, readShippedBuild } = require('../src/macos-agent-build');
 const os = require('node:os');
 const crypto = require('node:crypto');
@@ -1149,9 +1149,11 @@ test('agent provisioning: decides install / update / skip from what is on disk',
 
 test('agent provisioning: runs the installer in the background, asks for grants only on first install, never throws', async () => {
   const f = provisionFixture();
-  const p = f.make();
+  let nested;
+  const p = f.make({ logger: { log() { nested ??= p.ensure(); }, warn() {} } });
   const [a, b] = [p.ensure(), p.ensure()];
   assert.equal(a, b, 'single-flight');
+  assert.equal(nested, a, 'synchronous logger reentry shares the installation');
   const first = await a;
   assert.equal(first.ok, true);
   assert.deepEqual(f.calls, [['sh', 'install'], ['MultiCCAgent', 'request-permissions'], ['MultiCCAgent', 'ping']]);

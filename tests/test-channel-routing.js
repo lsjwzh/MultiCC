@@ -21,8 +21,8 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const registry = require('../src/plugins/channel-registry');
-const { createPluginsRoutes } = require('../src/routes/plugins');
+const registry = require('../src/native/binding').channelRegistry;
+const { createPluginsRoutes } = require('../src/native/binding').pluginsRoutes;
 const { HOST_PATH: PLUGINS_HOST_PATH } = require('../src/routes/plugins-host');
 const { createChannelSubscriptions } = require('../src/push/channel-subscriptions');
 const { mountPushHostRoute, HOST_PATH } = require('../src/routes/push-host');

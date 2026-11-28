@@ -484,7 +484,7 @@ function mountAirRoutes(app, deps) {
   }
   // 分相位计时记录后台生产者的成本，数字不进入摘要正文。
   const reportPhases = createPhaseReporter(deps.phaseDiagnostics, { lastLogAt: 0 });
-  const liveSync = deps.registerSync ? require('../../src/workspace/air-sync-runtime').createAirSyncRuntime({
+  const liveSync = deps.registerSync ? require('./frozen-1f3d27cc/workspace/air-sync-runtime').createAirSyncRuntime({
     build: async ids => {
       const timing = createPhaseTimer();
       const snapshot = await airSnapshot(timing, { ids, cooperative: true });

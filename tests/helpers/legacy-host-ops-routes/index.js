@@ -27,6 +27,9 @@ function load(name) {
   const rewritten = source.replace(
     /require\((['"])(\.{1,2}\/[^'"]+)\1\)/g,
     (_, __, rel) => {
+      if (rel === '../macos-agent-provision') {
+        return `require(${JSON.stringify(require.resolve('../frozen-1f3d27cc/macos-agent-provision'))})`;
+      }
       if (rel === '../cli-adapters/commands' || rel === '../windows-env') {
         return `require(${JSON.stringify(require.resolve('../frozen-bc29761b/' + rel.slice(3)))})`;
       }

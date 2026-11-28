@@ -2,7 +2,7 @@
 
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { validateEventRule, channelProblem } = require('../native/binding').getEventPolicy().rules;
-const channelRegistry = require('../plugins/channel-registry');
+const channelRegistry = require('../native/binding').channelRegistry;
 
 const DEFAULT_TRIGGER_PROMPT =
   '【multicc 自动触发】请使用 multicc-trigger skill 执行检查流程：查看当前 git 改动（git status/diff），' +

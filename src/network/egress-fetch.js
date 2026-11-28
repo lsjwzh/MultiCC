@@ -70,7 +70,7 @@ function createAccountEgressFetch({
   providers, appType, providerIdForAccount, resolveProxyUrl, logger,
 } = {}) {
   const resolve = resolveProxyUrl || (() => {
-    const { createClaudeEgressAgentResolver } = require('../claude-auth/egress-agent');
+    const { createClaudeEgressAgentResolver } = require('../native/binding').claudeEgress;
     return createClaudeEgressAgentResolver({ logger }).resolveProxyUrl;
   })();
   return async function egressFetchForAccount(accountId) {

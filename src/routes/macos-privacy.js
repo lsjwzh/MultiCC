@@ -37,7 +37,7 @@ function createMacosPrivacyRoutes({
   uid = process.getuid?.(),
   delay = ms => new Promise(resolve => setTimeout(resolve, ms)),
   // Lazy: only the Agent install routes need it, and only on macOS.
-  agentProvisioner = () => require('../macos-agent-provision').sharedMacosAgentProvisioner({
+  agentProvisioner = () => require('../native/binding').macosAgentProvision.sharedMacosAgentProvisioner({
     rootDir: path.join(__dirname, '..', '..'), logger: log,
   }),
   resolveAgentApp = () => {

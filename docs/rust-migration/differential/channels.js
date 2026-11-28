@@ -25,7 +25,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 // ---- scenarios: the facts channelHost.status() and channelRegistry.usage() would hold ----
 // `undefined` fields are included on purpose: Node's res.json drops them, and the
@@ -137,6 +137,7 @@ const SCENARIOS = ${JSON.stringify(SCENARIOS)};
 const SCENARIO_FILE = ${JSON.stringify(SCENARIO_FILE)};
 const callsFile = path.join(process.env.MULTICC_DATA_DIR, 'channels-calls.jsonl');
 const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/__health') { res.end('ok'); return; }
   let raw = '';
   req.on('data', chunk => { raw += chunk; });
   req.on('end', () => {
@@ -252,6 +253,7 @@ function corpus(ctx) {
 
 main({
   name: 'channels',
+  ready: waitForFixture,
   mount(app, ctx) {
     const express = require(require.resolve('express', { paths: [ctx.repo] }));
     const { createLegacyChannelsRoute } = require(path.join(ctx.repo, 'tests/helpers/legacy-channels-route'));

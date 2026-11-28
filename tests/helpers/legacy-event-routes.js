@@ -59,7 +59,7 @@ function mountEventRoutes(app, { hub, engine }) {
 
 const { sanitizePublicText } = require('./frozen-file-batch19/public-safety');
 const { validateEventRule, channelProblem } = require('../../src/native/runtime').getEventPolicy().rules;
-const channelRegistry = require('../../src/plugins/channel-registry');
+const channelRegistry = require('./frozen-1f3d27cc/plugins/channel-registry');
 
 const DEFAULT_TRIGGER_PROMPT =
   '【multicc 自动触发】请使用 multicc-trigger skill 执行检查流程：查看当前 git 改动（git status/diff），' +
