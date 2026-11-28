@@ -521,11 +521,13 @@
       };
     }
     const route = native || clean(input.currentRoute) || clean(next.routeName);
+    const model = next.cli === 'agy' && catalog?.agyModelLabel
+      ? catalog.agyModelLabel(next.model, next.effectiveEffort ?? next.effort, catalog.agyAccountEfforts(next.cliAccounts?.agy)) : next.model;
     return {
       tone: 'fixed',
       pending,
       mark: mark(next.cli),
-      text: [laneRoute(cliLabel, next.cli, route), clean(next.model), pending ? pendingLabel : ''].filter(Boolean).join(' · '),
+      text: [laneRoute(cliLabel, next.cli, route), clean(model), pending ? pendingLabel : ''].filter(Boolean).join(' · '),
       turn: '',
     };
   }
@@ -1085,6 +1087,7 @@
       return {
         cli,
         providers: list || providersOf(cli),
+        agyCatalog: cli === 'agy' ? accounts.agyCatalog : null,
         claudeModelOptions: scope().CLAUDE_MODEL_OPTIONS,
         defaults: (catalog && catalog.defaults) || {},
         // Only the session's own lane can reuse its computed default; after a
@@ -1285,7 +1288,7 @@
       getCli: () => currentCli,
       getProvider: () => providerValue,
       isNativeLine, nativeLineId, providerless, cliLabel,
-      onChanged: () => renderFooter(),
+      onChanged: () => renderFooter(), onModelCatalog: () => { renderModel(); renderFooter(); },
       isAlive: () => dialog.isConnected,
     });
     const accountField = accounts.field;
@@ -1629,9 +1632,6 @@
     }
 
     function renderModel() {
-      // 花名册（chat-ai-config 的 REFRESHABLE_MODEL_CLIS）里的 CLI 模型表来自
-      // 本机 CLI 实时目录，有可刷的东西；其余 CLI 的清单要么在 provider 目录里、
-      // 要么是固定档位。
       show(modelRefresh, aiApi.REFRESHABLE_MODEL_CLIS.has(currentCli));
       fillModel(providerValue, currentCli, modelValue);
       modelValue = currentModelValue();
@@ -1735,7 +1735,8 @@
 
     function renderEffort() {
       const model = currentModelValue() || providerById(currentCli, providerValue)?.model;
-      const options = aiApi.effortOptions(currentCli, model);
+      if (accounts.awaitingAgy(currentCli)) { show(effortField, false); return; }
+      const options = accounts.effortOptions(aiApi, currentCli, model);
       show(effortField, !!options.length);
       preferences.workflow.label.hidden = canonicalChoiceCli(currentCli) !== 'claude' || providerById(currentCli, providerValue)?.cliRelay === true || !options.some(c => c.value === 'xhigh');
       effortValue = controls.renderEffortPicker(effortSeg, segButton, options, effortValue, aiApi.defaultEffort(currentCli),
@@ -2126,9 +2127,9 @@
       const tiers = pick === PICK_DIFFICULTY && tiering === DEFAULT_TIERING
         ? TIERS.map(value => ({ value, label: tierLabelOf(value) })) : [];
       if (tiers.length && !TIERS.includes(row.tier)) row.tier = 'medium';
-      const efforts = aiApi.effortOptions(row.cli, row.model || providerById(row.cli, row.providerId)?.model)
+      const efforts = accounts.effortOptions(aiApi, row.cli, row.model || providerById(row.cli, row.providerId)?.model)
         .filter(choice => choice.value).map(choice => ({ value: choice.value, label: controls.effortChoiceLabel(choice) }));
-      if (!efforts.some(choice => choice.value === row.effort)) row.effort = '';
+      if (!accounts.awaitingAgy(row.cli) && !efforts.some(choice => choice.value === row.effort)) row.effort = '';
       if (efforts.length) efforts.unshift({ value: '', label: tt('runConfigRowEffortDefault', '推理强度（跟随会话）') });
       const showWorkflow = canonicalChoiceCli(row.cli) === 'claude' && !providerById(row.cli, row.providerId)?.cliRelay && efforts.some(c => c.value === 'xhigh');
       if (!showWorkflow) row.claudeWorkflow = false;
@@ -2620,7 +2621,7 @@
         const label = providerless(currentCli)
           ? ''
           : (lineItems().find(item => item.value === providerValue) || {}).label || '';
-        const model = currentModelValue();
+        const model = currentCli === 'agy' ? catalogApi.agyModelLabel(currentModelValue(), effortValue, catalogApi.agyAccountEfforts(accounts.draftPicks()?.agy)) : currentModelValue();
         const account = pickedAccount();
         footCopy.textContent = [cliLabel(currentCli), label, model, account && accountTitle(account)].filter(Boolean).join(' · ');
       } else {
@@ -2716,9 +2717,6 @@
     }
 
     // ── 交互 ────────────────────────────────────────────────────────────────
-    // 自持账号 CLI 的模型目录是异步拉的（qoder --list-models 1 天缓存、
-    // codebuddy --help 1 小时缓存）；冷缓存先按内置表画，拉回来再画一遍。
-    // OpenCode 的原生线路同理，但只在认不出任何原生线路时才补拉。
     function warmNativeModels(cli, marker) {
       const rebuild = () => { if (marker === epoch) { renderFixed(); renderFooter(); } };
       if (cli === 'opencode') {
@@ -2834,8 +2832,6 @@
       renderFooter();
     };
     modelCustom.oninput = () => { modelValue = currentModelValue(); renderEffort(); renderFooter(); };
-    // 手动刷新动态模型表：绕过两层缓存重新读本机 CLI。当前选中的模型原样
-    // 保留 —— 即使它已经下架，换不换、换成哪个得由用户决定，这里只把真实列表摆出来。
     modelRefresh.onclick = async event => {
       if (event) { event.preventDefault(); event.stopPropagation(); }
       if (modelRefresh.disabled) return;
@@ -2846,14 +2842,12 @@
       modelRefresh.textContent = tt('runConfigModelRefreshing', '刷新中…');
       let models = [];
       try {
-        models = await aiApi.refreshModelsForCli(cliAtClick, null,
+        models = cliAtClick === 'agy' && accounts.agyCatalog ? await accounts.loadPinnedCatalog(true) : await aiApi.refreshModelsForCli(cliAtClick, null,
           { force: true, providerId: providerAtClick });
       } catch (_) { models = []; }
       if (!closed && dialog.open && marker === epoch && currentCli === cliAtClick && providerValue === providerAtClick) {
         let selected = currentModelValue();
-        // 刷新可能改掉 OpenCode 原生线路的 id（opencodego → opencode-go）或
-        // 新增/移除线路：只重画模型下拉会让旧 id 匹配不到模型、看起来像被清空。
-        // 先按新目录对齐线路与模型前缀，线路/模型一起重画。
+        // 刷新后重新匹配 OpenCode 线路和模型前缀。
         if (cliAtClick === 'opencode') {
           const resolved = resolveNativeLine(providerValue);
           if (resolved !== providerValue) {

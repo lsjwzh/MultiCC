@@ -127,7 +127,9 @@ class _RunChipState extends State<RunChip> {
       }
       // agy 的「默认模型」由账号里的当前档位决定，只有目录回报才知道。
       if (cli == SessionCli.agy) {
-        await AgyModelsService(settings: widget.settings).load();
+        await AgyModelsService(settings: widget.settings).load(accountId: _runtime?.agyAccountId);
+        if (mounted && epoch == _loadEpoch) setState(() {});
+        return;
       }
       final d = await ManageService(
         settings: widget.settings,
@@ -154,6 +156,7 @@ class _RunChipState extends State<RunChip> {
   SessionCliConfig _pendingView(SessionPendingConfiguration p) =>
       SessionCliConfig(
         cli: p.cli,
+        agyAccountId: _runtime?.agyAccountId,
         provider: p.provider,
         providerSelection: p.providerSelection,
         model: p.model,
@@ -201,8 +204,9 @@ class _RunChipState extends State<RunChip> {
       }
     }
     if (model == null || model.isEmpty) {
-      return cli == SessionCli.agy ? AgyModelsService.defaultLabel : '默认';
+      return cli == SessionCli.agy ? AgyModelsService.defaultLabelFor(s.agyAccountId) : '默认';
     }
+    if (cli == SessionCli.agy) return cli.agyModelLabel(model, s.effectiveEffort ?? s.effort, agyAccountId: s.agyAccountId);
     if (cli.isCodexFamily) return CodexModelsService.labelFor(model);
     return modelDisplayName(cli, model, aliasMap: _aliasMapFor(s.provider));
   }
@@ -226,6 +230,7 @@ class _RunChipState extends State<RunChip> {
                   ? null
                   : SessionCliConfig(
                       cli: session.cli,
+                      agyAccountId: session.agyAccountId,
                       provider: session.provider,
                       providerSelection: session.providerSelection,
                       model: session.model,
@@ -268,6 +273,7 @@ class _RunChipState extends State<RunChip> {
     final model = live.activeProviderModel;
     return SessionCliConfig(
       cli: runtime.cli,
+      agyAccountId: runtime.agyAccountId,
       provider: id,
       providerName: live.activeProviderName,
       providerSelection: runtime.providerSelection,
@@ -299,7 +305,9 @@ class _RunChipState extends State<RunChip> {
     parts.add(_modelLabel(cli, runtime));
     final level = runtime?.effectiveEffort ?? runtime?.effort ?? cli.defaultEffort;
     final model = runtime?.model;
-    final choices = cli.effortOptionsForModel(model?.isNotEmpty == true ? model : runtime?.effectiveModel);
+    final choices = cli.effortOptionsForModel(model?.isNotEmpty == true ? model : runtime?.effectiveModel, agyAccountId: runtime?.agyAccountId);
+    if (cli == SessionCli.agy && model != null && level.isNotEmpty &&
+        cli.agyModelLabel(model, level, agyAccountId: runtime?.agyAccountId) != model) return parts.join(' · ');
     if (choices.contains(level.isEmpty ? cli.defaultEffort : level)) {
       final effort = effortChipLabel(cli, level);
       if (effort.isNotEmpty) parts.add(effort);

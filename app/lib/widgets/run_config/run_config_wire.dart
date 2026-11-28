@@ -32,6 +32,7 @@ class RunPoolRow {
     required this.lane,
     required this.providerId,
     this.model = '',
+    this.agyAccountId,
     this.effort = '',
     this.claudeWorkflow = false,
     this.autoModel = false,
@@ -43,11 +44,12 @@ class RunPoolRow {
   /// 这条线路挂在哪条车道上（车道 id 字符串；`kimi` 没有 [SessionCli] 枚举值）。
   String lane;
   final String providerId;
+  final String? agyAccountId;
   String model;
   String effort;
   bool claudeWorkflow;
   String? get selectedEffort => effort.isNotEmpty &&
-      tryParseCli(lane)?.effortOptionsForModel(model).contains(effort) == true ? effort : null;
+      tryParseCli(lane)?.effortOptionsForModel(model, agyAccountId: agyAccountId).contains(effort) == true ? effort : null;
   bool autoModel;
 
   /// 「我自己标」下的档位：1 简单 / 2 中等 / 3 复杂；没点过是 null。

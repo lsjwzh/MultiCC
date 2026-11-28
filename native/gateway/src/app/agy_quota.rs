@@ -868,6 +868,7 @@ printf '{"command":{"data":{"groups":[{"name":"Gemini Models","buckets":[{"windo
         use http_body_util::BodyExt;
         use std::os::unix::fs::PermissionsExt;
 
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
         let root = std::env::temp_dir().join(format!(
             "multicc-agy-ssh-quota-test-{}",
             std::time::SystemTime::now()

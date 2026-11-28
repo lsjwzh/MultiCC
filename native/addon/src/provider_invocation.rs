@@ -246,6 +246,19 @@ pub fn provider_invocation_prepare(
     for key in [c"skipDefaultModel", c"providerModel", c"providerModels"] {
         spawn.set(key, resolution.get(key)?)?;
     }
+    if route_binding.get(c"cli")?.is_string("agy")? {
+        let pin = route_binding
+            .get(c"accountId")?
+            .string()?
+            .map(|s| s.to_string_lossy());
+        spawn.set(
+            c"agyAccountKey",
+            text(
+                input,
+                &multicc_core::agy_models::account_key(pin.as_deref()),
+            )?,
+        )?;
+    }
     spawn.set(c"effectiveModel", effective)?;
     spawn.set(c"rawModel", raw_model)?;
     let effort = input.get(c"effort")?;

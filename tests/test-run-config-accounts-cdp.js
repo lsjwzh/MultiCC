@@ -301,3 +301,32 @@ test('Antigravity (agy): pick account per session, create & open login terminal,
     assert.deepEqual(patches[1][1].cliAccounts, { agy: null });
   });
 });
+
+test('agy 固定账号打开时保留已选强度，切换到仅有低档的模型后回到默认', async t => {
+  if (!findChromeBinary()) return t.skip('Chrome required');
+  const carbon = 'gemini-4-carbon', flash = 'gemini-3.8-flash';
+  const catalog = pinned => ({
+    source: 'cli', models: [carbon, flash].map(model => ({ model, label: model })),
+    efforts: { agy: { levels: [], default: '', modelLevels: {
+      [carbon]: pinned ? ['', 'high'] : ['', 'low'], [flash]: ['', 'low'],
+    }, concreteModels: { [carbon + '-high']: 'Gemini 4 Carbon (High)' } } },
+  });
+  const fixture = { ...routes,
+    'GET /api/agy/accounts': () => json({ accounts: [{ id: OLD_ID, label: '工作号' }] }),
+    'GET /api/agy/models': ({ url }) => json(catalog(url.searchParams.get('accountId') === OLD_ID)),
+    'GET /api/sessions/effort': () => json({ cliAccounts: { agy: OLD_ID } }),
+  };
+  await withCdpHarness({ routes: fixture, screenshotDir: qaDir() }, async page => {
+    await page.navigate('/run-config-host.html');
+    assert.ok(await page.waitFor('window.MultiCCRunConfig'));
+    await page.evaluate(`window.MultiCCRunConfig.open({ sessionId: 'effort',
+      configuration: { cli: 'agy', model: '${carbon}', effort: 'high' } }, ['agy'], () => {})`);
+    const buttons = "document.querySelector('.rc-effort-field')";
+    const active = buttons + ".querySelector('[aria-checked=true]')?.dataset.value";
+    assert.ok(await page.waitFor(active + " === 'high'"));
+    assert.equal(await page.evaluate(buttons + ".querySelector('.rc-effort-low') === null"), true);
+    await page.evaluate(`const model = document.querySelector('.rc-model'); model.value = '${flash}'; model.dispatchEvent(new Event('change'));`);
+    assert.ok(await page.waitFor(active + " === ''"));
+    assert.equal(await page.evaluate(buttons + ".querySelector('.rc-effort-high') === null"), true);
+  });
+});

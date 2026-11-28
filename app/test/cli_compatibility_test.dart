@@ -102,6 +102,32 @@ void main() {
       expect(modelShortNameForCli(SessionCli.pi, ''), '默认（跟随 Pi 配置）');
     });
 
+    test('agy uses only the tiers advertised for the selected family', () {
+      addTearDown(() => readCliEfforts(null));
+      readAgyEfforts({
+        'levels': [], 'default': '', 'tierSuffixes': ['-high'],
+        'modelLevels': {
+          'gemini-4-carbon': ['', 'low'],
+          'new-family': ['', 'high'],
+        },
+        'concreteModels': {'new-family-high': 'New Family (High)'},
+      });
+      final pinned = SessionCliConfig.fromJson({'cli': 'agy', 'cliAccounts': {'agy': 'pinned'}});
+      readAgyEfforts({
+        'levels': [], 'modelLevels': {'gemini-4-carbon': ['', 'high']},
+        'concreteModels': {'gemini-4-carbon-high': 'Carbon (High)'},
+      }, accountId: pinned.agyAccountId);
+      expect(SessionCli.agy.effortOptionsForModel('gemini-4-carbon', agyAccountId: pinned.agyAccountId), ['', 'high']);
+      expect(SessionCli.agy.agyModelLabel('gemini-4-carbon', 'high', agyAccountId: pinned.agyAccountId), 'Carbon (High)');
+      expect(SessionCli.agy.supportsEffort, isTrue);
+      expect(SessionCli.agy.effortOptionsForModel('gemini-4-carbon'), ['', 'low']);
+      expect(SessionCli.agy.effortOptionsForModel('new-family'), ['', 'high']);
+      expect(SessionCli.agy.effortOptionsForModel('new-family-high'), isEmpty);
+      expect(SessionCli.agy.effortOptionsForModel('gemini-4-neon'), isEmpty);
+      expect(SessionCli.agy.agyModelLabel('new-family', 'high'), 'New Family (High)');
+      expect(SessionCli.agy.agyModelLabel('gemini-4-carbon', 'high'), 'gemini-4-carbon');
+    });
+
     test('matches server-side agent, subagent and effort support', () {
       expect(SessionCli.agy.effortOptionsForModel('gemini-pro-orchestrator-neon'), isEmpty);
       expect(SessionCli.agy.effortOptionsForModel('gemini-4-neon'), contains('xhigh'));

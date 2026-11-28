@@ -346,8 +346,26 @@
     'codebuddy': {"label": "Reasoning Effort", "levels": ["", "minimal", "low", "medium", "high", "xhigh", "max"], "default": ""},
   };
   let efforts = offlineEfforts;
+  let effortsAt = 0;
+  const accountEfforts = new Map();
+  function readAgyEfforts(spec, accountId) {
+    if (!Array.isArray(spec?.levels)) return;
+    if (accountId) accountEfforts.set(accountId, { spec, at: Date.now() });
+    else { efforts = { ...efforts, agy: spec }; effortsAt = Date.now(); }
+  }
+  function agyAccountEfforts(accountId) {
+    if (!accountId) return cliEffort('agy');
+    const entry = accountEfforts.get(accountId);
+    return entry && Date.now() - entry.at < 600_000 ? entry.spec : offlineEfforts.agy;
+  }
+  function agyModelLabel(model, effort, spec = cliEffort('agy')) {
+    const labels = spec?.concreteModels;
+    if (effort && Object.hasOwn(labels || {}, model + '-' + effort)) return labels[model + '-' + effort];
+    return Object.hasOwn(labels || {}, model) ? labels[model] : model;
+  }
   function cliEffort(cli) {
     const key = cliKey(cli);
+    if (key === 'agy' && efforts.agy?.concreteModels && Date.now() - effortsAt >= 600_000) return offlineEfforts.agy;
     return Object.hasOwn(efforts, key) ? efforts[key] : null;
   }
 
@@ -903,7 +921,10 @@
     const stats = (Array.isArray(source.stats) ? source.stats : [])
       .map(normalizeStat)
       .filter(Boolean);
-    if (source.efforts && typeof source.efforts === 'object') efforts = source.efforts;
+    if (source.efforts && typeof source.efforts === 'object') {
+      efforts = source.efforts;
+      effortsAt = Date.now();
+    }
     const ccSwitchAvailable = source.ccSwitchAvailable === true;
     return Object.freeze({
       available: source.available === true,
@@ -1416,7 +1437,7 @@
     cliFamilyName,
     cliLanesOf,
     cliFamiliesFor,
-    cliEffort,
+    cliEffort, readAgyEfforts, agyModelLabel, agyAccountEfforts,
     cliUpdateOf,
     cliUpdateSpecs,
     cliIsBundled,

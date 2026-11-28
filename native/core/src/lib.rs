@@ -5,6 +5,7 @@ pub mod acp_session;
 pub mod acp_transport;
 pub mod active_turns;
 pub mod agy_accounts;
+pub mod agy_models;
 pub mod agy_remote;
 pub mod agy_stream;
 pub mod api_error_policy;

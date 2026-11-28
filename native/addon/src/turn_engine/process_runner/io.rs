@@ -1,5 +1,6 @@
 //! 仅接受当前运行器的子进程输出。stderr 保留未结束的行，供关闭时结算。
 use super::*;
+use multicc_core::agy_stream::effort;
 
 fn active(st: RunnerContext<'_>) -> Result<bool> {
     Ok(st.cs.get(c"claudeProc")?.equals(st.state.get(c"proc")?)?
@@ -24,7 +25,22 @@ fn line<'a>(st: RunnerContext<'a>, line: L<'a>) -> Result<L<'a>> {
         return undefined(s);
     }
     let event = s.catch(|| call(s.global()?.get(c"JSON")?, c"parse", &[line]))?;
+    let watch = s.get(c"agyEffortFlag")?.truthy()?;
     let Some(event) = event else {
+        if watch {
+            let diagnostic = line.coerce_string()?.to_string_lossy();
+            if effort::unsupported(&diagnostic) {
+                s.set(c"agyPlainRejection", flag(s, true)?)?;
+                s.set(
+                    c"stderrBuf",
+                    join(s, &[s.get(c"stderrBuf")?, line, text(s, "\n")?])?,
+                )?;
+                return undefined(s);
+            }
+            if diagnostic.trim() != "Fetching available models..." {
+                s.set(c"agyOutputObserved", flag(s, true)?)?;
+            }
+        }
         let count = crate::schedule_note_queued_live::plus_one(fallback(
             st.cs.get(c"_jsonlParseErrors")?,
             V::Number(0.),
@@ -44,6 +60,28 @@ fn line<'a>(st: RunnerContext<'a>, line: L<'a>) -> Result<L<'a>> {
         }
         return undefined(s);
     };
+    if watch {
+        let kind = event.optional(c"event")?;
+        let result = event.optional(c"result")?;
+        let message = result
+            .optional(c"error")?
+            .string()?
+            .map(|s| s.to_string_lossy());
+        if kind.is_string("result")?
+            && !result.optional(c"status")?.is_string("SUCCESS")?
+            && message.as_deref().is_some_and(effort::unsupported)
+        {
+            s.set(c"agyRejection", event)?;
+            return undefined(s);
+        }
+        if !kind.is_string("init")? {
+            s.set(c"agyOutputObserved", flag(s, true)?)?;
+        }
+    }
+    apply(st, event)
+}
+fn apply<'a>(st: RunnerContext<'a>, event: L<'a>) -> Result<L<'a>> {
+    let s = st.state;
     st.port(
         c"applyAdapterChatEvent",
         &[
@@ -54,7 +92,7 @@ fn line<'a>(st: RunnerContext<'a>, line: L<'a>) -> Result<L<'a>> {
             event,
             s.get(c"forward")?,
             st.turn,
-            runner,
+            s.get(c"runner")?,
         ],
     )?;
     undefined(s)
@@ -160,6 +198,20 @@ fn error<'a>(st: RunnerContext<'a>, err: L<'a>) -> Result<L<'a>> {
 pub(super) fn listen(st: RunnerContext<'_>) -> Result<()> {
     let s = st.state;
     let proc = s.get(c"proc")?;
+    if st.record.get(c"cli")?.is_string("agy")?
+        && call(
+            st.invocation.get(c"args")?,
+            c"includes",
+            &[text(s, "--effort")?],
+        )?
+        .truthy()?
+    {
+        s.set(c"agyEffortFlag", flag(s, true)?)?;
+        s.set(
+            c"applyAgyRejection",
+            st.callback("applyAgyRejection", 1, |st, a| apply(st, a[0]))?,
+        )?;
+    }
     s.set(c"stderrBuf", text(s, "")?)?;
     s.set(c"stderrPending", text(s, "")?)?;
     s.set(

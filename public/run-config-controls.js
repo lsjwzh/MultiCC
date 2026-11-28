@@ -360,7 +360,7 @@
 
   function createAccountSection({
     doc, el, option, show, tt, scope, request, entry, config, fixedStatus,
-    getCli, getProvider, isNativeLine, nativeLineId, providerless, cliLabel, onChanged, isAlive,
+    getCli, getProvider, isNativeLine, nativeLineId, providerless, cliLabel, onChanged, onModelCatalog, isAlive,
   }) {
     let accountPicks = { ...(config.cliAccounts || {}) };
     let accountPicksReady = !entry.sessionId || config.cliAccounts !== undefined;
@@ -369,6 +369,34 @@
     let accountVanished = '';
     let commandcodeLogin;
     let commandcodeLoginLoading = false;
+    let catalogAccount = '';
+    let pinnedCatalog = null;
+    let catalogRequest = 0;
+    let loadingCatalog = false;
+    async function loadPinnedCatalog(force = false) {
+      const id = lane() === 'agy' ? accountPicks.agy || '' : '';
+      if (!force && id === catalogAccount) return pinnedCatalog?.models || [];
+      const marker = ++catalogRequest;
+      catalogAccount = id;
+      pinnedCatalog = id ? { models: [] } : null;
+      loadingCatalog = !!id;
+      if (id) {
+        try {
+          const data = await request('/api/agy/models?accountId=' + encodeURIComponent(id) +
+            (force ? '&refresh=1' : ''), undefined, 'GET');
+          if (marker !== catalogRequest) return [];
+          if (Array.isArray(data?.models)) {
+            pinnedCatalog = data;
+            scope()?.MultiCCProviderCatalog?.readAgyEfforts(data.efforts?.agy, id);
+          }
+        } catch (_) { /* The picker falls back to the offline options. */ }
+      }
+      if (marker === catalogRequest) {
+        loadingCatalog = false;
+        if (!isAlive || isAlive()) onModelCatalog?.();
+      }
+      return pinnedCatalog?.models || [];
+    }
     let agyMeta = null; // { active, local }
     let agyLoading = false;
 
@@ -538,6 +566,7 @@
     function render() {
       const currentCli = getCli();
       const cli = lane();
+      void loadPinnedCatalog();
       show(field, !!cli);
       if (!cli) {
         show(form, false);
@@ -784,6 +813,15 @@
         const cli = lane();
         return cli && accountTouched.has(cli) ? { [cli]: accountPicks[cli] || null } : null;
       },
+      get agyCatalog() { return pinnedCatalog; }, loadPinnedCatalog,
+      awaitingAgy(cli) {
+        return cli === 'agy' && (!accountPicksReady || loadingCatalog || (accountPicks.agy && accountPicks.agy !== catalogAccount));
+      },
+      effortOptions(ai, cli, model) {
+        const id = cli === 'agy' && accountPicks.agy;
+        return ai.effortOptions(cli, model || (id && pinnedCatalog?.current?.model), id
+          ? scope()?.MultiCCProviderCatalog?.agyAccountEfforts(id) : undefined);
+      },
       draftPicks() {
         const picks = Object.fromEntries(Object.entries(accountPicks).filter(([, id]) => id));
         return Object.keys(picks).length ? picks : null;
@@ -793,7 +831,7 @@
         request(`/api/sessions/${encodeURIComponent(entry.sessionId)}`, undefined, 'GET').then(
           detail => { accountPicks = { ...(detail && detail.cliAccounts || {}), ...accountPicks }; },
           () => { /* 读不到现值：只写用户动过的车道，保持安全 */ },
-        ).then(() => { accountPicksReady = true; render(); onChanged(); });
+        ).then(() => { accountPicksReady = true; render(); if (lane() === 'agy' && !accountPicks.agy) onModelCatalog?.(); onChanged(); });
       },
     };
   }

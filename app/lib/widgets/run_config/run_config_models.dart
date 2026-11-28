@@ -25,10 +25,11 @@ String? _providerById(List<Map<String, dynamic>> providers, String id) {
 List<String> runModelChoices(
   SessionCli cli,
   String provider,
-  List<Map<String, dynamic>> providers,
-) {
+  List<Map<String, dynamic>> providers, {
+  String? agyAccountId,
+}) {
   if (cli == SessionCli.pi) return const [''];
-  if (cli == SessionCli.agy) return AgyModelsService.options().map((option) => option.key).toList();
+  if (cli == SessionCli.agy) return AgyModelsService.options(agyAccountId).map((option) => option.key).toList();
   if (cli == SessionCli.qoder) {
     return QoderModelsService.options().map((option) => option.key).toList();
   }
@@ -130,8 +131,8 @@ String runModelOptionLabel(
 String runLineName(String id, List<Map<String, dynamic>> providers) =>
     _providerById(providers, id) ?? (id.isEmpty ? '官方 Provider' : id);
 
-List<(String value, String label)> effortRungsFor(SessionCli cli, [String? model]) =>
-    [for (final value in cli.effortOptionsForModel(model)) (value, effortLevelLabel(value))];
+List<(String value, String label)> effortRungsFor(SessionCli cli, [String? model, String? agyAccountId]) =>
+    [for (final value in cli.effortOptionsForModel(model, agyAccountId: agyAccountId)) (value, effortLevelLabel(value))];
 
 String effortLevelLabel(String value) => switch (value) {
   '' || 'default' => '默认',

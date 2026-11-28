@@ -18,17 +18,21 @@ class LiveModel {
 /// already caches; this stops repeated sheet opens from re-fetching, and gives
 /// the option builders that run inside build() a synchronous [cached]).
 ///
-/// Only `source: cli` responses are kept — `fallback` / `cli-unauthenticated`
+/// Only authoritative sources are cached (the local CLI by default). Fallback
 /// lists are returned to the caller but never pinned, so the real catalog wins
 /// as soon as the CLI recovers or the user signs in.
 class LiveModelCatalog {
   LiveModelCatalog({
     required this.path,
+    this.onCatalog,
+    this.cacheSources = const {'cli'},
     this.ttl = const Duration(hours: 1),
     this.timeout = const Duration(seconds: 30),
   });
 
   final String path;
+  final void Function(Map body)? onCatalog;
+  final Set<String> cacheSources;
   final Duration ttl;
   final Duration timeout;
 
@@ -91,7 +95,8 @@ class LiveModelCatalog {
           ),
         );
       }
-      if (out.isNotEmpty && body['source']?.toString() == 'cli') {
+      if (out.isNotEmpty && cacheSources.contains(body['source'])) {
+        onCatalog?.call(body);
         _cache = out;
         _cachedAt = DateTime.now();
         _current = _parseCurrent(body['current']);

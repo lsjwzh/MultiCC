@@ -167,13 +167,27 @@ pub(super) async fn handle(
     ctx: &RequestCtx,
     filter: Option<(String, String)>,
 ) -> Response<Body> {
+    let lane = filter.as_ref().map(|(_, cli)| cli.clone());
     let app = app.clone();
     let result = tokio::task::spawn_blocking(move || {
         read(&app, filter.as_ref().map(|(a, c)| (a.as_str(), c.as_str())))
     })
     .await;
     match result {
-        Ok(Ok(value)) => express::json(ctx, 200, &value, &[]),
+        Ok(Ok(mut value)) => {
+            if let Some(cli) = lane {
+                let pin = multicc_core::http_gate::query_string(
+                    &multicc_core::http_gate::query_value(&ctx.original_url, "accountId"),
+                );
+                super::agy_catalog::project_efforts(
+                    &mut value,
+                    &cli,
+                    (!pin.is_empty()).then_some(pin.as_str()),
+                )
+                .await;
+            }
+            express::json(ctx, 200, &value, &[])
+        }
         _ => express::error(ctx, 500, "provider catalog unavailable"),
     }
 }
