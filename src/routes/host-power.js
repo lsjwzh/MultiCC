@@ -24,7 +24,7 @@ async function readPowerSettings(deps, req) {
   }
   return state.value;
 }
-const { mapError } = require('../http-errors');
+const { mapError } = require('../native/binding').httpErrors;
 
 const passwordService = deps => deps.unlockPassword || getUnlockPassword();
 const preferencesService = deps => deps.powerPreferences || getPowerPreferences();

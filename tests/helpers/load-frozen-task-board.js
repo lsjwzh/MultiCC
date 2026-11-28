@@ -28,7 +28,7 @@ const checkedBinding = Object.create(nativeBinding, {
   taskPlanning: { value: planning },
   taskDomainHost: { value: require('./frozen-batch10').frozen('native/task-domain') },
 });
-const boardStore = snapshot('task-board/board-store.js', '../../src/task-board/board-store.js', {
+const boardStore = snapshot('task-board/board-store.js', 'frozen-da8f52ee/task-board/board-store.js', {
   '../native/binding': checkedBinding,
 });
 // The routing kernel is shared. Bind its taskDirId port to the reference

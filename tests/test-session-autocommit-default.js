@@ -129,7 +129,9 @@ test('every session projection reads a missing autoCommit as ON', () => {
     assert.equal(toSessionDto({ id: 's', kind: 'chat', cli: 'claude', dirId: 'd', autoCommit: false }).autoCommit, false);
   }
   const fs = require('node:fs'), path = require('node:path');
-  for (const file of ['native/addon/src/session_dto.rs', 'src/routes/session-admin.js', 'src/workspace/air-routes.js', 'src/workspace/air-routes-host.js', 'public/chat.js']) {
+  const detail = fs.readFileSync(path.join(__dirname, '../native/addon/src/air_routes_host/detail.rs'), 'utf8');
+  assert.match(detail, /!r\.get\(c"autoCommit"\)\?\.is_false\(\)\?/, 'Air respects explicit false and defaults a missing autoCommit to true');
+  for (const file of ['native/addon/src/session_dto.rs', 'src/routes/session-admin.js', 'src/workspace/air-routes.js', 'public/chat.js']) {
     const text = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.equal(/!!\s*[\w.]*\.autoCommit\b/.test(text), false, `${file} 不许用 !! 读 autoCommit（缺键会读成关）`);
   }

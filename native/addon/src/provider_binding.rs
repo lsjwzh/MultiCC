@@ -2,6 +2,7 @@
 //! only when validation reaches it. Set membership and errors use the public
 //! objects of the calling module.
 use crate::js_live::LiveValue;
+use crate::route_response::{call, text, L};
 use multicc_core::js::{JsString, JsValue};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
@@ -172,6 +173,24 @@ pub fn legacy_provider_binding_view(env: Env, binding: Unknown<'_>) -> Result<sy
     Ok(view.raw())
 }
 
+fn branded<'a>(p: L<'a>, v: L<'a>) -> Result<bool> {
+    Ok(v.truthy()?
+        && v.get_key(p.get(c"brand")?)?.is_true()?
+        && call(p.global()?.get(c"Object")?, c"isFrozen", &[v])?.truthy()?)
+}
+pub(crate) fn checked<'a>(p: L<'a>, v: L<'a>) -> Result<L<'a>> {
+    if !branded(p, v)? {
+        return Err(p
+            .get(c"ProviderBindingError")?
+            .construct(&[text(
+                p,
+                "a ProviderBinding created by createProviderBinding is required",
+            )?])?
+            .throw_error());
+    }
+    Ok(v)
+}
+
 /// Brand belongs to the realm; inherited brands still count on frozen views.
 #[napi]
 pub fn provider_binding_methods(env: Env, host: Unknown<'_>) -> Result<sys::napi_value> {
@@ -179,23 +198,6 @@ pub fn provider_binding_methods(env: Env, host: Unknown<'_>) -> Result<sys::napi
         host_methods::{arg, env as scope, function, raw},
         route_response::*,
     };
-    fn branded<'a>(p: L<'a>, v: L<'a>) -> Result<bool> {
-        Ok(v.truthy()?
-            && v.get_key(p.get(c"brand")?)?.is_true()?
-            && call(p.global()?.get(c"Object")?, c"isFrozen", &[v])?.truthy()?)
-    }
-    fn checked<'a>(p: L<'a>, v: L<'a>) -> Result<L<'a>> {
-        if !branded(p, v)? {
-            return Err(p
-                .get(c"ProviderBindingError")?
-                .construct(&[text(
-                    p,
-                    "a ProviderBinding created by createProviderBinding is required",
-                )?])?
-                .throw_error());
-        }
-        Ok(v)
-    }
     let p = L::new(&env, host);
     Ok(fields(
         p,

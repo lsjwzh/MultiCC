@@ -688,7 +688,7 @@ main({
 
     // Express 4 does not catch async rejections; the repo's own asyncHandler
     // is how every current async route reaches safeErrorHandler.
-    const { asyncHandler } = require(path.join(repo, 'src/http-errors'));
+    const { asyncHandler } = require(path.join(repo, 'tests/helpers/frozen-da8f52ee/http-errors'));
     const wrapped = {};
     for (const method of ['get', 'post', 'patch', 'delete', 'put', 'options', 'all', 'use']) {
       wrapped[method] = function (first, ...rest) {

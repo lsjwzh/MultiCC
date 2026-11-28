@@ -8,7 +8,7 @@ const airIssueApi = require('../src/workspace/air-index-port');
 const { airNotices: airNoticeHooks } = airIssueApi;
 const { createAirStorageNotice } = airIssueApi;
 const { create } = require('../public/air-sync');
-const { createAirCardCache } = require('../src/workspace/air-card-cache');
+const { createAirCardCache } = require('../src/native/binding').airCardCache;
 
 const tick = () => new Promise(done => setImmediate(done));
 const task = (id, patch = {}) => ({ id: String(id), dirId: 'd', title: `任务 ${id}`, status: 'active',

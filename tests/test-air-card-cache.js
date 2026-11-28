@@ -5,7 +5,7 @@
 // runState / worktreeChanges 必须每轮现算，不能被缓存冻住。
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createAirCardCache } = require('../src/workspace/air-card-cache');
+const { createAirCardCache } = require('../src/native/binding').airCardCache;
 const { mountAir } = require('./helpers/air-host');
 
 function fixture({ mode = 'on', verifyMs = 60_000, verifyBudget = 8 } = {}) {
@@ -180,6 +180,37 @@ test('shadow 档永远现建；签名没变而内容变了时记下差异（签�
   assert.ok(mismatch, '必须记下差异');
   assert.equal(mismatch.taskId, 't');
   assert.deepEqual(mismatch.fields, ['readOnly']);
+});
+
+test('快照任务开始执行时才序列化输入', async () => {
+  const cache = createAirCardCache({ mode: 'on' });
+  let phase = 'enqueued';
+  const seen = [];
+  const pending = cache.snapshotAsync({
+    get globalSignature() { seen.push(phase); return 'g'; },
+    now: 0, prune: true, items: [], facts: {}, merges: {}, capacityReasons: {},
+  }, () => []);
+  await Promise.resolve();
+  phase = 'started';
+  await pending;
+  assert.deepEqual(seen, ['started']);
+});
+
+test('排队的下一项在上一项调用方恢复前读取签名', async () => {
+  const cache = createAirCardCache({ mode: 'on' });
+  const seen = [];
+  const options = {
+    keyOf: item => item.id,
+    signatureOf: item => { seen.push(item.signature); return item.signature; },
+    build: item => ({ card: { id: item.id } }),
+  };
+  const item = { id: 'b', signature: 'before' };
+  const first = cache.resolveAsync('g', [{ id: 'a', signature: 'first' }], options);
+  const second = cache.resolveAsync('g', [item], options);
+  await first;
+  item.signature = 'after';
+  await second;
+  assert.deepEqual(seen, ['first', 'before']);
 });
 
 test('off 档与未知档位：off 永远现建；拼错的档位退回 shadow 而不是 on', () => {

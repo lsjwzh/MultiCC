@@ -428,14 +428,15 @@ pub fn http_entry_clean_id(env: Env, value: Unknown<'_>) -> Result<sys::napi_val
 }
 #[napi]
 pub fn http_entry_request_ids(env: Env, headers: Unknown<'_>) -> Result<sys::napi_value> {
-    let headers = V::new(&env, headers);
+    Ok(request_ids(V::new(&env, headers))?.raw())
+}
+
+pub(crate) fn request_ids(headers: V<'_>) -> Result<V<'_>> {
     let id = clean_id(headers.get(c"x-request-id")?)?
         .unwrap_or_else(|| multicc_core::http_gate::make_request_id().into());
     let correlation = clean_id(headers.get(c"x-correlation-id")?)?.unwrap_or_else(|| id.clone());
-    Ok(headers
-        .from_value(&JsValue::object(vec![
-            ("id", JsValue::String(id)),
-            ("correlationId", JsValue::String(correlation)),
-        ]))?
-        .raw())
+    headers.from_value(&JsValue::object(vec![
+        ("id", JsValue::String(id)),
+        ("correlationId", JsValue::String(correlation)),
+    ]))
 }

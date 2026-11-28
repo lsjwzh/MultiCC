@@ -226,7 +226,7 @@ const world = buildWorld({
   createChatHistoryRuntime: require(path.join(repo, 'src/routes/chat-history/index')).createChatHistoryRuntime,
   createIosUdid: require(path.join(repo, 'src/ios-udid')).createIosUdid,
 });
-const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/http-errors'));
+const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/native/binding')).httpErrors;
 const { jsonCompression } = require(path.join(repo, 'src/native/binding')).jsonCompression;
 const app = express(); app.use(requestIdMiddleware, jsonCompression); app.use(express.json({ limit: '50mb' }));
 // A request marked ?down=1 is dropped before it is answered: the host is broken.

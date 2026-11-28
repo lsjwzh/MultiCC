@@ -20,7 +20,7 @@
 // native/gateway/tests/air_routes.rs and docs/rust-migration/differential/air-routes.js
 // (the sync/page pair: docs/rust-migration/differential/air-sync-routes.js).
 const assert = require('node:assert/strict');
-const { createAirRuntime, HOST_PATH } = require('../../src/workspace/air-routes-host');
+const { createAirRuntime, HOST_PATH } = require('../../src/native/binding').airRoutesHost;
 
 function fakeApp() {
   const routes = new Map();

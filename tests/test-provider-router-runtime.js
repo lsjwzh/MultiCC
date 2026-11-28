@@ -7,7 +7,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
-const { validateUsageObserved } = require('../src/usage-observed');
+const { validateUsageObserved } = require('../src/native/binding').usageObserved;
 const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { REQUIRED_CAPABILITIES } = require('../src/providers/router-port');
 const {

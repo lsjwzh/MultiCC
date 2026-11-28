@@ -306,7 +306,7 @@ const { createWorld, FROZEN_NOW } = require(path.join(REPO, 'tests/helpers/legac
 Date.now = () => FROZEN_NOW;
 
 const express = require(require.resolve('express', { paths: [REPO] }));
-const { DomainError } = require(path.join(REPO, 'src/http-errors'));
+const { DomainError } = require(path.join(REPO, 'src/native/binding')).httpErrors;
 const world = createWorld({ rootDir: process.env.HOST_OPS_ROOT, DomainError });
 
 // Both detached launchers are fakes; the log is written so this process can

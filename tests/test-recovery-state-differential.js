@@ -25,6 +25,12 @@ function frozenHostFactory(mutate = source => source) {
   frozen.require = name => name === '../unattended/kernel' ? require('./helpers/frozen-unattended/kernel') : name === '../session/runtime-busy'
     ? require('./helpers/session-runtime-busy-oracle') : name === './scheduler' ? require('../src/session-work') : originalRequire(name);
   frozen.require = require('./helpers/frozen-batch10').from(filename, frozen.require.bind(frozen));
+  const load = frozen.require;
+  frozen.require = name => {
+    if (name === '../cli-adapters/zcode-auth') return require('./helpers/frozen-da8f52ee/cli-adapters/zcode-auth');
+    if (name === '../cli-adapters/kimi-auth') return require('./helpers/frozen-da8f52ee/cli-adapters/kimi-auth');
+    return load(name);
+  };
   frozen._compile(mutate(source), filename);
   return frozen.exports.createSessionWorkHost;
 }

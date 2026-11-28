@@ -257,7 +257,7 @@ const express = require(require.resolve('express', { paths: [REPO] }));
 const { createCliSwitchWorld } = require(path.join(REPO, 'tests/helpers/legacy-cli-switch-routes'));
 const { createCliSwitchRuntime } = require(path.join(REPO, 'src/cli/switch-runtime'));
 const { createWsHost, createChatReplayHub } = require(path.join(REPO, 'src/native/binding')).wsHost;
-const { asyncHandler } = require(path.join(REPO, 'src/http-errors'));
+const { asyncHandler } = require(path.join(REPO, 'src/native/binding')).httpErrors;
 const { mountPublicSessionAccessGuard } = require(path.join(REPO, 'src/native/binding')).getNative().sessionPublicAccessApi();
 
 const worldPath = process.env.STUB_WORLD;
@@ -349,7 +349,7 @@ main({
     fs.writeFileSync(hostCallsPath, '');
     fs.writeFileSync(worldPath, JSON.stringify({ case: 'initial', session: null }));
     const helper = require(path.join(repo, 'tests/helpers/legacy-cli-switch-routes'));
-    const { asyncHandler } = require(path.join(repo, 'src/http-errors'));
+    const { asyncHandler } = require(path.join(repo, 'tests/helpers/frozen-da8f52ee/http-errors'));
     const { mountPublicSessionAccessGuard } = require(path.join(repo, 'tests/helpers/legacy-public-session-access'));
     nodeWorld = helper.createCliSwitchWorld();
     app.use((req, _res, next) => {

@@ -16,7 +16,7 @@ const {
   createProviderProxyAdmission,
   createProviderProxyGuard,
 } = require('./proxy-guard');
-const { createUsageObserved } = require('../usage-observed');
+const { createUsageObserved } = require('../native/binding').usageObserved;
 
 const PORT_API_VERSION = '1.0.0';
 const PORT_MODES = Object.freeze(['legacy', 'shadow', 'cpr']);

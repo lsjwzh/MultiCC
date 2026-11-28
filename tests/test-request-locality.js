@@ -174,8 +174,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/subagent-defaults-host.js',
     'src/routes/task-routes-host.js',
     'src/task-shell/host.js',
-    // The air host port lives with its runtime rather than under routes/.
-    'src/workspace/air-routes-host.js',
     'src/ws/connection-router.js',
   ]);
   const predicates = fs.readFileSync('native/addon/src/request_locality_api.rs', 'utf8');

@@ -27,7 +27,7 @@ const path = require('node:path');
 
 const root = path.resolve(process.argv[2] || path.join(__dirname, '..', '..', '..'));
 const { taskDomain, taskDomainAsync } = require(path.join(root, 'src/native/binding')).taskDomainHost;
-const { openBoardStore } = require(path.join(root, 'src/task-board/board-store'));
+const { openBoardStore } = require(path.join(root, 'src/native/binding')).taskBoardStore;
 
 const quiet = { warn() {}, log() {} };
 const boardOf = deletedTaskIds => ({ schemaVersion: 2, revision: 0, modules: {}, tasks: {}, taskGroups: {}, deletedTaskIds });

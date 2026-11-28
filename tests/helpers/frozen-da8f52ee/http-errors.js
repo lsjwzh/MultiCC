@@ -21,10 +21,10 @@
 // This is intentionally minimal: it does not attempt to classify every error
 // (that stays in domain services). It's a floor, not a ceiling.
 
-const { getNative } = require('./native/binding');
-const { API_VERSION, createErrorDto } = require('./native/binding').getApiContract();
+const { getNative } = require('../../../src/native/binding');
+const { API_VERSION, createErrorDto } = require('../../../src/native/binding').getApiContract();
 
-const { safeCode, sanitizeCompatibility, sanitizePublicText } = require('./native/binding').getPublicSafety();
+const { safeCode, sanitizeCompatibility, sanitizePublicText } = require('../../../src/native/binding').getPublicSafety();
 
 const DOMAIN_ERROR = Symbol('MultiCC.DomainError');
 const INFRASTRUCTURE_ERROR = Symbol('MultiCC.InfrastructureError');

@@ -752,7 +752,7 @@ main({
     // refresh reaches safeErrorHandler exactly as it did in production. The
     // handler goes onto the same deps object the world mutates, never a copy:
     // `accounts.enabled === false` is applied by removing the member.
-    const { asyncHandler } = require(path.join(repo, 'src/http-errors'));
+    const { asyncHandler } = require(path.join(repo, 'tests/helpers/frozen-da8f52ee/http-errors'));
     bag.deps.asyncHandler = asyncHandler;
     legacy.mountQuotaRoutes(app, bag.deps);
     upstreamText = upstreamSource(repo);

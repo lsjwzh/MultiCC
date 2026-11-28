@@ -18,7 +18,7 @@ delete process.env.KIMI_API_KEY;
 delete process.env.KIMI_CODE_HOME;
 
 const providers = require('../src/native/binding').providersHost;
-const kimiAuth = require('../src/cli-adapters/kimi-auth');
+const kimiAuth = require('../src/native/binding').kimiAuth;
 const { mountKimiAuthRoutes } = require('../src/routes/kimi-auth');
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));

@@ -21,8 +21,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
-const { atomicWriteJson } = require('../native/binding').runtimeSecurity;
-const { zcodeEngineEnv } = require('../native/binding').zcodeEngine;
+const { atomicWriteJson } = require('../../../../src/native/binding').runtimeSecurity;
+const { zcodeEngineEnv } = require('../../../../src/native/binding').zcodeEngine;
 
 const HOME = os.homedir();
 const DESKTOP_CONFIG_PATH = path.join(HOME, '.zcode', 'v2', 'config.json');

@@ -11,9 +11,9 @@
 // Structured errors come back in an envelope and are rethrown as
 // `UsageObservedError` with the same name/code/message.
 
-const { assertProviderBinding } = require('./native/binding').providerBinding;
-const { normalizeProxyOutcome } = require('./native/binding').proxyOutcome;
-const { getNative } = require('./native/binding');
+const { assertProviderBinding } = require('../../../src/native/binding').providerBinding;
+const { normalizeProxyOutcome } = require('../../../src/native/binding').proxyOutcome;
+const { getNative } = require('../../../src/native/binding');
 
 const native = getNative();
 const CATALOG = JSON.parse(native.usageObservedCatalog());
