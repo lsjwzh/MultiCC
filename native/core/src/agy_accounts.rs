@@ -125,7 +125,11 @@ pub fn set_active(home: &Path, id: Option<&str>) -> Result<(), String> {
 pub fn active_home(home: &Path) -> Option<PathBuf> {
     let id = active_id(home)?;
     let dir = account_home(home, &id)?;
-    dir.is_dir().then_some(dir)
+    if !dir.is_dir() {
+        return None;
+    }
+    ensure_macos_keychains_if_missing(home, &dir);
+    Some(dir)
 }
 
 fn read_meta(home: &Path, id: &str) -> Option<Value> {
@@ -273,10 +277,13 @@ pub fn resolve_account(
         }
     }
     match account_home(home, &id) {
-        Some(dir) if dir.is_dir() => Ok(Some(ResolvedAgyAccount::Local {
-            home: dir,
-            egress_binding,
-        })),
+        Some(dir) if dir.is_dir() => {
+            ensure_macos_keychains_if_missing(home, &dir);
+            Ok(Some(ResolvedAgyAccount::Local {
+                home: dir,
+                egress_binding,
+            }))
+        }
         _ if explicit => Err("unknown account".to_owned()),
         _ => Ok(None),
     }
@@ -297,7 +304,10 @@ pub fn resolve_home(home: &Path, account_id: Option<&str>) -> Result<Option<Path
         return Err("invalid account id".to_owned());
     }
     match (meta_file(home, id), account_home(home, id)) {
-        (Some(meta), Some(dir)) if meta.is_file() && dir.is_dir() => Ok(Some(dir)),
+        (Some(meta), Some(dir)) if meta.is_file() && dir.is_dir() => {
+            ensure_macos_keychains_if_missing(home, &dir);
+            Ok(Some(dir))
+        }
         _ => Err("unknown account".to_owned()),
     }
 }
@@ -454,6 +464,10 @@ pub fn create_account_with_egress(
     let meta = meta_file(home, &id).ok_or("invalid account id")?;
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     set_dir_mode(&dir);
+    if let Err(err) = link_macos_keychains_if_present(home, &dir) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(err);
+    }
     let mut record = json!({
         "id": id,
         "label": clean_label(label),
@@ -463,7 +477,10 @@ pub fn create_account_with_egress(
     if let Some(binding) = egress {
         record["egressBinding"] = binding.to_value();
     }
-    state_file::write_json_atomic(&meta, &record).map_err(|err| err.to_string())?;
+    if let Err(err) = state_file::write_json_atomic(&meta, &record) {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(err.to_string());
+    }
     Ok(record)
 }
 
@@ -754,8 +771,8 @@ pub fn import_account(home: &Path, label: &str) -> Result<Value, String> {
 }
 
 /// macOS 上 `agy` 的登录态保存在 `$HOME/Library/Keychains/login.keychain-db`。
-/// 导入本机登录态时软链该目录，隔离 HOME 仍可完成静默认证，同时保持 `.gemini`
-/// 配置与 MCP 文件完全隔离；删除账号时 `remove_dir_all` 只删软链本身，不触碰真实 Keychain。
+/// 新建或导入本机账号时软链该目录，隔离 HOME 仍可完成静默认证并避免弹出「找不到钥匙串」模态框，
+/// 同时保持 `.gemini` 配置与 MCP 文件完全隔离；删除账号时 `remove_dir_all` 只删软链本身，不触碰真实 Keychain。
 #[cfg(target_os = "macos")]
 fn link_macos_keychains_if_present(home: &Path, account_dir: &Path) -> Result<(), String> {
     let src = home.join("Library").join("Keychains");
@@ -776,6 +793,19 @@ fn link_macos_keychains_if_present(home: &Path, account_dir: &Path) -> Result<()
 fn link_macos_keychains_if_present(_home: &Path, _account_dir: &Path) -> Result<(), String> {
     Ok(())
 }
+
+/// 幂等补齐历史存量 `<id>.home` 缺失的 `Library/Keychains` 软链接。
+#[cfg(target_os = "macos")]
+fn ensure_macos_keychains_if_missing(home: &Path, account_dir: &Path) {
+    let dst = account_dir.join("Library").join("Keychains");
+    if fs::symlink_metadata(&dst).is_ok() {
+        return;
+    }
+    let _ = link_macos_keychains_if_present(home, account_dir);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_macos_keychains_if_missing(_home: &Path, _account_dir: &Path) {}
 
 pub fn delete_account(home: &Path, id: &str) -> Result<(), String> {
     if !valid_account(id) {
