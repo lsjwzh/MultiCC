@@ -12,6 +12,7 @@ pub mod acp_bridge;
 pub mod agy_relay_client;
 pub mod agy_remote_bridge;
 pub mod agy_remote_login;
+pub mod agy_resident;
 pub mod app;
 pub mod args;
 pub mod auth_control;

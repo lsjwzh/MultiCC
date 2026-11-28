@@ -41,6 +41,17 @@ fn main() {
             .expect("tokio runtime");
         std::process::exit(runtime.block_on(multicc_gateway::acp_bridge::serve(&args[1..])));
     }
+    #[cfg(unix)]
+    if args.first().map(String::as_str) == Some("agy-stream-guard") {
+        std::process::exit(multicc_gateway::agy_resident::watch(args.get(1)));
+    }
+    if args.first().map(String::as_str) == Some("agy-stream-bridge") {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        std::process::exit(runtime.block_on(multicc_gateway::agy_resident::serve(&args[1..])));
+    }
     if args.first().map(String::as_str) == Some("codex-app-bridge") {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

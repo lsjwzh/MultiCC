@@ -219,5 +219,18 @@ pub fn agy_host_invocation(
         ],
     )?;
     let output = agy_build_invocation(crate::host_methods::typed(input)?);
-    unsafe { napi::bindgen_prelude::ToNapiValue::to_napi_value(env.raw(), output) }
+    let raw = unsafe { napi::bindgen_prelude::ToNapiValue::to_napi_value(env.raw(), output)? };
+    let result = L::from_raw(env.raw(), raw);
+    result.set(
+        c"streamBackend",
+        result.from_value(&"agy-stream-json".into())?,
+    )?;
+    result.set(c"nativeKey", result.from_value(&"cliSessionId".into())?)?;
+    result.set(
+        c"clientAllocatesNativeId",
+        result.from_value(&V::Bool(false))?,
+    )?;
+    Ok(raw)
 }
+
+mod protocol;

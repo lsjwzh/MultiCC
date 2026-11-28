@@ -124,6 +124,7 @@ const PROTOCOLS = {
       return { forward: true, nativeId, done: evt.method === 'turn/completed' };
     },
   },
+  agy: require('../native/binding').getNative().agyResidentProtocol(),
   zcode: {
     fingerprint: zcodeFingerprint,
     // The adapter already puts `--session <id>` on non-first turns; the id the
@@ -149,7 +150,7 @@ const PROTOCOLS = {
     },
   },
 };
-const protocolOf = (backend) => (backend === 'zcode-app-server' ? 'zcode' : 'codex');
+const protocolOf = backend => ({ 'zcode-app-server': 'zcode', 'agy-stream-json': 'agy' }[backend] || 'codex');
 
 function spawnProc(name, s) {
   s.beforeSpawn?.({ sessionId: s.threadId });
@@ -174,10 +175,12 @@ function spawnProc(name, s) {
     throw error;
   }
   s.proc = proc;
+  s.recycleRequested = false;
   // Unguarded close handler with the token on the proc: a replaced child's
   // late close still frees exactly its own lease.
   proc.writerLeaseToken = writerToken || null;
   if (writerToken && proc.pid) setImmediate(() => { try { s.annotateWriter?.(writerToken, proc.pid); } catch (_) {} });
+  s.onSpawn?.(proc);
   proc.once('close', () => {
     const token = proc.writerLeaseToken;
     proc.writerLeaseToken = null;
@@ -206,7 +209,7 @@ function spawnProc(name, s) {
     try { proc.kill('SIGTERM'); } catch (_) {}
     armKillEscalation(proc, CLOSE_KILL_GRACE_MS);
   });
-  proc.on('exit', (code, signal) => { if (sessions.get(name)?.proc === proc) onExit(name, code, signal); });
+  proc.on(protocol.exitEvent || 'exit', (code, signal) => { if (sessions.get(name)?.proc === proc) onExit(name, code, signal); });
   proc.on('error', (err) => {
     if (sessions.get(name)?.proc !== proc) return;
     if (!proc.pid) onExit(name, null, null, err); else s.recycling = true;
@@ -262,6 +265,7 @@ function onStdout(name, chunk) {
     if (read.background !== undefined) onBackground(name, read.background);
     // The turn boundary. The server and the conversation stay alive, ready for
     // the next line on stdin.
+    if (read.retire) s.recycleRequested = true;
     if (read.done) finishTurn(name, evt);
   }
 }
@@ -356,6 +360,7 @@ function pump(name) {
     }
     return;
   }
+  if (PROTOCOLS[s.protocol].exitEvent === 'close' && s.proc && !isAlive(name)) return; // close 将在输出排空后继续
   const next = s.queue.shift();
   if (!next) return;
 
@@ -446,10 +451,12 @@ function ensure(name, cfg) {
       cmd: cfg.cmd,
       cwd: cfg.cwd,
       baseArgs: cfg.baseArgs || [],
+      launchKey: cfg.launchKey,
       threadId: cfg.sessionId || null,
       env: cfg.env || {},
       idleMs: cfg.idleMs || DEFAULT_IDLE_MS,
       onExit: cfg.onExit || null,
+      onSpawn: cfg.onSpawn || null,
       onDispose: cfg.onDispose || null,
       beforeSpawn: cfg.beforeSpawn || null,
       acquireWriter: cfg.acquireWriter || null,
@@ -465,6 +472,10 @@ function ensure(name, cfg) {
     sessions.set(name, s);
   } else {
     const protocol = protocolOf(cfg.streamBackend);
+    if (protocol !== s.protocol || PROTOCOLS[protocol].configure) {
+      if (cfg.cmd !== undefined) s.cmd = cfg.cmd;
+      if (cfg.cwd !== undefined) s.cwd = cfg.cwd;
+    }
     if (protocol !== s.protocol) {
       // Another CLI took the session over: its conversation id and child are
       // not this protocol's. Replace the child at the next boundary.
@@ -472,8 +483,10 @@ function ensure(name, cfg) {
       s.threadId = null;
       s.recycleRequested = isAlive(name);
     }
+    PROTOCOLS[protocol].configure?.(s, cfg, isAlive(name));
     if (cfg.baseArgs !== undefined) s.baseArgs = cfg.baseArgs;
     if (cfg.env !== undefined) s.env = cfg.env;
+    s.onSpawn = cfg.onSpawn;
     if (cfg.onExit !== undefined) s.onExit = cfg.onExit;
     if (cfg.onDispose !== undefined) s.onDispose = cfg.onDispose;
     if (cfg.beforeSpawn !== undefined) s.beforeSpawn = cfg.beforeSpawn;
@@ -545,10 +558,10 @@ function armKillEscalation(proc, graceMs) {
 // Stop the current turn by stopping the child. Unlike the claude lane there is
 // no in-process interrupt to ask for, so the session is torn down; the thread
 // survives on disk and the next turn re-attaches.
-function cancel(name) {
+function cancel(name, closing = false) {
   const s = sessions.get(name);
   if (!s) return;
-  const pending = s.queue.splice(0);
+  const pending = PROTOCOLS[s.protocol].cancelCurrentOnly && !closing ? [] : s.queue.splice(0);
   for (const q of pending) { try { q.reject(new Error('cancelled')); } catch (_) {} }
   if (s.proc) {
     s.recycling = true;
@@ -560,7 +573,7 @@ function cancel(name) {
 function close(name) {
   const s = sessions.get(name);
   closer.track(name, s?.proc);
-  cancel(name);
+  cancel(name, true);
   if (!s) return;
   clearIdle(s);
   const cur = s.current;

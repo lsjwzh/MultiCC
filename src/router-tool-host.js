@@ -192,6 +192,8 @@ function createRouterToolHost({
     );
   }
 
+  const imageMarker = id => imageBridge?.isEligible?.(configuredRecords?.get?.(id)) ? '1' : '0';
+
   function processContext({
     sessionId,
     turnId,
@@ -222,8 +224,9 @@ function createRouterToolHost({
         MULTICC_TURN_ID: turnId,
         MULTICC_ORIGIN_DISPATCH_ID: originDispatchId || '',
         MULTICC_ROUTER_CAPABILITY: token,
-        MULTICC_IMAGE_BRIDGE: imageBridge?.isEligible?.(configuredRecords?.get?.(sessionId)) ? '1' : '0',
+        MULTICC_IMAGE_BRIDGE: imageMarker(sessionId),
       }),
+      expiresAt: runtime.capabilityExpiresAt(token),
       bind(proc) {
         proc.once('error', revoke);
         proc.once('close', revoke);
@@ -296,6 +299,10 @@ function createRouterToolHost({
     configure,
     mount,
     processContext,
+    prepareResidentMcp(env, cli, cwd) {
+      env.MULTICC_IMAGE_BRIDGE = imageMarker(env.MULTICC_SESSION_ID);
+      applyRouterMcpEnv(env, cli, routerMcpNode, routerMcpScript, { cwd });
+    },
     refreshPersistentProcess,
     releasePersistentProcess,
     spawnProcess,

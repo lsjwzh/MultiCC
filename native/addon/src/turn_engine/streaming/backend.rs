@@ -387,6 +387,9 @@ pub(super) fn ensure<'a>(
             ),
         ],
     )?;
+    if inv.get(c"streamBackend")?.is_string("agy-stream-json")? {
+        agy::configure(st, opts)?;
+    }
     st.service(c"chatStream", c"ensure", &[st.session, opts])?;
     Ok(())
 }

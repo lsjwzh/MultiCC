@@ -55,7 +55,7 @@ test('the table places each CLI in exactly one lane', () => {
   // Nothing about callers changed — only this table and the runtime that owns the
   // resident child. zcode followed the same way: its engine's app-server keeps the
   // session (and the background tasks it runs) alive across turns.
-  for (const cli of ['claude', 'claude-exp', 'codex-exp', 'zcode']) {
+  for (const cli of ['claude', 'claude-exp', 'codex-exp', 'zcode', 'agy']) {
     assert.equal(isResident(cli), true, `${cli} keeps its child across turns`);
     assert.equal(capabilityOf(cli).lifecycle, 'resident');
   }

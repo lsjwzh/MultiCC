@@ -1,6 +1,7 @@
 //! 常驻进程只持有 SDK 配置所需的状态；每次发送独立捕获回合、运行器和序号。
 use crate::{js_iteration::read, route_response::*};
 use napi_derive::napi;
+mod agy;
 mod backend;
 mod delivery;
 
@@ -138,15 +139,23 @@ pub fn chat_run_streaming(env: Env, ports: Unknown<'_>, params: Unknown<'_>) -> 
     } else {
         envelope
     };
-    let settings = stream.port(
-        c"claudeSettingsExtra",
-        &[invocation, spawn_opts, binding, stream.record.get(c"cli")?],
-    )?;
-    let file = stream.service(
-        c"providers",
-        c"settingsOverrideFor",
-        &[session, child_env, settings],
-    )?;
+    state.set(c"spawnOpts", spawn_opts)?;
+    let agy = invocation
+        .get(c"streamBackend")?
+        .is_string("agy-stream-json")?;
+    let file = if agy {
+        null(state)?
+    } else {
+        let settings = stream.port(
+            c"claudeSettingsExtra",
+            &[invocation, spawn_opts, binding, stream.record.get(c"cli")?],
+        )?;
+        stream.service(
+            c"providers",
+            c"settingsOverrideFor",
+            &[session, child_env, settings],
+        )?
+    };
     let args = invocation.get(c"streamArgs")?;
     let args = if args.truthy()? {
         args
@@ -178,9 +187,8 @@ pub fn chat_run_streaming(env: Env, ports: Unknown<'_>, params: Unknown<'_>) -> 
     state.set(c"nativeKey", key)?;
     let has_id = stream.record.get_key(key)?.truthy()?;
     let resume = has_id
-        && (!invocation.get(c"sdkOptions")?.truthy()?
-            || !prepared
-                .get(c"invocationEnvelope")?
+        && (!(agy || invocation.get(c"sdkOptions")?.truthy()?)
+            || !envelope
                 .get(c"historyHandle")?
                 .get(c"isFirstTurn")?
                 .truthy()?);

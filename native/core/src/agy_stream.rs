@@ -18,6 +18,7 @@ use std::fs;
 use std::path::Path;
 
 pub mod effort;
+pub mod resident;
 const MAX_TRACKED_CONVERSATIONS: usize = 64;
 const AGY_LABEL: &str = "Antigravity";
 const USAGE_SOURCE: &str = "agy_stream";
@@ -383,6 +384,11 @@ impl AgyStreamDecoder {
         };
 
         match event {
+            "multicc_conversation" => obj
+                .get("conversation_id")
+                .and_then(Value::as_str)
+                .map(|id| vec![json!({"type":"session_started","sessionId":id})])
+                .unwrap_or_default(),
             "init" => self.decode_init(obj),
             "step_update" => self.decode_step_update(obj),
             "result" => self.decode_result(obj),

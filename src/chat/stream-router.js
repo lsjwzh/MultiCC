@@ -62,8 +62,10 @@ function createStreamRouter(legacy, sdk, appServer) {
   }
   const api = {
     ensure(name, cfg) {
-      residency.track(name, cfg.cwd, cfg.onWorkspaceActivity);
-      const mode = cfg.streamBackend === 'app-server' || cfg.streamBackend === 'zcode-app-server' ? 'app-server'
+      const retire = cfg.relocateWhenIdle
+        ? () => closeBackend(name, backend(name), undefined, false).catch(() => {}) : undefined;
+      residency.track(name, cfg.cwd, cfg.onWorkspaceActivity, retire);
+      const mode = cfg.streamBackend === 'app-server' || cfg.streamBackend === 'zcode-app-server' || cfg.streamBackend === 'agy-stream-json' ? 'app-server'
         : cfg.sdkOptions ? 'sdk' : 'legacy';
       if (modes.has(name) && modes.get(name) !== mode) {
         if (barriers.has(name)) throw Object.assign(new Error('workspace_busy'), { code: 'workspace_busy' });

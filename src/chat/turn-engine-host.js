@@ -461,6 +461,7 @@ function createChatTurnEngine(deps) {
       buildHandoffCheckpoint, renderHandoffPrompt, viewChatHistory, getBackgroundTaskRuntime,
       createAdapterCompletion, createRunnerOwnership, isCurrentTurnRunner, attemptRuntime, turnTiming,
       applyAdapterChatEvent, forwardProviderEvent, managedContext, finalizeCompletionStream,
+      gatewayPath, runChatTurnStreaming, meaningfulTurnOutput, turnHasSideEffects,
       finalizeStreamingTurn, sanitizeApiErrorMessage, getSessionWorkHost, getChatHistoryRuntime,
     }, { sessionName, cs, persisted, prepared, provider, turn, prepareInvocation, autoTurn, apiRetryAttempt, workspaceOpts });
   }
