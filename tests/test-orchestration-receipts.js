@@ -7,7 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const Database = require('better-sqlite3');
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
-const { createOutbox } = require('../src/outbox');
+const { createOutbox } = require('../src/native/binding').outboxRuntime;
 const { createOperationService } = require('../src/operation-service');
 const { createWaitService } = require('../src/wait/service');
 

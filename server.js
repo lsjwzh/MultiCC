@@ -2140,7 +2140,7 @@ const subscribeDispatchProgress = createDispatchProgressSubscription({
 // Usage-limit poller — a turn's own provider only; Claude readings are manual-refresh.
 const usageLimitPoller = require('./src/native/binding').usageLimitWiring.createUsageLimitWiring({
   persistedSessions, providers, chatBroadcast,
-  createPoller: require('./src/usage-limit-poller').createUsageLimitPoller,
+  createPoller: nativeBinding.usageLimitPoller.createUsageLimitPoller,
   recordLimit: limitRecorder.recordSession,
 });
 

@@ -25,7 +25,7 @@ const adapters = [
   require('../src/native/binding').cliAdapters.createQoderAdapter({}),
   require('../src/native/binding').cliAdapters.createKimiAdapter({}),
   require('../src/native/binding').cliAdapters.createCodebuddyAdapter({}),
-  require('../src/cli-adapters/dsh').createDshAdapter({}),
+  require('../src/native/binding').dshAdapter.createDshAdapter({}),
 ];
 const successResult = { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed' };
 const traces = {

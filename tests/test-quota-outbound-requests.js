@@ -9,7 +9,7 @@ const path = require('node:path');
 let handler = async () => { throw new Error('unexpected outbound request'); };
 mock.method(require('../src/native/binding').outbound, 'outboundFetch', (...args) => handler(...args));
 const { fetchCodexUsage } = require('../src/routes/codex-quota');
-const { pollCodexUsage } = require('../src/usage-limit-poller');
+const { pollCodexUsage } = require('../src/native/binding').usageLimitPoller;
 const { fetchKimiBalance } = require('../src/routes/kimi-quota');
 const { fetchWithCookies } = require('../src/routes/qoder-quota');
 const { fetchCliUsage } = require('../src/native/binding').claudeCliUsage;
@@ -177,7 +177,7 @@ test('Qoder 代理请求保留手动重定向和登录失效语义', async () =>
 
 test('余量和账户请求不能重新绕过统一网络入口', () => {
   const files = [
-    'src/usage-limit-poller.js', 'src/routes/codex-quota.js', 'src/routes/claude-accounts.js',
+    'src/routes/codex-quota.js', 'src/routes/claude-accounts.js',
     'src/routes/claude-usage-quota.js', 'src/routes/provider-balance-host.js', 'src/routes/qoder-quota.js',
     'src/routes/kimi-quota.js', 'src/quota/opencode-zen.js',
     'src/official-accounts-cli-login.js',
@@ -195,7 +195,15 @@ test('余量和账户请求不能重新绕过统一网络入口', () => {
     // Relative fetch inside browser-evaluated scripts belongs to Chrome.
     assert.doesNotMatch(source, /\bfetch\(\s*(?!['"]\/)[A-Za-z_$'"`]/, file);
   }
-  for (const file of ['src/usage-limit-poller.js', 'src/routes/codex-quota.js']) {
+  const poller = binding.match(/exposeHostApi\('usageLimitPoller'[\s\S]*?(?=\nexposeHostApi\(|$)/)?.[0] || '';
+  assert.match(poller, /outboundFetch: module\.exports\.outbound\.outboundFetch/);
+  assert.match(poller, /\brequestCodexUsage\b/);
+  const transport = 'native/addon/src/usage_limit_host/transport.rs';
+  const rust = fs.readFileSync(path.join(__dirname, '..', transport), 'utf8');
+  assert.match(rust, /c"outboundFetch"/);
+  assert.match(rust, /c"requestCodexUsage"/);
+  assert.doesNotMatch(rust, /reqwest::|hyper::|TcpStream::connect|globalThis\.fetch/);
+  for (const file of [transport, 'native/addon/src/usage_limit_host.rs', 'src/routes/codex-quota.js']) {
     assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), /['"]https:\/\/chatgpt\.com\/backend-api\/wham\/usage['"]/,
       `${file} 不得复制 Codex 余量请求实现`);
   }

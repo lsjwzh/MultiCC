@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { CANDIDATES, createDetector, isValidIp } = require('../src/providers/egress-ip');
+const { CANDIDATES, createDetector, isValidIp } = require('../src/native/binding').egressIpMonitor;
 
 const MIN = 60 * 1000;
 

@@ -1,7 +1,7 @@
 'use strict';
 // Frozen pre-migration oracle for behavior parity tests, never imported by production.
 const crypto = require('node:crypto');
-const { admitOutboxItem, hashPayload, normalizeJson, timingSafeHashEqual } = require('../../src/outbox');
+const { admitOutboxItem, hashPayload, normalizeJson, timingSafeHashEqual } = require('./frozen-e960f6eb/outbox');
 function legacyWaitResolver(store, now, cryptoImpl = crypto) {
   async function resolveInternal(id, payload, {
     callbackToken,

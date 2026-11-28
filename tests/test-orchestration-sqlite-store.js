@@ -308,7 +308,7 @@ test('question owner bridge backfills once and answers a replacement from the sa
   const activeTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'new-task' };
   const legacy = { pendingQuestion: { requestId: 'old', taskId: 'old-task', turnId: 'turn',
     question: 'old', resolved: false }, activeTurn, category: { classifyState: 'W' } };
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   let legacyAvailable = true;
   const owner = createQuestionOwner({ getStore: () => store, initialState: () => {
     if (!legacyAvailable) throw new Error('legacy snapshot unavailable');
@@ -342,7 +342,7 @@ test('question owner bridge moves a question across two Rust-owned sessions', as
     try { await store.close({ exportRollback: false }); }
     finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 10, liveTurn: () => null,
     initialState: id => ({ pendingQuestion: id === 'source'
       ? { requestId: 'q', turnId: 'turn', taskId: 'old', question: 'Q', resolved: false } : null,
@@ -1238,10 +1238,22 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
     assert.match(source, /sqlite\/driver|RustTaskStore|createNativeStore/, `${file} must use the shared driver or the native Rust store`);
     assert.doesNotMatch(source, /require\('better-sqlite3'\)/, `${file} must not require the addon`);
   }
-  const host = fs.readFileSync(path.join(root, 'src/orchestration/native-store-host.js'), 'utf8');
-  assert.match(host, /new native\.RustIsolatedOrchestrationStore\(/);
-  assert.doesNotMatch(host, /new native\.RustOrchestrationStore\(/,
-    'the production host must never open the orchestration database in-process');
+  for (const retired of ['src/orchestration/native-store-host.js', 'src/orchestration/draft-host.js', 'src/outbox.js']) {
+    assert.equal(fs.existsSync(path.join(root, retired)), false, retired);
+  }
+  const readSource = file => fs.readFileSync(path.join(root, file), 'utf8');
+  const factory = readSource('native/addon/src/orchestration_native_store/mod.rs');
+  assert.match(factory, /"createNativeStore"[^;]*transport::create\(/s);
+  const transport = readSource('native/addon/src/orchestration_native_store/transport.rs');
+  const create = transport.match(/fn create\b[\s\S]*?\n\}/)?.[0];
+  assert.ok(create, 'the registered factory must have an owner constructor');
+  assert.match(create, /get\(c"RustIsolatedOrchestrationStore"\)\?\s*\.construct\(/);
+  assert.doesNotMatch(create, /RustOrchestrationStore|Connection::open|better-sqlite3|node:sqlite/);
+  const owner = readSource('native/addon/src/orchestration_owner.rs');
+  assert.match(owner, /impl RustIsolatedOrchestrationStore\b[\s\S]*?OwnerSession::open\(&file, &owner_binary, &open\)/);
+  const ownerClient = readSource('native/core/src/orchestration_owner.rs');
+  assert.match(ownerClient, /if !binary\.is_absolute\(\)/);
+  assert.match(ownerClient, /Command::new\(binary\)\s*\.arg\("orchestration-owner"\)[^;]*\.spawn\(\)/);
 
   // The retired quota facade must stay absent. The lifecycle adapter retains
   // its compatibility aliases and submits storage to Rust; a Node SQLite
@@ -1249,6 +1261,7 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   assert.equal(fs.existsSync(path.join(root, 'src/quota/provider-limit-cache.js')), false);
   assert.equal(fs.existsSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js')), false);
   const binding = fs.readFileSync(path.join(root, 'src/native/binding.js'), 'utf8');
+  assert.match(binding, /createNativeStore: module\.exports\.orchestrationNativeStore\.createNativeStore/);
   const quotaHost = binding.slice(binding.indexOf("exposeHostApi('providerLimitCache'"), binding.indexOf("exposeHostApi('quotaHistory'"));
   const quotaExports = require('../src/native/binding').providerLimitCache;
   assert.equal(quotaExports.createProviderLimitCache, quotaExports.createNativeProviderLimitCache);

@@ -13,7 +13,7 @@ const {
   hashPayload,
   normalizeJson,
   OutboxConflictError,
-} = require('./outbox');
+} = require('./native/binding').outboxRuntime;
 const { getNative } = require('./native/binding');
 
 const TERMINAL_OPERATION_STATES = new Set([

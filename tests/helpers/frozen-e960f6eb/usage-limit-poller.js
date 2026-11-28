@@ -1,7 +1,7 @@
 'use strict';
 
-const { outboundFetch } = require('./native/binding').outbound;
-const { getNative, requestCodexUsage, readCodexAuth } = require('./native/binding');
+const { outboundFetch } = require('../../../src/native/binding').outbound;
+const { getNative, requestCodexUsage, readCodexAuth } = require('../../../src/native/binding');
 
 // Usage-limit poller — the ACTIVE-POLL half of the limit subsystem.
 //
@@ -26,9 +26,9 @@ const { getNative, requestCodexUsage, readCodexAuth } = require('./native/bindin
 //   balance → { kind:'balance', available, currency, total, granted, toppedUp }
 
 const crypto = require('crypto');
-const { publicTransportError } = require('./native/binding').upstreamError;
-const providers = require('./native/binding').providersHost;
-const { checkEgressIpAllowed } = require('./native/binding').egressIpPolicy;
+const { publicTransportError } = require('../../../src/native/binding').upstreamError;
+const providers = require('../../../src/native/binding').providersHost;
+const { checkEgressIpAllowed } = require('../../../src/native/binding').egressIpPolicy;
 
 const POLL_TIMEOUT_MS = 6000;
 // 借道余量透传：出借方收到查询后自己触发对厂商的真实余量查询（可能比本机

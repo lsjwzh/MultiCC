@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const {
   admitOutboxItem,
   normalizeJson,
-} = require('../../src/outbox');
+} = require('./frozen-e960f6eb/outbox');
 const {
   turnOutcomeForClassify, runStateForClassify, CLASSIFY_STATES,
   isProcessingLetter, isWaitForUserLetter, isTerminalLetter, isAbnormalLetter,

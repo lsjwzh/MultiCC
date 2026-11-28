@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { getNative } = require('../src/native/binding');
-const { canonicalize } = require('../src/outbox');
+const { canonicalize } = require('./helpers/frozen-e960f6eb/outbox');
 
 test('native canonicalization matches live JavaScript array methods and exception identity', () => {
   const native = getNative();
@@ -77,7 +77,7 @@ test('overridden JSON.stringify results match JavaScript without crashing the pr
   const script = String.raw`
     const assert = require('node:assert/strict');
     const { getNative } = require('./src/native/binding');
-    const { canonicalize } = require('./src/outbox');
+    const { canonicalize } = require('./tests/helpers/frozen-e960f6eb/outbox');
     const native = getNative();
     const original = JSON.stringify;
     const returnedObject = { toString() { return 'object-result'; } };

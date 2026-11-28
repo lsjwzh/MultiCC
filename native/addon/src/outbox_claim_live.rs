@@ -58,7 +58,7 @@ unsafe extern "C" fn compare_sequence(
         }
     }
 }
-fn sorted<'a>(root: L<'a>, items: L<'a>) -> Result<L<'a>> {
+pub(crate) fn sorted<'a>(root: L<'a>, items: L<'a>) -> Result<L<'a>> {
     let mut callback = ptr::null_mut();
     napi::check_status!(unsafe {
         sys::napi_create_function(
@@ -137,8 +137,10 @@ fn has_expired(draft: L<'_>, at: L<'_>) -> Result<bool> {
     }
     Ok(false)
 }
-fn recover<'a>(draft: L<'a>, policy: L<'a>, at: L<'a>) -> Result<()> {
-    let leased = sorted(draft, rows(draft, true)?)?;
+pub(crate) fn recover_rows<'a>(leased: L<'a>, policy: L<'a>, at: L<'a>) -> Result<(u32, u32)> {
+    let draft = policy;
+    let leased = sorted(draft, leased)?;
+    let (mut recovered, mut dead_lettered) = (0, 0);
     leased.for_each(|item| {
         if !item.get(c"state")?.is_string("leased")?
             || item.get(c"leasedUntil")?.number()? > at.number()?
@@ -162,6 +164,7 @@ fn recover<'a>(draft: L<'a>, policy: L<'a>, at: L<'a>) -> Result<()> {
         if item.get(c"attempts")?.number()? >= policy.get(c"maxAttempts")?.number()? {
             item.assign(c"state", draft.from_value(&V::string("dead-letter"))?)?;
             item.assign(c"deadLetterAt", at)?;
+            dead_lettered += 1;
         } else {
             item.assign(c"state", draft.from_value(&V::string("pending"))?)?;
             let delay = policy
@@ -172,9 +175,11 @@ fn recover<'a>(draft: L<'a>, policy: L<'a>, at: L<'a>) -> Result<()> {
                 c"availableAt",
                 draft.from_value(&V::Number(at.number()? + delay))?,
             )?;
+            recovered += 1;
         }
         Ok(())
-    })
+    })?;
+    Ok((recovered, dead_lettered))
 }
 fn candidates<'a>(draft: L<'a>, policy: L<'a>, at: L<'a>) -> Result<Vec<L<'a>>> {
     let ordered = sorted(draft, rows(draft, false)?)?;
@@ -259,7 +264,7 @@ pub fn outbox_claim_live(
         return Ok(draft.from_value(&V::Array(Vec::new()))?.raw());
     }
     let at = now(policy)?;
-    recover(draft, policy, at)?;
+    recover_rows(rows(draft, true)?, policy, at)?;
     let candidates = candidates(draft, policy, at)?;
     let output = draft.from_value(&V::Array(Vec::new()))?;
     for (index, item) in candidates.iter().enumerate() {

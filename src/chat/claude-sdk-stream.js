@@ -2,7 +2,7 @@
 
 const { randomUUID } = require('node:crypto');
 const { isMainResult } = require('../native/binding').cliResultCompletion;
-const { managedRoute, createRouteRelay } = require('./claude-sdk-route');
+const { managedRoute, createRouteRelay } = require('../native/binding').claudeSdkRoute;
 const { fingerprint, laneOptions } = require('../native/binding').claudeSdkConfig;
 const { envDigest } = require('../secrets-vault');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../native/binding').getMonitorAdmission();

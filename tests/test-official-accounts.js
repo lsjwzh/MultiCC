@@ -21,7 +21,7 @@ const {
 } = require('../src/native/binding').officialAccounts;
 const { createCodexOfficialRelayHandler } = require('../src/native/binding').codexOfficialRelay;
 const { createCodexAccountRefreshSupervisor } = require('../src/native/binding').codexAccountsRefresh;
-const poller = require('../src/usage-limit-poller');
+const poller = require('../src/native/binding').usageLimitPoller;
 const { fetchCodexUsage } = require('../src/routes/codex-quota');
 const { createQuotaRuntime } = require('../src/routes/quota-host');
 

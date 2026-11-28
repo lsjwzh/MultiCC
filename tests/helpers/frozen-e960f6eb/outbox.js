@@ -8,7 +8,7 @@ function candidateRows(draft, collection, where) {
 }
 
 const crypto = require('crypto');
-const { getNative } = require('./native/binding');
+const { getNative } = require('../../../src/native/binding');
 
 const TERMINAL_STATES = new Set(['delivered', 'dead-letter', 'cancelled']);
 

@@ -125,7 +125,7 @@ test('Rust-owned question host keeps creation, replay, classification and moves 
   const writes = [];
   const notifications = [];
   const activeTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'task' };
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123,
     liveTurn: id => id === 'source' ? activeTurn : null,
     initialState: id => ({ pendingQuestion: states[id]?.pendingUserInput || null,
@@ -165,7 +165,7 @@ test('ordered question creation and answer keep their queue positions across fir
     try { await store.close({ exportRollback: false }); }
     finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   let backfills = 0;
   const liveTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'task' };
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => liveTurn,
@@ -219,7 +219,7 @@ test('queued question creation checks the Rust active turn at execution time', a
   await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 's', initial: {
     pendingQuestion: null, activeTurn: active('old'), category: null,
   } });
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123,
     initialState: () => { throw new Error('initialized state must not be recopied'); },
     liveTurn: () => active('old') });
@@ -248,7 +248,7 @@ test('ordered first read backfills once and later reads never copy stale legacy 
   });
   let old = { requestId: 'old', resolved: false };
   let backfills = 0;
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, liveTurn: () => null,
     initialState: () => { backfills++; return { pendingQuestion: old, activeTurn: null, category: null }; } });
   assert.equal((await owner.readAsync('s')).pendingQuestion.requestId, 'old');
@@ -271,7 +271,7 @@ test('ordered move refuses a question replaced while the caller was waiting', as
   await store.sessionWorkState({ action: 'readOrInitialize', sessionId: 'source', initial: {
     pendingQuestion: { requestId: 'old', turnId: 'turn', resolved: false }, activeTurn, category: null,
   } });
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: null, activeTurn: null, category: null }) });
   const settled = owner.resolveAsync('source', 'old');
@@ -295,7 +295,7 @@ test('owned host admission backfills an old question and later answers its repla
   const record = { id: 's', taskState: { classifyState: 'W', pendingUserInput: {
     requestId: 'old', taskId: 'old-task', turnId: 'turn', question: 'old', resolved: false,
   } } };
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: record.taskState.pendingUserInput, activeTurn,
       category: { classifyState: record.taskState.classifyState } }) });
@@ -348,7 +348,7 @@ test('host admission rechecks the owned question after initialization and a conc
   const record = { id: 's', taskState: { classifyState: 'W', pendingUserInput: {
     requestId: 'old', turnId: 'turn', taskId: 'task', resolved: true,
   } } };
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 123, liveTurn: () => activeTurn,
     initialState: () => ({ pendingQuestion: record.taskState.pendingUserInput, activeTurn,
       category: { classifyState: record.taskState.classifyState } }) });

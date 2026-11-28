@@ -12,15 +12,16 @@ const { runSpeedtestRequest, createRoutingTest } = require('./legacy-provider-mi
 const { isOfficialCodexOAuthProvider } = require('./frozen-bc29761b/codex/official-relay');
 const { officialAccountIdFromProvider } = require('./frozen-bc29761b/official-accounts');
 const { detachProviderReferences } = require('./legacy-provider-force-detach');
-const { isValidIp } = require('../../src/providers/egress-ip');
+const { isValidIp } = require('./frozen-e960f6eb/providers/egress-ip');
 const { reassignProviderSessions } = require('../../src/provider-reassign');
 const { parseCredential, relayRouteFromBaseUrl } = require('../../src/native/binding').relayShares;
 const { nativeVendorOf } = require('./frozen-catalog-inputs/native-vendor');
 const { CLAUDE_MODELS_FALLBACK } = require('./legacy-claude-models-route');
+// Public catalog at e960f6eb, including the response order of the CLI and model maps.
+const baselineEfforts = require('./frozen-e960f6eb/providers/catalog-efforts.json');
 
-// Frozen copy of the retired src/providers/relay-share-code.js. The live
-// encoder is native/core/src/provider_registry.rs; this baseline must stay
-// byte-identical to the Node implementation it replaced.
+// The Node route predates CLI relay sharing. Its independent encoder follows
+// the v3 wire format shipped in 47b7e219, before the e960f6eb migration base.
 const CODE_PREFIX = 'mcrelay1.';
 
 // Public model metadata only: the importer must start on a model the source
@@ -41,10 +42,10 @@ function relayModelsOf(summary) {
   return models.slice(0, 100);
 }
 
-function encodeRelayShareCode({ name, appType, baseUrl, models, relayShareId, authToken }) {
+function encodeRelayShareCode({ name, appType, baseUrl, models, relayShareId, authToken, mode }) {
   const list = Array.isArray(models) ? models : [];
   return CODE_PREFIX + Buffer.from(JSON.stringify({
-    v: 2,
+    v: 3,
     kind: 'multicc-relay',
     name,
     appType,
@@ -52,6 +53,7 @@ function encodeRelayShareCode({ name, appType, baseUrl, models, relayShareId, au
     ...(list[0] ? { model: list[0], models: list } : {}),
     relayShareId,
     authToken,
+    mode: appType === 'agy' || mode === 'cli' ? 'cli' : 'proxy',
   }), 'utf8').toString('base64url');
 }
 
@@ -392,6 +394,7 @@ function createProviderRoutes(rawDeps) {
         // decide whether a provider's `limit` counts as fresh without duplicating
         // the staleness constant in two codebases.
         limitCacheStaleMs: cache ? staleAfterMs : null,
+        efforts: baselineEfforts,
       });
     });
 
@@ -740,7 +743,9 @@ function createProviderRoutes(rawDeps) {
         return res.status(400).json({ error: 'publicBaseUrl must be an http(s) URL' });
       }
       const base = parsed.origin;
-      const relayBaseUrl = req.params.appType === 'codex'
+      const relayBaseUrl = req.params.appType === 'agy'
+        ? `${base}/agy-proxy/${encodeURIComponent(req.params.id)}`
+        : req.params.appType === 'codex'
         ? `${base}/codex-proxy/${encodeURIComponent(req.params.id)}`
         : `${base}/claude-proxy/${encodeURIComponent(req.params.id)}/remote`;
       const summary = deps.providerRouterRuntime.getProviderSummary(
@@ -748,6 +753,12 @@ function createProviderRoutes(rawDeps) {
         req.params.id,
       ) || {};
       const relayModels = relayModelsOf(summary);
+      const requestedMode = req.body && req.body.mode;
+      const mode = req.params.appType === 'agy' ? 'cli'
+        : (typeof requestedMode === 'string' ? requestedMode.trim() : 'proxy');
+      if (mode !== 'proxy' && mode !== 'cli') {
+        return res.status(400).json({ error: 'mode must be "proxy" or "cli"' });
+      }
       const relayName = `${provider.name || req.params.id} · 远程共享`;
       try {
         const created = await deps.providerRelayShares.create({
@@ -756,6 +767,7 @@ function createProviderRoutes(rawDeps) {
           providerName: provider.name || req.params.id,
           publicBaseUrl: base,
           relayBaseUrl,
+          mode,
           token: req.body && req.body.token,
           label: req.body && req.body.label,
         });
@@ -766,6 +778,7 @@ function createProviderRoutes(rawDeps) {
           models: relayModels,
           relayShareId: created.share.id,
           authToken: created.credential,
+          mode,
         });
         res.json({ ok: true, code, baseUrl: relayBaseUrl, share: created.share });
       } catch (error) {
@@ -837,6 +850,7 @@ function createProviderRoutes(rawDeps) {
           models: relayModelsOf(summary),
           relayShareId: share.id,
           authToken: found.credential,
+          mode: typeof share.mode === 'string' ? share.mode.trim() : undefined,
         });
         return res.json({ ok: true, code, baseUrl: share.relayBaseUrl, share });
       } catch (error) {
@@ -866,6 +880,7 @@ function createProviderRoutes(rawDeps) {
         models: relayModelsOf(summary),
         relayShareId: credential.id,
         authToken: token,
+        mode: summary.cliRelay === true ? 'cli' : 'proxy',
       });
       return res.json({ ok: true, code, baseUrl: route.url });
     });

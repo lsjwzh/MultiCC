@@ -20,7 +20,7 @@ const dataDir = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-rel
 process.env.MULTICC_DATA_DIR = dataDir;
 const runtimePaths = createPaths({ dataDir });
 const { getProviderLimitTarget } = require('../src/native/binding').providersHost;
-const poller = require('../src/usage-limit-poller');
+const poller = require('../src/native/binding').usageLimitPoller;
 
 const RELAY_CREDENTIAL = 'mcr1.abcdefghijklmnop.secret-token-1';
 

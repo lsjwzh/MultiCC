@@ -178,7 +178,7 @@ fn with_seen<'a>(value: L<'a>, seen: L<'a>, f: impl FnOnce() -> Result<L<'a>>) -
     }
     result
 }
-fn canonical<'a>(value: L<'a>, seen: L<'a>) -> Result<L<'a>> {
+pub(crate) fn canonical<'a>(value: L<'a>, seen: L<'a>) -> Result<L<'a>> {
     let kind = value.kind()?;
     if kind == sys::ValueType::napi_null {
         return value.from_value(&JsValue::string("null"));

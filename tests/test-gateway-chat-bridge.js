@@ -7,7 +7,7 @@ const test = require('node:test');
 const {
   FrameError, KIND, connectChatBridge, decodeToNode, encodeClose, encodePing, encodeSend,
   encodeTerminate, sign, validCloseCode,
-} = require('../src/ws/gateway-chat-bridge');
+} = require('../src/native/binding').gatewayChatBridge;
 const corpus = require('../native/core/tests/fixtures/chat-bridge-corpus.json');
 
 // The Node end of the /ws/chat bridge. Two layers are checked here:

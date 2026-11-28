@@ -48,7 +48,7 @@ const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 const {
   configureClaudeUsageQueue, claudeUsageKey, readClaudeUsage, enqueueClaudeUsage,
 } = require('../native/binding').claudeUsageQueue;
-const { fetchUsage, USAGE_URL } = require('../claude-auth/official-oauth');
+const { fetchUsage, USAGE_URL } = require('../native/binding').claudeOfficialOAuth;
 const { fetchCliUsage } = require('../native/binding').claudeCliUsage;
 
 const CDP_TIMEOUT_MS = Number(process.env.CLAUDE_QUOTA_TIMEOUT_MS || 15000);

@@ -7,7 +7,7 @@ require('node:test').mock.method(require('../src/native/binding').outbound, 'out
 
 const assert = require('assert');
 const { test } = require('node:test');
-const poller = require('../src/usage-limit-poller');
+const poller = require('../src/native/binding').usageLimitPoller;
 
 // Swap the outbound transport with a scripted stub for the duration of one call.
 async function withFetch(handler, fn) {

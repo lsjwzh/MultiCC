@@ -5,7 +5,7 @@ const http = require('node:http');
 const test = require('node:test');
 
 const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
-const oauth = require('../src/claude-auth/official-oauth');
+const oauth = require('../src/native/binding').claudeOfficialOAuth;
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');
 const { mountClaudeAccountRoutes } = require('../src/routes/claude-accounts');

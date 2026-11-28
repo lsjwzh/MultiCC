@@ -194,8 +194,8 @@
       "migrationStrategy": "The profile is fully derived state: delete ~/.dsh/profiles/multicc and ensureDshProfile() rebuilds it on the next spawn. Only DSH_PROFILE_VERSION bumps rewrite it in place; never write outside this profile directory.",
       "sources": [
         {
-          "file": "src/cli-adapters/dsh.js",
-          "anchor": "function dshProfileDir(homeDir) { return path.join(homeDir, '.dsh', 'profiles', DSH_PROFILE); }"
+          "file": "native/addon/src/dsh_adapter.rs",
+          "anchor": "let dir = join(path, home, &[\".dsh\", \"profiles\", PROFILE])?;"
         }
       ]
     },

@@ -9,7 +9,7 @@ const Database = require('better-sqlite3');
 const { getNative } = require('../src/native/binding');
 const { createWaitService } = require('../src/wait/service');
 const { legacyWaitResolver } = require('./helpers/legacy-wait-resolution');
-const { OutboxConflictError } = require('../src/outbox');
+const { OutboxConflictError } = require('../src/native/binding').outboxRuntime;
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 
 function fixture(mode = 'callback', status = 'pending') {
@@ -27,6 +27,11 @@ async function runPair(mode, payload, options = {}, prepare = () => {}) {
   try { legacy = await old.resolveInternal('w', payload, params); } catch (error) { e1 = error; }
   try { native = getNative().waitResolveLive(states[1], 'w', payload, params, () => 1234, crypto, crypto, OutboxConflictError); } catch (error) { e2 = error; }
   assert.equal(e2?.message, e1?.message);
+  if (e1?.code === 'OUTBOX_PAYLOAD_CONFLICT') {
+    assert.ok(e1 instanceof require('./helpers/frozen-e960f6eb/outbox').OutboxConflictError);
+    assert.ok(e2 instanceof OutboxConflictError);
+    for (const key of ['name', 'statusCode', 'code', 'outboxId']) assert.equal(e2[key], e1[key]);
+  }
   if (!e1) assert.deepEqual(native, legacy);
   assert.deepEqual(states[1], states[0]);
 }

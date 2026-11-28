@@ -985,9 +985,9 @@ exposeHostApi('cliAdapters', () => {
   return getNative().cliAdaptersApi({
     getNative, process, gatewayPath, createCliProviderRegistry, createClaudeAdapter,
     createCodexAdapter: codexAdapter.createCodexAdapter, createCodexExpAdapter: codexAppAdapter.createCodexExpAdapter,
-    createDshAdapter: require('../cli-adapters/dsh').createDshAdapter,
+    createDshAdapter: module.exports.dshAdapter.createDshAdapter,
     resolveCliCommands, createCommandResolver,
-    claudeLikeMcpArgs: require('../cli-adapters/router-mcp').claudeLikeMcpArgs,
+    claudeLikeMcpArgs: module.exports.routerMcp.claudeLikeMcpArgs,
     validateOpenCodeModel: module.exports.openCodeModels.validateOpenCodeModel,
     extractUpstreamError: module.exports.upstreamError.extractUpstreamError,
     messageComposer, renderPrompt: messageComposer.renderPrompt,
@@ -1019,7 +1019,7 @@ exposeHostApi('claudeSdkConfig', () => {
   const settings = cfg => cfg.settingsFile ? JSON.parse(fs.readFileSync(cfg.settingsFile, 'utf8')) : {};
   return {
     fingerprint(cfg) {
-      return getNative().claudeSdkFingerprint(cfg, require('../chat/claude-sdk-route').managedRoute(cfg.env), settings(cfg));
+      return getNative().claudeSdkFingerprint(cfg, module.exports.claudeSdkRoute.managedRoute(cfg.env), settings(cfg));
     },
     laneOptions(cfg, started, relayEnv) {
       const parsed = settings(cfg);
@@ -1049,7 +1049,7 @@ exposeHostApi('workspaceResidency', () => ({
   },
 }));
 
-exposeHostApi('egressIpPolicy', () => getNative().egressIpPolicyApi(require('../providers/egress-ip')));
+exposeHostApi('egressIpPolicy', () => getNative().egressIpPolicyApi(module.exports.egressIpMonitor));
 
 exposeHostApi('proxyPolicy', () => {
   const run = require('node:util').promisify(require('node:child_process').execFile);
@@ -1124,6 +1124,76 @@ function getCliEnvironment() {
   });
 }
 
+exposeHostApi('dshAdapter', () => getNative().dshAdapterApi({
+  fs: require('node:fs'), path, homedir: require('node:os').homedir,
+  runnerSrcDir: path.join(__dirname, '../..', 'vendor', 'dsh-runner'),
+}));
+exposeHostApi('usageLimitPoller', () => getNative().usageLimitPollerHost({
+  crypto: require('node:crypto'),
+  State: getNative().RustUsageLimitPoller,
+  outboundFetch: module.exports.outbound.outboundFetch,
+  readCodexAuth, requestCodexUsage,
+  publicTransportError: module.exports.upstreamError.publicTransportError,
+  providers: module.exports.providersHost,
+  checkEgressIpAllowed: module.exports.egressIpPolicy.checkEgressIpAllowed,
+}));
+exposeHostApi('claudeSdkRoute', () => getNative().claudeSdkRouteApi({
+  http: require('node:http'), crypto: require('node:crypto'),
+  closeMethod: closeRelay => async function close() { await closeRelay(this); },
+}));
+exposeHostApi('orchestrationDraft', () => getNative().orchestrationDraftApi({
+  ...module.exports.orchestrationJson, isProxy: require('node:util').types.isProxy,
+}));
+exposeHostApi('claudeOfficialOAuth', () => {
+  const native = getNative();
+  class ClaudeOAuthError extends Error {
+    constructor(message, options) {
+      super(message);
+      native.initializeClaudeOauthError(this, options);
+    }
+    get retryable() { return native.claudeOauthRetryable(this); }
+  }
+  return native.claudeOfficialOauthHost({
+    crypto: require('node:crypto'), http: require('node:http'),
+    ClaudeOAuthError, subscriptionFromBody,
+  });
+});
+exposeHostApi('egressIpMonitor', () => getNative().egressIpMonitorApi(require('node:https')));
+exposeHostApi('gatewayChatBridge', () => {
+  const native = getNative();
+  const { EventEmitter } = require('node:events');
+  class FrameError extends Error {}
+  class BridgeSocket extends EventEmitter {
+    constructor(bridge, conn, info) {
+      super();
+      native.initializeGatewayBridgeSocket(this, bridge, conn, info);
+    }
+  }
+  return native.gatewayChatBridgeHost({
+    FrameError, BridgeSocket, net: require('node:net'), crypto: require('node:crypto'),
+  });
+});
+exposeHostApi('orchestrationNativeStore', () => getNative().orchestrationNativeStoreApi({
+  get native() { return module.exports.getNative(); },
+  addonPath, promiseThen, AsyncLocalStorage: require('node:async_hooks').AsyncLocalStorage,
+  isProxy: require('node:util').types.isProxy, isNativeError: require('node:util').types.isNativeError,
+  Buffer: require('node:buffer').Buffer, crypto: require('node:crypto'),
+  getOutboxConflictError: () => module.exports.outboxRuntime.OutboxConflictError,
+  commandOverride: () => module.exports.getNative === getNative ? undefined : module.exports.getNative(),
+}));
+exposeHostApi('outboxRuntime', () => {
+  class OutboxConflictError extends Error {
+    constructor(id) {
+      super(`outbox item ${id} already exists with different content`);
+      this.name = 'OutboxConflictError';
+      this.code = 'OUTBOX_PAYLOAD_CONFLICT';
+      this.statusCode = 409;
+      this.outboxId = id;
+    }
+  }
+  return getNative().outboxRuntimeApi(require('node:crypto'), OutboxConflictError);
+});
+exposeHostApi('routerMcp', () => getNative().routerMcpApi({ path, homedir: require('node:os').homedir }));
 exposeHostApi('cliCommands', () => getCliEnvironment().cliCommands);
 exposeHostApi('windowsEnv', () => getCliEnvironment().windowsEnv);
 exposeHostApi('agyAccounts', () => getCliEnvironment().agyAccounts);
@@ -1282,7 +1352,7 @@ exposeHostApi('gatewayChild', () => {
     source.capability = '';
   }
   function startChatBridge({ wss, logger = console, bootstrap = chat,
-    connect = require('../ws/gateway-chat-bridge').connectChatBridge } = {}) {
+    connect = module.exports.gatewayChatBridge.connectChatBridge } = {}) {
     return getNative().startGatewayChatBridge({ wss, logger, bootstrap, connect });
   }
   function raiseSigint(platform = process.platform) {
@@ -1523,9 +1593,9 @@ exposeHostApi('orchestrationSqlite', () => {
   }
   function createOrchestrationSqliteStore(options = {}) {
     const { OrchestrationStoreCorruptError, _cloneJson: cloneJson, _deepFreeze: deepFreeze } = module.exports.orchestrationJson;
-    const { createDraft, COLLECTIONS } = require('../orchestration/draft-host');
+    const { createDraft, COLLECTIONS } = module.exports.orchestrationDraft;
     return getNative().createSqliteHostStore(options, { createDraft, COLLECTIONS, cloneJson, deepFreeze, OrchestrationStoreCorruptError,
-      OrchestrationSqliteError, OrchestrationSqliteConflictError, createNativeStore: require('../orchestration/native-store-host').createNativeStore });
+      OrchestrationSqliteError, OrchestrationSqliteConflictError, createNativeStore: module.exports.orchestrationNativeStore.createNativeStore });
   }
   return { DATABASE_SCHEMA_VERSION: 2, OrchestrationSqliteConflictError, OrchestrationSqliteError, createOrchestrationSqliteStore };
 });
@@ -1747,13 +1817,13 @@ exposeHostApi('claudeCliUsage', () => getNative().cliUsageHost({
   credentials: providerCredentials, platform: process.platform,
   file: path.join(require('node:os').homedir(), '.claude', '.credentials.json'),
   readFile: file => require('node:fs/promises').readFile(file, 'utf8'), now: () => Date.now(),
-  outboundFetch: module.exports.outbound.outboundFetch, fetchUsage: require('../claude-auth/official-oauth').fetchUsage,
+  outboundFetch: module.exports.outbound.outboundFetch, fetchUsage: module.exports.claudeOfficialOAuth.fetchUsage,
 }));
 exposeHostApi('officialUsage', () => ({
   claudeUsageWindows: usage => getNative().officialUsageWindows(usage, false),
   codexDtoWindows: dto => getNative().officialUsageWindows(dto, true),
   createOfficialAccountUsageSweeper: ({ accounts, recorder, logger = console, now = Date.now, intervalMs = 600000,
-    pollCodex = require('../usage-limit-poller').pollCodexUsage } = {}) => getNative().officialUsageSweeper({
+    pollCodex = module.exports.usageLimitPoller.pollCodexUsage } = {}) => getNative().officialUsageSweeper({
     accounts, recorder, logger, now, intervalMs, pollCodex, authFile: dir => path.join(dir, 'auth.json'),
     accountProviderId: module.exports.officialCatalog.accountProviderId,
   }),
@@ -1778,7 +1848,7 @@ exposeHostApi('providerQuota', () => ({
 }));
 exposeHostApi('quotaSelfHeal', () => getNative().quotaSelfHealApi({
   defaultCodexAuth,
-  setCodexAuthRefresher: fn => require('../usage-limit-poller').setCodexAuthRefresher(fn),
+  setCodexAuthRefresher: fn => module.exports.usageLimitPoller.setCodexAuthRefresher(fn),
   setVirtualRefresher: fn => module.exports.virtualProvider.setRefresher(fn),
 }));
 
@@ -2180,7 +2250,7 @@ exposeHostApi('taskBoardCore', () => getNative().taskBoardCoreApi({
 exposeHostApi('sessionWork', () => getNative().sessionWorkApi(getNative(), () => ({
   crypto: require('node:crypto'), zcodeAuth: require('../cli-adapters/zcode-auth'),
   kimiAuth: require('../cli-adapters/kimi-auth'),
-  createQuestionOwner: require('../orchestration/native-store-host').createQuestionOwner,
+  createQuestionOwner: module.exports.orchestrationNativeStore.createQuestionOwner,
 })));
 
 exposeHostApi('codexHistoryHooks', () => getNative().codexHistoryHooksApi(undefined));
@@ -2342,7 +2412,7 @@ exposeHostApi('tunnelMonitor', () => {
 exposeHostApi('orchestrationHost', () => {
   const { createOrchestrationStore } = module.exports.orchestrationJson;
   const { createOrchestrationSqliteStore } = module.exports.orchestrationSqlite;
-  const { createOutbox } = require('../outbox');
+  const { createOutbox } = module.exports.outboxRuntime;
   const { createWaitService } = require('../wait/service');
   const { createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES } = require('../operation-service');
   const api = getNative().orchestrationRuntimeApi({

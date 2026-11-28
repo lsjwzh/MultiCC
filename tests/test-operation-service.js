@@ -5,6 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
+const { OutboxConflictError } = require('../src/native/binding').outboxRuntime;
 const { createOperationService, OperationConflictError } = require('../src/operation-service');
 const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
@@ -364,7 +365,8 @@ test('native dispatch admission keeps an existing conflicting outbox and inserts
   const before = await store.snapshot();
   await assert.rejects(createOperationService({ store }).admitDispatch({ operationId: 'op_conflict', ownerSessionId: 'owner',
     spec: { chatId: 'target', targetId: 'agent', message: 'hello' } }),
-  error => error.code === 'OUTBOX_PAYLOAD_CONFLICT' && error.outboxId === 'operation:op_conflict:request');
+  error => error instanceof OutboxConflictError
+    && error.code === 'OUTBOX_PAYLOAD_CONFLICT' && error.outboxId === 'operation:op_conflict:request');
   assert.deepEqual(await store.snapshot(), before);
 });
 
@@ -397,7 +399,7 @@ test('native admission reads a snapshot established before a spec getter writes 
   const store = createOrchestrationSqliteStore({ file });
   const db = new Database(file);
   t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
-  const { hashPayload, hashSecret } = require('../src/outbox');
+  const { hashPayload, hashSecret } = require('./helpers/frozen-e960f6eb/outbox');
   const spec = { get command() {
     const operation = { id: 'op_external', kind: 'detached', ownerSessionId: 'owner', status: 'admitted',
       idempotencyKeyHash: hashSecret('key'), requestHash: hashPayload({ command: 'echo ok' }),
