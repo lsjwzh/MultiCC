@@ -1,3 +1,4 @@
+pub mod voice_acp;
 pub mod codex_homes;
 pub mod curated_memory;
 pub mod memory_markdown;
