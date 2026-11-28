@@ -8,7 +8,7 @@ use crate::{
 use napi_derive::napi;
 use std::ffi::CStr;
 
-mod admission;
+pub(super) mod admission;
 mod completion;
 pub(super) mod operations;
 mod queries;
@@ -101,7 +101,7 @@ fn missing(s: L<'_>) -> Result<L<'_>> {
 fn terminal<'a>(p: L<'a>, status: L<'a>, key: &CStr) -> Result<bool> {
     call(p.get(key)?, c"has", &[status])?.truthy()
 }
-fn state<'a>(ports: L<'a>, options: L<'a>, wait: bool) -> Result<L<'a>> {
+pub(super) fn state<'a>(ports: L<'a>, options: L<'a>, wait: bool) -> Result<L<'a>> {
     let o = default_object(options)?;
     let store = read(o, c"store")?;
     let clock = with_default(read(o, c"now")?, ports.global()?.get(c"Date")?.get(c"now")?)?;

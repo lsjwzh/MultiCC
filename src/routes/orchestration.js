@@ -491,6 +491,7 @@ function createOrchestrationRoutes(rawDeps) {
           cwd: deps.cwdForSession(session),
           pollCmd: body.pollCmd,
           pollUrl: body.pollUrl,
+          ...(body.dedupeKey === undefined ? {} : { dedupeKey: body.dedupeKey }),
           untilContains: body.untilContains,
           untilRegex: body.untilRegex,
           intervalSec: body.intervalSec,

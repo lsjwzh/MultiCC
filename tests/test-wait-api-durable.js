@@ -131,6 +131,7 @@ function readOrchestration(file) {
   const registered = await api('POST', `/api/sessions/${sessionId}/wait`, {
     mode: 'callback',
     injectPrefix: '[external]',
+    dedupeKey: 'watch-main',
   });
   assert.equal(registered.status, 200);
   assert.equal(registered.data.ok, true);
@@ -173,6 +174,18 @@ function readOrchestration(file) {
   const durableText = JSON.stringify(readOrchestration(stateFile));
   assert.equal(durableText.includes(registered.data.token), false);
   assert.equal(durableText.includes('wrong'), false);
+
+  const replacement = await api('POST', `/api/sessions/${sessionId}/wait`, {
+    mode: 'callback', dedupeKey: ' watch-main ',
+  });
+  assert.equal(replacement.status, 200);
+  assert.equal(replacement.data.dedupeKey, 'watch-main');
+  response = await api('GET', `/api/sessions/${sessionId}/queue`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.data.queue.queued, []);
+  const [pending] = (await api('GET', `/api/sessions/${sessionId}/waits`)).data.waits;
+  assert.equal(pending.id, replacement.data.id);
+  assert.equal(pending.dedupeKey, 'watch-main');
 
   await stopServer();
   assertTestDir(root);

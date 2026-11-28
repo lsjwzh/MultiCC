@@ -7,21 +7,7 @@ const test = require('node:test');
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
-function frozenScheduler() {
-  const Module = require('node:module');
-  const filename = path.resolve(__dirname, '../src/session-work/scheduler.js');
-  const module = new Module(filename);
-  module.filename = filename;
-  module.paths = Module._nodeModulePaths(path.dirname(filename));
-  const originalRequire = module.require.bind(module);
-  module.require = id => id === './user-input'
-    ? require('./helpers/legacy-session-work-user-input') : originalRequire(id);
-  const snapshot = fs.readFileSync(path.join(__dirname, 'helpers/scheduler-before-domain-migration.js.txt'), 'utf8');
-  assert.equal(require('node:crypto').createHash('sha256').update(snapshot).digest('hex'),
-    'f2d34115aa9f3dff98bd49c19ad5d34f30a9fbeb3735b524ddf069eb0b32dbb9');
-  module._compile(snapshot, filename);
-  return module.exports.createSessionWorkScheduler;
-}
+const frozenScheduler = require('./helpers/frozen-session-work-scheduler');
 
 function delayedMutator(store) {
   return {

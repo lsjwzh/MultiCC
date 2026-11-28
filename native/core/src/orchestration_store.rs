@@ -7,6 +7,7 @@ mod operation_admit;
 mod operation_running;
 mod outbox_recover;
 mod query;
+pub mod queue_preview;
 mod receipts;
 mod record;
 mod schedule_admit;
@@ -23,6 +24,7 @@ mod schedule_settle;
 mod schema;
 mod session_work_state;
 mod wait_cancel;
+pub mod wakeup;
 
 use crate::js::{from_serde, json_stringify};
 use crate::orchestration_retention::{self, MaintenanceGuard, RetentionPolicy};

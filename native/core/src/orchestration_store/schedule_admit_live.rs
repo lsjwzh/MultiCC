@@ -1,8 +1,8 @@
 //! Rust-owned session-work admission. All durable decisions share one write
 //! transaction with the versioned session state and outbox records.
 use super::{
-    err, header, meta, operation_admit, record, session_work_state, set_meta, write_record_json,
-    Result, Store,
+    err, header, meta, operation_admit, queue_preview::queue_text, record, session_work_state,
+    set_meta, write_record_json, Result, Store,
 };
 use crate::js::{js_to_number, js_to_string, truthy, JsString, JsValue};
 use rusqlite::TransactionBehavior;
@@ -90,20 +90,23 @@ fn is_control(value: &JsValue) -> bool {
     .iter()
     .any(|text| is(value, text))
 }
+fn item_payload(item: &JsValue) -> &JsValue {
+    item.get("payload").unwrap_or(&JsValue::Undefined)
+}
 pub(super) fn kind(item: &JsValue) -> JsValue {
     let transfer = field(&field(item, "turnLineage"), "workKind");
     if truthy(&transfer) {
         return transfer;
     }
-    let payload = field(item, "payload");
-    let typ = field(&payload, "type");
+    let payload = item_payload(item);
+    let typ = field(payload, "type");
     if is(&typ, "session.work") {
-        return fallback(field(&payload, "workKind"), JsValue::string("task"));
+        return fallback(field(payload, "workKind"), JsValue::string("task"));
     }
     if is(&typ, "dispatch.request") {
         return JsValue::string(
-            if field(&payload, "taskStart") == JsValue::Bool(false)
-                && truthy(&field(&payload, "taskId"))
+            if field(payload, "taskStart") == JsValue::Bool(false)
+                && truthy(&field(payload, "taskId"))
             {
                 "continuation"
             } else {
@@ -124,36 +127,23 @@ pub(super) fn kind(item: &JsValue) -> JsValue {
     {
         return JsValue::string("callback");
     }
-    JsValue::string(
-        if field(&payload, "originContinue") == JsValue::Bool(true) {
-            "continuation"
-        } else {
-            "task"
-        },
-    )
+    JsValue::string(if field(payload, "originContinue") == JsValue::Bool(true) {
+        "continuation"
+    } else {
+        "task"
+    })
 }
 fn answer(item: &JsValue) -> bool {
-    let payload = field(item, "payload");
-    is(&field(&payload, "type"), "session.work")
+    let payload = item_payload(item);
+    is(&field(payload, "type"), "session.work")
         && is(&kind(item), "answer")
-        && matches!(field(&payload, "requestId"), JsValue::String(ref id) if !id.is_empty())
-}
-fn queue_text(item: &JsValue) -> JsValue {
-    let payload = field(item, "payload");
-    let value = fallback(
-        field(&payload, "message"),
-        fallback(
-            field(&payload, "taskText"),
-            fallback(field(&payload, "deliveryText"), JsValue::string("")),
-        ),
-    );
-    let text = js_to_string(&value);
-    JsValue::String(JsString::from_units(
-        text.as_units()[..text.len().min(20_000)].to_vec(),
-    ))
+        && matches!(field(payload, "requestId"), JsValue::String(ref id) if !id.is_empty())
 }
 fn client_id(item: &JsValue) -> JsValue {
-    let id = field(&field(&field(item, "payload"), "options"), "clientMsgId");
+    let id = field(
+        item_payload(item).get("options").unwrap_or(&JsValue::Null),
+        "clientMsgId",
+    );
     match &id {
         JsValue::String(s) if !s.trim().is_empty() => id,
         _ => JsValue::Null,
@@ -164,11 +154,11 @@ pub(super) fn task_id(item: &JsValue) -> JsValue {
     if truthy(&lineage) {
         return lineage;
     }
-    let payload = field(item, "payload");
-    if is(&field(&payload, "type"), "dispatch.result") {
+    let payload = item_payload(item);
+    if is(&field(payload, "type"), "dispatch.result") {
         return JsValue::Null;
     }
-    fallback(field(&payload, "taskId"), JsValue::Null)
+    fallback(field(payload, "taskId"), JsValue::Null)
 }
 pub(super) fn initial_schedule(session: &str, at: f64) -> JsValue {
     crate::js::from_serde(&json!({
@@ -324,7 +314,7 @@ pub fn project_schedule(
     let priority = field(schedule, "priorityEntryId");
     let mut shown = Vec::new();
     for item in queue.iter().filter(|item| !answer(item)) {
-        let payload = field(item, "payload");
+        let payload = item_payload(item);
         let last_error = field(item, "lastError");
         let error = if truthy(&last_error) {
             let value = js_to_string(&last_error);
@@ -352,7 +342,7 @@ pub fn project_schedule(
             (
                 "source",
                 fallback(
-                    field(&payload, "source"),
+                    field(payload, "source"),
                     fallback(
                         field(&field(item, "source"), "type"),
                         JsValue::string("legacy"),
@@ -366,7 +356,7 @@ pub fn project_schedule(
             ("position", JsValue::Number((shown.len() + 1) as f64)),
             ("admittedAt", field(item, "createdAt")),
             ("clientMsgId", client_id(item)),
-            ("text", queue_text(item)),
+            ("text", queue_text(payload)),
             ("attempts", JsValue::Number(attempts)),
             ("lastError", error),
         ]));
@@ -377,7 +367,7 @@ pub fn project_schedule(
             let client = client_id(item);
             if truthy(&client) {
                 put(&mut active, "clientMsgId", client)?;
-                put(&mut active, "text", queue_text(item))?;
+                put(&mut active, "text", queue_text(item_payload(item)))?;
             }
         }
     }
@@ -1754,6 +1744,34 @@ pub(super) fn commit(store: &mut Store, input: &Value) -> Result<Value> {
 mod completion_tests {
     use super::*;
     use crate::orchestration_retention::RetentionPolicy;
+
+    #[test]
+    fn project_pending_wait_from_existing_outbox_without_rewriting_it() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(super::super::schema::SQL).unwrap();
+        super::super::receipts::install(&db).unwrap();
+        let raw = r#"{"id":"wait:old","sessionId":"s","state":"pending","sequence":2,"source":{"type":"wait"},"payload":{"type":"wait.resolved","mode":"callback","injectPrefix":"","data":{"ready":true},"deliveryText":null}}"#;
+        db.execute("INSERT INTO orchestration_outbox(id,data_json,session_id,state,sequence) VALUES ('wait:old',?1,'s','pending',2)", [raw]).unwrap();
+        let schedule = initial_schedule("s", 1.);
+        let rows = queue_rows(&db, "s", &schedule).unwrap();
+        let public = public_schedule(&db, &schedule, &rows).unwrap();
+        let Some(JsValue::Array(items)) = public.get("queued") else {
+            panic!("missing queue")
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].get("text"),
+            Some(&JsValue::from("[等待的数据已返回]\n{\"ready\":true}"))
+        );
+        let stored: String = db
+            .query_row(
+                "SELECT data_json FROM orchestration_outbox WHERE id='wait:old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, raw);
+    }
 
     #[test]
     fn frozen_completion_allows_external_commit_then_rejects_stale_snapshot() {

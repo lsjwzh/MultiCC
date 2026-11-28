@@ -58,3 +58,18 @@ test('noteQueued does not sample the clock or create a schedule for a missing en
   assert.deepEqual(await scheduler.noteQueued('missing'), { ok: false, code: 'entry_not_found' });
   assert.deepEqual(draft.sessionSchedules, {});
 });
+
+test('wait previews stop reading data once the UTF-16 budget is spent', async () => {
+  const output = '😀'.repeat(50_000);
+  const data = { output, get tail() { throw new Error('read past the preview'); } };
+  const row = { id: 'wait:q', sessionId: 's', sequence: 1, state: 'pending',
+    source: { type: 'wait' }, payload: { type: 'wait.result', deliveryText: null, data } };
+  const draft = { sessionSchedules: {}, outbox: { [row.id]: row } };
+  const store = { mutate: async fn => fn(draft), read: async fn => fn(draft) };
+  const events = [];
+  const scheduler = createSessionWorkScheduler({ store, onEvent: event => events.push(event) });
+  await scheduler.noteQueued(row.id);
+  const expected = ('[等待的数据已返回]\n{"output":"' + output).slice(0, 20_000).replace(/[\uD800-\uDBFF]$/, '');
+  assert.equal(events[0].message, expected);
+  assert.equal((await scheduler.status('s')).queued[0].text, expected);
+});

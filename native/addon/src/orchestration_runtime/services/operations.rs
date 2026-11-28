@@ -123,15 +123,18 @@ fn cancel<'a>(p: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
 }
 
 pub(in crate::orchestration_runtime) fn create<'a>(ports: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
-    let p = state(ports, a[0], false)?;
+    api(state(ports, a[0], false)?)
+}
+
+pub(in crate::orchestration_runtime) fn api(p: L<'_>) -> Result<L<'_>> {
     defaulted_methods(
         p,
         &[
             ("admitDetached", 0, 1, |p, a| {
-                admission::admit(p, a[0], true)
+                admission::admit(p, a[0], true, undef(p)?)
             }),
             ("admitDispatch", 0, 1, |p, a| {
-                admission::admit(p, a[0], false)
+                admission::admit(p, a[0], false, undef(p)?)
             }),
             ("markRunning", 1, 2, running),
             ("completeDetached", 2, 2, |p, a| {

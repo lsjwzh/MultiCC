@@ -1,7 +1,6 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -23,19 +22,7 @@ function projectRecoveryEvent(event) {
     classifyState: event.classifyState || null, turnOutcome: event.turnOutcome || null };
 }
 
-function frozenScheduler() {
-  const Module = require('node:module');
-  const filename = path.resolve(__dirname, '../src/session-work/scheduler.js');
-  const source = fs.readFileSync(path.join(__dirname, 'helpers/scheduler-before-domain-migration.js.txt'), 'utf8');
-  assert.equal(crypto.createHash('sha256').update(source).digest('hex'), 'f2d34115aa9f3dff98bd49c19ad5d34f30a9fbeb3735b524ddf069eb0b32dbb9');
-  const module = new Module(filename);
-  module.filename = filename;
-  module.paths = Module._nodeModulePaths(path.dirname(filename));
-  const originalRequire = module.require.bind(module);
-  module.require = id => id === './user-input' ? require('./helpers/legacy-session-work-user-input') : originalRequire(id);
-  module._compile(source, filename);
-  return module.exports.createSessionWorkScheduler;
-}
+const frozenScheduler = require('./helpers/frozen-session-work-scheduler');
 
 test('experimental Rust recovery transaction agrees with frozen scheduler state', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-recovery-rust-diff-'));

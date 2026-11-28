@@ -107,7 +107,7 @@ fn log_parts<'a>(s: L<'a>, parts: &[L<'a>]) -> Result<()> {
     s.get(c"log")?.call_plain(&[message(s, parts)?])?;
     Ok(())
 }
-fn candidate<'a>(draft: L<'a>, collection: &str, filter: L<'a>) -> Result<L<'a>> {
+pub(super) fn candidate<'a>(draft: L<'a>, collection: &str, filter: L<'a>) -> Result<L<'a>> {
     if draft.get(c"select")?.kind()? == sys::ValueType::napi_function {
         call(
             draft,
@@ -137,7 +137,7 @@ fn add_pending<'a>(s: L<'a>, session: L<'a>, id: L<'a>) -> Result<()> {
     call(map, c"set", &[session, ids])?;
     Ok(())
 }
-fn remove_pending<'a>(s: L<'a>, session: L<'a>, id: L<'a>) -> Result<()> {
+pub(super) fn remove_pending<'a>(s: L<'a>, session: L<'a>, id: L<'a>) -> Result<()> {
     let map = s.get(c"pendingBySession")?;
     let ids = call(map, c"get", &[session])?;
     if ids.truthy()? {
@@ -184,7 +184,7 @@ fn pending_count(s: L<'_>) -> Result<L<'_>> {
 }
 pub(super) fn public_wait(w: L<'_>) -> Result<L<'_>> {
     let m = or_value(crate::js_iteration::read(w, c"metadata")?, object(w)?)?;
-    fields(
+    let out = fields(
         w,
         &[
             ("id", w.get(c"id")?),
@@ -205,7 +205,23 @@ pub(super) fn public_wait(w: L<'_>) -> Result<L<'_>> {
             ("resolvedAt", w.get(c"resolvedAt")?),
             ("cancelledAt", w.get(c"cancelledAt")?),
         ],
-    )
+    )?;
+    if m.get(c"dedupeKey")?.truthy()? {
+        out.set(c"dedupeKey", m.get(c"dedupeKey")?)?;
+    }
+    Ok(out)
+}
+pub(super) fn detached_target(m: L<'_>) -> Result<L<'_>> {
+    let field = |key| -> Result<Option<String>> {
+        Ok(m.optional(key)?.string()?.map(|s| s.to_string_lossy()))
+    };
+    match multicc_core::orchestration_store::wakeup::detached_target(
+        field(c"pollUrl")?.as_deref(),
+        field(c"pollCmd")?.as_deref(),
+    ) {
+        Some(id) => text(m, id),
+        None => null(m),
+    }
 }
 fn register<'a>(s: L<'a>, spec: L<'a>) -> Result<L<'a>> {
     let spec = default_object(spec)?;
@@ -302,6 +318,25 @@ fn register<'a>(s: L<'a>, spec: L<'a>) -> Result<L<'a>> {
         m.set(c"delayLeasedUntil", null(s)?)?;
     }
     m.spread_from(details)?;
+    let key = spec.get(c"dedupeKey")?;
+    if key.kind()? == sys::ValueType::napi_string {
+        let key = trim(key)?;
+        if key
+            .string()?
+            .is_some_and(|v| std::char::decode_utf16(v.as_units().iter().copied()).count() > 256)
+        {
+            return fail(s, c"Error", "dedupeKey exceeds 256 characters");
+        }
+        if key.truthy()? {
+            m.set(c"dedupeKey", key)?;
+        }
+    }
+    if mode.is_string("poll")? {
+        let target = detached_target(m)?;
+        if target.truthy()? {
+            m.set(c"detachedTaskId", target)?;
+        }
+    }
     let registration = fields(
         s,
         &[
@@ -315,7 +350,7 @@ fn register<'a>(s: L<'a>, spec: L<'a>) -> Result<L<'a>> {
             ("metadata", m),
         ],
     )?;
-    let promise = service(s, c"waits", c"register", &[registration])?;
+    let promise = wakeups::admit(s, registration, false)?;
     after(state(s, &[("m", m)])?, promise, |st, r| {
         let s = st.get(c"s")?;
         let m = st.get(c"m")?;
@@ -327,6 +362,9 @@ fn register<'a>(s: L<'a>, spec: L<'a>) -> Result<L<'a>> {
             set(out, k, fallback(get(r, k)?, V::Null)?)?;
         }
         out.set(c"session", r.get(c"sessionId")?)?;
+        if m.get(c"dedupeKey")?.truthy()? {
+            out.set(c"dedupeKey", m.get(c"dedupeKey")?)?;
+        }
         out.set(c"status", text(s, "pending")?)?;
         out.set(c"dueAt", fallback(m.get(c"dueAt")?, V::Null)?)?;
         Ok(out)
@@ -343,6 +381,44 @@ fn with_status<'a>(result: L<'a>, ok: &str) -> Result<L<'a>> {
         },
     )?;
     Ok(out)
+}
+// The outbox commit is authoritative. Broadcast each new admission once;
+// a notification failure must not turn a committed resolve into an error.
+fn notify_queued<'a>(s: L<'a>, resolved: L<'a>) -> Result<L<'a>> {
+    if !resolved.get(c"ok")?.truthy()? || resolved.get(c"idempotent")?.truthy()? {
+        return Ok(resolved);
+    }
+    let st = state(s, &[("resolved", resolved)])?;
+    let notice = async_result(s, || {
+        service(
+            s,
+            c"sessionScheduler",
+            c"noteQueued",
+            &[resolved.get(c"outboxId")?],
+        )
+    })?;
+    let result = after(st, notice, |st, notice| {
+        if !notice.optional(c"ok")?.truthy()? {
+            log_parts(
+                st.get(c"s")?,
+                &[
+                    text(st, "[orchestration] wait queue notice failed: ")?,
+                    fallback(notice.optional(c"code")?, "unknown".into())?,
+                ],
+            )?;
+        }
+        st.get(c"resolved")
+    })?;
+    recover(st, result, |st, e| {
+        log_parts(
+            st.get(c"s")?,
+            &[
+                text(st, "[orchestration] wait queue notice failed: ")?,
+                e.optional(c"message")?,
+            ],
+        )?;
+        st.get(c"resolved")
+    })
 }
 fn resolve_callback<'a>(s: L<'a>, args: &[L<'a>]) -> Result<L<'a>> {
     let st = state(s, &[("id", args[0])])?;
@@ -362,7 +438,11 @@ fn resolve_callback<'a>(s: L<'a>, args: &[L<'a>]) -> Result<L<'a>> {
                     if w.truthy()? {
                         remove_pending(st.get(c"s")?, w.get(c"sessionId")?, st.get(c"id")?)?;
                     }
-                    with_status(st.get(c"result")?, "resolved")
+                    after(
+                        st,
+                        notify_queued(st.get(c"s")?, st.get(c"result")?)?,
+                        |_, r| with_status(r, "resolved"),
+                    )
                 },
             )
         },
@@ -371,11 +451,19 @@ fn resolve_callback<'a>(s: L<'a>, args: &[L<'a>]) -> Result<L<'a>> {
 fn cancel<'a>(s: L<'a>, id: L<'a>) -> Result<L<'a>> {
     let st = state(s, &[("id", id)])?;
     after(st, service(s, c"waits", c"get", &[id])?, |st, w| {
+        if w.optional(c"status")?.is_string("resolved")? {
+            return wakeups::withdraw_resolved(st.get(c"s")?, st.get(c"id")?);
+        }
         st.set(c"before", w)?;
         after(
             st,
             service(st.get(c"s")?, c"waits", c"cancel", &[st.get(c"id")?])?,
             |st, r| {
+                if r.get(c"code")?.is_string("not_pending")?
+                    && r.get(c"status")?.is_string("resolved")?
+                {
+                    return wakeups::withdraw_resolved(st.get(c"s")?, st.get(c"id")?);
+                }
                 let w = st.get(c"before")?;
                 if r.get(c"ok")?.truthy()? && w.truthy()? {
                     remove_pending(st.get(c"s")?, w.get(c"sessionId")?, st.get(c"id")?)?;
