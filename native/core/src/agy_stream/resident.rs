@@ -3,7 +3,8 @@
 //! stdin 每行一个 user 消息，同一会话只有一次 init，每轮以 result 结束。
 //! result.usage 是会话累计值。模型、强度和恢复 ID 是启动选项。
 //! 协议没有承诺单轮中断，宿主取消时关闭进程，下一轮用已捕获的 ID 恢复。
-//! 本机只实测到资格检查错误的 result，成功路径由模拟 CLI 覆盖。
+//! 本机 1.5.18 接受上述输入格式，但因地区资格检查返回 num_turns=0 的错误 result。
+//! 成功多轮的本地回归使用模拟 CLI，实机延迟由已登录环境运行测时脚本验证。
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, path::Path};
