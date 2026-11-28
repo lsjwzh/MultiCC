@@ -264,7 +264,7 @@ process.stdin.on('error', () => process.exit(0));
 process.stdin.resume();
 
 const express = require(require.resolve('express', { paths: [REPO] }));
-const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/http-errors'));
+const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/native/binding')).httpErrors;
 const { jsonCompression } = require(path.join(REPO, 'src/native/binding')).jsonCompression;
 const world = require(path.join(REPO, 'tests/helpers/directory-scripted-world'));
 const { createDirectoryHost } = require(path.join(REPO, 'src/routes/directory-host'));

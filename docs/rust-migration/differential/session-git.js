@@ -54,7 +54,7 @@
 // produces, so both sides agree byte for byte.
 const fs = require('fs');
 const path = require('path');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 const HOST_PATH = '/api/__host/session-git';
 const MAX_DIFF = 1024 * 1024;
@@ -857,6 +857,7 @@ const bag = buildDeps({});
 bag.deps.asyncHandler = asyncHandlerFrom(REPO);
 const runtime = createSessionGitRuntime(bag.deps);
 const app = express();
+app.get('/__health', (_req, res) => res.send('ok'));
 app.use((req, res, next) => {
   bag.apply(readWorld());
   res.on('finish', () => {
@@ -910,11 +911,12 @@ main({
     legacy = require(path.join(repo, 'tests/helpers/legacy-session-git-routes'));
     const world = require(path.join(repo, 'tests/helpers/session-git-scripted-world'));
     bag = world.buildDeps(baseWorld('initial'));
-    bag.deps.asyncHandler = world.asyncHandlerFrom(repo);
+    bag.deps.asyncHandler = require(path.join(repo, 'tests/helpers/frozen-da8f52ee/http-errors')).asyncHandler;
     current = legacy.createSessionGitRuntime(bag.deps);
     current.mountRoutes(app);
     upstreamText = upstreamSource(repo);
   },
+  ready: waitForFixture,
   get upstream() {
     return upstreamText;
   },

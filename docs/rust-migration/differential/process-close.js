@@ -18,7 +18,7 @@ globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCE
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
 const app = express();
-app.use(require(path.join(repo, 'src/http-errors')).requestIdMiddleware,
+app.use(require(path.join(repo, 'src/native/binding')).httpErrors.requestIdMiddleware,
  require(path.join(repo, 'src/native/binding')).jsonCompression.jsonCompression, express.json());
 const { exercise } = require(path.join(repo, 'tests/helpers/process-close-fixture'));
 const api = require(path.join(repo, 'src/native/binding')).getProcessCloser();

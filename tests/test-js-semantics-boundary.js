@@ -17,7 +17,7 @@ const test = require('node:test');
 const { normalizeTurnRequest } = require('../src/native/binding').turnRequestHost;
 const {
   createUsageObserved, stableUsageEventId,
-} = require('../src/usage-observed');
+} = require('../src/native/binding').usageObserved;
 const {
   messageText, buildHandoffCheckpoint, renderHandoffPrompt,
 } = require('../src/cli-switch');

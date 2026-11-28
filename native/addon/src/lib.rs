@@ -422,6 +422,14 @@ mod image_bridge_runtime;
 mod role_token_runtime;
 mod role_token_tracker;
 pub mod selection;
+pub mod http_errors;
+pub mod task_worktree_host;
+pub mod air_cache_host;
+pub mod board_store_host;
+pub mod cli_login_auth;
+pub mod codex_image_bridge;
+pub mod codex_oauth_refresh;
+pub mod air_routes_host;
 pub mod usage_observed;
 
 pub mod auth_routes;

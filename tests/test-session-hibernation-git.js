@@ -419,7 +419,7 @@ test('生产任务清理删除已合并分支后，重启及唤醒保留会话�
   let cleanup;
   await defaultRepoActor.run(dirPath, 'publication-fixture', async () => {
     assert.ok(defaultRepoActor.isLeased(id));
-    cleanup = require('../src/task-worktree').cleanupAfterPublication({
+    cleanup = require('../src/native/binding').taskWorktree.cleanupAfterPublication({
       repoActor: defaultRepoActor, dirPath, taskId, cleanup: board.runtime.taskWorktree.cleanupWorktree });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(records.get(id).workspaceState, 'awake');

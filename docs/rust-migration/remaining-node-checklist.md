@@ -1,5 +1,38 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 14 批（2026-11-27，MacPro x86_64）
+
+基线为 `da8f52ee`。本批退役的十个生产模块涵盖用量事件、HTTP、CLI 账号、任务板、工作树与 Air，共 3,217 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 245 / 75,402 | 235 / 72,297 |
+| server.js 与 src/ | 246 / 78,255 | 236 / 75,150 |
+| 含生产插件 | 258 / 82,174 | 248 / 79,069 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/usage-observed.js` | 93 | 用量事件校验、绑定归属与结果冻结 |
+| `src/codex/image-bridge.js` | 348 | 官方图片工作器的账号选择、结果和生命周期 |
+| `src/http-errors.js` | 199 | Express 请求编号及错误处理 |
+| `src/codex/oauth-refresh.js` | 435 | Codex OAuth 刷新门控、单飞与 CLI 轮替 |
+| `src/task-board/board-store.js` | 487 | 任务板驻留镜像、增量与事务 |
+| `src/task-worktree.js` | 227 | 任务工作树归属、合入和清理 |
+| `src/cli-adapters/zcode-auth.js` | 372 | ZCode 登录、配置与模型选择 |
+| `src/cli-adapters/kimi-auth.js` | 118 | Kimi 登录状态与原生 CLI 探测 |
+| `src/workspace/air-routes-host.js` | 789 | Air 宿主协议、快照和投影 |
+| `src/workspace/air-card-cache.js` | 149 | Air 卡片缓存和串行刷新 |
+
+Rust 接管用量、HTTP 中间件、账号工作器、任务板和 Air 缓存策略。Node 宿主提供 V8 错误类、Express 对象、现有子进程与可注入的运行时端口。对应宿主完成迁移后可移除这些接口。
+
+x64 产物源码指纹为 `9e64475547ca456becf3194f`。53 个关联 Node 入口通过 870 项，跳过 0 项。Rust 通过 230 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+20 组 HTTP 差分得到 2,139 项一致结果，并验证 36 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,548 个文件，覆盖本批 31 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `dc42384da4f3c9f6e1adb8503ab4681c90e8701873b50e335e97cb4f897b2de2`。
+
+Air 回归用例覆盖串行队列的续体顺序、原生任务开始时的快照序列化，以及条件请求在手动刷新时的行为。会话 Git 差分等待测试宿主就绪后再发送第一个用例。
+
 ## server.js 可达模块第 13 批（2026-11-27，MacPro x86_64）
 
 基线为 `e960f6eb`。本批退役十个 CLI、网关、编排和账号业务模块，共 3,805 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)

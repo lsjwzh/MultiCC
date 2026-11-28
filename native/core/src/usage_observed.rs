@@ -1,13 +1,6 @@
-//! Usage observation normalizer — migrated verbatim from
-//! `src/usage-observed.js`. The JS module keeps its export surface:
-//! `USAGE_OBSERVED_VERSION`, `UsageObservedError`, `createUsageObserved`,
-//! `stableUsageEventId`, `validateUsageObserved`.
-//!
-//! Non-pure edges stay in JS: `assertProviderBinding` (Symbol brand) runs in
-//! the bridge before this kernel, and `normalizeProxyOutcome` runs there too —
-//! the kernel asks for it lazily (only after every earlier validation passed)
-//! so error precedence is unchanged. Structured errors come back through an
-//! envelope and the bridge rethrows `UsageObservedError` with the old code.
+//! Usage observation normalization and stable identifiers. The addon validates
+//! the realm's provider binding, parses dates through V8 and requests proxy
+//! outcome validation only after the earlier checks have passed.
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};

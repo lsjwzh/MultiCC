@@ -278,7 +278,7 @@ function upstream(repo) {
 const net = require('node:net'); const http = require('node:http'); const path = require('node:path');
 const repo = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [repo] }));
-const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/http-errors'));
+const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/native/binding')).httpErrors;
 const { jsonCompression } = require(path.join(repo, 'src/native/binding')).jsonCompression;
 const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
 const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;

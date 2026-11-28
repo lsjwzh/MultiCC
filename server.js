@@ -113,7 +113,7 @@ const { createRouterToolHost } = require('./src/router-tool-host'); const { crea
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
 const gatewayChild = nativeBinding.gatewayChild; gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
-const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
+const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/native/binding').httpErrors;
 const { createMemoModule } = require('./src/memo');
 const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
 const { createApkDistribution } = require('./src/apk-distribution');
@@ -179,7 +179,7 @@ const {
 const {
   createCodexOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
-} = require('./src/codex/oauth-refresh');
+} = require('./src/native/binding').codexOAuthRefresh;
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/native/binding').classifyVocab;
 const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/binding').taskDomainHost;
 const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
@@ -519,7 +519,7 @@ const {
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
 } = require('./src/native/binding').gitService;
-const { slotOwnsWorktree } = require('./src/task-worktree');
+const { slotOwnsWorktree } = require('./src/native/binding').taskWorktree;
 
 // RepoActor operations are retained in a bounded in-memory history. Destructive
 // endpoint responses include operationId; callers can inspect progress and the
@@ -2361,7 +2361,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
     // Best-effort: a running task or failed removal keeps the worktree for
     // the manual one-click action.
     if (process.env.MULTICC_TASK_WORKTREE_AUTOCLEANUP !== '0' && taskBoardRuntime?.taskWorktree?.cleanupWorktree) {
-      require('./src/task-worktree').cleanupAfterPublication({ repoActor: defaultRepoActor, dirPath: directories.get(persistedSessions.get(sessionId)?.dirId)?.path, taskId, cleanup: taskBoardRuntime.taskWorktree.cleanupWorktree })
+      require('./src/native/binding').taskWorktree.cleanupAfterPublication({ repoActor: defaultRepoActor, dirPath: directories.get(persistedSessions.get(sessionId)?.dirId)?.path, taskId, cleanup: taskBoardRuntime.taskWorktree.cleanupWorktree })
         .then(result => { if (result?.removed) logger.info('task_worktree_autocleanup', { taskId }); })
         .catch(error => logger.warn('task_worktree_autocleanup_failed', { taskId, code: error?.code || 'failed' }));
     }

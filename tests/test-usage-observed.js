@@ -7,7 +7,7 @@ const {
   UsageObservedError,
   createUsageObserved,
   validateUsageObserved,
-} = require('../src/usage-observed');
+} = require('../src/native/binding').usageObserved;
 
 function exactUsage(overrides = {}) {
   return {
@@ -152,4 +152,29 @@ test('UsageObserved preserves a complete immutable provider attempt identity', (
   );
   assert.throws(() => createUsageObserved(exactUsage({ routeAttemptId: 'attempt-only' })),
     /complete provider attempt identity/);
+});
+
+test('usage observation preserves getter order across timestamp parsing and lazy outcome validation', () => {
+  const old = require('./helpers/frozen-da8f52ee/usage-observed');
+  function observe(create) {
+    const reads = [];
+    const input = exactUsage();
+    Object.defineProperty(input, 'occurredAt', {
+      enumerable: true,
+      get() { reads.push('occurredAt'); return 'January 2, 2020 GMT'; },
+    });
+    Object.defineProperty(input, 'proxyOutcome', {
+      enumerable: true,
+      get() {
+        reads.push('proxyOutcome');
+        return { version: 1, requestId: 'r1', requestKind: 'inference', termination: 'completed', httpStatus: null };
+      },
+    });
+    const event = create(input);
+    return { reads, event, frozen: [event, event.tokens, event.proxyOutcome].map(Object.isFrozen) };
+  }
+  const expected = observe(old.createUsageObserved);
+  assert.deepEqual(expected.reads.slice(0, 2), ['occurredAt', 'occurredAt']);
+  assert.deepEqual(expected.frozen, [true, true, true]);
+  assert.deepEqual(observe(createUsageObserved), expected);
 });

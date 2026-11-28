@@ -19,7 +19,7 @@ const {
 const { atomicWriteJson, secureRuntimeData } = require('../src/native/binding').runtimeSecurity;
 const { createPaths } = require('../src/paths');
 const { installWsBackpressure } = require('./helpers/legacy-ws-backpressure');
-const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/http-errors');
+const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/native/binding').httpErrors;
 
 test('authenticated installs auto-bind to IPv4 LAN while explicit policy stays fail-closed', () => {
   assert.deepStrictEqual(resolveNetworkPolicy({}), {

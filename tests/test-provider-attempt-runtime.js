@@ -10,7 +10,7 @@ const {
   scopeHostProviderEvent,
   tagProviderAttemptEvent,
 } = require('../src/native/binding').providerAttemptRuntime;
-const { createUsageObserved } = require('../src/usage-observed');
+const { createUsageObserved } = require('../src/native/binding').usageObserved;
 const { canPersistAdapterCompletion } = require('../src/native/binding').adapterCompletion;
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
 const { resolveTurnState } = require('../src/native/binding').getTurnState();

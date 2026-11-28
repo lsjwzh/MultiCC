@@ -8,7 +8,7 @@ const {
   RustRoleTokenTracker, roleLedgerUpdate, emptyRoleTokenBucket: emptyBucket,
   roleBucketHasUsage, accumulateRoleBucket,
 } = require('../../../src/native/binding').getNative();
-const { validateUsageObserved } = require('../../../src/usage-observed');
+const { validateUsageObserved } = require('../frozen-da8f52ee/usage-observed');
 
 // Use V8's '+' coercion for legacy strings and caller-owned objects.
 const jsAdd = (left, right) => left + right;

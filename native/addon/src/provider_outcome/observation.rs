@@ -19,7 +19,7 @@ fn status(n: f64) -> bool {
     (400.0..=599.0).contains(&n) && n.fract() == 0.0
 }
 
-fn normalize(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
+pub(crate) fn normalize(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
     let invalid = || value.type_error("invalid proxy outcome");
     if !value.truthy()?
         || !value.get(c"version")?.is_number(1.0)?

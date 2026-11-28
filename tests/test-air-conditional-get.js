@@ -104,7 +104,7 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   assert.ok(source.indexOf('resourceEtag.set(path, etag)') > source.indexOf('if (!response.ok || result.ok === false)'),
     'ETag 要记在收下正文之后');
   assert.match(source, /if \(result\.unchanged\) return false;/, '详情没变就不重建会话区');
-  assert.match(source, /if \(!snapshot\.unchanged\) \{\s*acceptSnapshot\(snapshot\);/, '兼容读取没变时跳过渲染');
+  assert.match(source, /if \(!liveSync && !snapshot\.unchanged\) acceptSnapshot\(snapshot\);/, '兼容读取没变时跳过渲染');
   // 打开对话只核验轻量绑定；含审计历史的详情只在用户展开详情面板时读取。
   assert.match(openEntry, /\/api\/air\/tasks\/\$\{encodeURIComponent\(taskId\)\}\/open/);
   assert.match(source, /MultiCCAirTaskEntry\?\.open\(\{ taskId, api, notice \}\)/);
@@ -113,7 +113,7 @@ test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', ()
   // 归因不在面板里，所以按下去时即使面板是收起状态也要刷新选中的那条。
   assert.match(source, /taskId && \(refreshSelectedEntry \|\| !\$\('task-details'\)\.hidden\)\s*\? await refreshEntry\(\) : false/);
   assert.doesNotMatch(source, /void refreshEntry\(\);/, '导航不能再先下载完整详情');
-  assert.match(source, /if \(snapshot\.unchanged && !entryChanged\) return;/);
+  assert.match(source, /if \(snapshot\.unchanged && !entryChanged && !refreshSelectedEntry\) return;/);
   // 只有一个轮询档：15 秒（2026-09-30 要求活跃/后台/空闲全拉平，App 端
   // air_tasks_view.dart 的 _snapshotPollInterval 也是同一个数字）。
   assert.match(source, /const POLL_MS = 15000;/);

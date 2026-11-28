@@ -411,7 +411,7 @@ Date.now = () => FROZEN_NOW;
 
 const work = process.env.ORCH_ROOT;
 const express = require(require.resolve('express', { paths: [REPO] }));
-const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/http-errors'));
+const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/native/binding')).httpErrors;
 const { jsonCompression } = require(path.join(REPO, 'src/native/binding')).jsonCompression;
 const { createPublicSessionAccessGuard } = require(path.join(REPO, 'src/native/binding')).getNative().sessionPublicAccessApi();
 const { createAuxRunRoutes, createOrchestrationHost, mountUnattendedRoutes } = require(path.join(REPO, 'src/routes/orchestration-host'));

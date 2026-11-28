@@ -100,7 +100,7 @@ function createZcodeLoginHandler(zcodeAuth) {
 
 function mountZcodeAuthRoutes(app, deps = {}) {
   assertApp(app);
-  const zcodeAuth = deps.zcodeAuth || require('../cli-adapters/zcode-auth');
+  const zcodeAuth = deps.zcodeAuth || require('../native/binding').zcodeAuth;
 
   // GET /api/zcode/auth -- get current auth status
   app.get('/api/zcode/auth', (req, res) => {
@@ -190,7 +190,7 @@ function mountZcodeAuthRoutes(app, deps = {}) {
 // this exact path — and its automatic OPTIONS — to the real Express app.
 function mountZcodeAuthLoginRoute(app, deps = {}) {
   assertApp(app);
-  const zcodeAuth = deps.zcodeAuth || require('../cli-adapters/zcode-auth');
+  const zcodeAuth = deps.zcodeAuth || require('../native/binding').zcodeAuth;
   app.post('/api/zcode/auth/login', createZcodeLoginHandler(zcodeAuth));
 }
 

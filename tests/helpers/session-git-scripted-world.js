@@ -172,9 +172,9 @@ function buildDeps(initialWorld = {}) {
 
 // The deps the two runtimes need are identical (the current runtime's host
 // port is a superset of the legacy route surface). Express-based callers wrap
-// handlers in src/http-errors.asyncHandler instead of the identity shim above.
+// handlers in the production asyncHandler instead of the identity shim above.
 function asyncHandlerFrom(repo) {
-  return require(path.join(repo, 'src/http-errors')).asyncHandler;
+  return require(path.join(repo, 'src/native/binding')).httpErrors.asyncHandler;
 }
 
 module.exports = { buildDeps, asyncHandlerFrom };

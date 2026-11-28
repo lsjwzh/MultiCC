@@ -20,7 +20,7 @@ function kimiHomeDir(env = process.env) {
 
 function isKimiLoginAvailable() {
   try {
-    const { findExecutableOnPath } = require('../native/binding').cliCommands;
+    const { findExecutableOnPath } = require('../../../../src/native/binding').cliCommands;
     const cmd = process.env.KIMI_CMD || findExecutableOnPath('kimi');
     if (cmd && cmd !== 'kimi') return true;
     // Bare-name fallback: trust PATH resolution at spawn time.
@@ -56,7 +56,7 @@ function parseKimiLoginVerificationUrl(text) {
 
 function resolveKimiCmd() {
   if (process.env.KIMI_CMD) return process.env.KIMI_CMD;
-  const { findExecutableOnPath } = require('../native/binding').cliCommands;
+  const { findExecutableOnPath } = require('../../../../src/native/binding').cliCommands;
   return findExecutableOnPath('kimi') || 'kimi';
 }
 

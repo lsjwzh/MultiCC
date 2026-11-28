@@ -1471,13 +1471,125 @@ exposeHostApi('migrationGate', () => {
 
 exposeHostApi('providerDefaults', () => getNative().providerDefaultsApi({ path, Owner: getNative().RustProviderDefaultsStore }));
 
-exposeHostApi('providerBinding', () => {
+let providerBindingPorts;
+function getProviderBindingPorts() {
+  if (providerBindingPorts) return providerBindingPorts;
   class ProviderBindingError extends Error {
     constructor(message, code = 'INVALID_PROVIDER_BINDING') { super(message); this.name = 'ProviderBindingError'; this.code = code; }
   }
   const SUPPORTED_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok', 'agy', 'commandcode', 'pi']);
   const ROLE_KINDS = new Set(['main', 'sub', 'aux']), AGENT_ROLES = new Set(['default', 'worker', 'explorer', 'custom']);
-  const ports = { SUPPORTED_CLIS, ROLE_KINDS, AGENT_ROLES, ProviderBindingError, brand: Symbol('MultiCC.ProviderBinding') };
+  return providerBindingPorts = { SUPPORTED_CLIS, ROLE_KINDS, AGENT_ROLES, ProviderBindingError, brand: Symbol('MultiCC.ProviderBinding') };
+}
+exposeHostApi('httpErrors', () => {
+  const native = getNative();
+  const { safeCode, sanitizeCompatibility, sanitizePublicText } = getPublicSafety();
+  const domain = Symbol('MultiCC.DomainError');
+  const infrastructure = Symbol('MultiCC.InfrastructureError');
+  const http = Symbol('MultiCC.HttpError');
+  function isDomainError(value) { return !!(value && value[domain] === true); }
+  function isInfrastructureError(value) { return !!(value && value[infrastructure] === true); }
+  function isHttpError(value) { return !!(value && value[http] === true); }
+  class DomainError extends Error {
+    constructor(kind, message, { code, publicMessage, compatibility, cause } = {}) {
+      super(native.domainErrorMessage(message, false));
+      native.domainErrorInitialize(this, kind, code, publicMessage, compatibility, cause);
+      Object.defineProperty(this, domain, { value: true });
+    }
+  }
+  class InfrastructureError extends Error {
+    constructor(message, { code, compatibility, cause } = {}) {
+      super(native.domainErrorMessage(message, true));
+      native.infrastructureErrorInitialize(this, code, compatibility, cause);
+      Object.defineProperty(this, infrastructure, { value: true });
+    }
+  }
+  class HttpError extends Error {
+    constructor({ status, code, message, compatibility, cause } = {}) {
+      const normalized = native.httpErrorTrustedStatus(status);
+      super(native.httpErrorMessage(normalized, message, sanitizePublicText));
+      native.httpErrorInitialize(this, normalized, code, compatibility, cause, ports);
+      Object.defineProperty(this, http, { value: true });
+      Object.freeze(this);
+    }
+  }
+  const ports = { HttpError, isHttpError, isDomainError, isInfrastructureError,
+    safeCode, sanitizeCompatibility, sanitizePublicText };
+  let kinds, definitions;
+  function domainErrorMap() { return definitions ??= native.httpErrorDefinitions(ports); }
+  const middleware = native.httpErrorsMiddleware({
+    process, API_VERSION: getApiContract().API_VERSION,
+    elapsedMs: start => Number(process.hrtime.bigint() - start) / 1e6,
+  });
+  return {
+    HttpError, isHttpError,
+    trustedStatus(value) { return native.httpErrorTrustedStatus(value); },
+    mapError(error) { return native.httpErrorMap(error, ports, domainErrorMap()); },
+    DomainError, InfrastructureError, isDomainError, isInfrastructureError,
+    get DOMAIN_KINDS() { return kinds ??= native.domainErrorKinds(ports); },
+    get DOMAIN_ERROR_MAP() { return domainErrorMap(); },
+    ...middleware,
+    makeRequestId() { return native.httpEntryMakeRequestId(); },
+    cleanIncomingId(value) { return native.httpEntryCleanId(value); },
+  };
+});
+
+exposeHostApi('taskWorktree', () => getNative().taskWorktreeApi({ crypto: require('node:crypto'), existsSync: require('node:fs').existsSync }));
+
+exposeHostApi('airCardCache', () => getNative().airCardCacheApi({ Owner: getNative().RustAirCardCache, runNative, boardStoreOf: module.exports.taskDomainHost.boardStoreOf }));
+
+exposeHostApi('taskBoardStore', () => getNative().taskBoardStoreApi({ Owner: getNative().RustTaskBoard, domain: module.exports.taskDomainHost, wireDate: module.exports.taskPlanning.wireDate, compare: (a, b) => a.localeCompare(b), runNative, nativeCode }));
+
+exposeHostApi('zcodeAuth', () => getNative().zcodeAuthHost({
+  process, path, fs: require('node:fs'), homedir: require('node:os').homedir,
+  spawn: require('node:child_process').spawn, reportFailure: module.exports.stateStore.reportFailure,
+}));
+
+exposeHostApi('kimiAuth', () => getNative().kimiAuthHost({
+  process, path, homedir: require('node:os').homedir,
+  spawn: require('node:child_process').spawn, findExecutableOnPath: module.exports.cliCommands.findExecutableOnPath,
+}));
+
+exposeHostApi('codexOAuthRefresh', () => getNative().codexOauthRefreshHost({
+  process, path, fs: require('node:fs'), os: require('node:os'),
+  providerPorts: () => module.exports.providersHost, execFile: require('node:child_process').execFile,
+}));
+
+exposeHostApi('codexImageBridge', () => {
+  class ImageBridgeError extends Error {
+    constructor(code, message = 'image generation is unavailable') {
+      super(message);
+      this.name = 'ImageBridgeError';
+      this.code = code;
+    }
+  }
+  return getNative().codexImageBridgeHost({
+    ImageBridgeError, process, path, fs: require('node:fs'), crypto: require('node:crypto'),
+    spawn: require('node:child_process').spawn, tmpdir: require('node:os').tmpdir,
+  });
+});
+
+exposeHostApi('airRoutesHost', () => getNative().airRoutesHostApi({
+  domain: module.exports.taskDomainHost, boardCore: module.exports.taskBoardCore,
+  cache: module.exports.airCardCache, abnormal: module.exports.classifyVocab.isAbnormalLetter,
+  createSync: options => require('../workspace/air-sync-runtime').createAirSyncRuntime(options),
+  deliveryView: module.exports.deliveryView, local: module.exports.requestLocality.isLocalRequest,
+  path: require('node:path'), crypto: require('node:crypto'), process,
+}));
+
+exposeHostApi('usageObserved', () => {
+  class UsageObservedError extends Error {
+    constructor(message, code = 'INVALID_USAGE_OBSERVED') {
+      super(message);
+      this.name = 'UsageObservedError';
+      this.code = code;
+    }
+  }
+  return getNative().usageObservedApi({ binding: getProviderBindingPorts(), UsageObservedError });
+});
+exposeHostApi('providerBinding', () => {
+  const ports = getProviderBindingPorts();
+  const { SUPPORTED_CLIS, ROLE_KINDS, AGENT_ROLES, ProviderBindingError } = ports;
   let api;
   const methods = () => api ??= getNative().providerBindingMethods(ports);
   return { AGENT_ROLES, ROLE_KINDS, SUPPORTED_CLIS, ProviderBindingError,
@@ -1883,7 +1995,7 @@ exposeHostApi('artifacts', () => getNative().artifactCleanupApi({
 
 exposeHostApi('roleTokenTracker', () => {
   const native = getNative();
-  const { validateUsageObserved } = require('../usage-observed');
+  const { validateUsageObserved } = module.exports.usageObserved;
   // Legacy token buckets and Date-like inputs use V8's additive coercion.
   const add = (a, b) => a + b;
   const ports = { add, path, fs: require('node:fs'), now: () => new Date(),
@@ -1904,7 +2016,7 @@ exposeHostApi('roleTokenTracker', () => {
 });
 
 exposeHostApi('officialImageBridgeRuntime', () => {
-  const { createOfficialImageBridge } = require('../codex/image-bridge');
+  const { createOfficialImageBridge } = module.exports.codexImageBridge;
   const host = { home: require('node:os').homedir, path,
     officialId: module.exports.officialAccounts.officialAccountIdFromProvider };
   return { createOfficialImageBridgeRuntime: options =>
@@ -1912,7 +2024,7 @@ exposeHostApi('officialImageBridgeRuntime', () => {
 });
 
 exposeHostApi('macosPower', () => getNative().macosPowerApi({
-  platform: process.platform, fs: require('node:fs'), DomainError: require('../http-errors').DomainError,
+  platform: process.platform, fs: require('node:fs'), DomainError: module.exports.httpErrors.DomainError,
   installer: path.resolve(__dirname, '../../scripts/install-powerd.sh'),
   username: () => require('node:os').userInfo().username,
   executeInjected: (run, file, args, options) => new Promise((resolve, reject) => {
@@ -1966,7 +2078,7 @@ exposeHostApi('workspaceNotes', () => getNative().workspaceNotesApi());
 exposeHostApi('docsMemoryHost', () => getNative().docsMemoryHostApi({
   docs: () => module.exports.docsRegistry,
   isLocalRequest: module.exports.requestLocality.isLocalRequest,
-  mapError: require('../http-errors').mapError,
+  mapError: module.exports.httpErrors.mapError,
 }));
 
 let folderMemoryApis;
@@ -2093,7 +2205,7 @@ exposeHostApi('batteryGuard', () => getNative().batteryGuardApi({
 }));
 
 exposeHostApi('codexAccountsRefresh', () => {
-  const { createCodexOAuthRefresher, stripOpenAiEnv } = require('../codex/oauth-refresh');
+  const { createCodexOAuthRefresher, stripOpenAiEnv } = module.exports.codexOAuthRefresh;
   return getNative().codexAccountRefreshApi({
     process, createCodexOAuthRefresher, stripOpenAiEnv, quietLogger: { info() {}, warn() {}, error() {} },
   });
@@ -2228,8 +2340,8 @@ exposeHostApi('taskBoardRuntime', () => {
     isVoiceRouterRecord: module.exports.voiceRouter.isVoiceRouterRecord,
     runStateForFreezeReason: module.exports.sessionWork.runStateForFreezeReason,
     runStateForLetter: module.exports.classifyVocab.runStateForClassify,
-    openBoardStore: require('../task-board/board-store').openBoardStore,
-    createTaskWorktreeService: require('../task-worktree').createTaskWorktreeService,
+    openBoardStore: module.exports.taskBoardStore.openBoardStore,
+    createTaskWorktreeService: module.exports.taskWorktree.createTaskWorktreeService,
     createTaskRetention: module.exports.taskRetention.createTaskRetention,
     createTaskPlanningRuntime: module.exports.taskPlanningRoutes.createTaskPlanningRuntime,
     createBoardTaskLifecycle: module.exports.taskLifecycle.createBoardTaskLifecycle,
@@ -2248,8 +2360,8 @@ exposeHostApi('taskBoardCore', () => getNative().taskBoardCoreApi({
 }));
 
 exposeHostApi('sessionWork', () => getNative().sessionWorkApi(getNative(), () => ({
-  crypto: require('node:crypto'), zcodeAuth: require('../cli-adapters/zcode-auth'),
-  kimiAuth: require('../cli-adapters/kimi-auth'),
+  crypto: require('node:crypto'), zcodeAuth: module.exports.zcodeAuth,
+  kimiAuth: module.exports.kimiAuth,
   createQuestionOwner: module.exports.orchestrationNativeStore.createQuestionOwner,
 })));
 
@@ -2262,7 +2374,7 @@ exposeHostApi('stateContainer', () => getNative().sharedStateContainer());
 
 exposeHostApi('eventBus', () => getNative().sharedEventBus(require('node:events').EventEmitter));
 
-exposeHostApi('airRoutes', () => getNative().airMountApi(require('../workspace/air-routes-host').createAirRuntime));
+exposeHostApi('airRoutes', () => getNative().airMountApi(module.exports.airRoutesHost.createAirRuntime));
 
 exposeHostApi('chatHistoryService', () => getNative().chatHistoryServiceApi(getNative()));
 
@@ -2278,7 +2390,7 @@ exposeHostApi('codexModelCatalog', () => getNative().codexAccountCatalogApi({
   accountId: provider => module.exports.officialAccounts.officialAccountIdFromProvider(provider),
   officialCodex: provider => module.exports.codexOfficialRelay.isOfficialCodexOAuthProvider(provider),
   globalHome: () => path.join(require('node:os').homedir(), '.codex'), env: () => process.env,
-  stripEnv: env => require('../codex/oauth-refresh').stripOpenAiEnv(env),
+  stripEnv: env => module.exports.codexOAuthRefresh.stripOpenAiEnv(env),
   childProxyEnv: env => module.exports.outbound.getChildProxyEnv(env),
   createEgress: () => require('../claude-auth/egress-agent').createClaudeEgressAgentResolver(),
   commands: options => module.exports.cliCommands.resolveCliCommands(options),

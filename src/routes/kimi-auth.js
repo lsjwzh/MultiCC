@@ -29,7 +29,7 @@ function authStatusDto(status) {
 // Dependency resolution shared by the mount and the login-only public subset.
 function loginContext(deps = {}) {
   return {
-    kimiAuth: deps.kimiAuth || require('../cli-adapters/kimi-auth'),
+    kimiAuth: deps.kimiAuth || require('../native/binding').kimiAuth,
     getBrowser: deps.getBrowser
       || (() => require('../quota-managed-browser').getManagedQuotaBrowser()),
     loginWaitMs: Number.isFinite(deps.loginWaitMs) ? deps.loginWaitMs : LOGIN_WAIT_MS,

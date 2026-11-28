@@ -2,7 +2,7 @@
 // Unit tests for src/shutdown.js and src/http-errors.js.
 
 const { createShutdownCoordinator } = require('../src/shutdown');
-const { requestIdMiddleware, safeErrorHandler, asyncHandler, safeError, makeRequestId } = require('../src/http-errors');
+const { requestIdMiddleware, safeErrorHandler, asyncHandler, safeError, makeRequestId } = require('../src/native/binding').httpErrors;
 
 let pass = 0, fail = 0;
 function ok(cond, name) {

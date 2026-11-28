@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createUsageObserved } = require('../src/usage-observed');
+const { createUsageObserved } = require('../src/native/binding').usageObserved;
 const {
   createRoleTokenTracker,
   usageObservedToRoleTokenInfo,
