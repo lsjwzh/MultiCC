@@ -23,7 +23,7 @@ const {
   stableQueueEntryId,
   textFromPrompt,
   validateTransportSecurity,
-} = require('../src/voice/acp-bridge');
+} = require('../src/native/binding').voiceAcpBridge;
 
 function commander(id = 'commander-1', dirId = 'dir-1') {
   return {

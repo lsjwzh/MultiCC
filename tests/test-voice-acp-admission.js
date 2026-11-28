@@ -31,7 +31,7 @@ const {
   createVoiceAcpBridge,
   speakableFromBuffer,
   textFromPrompt,
-} = require('../src/voice/acp-bridge');
+} = require('../src/native/binding').voiceAcpBridge;
 
 const DISPATCH_MESSAGE = '检查登录接口 500 的原因并修复，然后跑一遍回归测试';
 const MARKER_TURN = `好的，我让一号项目的 Commander 去查。\n<<dispatch target="commander-1">${DISPATCH_MESSAGE}</dispatch>>`;
@@ -362,7 +362,7 @@ function okJson(body, status = 200) {
 
 // Launch mode (the one machine-wide child): no directoryId, and the routing
 // target is resolved per utterance from the launch id in the prompt envelope.
-function launchHarness({ scope = 'global', queueStatus = 200, queueThrows = null } = {}) {
+function launchHarness({ scope = 'global', queueStatus = 200, queueThrows = null, createBridge = createVoiceAcpBridge } = {}) {
   const instanceId = ++harnessId;
   FakeWebSocket.instances = [];
   const requests = [];
@@ -397,7 +397,7 @@ function launchHarness({ scope = 'global', queueStatus = 200, queueThrows = null
     }
     throw new Error(`unexpected request: ${url}`);
   };
-  const bridge = createVoiceAcpBridge({
+  const bridge = createBridge({
     fetchImpl,
     WebSocketImpl: FakeWebSocket,
     randomUUID: (() => {
@@ -909,4 +909,172 @@ test('spoken text prefers the Host’s own stripped text over the local buffer',
     '这条任务的提交状态还没有确认，请稍后在 MultiCC 任务板上查看。',
     'unknown is explicit and contains no uncorrelated prose',
   );
+});
+
+test('native voice ACP exports preserve the independent frozen text and transport contracts', () => {
+  const fs = require('node:fs');
+  const crypto = require('node:crypto');
+  const frozenPath = require.resolve('./helpers/frozen-voice-acp-bridge.cjs');
+  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(frozenPath)).digest('hex'),
+    '9361631ba844635251cd44692bcc46b8e8b835e6c5ecee55c503002d8348b878');
+  const old = require('./helpers/load-frozen-voice-acp-bridge');
+  const actual = require('../src/native/binding').voiceAcpBridge;
+  for (const n of [undefined, null, false, '', '100', NaN, Infinity, -1, 0, 0.2, 1, 75_000.9, 999_999]) {
+    assert.equal(actual.boundedTimeout(n, 123), old.boundedTimeout(n, 123));
+    assert.equal(actual.boundedAdmissionTimeout(n), old.boundedAdmissionTimeout(n));
+  }
+  const prompts = [
+    null, [{ type: 'text', text: 12 }], [{ type: 'resource_link', uri: 'file:///example', name: '资源' }],
+    promptBlocks('请求\udfff😺', 'launch-1', { objective: '目标' }),
+    promptBlocks('a'.repeat(11_999) + '😺', 'x'.repeat(199) + '😺'),
+    [{ type: 'text', text: '<QWEN_AUDIO_AGENT_REQUEST>{bad}</QWEN_AUDIO_AGENT_REQUEST>fallback' }],
+    [...promptBlocks('one'), ...promptBlocks('two')],
+    [{ type: 'text', text: '<qwen_audio_agent_backend_instructions>x</qwen_audio_agent_backend_instructions>\ufeff正文\ud800' }],
+  ];
+  for (const blocks of prompts) assert.equal(actual.textFromPrompt(blocks), old.textFromPrompt(blocks));
+  for (const prior of ['', 'abc', '😺\udfff', 7]) for (const next of ['', 'ab', 'abcde', '😺', false]) {
+    for (const snapshot of [false, true]) assert.deepEqual(actual.assistantDelta(prior, next, snapshot), old.assistantDelta(prior, next, snapshot));
+  }
+  for (const session of ['s', '前\udfff', '😺']) {
+    assert.equal(actual.stableQueueEntryId(session, 'voice:call'), old.stableQueueEntryId(session, 'voice:call'));
+  }
+  for (const base of [undefined, 'http://127.1:3000', 'http://[::1]', 'https://example.test', 'http://host', 'http://user@host', 'ftp://host', 'https://host/path', 'https://host/?x=1']) {
+    for (const token of ['', 'test-token']) {
+      const observe = api => {
+        try { const value = api.validateTransportSecurity(base, token); return { url: value.url.toString(), loopback: value.loopback }; }
+        catch (error) { return { name: error.name, message: error.message }; }
+      };
+      assert.deepEqual(observe(actual), observe(old));
+    }
+  }
+  assert.equal(actual.QWEN_INSTRUCTION_BLOCK.source, old.QWEN_INSTRUCTION_BLOCK.source);
+  assert.equal(actual.QWEN_INSTRUCTION_BLOCK.flags, old.QWEN_INSTRUCTION_BLOCK.flags);
+});
+
+test('native voice ACP lifecycle replays the frozen bridge with independent speech cleaning', async () => {
+  const legacy = require('./helpers/load-frozen-voice-acp-bridge');
+  async function replay(createBridge, mode) {
+    const harness = launchHarness({ createBridge, scope: mode === 'chat' ? 'chat' : 'global',
+      queueStatus: mode === 'cancel-error' ? 500 : 200 });
+    const turn = await startTurn(harness, { text: '检查构建' });
+    const notifications = [];
+    if (mode === 'chat') {
+      turn.socket.serverSend({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'read-1', name: 'read_status' },
+        { type: 'text', text: '完成。<<rou' },
+      ] } });
+      turn.socket.serverSend({ type: 'assistant', message: { content: [{ type: 'text', text: 'te>私密</route>> chat-1 /tmp/project' }] } });
+      turn.socket.serverSend({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'read-1', is_error: true }] } });
+      turn.socket.serverSend({ type: 'result', usage: { total_tokens: 5, inputTokens: 2, outputTokens: 3 } });
+    } else if (mode === 'timeout') harness.fireTimeout();
+    else if (mode === 'disconnect') turn.socket.close();
+    else if (mode.startsWith('cancel')) {
+      if (mode === 'cancel-error') {
+        // Start a second turn without an echo to cover queued cancellation errors.
+        turn.socket.serverSend(admissionFrame(turn));
+        await turn.promise;
+        const queued = harness.bridge.prompt({ sessionId: turn.created.sessionId, prompt: promptBlocks('queued') }, () => {});
+        await new Promise(resolve => setImmediate(resolve));
+        notifications.push(await harness.bridge.cancel({ sessionId: turn.created.sessionId }));
+        notifications.push(await queued);
+      } else notifications.push(await harness.bridge.cancel({ sessionId: turn.created.sessionId }));
+    } else {
+      turn.socket.serverSend(admissionFrame(turn, { requestId: 'foreign-request' }));
+      turn.socket.serverSend({ type: 'result', usage: { total_tokens: 99 } });
+      turn.socket.serverSend(admissionFrame(turn, mode === 'missing-operation' ? { operationId: '' } : {}));
+    }
+    const result = await turn.promise;
+    await harness.bridge.closeSession({ sessionId: turn.created.sessionId });
+    return { result, notifications, updates: turn.updates.map(({ messageId, ...rest }) => rest),
+      requests: harness.requests.map(({ url, options }) => ({ url, body: options.body ? JSON.parse(options.body) : null })),
+      count: harness.bridge.sessionCount(), timers: harness.timers.map(t => ({ delay: t.delay, cancelled: !!t.cancelled })) };
+  }
+  for (const mode of ['admitted', 'missing-operation', 'chat', 'timeout', 'disconnect', 'cancel-active', 'cancel-error']) {
+    const firstId = harnessId;
+    const actual = await replay(createVoiceAcpBridge, mode);
+    harnessId = firstId;
+    assert.deepEqual(actual, await replay(legacy.createVoiceAcpBridge, mode), mode);
+  }
+});
+
+test('admission can finish before echo and notification draining preserves serial order', async () => {
+  const harness = launchHarness();
+  const created = await harness.bridge.createSession();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const seen = [];
+  let settled = false;
+  const result = harness.bridge.prompt({ sessionId: created.sessionId, prompt: promptBlocks('检查') }, async update => {
+    seen.push(update.content.text);
+    await gate;
+  }).then(value => { settled = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  const socket = FakeWebSocket.instances.at(-1);
+  const outgoing = socket.sent.find(value => value.type === 'user_message');
+  socket.serverSend(null);
+  socket.serverSend({ type: 'voice_admission', version: 1, requestId: outgoing.clientMsgId, outcome: 'no_dispatch', speechText: '完成了' });
+  socket.serverSend({ type: 'voice_admission', version: 1, requestId: outgoing.clientMsgId, outcome: 'failed', speechText: '重复' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.deepEqual(seen, ['完成了']);
+  assert.equal(harness.timers.length, 0, 'an admission before echo does not arm a deadline');
+  release();
+  assert.equal((await result).stopReason, 'end_turn');
+  await harness.bridge.stop();
+});
+
+test('native Fleet refresh, authenticated ws tickets, resume and HTTP errors match frozen behavior', async () => {
+  const legacy = require('./helpers/load-frozen-voice-acp-bridge');
+  async function replay(createBridge) {
+    FakeWebSocket.instances = [];
+    const trace = [];
+    let target = 'commander-1';
+    let failure = null;
+    let uuid = 0;
+    const bridge = createBridge({
+      directoryId: 'fleet /?', baseUrl: 'https://example.test', accessToken: 'fixture-token', maxSessions: 1,
+      randomUUID: () => `trace-${++uuid}`, WebSocketImpl: FakeWebSocket,
+      fetchImpl: async (url, options) => {
+        trace.push({ url, headers: options.headers, body: options.body ? JSON.parse(options.body) : null });
+        if (failure === 'network') throw new Error('offline');
+        if (failure === 'bad-json') return { ok: false, status: 502, json: async () => { throw new Error('invalid JSON'); } };
+        if (failure === 'denied') return okJson({ code: 'denied' }, 403);
+        if (url.includes('/voice-gateway')) return okJson({ gateway: { id: 'gateway-1', directoryId: 'fleet /?', enabled: true, commanderSessionId: target, binding: { ready: true } } });
+        if (url.endsWith('/ws-ticket')) return okJson({ ticket: 'short-ticket' });
+        if (url.endsWith('/queue/action')) return okJson({ error: 'entry_gone' }, 409);
+        throw new Error('unexpected URL');
+      },
+    });
+    const created = await bridge.createSession({ cwd: '/tmp/project' });
+    let limit;
+    try { await bridge.createSession(); } catch (error) { limit = { code: error.code, message: error.message }; }
+    const updates = [];
+    const queued = bridge.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'queued' }] }, update => updates.push(update));
+    await new Promise(resolve => setImmediate(resolve));
+    const cancellation = await bridge.cancel({ sessionId: created.sessionId });
+    const cancelled = await queued;
+    target = 'commander-2';
+    const pending = bridge.prompt({ sessionId: created.sessionId, prompt: [{ type: 'text', text: 'changed target' }] }, update => updates.push(update));
+    await new Promise(resolve => setImmediate(resolve));
+    const socket = FakeWebSocket.instances.at(-1);
+    const outgoing = socket.sent.find(value => value.type === 'user_message');
+    socket.serverSend({ type: 'chat_msg_meta', role: 'user', clientMsgId: outgoing.clientMsgId });
+    socket.serverSend({ type: 'assistant', message: { content: [{ type: 'text', text: '完成了。commander-2 /tmp/project' }] } });
+    socket.serverSend({ type: 'result', usage: { totalTokens: -2, input_tokens: '4', outputTokens: 1 } });
+    const result = await pending;
+    await bridge.resumeSession({ sessionId: created.sessionId, cwd: '/tmp/next' });
+    const failures = [];
+    for (failure of ['denied', 'bad-json', 'network']) {
+      try { await bridge.gateway(); } catch (error) { failures.push({ code: error.code, message: error.message, status: error.status }); }
+    }
+    const sockets = FakeWebSocket.instances.map(ws => ({ url: ws.url, readyState: ws.readyState, sent: ws.sent }));
+    await bridge.stop();
+    return { created, limit, cancellation, cancelled, result, updates, trace, sockets, failures, count: bridge.sessionCount() };
+  }
+  const actual = await replay(createVoiceAcpBridge);
+  assert.deepEqual(actual, await replay(legacy.createVoiceAcpBridge));
+  assert.deepEqual(actual.sockets.map(ws => new URL(ws.url).searchParams.get('session')), ['commander-1', 'commander-2']);
+  assert.ok(actual.sockets.every(ws => !ws.url.includes('fixture-token') && new URL(ws.url).searchParams.get('ticket') === 'short-ticket'));
+  assert.equal(actual.cancellation.code, 'entry_gone');
+  assert.equal(actual.result.usage.totalTokens, -2, 'legacy truthy usage is preserved without clamping');
 });

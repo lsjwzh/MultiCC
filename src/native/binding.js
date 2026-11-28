@@ -2713,3 +2713,10 @@ function createHostBatteryReader() {
 }
 module.exports.createHostBatteryReader = createHostBatteryReader;
 module.exports.hostBatteryUnavailable = hostBatteryUnavailable;
+
+// The official ACP SDK, streams and Node network/timer interfaces remain host ports.
+// Rust owns routing, session state, continuation order and admission decisions.
+exposeHostApi('voiceAcpBridge', () => getNative().voiceAcpBridgeApi({
+  WebSocket: require('ws'), randomUUID: require('node:crypto').randomUUID,
+  setTimeout, clearTimeout,
+}));

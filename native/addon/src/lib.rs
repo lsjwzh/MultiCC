@@ -1,3 +1,4 @@
+mod voice_acp_bridge;
 mod outbox_runtime;
 mod orchestration_native_store;
 mod gateway_chat_bridge;

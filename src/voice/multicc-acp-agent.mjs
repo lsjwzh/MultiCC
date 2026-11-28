@@ -2,9 +2,9 @@
 
 import { Readable, Writable } from 'node:stream'
 import * as acp from '@agentclientprotocol/sdk'
-import bridgeModule from './acp-bridge.js'
+import nativeBinding from '../native/binding.js'
 
-const { createVoiceAcpBridge } = bridgeModule
+const { createVoiceAcpBridge } = nativeBinding.voiceAcpBridge
 
 function option(name) {
   const index = process.argv.indexOf(name)
