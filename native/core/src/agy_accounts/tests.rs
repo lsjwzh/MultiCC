@@ -406,3 +406,57 @@ fn import_account_links_macos_keychains_and_delete_preserves_target() {
     assert_eq!(fs::read(&sentinel).unwrap(), b"sentinel");
     let _ = fs::remove_dir_all(&home);
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn create_account_links_macos_keychains_and_backfills_legacy_homes() {
+    let home = temp_home("macos-keychains-create");
+    let keychains_dir = home.join("Library").join("Keychains");
+    fs::create_dir_all(&keychains_dir).unwrap();
+    let sentinel = keychains_dir.join("login.keychain-db");
+    fs::write(&sentinel, b"login-sentinel").unwrap();
+
+    // 1. 新建本地账号即建立 Library/Keychains 软链，避免 agy 写令牌弹「找不到钥匙串」。
+    let created = create_account(&home, "新建反重力号", "created").unwrap();
+    let id = created["id"].as_str().unwrap();
+    let acct_dir = account_home(&home, id).unwrap();
+    let link = acct_dir.join("Library").join("Keychains");
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(fs::read_link(&link).unwrap(), keychains_dir);
+    assert!(link.join("login.keychain-db").is_file());
+
+    // 2. 模拟历史存量账号缺失 Library/Keychains 时，resolve_account / resolve_home / active_home 自动幂等补齐。
+    fs::remove_file(&link).unwrap();
+    assert!(fs::symlink_metadata(&link).is_err());
+    let resolved = resolve_account(&home, Some(id)).unwrap().unwrap();
+    assert!(matches!(resolved, ResolvedAgyAccount::Local { .. }));
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    fs::remove_file(&link).unwrap();
+    let resolved_dir = resolve_home(&home, Some(id)).unwrap().unwrap();
+    assert_eq!(resolved_dir, acct_dir);
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    fs::remove_file(&link).unwrap();
+    set_active(&home, Some(id)).unwrap();
+    assert_eq!(active_home(&home).unwrap(), acct_dir);
+    assert!(fs::symlink_metadata(&link)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    // 3. 删除新建账号同样只删软链，保留真实 Keychains。
+    delete_account(&home, id).unwrap();
+    assert!(sentinel.is_file());
+    assert_eq!(fs::read(&sentinel).unwrap(), b"login-sentinel");
+    let _ = fs::remove_dir_all(&home);
+}
