@@ -17,8 +17,8 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createChannelHost } = require('../src/plugins/channel-host');
-const { createPluginsRoutes } = require('../src/routes/plugins');
+const { createChannelHost } = require('../src/native/binding').channelHost;
+const { createPluginsRoutes } = require('../src/native/binding').pluginsRoutes;
 
 const SKIP = process.platform === 'win32' ? 'the fake plugin is a #! script' : false;
 
@@ -111,6 +111,18 @@ function setup(t, { overrides = {}, plugins = [['demo-channel', {}]] } = {}) {
 
 const ready = (host, id = 'demo-channel') => until(() => host.status().find(item => item.id === id && item.ready));
 
+async function setupReadyForAlerts(t) {
+  // Measure outages after the initial hello. Starting the Node fixture can exceed
+  // downAlertMs under load and is a separate outage from the one exercised here.
+  const startupTime = Date.now();
+  let startupDelay = null;
+  const now = () => startupDelay === null ? startupTime : Date.now() - startupDelay;
+  const fixture = setup(t, { overrides: { now } });
+  await ready(fixture.host);
+  startupDelay = Date.now() - startupTime;
+  return fixture;
+}
+
 test('a resident plugin is started once; run goes to the resident process with its data dir and the server address', { skip: SKIP }, async t => {
   const { routes, host, root } = setup(t);
   const first = await ready(host);
@@ -153,8 +165,7 @@ test('a crash is restarted with backoff; the call in flight fails cleanly', { sk
 });
 
 test('a plugin that stays down is reported once, and the report clears when it comes back', { skip: SKIP }, async t => {
-  const { routes, host, alerts, user } = setup(t);
-  await ready(host);
+  const { routes, host, alerts, user } = await setupReadyForAlerts(t);
   const dataDir = path.join(user, '..', 'plugins-data', 'demo-channel');
   fs.mkdirSync(dataDir, { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'crash-on-start'), '');
@@ -176,8 +187,7 @@ test('a plugin that stays down is reported once, and the report clears when it c
 });
 
 test('plugin alerts reach the alert hook once per key until resolved', { skip: SKIP }, async t => {
-  const { routes, host, alerts } = setup(t);
-  await ready(host);
+  const { routes, host, alerts } = await setupReadyForAlerts(t);
   await routes.runPluginCommand('demo-channel', 'alert', { key: 'agent-permissions', level: 'critical' });
   await routes.runPluginCommand('demo-channel', 'alert', { key: 'agent-permissions', level: 'critical' });
   await routes.runPluginCommand('demo-channel', 'alert', { key: 'bad key with spaces' });

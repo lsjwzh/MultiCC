@@ -4,7 +4,7 @@ const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { isSettledLetter } = require('../native/binding').classifyVocab;
 const { apiErrorSignaturesQuoted } = require('../native/binding').apiErrorPolicy;
 const { notificationCopy } = require('../native/binding').getPushNotificationCopy();
-const channelRegistry = require('../plugins/channel-registry');
+const channelRegistry = require('../native/binding').channelRegistry;
 
 const PUSH_ANSI_RE = /\x1b(?:\[[0-9;?]*[a-zA-Z~]|\][^\x07]*(?:\x07|\x1b\\)|[()][AB012]|.)/g;
 const DEFAULT_IDLE_MS = 6000;

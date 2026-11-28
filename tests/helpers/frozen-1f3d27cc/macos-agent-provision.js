@@ -34,7 +34,7 @@
 //     that would silently revoke every grant. The next start retries.
 
 const nodePath = require('node:path');
-const { getNative } = require('./native/binding');
+const { getNative } = require('../../../src/native/binding');
 
 const LABEL = 'com.multicc.agent';
 const OUTPUT_TAIL = 4000;

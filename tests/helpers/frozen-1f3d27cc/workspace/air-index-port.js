@@ -1,6 +1,6 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
-const nativeRuntime = require('../native/binding');
+const nativeRuntime = require('../../../../src/native/binding');
 const { createTaskReadModel } = require('../native/task-read-model');
 
 // Transport only: the Rust owner retains all cards, caches and replay history.

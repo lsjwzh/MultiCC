@@ -12,6 +12,41 @@ function bootstrapApi(key, create, unavailable) {
     return f;
   };
   switch (key) {
+    case 'taskReadModel': return { createTaskReadModel: forward('createTaskReadModel', 0) };
+    case 'macosAgentProvision': {
+      // Skill bootstrap may load before the platform addon. A disabled installer
+      // can report its skip without opening the Agent files or spawning a child.
+      const shared = new Map();
+      function createMacosAgentProvisioner(options = {}) {
+        const platform = options.platform || process.platform;
+        const env = options.env || process.env;
+        let owner, pending, last = null;
+        const load = () => owner ??= ready().createMacosAgentProvisioner(options);
+        const skip = () => platform !== 'darwin' ? 'not-macos'
+          : env.MULTICC_AGENT_AUTO_INSTALL === '0' ? 'disabled-by-env' : null;
+        return {
+          plan(opts = {}) { const reason = skip(); return reason ? { action: 'skip', reason } : load().plan(opts); },
+          inspect() { return load().inspect(); },
+          ensure(opts = {}) {
+            if (pending) return pending;
+            const reason = skip();
+            if (!reason) return load().ensure(opts);
+            pending = Promise.resolve().then(() => {
+              last = { action: 'skip', reason, ok: true, at: new Date().toISOString() };
+              pending = undefined;
+              return last;
+            });
+            return pending;
+          },
+          getStatus() { return owner ? owner.getStatus() : last; },
+        };
+      }
+      return { LABEL: 'com.multicc.agent', SIGNING_DEFERRED_EXIT: 75, createMacosAgentProvisioner,
+        sharedMacosAgentProvisioner({ rootDir, logger } = {}) {
+          if (!shared.has(rootDir)) shared.set(rootDir, createMacosAgentProvisioner({ rootDir, logger }));
+          return shared.get(rootDir);
+        } };
+    }
     case 'taskPlanningRoutes': {
       // Packaging diagnostics can report a planning refusal without a platform binary.
       const { codes, defaultStatus } = require('../../native/core/src/task_planning_status.json');

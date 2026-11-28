@@ -1,5 +1,38 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 15 批（2026-11-27，MacPro x86_64）
+
+基线为 `1f3d27cc`。本批退役的十个生产模块涵盖 Air 同步、任务读模型、专用出口、插件管理与频道投递，共 2,650 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 235 / 72,297 | 225 / 69,738 |
+| server.js 与 src/ | 236 / 75,150 | 226 / 72,591 |
+| 含生产插件 | 248 / 79,069 | 238 / 76,510 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/workspace/air-sync-runtime.js` | 216 | Air 快照同步、队列、订阅与重放 |
+| `src/workspace/air-index-port.js` | 97 | Air 索引及存储告警 |
+| `src/native/task-read-model.js` | 70 | 任务读模型的队列与排序重试 |
+| `src/claude-auth/egress-agent.js` | 152 | 账号专用出口与连接复用 |
+| `src/routes/plugins.js` | 389 | 插件路由与本机运行时接线 |
+| `src/plugins/catalog.js` | 573 | 插件目录签名与更新 |
+| `src/macos-agent-provision.js` | 283 | macOS Agent 检查、安装与归属 |
+| `src/plugins/installer.js` | 272 | 插件包校验、安装替换与回退 |
+| `src/plugins/channel-host.js` | 449 | 常驻频道子进程及请求结算 |
+| `src/plugins/channel-registry.js` | 149 | 共享频道注册、分类与投递 |
+
+Rust 接管 Air 发布与重放、读模型队列、插件目录与安装状态、Agent 配置和频道投递。Node 宿主提供 Express、WebSocket、可注入进程和代理 Agent 类型，这些调用方迁出 Node 后可移除相应端口。
+
+x64 产物源码指纹为 `71262c04ae13318c2d37f084`。31 个关联 Node 入口通过 385 项，跳过 0 项。另有 7 项 macOS Agent 隔离用例通过，覆盖安装决策、版本归属、单飞与模拟子进程。Rust 通过 205 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+7 组 HTTP 差分得到 445 项一致结果，并验证 13 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,579 个文件，覆盖本批 33 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `e1617bc2c73818fd99f5bdc26f67100dbc9c1e5a60e635f50a12e681ed675b27`。
+
+差分测试旧侧继续使用发布基线的 Air 依赖链、频道注册表与 macOS Agent 配置逻辑。
+
 ## server.js 可达模块第 14 批（2026-11-27，MacPro x86_64）
 
 基线为 `da8f52ee`。本批退役的十个生产模块涵盖用量事件、HTTP、CLI 账号、任务板、工作树与 Air，共 3,217 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)

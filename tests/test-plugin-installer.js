@@ -20,9 +20,9 @@ const test = require('node:test');
 
 const { getNative } = require('../src/native/binding');
 const createZip = (entries, opts) => getNative().handoffZipCreate(entries, opts);
-const { createPluginInstaller } = require('../src/plugins/installer');
-const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/routes/plugins');
-const { parseCatalog } = require('../src/plugins/catalog');
+const { createPluginInstaller } = require('../src/native/binding').pluginInstaller;
+const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/native/binding').pluginsRoutes;
+const { parseCatalog } = require('../src/native/binding').pluginCatalog;
 
 const PLATFORM_KEY = `${process.platform}-${process.arch}`;
 const POSIX = process.platform !== 'win32';

@@ -2,8 +2,8 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createHash } = require('node:crypto');
-const { createAirIndex } = require('../src/workspace/air-index-port');
-const { createAirSyncRuntime } = require('../src/workspace/air-sync-runtime');
+const { createAirIndex } = require('../src/native/binding').airIndexPort;
+const { createAirSyncRuntime } = require('../src/native/binding').airSyncRuntime;
 const { getNative } = require('../src/native/binding');
 let addon = null;
 try { addon = getNative(); } catch (_) { /* availability is asserted below */ }

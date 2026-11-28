@@ -23,7 +23,7 @@
 // Usage: node docs/rust-migration/differential/plugins.js <repo> <gateway> <addon>
 const path = require('node:path');
 const fs = require('node:fs');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 // The facts both sides read. Keyed by the session id the recheck corpus sends.
 const ACTIVE = { 'sess-active': true, 'sess-idle': false };
@@ -119,6 +119,7 @@ function findPlugin(id) {
   return { ok: true, found: true, dir, ui };
 }
 const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/__health') { res.end('ok'); return; }
   let raw = '';
   req.on('data', chunk => { raw += chunk; });
   req.on('end', () => {
@@ -298,6 +299,7 @@ process.on('exit', () => { try { fs.rmSync(TREE_WORK, { recursive: true, force: 
 
 main({
   name: 'plugins',
+  ready: waitForFixture,
   mount(app, ctx) {
     const { createLegacyPluginsRoutes } = require(path.join(ctx.repo, 'tests/helpers/legacy-plugins-routes'));
     const { isLocalRequest } = require(path.join(ctx.repo, 'src/request-locality'));

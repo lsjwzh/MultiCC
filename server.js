@@ -63,7 +63,7 @@ const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/nativ
 const crypto = require('crypto');
 const bus = require('./src/native/binding').eventBus;
 const state = require('./src/native/binding').stateContainer;
-const artifacts = nativeBinding.artifacts, docsRegistry = nativeBinding.docsRegistry, secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
+const artifacts = nativeBinding.artifacts, docsRegistry = nativeBinding.docsRegistry, secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/native/binding').pluginsRoutes;
 const providers = require('./src/native/binding').providersHost;
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/native/binding').codexModelCatalog.startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
@@ -334,7 +334,7 @@ logger.info('provider_router_runtime', {
 });
 installConsoleRedaction(console);
 secureRuntimeData(MULTICC_PATHS);
-const { airNotices } = require('./src/workspace/air-index-port');
+const { airNotices } = require('./src/native/binding').airIndexPort;
 airNotices.installStateStoreReporter(stateStore, { metrics, logger });
 const networkPolicy = resolveNetworkPolicy(process.env);
 const app = express();
@@ -1145,7 +1145,7 @@ const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
 // 每条线路的「专用出口」：CPR 拨上游前按线路问出口（「Chrome 隔离出口启动器」插件里的身份），
 // Claude 与 Codex 两条协议代理共用同一个解析器；装着的 CPR 不认这个钩子时，绑了出口的线路
 // 在读令牌处失败，绝不悄悄从本机 IP 直连。
-const claudeEgress = require('./src/claude-auth/egress-agent');
+const claudeEgress = require('./src/native/binding').claudeEgress;
 const claudeEgressSupported = providerRouterRuntime.routerSupports('upstreamAgent');
 if (!claudeEgressSupported) logger.error('claude_egress_router_outdated', { need: 'cli-provider-router >= 0.5.2 (CAPABILITIES.upstreamAgent)' });
 const claudeEgressResolver = claudeEgress.createClaudeEgressAgentResolver({ logger });
