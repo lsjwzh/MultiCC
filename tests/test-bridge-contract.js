@@ -22,6 +22,7 @@
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const assert = require('node:assert/strict');
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -68,24 +69,40 @@ function containsAll(actual, expected) {
 // The five adapters, tagged with their extra routes. Anywhere we say "5" in
 // the report, count these entries.
 const bridges = [
-  { name: 'discord', path: '../plugins/bridges/discord-bridge', extras: [] },
-  { name: 'feishu', native: 'createFeishuBridge', extras: [] },
+  { name: 'discord', native: 'discordBridge', extras: [] },
+  { name: 'feishu', native: 'feishuBridge', extras: [] },
   { name: 'slack', path: '../plugins/bridges/slack-bridge', extras: [] },
-  { name: 'telegram', path: '../plugins/bridges/telegram-bridge', extras: [] },
-  { name: 'wechat', native: 'createWechatBridge', extras: WECHAT_EXTRA_ROUTES },
+  { name: 'telegram', native: 'telegramBridge', extras: [] },
+  { name: 'wechat', native: 'wechatBridge', extras: WECHAT_EXTRA_ROUTES },
 ];
 
 // Point every bridge at a hermetic data dir BEFORE requiring any of them —
-// secure-config reads MULTICC_DATA_DIR at module load time.
+// Each bridge captures the instance data paths on first use.
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-contract-'));
 process.env.MULTICC_DATA_DIR = tmp;
+const testHome = require('node:test').mock.method(os, 'homedir', () => tmp);
+
+{
+  const { bridgeConfigFile, bridgeHistoryFile, saveBridgeConfig, CONFIG_DIR } = require('../src/native/binding').bridgeConfig;
+  const legacy = path.join(tmp, 'old.json');
+  fs.writeFileSync(legacy, 'old content\n', { mode: 0o644 });
+  const file = bridgeConfigFile('migration.json', legacy);
+  assert.equal(file, path.join(CONFIG_DIR, 'migration.json'));
+  assert.equal(fs.readFileSync(file, 'utf8'), 'old content\n');
+  if (process.platform !== 'win32') {
+    for (const name of [legacy, file]) assert.equal(fs.statSync(name).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(CONFIG_DIR).mode & 0o777, 0o700);
+  }
+  const value = { text: '你好', attempts: [1, 2] };
+  assert.equal(saveBridgeConfig(file, value), undefined);
+  bridgeConfigFile('migration.json', legacy);
+  assert.equal(fs.readFileSync(file, 'utf8'), JSON.stringify(value, null, 2));
+  assert.equal(path.basename(bridgeHistoryFile('s/😀?')), 's____.json');
+  assert.throws(() => bridgeHistoryFile(0), /requires a session id/);
+}
 
 // Preload the bridges so require caches are fresh with the tmp config dir.
-// Native factories also isolate the gateway cwd: MULTICC_DATA_DIR alone does
-// not move the legacy ~/.multicc/<platform>-gateway workspace.
-const modules = bridges.map(b => b.native
-  ? require('../src/native/binding').imChannelHost[b.native]({ os: { homedir: () => tmp } })
-  : require(b.path));
+const modules = bridges.map(b => b.native ? require('../src/native/binding')[b.native] : require(b.path));
 
 // ── 1. Public module shape ────────────────────────────────────────────
 for (let i = 0; i < bridges.length; i++) {
@@ -194,6 +211,41 @@ for (let i = 0; i < bridges.length; i++) {
     catch (e) { msg = e.message; }
     ok(!!msg, `${bridges[i].name}: startBridge() with no config rejects (${(msg || '').slice(0, 60)}${msg ? '…' : ''})`);
   }
+  for (let i = 0; i < modules.length; i++) {
+    const { name } = bridges[i];
+    const sessionId = name === 'wechat' ? '__gateway__' : `__${name}_gateway__`;
+    const record = { id: sessionId, cli: 'codex', cliSessionId: 'prior' };
+    const records = new Map([[sessionId, record]]);
+    let writes = 0, settle;
+    modules[i].init({
+      persistedSessions: records, chatSessions: new Map(), chatBroadcast() {},
+      savePersistedSessions() { writes++; },
+      clearBridgeHistory(id) {
+        assert.equal(id, sessionId);
+        return new Promise((resolve, reject) => { settle = { resolve, reject }; });
+      },
+    });
+    const reset = pickHandler(modules[i].router, 'POST', '/gateway/reset');
+    for (const failOwner of [true, false]) {
+      settle = null;
+      const res = fakeRes();
+      const pending = reset({ body: {}, params: {}, query: {} }, res);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.ok(settle, name + ' must call the session history owner');
+      assert.equal(res.body, null, name + ' replied while the owner was pending');
+      assert.equal(record.cliSessionId, 'prior');
+      assert.equal(writes, 0);
+      if (failOwner) settle.reject(new Error('history unavailable'));
+      else settle.resolve({ clearedNativeSessions: 0 });
+      await pending;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(res.statusCode, failOwner ? 500 : 200, name);
+      assert.deepEqual(res.body, failOwner ? { error: 'history unavailable' } : { ok: true }, name);
+      assert.equal(record.cliSessionId, failOwner ? 'prior' : null);
+      assert.equal(writes, failOwner ? 0 : 1);
+    }
+  }
+  testHome.mock.restore();
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`\n== bridge contract: ${pass} passed, ${fail} failed ==`);
   process.exit(fail ? 1 : 0);

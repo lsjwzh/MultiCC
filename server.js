@@ -46,10 +46,10 @@ const { createUploadSuite } = nativeBinding;
 const chokidar = require('chokidar');
 const cron = require('node-cron');
 const upload = createUploadSuite();
-const wechatBridge = require('./src/native/binding').wechatBridge;
-const feishuBridge = require('./src/native/binding').feishuBridge;
-const telegramBridge = require('./plugins/bridges/telegram-bridge');
-const discordBridge = require('./plugins/bridges/discord-bridge');
+const wechatBridge = nativeBinding.wechatBridge;
+const feishuBridge = nativeBinding.feishuBridge;
+const telegramBridge = nativeBinding.telegramBridge;
+const discordBridge = nativeBinding.discordBridge;
 const slackBridge = require('./plugins/bridges/slack-bridge');
 const voiceAsr = require('./plugins/voice/voice-asr');
 const ttsService = require('./src/voice/tts-service');
@@ -2144,11 +2144,15 @@ const usageLimitPoller = require('./src/native/binding').usageLimitWiring.create
   recordLimit: limitRecorder.recordSession,
 });
 
+// All bridge resets share the session history queue and its retention rules.
+const clearBridgeHistory = id => chatHistoryRuntime.clearHistory(id, { keep: 0 }, chatSessions.get(id));
+
 // ── WeChat Bridge ──
 // Must come after chatSessions/chatBroadcast are declared (TDZ would crash otherwise).
 wechatBridge.init({
   persistedSessions,
   chatSessions,
+  clearBridgeHistory,
   savePersistedSessions: () => savePersistedSessionsBestEffort('bridge.wechat-session-state'),
   chatBroadcast,
   port: PORT,
@@ -2161,6 +2165,7 @@ app.use('/api/wechat', wechatBridge.router);
 feishuBridge.init({
   persistedSessions,
   chatSessions,
+  clearBridgeHistory,
   savePersistedSessions: () => savePersistedSessionsBestEffort('bridge.feishu-session-state'),
   chatBroadcast,
   port: PORT,
@@ -2179,6 +2184,7 @@ for (const [mount, bridge] of [
   bridge.init({
     persistedSessions,
     chatSessions,
+    clearBridgeHistory,
     savePersistedSessions: () => savePersistedSessionsBestEffort(`bridge.${mount.slice(5)}-session-state`),
     chatBroadcast,
     port: PORT,

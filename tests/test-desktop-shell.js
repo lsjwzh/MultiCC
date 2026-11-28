@@ -768,7 +768,7 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     // without the Command Line Tools (src/portable-git.js looks for it here).
     'install-git.sh',
     'src/native/binding.js',
-    'src/network/sdk-bridges.js', 'plugins/cron/cron-tasks.js',
+    'src/network/sdk-bridges.js', 'plugins/bridges/telegram-client-adapter.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
     'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
@@ -812,7 +812,8 @@ function stubRepoRoot(dir) {
   for (const rel of ['server.js', 'src/paths/index.js', 'public/chat.html', 'public/air.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
     'src/native/binding.js', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
-    'src/network/sdk-bridges.js', 'skills/multicc-artifact/references/registration-rule.md',
+    'src/network/sdk-bridges.js', 'plugins/bridges/telegram-client-adapter.js',
+    'skills/multicc-artifact/references/registration-rule.md',
     'native/core/src/task_planning_status.json']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -1240,7 +1241,9 @@ test('host-env honors MULTICC_ENV_FILE for read and write', withEnv({ MULTICC_EN
 
 // ── static: security posture, purity, packaging, workflow, icon ─────────────
 
-test('desktop-stage-standalone stages the same Resources tree a package ships', { timeout: 195_000 }, async () => {
+// A clean macOS home has to compile both Swift architectures without a module cache.
+const stagingDeadline = process.platform === 'darwin' ? 480_000 : 180_000;
+test('desktop-stage-standalone stages the same Resources tree a package ships', { timeout: stagingDeadline + 15_000 }, async () => {
   const out = tmpdir('desktop-stage-res-');
   const child = spawn(process.execPath, [path.join(ROOT, 'scripts', 'desktop-stage-standalone.js'),
     '--out', out, '--no-install', '--no-runtime'], { detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -1252,11 +1255,11 @@ test('desktop-stage-standalone stages the same Resources tree a package ships', 
       expired = true;
       if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
       else { try { process.kill(-child.pid, 'SIGKILL'); } catch (_) {} }
-    }, 180_000);
+    }, stagingDeadline);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('close', status => { clearTimeout(timer); resolve({ status, stderr }); });
   });
-  assert.equal(expired, false, 'desktop staging exceeded its 180-second deadline');
+  assert.equal(expired, false, `desktop staging exceeded ${stagingDeadline} ms: ${stderr.slice(-2000)}`);
   assert.equal(res.status, 0, `staging failed: ${res.stderr}`);
   for (const must of ['app-server/server.js', 'app-server/public/air.html',
     'launcher/standalone-launcher.js', 'launcher/standalone-cli.js',

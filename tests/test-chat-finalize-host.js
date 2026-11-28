@@ -41,7 +41,7 @@ function createHarness(options = {}) {
     logError(event, detail) { calls.push(['log-error', event, detail?.action || detail?.error?.message]); },
     now: () => 200,
   };
-  return { calls, classifyOptions, executor: createTurnFinalizationExecutor(ports) };
+  return { ports, calls, classifyOptions, executor: createTurnFinalizationExecutor(ports) };
 }
 
 function context(overrides = {}) {
@@ -282,4 +282,52 @@ test('a reserved provider handoff reaches the fault classifier', async () => {
 
 test('finalize host fails closed when a required runtime port is absent', async () => {
   assert.throws(() => createTurnFinalizationExecutor({}), /finalize host port missing/);
+});
+
+test('question snapshots surround both phases and wait for the live sync promise', async () => {
+  const { ports, calls } = createHarness();
+  const ctx = context();
+  const snapshots = [];
+  let releaseSync;
+  let markSyncStarted;
+  const syncStarted = new Promise(resolve => { markSyncStarted = resolve; });
+  ports.withQuestionSnapshot = function (session, phase) {
+    assert.equal(this, ports);
+    assert.equal(session, ctx.sessionName);
+    snapshots.push(calls.length);
+    return phase();
+  };
+  ports.syncQuestionTurn = function (session) {
+    assert.equal(this, ports);
+    assert.equal(session, ctx.sessionName);
+    markSyncStarted();
+    return new Promise(resolve => { releaseSync = resolve; });
+  };
+  const executor = createTurnFinalizationExecutor(ports);
+  let finished = false;
+  const done = executor.execute(processPlan(), ctx).then(result => { finished = true; return result; });
+  assert.equal(snapshots.length, 1);
+  await syncStarted;
+  assert.equal(snapshots.length, 2);
+  assert.equal(calls.filter(([name]) => name === 'persist').length, 1);
+  assert.equal(finished, false);
+  releaseSync();
+  assert.equal((await done).appendPersisted, true);
+});
+
+test('a snapshot exception after a durable write retains its identity and never retries commit', async () => {
+  const { ports, calls } = createHarness();
+  const marker = { failure: 'after-commit' };
+  let snapshots = 0;
+  ports.withQuestionSnapshot = (_session, phase) => {
+    snapshots++;
+    const result = phase();
+    if (snapshots === 2) throw marker;
+    return result;
+  };
+  await assert.rejects(createTurnFinalizationExecutor(ports).execute(processPlan(), context()),
+    reason => reason === marker);
+  assert.equal(snapshots, 2);
+  assert.equal(calls.filter(([name]) => name === 'persist').length, 1);
+  assert.equal(calls.filter(([name]) => name === 'usage').length, 1);
 });

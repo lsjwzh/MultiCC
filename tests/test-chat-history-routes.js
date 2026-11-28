@@ -72,6 +72,37 @@ test('display clearing and hiding survive restart without changing task evidence
   assert.deepEqual(restarted.runtime.paginate('s1').messages.map(m => m.id), ['u3']);
 });
 
+test('gateway reset hides a queued delivery and retains its receipt when the history store is reopened', async t => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-bridge-history-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const open = () => fixture({ history: createChatHistoryFileRepository({ dataDir }) });
+  const fx = open();
+  const sessionId = '__feishu_gateway__';
+  const record = { id: sessionId, cli: 'codex', cliSessionId: 'previous' };
+  fx.persistedSessions.set(sessionId, record);
+  const gateway = require('../src/native/binding').bridgeGateway.createGatewayLifecycle({
+    sessionId, platformLabel: 'Feishu', persistedSessions: fx.persistedSessions, chatSessions: fx.chatSessions,
+    clearBridgeHistory: id => fx.runtime.clearHistory(id, { keep: 0 }, fx.chatSessions.get(id)),
+    savePersistedSessions() {}, chatWsCtl: { disconnect() {}, reconnectIfRunning() {} }, log() {},
+  });
+  try {
+    const queued = fx.runtime.appendMessage(sessionId, {
+      id: 'queued', role: 'user', content: 'delivery', deliveryId: 'receipt', taskId: 'task',
+    });
+    await Promise.all([queued, gateway.resetHistory()]);
+    assert.equal(record.cliSessionId, null);
+    assert.deepEqual(fx.runtime.paginate(sessionId).messages, []);
+  } finally {
+    fx.runtime.stop();
+  }
+  const reopened = open();
+  t.after(() => reopened.runtime.stop());
+  assert.deepEqual(reopened.runtime.paginate(sessionId).messages, []);
+  const archived = reopened.runtime.paginate(sessionId, { includeHidden: true }).messages;
+  assert.deepEqual(archived.map(({ id, taskId }) => [id, taskId]), [['queued', 'task']]);
+  assert.equal(await reopened.runtime.service.hasPersistedDelivery(sessionId, 'receipt'), true);
+});
+
 test('display cap and task-linked removal never delete original records', async () => {
   const original = Array.from({ length: 6 }, (_, index) => ({
     id: `m${index}`, role: 'user', content: `task evidence ${index}`, taskId: 'task-1',

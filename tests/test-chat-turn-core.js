@@ -1367,9 +1367,9 @@ test('production lifecycle uses append return, runner ownership and one guarded 
     'host lifecycle composition must live outside the God file');
   assert.match(source, /createChatHostRuntime\(\{/,
     'server must consume the extracted host runtime through narrow ports');
-  const finalizeHostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'finalize-host.js'), 'utf8');
-  assert.match(finalizeHostSource, /chatExecuteTurnFinalization\(plan, rawContext, ports, runtime\)/);
-  assert.doesNotMatch(finalizeHostSource, /function (?:applyEffect|executeUnsafe|isBlockedTerminalEffect)\(/);
+  const finalizeHostSource = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_finalize_host.rs'), 'utf8');
+  assert.match(finalizeHostSource, /chat_execute_turn_finalization\(/);
+  assert.doesNotMatch(finalizeHostSource, /fn (?:apply_effect|execute_unsafe|is_blocked_terminal_effect)\(/);
   const finalizeNativeSource = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src',
     'chat_finalize_execution.rs'), 'utf8');
   assert.match(finalizeNativeSource, /\.port\(\s*c"persistAssistant",[\s\S]{0,130}\.is_true\(\)\?/,
@@ -1384,7 +1384,7 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   // The durable-result branch is native and two-phase: the engine starts the
   // write, awaits the durable verdict and hands it back to the Rust commit entry.
   assert.match(source, /requestFinalPersist: \(sessionName, cs, turn, runner, message, options, forward, wasMapped, evt\) => requestFinalPersist\(/);
-  assert.match(finalizeHostSource, /chatCommitTurnFinalization\(/);
+  assert.match(finalizeHostSource, /chat_commit_turn_finalization\(/);
   const nativeEvents = fs.readFileSync(
     path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_events.rs'), 'utf8');
   assert.match(nativeEvents, /if durable \{[\s\S]{0,600}cs\.assign\(c"_resultSaved"/);
@@ -1452,23 +1452,17 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
 
 test('chat core modules import no runtime I/O dependencies', () => {
   const root = path.join(__dirname, '..');
-  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js', 'src/chat/turn-request.js', 'src/chat/turn-lifecycle.js', 'src/chat/host-coordinator.js', 'src/chat/host-runtime.js']) {
+  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js', 'src/chat/turn-request.js', 'src/chat/turn-lifecycle.js', 'src/chat/host-coordinator.js', 'src/chat/host-runtime.js', 'src/chat/finalize-host.js']) {
     assert.equal(fs.existsSync(path.join(root, retired)), false, retired);
   }
   for (const file of [
     'native/addon/src/post_turn_router.rs', 'native/addon/src/turn_runtime_store.rs', 'native/addon/src/record_facades.rs',
     'native/addon/src/turn_request.rs', 'native/core/src/turn_request.rs',
-    'native/core/src/chat_runtime.rs', 'native/addon/src/retry_policy.rs',
+    'native/core/src/chat_runtime.rs', 'native/addon/src/chat_finalize_host.rs', 'native/addon/src/retry_policy.rs',
     'native/addon/src/chat_host/lifecycle.rs', 'native/addon/src/chat_host/attribution.rs',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.doesNotMatch(source, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/, file);
-  }
-  for (const file of [
-    'src/chat/finalize-host.js',
-  ]) {
-    const source = fs.readFileSync(path.join(root, file), 'utf8');
-    assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
   }
 });
 

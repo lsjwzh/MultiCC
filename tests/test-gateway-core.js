@@ -1,13 +1,15 @@
 'use strict';
-// Deterministic contract tests for plugins/bridges/gateway-core.js.
+// Deterministic contract tests for the Rust bridgeGateway API.
 // Uses in-memory Maps and a fake WebSocket implementation so nothing touches
 // real Slack/Feishu/Discord/Telegram/WeChat servers.
 
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
-const core = require('../plugins/bridges/gateway-core');
+const core = require('../src/native/binding').bridgeGateway;
+const tick = () => new Promise(resolve => setImmediate(resolve));
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -107,7 +109,7 @@ class FakeWS extends EventEmitter {
       persistedSessions,
       chatSessions,
       savePersistedSessions: () => { saveCalls++; },
-      bridgeHistoryFile,
+      clearBridgeHistory: (id) => fs.promises.rm(bridgeHistoryFile(id), { force: true }),
       chatWsCtl,
       log: (type, text) => logs.push({ type, text }),
     });
@@ -146,7 +148,7 @@ class FakeWS extends EventEmitter {
     // Reset history
     fs.writeFileSync(bridgeHistoryFile('__test_gateway__'), '{}');
     chatSessions.set('__test_gateway__', { claudeProc: { kill: () => {} }, chatTurnCount: 9 });
-    gw.resetHistory();
+    await gw.resetHistory();
     ok(!fs.existsSync(bridgeHistoryFile('__test_gateway__')), 'lifecycle: resetHistory removes history file');
     ok(chatSessions.get('__test_gateway__').chatTurnCount === 0, 'lifecycle: resetHistory resets chatTurnCount');
     // codex cli → cliSessionId stays null on reset (only claude gets a fresh UUID)
@@ -159,6 +161,116 @@ class FakeWS extends EventEmitter {
     ok(!chatSessions.has('__test_gateway__'), 'lifecycle: destroy removes chat session');
 
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+
+  // History clearing belongs to the history owner. Its completion is a barrier
+  // before UUID rotation/save/process cleanup/reconnect/success reporting.
+  {
+    const deferred = () => {
+      let resolve, reject;
+      const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+      return { promise, resolve, reject };
+    };
+    function fixture(owner, { cli = 'claude', exists = true } = {}) {
+      const id = '__owner_gateway__';
+      const record = { id, cli, cliSessionId: 'original-session' };
+      const persistedSessions = new Map(exists ? [[id, record]] : []);
+      const effects = [];
+      const processHandle = { kill(signal) { effects.push(['kill', signal]); } };
+      const chat = { claudeProc: processHandle, chatTurnCount: 7 };
+      const chatSessions = new Map([[id, chat]]);
+      let fallbackCalls = 0;
+      const gateway = core.createGatewayLifecycle({
+        sessionId: id, platformLabel: 'Owner', persistedSessions, chatSessions,
+        clearBridgeHistory: typeof owner === 'function' ? (sessionId) => {
+          effects.push(['owner', sessionId]); return owner(sessionId);
+        } : owner,
+        bridgeHistoryFile() { fallbackCalls++; throw Error('legacy deletion must not run'); },
+        savePersistedSessions() { effects.push('save'); },
+        chatWsCtl: {
+          disconnect() { effects.push('disconnect'); },
+          reconnectIfRunning() { effects.push('reconnect'); },
+        },
+        log(type, text) { effects.push([type, text]); },
+      });
+      const untouched = () => {
+        assert.equal(record.cliSessionId, 'original-session');
+        assert.equal(chat.claudeProc, processHandle); assert.equal(chat.chatTurnCount, 7);
+        assert.equal(fallbackCalls, 0);
+      };
+      return { id, gateway, record, persistedSessions, chatSessions, chat, effects, untouched };
+    }
+
+    for (const cli of ['claude', 'codex']) {
+      const clear = deferred();
+      const f = fixture(() => clear.promise, { cli });
+      let settled = false;
+      const pending = f.gateway.resetHistory();
+      pending.then(() => { settled = true; });
+      assert.deepEqual(f.effects, [['owner', f.id]]); f.untouched();
+      await tick(); // let all ready microtasks pass while the owner is pending
+      assert.equal(settled, false); f.untouched();
+      assert.deepEqual(f.effects, [['owner', f.id]]);
+      clear.resolve({ cleared: true }); await pending;
+      if (cli === 'claude') assert.match(f.record.cliSessionId, /^[a-f0-9-]{36}$/);
+      else assert.equal(f.record.cliSessionId, null);
+      assert.equal(f.chat.claudeProc, null); assert.equal(f.chat.chatTurnCount, 0);
+      assert.deepEqual(f.effects, [['owner', f.id], 'save', ['kill', 'SIGTERM'],
+        'disconnect', 'reconnect', ['system', 'Owner gateway history cleared']]);
+    }
+
+    for (const reason of [Error('owner failed'), { code: 'owner-rejected' }, undefined]) {
+      for (const mode of ['throw', 'reject']) {
+        const clear = deferred();
+        const f = fixture(() => { if (mode === 'throw') throw reason; return clear.promise; });
+        const pending = f.gateway.resetHistory();
+        const rejected = assert.rejects(pending, error => error === reason);
+        f.untouched(); assert.deepEqual(f.effects, [['owner', f.id]]);
+        if (mode === 'reject') {
+          await tick(); f.untouched(); assert.deepEqual(f.effects, [['owner', f.id]]);
+          clear.reject(reason);
+        }
+        await rejected;
+        f.untouched(); assert.deepEqual(f.effects, [['owner', f.id]]);
+      }
+    }
+
+    // Missing/invalid owners fail closed for an existing record. They are not
+    // consulted at all when there is no gateway, including the missing case.
+    for (const owner of [undefined, null, {}]) {
+      const absent = fixture(owner, { exists: false });
+      assert.equal(absent.gateway.resetHistory(), undefined);
+      absent.untouched(); assert.deepEqual(absent.effects, []);
+      const present = fixture(owner);
+      await assert.rejects(present.gateway.resetHistory(), { name: 'TypeError' });
+      present.untouched(); assert.deepEqual(present.effects, []);
+    }
+    const absent = fixture(() => { throw Error('owner must not be called'); }, { exists: false });
+    assert.equal(absent.gateway.resetHistory(), undefined); assert.deepEqual(absent.effects, []);
+
+    // A replacement gateway/chat created during the await must stay untouched.
+    {
+      const clear = deferred(), f = fixture(() => clear.promise);
+      const pending = f.gateway.resetHistory();
+      const replacement = { id: f.id, cli: 'codex', cliSessionId: 'replacement-session' };
+      const replacementChat = { claudeProc: { kill() { throw Error('new process must not be killed'); } }, chatTurnCount: 11 };
+      f.persistedSessions.set(f.id, replacement); f.chatSessions.set(f.id, replacementChat);
+      clear.resolve(); await pending;
+      f.untouched(); assert.equal(f.gateway.get(), replacement);
+      assert.equal(replacement.cliSessionId, 'replacement-session');
+      assert.equal(replacementChat.chatTurnCount, 11);
+      assert.deepEqual(f.effects, [['owner', f.id]]);
+    }
+    {
+      const clear = deferred(), f = fixture(() => clear.promise);
+      const pending = f.gateway.resetHistory();
+      f.gateway.destroy();
+      const afterDestroy = f.effects.slice();
+      clear.resolve(); await pending;
+      assert.equal(f.gateway.get(), null); assert.equal(f.record.cliSessionId, 'original-session');
+      assert.deepEqual(f.effects, afterDestroy);
+    }
+    ok(true, 'lifecycle: owner barrier, rejection identity, no-record/invalid-owner and stale-record guards');
   }
 
   // ── chat WS client: connect → user message → assistant + result flush ──
@@ -253,6 +365,8 @@ class FakeWS extends EventEmitter {
     ok(threw, 'chunk: throws without max');
   }
 
+  await require('./helpers/bridge-gateway-compat')(core);
+  ok(true, 'Rust gateway: independent frozen baseline compatibility corpus');
   console.log(`\n== gateway-core unit: ${pass} passed, ${fail} failed ==`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

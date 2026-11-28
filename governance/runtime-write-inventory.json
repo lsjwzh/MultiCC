@@ -53,8 +53,8 @@
       "migrationStrategy": "Add a bridge-workspace port, detect active sessions, then copy or relocate one bridge at a time with rollback markers.",
       "sources": [
         {
-          "file": "plugins/bridges/discord-bridge.js",
-          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'discord-gateway');"
+          "file": "native/addon/src/chat_platform_bridge.rs",
+          "anchor": "text(p, \".multicc\")?"
         },
         {
           "file": "native/addon/src/im_channels.rs",
@@ -63,10 +63,6 @@
         {
           "file": "plugins/bridges/slack-bridge.js",
           "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'slack-gateway');"
-        },
-        {
-          "file": "plugins/bridges/telegram-bridge.js",
-          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'telegram-gateway');"
         },
         {
           "file": "native/addon/src/im_channels.rs",

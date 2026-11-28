@@ -343,7 +343,7 @@ const frozenPlanner = loadFixture(require.resolve('./helpers/frozen-finalize-pla
 const executorFile = require.resolve('./helpers/legacy-chat-finalize-host');
 const legacyExecutor = loadFixture(executorFile, executorFile, { '../../src/chat/finalize-plan': frozenPlanner,
   '../../src/chat/turn-progress': require('../src/native/binding').getTurnProgress() });
-const nativeExecutor = require('../src/chat/finalize-host');
+const nativeExecutor = require('../src/native/binding').turnFinalizationExecutor;
 
 async function executionHarness(owner, input, options = {}) {
   const calls = [];

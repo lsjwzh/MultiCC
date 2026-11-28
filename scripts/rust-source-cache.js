@@ -469,6 +469,8 @@ function probeAddon(file, node = process.execPath) {
       const done=bg.handleEvent(bgPorts,'smoke',null,{subtype:'codex_task_done',task_id:'codex_probe',description:'child',status:'completed'});
       if(!done||!done.handled||!seen.some(frame=>frame&&frame.type==='monitor_done')) process.exit(1);
     }
+    if(['turnFinalizationExecutorApi','bridgeConfigApi','bridgeGatewayApi','voiceAcpBridgeApi',
+      'wechatBridgeApi','feishuBridgeApi','chatPlatformBridgeApi'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(typeof a.chatAssistantSameQuery!=='function'||typeof a.RustBackgroundHold!=='function'
       || ['start','observe','tick','flush','beginInjection','confirmInjection','acknowledgeHistory','historyPending','historyWritten','interruptInjections','requireAnswerHistory','pendingBoundaries','acknowledgeAnswer','abortInjection','capReached','dispose']
         .some(key=>typeof a.RustBackgroundHold.prototype[key]!=='function')

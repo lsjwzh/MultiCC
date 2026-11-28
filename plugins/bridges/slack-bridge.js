@@ -1,5 +1,5 @@
 'use strict';
-// Slack IM bridge — thin adapter atop plugins/bridges/gateway-core.
+// Slack IM bridge — SDK adapter atop the Rust bridgeGateway API.
 //
 // Slack-specific concerns kept here:
 //   • @slack/bolt Socket Mode App bring-up,
@@ -13,11 +13,11 @@ const express = require('express');
 const path = require('path');
 const os = require('os');
 const { outboundAgent } = require('../../src/native/binding').outbound;
-const { bridgeConfigFile, bridgeHistoryFile, saveBridgeConfig } = require('./secure-config');
+const { bridgeConfigFile, saveBridgeConfig } = require('../../src/native/binding').bridgeConfig;
 const {
   createEchoStore, createLogStore, createGatewayLifecycle, createChatWsClient, chunkOutbound,
   deps: { fs },
-} = require('./gateway-core');
+} = require('../../src/native/binding').bridgeGateway;
 
 let SlackBolt = null;
 function loadSlack() {
@@ -178,7 +178,7 @@ async function _handleCommand(text) {
       ].join('\n');
       break;
     }
-    case '/reset': _gateway.resetHistory(); reply = '✅ 已清空对话历史'; break;
+    case '/reset': await _gateway.resetHistory(); reply = '✅ 已清空对话历史'; break;
     default: reply = `未知命令: ${cmd}，输入 /help 查看帮助`;
   }
   if (reply) { try { await _sendSlackText(reply); } catch (e) { _log('error', e.message); } }
@@ -239,7 +239,7 @@ function stopBridge() {
   _log('system', 'Slack bridge stopped');
 }
 
-function init({ persistedSessions, chatSessions, savePersistedSessions, chatBroadcast, port }) {
+function init({ persistedSessions, chatSessions, savePersistedSessions, clearBridgeHistory, chatBroadcast, port }) {
   _persistedSessions = persistedSessions;
   _chatSessions = chatSessions;
   _savePersistedSessions = savePersistedSessions;
@@ -259,7 +259,7 @@ function init({ persistedSessions, chatSessions, savePersistedSessions, chatBroa
     persistedSessions: _persistedSessions,
     chatSessions: _chatSessions,
     savePersistedSessions: _savePersistedSessions,
-    bridgeHistoryFile,
+    clearBridgeHistory,
     chatWsCtl: wsCtl,
     log: _log,
   });
@@ -317,8 +317,8 @@ router.put('/gateway', (req, res) => {
 router.delete('/gateway', (req, res) => {
   try { _gateway.destroy(); res.json({ ok: true }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
-router.post('/gateway/reset', (req, res) => {
-  try { _gateway.resetHistory(); res.json({ ok: true }); } catch (e) { res.status(500).json({ error: e.message }); }
+router.post('/gateway/reset', async (req, res) => {
+  try { await _gateway.resetHistory(); res.json({ ok: true }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 router.post('/start', async (req, res) => {

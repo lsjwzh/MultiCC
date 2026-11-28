@@ -102,7 +102,7 @@ test('every persist and result path carries the timeline (source guard)', () => 
   // Result/persist readers carry the session name they already have.
   assert.match(read('native/addon/src/chat_host/runtime.rs'), /get\(c"timelineField"\)\?\s*\.call_plain\(\s*&\[id, state\]/);
   assert.match(read('src/codex/usage.js'), /timelineField\(sessionName, cs, now\(\)\)/);
-  assert.match(read('src/chat/finalize-host.js'), /chatExecuteTurnFinalization\(plan, rawContext, ports, runtime\)/);
+  assert.match(read('native/addon/src/chat_finalize_host.rs'), /chat_execute_turn_finalization\(/);
   assert.match(read('native/addon/src/chat_finalize_execution.rs'),
     /c"timelineField",\s*&\[session, cs, self\.runtime\(c"now", &\[\]\)\?\]/);
 });
