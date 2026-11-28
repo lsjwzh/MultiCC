@@ -205,6 +205,11 @@ test('health-probe times out even when a gateway hangs during fetch or body cons
 });
 
 test('supervisor waits through advancing workspace recovery, stops on replay, and gates readiness on HTTP', async t => {
+  // Allow a cold child process to boot on a loaded release builder. Three
+  // progress intervals still exceed the readiness budget, so removing the
+  // progress extension or accepting replayed progress must fail this test.
+  const healthTimeoutMs = 5000;
+  const progressIntervalMs = 2000;
   for (const stall of [false, true]) {
     const dir = tmpdir('workspace-boot-');
     const script = `
@@ -221,19 +226,20 @@ test('supervisor waits through advancing workspace recovery, stops on replay, an
       setInterval(() => {
         if (!${stall} && current < 4) current++;
         emit(row('reconcile', current) + row('history', 3));
-      }, 650);
+      }, ${progressIntervalMs});
       require('node:http').createServer((req, res) => {
         if (req.url === '/api/desktop-shutdown') { res.end(); setTimeout(() => process.exit(), 20); return; }
         res.writeHead(current === 4 ? 200 : 503).end();
       }).listen(Number(process.env.PORT), '127.0.0.1');
     `;
     const { sup, phases } = makeSupervisor({
-      args: ['-e', script], logsDir: dir, opts: { healthTimeoutMs: 1500, restartBackoffMs: 30_000 },
+      args: ['-e', script], logsDir: dir, opts: { healthTimeoutMs, restartBackoffMs: 30_000 },
     });
     t.after(() => sup.stop());
     await sup.start({ port: await reservePort() });
     const final = stall ? 'failed' : 'ready';
-    await waitFor(() => phases.some(p => p.phase === final), { timeoutMs: 10_000, what: final });
+    await waitFor(() => phases.some(p => p.phase === final || p.phase === 'failed'), { timeoutMs: 20_000, what: final });
+    assert.ok(phases.some(p => p.phase === final), JSON.stringify(phases));
     const recovery = phases.filter(p => p.phase === 'workspace-recovery').map(p => p.info.recovery);
     assert.deepEqual(recovery, (stall ? [1] : [1, 2, 3, 4]).map(completed => ({ phase: 'reconcile', completed, total: 4 })));
     if (stall) assert.ok(!phases.some(p => p.phase === 'ready'));
