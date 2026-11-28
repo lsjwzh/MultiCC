@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { buildAuxHttpRequest } = require('../src/aux-http');
+const { buildAuxHttpRequest } = require('../src/native/binding').auxHttp;
 
 const common = { model: 'model-1', prompt: 'hello', systemPrompt: 'be concise' };
 

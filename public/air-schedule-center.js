@@ -6,7 +6,7 @@
 // scripts/check-source-line-budget.js 的行数天花板上，那条登记的注释自己写着「下一次
 // 动定时中心应把 renderSchedules 整块抽成独立模块」—— 脚本任务类型这一轮就是那次拆分。
 //
-// 两种规则（服务端 plugins/cron/cron-tasks.js 的 kind 字段）：
+// 两种规则（服务端 native/addon/src/recurring/schedule.rs 的 kind 字段）：
 //   · agent（默认）：建一个固定 Air 任务，每次触发把 prompt 投给它，跑的是大模型；
 //   · script：不建任务、不经过任何模型，直接在工作目录里跑一条本地命令（通常是
 //     python 脚本），退出码与输出末尾进执行记录。像「盯任务板、出错就往微信发一条」

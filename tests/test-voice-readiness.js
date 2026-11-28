@@ -1,6 +1,6 @@
 'use strict';
 // "Can voice input work, and if not what should the user do" (Rust voice readiness)
-// plus the streaming path's matching voice_not_ready frame (plugins/voice/voice-asr.js).
+// plus the streaming path's matching voice_not_ready frame (native/addon/src/voice_asr.rs).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
@@ -33,8 +33,8 @@ test('local beats cloud; any cloud credential is enough; a throwing status probe
 });
 
 test('streaming: with nothing configured the socket says voice_not_ready, not "OpenAI key missing"', () => {
-  const asr = require('../plugins/voice/voice-asr');
-  const asrLocal = require('../src/voice/asr-local');
+  const asr = require('../src/native/binding').voiceAsr;
+  const asrLocal = require('../src/native/binding').asrLocal;
   const saved = JSON.parse(JSON.stringify(asr.cfg));
   const savedAvailable = asrLocal.isAvailable;
   asrLocal.isAvailable = () => false; // this machine may well have the model

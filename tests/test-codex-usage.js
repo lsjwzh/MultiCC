@@ -10,7 +10,7 @@ const {
   projectHistoryUsage,
   summarizeHistoryUsage,
   usageEpochForSessionId,
-} = require('../src/codex/usage');
+} = require('../src/native/binding').codexUsage;
 
 test('Codex reads cached counts live and preserves getter errors', () => {
   const reads = [];

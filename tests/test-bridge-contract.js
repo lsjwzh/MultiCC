@@ -71,7 +71,7 @@ function containsAll(actual, expected) {
 const bridges = [
   { name: 'discord', native: 'discordBridge', extras: [] },
   { name: 'feishu', native: 'feishuBridge', extras: [] },
-  { name: 'slack', path: '../plugins/bridges/slack-bridge', extras: [] },
+  { name: 'slack', native: 'slackBridge', extras: [] },
   { name: 'telegram', native: 'telegramBridge', extras: [] },
   { name: 'wechat', native: 'wechatBridge', extras: WECHAT_EXTRA_ROUTES },
 ];
@@ -102,7 +102,7 @@ const testHome = require('node:test').mock.method(os, 'homedir', () => tmp);
 }
 
 // Preload the bridges so require caches are fresh with the tmp config dir.
-const modules = bridges.map(b => b.native ? require('../src/native/binding')[b.native] : require(b.path));
+const modules = bridges.map(b => require('../src/native/binding')[b.native]);
 
 // ── 1. Public module shape ────────────────────────────────────────────
 for (let i = 0; i < bridges.length; i++) {

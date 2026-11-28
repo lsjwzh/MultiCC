@@ -31,7 +31,18 @@ async function start(dir, gateway, addon, fixture, seeded = false, upgradedBoard
   if (fixture) {
     // server.js reads .env relative to __dirname. Give the oracle its own
     // entry file so a developer checkout's keys never enter the experiment.
-    fs.copyFileSync(path.join(root, 'server.js'), path.join(cwd, 'server.js'));
+    // The reference entry pins this batch's retired protocols independently.
+    // Only this disposable test package loads frozen code.
+    const frozenLoader = JSON.stringify(path.join(root, 'tests/helpers/load-frozen-cron-git'));
+    const referenceSource = fs.readFileSync(path.join(root, 'server.js'), 'utf8')
+      .replace("const cronTasks = require('./src/native/binding').cronTasks;",
+        `const cronTasks = require(${frozenLoader}).loadFrozen('cron-tasks', { packageRoot: __dirname });`)
+      .replace("const gitPush = require('./src/native/binding').gitPush;",
+        `const gitPush = require(${frozenLoader}).loadFrozen('git-push', { packageRoot: __dirname });`);
+    for (const name of ['cron-tasks', 'git-push']) {
+      assert.ok(referenceSource.includes(`require(${frozenLoader}).loadFrozen('${name}'`), `missing frozen ${name} binding`);
+    }
+    fs.writeFileSync(path.join(cwd, 'server.js'), referenceSource);
     for (const name of ['src', 'plugins', 'node_modules', 'scripts', 'skills', 'native']) {
       if (!fs.existsSync(path.join(cwd, name))) fs.symlinkSync(path.join(root, name), path.join(cwd, name), 'dir');
     }

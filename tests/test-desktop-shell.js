@@ -768,11 +768,15 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     // without the Command Line Tools (src/portable-git.js looks for it here).
     'install-git.sh',
     'src/native/binding.js',
-    'src/network/sdk-bridges.js', 'plugins/bridges/telegram-client-adapter.js', 'plugins/cron/cron-tasks.js',
+    'src/network/sdk-bridges.js', 'plugins/bridges/telegram-client-adapter.js',
     'skills/multicc-artifact/references/registration-rule.md',
     'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
   }
+  for (const retired of ['plugins/cron/cron-tasks.js', 'plugins/cron/fanout-migration.js', 'plugins/utils/git-push.js']) {
+    assert.equal(fs.existsSync(path.join(staged, retired)), false, `retired Node implementation was packaged: ${retired}`);
+  }
+  assert.match(fs.readFileSync(path.join(staged, 'src/native/binding.js'), 'utf8'), /native\.cronTasksApi/);
   // The macOS agent installer is run by the server at startup, the powerd
   // installer is run inside the one admin prompt 「关盖运行」 raises, and the ASR
   // fetcher is run by hand: all three must stay executable or they would

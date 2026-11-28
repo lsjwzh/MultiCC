@@ -1,7 +1,7 @@
 'use strict';
 
 const { normalizedUsageTokenCount, usageTokenComponents, advanceUsageBucket } = require('../native/binding').getNative();
-const { projectHistoryUsage } = require('../codex/usage');
+const { projectHistoryUsage } = require('../native/binding').codexUsage;
 
 const EMPTY_ROLE_SNAPSHOT = Object.freeze({
   main: null,

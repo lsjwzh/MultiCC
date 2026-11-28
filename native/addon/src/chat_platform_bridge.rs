@@ -1,4 +1,4 @@
-//! Telegram/Discord policy, state, routes and ordered SDK effects. Node only
+//! Telegram, Discord and Slack policy, state, routes and ordered SDK effects. Node only
 //! supplies the platform SDKs, Express and the shared native bridge facades.
 use crate::host_api::*;
 use napi_derive::napi;
@@ -6,9 +6,19 @@ mod inbound;
 mod lifecycle;
 mod outbound;
 mod routes;
+mod slack;
+mod slack_text;
 
 fn telegram(s: L<'_>) -> Result<bool> {
     s.get(c"platform")?.is_string("telegram")
+}
+fn is_slack(s: L<'_>) -> Result<bool> {
+    s.get(c"platform")?.is_string("slack")
+}
+fn configured(s: L<'_>) -> Result<bool> {
+    let config = s.get(c"config")?;
+    Ok(config.get(c"botToken")?.truthy()?
+        && (!is_slack(s)? || config.get(c"appToken")?.truthy()?))
 }
 fn label(s: L<'_>) -> Result<String> {
     fold_string(s.get(c"label")?)
@@ -55,6 +65,9 @@ fn load_config<'a>(s: L<'a>, _: &mut [L<'a>]) -> Result<L<'a>> {
         json_call(s, c"parse", raw)
     })? {
         Some(config) => Ok(config),
+        None if is_slack(s)? => {
+            fields(s, &[("botToken", text(s, "")?), ("appToken", text(s, "")?)])
+        }
         None => fields(s, &[("botToken", text(s, "")?)]),
     }
 }
@@ -159,6 +172,7 @@ pub fn chat_platform_bridge_api(
     let title = match platform.as_str() {
         "telegram" => "Telegram",
         "discord" => "Discord",
+        "slack" => "Slack",
         _ => return Err(napi::Error::from_reason("unsupported chat platform")),
     };
     let path = p.get(c"path")?;

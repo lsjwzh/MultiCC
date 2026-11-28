@@ -5,7 +5,7 @@ const { isMonitorHandoffResult } = require('../native/binding').getMonitorAdmiss
 const { createMonitorControl } = require('../native/binding').getMonitorControl();
 const { createBackgroundHold } = require('../native/binding').backgroundHold;
 const { decideMissingResume } = require('../native/binding').missingResumeRecovery;
-const { envDigest } = require('../secrets-vault');
+const { envDigest } = require('../native/binding').secretsVault;
 
 // ── Persistent streaming CLI process per chat session ──
 //

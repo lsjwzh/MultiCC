@@ -15,7 +15,7 @@ const test = require('node:test');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'secrets-test-'));
 process.env.MULTICC_DATA_DIR = tmp;
-const vault = require('../src/secrets-vault');
+const vault = require('../src/native/binding').secretsVault;
 const { assertTestDir } = require('../src/paths');
 assertTestDir(tmp);
 

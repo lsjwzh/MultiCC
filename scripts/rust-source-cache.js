@@ -101,6 +101,7 @@ function probeAddon(file, node = process.execPath) {
   // The path rides an env var: the script is written to a temp file (see below),
   // so argv[1] is the script itself, not the addon.
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
+    if(['secretsVaultApi','auxHttpApi','codexUsageApi'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['assertSessionMemoryDependencies','mountSessionMemoryRoutes','sessionMemoryRuntimeApi','memoryBrowserApi',
       'taskReadModelHostApi','macosAgentProvisionApi','airSyncHostApi','airIndexHostApi','claudeEgressHost',
       'claudeOauthRefreshHost','orchestrationServicesApi','chatLifecycleApi','chatCoordinatorApi','chatRuntimeApi',
@@ -124,7 +125,7 @@ function probeAddon(file, node = process.execPath) {
       'readProviderCliValue','wakeSyncResult','hostPromptsApi','pushNotificationApi','searchRankLive','RustNativeCounters',
       'openCodeModelsApi','agyModelsApi','agyCliCatalogRead','modelCatalogsHostApi','providerModelsApi',
       'providerRouterAdapterApi','nativeVendorApi','codexAccountCatalogApi','claudeModelListApi','officialProviderCatalogApi','relayModelCatalogApi',
-      'voiceWordsScan','voiceConfigApi','voiceCorrectorApi','voiceLearnerApi','voiceMinerApi','voiceLaunchRegistryApi',
+      'voiceAsrApi','asrLocalApi','ttsServiceApi','voiceWordsScan','voiceConfigApi','voiceCorrectorApi','voiceLearnerApi','voiceMinerApi','voiceLaunchRegistryApi',
       'voiceGatewayDomainApi','voiceGatewayHostApi','voiceRuntimeHostApi','voiceSettingsHostApi','asrModelInstallerApi',
       'voiceSpeechValue','switchRouteResult','taskShellReferenceValue','taskShellContextApi',
       'openCodeFallbackLimit','createClassifyStateMachine'].some(key=>typeof a[key]!=='function')) process.exit(1);

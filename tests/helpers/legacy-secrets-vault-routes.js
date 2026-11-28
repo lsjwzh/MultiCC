@@ -15,7 +15,7 @@
 // the copied source is `module.exports.` -> `vault.` so the handlers reach the
 // live store.
 
-const vault = require('../../src/secrets-vault');
+const vault = require('../../src/native/binding').secretsVault;
 
 // Metadata-only projection — the only shape agents and list endpoints ever see.
 function meta(entry) {

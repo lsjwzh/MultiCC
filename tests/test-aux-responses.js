@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const { executeAuxHttp, parseResponsesStream } = require('../src/aux-http');
+const { executeAuxHttp, parseResponsesStream } = require('../src/native/binding').auxHttp;
 const { mountAuxGoalRoutes } = require('../src/routes/aux-goal');
 const { createCodexOfficialRelayHandler } = require('../src/native/binding').codexOfficialRelay;
 const { createOfficialCatalog } = require('../src/native/binding').officialCatalog;

@@ -1,0 +1,17 @@
+{
+  "voice-asr.cjs": {
+    "source": "plugins/voice/voice-asr.js",
+    "baseline": "4dd9f2c746c1fe5b3ca6e7d6a01da7504aef72a4",
+    "sha256": "2cd4701a582d4fadd2dd3c033f138cbc9d27b546dcd56346462abb42eaf6c092"
+  },
+  "asr-local.cjs": {
+    "source": "src/voice/asr-local.js",
+    "baseline": "4dd9f2c746c1fe5b3ca6e7d6a01da7504aef72a4",
+    "sha256": "2ca1f912dcb6c5a325a3fccc1834305acab045bb969344cd1f398d0056aea5c1"
+  },
+  "tts-service.cjs": {
+    "source": "src/voice/tts-service.js",
+    "baseline": "4dd9f2c746c1fe5b3ca6e7d6a01da7504aef72a4",
+    "sha256": "131980659809efed93d4e1b9f7efe6836ac50f2f9f379c7b3ddd281cf3091004"
+  }
+}

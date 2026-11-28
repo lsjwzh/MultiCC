@@ -186,6 +186,8 @@ pub mod voice_runtime_routes;
 pub mod voice_speech;
 pub mod voice_typed_terms;
 pub mod voice_words;
+pub mod voice_audio;
+pub mod voice_asr;
 pub mod windows_tools;
 pub mod workspace_release;
 pub mod worktree_sync;
@@ -262,3 +264,9 @@ pub mod chat_error_history;
 pub mod memory_distill;
 
 pub mod artifact_retention;
+
+pub mod vault_store;
+pub mod codex_usage;
+pub mod aux_http;
+pub mod recurring;
+pub mod cron_fanout;

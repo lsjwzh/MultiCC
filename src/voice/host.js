@@ -32,7 +32,7 @@ function createVoiceHost({
   acpAgentPath = path.join(__dirname, 'multicc-acp-agent.mjs'),
   uploadVoice,
   voice = require('../native/binding').voiceConfig,
-  asrLocal = require('./asr-local'),
+  asrLocal = require('../native/binding').asrLocal,
   // Local ASR weights are ~229MB fetched off the network, so the host decides
   // whether it may do that unprompted. Off by default: a host composed inside a
   // test must never reach HuggingFace. server.js opts in explicitly.

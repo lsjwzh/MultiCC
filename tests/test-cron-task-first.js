@@ -32,9 +32,7 @@ test('central cron migrates once and always delivers through one fixed Air task'
     lastSessionId: 'legacy-chat', taskId: 'tsk_empty_startup_race', taskSessionId: 'task-empty',
     createdAt: '2026-09-01T00:00:00.000Z',
   }]));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   const known = new Set(['tsk_legacy', 'tsk_empty_startup_race']);
   const deliveries = [];
   let creates = 0;
@@ -101,9 +99,7 @@ test('new cron creates its fixed Air task before the schedule becomes visible', 
   const previous = process.env.MULTICC_DATA_DIR;
   process.env.MULTICC_DATA_DIR = root;
   fs.writeFileSync(path.join(root, 'scheduled_tasks.json'), '[]');
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   t.after(() => {
     cron.stop();
     if (previous === undefined) delete process.env.MULTICC_DATA_DIR;
@@ -151,9 +147,7 @@ test('an archived fixed task stops the rule instead of spawning a session or a t
     taskId: 'tsk_archived', taskSessionId: 'task-archived', taskBindingVersion: 1,
     createdAt: '2026-09-01T00:00:00.000Z',
   }]));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   t.after(() => cron.stop());
   let creates = 0;
   const deliveries = [];
@@ -212,9 +206,7 @@ test('rebind creates exactly one replacement fixed task and refuses while the bi
     taskId: 'tsk_gone', taskBindingVersion: 1, taskBindingError: '固定任务已归档或只读',
     createdAt: '2026-09-01T00:00:00.000Z',
   }]));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   t.after(() => cron.stop());
   const created = [];
   const known = new Set(['tsk_gone']);
@@ -275,6 +267,45 @@ test('rebind creates exactly one replacement fixed task and refuses while the bi
   assert.equal(disk[0].taskRebindHistory.length, 1);
 });
 
+test('a pending lookup cannot overwrite a repaired cron binding', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-pending-rebind-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const binding = require('../src/native/binding');
+  const paths = binding.appPaths.createPaths({ dataDir: root });
+  fs.writeFileSync(paths.scheduledTasksFile, '[]');
+  const cron = binding.createCronTasks({ paths });
+  t.after(() => cron.stop());
+
+  for (const rejectOld of [false, true]) {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    let started;
+    const lookupStarted = new Promise(resolve => { started = resolve; });
+    const rule = { id: 'cron', dirId: 'd', name: 'rule', taskId: 'old', taskBindingVersion: 1 };
+    cron.init({
+      directories: new Map([['d', { id: 'd' }]]),
+      createTask: async () => ({ ok: true, taskId: 'new', sessionId: 'session-new' }),
+      getTask: async id => {
+        if (id === 'old') {
+          started();
+          await pending;
+          if (rejectOld) throw Object.assign(new Error('archived'), { code: 'task_archived' });
+        }
+        return { task: { id }, sessionId: 'session-' + id };
+      },
+    });
+    const lookup = cron._ensureTask(rule);
+    await lookupStarted;
+    await cron._rebindTask(rule, { force: true });
+    release();
+    const result = await lookup;
+    assert.equal(result.taskId, 'new');
+    assert.equal(result.entry.task.id, 'new');
+    assert.equal(rule.taskSessionId, 'session-new');
+    assert.equal(rule.taskBindingError, '');
+  }
+});
+
 // 执行记录: 每次触发都留一条(时间/来源/结果/去向/错误), 旧的滚出去, 有界。
 test('every firing leaves an execution record the panel can read back', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-runs-'));
@@ -291,9 +322,7 @@ test('every firing leaves an execution record the panel can read back', async t 
     taskId: 'tsk_runs', taskSessionId: 'task-runs', taskBindingVersion: 1,
     createdAt: '2026-09-01T00:00:00.000Z',
   }]));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   t.after(() => cron.stop());
 
   let failNext = false;
@@ -386,9 +415,7 @@ test('a schedule publishes the fixed sessions it owns so Air can exclude them', 
     { id: 'cron_b', name: '乙', dirId: 'dir-1', cli: 'claude', cron: '0 9 * * *', prompt: 'p',
       enabled: false, taskId: 'tsk_b', lastSessionId: 'chat-b', taskBindingVersion: 1 },
   ]));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   cron.init({
     directories: new Map([['dir-1', { id: 'dir-1', name: '项目一', path: root }]]),
     clis: ['claude'],
@@ -410,9 +437,7 @@ test('script rules run a local command and never touch a fixed Air task', async 
   const previous = process.env.MULTICC_DATA_DIR;
   process.env.MULTICC_DATA_DIR = root;
   fs.writeFileSync(path.join(root, 'scheduled_tasks.json'), '[]');
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   t.after(() => {
     cron.stop();
     if (previous === undefined) delete process.env.MULTICC_DATA_DIR;
@@ -631,9 +656,7 @@ test('GET /api/cron and /api/cron/calendar skip full task-entry reload and disk 
     taskId: 'tsk_fast', taskSessionId: 'task-fast', taskBindingVersion: 1,
     createdAt: '2026-09-01T00:00:00.000Z',
   }]));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   t.after(() => {
     cron.stop();
     if (previous === undefined) delete process.env.MULTICC_DATA_DIR;

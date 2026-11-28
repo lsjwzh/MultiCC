@@ -17,7 +17,7 @@ process.env.MULTICC_DATA_DIR = path.join(tmp, 'data');
 fs.mkdirSync(process.env.MULTICC_DATA_DIR);
 const { assertTestDir } = require('../src/paths');
 assertTestDir(process.env.MULTICC_DATA_DIR);
-const vault = require('../src/secrets-vault');
+const vault = require('../src/native/binding').secretsVault;
 const stream = require('../src/chat/chat-stream');
 
 const spawnLog = path.join(tmp, 'spawns.jsonl');

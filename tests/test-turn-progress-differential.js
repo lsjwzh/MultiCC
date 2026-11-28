@@ -1069,7 +1069,7 @@ test('wiring source guard: server.js creates one owner and wires every reader', 
   }
   const sources = [
     'server.js', 'src/chat/turn-engine-host.js', 'native/addon/src/chat_host/runtime.rs', 'native/addon/src/chat_finalize_host.rs',
-    'src/codex/usage.js', 'src/liveness/runtime.js',
+    'native/addon/src/codex_usage.rs', 'src/liveness/runtime.js',
   ].map(read).join('\n');
   assert.doesNotMatch(sources, /require\(['"]\.\/?(?:progress-heartbeat|turn-timing|turn-timeline|delivery-probe)['"]\)/);
   assert.doesNotMatch(sources, /require\(['"]\.\.\/chat\/(?:progress-heartbeat|turn-timing|turn-timeline|delivery-probe)['"]\)/);

@@ -2378,6 +2378,26 @@ exposeHostApi('missingResumeRecovery', () => {
   return getNative().missingResumeRecoveryApi(MissingResumeRecoveryError);
 });
 
+// Recurring automation: Rust owns rules, binding, history, cron projection and
+// git cache/refresh state. Node supplies existing host ports and module paths.
+exposeHostApi('fanoutMigration', () => getNative().fanoutMigrationApi({
+  pkgRoot: module.exports.appPaths.PKG_ROOT, logger: console,
+}));
+exposeHostApi('createCronTasks', () => (options = {}) => {
+  const native = getNative();
+  const paths = module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
+  return native.cronTasksApi({
+    paths, legacyStore: path.join(paths.pkgRoot, 'plugins', 'cron', 'scheduled_tasks.json'),
+    version: require('../../package.json').version || null,
+    logger: console, path, randomUUID: require('node:crypto').randomUUID,
+    atomicWriteJson: module.exports.runtimeSecurity.atomicWriteJson,
+    exec: require('node:child_process').exec, env: process.env, fanout: module.exports.fanoutMigration,
+    ...options,
+  });
+});
+exposeHostApi('cronTasks', () => module.exports.createCronTasks());
+exposeHostApi('gitPush', () => getNative().directoryPushApi(module.exports.gitQueue.runGit));
+
 exposeHostApi('gitQueue', () => getNative().defaultGitQueue(module.exports.repoActor.defaultRepoActor));
 
 exposeHostApi('gitService', () => getNative().gitServiceApi(module.exports.repoActor.defaultRepoActor, process.execPath,
@@ -2563,6 +2583,25 @@ exposeHostApi('voiceLearner', () => {
     atomicWriteJson: module.exports.runtimeSecurity.atomicWriteJson, basename: require('node:path').basename,
   });
 });
+// Voice policy/state/protocols live in Rust. These ports only carry Node IO
+// and sherpa's optional native SDK; they never load a retired implementation.
+exposeHostApi('asrLocal', () => getNative().asrLocalApi({
+  env: process.env, fs: require('node:fs'), path: require('node:path'),
+  homedir: () => require('node:os').homedir(), spawn: require('node:child_process').spawn,
+  loadSherpa: () => require('sherpa-onnx-node'),
+  correctWithHotwords: module.exports.voiceCorrector.correctWithHotwords,
+  voiceConfig: () => module.exports.voiceConfig,
+}));
+exposeHostApi('voiceAsr', () => getNative().voiceAsrApi({
+  env: process.env, WebSocket: require('ws'),
+  outboundAgent: module.exports.outbound.outboundAgent, asrLocal: module.exports.asrLocal,
+}));
+exposeHostApi('ttsService', () => getNative().ttsServiceApi({
+  env: process.env, WebSocket: require('ws'), https: require('node:https'),
+  spawn: require('node:child_process').spawn,
+  outboundAgent: module.exports.outbound.outboundAgent,
+  getChildProxyEnv: module.exports.outbound.getChildProxyEnv, policy: module.exports.outbound.policy,
+}));
 exposeHostApi('voiceConfig', () => getNative().voiceConfigApi({
   env: process.env, fs: require('node:fs'), atomicWriteJson: module.exports.runtimeSecurity.atomicWriteJson,
   paths: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }),
@@ -2770,3 +2809,15 @@ exposeHostApi('discordBridge', () => getNative().chatPlatformBridgeApi({
   outboundFetch: module.exports.outbound.outboundFetch,
   buildDiscordStrategy: require('../network/sdk-bridges').buildDiscordStrategy,
 }, 'discord'));
+exposeHostApi('slackBridge', () => getNative().chatPlatformBridgeApi({
+  ...chatPlatformBridgePorts(), loadSlack: () => require('@slack/bolt'),
+  outboundAgent: module.exports.outbound.outboundAgent,
+}, 'slack'));
+
+// Runtime batch 18: only host resources/context cross these native boundaries.
+exposeHostApi('secretsVault', () => getNative().secretsVaultApi({
+  STORE: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).secretsFile,
+  audit: module.exports.secretAudit, write: module.exports.runtimeSecurity.atomicWriteJson,
+}));
+exposeHostApi('auxHttp', () => getNative().auxHttpApi({ http: require('node:http'), https: require('node:https') }));
+exposeHostApi('codexUsage', () => getNative().codexUsageApi(() => getTurnProgress().field));

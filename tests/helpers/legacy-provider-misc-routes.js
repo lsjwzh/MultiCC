@@ -135,7 +135,7 @@ function vaultKeyResolver(vaultOf) {
 }
 
 function createRoutingTest(options = {}) {
-  const vaultOf = () => options.vault || require('../../src/secrets-vault');
+  const vaultOf = () => options.vault || require('../../src/native/binding').secretsVault;
   const jev = options.jev || createJevClient({
     fetchImpl: options.fetchImpl,
     resolveApiKey: vaultKeyResolver(vaultOf),

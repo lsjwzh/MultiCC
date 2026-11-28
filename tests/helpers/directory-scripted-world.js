@@ -28,7 +28,7 @@ const execFileAsync = promisify(execFile);
 
 const { realPathOf, isHomeOrAbove } = require('./legacy-path-safety');
 const { friendlyDirReason, dirReasonFix } = require('../../src/directories');
-const { directoryPushState, pushDirectory, invalidate } = require('../../plugins/utils/git-push');
+
 
 const CREATED = '2026-01-01T00:00:00.000Z';
 const COMMIT_ENV = {
@@ -172,7 +172,8 @@ function resolveCwd(current, arg) {
   return path.resolve(current, arg);
 }
 
-function state(dataRoot) {
+function state(dataRoot, overrides = {}) {
+  const { directoryPushState, pushDirectory, invalidate } = overrides.gitPush || require('../../src/native/binding').gitPush;
   const effectsFile = path.join(dataRoot, 'effects.log');
   if (!fs.existsSync(effectsFile)) fs.writeFileSync(effectsFile, '');
   let ids = 0;

@@ -8,6 +8,7 @@ const Module = require('node:module');
 const http = require('node:http');
 const { EventEmitter, once } = require('node:events');
 const WebSocket = require('ws');
+const { getNative } = require('../src/native/binding');
 
 function loadIsolated(relative, mocks) {
   const filename = path.resolve(__dirname, '..', relative);
@@ -37,10 +38,8 @@ for (const provider of ['openai', 'volcano', 'funasr']) {
   test(`${provider} 语音识别连接传递统一代理并保留认证信息`, () => {
     const { Socket, sockets } = fakeSockets();
     const agent = {};
-    const voice = loadIsolated('plugins/voice/voice-asr.js', {
-      ws: Socket,
-      '../../src/native/binding': { outbound: { outboundAgent: agent } },
-      '../../src/voice/asr-local': {},
+    const voice = getNative().voiceAsrApi({
+      env: process.env, WebSocket: Socket, outboundAgent: agent, asrLocal: {},
     });
     voice.applyConfig({ OPENAI_REALTIME_API_KEY: 'test-key', VOLC_ASR_APP_ID: 'test-app', VOLC_ASR_ACCESS_TOKEN: 'test-token', FUNASR_WS_URL: 'ws://127.0.0.1:10095' });
     const ws = peer();
@@ -57,7 +56,7 @@ for (const provider of ['openai', 'volcano', 'funasr']) {
 test('火山语音合成连接传递统一代理', () => {
   const { Socket, sockets } = fakeSockets();
   const agent = {};
-  const tts = loadIsolated('src/voice/tts-service.js', { ws: Socket, '../native/binding': { outbound: { outboundAgent: agent } } });
+  const tts = getNative().ttsServiceApi({ env: process.env, WebSocket: Socket, outboundAgent: agent });
   tts.applyConfig({ VOLC_TTS_APP_ID: 'test-app', VOLC_TTS_ACCESS_TOKEN: 'test-token' });
   const ws = peer();
   tts.handleTtsWs(ws);
@@ -93,13 +92,14 @@ function loadBridge(name, sdk, agent) {
     createChatWsClient: () => ({ connect: noop, disconnect: noop }),
   };
   let exports;
-  if (name === 'discord') {
+  if (name === 'discord' || name === 'slack') {
     exports = require('../src/native/binding').getNative().chatPlatformBridgeApi({
       express: require('express'), path, os: require('node:os'), fs: core.deps.fs,
       bridgeDir: path.resolve(__dirname, '../plugins/bridges'), bridgeGateway: core,
       bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
       loadDiscord: () => sdk(captured)['discord.js'], outboundFetch: noop, buildDiscordStrategy: noop,
-    }, 'discord');
+      loadSlack: () => sdk(captured)['@slack/bolt'], outboundAgent: agent,
+    }, name);
   } else if (name === 'feishu') {
     exports = require('../src/native/binding').imChannelHost.createFeishuBridge({
       fs: core.deps.fs,
@@ -109,15 +109,7 @@ function loadBridge(name, sdk, agent) {
       createLarkHttpInstance: () => ({}), outboundAgent: agent,
     });
   } else {
-    exports = loadIsolated(`plugins/bridges/${name}-bridge.js`, {
-      '../../src/native/binding': {
-        outbound: { outboundAgent: agent, outboundFetch: noop },
-        bridgeGateway: core,
-        bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
-      },
-      '../../src/network/sdk-bridges': { createLarkHttpInstance: () => ({}), buildDiscordStrategy: noop },
-      ...sdk(captured),
-    });
+    throw new Error(`Unknown bridge fixture: ${name}`);
   }
   exports.init({ persistedSessions: new Map(), chatSessions: new Map() });
   return { exports, captured };

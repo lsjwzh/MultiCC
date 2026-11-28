@@ -30,7 +30,19 @@ fn status<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     let target = s.get(c"target")?;
     let is_tg = telegram(s)?;
     let target = if target.truthy()? {
-        fields(s, &[(if is_tg { "chatId" } else { "channelId" }, target)])?
+        fields(
+            s,
+            &[(
+                if is_tg {
+                    "chatId"
+                } else if is_slack(s)? {
+                    "channel"
+                } else {
+                    "channelId"
+                },
+                target,
+            )],
+        )?
     } else {
         null(s)?
     };
@@ -41,14 +53,17 @@ fn status<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
             s,
             &[
                 ("running", s.get(c"running")?),
-                (
-                    "configured",
-                    flag(s, s.get(c"config")?.get(c"botToken")?.truthy()?)?,
-                ),
+                ("configured", flag(s, configured(s)?)?),
                 ("startTime", started),
                 ("gateway", rec),
                 (
-                    if is_tg { "polling" } else { "wsConnected" },
+                    if is_tg {
+                        "polling"
+                    } else if is_slack(s)? {
+                        "socketConnected"
+                    } else {
+                        "wsConnected"
+                    },
                     flag(s, s.get(c"client")?.truthy()?)?,
                 ),
                 ("chatConnected", call(s.get(c"chatWs")?, c"isOpen", &[])?),
@@ -65,12 +80,25 @@ fn status<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     )
 }
 fn config<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
-    let configured = s.get(c"config")?.get(c"botToken")?.truthy()?;
+    let configured = configured(s)?;
     let out = fields(s, &[])?;
-    if !telegram(s)? {
-        out.set(c"botToken", text(s, if configured { "***" } else { "" })?)?;
+    if is_slack(s)? {
+        let config = s.get(c"config")?;
+        out.set(c"configured", flag(s, configured)?)?;
+        out.set(
+            c"botTokenConfigured",
+            flag(s, config.get(c"botToken")?.truthy()?)?,
+        )?;
+        out.set(
+            c"appTokenConfigured",
+            flag(s, config.get(c"appToken")?.truthy()?)?,
+        )?;
+    } else {
+        if !telegram(s)? {
+            out.set(c"botToken", text(s, if configured { "***" } else { "" })?)?;
+        }
+        out.set(c"configured", flag(s, configured)?)?;
     }
-    out.set(c"configured", flag(s, configured)?)?;
     send(a[1], None, out)
 }
 fn save_config<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
@@ -80,12 +108,33 @@ fn save_config<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
         s.get(c"config")?
             .set(c"botToken", call(string(token)?, c"trim", &[])?)?;
     }
+    if is_slack(s)? {
+        let app_token = body.get(c"appToken")?;
+        if !app_token.undefined()? {
+            s.get(c"config")?
+                .set(c"appToken", call(string(app_token)?, c"trim", &[])?)?;
+        }
+    }
     call(
         s.get(c"ports")?.get(c"bridgeConfig")?,
         c"saveBridgeConfig",
         &[s.get(c"configFile")?, s.get(c"config")?],
     )?;
-    ok(a[1])
+    if is_slack(s)? {
+        send(
+            a[1],
+            None,
+            fields(
+                s,
+                &[
+                    ("ok", flag(s, true)?),
+                    ("configured", flag(s, configured(s)?)?),
+                ],
+            )?,
+        )
+    } else {
+        ok(a[1])
+    }
 }
 fn local_error<'a>(s: L<'a>, res: L<'a>, code: i32, e: napi::Error) -> Result<L<'a>> {
     let cause = caught(s, e)?;
@@ -168,7 +217,16 @@ fn manual_send<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
         }
         if body.get(c"target")?.equals(s.get(c"platform")?)? {
             let is_tg = telegram(s)?;
-            let target = body.get(if is_tg { c"chatId" } else { c"channelId" })?;
+            let target = if is_slack(s)? {
+                let channel = body.get(c"channel")?;
+                if channel.truthy()? {
+                    channel
+                } else {
+                    body.get(c"chatId")?
+                }
+            } else {
+                body.get(if is_tg { c"chatId" } else { c"channelId" })?
+            };
             if target.truthy()? {
                 let target = if is_tg {
                     let number = s.global()?.get(c"Number")?.call_plain(&[target])?;
@@ -188,6 +246,8 @@ fn manual_send<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
                     400,
                     if is_tg {
                         "No Telegram chat attached (provide chatId)"
+                    } else if is_slack(s)? {
+                        "No Slack channel attached (provide channel)"
                     } else {
                         "No Discord channel attached (provide channelId)"
                     },
@@ -202,7 +262,6 @@ fn manual_send<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
                 call(s.get(c"echo")?, c"add", &[value])?;
                 outbound::send_text(s, value)
             })?;
-            // SDK fetch/send failures were already swallowed by send_text.
             let sent = recover(sent, c, |c, a| {
                 c.set(c"responded", flag(c, true)?)?;
                 send(

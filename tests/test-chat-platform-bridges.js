@@ -98,6 +98,26 @@ function harness(t, platform, options = {}) {
       clients.push(client); return client;
     },
     loadDiscord() { sdkLoads++; if (options.loadError) throw options.loadError; return sdk; },
+    loadSlack() {
+      sdkLoads++;
+      return { App: class {
+        constructor(value) {
+          clientOptions = value;
+          clients.push(this);
+          this.client = {
+            auth: { test: async () => { if (options.authError) throw options.authError; return { user_id: 'U_SELF' }; } },
+            chat: { postMessage: async message => {
+              calls.push(['slack.send', message]);
+              if (options.sendError) throw options.sendError;
+              await options.sendGate?.promise;
+            } },
+          };
+        }
+        event(type, callback) { assert.equal(type, 'message'); this.message = callback; }
+        async start() { if (options.startError) throw options.startError; }
+        async stop() { await options.stopGate?.promise; if (options.stopError) throw options.stopError; }
+      } };
+    },
     outboundFetch, buildDiscordStrategy,
   }, platform);
   bridge.init({ persistedSessions: gateways, chatSessions: new Map(), savePersistedSessions: () => calls.push('gateway.save'), clearBridgeHistory, port: 4321 });
@@ -111,6 +131,7 @@ function harness(t, platform, options = {}) {
     async logs() { return (await request(h, 'GET', '/log')).body; },
     async inbound(value) {
       if (platform === 'telegram') await clients.at(-1).message(value);
+      else if (platform === 'slack') await clients.at(-1).message({ event: value });
       else {
         clients.at(-1).emit('messageCreate', value);
         await new Promise(resolve => setImmediate(resolve));
@@ -381,3 +402,98 @@ for (const platform of ['telegram', 'discord']) {
     });
   }
 }
+
+test('slack rich text preserves mentions, quotes, list order and UTF-16', async t => {
+  const h = harness(t, 'slack', { config: { botToken: 'fake', appToken: 'fake' } });
+  await h.create();
+  await h.bridge.startBridge();
+  const section = (...elements) => ({ type: 'rich_text_section', elements });
+  const leaf = text => ({ type: 'text', text });
+  const blocks = [{ type: 'rich_text', elements: [
+    { type: 'rich_text_quote', elements: [{ type: 'rich_text_list', style: 'ordered', elements: [
+      section(leaf('hello '), { type: 'user', user_id: 'U1' }),
+      section({ type: 'link', url: 'url' }, { type: 'channel', channel_id: 'C1' }, { type: 'emoji', name: 'hi' }),
+    ] }] },
+    { type: 'rich_text_preformatted', elements: [leaf('x\ud800'), { type: 'date', fallback: '!' }] },
+  ] }];
+  await h.inbound({ user: 'U1', text: '<@U_SELF> hi', channel: 'A', blocks });
+  assert.deepEqual(h.calls.filter(c => c[0] === 'ws.send'), [
+    ['ws.send', 'hi\n> 1. hello <@U1>\n> 2. url<#C1>:hi:\n```\nx\ud800!\n```'],
+  ]);
+  for (const ignored of [{ user: 'U_SELF' }, { bot_id: 'bot' }, { subtype: 'message_changed' }]) {
+    await h.inbound({ channel: 'ignored', text: 'ignored', ...ignored });
+  }
+  assert.deepEqual((await h.status()).currentChannel, { channel: 'A' });
+  await h.inbound({ channel: 'B', text: '<@U_SELF>' });
+  assert.deepEqual((await h.status()).currentChannel, { channel: 'B' });
+});
+
+test('slack chunks re-read the channel and transport failures reach the caller', async t => {
+  const gate = deferred();
+  const opts = { config: { botToken: 'fake', appToken: 'fake' }, sendGate: gate };
+  const h = harness(t, 'slack', opts);
+  await h.create();
+  await h.bridge.startBridge();
+  await h.inbound({ channel: 'A', text: '' });
+  const pending = h.wsOptions.onTurn('x'.repeat(3600));
+  const sent = () => h.calls.filter(c => c[0] === 'slack.send').map(c => c[1]);
+  assert.equal(sent()[0].channel, 'A');
+  await h.inbound({ channel: 'B', text: sent()[0].text });
+  gate.resolve();
+  await pending;
+  assert.deepEqual(sent().map(m => m.channel), ['A', 'B']);
+  opts.sendError = new Error('fake Slack unavailable');
+  await assert.rejects(h.wsOptions.onTurn('next turn'), e => e === opts.sendError);
+  const manual = await request(h, 'POST', '/send', { target: 'slack', chatId: 'C', text: 'manual' });
+  assert.equal(manual.statusCode, 500);
+  assert.deepEqual(manual.body, { error: 'fake Slack unavailable' });
+  assert.deepEqual((await h.status()).currentChannel, { channel: 'C' });
+});
+
+test('slack config, auth failure, startup rollback and asynchronous stop', async t => {
+  const opts = { config: {}, stopGate: deferred(), stopError: new Error('stop fault') };
+  const h = harness(t, 'slack', opts);
+  await assert.rejects(h.bridge.startBridge(), /botToken\/appToken/);
+  await h.create();
+  assert.deepEqual((await request(h, 'POST', '/config', { botToken: ' test ' })).body, { ok: true, configured: false });
+  assert.deepEqual((await request(h, 'GET', '/config')).body, {
+    botTokenConfigured: true, appTokenConfigured: false, configured: false,
+  });
+  await request(h, 'POST', '/config', { appToken: ' app ' });
+  assert.deepEqual(h.storage.config, { botToken: 'test', appToken: 'app' });
+  opts.authError = new Error('wrong token');
+  await assert.rejects(h.bridge.startBridge(), /Slack auth.test failed: wrong token/);
+  assert.equal((await h.status()).socketConnected, false);
+  delete opts.authError;
+  opts.startError = new Error('start fault');
+  await assert.rejects(h.bridge.startBridge(), e => e === opts.startError);
+  assert.equal((await h.status()).running, false);
+  assert.deepEqual(h.calls.filter(c => typeof c === 'string' && c.startsWith('ws.')), ['ws.connect', 'ws.disconnect']);
+  delete opts.startError;
+  await h.bridge.startBridge();
+  assert.equal(h.sdkLoads, 1);
+  assert.equal(h.bridge.stopBridge(), undefined);
+  assert.equal((await h.status()).socketConnected, false);
+  opts.stopGate.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok((await h.logs()).some(entry => entry.text === 'Slack stop failed: stop fault'));
+});
+
+test('slack /reset waits for the history owner and only acknowledges a successful clear', async t => {
+  let gate;
+  const h = harness(t, 'slack', {
+    config: { botToken: 'fake', appToken: 'fake' },
+    clearBridgeHistory: () => gate.promise,
+  });
+  await h.create();
+  await h.bridge.startBridge();
+  const replies = () => h.calls.filter(call => call[0] === 'slack.send').map(call => call[1].text);
+  for (const success of [false, true]) {
+    gate = deferred();
+    const pending = h.inbound({ channel: 'test-channel', text: '/RESET' });
+    assert.deepEqual(replies(), []);
+    if (success) gate.resolve(); else gate.reject(new Error('history unavailable'));
+    await pending;
+    assert.deepEqual(replies(), success ? ['✅ 已清空对话历史'] : []);
+  }
+});

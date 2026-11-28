@@ -1094,6 +1094,11 @@
       "lane": "deterministic"
     },
     {
+      "path": "tests/test-agy-resident.js",
+      "tier": "core",
+      "lane": "isolated"
+    },
+    {
       "path": "tests/test-air-artifacts-page-cdp.js",
       "tier": "flow",
       "lane": "cdp",
@@ -5328,6 +5333,16 @@
       ]
     },
     {
+      "path": "tests/test-recurring-native-differential.js",
+      "tier": "flow",
+      "lane": "deterministic",
+      "owner": "npm:test:core",
+      "entrypoints": [
+        "npm:test:task-first",
+        "npm:test:git-push"
+      ]
+    },
+    {
       "path": "tests/test-redaction-native.js",
       "tier": "core",
       "lane": "deterministic",
@@ -5593,6 +5608,15 @@
       "owner": "npm:test:security",
       "entrypoints": [
         "npm:test:security"
+      ]
+    },
+    {
+      "path": "tests/test-runtime-batch18-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:runtime-batch18",
+      "entrypoints": [
+        "npm:test:runtime-batch18"
       ]
     },
     {
@@ -6324,6 +6348,11 @@
       "entrypoints": [
         "npm:test:state"
       ]
+    },
+    {
+      "path": "tests/test-state-store-host.js",
+      "tier": "core",
+      "lane": "deterministic"
     },
     {
       "path": "tests/test-state-store.js",
@@ -7294,6 +7323,15 @@
       "owner": "npm:test:core",
       "entrypoints": [
         "npm:test:core"
+      ]
+    },
+    {
+      "path": "tests/test-voice-runtime-differential.js",
+      "tier": "core",
+      "lane": "deterministic",
+      "owner": "npm:test:network",
+      "entrypoints": [
+        "npm:test:network"
       ]
     },
     {

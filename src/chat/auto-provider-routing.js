@@ -46,7 +46,7 @@ function textHash(text) {
 // Vault-backed default so the feature works from a session's config alone: the
 // value is read in-process and never crosses a log line, an event or the wire.
 function defaultApiKeyResolver(name) {
-  const vault = require('../secrets-vault');
+  const vault = require('../native/binding').secretsVault;
   const result = vault.reveal(name, { source: 'auto_provider_routing' });
   return result && result.entry ? result.entry.value : null;
 }

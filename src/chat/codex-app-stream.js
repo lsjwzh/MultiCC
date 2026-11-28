@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { releaseResidentRoute, retainResidentRoute } = require('../native/binding').codexResidentRoute;
-const { envDigest } = require('../secrets-vault');
+const { envDigest } = require('../native/binding').secretsVault;
 const { getWriterGroup } = require('../native/binding');
 
 // ── Resident codex app-server process per chat session ──

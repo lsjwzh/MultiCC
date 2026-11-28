@@ -33,14 +33,21 @@
     },
     {
       "id": "plugins-bridges",
-      "title": "IM bridge 与 cron 插件",
-      "routes": 71,
+      "title": "IM bridge 插件",
+      "routes": 63,
       "state": "plugin",
       "files": [
-        "plugins/bridges/*.js",
-        "plugins/cron/cron-tasks.js"
+        "plugins/bridges/*.js"
       ],
-      "note": "wechat-ilink 15 + feishu/telegram/discord/slack 各 12 + cron 8。bridge.router 持有各平台 SDK 句柄与长连接。"
+      "note": "wechat-ilink 15 + feishu/telegram/discord/slack 各 12。bridge.router 持有各平台 SDK 句柄与长连接。"
+    },
+    {
+      "id": "recurring-tasks",
+      "title": "定时任务",
+      "routes": 8,
+      "state": "state-in-rust",
+      "files": ["native/addon/src/recurring/schedule.rs", "native/addon/src/recurring/routes.rs"],
+      "note": "Rust recurring owner 持有调度、固定任务绑定、历史与 CRUD；共享 core 解析器与脚本进程 owner，Node 仅装配既有宿主端口。"
     },
     {
       "id": "cli-tools",

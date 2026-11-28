@@ -15,7 +15,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-vault-test-'));
 process.env.MULTICC_DATA_DIR = dataDir;
 const { assertTestDir } = require('../src/paths');
 assertTestDir(dataDir);
-const vault = require('../src/secrets-vault');
+const vault = require('../src/native/binding').secretsVault;
 const { createSdkStream } = require('../src/chat/claude-sdk-stream');
 const { createStreamRouter } = require('../src/chat/stream-router');
 const { bundledClaudeCodeBinary } = require('../src/cli/cli-capability');

@@ -6,7 +6,7 @@
 
 const http = require('http');
 const https = require('https');
-const { parseResponsesStream } = require('../aux-http');
+const { parseResponsesStream } = require('../native/binding').auxHttp;
 
 const MAX_TOKENS = 8192;
 // Turns are not capped (a hard problem can take many rounds), so old tool output

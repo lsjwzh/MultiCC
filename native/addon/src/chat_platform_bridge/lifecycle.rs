@@ -23,6 +23,9 @@ pub(super) fn start(s: L<'_>) -> Result<L<'_>> {
     if s.get(c"running")?.truthy()? {
         return Err(error_value(s, "Bridge is already running")?.throw_error());
     }
+    if is_slack(s)? && !configured(s)? {
+        return Err(error_value(s, "未配置 Slack 应用凭证（botToken/appToken）")?.throw_error());
+    }
     if !s.get(c"config")?.get(c"botToken")?.truthy()? {
         return Err(error_value(s, &format!("未配置 {} Bot Token", label(s)?))?.throw_error());
     }
@@ -33,7 +36,9 @@ pub(super) fn start(s: L<'_>) -> Result<L<'_>> {
         )?
         .throw_error());
     }
-    if telegram(s)? {
+    if is_slack(s)? {
+        slack::start(s)
+    } else if telegram(s)? {
         let opts = fields(
             s,
             &[
@@ -180,7 +185,9 @@ pub(super) fn start(s: L<'_>) -> Result<L<'_>> {
 pub(super) fn stop(s: L<'_>) -> Result<L<'_>> {
     s.set(c"running", flag(s, false)?)?;
     let client = s.get(c"client")?;
-    if telegram(s)? {
+    if is_slack(s)? {
+        slack::stop(s, client)
+    } else if telegram(s)? {
         s.set(c"client", null(s)?)?;
         call(s.get(c"chatWs")?, c"disconnect", &[])?;
         let stopped = if client.truthy()? {

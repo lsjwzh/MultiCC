@@ -45,11 +45,11 @@ const {
   buildHandoffCheckpoint,
 } = require('../cli-switch');
 const { cliHandoffSummary } = require('../cli/switch-runtime');
-const { summarizeHistoryUsage } = require('../codex/usage');
+const { summarizeHistoryUsage } = require('../native/binding').codexUsage;
 const { buildReplayMessages } = require('../routes/chat-history/index');
 const chatStream = require('./chat-stream');
 const { spawnContractOf } = require('./held-turn-injection');
-const secretsVault = require('../secrets-vault');
+const secretsVault = require('../native/binding').secretsVault;
 const waitInjector = require('../wait/injector');
 const providers = require('../native/binding').providersHost;
 const { claudeSettingsExtra, appendAdapterAssistantText, adapterReasoningProgressEvent,

@@ -190,7 +190,7 @@ function testCron() {
   withTempDataDir(() => {
     const clock = fakeTimers();
     try {
-      const cron = freshRequire('../plugins/cron/cron-tasks');
+      const cron = require('../src/native/binding').createCronTasks();
       const deps = {
         directories: new Map(),
         createSessionRecord: async () => ({ ok: false }),

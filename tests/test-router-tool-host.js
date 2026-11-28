@@ -12,7 +12,7 @@ const express = require('express');
 process.env.MULTICC_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rth-test-'));
 const { isLocalRequest } = require('../src/request-locality');
 const { createRouterToolHost } = require('../src/router-tool-host');
-const vault = require('../src/secrets-vault');
+const vault = require('../src/native/binding').secretsVault;
 
 async function listen(server) {
   await new Promise((resolve, reject) => {

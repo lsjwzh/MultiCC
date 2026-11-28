@@ -29,9 +29,7 @@ async function setup(t, tasks) {
   const previous = process.env.MULTICC_DATA_DIR;
   process.env.MULTICC_DATA_DIR = root;
   fs.writeFileSync(path.join(root, 'scheduled_tasks.json'), JSON.stringify(tasks));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   cron.init({
     directories: new Map([['dir-1', { id: 'dir-1', name: '项目一', path: root }]]),
     clis: ['claude'],

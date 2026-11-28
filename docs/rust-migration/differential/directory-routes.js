@@ -334,7 +334,9 @@ main({
 
     const world = require(path.join(repo, 'tests/helpers/directory-scripted-world'));
     const legacy = require(path.join(repo, 'tests/helpers/legacy-directory-routes'));
-    legacy.mountLegacyDirectory(app, world.state(nodeData));
+    legacy.mountLegacyDirectory(app, world.state(nodeData, {
+      gitPush: require(path.join(repo, 'tests/helpers/load-frozen-cron-git')).loadFrozen('git-push'),
+    }));
     upstreamText = upstreamSource(repo);
   },
   ready: waitForFixture,

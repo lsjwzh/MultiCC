@@ -41,7 +41,7 @@ fn command<'a>(s: L<'a>, value: L<'a>) -> Result<L<'a>> {
         } else {
             "已停止"
         };
-        let configured = if s.get(c"config")?.get(c"botToken")?.truthy()? {
+        let configured = if configured(s)? {
             "已配置"
         } else {
             "未配置"
@@ -54,6 +54,8 @@ fn command<'a>(s: L<'a>, value: L<'a>) -> Result<L<'a>> {
         let connected = s.get(c"client")?.truthy()?;
         if telegram(s)? {
             text(s, &format!("🔗 桥接: {running}\n🤖 Bot: {configured} ({uptime})\n🔌 Gateway: {cli}\n📡 Polling: {}", if connected { "运行中" } else { "未启动" }))?
+        } else if is_slack(s)? {
+            text(s, &format!("🔗 桥接: {running}\n📱 应用: {configured} ({uptime})\n🤖 Gateway: {cli}\n🔌 Socket Mode: {}", if connected { "已建立" } else { "未建立" }))?
         } else {
             text(s, &format!("🔗 桥接: {running}\n📱 Bot Token: {configured} ({uptime})\n🤖 Gateway: {cli}\n🔌 长连接: {}", if connected { "已建立" } else { "未建立" }))?
         }
@@ -78,7 +80,12 @@ fn send_reply<'a>(s: L<'a>, reply: L<'a>) -> Result<L<'a>> {
 pub(super) fn receive<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     let msg = a[0];
     let handled = async_result(s, || {
-        let raw = if telegram(s)? {
+        let raw = if is_slack(s)? {
+            let Some(value) = slack_text::extract(s, msg)? else {
+                return undef(s);
+            };
+            value
+        } else if telegram(s)? {
             let value = msg.get(c"text")?;
             if !value.truthy()? {
                 return undef(s);
@@ -98,7 +105,9 @@ pub(super) fn receive<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
         };
         let value = call(string(fallback(raw, "".into())?)?, c"trim", &[])?;
         let context = msg.get(if telegram(s)? { c"chat" } else { c"channel" })?;
-        let target = if context.truthy()? {
+        let target = if is_slack(s)? {
+            context
+        } else if context.truthy()? {
             context.get(c"id")?
         } else {
             undef(s)?

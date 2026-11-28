@@ -77,7 +77,7 @@
 - 只归档，不合并、不删除：固定任务是 task-shell 身份，`merge-tasks` 会以
   `task_shell_identity_immutable` 拒绝把它作为合并目标，历史投递无法并回固定任务，只能用归档
   把它们从活动列表收敛掉（归档可恢复）。
-- 识别规则（`plugins/cron/fanout-migration.js`，纯函数选候选 + 一次批量写入）必须同时满足：
+- 识别规则（`native/core/src/cron_fanout.rs` 与 `native/addon/src/recurring/fanout.rs`，纯函数选候选 + 一次批量写入）必须同时满足：
   任务未归档；不是任何规则当前绑定的固定任务（含 disabled 规则，这是最关键的一道闸）；不是别的
   规则绑定的任务；`origin:session / recordType:observed`；没有 `chatSessionId`（没有属于自己的会话
   绑定）、没有 `ownerShellId`（不属于任何 shell）、没有 `routing`（不是派发出来的任务）；标题是

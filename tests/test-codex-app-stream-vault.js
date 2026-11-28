@@ -13,7 +13,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-vault-test-'));
 process.env.MULTICC_DATA_DIR = dataDir;
 const { assertTestDir } = require('../src/paths');
 assertTestDir(dataDir);
-const vault = require('../src/secrets-vault');
+const vault = require('../src/native/binding').secretsVault;
 const { createCodexAppStream } = require('../src/chat/codex-app-stream');
 const { writeFakeAppServer } = require('./helpers/fake-codex-app-server');
 

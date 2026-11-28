@@ -1,23 +1,11 @@
 //! Month projection for the cron panel, including disabled subscription hints.
 use super::cron_list::next_before;
-use chrono::{Datelike, Days, Duration, Local, NaiveDate, SecondsFormat, TimeZone};
-use multicc_core::{js::serde::truthy, session_records};
+use chrono::{Datelike, Days, Local, NaiveDate, SecondsFormat, TimeZone};
+use multicc_core::{js::serde::truthy, recurring::month_start, session_records};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 const POINTS_PER_RULE: usize = 200;
-
-fn month_start(date: NaiveDate) -> Option<i64> {
-    let midnight = date.and_hms_opt(0, 0, 0)?;
-    // JavaScript Date picks the earlier offset for an overlap and advances
-    // past a gap. A local calendar date can itself be skipped at the dateline.
-    (0..=1440).find_map(|minute| {
-        Local
-            .from_local_datetime(&(midnight + Duration::minutes(minute)))
-            .earliest()
-            .map(|time| time.timestamp_millis())
-    })
-}
 
 pub(super) fn render(tasks: &[Value], month: &str, now: i64) -> (u16, Value) {
     let bytes = month.as_bytes();
@@ -35,7 +23,8 @@ pub(super) fn render(tasks: &[Value], month: &str, now: i64) -> (u16, Value) {
         return (400, json!({"error": "month 范围无效"}));
     };
     let following = (first + Days::new(31)).with_day(1).unwrap();
-    let (Some(start), Some(end)) = (month_start(first), month_start(following)) else {
+    let (Some(start), Some(end)) = (month_start(first, &Local), month_start(following, &Local))
+    else {
         return (500, json!({"error": "invalid local time"}));
     };
     let mut days: BTreeMap<u32, Vec<Value>> = BTreeMap::new();

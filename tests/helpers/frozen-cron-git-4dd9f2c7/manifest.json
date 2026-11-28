@@ -1,0 +1,20 @@
+{
+  "plugins/cron/cron-tasks.js": {
+    "baseline": "4dd9f2c746c1fe5b3ca6e7d6a01da7504aef72a4",
+    "sha256": "b13bfc5ada0bf1bf2201afd8c43c09056ca75bc1b3359713f92a44b4d5c30912",
+    "lines": 740,
+    "file": "cron-tasks.js"
+  },
+  "plugins/cron/fanout-migration.js": {
+    "baseline": "4dd9f2c746c1fe5b3ca6e7d6a01da7504aef72a4",
+    "sha256": "6b13ed1349f6d2b0b05f774ad19d80b8a46031773f511913ad13134e51f3e149",
+    "lines": 264,
+    "file": "fanout-migration.js"
+  },
+  "plugins/utils/git-push.js": {
+    "baseline": "4dd9f2c746c1fe5b3ca6e7d6a01da7504aef72a4",
+    "sha256": "792560609441340c4a77b90a3e0bc053095d6150eb1f74e2922df825f23a7f54",
+    "lines": 141,
+    "file": "git-push.js"
+  }
+}

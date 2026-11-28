@@ -1,0 +1,11 @@
+{
+  "baseline": "4dd9f2c746c1fe5b3ca6e7d6a01da7504aef72a4",
+  "sources": {
+    "aux-http.js": "02ea7eab268b77bc62f241fa1a868cf23f83744162db4edc12f5e99c3f383c55",
+    "codex-usage.js": "b51c9183046bf65de0eed46cfe68509832f70c49ab180495dc798ba585fcb371",
+    "secrets-vault.js": "5e528d4506abab7856a0c348e8896fec99337b8a5f6d74fee324fa71b60ca9dc"
+  },
+  "dependencies": {
+    "native/addon/src/usage_observed.rs": "ed7fac6e005581309e027b496f8d1a96693da365133239d2a7d20d7f897115b4"
+  }
+}

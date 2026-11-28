@@ -130,7 +130,7 @@ function assertPort(portName, impl, methods) {
 const REPOSITORY_PORT = ['get', 'list', 'add', 'remove', 'findByPath', 'save', 'map'];
 
 // Git effects on a directory's main working tree (push state, quick-commit,
-// repo-readiness). Backed by plugins/utils/git-push + src/git-queue + the
+// repo-readiness). Backed by the frozen git-push oracle + the native git queue + the
 // stateful ensureDirGitReady() in server.js.
 const GIT_PORT = ['baseBranch', 'pushState', 'push', 'invalidatePushCache',
   'statusPorcelain', 'stageAll', 'commit', 'ensureReady', 'unmarkReady'];

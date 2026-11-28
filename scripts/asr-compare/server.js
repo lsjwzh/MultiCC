@@ -422,7 +422,7 @@ let sensePost = null;
 function applySensePost(text) {
   if (sensePost === null) {
     try {
-      const asr = require(path.join(__dirname, '..', '..', 'src', 'voice', 'asr-local'));
+      const asr = require(path.join(__dirname, '..', '..', 'src', 'native', 'binding')).asrLocal;
       sensePost = asr && typeof asr.applyVocabCorrections === 'function' ? asr.applyVocabCorrections : false;
     } catch (_) { sensePost = false; }
   }

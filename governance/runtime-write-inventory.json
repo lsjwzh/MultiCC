@@ -61,10 +61,6 @@
           "anchor": "\"feishu-gateway\""
         },
         {
-          "file": "plugins/bridges/slack-bridge.js",
-          "anchor": "const GATEWAY_CWD = path.join(os.homedir(), '.multicc', 'slack-gateway');"
-        },
-        {
           "file": "native/addon/src/im_channels.rs",
           "anchor": "\"gateway\""
         }
@@ -282,8 +278,8 @@
       "migrationStrategy": "Keep the explicit ASR_LOCAL_MODEL_DIR override; document backup/download behavior and never copy hundreds of MB during normal startup.",
       "sources": [
         {
-          "file": "src/voice/asr-local.js",
-          "anchor": "ASR_LOCAL_MODEL_DIR: process.env.ASR_LOCAL_MODEL_DIR || path.join(os.homedir(), '.multicc', 'asr-models'),"
+          "file": "native/addon/src/asr_local.rs",
+          "anchor": "c\"ASR_LOCAL_MODEL_DIR\""
         },
         {
           "file": "scripts/setup-local-asr.sh",
@@ -505,13 +501,13 @@
     {
       "id": "legacy-cron-reader",
       "classification": "compatibility-read",
-      "owner": "cron adapter",
+      "owner": "Rust recurring owner",
       "rationale": "A package-local scheduled task file is read once and copied forward; all saves already use MULTICC_DATA_DIR.",
       "migrationStrategy": "Remove the read fallback after one supported migration window; do not delete the legacy file automatically.",
       "sources": [
         {
-          "file": "plugins/cron/cron-tasks.js",
-          "anchor": "const LEGACY_STORE = path.join(__dirname, 'scheduled_tasks.json');"
+          "file": "native/addon/src/recurring/schedule.rs",
+          "anchor": "// legacy fallback: package-local scheduled_tasks.json"
         }
       ]
     },

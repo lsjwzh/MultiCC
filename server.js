@@ -50,29 +50,29 @@ const wechatBridge = nativeBinding.wechatBridge;
 const feishuBridge = nativeBinding.feishuBridge;
 const telegramBridge = nativeBinding.telegramBridge;
 const discordBridge = nativeBinding.discordBridge;
-const slackBridge = require('./plugins/bridges/slack-bridge');
-const voiceAsr = require('./plugins/voice/voice-asr');
-const ttsService = require('./src/voice/tts-service');
-const cronTasks = require('./plugins/cron/cron-tasks');
+const slackBridge = nativeBinding.slackBridge;
+const voiceAsr = nativeBinding.voiceAsr;
+const ttsService = nativeBinding.ttsService;
+const cronTasks = require('./src/native/binding').cronTasks;
 const webpush = require('web-push');
 const macosPower = require('./src/native/binding').macosPower;
 const batteryGuardRuntime = nativeBinding.batteryGuard.createSystemBatteryGuardRuntime({ logger: console }).start();
-const gitPush = require('./plugins/utils/git-push');
+const gitPush = require('./src/native/binding').gitPush;
 const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/native/binding').gitQueue;
 
 const crypto = require('crypto');
 const bus = require('./src/native/binding').eventBus;
 const state = require('./src/native/binding').stateContainer;
-const artifacts = nativeBinding.artifacts, docsRegistry = nativeBinding.docsRegistry, secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/native/binding').pluginsRoutes;
+const artifacts = nativeBinding.artifacts, docsRegistry = nativeBinding.docsRegistry, secretsVault = nativeBinding.secretsVault, pluginsRoutes = require('./src/native/binding').pluginsRoutes;
 const providers = require('./src/native/binding').providersHost;
 providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/native/binding').codexModelCatalog.startDefaultRuntime();
-const { executeAuxHttp } = require('./src/aux-http');
+const { executeAuxHttp } = require('./src/native/binding').auxHttp;
 const { createRoleTokenTracker } = nativeBinding.roleTokenTracker;
 const {
   createCodexUsageHost,
   projectHistoryUsage,
   summarizeHistoryUsage,
-} = require('./src/codex/usage');
+} = require('./src/native/binding').codexUsage;
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { appPaths: { createPaths }, getNative, findProviderReferences, messageComposer, bootstrapState,
   synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence, getSessionNotices } = require('./src/native/binding');

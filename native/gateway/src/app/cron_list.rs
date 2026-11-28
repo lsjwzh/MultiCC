@@ -7,7 +7,7 @@ use axum::{
     body::Body,
     http::{Method, Response},
 };
-use chrono::{Datelike, Local, TimeZone, Timelike};
+
 use multicc_core::{
     cli_switch, durable_state,
     http_gate::encode_uri_component,
@@ -78,77 +78,10 @@ pub(super) fn fallback(v: &Value, default: Value) -> Value {
     }
 }
 pub(super) fn field(field: &str, min: u32, max: u32) -> Option<u64> {
-    fn integer(s: &str) -> Option<u32> {
-        let s = s.trim().trim_start_matches('+');
-        s[..s.bytes().take_while(u8::is_ascii_digit).count()]
-            .parse()
-            .ok()
-    }
-    let mut mask = 0;
-    for part in field.split(',') {
-        let slash: Vec<_> = part.split('/').collect();
-        let (range, step) = if slash.len() == 2 {
-            (slash[0], integer(slash[1]).filter(|n| *n > 0)?)
-        } else {
-            (part, 1)
-        };
-        let (lo, hi) = if range == "*" {
-            (min, max)
-        } else if let Some((lo, hi)) = range.split_once('-') {
-            (integer(lo)?, integer(hi)?)
-        } else {
-            let n = integer(range)?;
-            (n, n)
-        };
-        if lo < min || hi > max || hi < lo {
-            return None;
-        }
-        for i in (lo..=hi).step_by(step as usize) {
-            mask |= 1 << i;
-        }
-    }
-    Some(mask)
+    multicc_core::recurring::field(field, min, max)
 }
 pub(super) fn next_before(expr: &str, now: i64, end: Option<i64>) -> Option<i64> {
-    let fields = expr.split_whitespace().collect::<Vec<_>>();
-    if fields.len() != 5 {
-        return None;
-    }
-    let bounds = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)];
-    let mut masks = [0; 5];
-    for i in 0..5 {
-        masks[i] = field(fields[i], bounds[i].0, bounds[i].1)?;
-    }
-    let has = |i: usize, n: u32| masks[i] & (1 << n) != 0;
-    let start = Local
-        .timestamp_millis_opt(now)
-        .single()?
-        .naive_local()
-        .with_second(0)?
-        .with_nanosecond(0)?;
-    let stop = end
-        .and_then(|ms| Local.timestamp_millis_opt(ms).single())
-        .map(|t| t.naive_local());
-    for n in 1..=366 * 1440 {
-        let dt = start + chrono::Duration::minutes(n);
-        if stop.is_some_and(|end| dt >= end) {
-            break;
-        }
-        if has(0, dt.minute()) && has(1, dt.hour()) && has(3, dt.month()) {
-            let dom = has(2, dt.day());
-            let dow = has(4, dt.weekday().num_days_from_sunday());
-            if if masks[2].count_ones() != 31 && masks[4].count_ones() != 7 {
-                dom || dow
-            } else {
-                dom && dow
-            } {
-                if let Some(t) = Local.from_local_datetime(&dt).earliest() {
-                    return Some(t.timestamp_millis());
-                }
-            }
-        }
-    }
-    None
+    multicc_core::recurring::Expression::parse(expr)?.next(now, end)
 }
 fn output_tail(v: &Value, limit: usize) -> js::JsValue {
     let raw = js::js_to_string(&js::from_serde(v));

@@ -404,9 +404,6 @@ async function legacyStore(dir, reference) {
     for (const entry of fs.readdirSync(path.join(root, 'plugins'))) {
       if (entry !== 'cron') fs.symlinkSync(path.join(root, 'plugins', entry), path.join(plugins, entry));
     }
-    for (const file of ['cron-tasks.js', 'fanout-migration.js']) {
-      fs.copyFileSync(path.join(root, 'plugins/cron', file), path.join(plugins, 'cron', file));
-    }
   }
   const rules = [
     { id: 'legacy-script', name: 'legacy', kind: 'script', enabled: false, command: 'do-not-run' },

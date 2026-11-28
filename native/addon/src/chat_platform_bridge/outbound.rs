@@ -21,7 +21,16 @@ fn next<'a>(c: L<'a>, _: &mut [L<'a>]) -> Result<L<'a>> {
     call(s.get(c"echo")?, c"add", &[body])?;
     c.set(c"body", body)?;
     let sent = async_result(c, || {
-        if telegram(s)? {
+        if is_slack(s)? {
+            call(
+                s.get(c"client")?.get(c"client")?.get(c"chat")?,
+                c"postMessage",
+                &[fields(
+                    s,
+                    &[("channel", s.get(c"target")?), ("text", body)],
+                )?],
+            )
+        } else if telegram(s)? {
             call(
                 s.get(c"client")?,
                 c"sendMessage",
@@ -31,16 +40,20 @@ fn next<'a>(c: L<'a>, _: &mut [L<'a>]) -> Result<L<'a>> {
             call(c.get(c"channel")?, c"send", &[body])
         }
     })?;
-    let sent = recover(sent, c, |c, a| {
-        let s = c.get(c"state")?;
-        c.set(c"failed", flag(c, true)?)?;
-        log(
-            s,
-            "error",
-            concat(s, &format!("{} send failed: ", label(s)?), message(a[0])?)?,
-        )?;
-        undef(s)
-    })?;
+    let sent = if is_slack(s)? {
+        sent
+    } else {
+        recover(sent, c, |c, a| {
+            let s = c.get(c"state")?;
+            c.set(c"failed", flag(c, true)?)?;
+            log(
+                s,
+                "error",
+                concat(s, &format!("{} send failed: ", label(s)?), message(a[0])?)?,
+            )?;
+            undef(s)
+        })?
+    };
     then(sent, c, |c, _| {
         let s = c.get(c"state")?;
         if c.get(c"failed")?.truthy()? {
@@ -62,6 +75,8 @@ pub(super) fn send_text<'a>(s: L<'a>, value: L<'a>) -> Result<L<'a>> {
             let cut = call(string(value)?, c"slice", &[num(s, 0.)?, num(s, 80.)?])?;
             let target = if telegram(s)? {
                 "Telegram chat"
+            } else if is_slack(s)? {
+                "Slack channel"
             } else {
                 "Discord channel"
             };
@@ -76,7 +91,13 @@ pub(super) fn send_text<'a>(s: L<'a>, value: L<'a>) -> Result<L<'a>> {
             )?;
             return undef(s);
         }
-        let max = if telegram(s)? { 3800. } else { 1900. };
+        let max = if telegram(s)? {
+            3800.
+        } else if is_slack(s)? {
+            3500.
+        } else {
+            1900.
+        };
         let bodies = call(
             s.get(c"ports")?.get(c"bridgeGateway")?,
             c"chunkOutbound",
@@ -91,7 +112,7 @@ pub(super) fn send_text<'a>(s: L<'a>, value: L<'a>) -> Result<L<'a>> {
                 ("failed", flag(s, false)?),
             ],
         )?;
-        if telegram(s)? {
+        if telegram(s)? || is_slack(s)? {
             next(c, &mut [])
         } else {
             let fetched = async_result(s, || {

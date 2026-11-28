@@ -8,7 +8,7 @@ const test = require('node:test');
 
 const planning = require('../src/native/binding').taskPlanning;
 const { mkRuntime } = require('./helpers/task-board-runtime');
-const migration = require('../plugins/cron/fanout-migration');
+const migration = require('../src/native/binding').fanoutMigration;
 
 const PROMPT = '检查 Mafit 全链路健康，以 curl -s http://127.0.0.1:8770/api/health 的 ok / mafit_service 为准；健康项跳过，不无谓重启。';
 
@@ -191,9 +191,7 @@ test('the cron runtime runs the cleanup once after boot and archives through the
 
   const tasks = { tsk_fixed: fixedTask({ id: 'tsk_fixed' }), tsk_residue: residue({ id: 'tsk_residue' }) };
   fs.writeFileSync(path.join(root, 'scheduled_tasks.json'), JSON.stringify([rule()]));
-  const modulePath = require.resolve('../plugins/cron/cron-tasks');
-  delete require.cache[modulePath];
-  const cron = require(modulePath);
+  const cron = require('../src/native/binding').createCronTasks();
   const archived = [];
   cron.init({
     directories: new Map([['dir-1', { id: 'dir-1', name: '项目一', path: root }]]),

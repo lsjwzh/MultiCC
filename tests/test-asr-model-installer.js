@@ -25,7 +25,7 @@ function tempRoot(t) {
   return root;
 }
 
-// Mirrors src/voice/asr-local.js: the recognizer is usable only when both the
+// Mirrors native/addon/src/asr_local.rs: the recognizer is usable only when both the
 // weights and the vocabulary are in place. Keeping the same rule here means a
 // passing "ready" test also proves the installer writes where the reader looks.
 function fakeAsrLocal(root, overrides = {}) {

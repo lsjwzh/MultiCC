@@ -7,7 +7,7 @@ console.log('=== Realtime Voice Implementation Validation ===\n');
 // Test 1: TTS Service loads
 console.log('[Test 1] TTS Service Loading');
 try {
-  const tts = require('../src/voice/tts-service.js');
+  const tts = require('../src/native/binding').ttsService;
   assert(typeof tts.handleTtsWs === 'function', 'handleTtsWs should be a function');
   assert(typeof tts.providerStatus === 'function', 'providerStatus should be a function');
   assert(typeof tts.applyConfig === 'function', 'applyConfig should be a function');
@@ -72,13 +72,13 @@ for (const f of testPages) {
 // Test 5: Server.js has TTS integration
 console.log('\n[Test 5] Server Integration');
 const serverContent = fs.readFileSync('server.js', 'utf8');
-if (serverContent.includes("ttsService.handleTtsWs")) {
+if (fs.readFileSync('src/ws/connection-router.js', 'utf8').includes("ttsService.handleTtsWs")) {
   console.log('  ✅ TTS WebSocket route integrated');
 } else {
   console.log('  ❌ TTS WebSocket route not found');
   process.exit(1);
 }
-if (serverContent.includes("require('../src/voice/tts-service')")) {
+if (serverContent.includes("const ttsService = nativeBinding.ttsService;")) {
   console.log('  ✅ TTS service imported');
 } else {
   console.log('  ❌ TTS service import not found');

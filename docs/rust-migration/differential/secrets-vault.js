@@ -537,7 +537,7 @@ const spec = {
     scriptPath = path.join(work, 'secrets-vault-script.json');
     fs.writeFileSync(scriptPath, JSON.stringify({ secret: {} }));
     legacy = require(path.join(repo, 'tests/helpers/legacy-secrets-vault-routes'));
-    vault = require(path.join(repo, 'src/secrets-vault'));
+    vault = require(path.join(repo, 'src/native/binding')).secretsVault;
     const { createSecretsVaultHost } = require(path.join(repo, 'src/routes/secrets-vault-host'));
     handleHost = createSecretsVaultHost(vault);
     legacy.mount(app);

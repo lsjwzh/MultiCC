@@ -28,7 +28,7 @@ test('public session DTO exposes only safe hibernation lifecycle fields', () => 
 test('host composition gates every real ingress and keeps view paths passive', () => {
   const server = read('server.js');
   const engine = read('src/chat/turn-engine-host.js');
-  const cron = read('plugins/cron/cron-tasks.js');
+  const cron = read('native/addon/src/recurring/schedule.rs');
   const board = read('native/addon/src/task_board_runtime/projection/view.rs');
   assert.match(server, /reconcileStartup\(workspaceStartupProgress\).*initWorktrees/s);
   assert.match(engine, /getSessionHibernation/);

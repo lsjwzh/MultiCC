@@ -2,38 +2,29 @@
 
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
+const { getNative } = require('../src/native/binding');
 const test = require('node:test');
 
 function harness(getChildProxyEnv, proxyForUrl = async () => 'http://proxy.test:8080') {
-  const file = path.resolve(__dirname, '../src/voice/tts-service.js');
-  const realRequire = createRequire(file);
   const calls = [];
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.kill = signal => calls.push({ signal });
-  const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
-    module, exports: module.exports, process, Buffer, setTimeout, clearTimeout,
+  const tts = getNative().ttsServiceApi({
+    env: process.env, WebSocket: require('ws'), https: require('node:https'),
+    getChildProxyEnv, outboundAgent: {}, policy: { proxyForUrl },
     console: { log() {}, error() {}, warn() {} },
-    require(name) {
-      if (name === '../native/binding') return { outbound: { getChildProxyEnv, outboundAgent: {}, policy: { proxyForUrl } } };
-      if (name === 'child_process') return { spawn(command, args, options) {
-        calls.push({ command, args, options });
-        return child;
-      } };
-      return realRequire(name);
+    spawn(command, args, options) {
+      calls.push({ command, args, options });
+      return child;
     },
-  }, { filename: file });
+  });
   const socket = new EventEmitter();
   socket.readyState = 1;
   socket.messages = [];
   socket.send = message => socket.messages.push(message);
-  module.exports.handleTtsWs(socket, {});
+  tts.handleTtsWs(socket, {});
   return { socket, calls, child };
 }
 

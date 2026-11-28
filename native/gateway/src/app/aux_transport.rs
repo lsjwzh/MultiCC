@@ -188,15 +188,8 @@ fn message(error: &Value, fallback: &str) -> String {
 fn parse(wire: &str, sse: bool, data: &str) -> Result<String, String> {
     let v: Value = if wire == "responses" && sse {
         let mut completed = None;
-        for event in data.replace("\r\n", "\n").split("\n\n") {
-            let data = event
-                .lines()
-                .filter_map(|l| l.strip_prefix("data:").map(str::trim_start))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if data.is_empty() || data == "[DONE]" {
-                continue;
-            }
+        for payload in multicc_core::aux_http::payloads(&multicc_core::js::JsString::from(data)) {
+            let data = payload.to_string_lossy();
             let v: Value = serde_json::from_str(&data).map_err(|_| "Invalid Aux response")?;
             match text(&v["type"]) {
                 "response.completed" => completed = Some(v["response"].clone()),
