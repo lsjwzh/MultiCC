@@ -315,12 +315,23 @@ impl<'a> History<'a> {
             c"filter",
             &[L::new(self.env, filter.into_unknown(self.env)?)],
         )?;
+        let disk_rows = owned
+            && self.ports.get(c"history")?.get(c"fileFor")?.kind()?
+                == sys::ValueType::napi_function;
+        let mut row_index = 0;
+        let session_key = key(session)?.to_string_lossy();
         selected.for_each(|entry| {
+            let pos = row_index;
+            row_index += 1;
             // Repository-owned reads are fresh JSON objects that have not been
             // exposed to any other caller. Normalizing those in place avoids a
             // second full object graph; generic ports and replace inputs keep
             // the old isolated-clone contract.
             let message = if owned { entry } else { clone_json(entry)? };
+            if disk_rows && message.get(c"role")?.truthy()? && !message.get(c"id")?.truthy()? {
+                let id = multicc_core::message_page::disk_legacy_id(&session_key, pos);
+                message.assign(c"id", text(self.anchor, &id)?)?;
+            }
             let message = drop_thinking_copies(clean_thinking(self.env, message)?)?;
             if message.get(c"role")?.truthy()? && !message.get(c"id")?.truthy()? {
                 message.assign(c"id", string(self.port(c"idFactory", &[])?)?)?;

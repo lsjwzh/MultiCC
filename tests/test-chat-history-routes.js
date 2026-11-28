@@ -98,6 +98,11 @@ test('legacy IDs are made durable before hiding, and visibility follows a reposi
   const history = createChatHistoryFileRepository({ dataDir });
   history.write('s1', [{ role: 'user', content: 'legacy evidence', taskId: 't1' }]);
   const fx = fixture({ history });
+  const id = fx.runtime.paginate('s1').messages[0].id;
+  assert.match(id, /^m_legacy_[0-9a-f]{64}$/);
+  const cold = fixture({ history: createChatHistoryFileRepository({ dataDir }) });
+  assert.equal(cold.runtime.paginate('s1').messages[0].id, id);
+  cold.runtime.stop();
   await fx.runtime.clearHistory('s1', { keep: 0 }, fx.chatState);
   fx.runtime.stop();
   assert.equal(history.renameSession('s1', 'renamed'), true);

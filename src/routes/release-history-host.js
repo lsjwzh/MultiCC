@@ -71,7 +71,6 @@ const OPS = {
   'udid-result': { method: 'GET', path: '/ios-ota/udid/result/:token', params: ['token'] },
   'udid-callback': { method: 'POST', path: '/ios-ota/udid/callback/:token', params: ['token'] },
   'message-delete': { method: 'DELETE', path: '/api/sessions/:id/messages/:msgId', params: ['id', 'msgId'] },
-  'history': { method: 'GET', path: '/api/sessions/:id/history', params: ['id'] },
   'context-level': { method: 'GET', path: '/api/sessions/:id/context-level', params: ['id'] },
   'apk-download': { method: 'GET', path: '/multicc.apk', params: [] },
 };

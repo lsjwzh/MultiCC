@@ -58,29 +58,19 @@ test('/api/air 不把迁移的内部 task 全表随正文发出去', async () =>
   assert.ok(!body.includes(marker), '正文里不该出现任务体内容');
 });
 
-test('/api/air/tasks/:id 详情同样由正文派生校验器（3.5MB 的消息正文不再每 15 秒重传）', async () => {
-  let messages = [{ id: 'm1', role: 'user', content: 'x'.repeat(64) }];
-  // 详情正文与 ETag 都在宿主定稿：前门只做 304 判定后原样发出。
+test('Air 详情宿主只请求元数据和范围，正文与条件请求由网关处理', async () => {
   const air = mountAir({
     admission: { snapshot: () => ({ workspaces: [], leases: [], budgets: {} }), capacityReason: () => null,
       deliveryEvidence: () => ({ run: null, integration: null }) },
-    records: new Map([['s', { id: 's', dirId: 'd1', kind: 'chat', cli: 'codex' }]]), directories: new Map([['d1', { id: 'd1', path: '/repo' }]]),
-    getBoard: () => ({ tasks: {} }), clis: ['codex'],
-    shell: { taskEntry: async id => ({ ok: true, task: { id, title: '任务' }, messages, execution: { busy: false }, sessionId: 's' }),
-      attributionCandidate: () => null, roleBindings: () => null },
+    records: new Map([['s', { id: 's', kind: 'chat' }]]), directories: new Map(),
+    shell: { taskEntry: async (id, options) => {
+      assert.deepEqual(options, { includeMessages: false, messageScope: true });
+      return {ok:true, task:{id}, sessionId:'s', messageScope:{sessionIds:['s']}};
+    }, attributionCandidate: () => null, roleBindings: () => null },
   });
-  const first = await air.ok({ op: 'task-detail', taskId: 't' });
-  assert.deepEqual(JSON.parse(first.body).messages, messages);
-  assert.match(first.etag, /^W\//);
-
-  const same = await air.ok({ op: 'task-detail', taskId: 't' });
-  assert.equal(same.etag, first.etag, '同一份详情必须给出同一个校验器');
-  assert.equal(same.body, first.body);
-
-  messages = [...messages, { id: 'm2', role: 'assistant', content: 'y' }];
-  const next = await air.ok({ op: 'task-detail', taskId: 't' });
-  assert.notEqual(next.etag, first.etag, '新消息到达时必须换校验器，前门才会给完整详情');
-  assert.equal(JSON.parse(next.body).messages.length, 2);
+  const data = await air.ok({op:'task-detail-scope', taskId:'t'});
+  assert.deepEqual(data.messageScope.sessionIds,['s']);
+  assert.equal(data.body, undefined);
 });
 
 test('Air 前端显式发条件请求，并在 304 时跳过解析与重画', () => {

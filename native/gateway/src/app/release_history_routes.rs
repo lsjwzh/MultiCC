@@ -197,7 +197,7 @@ async fn guarded(
     index: usize,
     parts: &[&str],
     host: u16,
-) -> Result<String, Response<Body>> {
+) -> Result<(String, Value), Response<Body>> {
     let id = decoded(ctx, parts.get(index).copied().unwrap_or(""))?;
     let found = match guard_facts(host, &id, ctx.method.as_str()).await {
         Ok(found) => found,
@@ -206,7 +206,7 @@ async fn guarded(
     if found.internal {
         return Err(guarded_404(ctx, false));
     }
-    Ok(id)
+    Ok((id, found.record))
 }
 
 /// What `express.raw` left in `req.body` for the device callback. The retired
@@ -297,9 +297,13 @@ pub async fn handle(
         _ => guard_index(&parts),
     };
     let mut session_id = None;
+    let mut record = Value::Null;
     if let Some(index) = guard_segment {
         match guarded(ctx, index, &parts, host).await {
-            Ok(id) => session_id = Some(id),
+            Ok((id, r)) => {
+                session_id = Some(id);
+                record = r;
+            }
             Err(refusal) => return refusal,
         }
     }
@@ -328,6 +332,29 @@ pub async fn handle(
             Ok(value) => request_body = value,
             Err(error) => return express::error(ctx, error.status, error.reason),
         }
+    }
+
+    if route == Route::History {
+        if record.is_null() {
+            return express::json(
+                ctx,
+                404,
+                &serde_json::json!({"error":"session not found"}),
+                &[],
+            );
+        }
+        let scope = multicc_core::message_page::Scope {
+            session_ids: session_id.into_iter().collect(),
+            ..Default::default()
+        };
+        return super::message_page::serve(
+            app,
+            ctx,
+            serde_json::json!({}),
+            scope,
+            record["cli"] == "codex-exp",
+        )
+        .await;
     }
 
     if route == Route::Root {

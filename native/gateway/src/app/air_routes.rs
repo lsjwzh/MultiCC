@@ -22,10 +22,9 @@
 //! subprocesses, the pins/todos/ignore state files and the live-sync
 //! broadcaster.
 //!
-//! `GET /api/air` and `GET /api/air/tasks/:id` are the only conditional reads:
-//! Node serializes the body and derives the weak ETag (`W/"<sha1 base64url>"`,
-//! or the summary's cached tag), and this module forwards both byte for byte —
-//! the snapshot is a 4s hot path and must not be copied or re-serialized here.
+//! The snapshot host supplies its cached bytes and ETag. For task details the
+//! host resolves task access and metadata; the gateway reads and serializes
+//! the requested transcript page and computes its weak ETag.
 //!
 //! Every write handler awaits one host round trip that mutates a state file,
 //! the task store or a worktree, so [`App::air_write`] serializes them the way
@@ -409,10 +408,16 @@ pub async fn handle(
     } else {
         None
     };
-    answer(ctx, route, body, host_port_num).await
+    answer(app, ctx, route, body, host_port_num).await
 }
 
-async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Response<Body> {
+async fn answer(
+    app: &App,
+    ctx: &RequestCtx,
+    route: Route,
+    body: &Value,
+    host: u16,
+) -> Response<Body> {
     let parts = segments(&ctx.path).unwrap_or_default();
     // The retired catch arm: `error.code || 'air_request_failed'` with the
     // thrown message only when `error.status` was truthy.
@@ -535,17 +540,26 @@ async fn answer(ctx: &RequestCtx, route: Route, body: &Value, host: u16) -> Resp
                 Ok(value) => value,
                 Err(response) => return response,
             };
-            conditional(
+            let mut detail = match call(
                 ctx,
-                call(
-                    ctx,
-                    host,
-                    payload("task-detail", vec![("taskId", json!(id))]),
-                    AIR,
-                    false,
-                )
-                .await,
+                host,
+                payload("task-detail-scope", vec![("taskId", json!(id))]),
+                AIR,
+                false,
             )
+            .await
+            {
+                Ok(detail) => detail,
+                Err(response) => return response,
+            };
+            let Some(scope) = detail
+                .as_object_mut()
+                .and_then(|o| o.remove("messageScope"))
+                .and_then(|s| serde_json::from_value(s).ok())
+            else {
+                return unavailable(ctx);
+            };
+            super::message_page::serve(app, ctx, detail, scope, false).await
         }
         Route::TaskOpenGet => {
             let id = match decoded(ctx, part(&parts, 2)) {

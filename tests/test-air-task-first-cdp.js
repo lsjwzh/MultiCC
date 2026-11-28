@@ -238,7 +238,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         headerCenter:Math.round(header.left+header.width/2), headerTop:Math.round(header.top),
         headerHeight:Math.round(header.height), pinBottom:Math.round(tabs[0].bottom), titleTop:Math.round(title.top) };})()`);
     assert.equal(pinPair.dir, 'row', '这一排是横排的（nav 的 flex-direction:column 不许漏进来）');
-    assert.equal(pinPair.justify, 'flex-start', '溢出时从第一枚开始横向滚动');
+    // Chromium also serializes flex-start as flow-start for this row.
+    assert.ok(['flex-start', 'flow-start'].includes(pinPair.justify), '溢出时从第一枚开始横向滚动');
     assert.equal(pinPair.tops[0], pinPair.tops[1], '两个 pin 并排在同一行：' + JSON.stringify(pinPair.tops));
     assert.ok(Math.abs(pinPair.rowCenter - pinPair.headerCenter) <= 1,
       `这排的中心就是页头的中心（${pinPair.rowCenter} vs ${pinPair.headerCenter}）`);
