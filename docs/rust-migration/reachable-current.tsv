@@ -1,6 +1,6 @@
 文件	物理行数	可达调用方
 plugins/bridges/telegram-client-adapter.js	121	src/native/binding.js
-server.js	2860	—
+server.js	2897	—
 src/annotation-live.js	107	src/routes/events-host.js
 src/apk-distribution.js	420	server.js
 src/cdp-relay.js	279	src/chrome-cdp.js
@@ -46,7 +46,7 @@ src/codex-auth/official-oauth.js	349	src/routes/codex-accounts.js
 src/commander-migration.js	297	server.js
 src/detached.js	265	server.js
 src/directories.js	295	server.js,src/routes/macos-privacy.js
-src/dispatch/gateway-host.js	657	server.js
+src/dispatch/gateway-host.js	663	server.js
 src/dispatch/targeting.js	235	server.js,src/dispatch/gateway-host.js
 src/doctor/environment.js	304	src/doctor/service.js
 src/doctor/llm-loop.js	175	src/doctor/environment.js,src/doctor/service.js
@@ -87,10 +87,10 @@ src/push/runtime.js	378	server.js
 src/push/service.js	223	server.js
 src/quota-managed-browser.js	453	src/routes/aliyun-quota.js,src/routes/claude-usage-quota.js,src/routes/kimi-auth.js,src/routes/kimi-quota.js,src/routes/opencode-quota.js,src/routes/qoder-quota.js,src/routes/quota-host.js
 src/quota/opencode-zen.js	314	src/routes/opencode-quota.js
-src/router-tool-host.js	312	server.js
-src/router-tool-runtime.js	1368	src/router-tool-host.js
+src/router-tool-host.js	319	server.js
+src/router-tool-runtime.js	1790	src/router-tool-host.js
 src/routes/account-routes-host.js	318	server.js,src/routes/session-create.js
-src/routes/agent-resources.js	237	server.js
+src/routes/agent-resources.js	238	server.js
 src/routes/aliyun-quota.js	147	src/routes/quota-host.js
 src/routes/auth.js	143	server.js
 src/routes/aux-goal.js	891	server.js
@@ -114,8 +114,8 @@ src/routes/kimi-quota.js	356	src/routes/aliyun-quota.js,src/routes/quota-host.js
 src/routes/macos-privacy.js	220	src/routes/host-ops-host.js
 src/routes/opencode-quota.js	245	src/routes/quota-host.js
 src/routes/ops-terminal.js	356	src/doctor/service.js,src/routes/host-ops-host.js
-src/routes/orchestration-host.js	191	server.js,src/routes/session-admin.js
-src/routes/orchestration.js	668	server.js
+src/routes/orchestration-host.js	200	server.js,src/routes/session-admin.js
+src/routes/orchestration.js	981	server.js
 src/routes/provider-balance-host.js	105	server.js
 src/routes/providers-host.js	617	src/routes/providers.js
 src/routes/providers.js	156	server.js

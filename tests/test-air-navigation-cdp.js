@@ -159,7 +159,9 @@ test('the three-step guide stays resumable and offers skippable macOS remote con
     await page.evaluate(`document.querySelector('#quick-task-input').value = '查看项目文件';
       document.querySelector('#quick-task-form').requestSubmit()`);
     assert.ok(await page.waitFor(`location.search.includes('task=first-task')`));
-    assert.equal(await page.evaluate(`document.querySelector('#onboarding-progress').textContent`), '3 / 3');
+    // Navigation can finish before the refreshed task list renders the guide.
+    assert.ok(await page.waitFor(`document.querySelector('#onboarding-progress').textContent === '3 / 3'`),
+      'creating the first task completes all three guide steps');
     assert.ok(await page.evaluate(`document.querySelector('#onboarding-entry-remote').checkVisibility()`));
     assert.deepEqual(opens, []);
     await page.evaluate(`document.querySelector('#onboarding-entry').click(); document.querySelector('#setup-remote-configure').click()`);
