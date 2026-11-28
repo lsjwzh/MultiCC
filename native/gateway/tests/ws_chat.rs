@@ -462,6 +462,36 @@ async fn terminate_drops_the_connection_without_a_close_frame() {
     assert_eq!(closed["code"], 1006);
 }
 
+#[tokio::test(start_paused = true)]
+async fn late_heartbeat_tick_leaves_time_for_a_pong() {
+    use futures_util::FutureExt;
+    use multicc_core::workspace_sockets::{Heartbeat, HeartbeatTick};
+    let mut timer = multicc_gateway::ws_chat::heartbeat_interval();
+    let mut heartbeat = Heartbeat::default();
+    let period = Duration::from_secs(30);
+    for _ in 0..3 {
+        timer.tick().await;
+        assert_eq!(
+            heartbeat.tick_at(tokio::time::Instant::now().into_std()),
+            HeartbeatTick::Ping
+        );
+    }
+    tokio::time::advance(4 * period).await;
+    timer.tick().await;
+    assert_eq!(
+        heartbeat.tick_at(tokio::time::Instant::now().into_std()),
+        HeartbeatTick::Ping
+    );
+    assert!(timer.tick().now_or_never().is_none());
+    let mut unresponsive = heartbeat.clone();
+    heartbeat.on_pong();
+    timer.tick().await;
+    let now = tokio::time::Instant::now().into_std();
+    assert_eq!(unresponsive.tick_at(now), HeartbeatTick::Terminate);
+    assert_eq!(heartbeat.tick_at(now), HeartbeatTick::Ping);
+    assert_eq!(heartbeat.missed_pongs(), 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pings_work_in_both_directions() {
     let gateway = Gateway::start("ping", "bridge");
@@ -1369,7 +1399,10 @@ async fn native_http_new_task_materializes_and_injects_verified_reference() {
     let deadline = Instant::now() + Duration::from_secs(30);
     let input = loop {
         if let Ok(text) = fs::read_to_string(gateway.state.join("provider-input")) {
-            break text;
+            // Shell redirection creates the file before printf appends its JSON line.
+            if text.ends_with('\n') {
+                break text;
+            }
         }
         assert!(
             Instant::now() < deadline,

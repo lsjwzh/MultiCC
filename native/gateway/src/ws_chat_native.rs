@@ -47,7 +47,6 @@ use crate::{app::App, ws_chat_hub::ChatHub, ws_registry::Frame};
 use store::{optional_text, Stored};
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
-const PING_INTERVAL: Duration = Duration::from_secs(30);
 const QUEUE_CAPACITY: usize = 512;
 const QUEUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -439,9 +438,9 @@ where
             shell::wake(&app, id, &session, task).await;
         }
     }
-    let mut ping =
-        tokio::time::interval_at(tokio::time::Instant::now() + PING_INTERVAL, PING_INTERVAL);
-    let mut unanswered = 0;
+    let mut ping = crate::ws_chat::heartbeat_interval();
+    use multicc_core::workspace_sockets::{Heartbeat, HeartbeatTick};
+    let mut heartbeat = Heartbeat::default();
     loop {
         tokio::select! {
             _ = attached.connection.overflow.changed() => {
@@ -449,8 +448,7 @@ where
                 break;
             }
             _ = ping.tick() => {
-                if unanswered == 3 || !send_message(&mut socket, Message::Ping(Bytes::new())).await { break; }
-                unanswered += 1;
+                if heartbeat.tick() != HeartbeatTick::Ping || !send_message(&mut socket, Message::Ping(Bytes::new())).await { break; }
             }
             frame = attached.connection.receiver.recv() => {
                 let Some(frame) = frame else { break };
@@ -469,7 +467,7 @@ where
                         input(&app, id, &session, attached.connection.id, &permission, message, shell_route).await;
                     }
                 }
-                Some(Ok(Message::Pong(_))) => unanswered = 0,
+                Some(Ok(Message::Pong(_))) => heartbeat.on_pong(),
                 Some(Ok(Message::Ping(_))) => { let _ = tokio::time::timeout(SEND_TIMEOUT, socket.flush()).await; }
                 Some(Ok(Message::Close(_))) => {
                     let _ = tokio::time::timeout(SEND_TIMEOUT, socket.flush()).await;

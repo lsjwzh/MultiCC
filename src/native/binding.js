@@ -1677,7 +1677,7 @@ exposeHostApi('codexImageBridge', () => {
 
 exposeHostApi('airRoutesHost', () => getNative().airRoutesHostApi({
   domain: module.exports.taskDomainHost, boardCore: module.exports.taskBoardCore,
-  cache: module.exports.airCardCache, abnormal: module.exports.classifyVocab.isAbnormalLetter,
+  isOpenRunState: module.exports.classifyVocab.isOpenRunState, cache: module.exports.airCardCache, abnormal: module.exports.classifyVocab.isAbnormalLetter,
   createSync: options => module.exports.airSyncRuntime.createAirSyncRuntime(options),
   deliveryView: module.exports.deliveryView, local: module.exports.requestLocality.isLocalRequest,
   path: require('node:path'), crypto: require('node:crypto'), process,

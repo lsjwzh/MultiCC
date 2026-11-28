@@ -522,6 +522,22 @@ impl TaskStore {
                 .join(",")
         ))
     }
+    pub fn cached_read(&mut self, kind: &str, shape: &str, token: Option<u64>) -> Result<String> {
+        let key = format!("{shape}:{kind}");
+        self.refresh_cache(kind, shape, &key)?;
+        let cached = &self.cache[&key];
+        #[derive(serde::Serialize)]
+        struct Reply<'a> {
+            token: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            rows: Option<&'a Value>,
+        }
+        serde_json::to_string(&Reply {
+            token: cached.token,
+            rows: (Some(cached.token) != token).then_some(&cached.rows),
+        })
+        .map_err(err)
+    }
     fn refresh_cache(&mut self, kind: &str, shape: &str, key: &str) -> Result<()> {
         let epoch = self.epoch(&[json!(kind)])?;
         if self
@@ -543,7 +559,7 @@ impl TaskStore {
             Cached {
                 epoch,
                 token: self.sequence,
-                rows: json!(rows),
+                rows: Value::Array(rows),
             },
         );
         Ok(())
@@ -944,14 +960,7 @@ if !next.is_empty(){s.add_receipt(next,id)?;}},_=>()
                     return Err(format!("row cache not allowed for kind {kind}"));
                 }
                 let shape = text(&v["shape"]);
-                let key = format!("{shape}:{kind}");
-                self.refresh_cache(kind, shape, &key)?;
-                let cached = &self.cache[&key];
-                if v["token"].as_u64() == Some(cached.token) {
-                    json!({"token":cached.token})
-                } else {
-                    json!({"token":cached.token,"rows":cached.rows})
-                }
+                return self.cached_read(kind, shape, v["token"].as_u64());
             }
             "taskBySession" => {
                 if id.is_empty() {

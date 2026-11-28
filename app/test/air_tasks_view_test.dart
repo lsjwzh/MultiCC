@@ -32,6 +32,10 @@ MockClient _client(
   List<String>? lidSleepPosts,
 }) => MockClient((request) async {
   requests.add(request.url.path);
+  if (request.url.path == '/api/air/archive-inactive') {
+    expect(request.method, 'POST');
+    return http.Response('{"ok":true,"archived":[]}', 200);
+  }
   // 关盖运行（macOS 电源）：Web 侧栏「常用设置」那一行、以及设置中心 › 全局配置
   // 那个开关，打的是同一条接口。默认这台主机没有这个能力（非 macOS 给的答案就是
   // available:false），要测那一行时再把这个能力打开。
@@ -394,6 +398,33 @@ void main() {
 
   // 状态徽标上的字来自 i18n 词典（注册表只给 key），不加载就只有 key。
   setUpAll(() => I18n.init('zh'));
+
+  for (final width in [430.0, 1280.0]) {
+    testWidgets('归档旧任务需要二次确认 ($width)', (tester) async {
+      final calls = <String>[];
+      final client = _client(calls);
+      final settings = await _settings();
+      tester.view.physicalSize = Size(width, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await tester.pumpWidget(MaterialApp(home: AirTasksView(settings: settings, httpClient: client)));
+      await tester.pumpAndSettle();
+      const write = '/api/air/archive-inactive';
+      for (final action in ['取消', '确认归档']) {
+        await tester.tap(find.byKey(const ValueKey('air-header-menu')));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('归档旧任务'));
+        await tester.pumpAndSettle();
+        expect(calls.where((call) => call == write), isEmpty);
+        await tester.tap(find.text(action));
+        await tester.pumpAndSettle();
+      }
+      expect(calls.where((call) => call == write), hasLength(1));
+      await tester.pumpWidget(const SizedBox());
+      client.close();
+    });
+  }
 
   testWidgets('目录全文搜索能找到归档对话，切范围和清空不会保留旧命中', (tester) async {
     final settings = await _settings();

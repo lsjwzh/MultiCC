@@ -32,6 +32,8 @@ pub enum HeartbeatTick {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Heartbeat {
+    last_tick: Option<std::time::Instant>,
+    late_grace_used: bool,
     pending: bool,
     missed: u32,
     timed_out: bool,
@@ -41,15 +43,31 @@ impl Heartbeat {
     pub fn on_pong(&mut self) {
         self.pending = false;
         self.missed = 0;
+        self.late_grace_used = false;
     }
 
     /// One 30s window. Counting completed unanswered windows (not the first
     /// ping) is what gives a delayed relay pong ~90s before the close.
     pub fn tick(&mut self) -> HeartbeatTick {
+        self.tick_at(std::time::Instant::now())
+    }
+    pub fn tick_at(&mut self, now: std::time::Instant) -> HeartbeatTick {
+        let last = self.last_tick.replace(now);
         if self.timed_out {
             return HeartbeatTick::Idle;
         }
         if self.pending {
+            // A delayed timer can run before a pong already waiting in the IO queue.
+            // Give that socket one extra poll window, bounded even under repeated stalls.
+            if self.missed + 1 == MAX_MISSED_PONGS
+                && !self.late_grace_used
+                && last.is_some_and(|last| {
+                    now.saturating_duration_since(last) >= std::time::Duration::from_secs(35)
+                })
+            {
+                self.late_grace_used = true;
+                return HeartbeatTick::Ping;
+            }
             self.missed += 1;
         }
         if self.missed >= MAX_MISSED_PONGS {
@@ -547,6 +565,30 @@ mod tests {
         assert_eq!(heartbeat.tick(), HeartbeatTick::Terminate);
         assert!(heartbeat.timed_out());
         assert_eq!(heartbeat.tick(), HeartbeatTick::Idle);
+    }
+
+    #[test]
+    fn delayed_final_sweep_allows_one_window_for_queued_pong() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut heartbeat = Heartbeat::default();
+        for offset in [0, 30, 60, 98] {
+            assert_eq!(
+                heartbeat.tick_at(now + Duration::from_secs(offset)),
+                HeartbeatTick::Ping
+            );
+        }
+        let mut dead = heartbeat.clone();
+        assert_eq!(
+            dead.tick_at(now + Duration::from_secs(142)),
+            HeartbeatTick::Terminate
+        );
+        heartbeat.on_pong();
+        assert_eq!(
+            heartbeat.tick_at(now + Duration::from_secs(128)),
+            HeartbeatTick::Ping
+        );
+        assert_eq!(heartbeat.missed_pongs(), 0);
     }
 
     #[test]

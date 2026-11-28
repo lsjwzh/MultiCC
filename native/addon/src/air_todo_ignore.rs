@@ -229,6 +229,9 @@ impl<'a> Runtime<'a> {
     }
 
     fn read(&self) -> Result<L<'a>> {
+        if self.load()?.is_empty() {
+            return array(self.ports, &[]);
+        }
         let ids = self
             .effective(self.views()?, false)?
             .into_iter()

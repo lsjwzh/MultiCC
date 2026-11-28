@@ -59,7 +59,18 @@ fn change<'a>(s: L<'a>, a: &mut [L<'a>], publish: bool) -> Result<L<'a>> {
     if publish {
         cmd.set(c"dayStarts", with_default(a[2], array(s)?)?)?;
     }
-    then(run(s, cmd)?, s, accept)
+    let next = num(s, s.get(c"writes")?.number()? + 1.)?;
+    let pending = run(s, cmd)?;
+    s.set(c"writes", next)?;
+    let done = then(pending, s, accept)?;
+    call(
+        done,
+        c"finally",
+        &[function(s, "finishWrite", 0, 0, |s, _| {
+            s.set(c"writes", num(s, s.get(c"writes")?.number()? - 1.)?)?;
+            undef(s)
+        })?],
+    )
 }
 pub(super) fn create<'a>(p: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     let options = default_object(a[0])?;
@@ -93,6 +104,7 @@ pub(super) fn create<'a>(p: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
         p,
         &[
             ("model", model),
+            ("writes", num(p, 0.)?),
             ("opened", opened),
             ("cursor", cursor),
             ("ready", flag(p, false)?),
@@ -152,7 +164,22 @@ pub(super) fn create<'a>(p: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
                 run(s, message(s, "snapshot", &[])?)
             }),
             ("serialized", 0, 0, |s, _| {
-                run(s, message(s, "serialized", &[])?)
+                let cursor = s.get(c"cursor")?;
+                if !s.get(c"closed")?.truthy()?
+                    && s.get(c"writes")?.is_number(0.)?
+                    && cursor.equals(s.get(c"serializedCursor")?)?
+                {
+                    return resolved(spread(s.get(c"serializedValue")?)?);
+                }
+                let frame = fields(s, &[("index", s), ("cursor", cursor)])?;
+                then(run(s, message(s, "serialized", &[])?)?, frame, |f, a| {
+                    let s = f.get(c"index")?;
+                    if s.get(c"cursor")?.equals(f.get(c"cursor")?)? {
+                        s.set(c"serializedCursor", f.get(c"cursor")?)?;
+                        s.set(c"serializedValue", spread(a[0])?)?;
+                    }
+                    Ok(a[0])
+                })
             }),
             ("close", 0, 0, |s, _| {
                 s.set(c"closed", flag(s, true)?)?;

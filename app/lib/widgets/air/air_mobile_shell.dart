@@ -291,6 +291,8 @@ extension _AirMobileShell on _AirTasksViewState {
                   _updateMobile(() => _mode = _AirMode.library);
                 case 'add-directory':
                   unawaited(_addDirectory());
+                case 'archive-inactive':
+                  unawaited(_archiveInactive());
                 case 'retention':
                   if (_directoryId != null) {
                     unawaited(
@@ -317,6 +319,7 @@ extension _AirMobileShell on _AirTasksViewState {
               }
             },
             itemBuilder: (_) => [
+              PopupMenuItem(value: 'archive-inactive', child: Text(t('airArchiveInactive'))),
               const PopupMenuItem(value: 'search', child: Text('搜索目录与任务')),
               const PopupMenuItem(value: 'library', child: Text('工作目录库')),
               const PopupMenuItem(

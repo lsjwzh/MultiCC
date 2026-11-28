@@ -23,6 +23,10 @@ struct Plan {
     prune: bool,
 }
 pub struct CardCache {
+    board_version: Option<(u64, u64)>,
+    board: Value,
+    task_hashes: HashMap<String, u64>,
+    signatures: super::air::Signatures,
     prepared_input: Option<String>,
     prepared_value: Value,
     prepared_token: u32,
@@ -44,6 +48,10 @@ pub struct CardCache {
 impl Default for CardCache {
     fn default() -> Self {
         Self {
+            board_version: None,
+            board: Value::Null,
+            task_hashes: HashMap::new(),
+            signatures: Default::default(),
             prepared_input: None,
             prepared_value: Value::Null,
             prepared_token: 0,
@@ -80,22 +88,58 @@ impl CardCache {
         }
         .to_string())
     }
-    /// 常驻任务板版：输入不含 board，直接读句柄的常驻副本；按句柄版本号判定重算。
-    pub fn prepare_on(
-        &mut self,
-        input: &str,
-        board: &Value,
-        version: u64,
-        known_token: u32,
-    ) -> Result<String, String> {
-        let key = format!("{version}\u{1}{input}");
+    /// Copy only changed rows while holding the shared board lock. All input
+    /// preparation, hashing and reply encoding subsequently use the worker's mirror.
+    pub fn capture_board(&mut self, identity: u64, state: &super::handle::BoardState) {
+        let version = Some((identity, state.version()));
+        if self.board_version == version {
+            return;
+        }
+        let source = state.board();
+        let mut previous = self
+            .board
+            .get_mut("tasks")
+            .and_then(Value::as_object_mut)
+            .map(std::mem::take)
+            .unwrap_or_default();
+        let mut tasks = serde_json::Map::new();
+        for (id, task) in source["tasks"].as_object().into_iter().flatten() {
+            let same = self
+                .task_hashes
+                .get(id)
+                .is_some_and(|h| Some(h) == state.task_hashes().get(id));
+            let row = if same {
+                previous.swap_remove(id).unwrap_or_else(|| task.clone())
+            } else {
+                task.clone()
+            };
+            tasks.insert(id.clone(), row);
+        }
+        let mut board = json!({});
+        for key in ["modules", "taskGroups", "deletedTaskIds"] {
+            if let Some(value) = source.get(key) {
+                board[key] = value.clone();
+            }
+        }
+        board["tasks"] = Value::Object(tasks);
+        self.board = board;
+        self.task_hashes.clone_from(state.task_hashes());
+        self.board_version = version;
+        self.prepared_input = None;
+    }
+    pub fn prepare_on(&mut self, input: &str, known_token: u32) -> Result<String, String> {
+        let key = format!("board\u{1}{input}");
         if self.prepared_input.as_deref() != Some(key.as_str()) {
             let command: Value =
                 crate::json_lenient::from_str(input).map_err(|_| "invalid_air_preparation")?;
             if text(&command["op"]) != "airInputs" {
                 return Err("invalid_air_preparation".into());
             }
-            self.prepared_value = super::air::run_on(board, &command);
+            self.prepared_value = super::air::prepare(
+                &self.board,
+                &command,
+                Some((&self.task_hashes, &mut self.signatures)),
+            );
             self.prepared_input = Some(key);
             self.prepared_token = self.prepared_token.wrapping_add(1).max(1);
         }
@@ -122,7 +166,7 @@ impl CardCache {
             "prune":v["prune"],
             "items":items.iter().map(|item| json!({
                 "key":item["key"],
-                "signature":item["signature"]
+                "signature":if item.get("access").is_some() && !item["signature"].is_null() {json!([item["signature"],item["access"]])} else {item["signature"].clone()}
             })).collect::<Vec<_>>()
         }))?;
         Ok(json!({

@@ -261,6 +261,7 @@ pub fn task_board_state_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_va
         ("registerShellTask", 1, 1),
         ("markTaskSeen", 1, 1),
         ("archiveTasks", 1, 1),
+        ("archiveInactive", 1, 1),
     ] {
         let method = function(p, name, length, count, move |p, a| match name {
             "persistWithRecovery" => persist(p, a[0]),
@@ -279,7 +280,9 @@ pub fn task_board_state_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_va
             "updateBoardTask" => update(p, a[0], a[1], a[2]),
             "registerShellTask" => tasks::register(p, a[0]),
             "markTaskSeen" => tasks::mark_seen(p, a[0]),
-            "archiveTasks" => async_result(p, || tasks::archive(p, a[0])),
+            "archiveTasks" | "archiveInactive" => {
+                async_result(p, || tasks::archive(p, a[0], name == "archiveInactive"))
+            }
             _ => unreachable!(),
         })?;
         api.set_key(text(p, name)?, method)?;

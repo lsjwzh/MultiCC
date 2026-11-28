@@ -19,6 +19,7 @@ function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports 
       // 读全，老实现是每行一次 store.get('task-first:indexed')。
       // 两次读都走行缓存：同一轮 /api/air 里 listTasks() 马上要再读一次同一张
       // 表，内容没变时不该解析两遍（store.js 的 cachedList/cachedEntries）。
+      await store.warmMigrationRows?.();
       const all = new Map(store.cachedList('task').map(task => [task.id, task]));
       const indexed = new Set(store.cachedEntries('task-first:indexed').map(([id]) => id));
       const known = new Map([...all.values()].map(task => [task.sessionId, task]));
@@ -44,11 +45,19 @@ function createTaskFirstMigration({ store, open, adopt, roles, indexTask, ports 
       const bound = [];
       for (const record of list) bound.push(record?.taskBoundTaskId, known.get(record?.id)?.id);
       bulk = await loadDeleted(bound);
-      getNative().taskFirstAdopt(owner, list, all, known, indexed, isDeleted, errors);
+      for (let i = 0; i < list.length; i += 32) {
+        getNative().taskFirstAdopt(owner, list.slice(i, i + 32), all, known, indexed, isDeleted, errors);
+        if (i + 32 < list.length) await new Promise(resolve => setImmediate(resolve));
+      }
       // 第一轮领养出来的新行到这里才进 all。老实现是进第二轮循环时逐条现问，
       // 所以这里要用最终的键集再问一次（已问过的 id 结果不变，取并集即可）。
       if (bulk) bulk = await loadDeleted([...all.keys()]);
+      let chunkStart = performance.now();
       for (const original of all.values()) {
+        if (performance.now() - chunkStart >= 4) {
+          await new Promise(resolve => setImmediate(resolve));
+          chunkStart = performance.now();
+        }
         if (isDeleted(original.id)) continue;
         tasks.push(original);
         try {

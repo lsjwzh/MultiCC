@@ -97,25 +97,29 @@ pub struct Index {
     snapshot: Option<Snapshot>,
     history: VecDeque<Event>,
     encoded: Option<Value>,
+    card_json: HashMap<String, String>,
 }
 impl Index {
     fn cursor(&self) -> String {
         format!("{}:{}", self.epoch, self.revision)
     }
-    fn candidate(
-        &self,
-        input: &Value,
-        partial: bool,
-        removed: &[String],
-    ) -> Result<Candidate, String> {
-        let mut metadata = input
+    fn parts(input: &Value) -> Result<(Value, &[Value]), String> {
+        let metadata = input
             .as_object()
             .ok_or("read_model_invalid_snapshot")?
-            .clone();
-        let tasks = metadata.remove("tasks").unwrap_or(json!([]));
-        let tasks = tasks.as_array().ok_or("read_model_invalid_snapshot")?;
+            .iter()
+            .filter(|(key, _)| *key != "tasks")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let metadata = Value::Object(metadata);
         validate_metadata(&metadata)?;
+        let tasks = match input.get("tasks") {
+            None => &[][..],
+            Some(t) => t
+                .as_array()
+                .ok_or("read_model_invalid_snapshot")?
+                .as_slice(),
+        };
         let mut present = HashSet::new();
         for card in tasks {
             if !card.is_object()
@@ -137,6 +141,16 @@ impl Index {
                 number(&card[key])?;
             }
         }
+        Ok((metadata, tasks))
+    }
+    fn candidate(
+        &self,
+        input: &Value,
+        partial: bool,
+        removed: &[String],
+    ) -> Result<Candidate, String> {
+        let (metadata, tasks) = Self::parts(input)?;
+        let present: HashSet<_> = tasks.iter().map(|c| text(c, "id")).collect();
         let removed: HashSet<_> = removed.iter().map(String::as_str).collect();
         let mut rows = Vec::new();
         let mut deleted = Vec::new();
@@ -220,6 +234,46 @@ impl Index {
                 removed,
                 id_order,
             } => {
+                // Most publications touch existing cards only. Validate the complete
+                // delta before editing either representation, then move only changed rows.
+                if partial && removed.is_empty() && id_order.is_none() {
+                    if let Some(current) = self.snapshot.as_mut() {
+                        let (metadata, tasks) = Self::parts(&snapshot)?;
+                        if tasks
+                            .iter()
+                            .all(|card| current.position(text(card, "id")).is_some())
+                        {
+                            let changed: Vec<_> = tasks
+                                .iter()
+                                .filter(|card| {
+                                    current.cards[current.position(text(card, "id")).unwrap()]
+                                        != **card
+                                })
+                                .cloned()
+                                .collect();
+                            let meta_changed = current.metadata != metadata;
+                            if changed.is_empty() && !meta_changed {
+                                return Ok(Value::Null);
+                            }
+                            let mut event = json!({"type":"air_delta","cursor":format!("{}:{}",self.epoch,self.revision+1),
+                                "previous":format!("{}:{}",self.epoch,self.revision),"tasks":changed,"deleted":[]});
+                            if meta_changed {
+                                event["metadata"] = metadata.clone();
+                            }
+                            let replacements: HashMap<_, _> = changed
+                                .iter()
+                                .map(|card| (text(card, "id"), card))
+                                .collect();
+                            for row in &mut self.rows {
+                                if let Some(card) = replacements.get(text(row, "id")) {
+                                    row.clone_from(card);
+                                }
+                            }
+                            current.replace_cards(&changed, metadata, self.revision + 1);
+                            return Ok(self.record(event, false));
+                        }
+                    }
+                }
                 let (rows, metadata, changed, mut deleted) =
                     self.candidate(&snapshot, partial, &removed)?;
                 if partial {
@@ -252,28 +306,10 @@ impl Index {
                 if meta_changed {
                     event["metadata"] = metadata;
                 }
-                let bytes = super::wire::bytes(&event);
-                let reset = self.snapshot.is_none() || bytes > self.max_bytes;
-                // All validation and allocations precede publication.
+                let first = self.snapshot.is_none();
                 self.rows = rows;
-                self.revision = revision;
                 self.snapshot = Some(candidate);
-                self.encoded = None;
-                if reset {
-                    self.history.clear();
-                    self.floor = revision;
-                    Ok(json!({"type":"air_reset","cursor":cursor}))
-                } else {
-                    self.history.push_back(Event {
-                        revision,
-                        body: event.clone(),
-                        bytes,
-                    });
-                    while self.history.len() > self.history_limit {
-                        self.floor = self.history.pop_front().unwrap().revision;
-                    }
-                    Ok(event)
-                }
+                Ok(self.record(event, first))
             }
             Command::Publish {
                 snapshot,
@@ -315,9 +351,28 @@ impl Index {
                 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
                 use sha1::{Digest, Sha1};
                 let s = self.snapshot.as_ref().ok_or("read_model_not_ready")?;
-                let mut snapshot = s.metadata.clone();
-                snapshot["tasks"] = json!(s.cards);
-                let body = snapshot.to_string();
+                let mut body = s.metadata.to_string();
+                body.pop(); // metadata is a validated object; tasks are its last field.
+                if body.len() > 1 {
+                    body.push(',');
+                }
+                body.push_str("\"tasks\":[");
+                for (i, card) in s
+                    .cards
+                    .iter()
+                    .filter(|c| text(c, "status") != "archived")
+                    .enumerate()
+                {
+                    if i > 0 {
+                        body.push(',');
+                    }
+                    let id = text(card, "id");
+                    if !self.card_json.contains_key(id) {
+                        self.card_json.insert(id.to_owned(), card.to_string());
+                    }
+                    body.push_str(&self.card_json[id]);
+                }
+                body.push_str("]}");
                 let etag = format!(
                     "W/\"{}\"",
                     URL_SAFE_NO_PAD.encode(Sha1::digest(body.as_bytes()))
@@ -373,22 +428,29 @@ impl Index {
                     .filter(|c| text(c, "status") != "archived")
                     .take(30)
                     .map(|c| text(c, "id").to_owned())
-                    .chain(pins.iter().filter_map(|v| v.as_str().map(str::to_owned)))
+                    .chain(
+                        pins.iter()
+                            .filter_map(Value::as_str)
+                            .filter(|id| {
+                                s.position(id)
+                                    .is_some_and(|i| text(&s.cards[i], "status") != "archived")
+                            })
+                            .map(str::to_owned),
+                    )
                     .chain(include.into_iter().take(50))
                 {
                     if unique.insert(id.clone()) {
                         ids.push(id);
                     }
                 }
-                let by_id: HashMap<_, _> = s.cards.iter().map(|c| (text(c, "id"), c)).collect();
                 let tasks: Vec<_> = ids
                     .iter()
-                    .filter_map(|id| by_id.get(id.as_str()).map(|c| (*c).clone()))
+                    .filter_map(|id| s.position(id).map(|i| s.cards[i].clone()))
                     .collect();
                 let attention: Vec<_> = s
                     .cards
                     .iter()
-                    .filter(|c| truthy(&c["attention"]))
+                    .filter(|c| text(c, "status") != "archived" && truthy(&c["attention"]))
                     .take(50)
                     .cloned()
                     .collect();
@@ -401,6 +463,36 @@ impl Index {
                 Ok(result)
             }
         }
+    }
+    fn record(&mut self, event: Value, first: bool) -> Value {
+        self.encoded = None;
+        self.revision += 1;
+        for card in event["tasks"].as_array().into_iter().flatten() {
+            self.card_json.remove(text(card, "id"));
+        }
+        for id in event["deleted"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            self.card_json.remove(id);
+        }
+        let bytes = super::wire::bytes(&event);
+        if first || bytes > self.max_bytes {
+            self.history.clear();
+            self.floor = self.revision;
+            return json!({"type":"air_reset","cursor":self.cursor()});
+        }
+        self.history.push_back(Event {
+            revision: self.revision,
+            body: event.clone(),
+            bytes,
+        });
+        while self.history.len() > self.history_limit {
+            self.floor = self.history.pop_front().unwrap().revision;
+        }
+        event
     }
     fn changes(&self, since: &str) -> Value {
         if self.snapshot.is_none() {

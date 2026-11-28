@@ -374,6 +374,7 @@ pub fn task_board_runtime_create(
             c"getBoard",
             c"save",
             c"archiveTasks",
+            c"archiveInactive",
         ],
     )?;
     result.set(c"routePorts", routes)?;

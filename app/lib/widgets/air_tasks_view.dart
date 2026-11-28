@@ -1469,7 +1469,7 @@ class _AirTasksViewState extends State<AirTasksView>
     // 「最近」会掉出列表，pin 不会 —— 这两件事必须分开。
     for (final id in data.taskPins) {
       final task = data.taskOf(id);
-      if (task != null && seen.add(task.id)) rows.add(task);
+      if (task != null && task.status != 'archived' && seen.add(task.id)) rows.add(task);
     }
     final recent = data.tasks.where((task) => task.status != 'archived').toList()
       ..sort((a, b) {
@@ -1830,6 +1830,8 @@ class _AirTasksViewState extends State<AirTasksView>
 
                 case 'schedules':
                   _openDestination(WorkspaceDestination.cron);
+                case 'archive-inactive':
+                  unawaited(_archiveInactive());
                 case 'retention':
                   if (_directoryId != null) {
                     unawaited(
@@ -1848,6 +1850,7 @@ class _AirTasksViewState extends State<AirTasksView>
               }
             },
             itemBuilder: (context) => [
+              PopupMenuItem(value: 'archive-inactive', child: Text(t('airArchiveInactive'))),
               const PopupMenuItem(value: 'search', child: Text('搜索目录与任务')),
               const PopupMenuItem(value: 'library', child: Text('工作目录库')),
               const PopupMenuItem(

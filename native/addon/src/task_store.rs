@@ -6,9 +6,10 @@ use multicc_core::{
     task_shell::reference::{SnapshotPairTracker, SNAPSHOT_BYTES, SNAPSHOT_FIELDS},
     task_store::TaskStore,
 };
+use napi::{bindgen_prelude::AsyncTask, Task};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 // 持锁区 panic 毒化后取回内部状态，并回滚可能遗留的事务。
 fn lock_store(inner: &Mutex<TaskStore>) -> MutexGuard<'_, TaskStore> {
     match inner.lock() {
@@ -23,7 +24,7 @@ fn lock_store(inner: &Mutex<TaskStore>) -> MutexGuard<'_, TaskStore> {
 }
 #[napi]
 pub struct RustTaskStore {
-    inner: Mutex<TaskStore>,
+    inner: Arc<Mutex<TaskStore>>,
 }
 #[napi]
 impl RustTaskStore {
@@ -31,8 +32,29 @@ impl RustTaskStore {
     pub fn new(file: String) -> Result<Self> {
         guard("TASK_STORE_PANIC", || {
             Ok(Self {
-                inner: Mutex::new(TaskStore::open(&file).map_err(napi::Error::from_reason)?),
+                inner: Arc::new(Mutex::new(
+                    TaskStore::open(&file).map_err(napi::Error::from_reason)?,
+                )),
             })
+        })
+    }
+    #[napi]
+    pub fn air_access_async(&self, input: String) -> AsyncTask<AirAccessJob> {
+        AsyncTask::new(AirAccessJob {
+            store: self.inner.clone(),
+            input,
+        })
+    }
+    #[napi]
+    pub fn migration_rows_async(
+        &self,
+        indexed: bool,
+        token: Option<u32>,
+    ) -> AsyncTask<MigrationRows> {
+        AsyncTask::new(MigrationRows {
+            store: self.inner.clone(),
+            indexed,
+            token,
         })
     }
     #[napi]
@@ -42,6 +64,52 @@ impl RustTaskStore {
                 .run(&input)
                 .map_err(napi::Error::from_reason)
         })
+    }
+}
+pub struct MigrationRows {
+    store: Arc<Mutex<TaskStore>>,
+    indexed: bool,
+    token: Option<u32>,
+}
+impl Task for MigrationRows {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        guard("TASK_STORE_PANIC", || {
+            let (kind, shape) = if self.indexed {
+                ("task-first:indexed", "entries")
+            } else {
+                ("task", "rows")
+            };
+            let mut store = lock_store(&self.store);
+            store
+                .cached_read(kind, shape, self.token.map(u64::from))
+                .map_err(napi::Error::from_reason)
+        })
+    }
+    fn resolve(&mut self, _: Env, result: String) -> Result<String> {
+        Ok(result)
+    }
+}
+pub struct AirAccessJob {
+    store: Arc<Mutex<TaskStore>>,
+    input: String,
+}
+impl Task for AirAccessJob {
+    type Output = String;
+    type JsValue = String;
+    fn compute(&mut self) -> Result<String> {
+        guard("TASK_STORE_PANIC", || {
+            let command: serde_json::Value = serde_json::from_str(&self.input)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let mut store = lock_store(&self.store);
+            // A JS transaction spans multiple synchronous calls. Do not read its
+            // uncommitted state; the host retries this small batch after yielding.
+            store.air_access(&command).map_err(napi::Error::from_reason)
+        })
+    }
+    fn resolve(&mut self, _: Env, result: String) -> Result<String> {
+        Ok(result)
     }
 }
 #[napi]

@@ -56,6 +56,7 @@ pub enum Route {
     SyncGet,
     PageGet,
     SnapshotGet,
+    ArchiveInactivePost,
     ReclaimPost,
     ResolveGet,
     TasksPost,
@@ -107,6 +108,11 @@ static LAYERS: &[Layer] = &[
         segs: &[Lit("air")],
         method: "GET",
         kind: Route::SnapshotGet,
+    },
+    Layer {
+        segs: &[Lit("air"), Lit("archive-inactive")],
+        method: "POST",
+        kind: Route::ArchiveInactivePost,
     },
     Layer {
         segs: &[Lit("air"), Lit("worktrees"), Lit("reclaim")],
@@ -476,6 +482,10 @@ async fn answer(
                 call(ctx, host, payload("snapshot", fields), AIR, false).await,
             )
         }
+        Route::ArchiveInactivePost => finish(
+            ctx,
+            call(ctx, host, payload("archive-inactive", vec![]), AIR, false).await,
+        ),
         Route::ReclaimPost => {
             let dir_id = body_field(body, "dirId")
                 .filter(truthy)

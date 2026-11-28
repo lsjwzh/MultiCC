@@ -48,5 +48,8 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"

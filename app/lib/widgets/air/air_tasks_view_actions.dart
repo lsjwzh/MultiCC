@@ -57,6 +57,42 @@ mixin _AirTasksViewActions on State<AirTasksView> {
 
   Future<void> _refresh();
 
+  bool _archivingInactive = false;
+
+  Future<void> _archiveInactive() async {
+    if (_archivingInactive) return;
+    _archivingInactive = true;
+    try {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(t('airArchiveInactive')),
+          content: Text(t('airArchiveInactiveConfirm')),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(t('cancel'))),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(t('confirmArchive'))),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      final result = await _service.archiveInactive();
+      await _refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(t('airArchiveInactiveResult', {'n': '${(result['archived'] as List).length}'}))),
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(airTaskActionErrorMessage(error))),
+        );
+      }
+    } finally {
+      _archivingInactive = false;
+    }
+  }
+
   /// 长按 / 行内动作：按任务当前状态执行唯一动作（同控制台与目录页）。
   void _runTaskAction(AirTask task) {
     final action = airTaskPrimaryAction(task);

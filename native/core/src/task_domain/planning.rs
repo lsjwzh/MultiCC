@@ -205,7 +205,7 @@ pub fn normalize_task(t: &mut Value, options: &Value, host: Host) {
     t["dueAt"] = host.date(&t["dueAt"]);
     t["acceptanceCriteria"] = json!(criteria(&t["acceptanceCriteria"]));
     t["planningRevision"] = json!(revision(&t["planningRevision"], 1.0));
-    if t["workflowStage"] == "done" {
+    if t["workflowStage"] == "done" && t["status"] != "archived" {
         t["status"] = json!("done");
     } else if t["status"] == "done" {
         t["workflowStage"] = json!("done");

@@ -925,6 +925,7 @@
     $('quick-task-status').textContent = text || '';
     $('quick-task-status').classList.toggle('capacity-error', capacity);
   }
+  $('archive-inactive').onclick = () => window.MultiCCArchiveInactive({ api, refresh, notice, t });
   let retentionPreview = null;
   const retentionDialog = $('task-retention-dialog');
   const closeRetention = () => retentionDialog.close();
@@ -1338,10 +1339,9 @@
   // ── Pin 住的任务 ────────────────────────────────────────────────────────
   // 「这件活我要一直看着」—— 和「最近打开过」不是一回事：最近会掉出列表，pin 不会。
   const phoneLayout = () => matchMedia('(max-width: 760px)').matches;
-  /** 按 pin 的顺序取出任务本身；已经被删掉的那种自然就不在列表里了。 */
   const pinnedTasks = () => taskPins
     .map(id => (data?.tasks || []).find(task => task.id === id))
-    .filter(Boolean);
+    .filter(task => task && task.status !== 'archived');
   const isPinned = id => !!id && taskPins.includes(id);
 
   /** 侧栏那份列表：手机上 pin 住的排在最前面，剩下的照最近动静倒序。 */

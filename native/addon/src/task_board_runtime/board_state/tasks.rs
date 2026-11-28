@@ -90,7 +90,7 @@ fn archive_result<'e>(p: L<'e>, ok: bool, ids: L<'e>, skipped: L<'e>) -> Result<
     )
 }
 
-pub(super) fn archive<'e>(p: L<'e>, input: L<'e>) -> Result<L<'e>> {
+pub(super) fn archive<'e>(p: L<'e>, input: L<'e>, idle_only: bool) -> Result<L<'e>> {
     let map = function(p, "", 1, 1, |_, a| task_key(a[0]))?;
     let input = input.or(|| array(p))?;
     let keys = call(input, c"map", &[map])?;
@@ -101,6 +101,7 @@ pub(super) fn archive<'e>(p: L<'e>, input: L<'e>) -> Result<L<'e>> {
     wanted.for_each(|id| {
         let task = Host(p).tasks()?.get_key(id)?;
         if task.truthy()?
+            && (!idle_only || task.get(c"status")?.is_string("done")?)
             && !task.get(c"status")?.is_string("archived")?
             && !task.get(c"deleting")?.truthy()?
             && !call(p.get(c"taskLifecycle")?, c"isBusy", &[id])?.truthy()?

@@ -58,6 +58,13 @@ const REPLY_GRACE: Duration = Duration::from_secs(5);
 /// socket.
 const TERMINATE_GRACE: Duration = Duration::from_millis(250);
 
+pub fn heartbeat_interval() -> tokio::time::Interval {
+    let period = Duration::from_secs(30);
+    let mut timer = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    timer
+}
+
 pub fn claims(path: &str) -> bool {
     path == PATH
 }
