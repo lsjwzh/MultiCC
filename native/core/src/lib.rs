@@ -26,6 +26,7 @@ pub mod background;
 pub mod background_hold;
 pub mod cc_switch;
 pub mod chat_bridge;
+pub mod bridge_gateway;
 pub mod chat_connect_replay;
 pub mod chat_context_rotation;
 pub mod chat_events;

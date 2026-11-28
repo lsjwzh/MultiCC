@@ -119,10 +119,12 @@ test('installed 1.x package can be loaded and constructed without network activa
   await client.stop();
 });
 
-test('Telegram bridge has no eager SDK import and disabled startup remains isolated', () => {
-  const bridge = fs.readFileSync(path.join(__dirname, '..', 'plugins', 'bridges', 'telegram-bridge.js'), 'utf8');
+test('Telegram native bridge keeps the SDK behind its lazy adapter port', () => {
+  const binding = fs.readFileSync(path.join(__dirname, '..', 'src', 'native', 'binding.js'), 'utf8');
   const adapter = fs.readFileSync(path.join(__dirname, '..', 'plugins', 'bridges', 'telegram-client-adapter.js'), 'utf8');
-  assert.equal(/require\(['"]node-telegram-bot-api['"]\)/.test(bridge), false);
+  const lifecycle = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src', 'chat_platform_bridge', 'lifecycle.rs'), 'utf8');
+  assert.equal(/require\(['"]node-telegram-bot-api['"]\)/.test(binding), false);
   assert.equal((adapter.match(/require\(['"]node-telegram-bot-api['"]\)/g) || []).length, 1);
-  assert.match(bridge, /createTelegramClient\(\{ token: _config\.botToken, transport: 'polling' \}\)/);
+  assert.match(binding, /exposeHostApi\('telegramBridge'/);
+  assert.match(lifecycle, /"transport", text\(s, "polling"\)/);
 });

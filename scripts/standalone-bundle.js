@@ -70,6 +70,7 @@ const BUNDLE_README = '使用说明.txt';
 const RUNTIME_SMOKE_SCRIPT = "const D=require('./src/sqlite/driver').databaseConstructor();"
   + "const c=require('./src/native/binding').getNative();"
   + "if(c.cprProtocolVersion?.()!==1||typeof c.cprCreateExchange!=='function')throw Error('Rust CPR module required');"
+  + "if(['bridgeConfigApi','wechatBridgeApi','feishuBridgeApi','chatPlatformBridgeApi'].some(k=>typeof c[k]!=='function'))throw Error('Rust messaging bridges required');"
   + "const db=new D(':memory:');if(db.backend!=='rust')throw Error('Rust SQLite required');"
   + "db.exec('CREATE TABLE t(x); CREATE VIRTUAL TABLE f USING fts5(x)');"
   + "db.transaction(()=>db.prepare('INSERT INTO t VALUES(?)').run('rust'))();"
@@ -535,6 +536,7 @@ function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime,
     path.join(appServerDir, 'server.js'),
     path.join(appServerDir, 'public', 'air.html'),
     path.join(appServerDir, 'src', 'native', 'binding.js'),
+    path.join(appServerDir, 'native', 'prebuilt', `${platform}-${arch}`, 'multicc_core.node'),
     path.join(resourcesDir, 'launcher', 'standalone-launcher.js'),
     path.join(resourcesDir, 'launcher', 'standalone-cli.js'),
     path.join(bundleDir, platform === 'win32' ? 'multicc.cmd' : 'multicc'),

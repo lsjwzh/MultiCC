@@ -249,7 +249,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   for (const must of ['server.js', 'src/paths/index.js', 'src/native/binding.js',
     'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
-    'src/network/sdk-bridges.js', ...MACOS_AGENT_FILES,
+    'src/network/sdk-bridges.js', 'plugins/bridges/telegram-client-adapter.js', ...MACOS_AGENT_FILES,
     ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
     'skills/multicc-artifact/references/registration-rule.md',
     // A quick file sentinel; verifyServerDependencies below checks every

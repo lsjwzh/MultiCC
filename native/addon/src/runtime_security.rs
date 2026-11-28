@@ -32,7 +32,7 @@ pub(super) fn private_dir(p: L<'_>, path: &Path) -> Result<()> {
         .map_err(|e| node_fs_error::throw(p, &e, "mkdir", Some(path), None))?;
     mode(path, 0o700).map_err(|e| node_fs_error::throw(p, &e, "chmod", Some(path), None))
 }
-fn secure_file(p: L<'_>, path: &Path) -> Result<()> {
+pub(super) fn secure_file(p: L<'_>, path: &Path) -> Result<()> {
     match mode(path, 0o600) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),

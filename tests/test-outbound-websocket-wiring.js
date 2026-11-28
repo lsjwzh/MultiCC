@@ -92,19 +92,33 @@ function loadBridge(name, sdk, agent) {
     createGatewayLifecycle: () => gateway,
     createChatWsClient: () => ({ connect: noop, disconnect: noop }),
   };
-  const exports = name === 'feishu' ? require('../src/native/binding').imChannelHost.createFeishuBridge({
-    fs: core.deps.fs,
-    bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
-    bridgeGateway: core,
-    loadLark: () => sdk(captured)['@larksuiteoapi/node-sdk'],
-    createLarkHttpInstance: () => ({}), outboundAgent: agent,
-  }) : loadIsolated(`plugins/bridges/${name}-bridge.js`, {
-    '../../src/native/binding': { outbound: { outboundAgent: agent, outboundFetch: noop } },
-    './secure-config': { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
-    './gateway-core': core,
-    '../../src/network/sdk-bridges': { createLarkHttpInstance: () => ({}), buildDiscordStrategy: noop },
-    ...sdk(captured),
-  });
+  let exports;
+  if (name === 'discord') {
+    exports = require('../src/native/binding').getNative().chatPlatformBridgeApi({
+      express: require('express'), path, os: require('node:os'), fs: core.deps.fs,
+      bridgeDir: path.resolve(__dirname, '../plugins/bridges'), bridgeGateway: core,
+      bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
+      loadDiscord: () => sdk(captured)['discord.js'], outboundFetch: noop, buildDiscordStrategy: noop,
+    }, 'discord');
+  } else if (name === 'feishu') {
+    exports = require('../src/native/binding').imChannelHost.createFeishuBridge({
+      fs: core.deps.fs,
+      bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
+      bridgeGateway: core,
+      loadLark: () => sdk(captured)['@larksuiteoapi/node-sdk'],
+      createLarkHttpInstance: () => ({}), outboundAgent: agent,
+    });
+  } else {
+    exports = loadIsolated(`plugins/bridges/${name}-bridge.js`, {
+      '../../src/native/binding': {
+        outbound: { outboundAgent: agent, outboundFetch: noop },
+        bridgeGateway: core,
+        bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
+      },
+      '../../src/network/sdk-bridges': { createLarkHttpInstance: () => ({}), buildDiscordStrategy: noop },
+      ...sdk(captured),
+    });
+  }
   exports.init({ persistedSessions: new Map(), chatSessions: new Map() });
   return { exports, captured };
 }

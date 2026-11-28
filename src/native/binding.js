@@ -1183,6 +1183,11 @@ exposeHostApi('claudeOfficialOAuth', () => {
   });
 });
 exposeHostApi('egressIpMonitor', () => getNative().egressIpMonitorApi(require('node:https')));
+// Node-only SDK/IO handles; IM gateway state and all control flow live in Rust.
+exposeHostApi('bridgeGateway', () => getNative().bridgeGatewayApi({
+  fs: require('node:fs'), path: require('node:path'), os: require('node:os'),
+  crypto: require('node:crypto'), WebSocket: require('ws'),
+}));
 exposeHostApi('gatewayChatBridge', () => {
   const native = getNative();
   const { EventEmitter } = require('node:events');
@@ -1868,6 +1873,11 @@ exposeHostApi('runtimeSecurity', () => {
     atomicWriteText: (file, value, options) => write(file, String(value), options),
   };
 });
+
+exposeHostApi('bridgeConfig', () => getNative().bridgeConfigApi({
+  fs: require('node:fs'), path, store: module.exports.stateStore,
+  paths: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }),
+}));
 
 exposeHostApi('hostEnv', () => getNative().hostEnvApi({
   environment: process.env, reportFailure: module.exports.stateStore.reportFailure,
@@ -2679,6 +2689,7 @@ exposeHostApi('chatHostRuntime', () => getNative().chatRuntimeApi({
   coordinator: module.exports.chatHostCoordinator, redact: module.exports.observability.redactProviderRouteCapability,
   protocol: module.exports.cliCapability.protocolFamilyOf, turnProgress: getTurnProgress,
 }));
+exposeHostApi('turnFinalizationExecutor', () => getNative().turnFinalizationExecutorApi(getTurnProgress));
 exposeHostApi('chatApi', () => getNative().chatHostExports([
   () => module.exports.turnRequestHost, getRetryPolicy, () => module.exports.apiErrorPolicy,
   () => getNative().apiErrorHostApi({
@@ -2688,7 +2699,7 @@ exposeHostApi('chatApi', () => getNative().chatHostExports([
   () => ({ createTurnRuntimeStore: module.exports.stateOwner.createTurnRuntimeStore }),
   () => module.exports.turnLifecycle, () => module.exports.providerAttemptRuntime,
   () => providerInvocation, () => module.exports.chatHostCoordinator, () => module.exports.chatHostRuntime,
-  () => module.exports.finalizationPlan, () => require('../chat/finalize-host'),
+  () => module.exports.finalizationPlan, () => module.exports.turnFinalizationExecutor,
 ]));
 
 exposeHostApi('taskBoardRouting', () => getNative().taskBoardRoutingApi({
@@ -2744,3 +2755,18 @@ exposeHostApi('voiceAcpBridge', () => getNative().voiceAcpBridgeApi({
   WebSocket: require('ws'), randomUUID: require('node:crypto').randomUUID,
   setTimeout, clearTimeout,
 }));
+// Node-only SDK imports/IO; platform policy and all mutable state live in Rust.
+function chatPlatformBridgePorts() {
+  return { express: require('express'), path, os: require('node:os'), fs: require('node:fs'),
+    bridgeDir: path.resolve(__dirname, '../../plugins/bridges'),
+    bridgeConfig: module.exports.bridgeConfig, bridgeGateway: module.exports.bridgeGateway };
+}
+exposeHostApi('telegramBridge', () => getNative().chatPlatformBridgeApi({
+  ...chatPlatformBridgePorts(),
+  createTelegramClient: require('../../plugins/bridges/telegram-client-adapter').createTelegramClient,
+}, 'telegram'));
+exposeHostApi('discordBridge', () => getNative().chatPlatformBridgeApi({
+  ...chatPlatformBridgePorts(), loadDiscord: () => require('discord.js'),
+  outboundFetch: module.exports.outbound.outboundFetch,
+  buildDiscordStrategy: require('../network/sdk-bridges').buildDiscordStrategy,
+}, 'discord'));
