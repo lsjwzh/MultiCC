@@ -126,7 +126,9 @@ class AirTaskRuntime {
   /// 没选模型时 agy 由它自己决定（账号里当前那一档），目录回报了就直接写出来，
   /// 不然「默认模型」四个字什么也没说。
   String get modelLabel {
-    if (model.isNotEmpty) return model;
+    if (model.isNotEmpty) {
+      return cli == 'agy' ? SessionCli.agy.agyModelLabel(model, effort) : model;
+    }
     final now = cli == 'agy' ? AgyModelsService.current : null;
     return now == null ? '默认模型' : '默认模型 · ${now.label}';
   }

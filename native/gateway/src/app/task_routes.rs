@@ -391,7 +391,12 @@ async fn planning(
             .unwrap_or_default();
         return express::json(ctx, planning_status(code), outcome, &[]);
     }
-    express::json(ctx, 200, &planning_ok(&value["task"], &value["revision"]), &[])
+    express::json(
+        ctx,
+        200,
+        &planning_ok(&value["task"], &value["revision"]),
+        &[],
+    )
 }
 
 async fn answer(

@@ -183,8 +183,8 @@ const MIGRATION_DEBT = Object.freeze({
   // 2026-11-23 Move account selector (Command Code / OpenCode / Antigravity) to
   // run-config-controls.js; measured 3090 lines / 155175 bytes, ratchet down.
   'public/run-config.js': Object.freeze({
-    ceiling: 3052,
-    byteCeiling: 154469,
+    ceiling: 3046,
+    byteCeiling: 154184,
     target: 3000,
     reason: 'extract the model field (select + search + custom + status + refresh button) into its own module to return under 3k',
   }),

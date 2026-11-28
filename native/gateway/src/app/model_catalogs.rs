@@ -234,6 +234,8 @@ pub async fn catalog(catalog: Catalog, ctx: &RequestCtx, host_port_num: u16) -> 
                 &json!({
                     "models": found.models,
                     "current": found.current,
+                    "efforts": {"agy": found.concrete.as_ref().map(multicc_core::agy_models::effort_spec)
+                        .unwrap_or_else(|| json!(multicc_core::cli_capability::effort_of("agy")))},
                     "source": found.source,
                     "cached": found.cached,
                 }),

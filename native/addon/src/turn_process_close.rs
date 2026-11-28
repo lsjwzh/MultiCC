@@ -526,6 +526,7 @@ pub fn chat_plan_process_close(
         .raw())
 }
 
+mod agy;
 mod execute;
 
 /// 只处理仍归属当前回合的进程。剩余的标准输出行与完成证据必须先冲刷，
@@ -590,6 +591,9 @@ pub fn chat_observe_process_exit(
         )?;
     }
     st.assign(c"stderrPending", text(p, "")?)?;
+    if agy::retry(&h, st)? {
+        return Ok(false);
+    }
     let duration =
         call(p.global()?.get(c"Date")?, c"now", &[])?.number()? - st.get(c"spawnTs")?.number()?;
     c.assign(c"durMs", num(p, duration)?)?;

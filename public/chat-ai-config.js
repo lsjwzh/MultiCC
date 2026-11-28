@@ -153,8 +153,7 @@
     return effortSpec(cli)?.default || '';
   }
 
-  function effortOptions(cli, model) {
-    const spec = effortSpec(cli);
+  function effortOptions(cli, model, spec = effortSpec(cli)) {
     if (!spec) return [];
     const selected = model || (cli === 'agy' ? root?.readAgyCurrentSync?.()?.model : '');
     const id = String(selected || '').split('[')[0].trim().toLowerCase();
@@ -337,7 +336,7 @@
     nudgeModelCatalog(state);
     if (state && state.cli === 'pi') return ['', '__custom__'];
     if (state && state.cli === 'agy') {
-      const cached = readModelCacheSync('multicc.agy.models.v1', 60 * 60 * 1000);
+      const cached = state.agyCatalog?.models ?? readModelCacheSync('multicc.agy.models.v1', 10 * 60 * 1000);
       return ['', ...cached.map(m => m.model), '__custom__'];
     }
     const tiers = providerAliasTiers(providerId, state);
@@ -504,7 +503,7 @@
         const cached = readCodebuddyModelsSync();
         return (cached.length ? cached.map(m => m.model) : CODEBUDDY_MODEL_OPTIONS).filter(Boolean);
       }
-      if (cli === 'agy') return readModelCacheSync('multicc.agy.models.v1', 60 * 60 * 1000).map(m => m.model);
+      if (cli === 'agy') return readModelCacheSync('multicc.agy.models.v1', 10 * 60 * 1000).map(m => m.model);
       if (cli === 'grok') {
         const cached = readModelCacheSync('multicc.grok.models.v1', 60 * 60 * 1000);
         return (cached.length ? cached.map(m => m.model) : GROK_MODEL_OPTIONS).filter(Boolean);
@@ -814,7 +813,9 @@
       try {
         const loader = catalogLoader(loaderName);
         if (!loader) return [];
-        const had = readModelCacheSync(cacheKey, 60 * 60 * 1000).length > 0;
+        const had = loaderName === 'loadAgyModels'
+          ? !!root?.readAgyCurrentSync?.() && !!effortSpec('agy')?.concreteModels
+          : readModelCacheSync(cacheKey, 60 * 60 * 1000).length > 0;
         const models = await loader({ force });
         if (typeof rebuildCallback === 'function' && (force || !had)) {
           try { rebuildCallback(); } catch (_) { /* noop */ }
@@ -946,7 +947,7 @@
       if (state && state.cli === 'codebuddy') return localized(state, 'aiConfigDefaultFollowWorkBuddy', '默认（跟随 WorkBuddy 设置）');
       if (state && state.cli === 'dsh') return localized(state, 'aiConfigDefaultFollowDsh', '默认（跟随 DSH 配置）');
       if (state && state.cli === 'agy') {
-        const current = agyCurrentModel();
+        const current = state.agyCatalog ? state.agyCatalog.current : agyCurrentModel();
         if (current) return `默认 · ${current.label}`;
         return localized(state, 'aiConfigDefaultFollowAgy', '默认（跟随 Antigravity 配置）');
       }
@@ -956,6 +957,10 @@
       if (state && state.cli === 'grok') return localized(state, 'aiConfigDefaultFollowGrok', '默认（跟随 Grok 配置）');
       if (state && state.cli === 'zcode') return localized(state, 'aiConfigDefaultFollowZcode', '默认（跟随 ZCode 设置）');
       return translate(state, 'default');
+    }
+    if (state?.cli === 'agy' && state.agyCatalog) {
+      const row = state.agyCatalog.models.find(item => item.model === value);
+      if (row?.label) return row.label;
     }
     if (state && state.cli === 'codebuddy') {
       return ({

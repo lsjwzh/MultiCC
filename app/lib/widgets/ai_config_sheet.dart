@@ -28,6 +28,7 @@ Future<void> _warmModelCatalog(
   SettingsService settings,
   SessionCli cli, {
   http.Client? httpClient,
+  String? agyAccountId,
 }) async {
   if (cli == SessionCli.qoder) {
     try {
@@ -43,7 +44,7 @@ Future<void> _warmModelCatalog(
     } catch (_) {}
   } else if (cli == SessionCli.agy) {
     try {
-      await AgyModelsService(settings: settings).load();
+      await AgyModelsService(settings: settings).load(accountId: agyAccountId);
     } catch (_) {}
   } else if (cli == SessionCli.grok) {
     try {
@@ -73,12 +74,13 @@ Future<List<Map<String, dynamic>>> prepareAIConfigInputs(
   SettingsService settings,
   SessionCli cli, {
   http.Client? httpClient,
+  String? agyAccountId,
 }) async {
   // The model warm-up and the provider-pool fetch used to run serially, so
   // every sheet open paid both before a line rendered. They touch different
   // endpoints, so start the warm-up unawaited and settle it only where its
   // result is actually read.
-  final warmModels = _warmModelCatalog(settings, cli, httpClient: httpClient);
+  final warmModels = _warmModelCatalog(settings, cli, httpClient: httpClient, agyAccountId: agyAccountId);
   try {
     if (cli.supportsProvider) {
       final d = await ManageService(

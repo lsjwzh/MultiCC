@@ -10,6 +10,7 @@
 use crate::agy_relay_client::{fetch_relay_models, RelayCatalogError};
 use crate::agy_remote_bridge::{build_ssh_base_args, ssh_bin};
 use multicc_core::agy_accounts::{self as agy_store, ResolvedAgyAccount};
+use multicc_core::agy_models::{self, Models, TTL};
 use multicc_core::agy_remote::{
     build_remote_agy_command_script, posix_shell_quote, RemoteAgyTarget, DEFAULT_REMOTE_AGY_BIN,
 };
@@ -31,7 +32,6 @@ use tokio::{
 
 /// A successful catalog is reused for ten minutes; a failed probe backs off for
 /// thirty seconds so a signed-out CLI cannot spawn on every page load.
-const TTL: Duration = Duration::from_secs(600);
 const FAIL_TTL: Duration = Duration::from_secs(30);
 const MAX_LINE: usize = 4_000_000;
 
@@ -47,21 +47,15 @@ static CACHE: OnceLock<Mutex<CacheMap>> = OnceLock::new();
 pub(crate) struct AgyCatalog {
     pub models: Vec<Value>,
     pub current: Option<Value>,
+    pub concrete: Option<Models>,
 }
 
 pub(super) struct AgyCatalogResult {
     pub models: Vec<Value>,
     pub current: Option<Value>,
+    pub concrete: Option<Models>,
     pub source: &'static str,
     pub cached: bool,
-}
-
-fn accounts_home_dir() -> Option<PathBuf> {
-    std::env::var_os("MULTICC_AGY_ACCOUNTS_HOME")
-        .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()))
-        .or_else(|| std::env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
-        .map(PathBuf::from)
 }
 
 pub(crate) const AGY_INSTALL_COMMAND: &str =
@@ -145,7 +139,13 @@ fn model_options(session: &Value) -> AgyCatalog {
             Some(json!({"model": id, "label": label}))
         })
         .or(family_current);
-    AgyCatalog { models, current }
+    let concrete =
+        agy_models::concrete_models(&session["models"]["availableModels"], "modelId", "name");
+    AgyCatalog {
+        models,
+        current,
+        concrete,
+    }
 }
 
 async fn run_acp_model_query(
@@ -326,6 +326,14 @@ where
         }
     }
     let fresh = producer().await;
+    if let Some(home) = agy_models::accounts_home() {
+        let key = cache_key.split_once(':').map_or(cache_key, |(_, id)| id);
+        agy_models::publish(
+            &home,
+            key,
+            fresh.as_ref().ok().and_then(|c| c.concrete.as_ref()),
+        );
+    }
     *guard = Some((Instant::now(), fresh.clone()));
     fresh.map(|models| (models, false))
 }
@@ -359,7 +367,18 @@ pub(crate) async fn query_local_account(
 /// must drop it instead of waiting out the ten-minute TTL.
 pub(super) async fn invalidate() {
     if let Some(cache) = CACHE.get() {
-        cache.lock().await.clear();
+        let mut cache = cache.lock().await;
+        if let Some(home) = agy_models::accounts_home() {
+            for (key, slot) in cache.iter() {
+                let _guard = slot.lock().await;
+                agy_models::publish(
+                    &home,
+                    key.split_once(':').map_or(key.as_str(), |(_, id)| id),
+                    None,
+                );
+            }
+        }
+        cache.clear();
     }
 }
 
@@ -368,7 +387,7 @@ pub(super) async fn resolve_models(
     explicit_account_id: Option<&str>,
     refresh: bool,
 ) -> Result<AgyCatalogResult, String> {
-    let Some(home) = accounts_home_dir() else {
+    let Some(home) = agy_models::accounts_home() else {
         return Err("无法定位 HOME 目录，未能读取反重力模型目录".to_string());
     };
     match agy_store::resolve_account(&home, explicit_account_id) {
@@ -380,6 +399,7 @@ pub(super) async fn resolve_models(
             Ok(AgyCatalogResult {
                 models: catalog.models,
                 current: catalog.current,
+                concrete: catalog.concrete,
                 source: "cli",
                 cached,
             })
@@ -388,16 +408,20 @@ pub(super) async fn resolve_models(
             home: account_home,
             egress_binding,
         })) => {
-            let acct_id = explicit_account_id
-                .map(str::to_owned)
-                .or_else(|| agy_store::active_id(&home))
-                .unwrap_or_else(|| "local".to_string());
+            // Resolve the key from the same mini-home as the ACP child. The active
+            // account may have changed while this request was being prepared.
+            let acct_id = account_home
+                .file_name()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_suffix(".home"))
+                .ok_or("无法识别反重力账号目录")?;
             let (catalog, cached) =
-                query_local_account(&acct_id, &account_home, egress_binding.as_ref(), refresh)
+                query_local_account(acct_id, &account_home, egress_binding.as_ref(), refresh)
                     .await?;
             Ok(AgyCatalogResult {
                 models: catalog.models,
                 current: catalog.current,
+                concrete: catalog.concrete,
                 source: "cli",
                 cached,
             })
@@ -407,7 +431,7 @@ pub(super) async fn resolve_models(
             let (catalog, cached) = cached_models(&cache_key, refresh, || async {
                 fetch_relay_models(&remote, refresh)
                     .await
-                    .map(|(models, current)| AgyCatalog { models, current })
+                    .map(|(models, current, concrete)| AgyCatalog { models, current, concrete })
                     .map_err(|err| match err {
                         RelayCatalogError::Revoked => {
                             "反重力借道分享码已被撤销或无效，请向出借方重新获取".to_string()
@@ -423,6 +447,7 @@ pub(super) async fn resolve_models(
             Ok(AgyCatalogResult {
                 models: catalog.models,
                 current: catalog.current,
+                concrete: catalog.concrete,
                 source: "relay",
                 cached,
             })
@@ -436,11 +461,33 @@ pub(super) async fn resolve_models(
             Ok(AgyCatalogResult {
                 models: catalog.models,
                 current: catalog.current,
+                concrete: catalog.concrete,
                 source: "ssh",
                 cached,
             })
         }
         Err(err) => Err(err),
+    }
+}
+
+/// A lane-specific picker can discover a cold catalog. General provider polls
+/// only peek, so an agy login or network outage never stalls another lane.
+pub(super) async fn project_efforts(catalog: &mut Value, cli: &str, pin: Option<&str>) {
+    let concrete = if cli == "agy" {
+        tokio::time::timeout(Duration::from_secs(25), resolve_models(pin, false))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|found| found.concrete)
+    } else {
+        let key = agy_models::account_key(None);
+        tokio::task::spawn_blocking(move || agy_models::cached(&key))
+            .await
+            .ok()
+            .flatten()
+    };
+    if let Some(models) = concrete {
+        catalog["efforts"]["agy"] = agy_models::effort_spec(&models);
     }
 }
 
@@ -485,6 +532,17 @@ mod tests {
         let catalog = model_options(&session);
         // 可选项仍是族名；真正在跑的档位只出现在 current 里。
         assert_eq!(catalog.models.len(), 2);
+        let efforts = agy_models::effort_spec(catalog.concrete.as_ref().unwrap());
+        assert_eq!(
+            efforts["modelLevels"]["gemini-4-neon"],
+            json!(["", "medium", "high"])
+        );
+        assert!(efforts["modelLevels"].get("claude-sonnet-5-5").is_none());
+        assert_eq!(efforts["levels"], json!([]));
+        assert_eq!(
+            efforts["concreteModels"]["gemini-4-neon-high"],
+            "Gemini 4 Neon (High)"
+        );
         assert_eq!(
             catalog.current.unwrap(),
             json!({"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"})
@@ -570,6 +628,7 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","catego
         let host_id = created["id"].as_str().unwrap().to_string();
         let acct_home = agy_store::account_home(&host_home, &host_id).unwrap();
         let egress = agy_store::get_account_egress(&host_home, &host_id);
+        std::env::set_var("MULTICC_AGY_ACCOUNTS_HOME", &host_home);
         let (host_catalog, cached) =
             query_local_account(&host_id, &acct_home, egress.as_ref(), true)
                 .await
@@ -589,6 +648,7 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","catego
         let catalog_payload = json!({
             "models": host_catalog.models,
             "current": host_catalog.current,
+            "availableModels": [{"model":"gemini-4-neon-high","label":"Gemini 4 Neon (High)"}],
             "source": "cli",
             "cached": false,
         })
@@ -633,6 +693,23 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","catego
 
         let r1 = resolve_models(None, false).await.unwrap();
         assert_eq!(r1.source, "relay");
+        assert_eq!(
+            agy_models::cached(client_acct_id).unwrap()["gemini-4-neon-high"],
+            "Gemini 4 Neon (High)"
+        );
+        let invocation = multicc_core::agy_stream::build_for_account(
+            &multicc_core::agy_stream::InvocationInput {
+                model: Some("gemini-4-neon".into()),
+                effort: Some("high".into()),
+                ..Default::default()
+            },
+            client_acct_id,
+        );
+        assert!(invocation
+            .args
+            .windows(2)
+            .any(|args| args == ["--model", "gemini-4-neon-high"]));
+        assert!(!invocation.args.iter().any(|arg| arg == "--effort"));
         assert!(!r1.cached);
         assert_eq!(r1.models.len(), 2);
         // 出借方的“当前模型”随目录一起透传，借用方不必再猜。
@@ -674,6 +751,7 @@ printf '{"jsonrpc":"2.0","id":2,"result":{"configOptions":[{"id":"model","catego
     async fn ssh_remote_account_bridges_models_over_ssh_with_caching() {
         use std::os::unix::fs::PermissionsExt;
 
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
         let root = std::env::temp_dir().join(format!(
             "multicc-agy-ssh-models-test-{}",
             std::time::SystemTime::now()

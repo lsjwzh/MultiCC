@@ -198,6 +198,7 @@ pub async fn handle_models(ctx: &RequestCtx, peer: &str, host_port: u16) -> Resp
             &json!({
                 "models": catalog.models,
                 "current": catalog.current,
+                "availableModels": catalog.concrete.map(|models| models.into_iter().map(|(model,label)|json!({ "model": model, "label": label })).collect::<Vec<_>>()),
                 "source": "cli",
                 "cached": cached,
             }),

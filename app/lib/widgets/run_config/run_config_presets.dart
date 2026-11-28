@@ -302,9 +302,10 @@ class RunConfigPreset {
   final String subagentProviderId;
   final String subagentModel;
 
-  List<RunPoolRow> copyRows() => [
+  List<RunPoolRow> copyRows({String? agyAccountId}) => [
     for (final row in rows)
       RunPoolRow(
+        agyAccountId: agyAccountId,
         lane: row.lane,
         providerId: row.providerId,
         model: row.model,

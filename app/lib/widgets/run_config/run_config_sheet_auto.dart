@@ -337,6 +337,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         rows: [
           for (final row in _rows.where((row) => row.sendable))
             RunPoolRow(
+              agyAccountId: widget.agyAccountId,
               lane: row.lane,
               providerId: row.providerId,
               model: row.model,
@@ -519,7 +520,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       setState(() {
         _rows
           ..clear()
-          ..addAll(preset.copyRows());
+          ..addAll(preset.copyRows(agyAccountId: widget.agyAccountId));
         // 之后改池子再点「更新预设」写回的就是这一条。
         _activePresetId = preset.id;
         _activePresetName = preset.name;
@@ -797,7 +798,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
             ),
             const SizedBox(height: 6),
             _rowModelPicker(index),
-            if ((tryParseCli(row.lane)?.effortOptionsForModel(row.model) ?? []).isNotEmpty)
+            if ((tryParseCli(row.lane)?.effortOptionsForModel(row.model, agyAccountId: widget.agyAccountId) ?? []).isNotEmpty)
               DropdownButtonFormField<String>(
                 key: Key('run-pool-effort-${row.id}'),
                 value: row.selectedEffort ?? '',
@@ -805,7 +806,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
                 isExpanded: true,
                 items: [
                   const DropdownMenuItem(value: '', child: Text('推理强度（跟随会话）')),
-                  for (final (value, label) in effortRungsFor(tryParseCli(row.lane)!, row.model))
+                  for (final (value, label) in effortRungsFor(tryParseCli(row.lane)!, row.model, widget.agyAccountId))
                     if (value.isNotEmpty) DropdownMenuItem(value: value, child: Text(label)),
                 ],
                 onChanged: (value) => setState(() => row.effort = value ?? ''),
@@ -988,6 +989,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
       cli,
       row.providerId,
       _poolFor(row.lane),
+      agyAccountId: widget.agyAccountId,
     ).where((m) => m.trim().isNotEmpty).toList();
     final autoAllowed = _order == RunPickOrder.difficulty;
     final value = row.autoModel
@@ -1095,7 +1097,7 @@ mixin RunConfigAutoSection on RunConfigSheetBase {
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (_) =>
-          _AddLineSheet(pool: _pool, rows: _rows, available: _available),
+          _AddLineSheet(pool: _pool, rows: _rows, available: _available, agyAccountId: widget.agyAccountId),
     );
     if (picked == null || !mounted) return;
     setState(() => _rows.add(picked));
@@ -1186,11 +1188,13 @@ class _AddLineSheet extends StatefulWidget {
     required this.pool,
     required this.rows,
     required this.available,
+    this.agyAccountId,
   });
 
   final RunPoolService pool;
   final List<RunPoolRow> rows;
   final bool Function(SessionCli) available;
+  final String? agyAccountId;
 
   @override
   State<_AddLineSheet> createState() => _AddLineSheetState();
@@ -1422,7 +1426,7 @@ class _AddLineSheetState extends State<_AddLineSheet> {
                 ? null
                 : () => Navigator.pop(
                     context,
-                    RunPoolRow(lane: lane, providerId: id),
+                    RunPoolRow(lane: lane, providerId: id, agyAccountId: widget.agyAccountId),
                   ),
           ),
         );
