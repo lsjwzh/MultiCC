@@ -80,6 +80,7 @@ pub mod memory_browser_scan;
 pub mod memory_markdown;
 pub mod memory_retrieval;
 pub mod message_composer;
+pub mod message_page;
 pub mod missing_resume_recovery;
 pub mod model_default;
 pub mod model_request_policy;

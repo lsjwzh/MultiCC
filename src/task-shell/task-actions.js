@@ -57,16 +57,20 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       items: rows.map(task => ({ task: { ...ownerFacts(task), ...accessFacts(task) }, lifecycle: lifecycleFacts(getTask(task.id) || task) })) });
     return new Map(tasks.map((t, i) => [t.id, results[i]?.pending ? access(t) : results[i]]));
   }
-  async function taskEntry(id, { includeMessages = true } = {}) {
+  async function taskEntry(id, { includeMessages = true, messageScope = false } = {}) {
     const task = findTask(id), lifecycle = getTask(id) || task;
     const a = access(task), owner = a.ownerShellId && shell(a.ownerShellId);
     const sid = [task.sessionId, task.chatSessionId, a.sourceSessionId].find(id => id && getRecord(id)) || null;
     let messages = [];
-    if (includeMessages) {
-      const scope = owner ? chatScope(owner.id) : { sessionIds: [...new Set((task.refs || []).map(r => r.sessionId))] };
+    let scope;
+    if (includeMessages || messageScope) {
+      scope = owner ? chatScope(owner.id) : { sessionIds: [...new Set((task.refs || []).map(r => r.sessionId))] };
       if (sid && !scope.sessionIds.includes(sid)) scope.sessionIds.push(sid);
       for (const source of task.historySessionIds || []) if (!scope.sessionIds.includes(source)) scope.sessionIds.push(source);
-      const inherited = (task.forkedFromTaskId || task.separatedFromTaskId) ? (task.snapshotIds || []).flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' })) : [];
+    }
+    const snapshotIds = (task.forkedFromTaskId || task.separatedFromTaskId) ? task.snapshotIds || [] : [];
+    if (includeMessages) {
+      const inherited = snapshotIds.flatMap(id => store.get('snapshot', id)?.messages || []).map(m => ({ ...m, inherited: true, content: m.content || m.evidenceExcerpt || '' }));
       const live = shellRecords(scope, getHistory, ports.getLiveState)
         .filter(m => m.taskId === id || (!m.taskId && m.sourceSessionId === sid));
       // A separated task's transcript seed keeps the source message id, so the
@@ -87,6 +91,8 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
       planningRevision: lifecycle.planningRevision ?? task.planningRevision ?? null,
       priority: lifecycle.priority || task.priority || null, dueAt: lifecycle.dueAt || task.dueAt || null,
       ...a }, ports.taskShortCode), messages, execution,
+      ...(messageScope && { messageScope: { sessionIds: scope.sessionIds, snapshotIds,
+        streaming: scope.sessionIds.filter(id => ports.getLiveState?.(id)?.isStreaming) } }),
       sessionId: sid, ...a, url: airTaskUrl(id, task.dirId),
       returnUrl: a.sourceSessionId ? `/chat.html?session=${encodeURIComponent(a.sourceSessionId)}` : null };
   }
@@ -96,6 +102,7 @@ function createTaskActions({ store, getRecord, getTask, getHistory, getExecution
     // shares its source conversation until the user chooses “separate shell”.
     // Merely opening its Air detail must remain a read, never materialize the
     // reserved session/worktree behind the user's back.
+    if (!existing && options.messageScope) return taskEntry(id, options);
     if (existing?.embedded === true && !existing.ready) return taskEntry(id, options);
     if ((existing?.ready && !existing.bindingPending) || lifecycle.status === 'archived' || lifecycle.deleting) return taskEntry(id, options);
     // A historical task with an existing execution cannot be rebound by a read.

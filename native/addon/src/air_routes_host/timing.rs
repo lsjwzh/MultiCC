@@ -149,10 +149,6 @@ fn etag<'a>(p: L<'a>, body: L<'a>) -> Result<L<'a>> {
     let digest = call(updated, c"digest", &[text(p, "base64url")?])?;
     call(text(p, "W/\"")?, c"concat", &[digest, text(p, "\"")?])
 }
-pub(super) fn serialized<'a>(p: L<'a>, input: L<'a>) -> Result<L<'a>> {
-    let body = json_call(p, c"stringify", input)?;
-    fields(p, &[("body", body), ("etag", etag(p, body)?)])
-}
 pub(super) fn build<'a>(p: L<'a>, ids: L<'a>) -> Result<L<'a>> {
     async_result(p, || {
         let t = timer(p)?;

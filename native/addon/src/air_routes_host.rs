@@ -120,7 +120,7 @@ fn invoke<'a>(p: L<'a>, b: L<'a>) -> Result<L<'a>> {
         .unwrap_or_default();
     match op.as_str() {
         "snapshot" => timing::snapshot_value(p, b.get(c"ifNoneMatch")?),
-        "task-detail" | "task-open" => detail::task(p, b.get(c"taskId")?, op == "task-open"),
+        "task-detail-scope" | "task-open" => detail::task(p, b.get(c"taskId")?, op == "task-open"),
         "resolve" => detail::resolve(p, b),
         "reclaim" => detail::reclaim(p, b),
         "create-task" => then(
@@ -136,7 +136,14 @@ fn invoke<'a>(p: L<'a>, b: L<'a>) -> Result<L<'a>> {
             },
         ),
         "reconcile" => then(
-            call(shell(p)?, c"taskEntry", &[b.get(c"taskId")?])?,
+            call(
+                shell(p)?,
+                c"taskEntry",
+                &[
+                    b.get(c"taskId")?,
+                    fields(p, &[("includeMessages", flag(p, false)?)])?,
+                ],
+            )?,
             p,
             |p, a| {
                 call(

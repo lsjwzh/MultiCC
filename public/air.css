@@ -2673,3 +2673,7 @@ dialog { border-color: var(--hairline); border-radius: 22px; box-shadow: var(--s
 @media (max-width: 640px) {
   .air-ops-cmdline .air-ops-input { font-size: 16px; }
 }
+
+.detail-message-list { max-height: 36vh; overflow-y: auto; overflow-anchor: none; }
+.detail-message-list article { padding: .6rem 0; border-bottom: 1px solid var(--line); }
+.detail-message-list pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .3rem 0; font: inherit; }

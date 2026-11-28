@@ -324,7 +324,7 @@ fn assert_key_order(body: &str, keys: &[&str]) {
 }
 
 fn world(ops: Value) -> Value {
-    json!({ "releaseHistory": { "ops": ops } })
+    json!({ "releaseHistory": { "ops": ops }, "sessionAdmin":{"ops":{"guard-record:s1":{"record":{"id":"s1"},"internal":false}}} })
 }
 
 /// External peer, authenticated: the forwarding header makes the locality fact
@@ -654,35 +654,40 @@ fn message_delete_forwards_both_decoded_parameters() {
 }
 
 #[test]
-fn history_forwards_only_the_known_query_keys() {
-    let gateway = Gateway::start(
-        "history",
-        world(json!({ "history": { "status": 200, "body": {
-            "messages": [{ "id": "m1" }], "hasMore": false
-        } } })),
+fn history_reads_pages_after_guard_without_a_transcript_host_call() {
+    let gateway = Gateway::start("history", world(json!({})));
+    let dir = gateway.dir.join("data/chat_history");
+    fs::create_dir(&dir).unwrap();
+    fs::write(
+        dir.join("s1.json"),
+        r#"[{"id":"a","role":"user"},{"id":"b","role":"assistant"}]"#,
+    )
+    .unwrap();
+    let response = gateway.get("/api/sessions/s1/history?limit=1");
+    assert_eq!(response.status, 200);
+    assert_eq!(response.json()["before"], "b");
+    assert_eq!(
+        gateway.get("/api/sessions/s1/history?before=b").json()["messages"][0]["id"],
+        "a"
     );
-    let response = gateway.exchange(
+    assert_eq!(
+        gateway.get("/api/sessions/s1/history?around=b").json()["found"],
+        true
+    );
+    assert_eq!(
+        gateway.get("/api/sessions/s1/history?messageId=a").json()["message"]["id"],
+        "a"
+    );
+    assert_eq!(gateway.get("/api/sessions/missing/history").status, 404);
+    let cached = gateway.exchange(
         "GET",
-        "/api/sessions/s1/history?historyScope=all&before=7&around=m9&limit=50&plan=1&secret=x&limit=60",
-        &external(),
+        "/api/sessions/s1/history?limit=1",
+        &[("If-None-Match", response.header("etag").unwrap())],
         None,
     );
-    assert_eq!(response.status, 200, "{}", gateway.log());
-    assert_eq!(
-        response.body,
-        r#"{"messages":[{"id":"m1"}],"hasMore":false}"#
-    );
-    let call = &gateway.calls()[0];
-    assert_eq!(call["op"], "history");
-    assert_eq!(call["id"], "s1");
-    let query = call["query"].as_object().unwrap();
-    for key in ["historyScope", "before", "around", "plan"] {
-        assert!(query.contains_key(key), "{key} missing from {query:?}");
-    }
-    assert!(!query.contains_key("secret"));
-    // A repeated key is the qs array, exactly as Express's parser gave it.
-    assert_eq!(query["limit"], json!(["50", "60"]));
-    assert_eq!(query["historyScope"], "all");
+    assert_eq!(cached.status, 304);
+    assert!(gateway.calls().is_empty());
+    assert_eq!(gateway.session_admin_calls().len(), 6);
 }
 
 #[test]
@@ -786,6 +791,7 @@ fn internal_slots_are_404_on_the_three_history_routes_and_their_options() {
     let script = json!({
         "releaseHistory": { "ops": {} },
         "sessionAdmin": { "ops": {
+            "guard-record:s1":{"record":{"id":"s1"},"internal":false},
             "guard-record:slot1": { "record": null, "internal": true, "taskStateWritable": true }
         } }
     });
@@ -821,7 +827,7 @@ fn internal_slots_are_404_on_the_three_history_routes_and_their_options() {
     // A real session on the same routes is served.
     let response = gateway.exchange("GET", "/api/sessions/s1/history", &external(), None);
     assert_eq!(response.status, 200);
-    assert_eq!(gateway.ops(), vec!["history"]);
+    assert!(gateway.ops().is_empty());
 }
 
 // ── OPTIONS ────────────────────────────────────────────────────────────────
@@ -905,13 +911,13 @@ fn a_thrown_handler_is_rebuilt_with_the_front_doors_ids_and_no_message() {
     // request ids, never anything else the answer carried.
     let gateway = Gateway::start(
         "threw",
-        world(json!({ "history": {
+        world(json!({ "context-level": {
             "threw": true, "status": 500, "code": "internal_error", "message": "internal_error",
             "stack": "Error: boom at /Users/someone/src/ios-udid.js:42",
             "requestId": "HOST-RID", "correlationId": "HOST-CID"
         } })),
     );
-    let response = gateway.exchange("GET", "/api/sessions/s1/history", &external(), None);
+    let response = gateway.exchange("GET", "/api/sessions/s1/context-level", &external(), None);
     assert_eq!(response.status, 500, "{}", gateway.log());
     assert_key_order(
         &response.body,
@@ -1137,7 +1143,7 @@ fn head_has_headers_and_no_body_on_every_read_route() {
         .iter()
         .map(|call| call["method"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(methods, vec!["HEAD", "HEAD", "HEAD"]);
+    assert_eq!(methods, vec!["HEAD", "HEAD"]);
     assert_eq!(gateway.head("/api/ios-ota-info").status, 200);
 }
 
@@ -1214,7 +1220,7 @@ fn read_routes_are_not_serialized_behind_the_write_lock() {
         json!({ "releaseHistory": { "delayMs": 500, "ops": {} } }),
     );
     let requests: Vec<_> = (0..3)
-        .map(|_| ("GET", "/api/sessions/s1/history".to_string(), external()))
+        .map(|_| ("GET", "/api/apk-info".to_string(), external()))
         .collect();
     assert_eq!(burst(&gateway, &requests), vec![200; 3]);
     let phases = gateway.phases();

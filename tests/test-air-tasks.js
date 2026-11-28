@@ -12,6 +12,9 @@ test('navigation entry skips history reads while ordinary task details retain th
   const lean = await f.runtime.bindPlannedTask(task.id, { includeMessages: false });
   assert.equal(historyReads, 0);
   assert.deepEqual(lean.messages, []);
+  const scoped = await f.runtime.taskEntry(task.id, { includeMessages: false, messageScope: true });
+  assert.ok(scoped.messageScope.sessionIds.includes(lean.sessionId));
+  assert.equal(historyReads, 0);
   const full = await f.runtime.taskEntry(task.id);
   assert.ok(historyReads > 0);
   assert.ok(JSON.stringify(full).length > 1024 * 1024);
@@ -574,7 +577,7 @@ test('Air task entry exposes provider routing metadata without credentials', asy
     effectiveModel: () => 'gpt-a', effectiveEffort: () => 'high',
     serializeSubagent: sa => (sa ? { providerId: sa.providerId, model: sa.model, effectiveModel: 'gpt-b' } : null),
   });
-  const response = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
+  const response = JSON.parse(JSON.stringify(await air.ok({ op: 'task-detail-scope', taskId: 't' })));
   assert.deepEqual(response.configuration, {
     pendingConfiguration: null,
     cli: 'codex', model: 'gpt-alias', effectiveModel: 'gpt-a', effort: 'high', effectiveEffort: 'high',
@@ -589,10 +592,10 @@ test('Air task entry exposes provider routing metadata without credentials', asy
   // Once Auto has routed a turn, the pill names the model that actually
   // answered, not the first candidate's.
   record.autoProviderLastRoute = { providerId: 'provider-b', providerName: 'Provider B', model: 'gpt-b-routed' };
-  const routed = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
+  const routed = JSON.parse(JSON.stringify(await air.ok({ op: 'task-detail-scope', taskId: 't' })));
   assert.equal(routed.configuration.effectiveModel, 'gpt-b-routed');
   record.providerSelection = null;
-  const manual = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
+  const manual = JSON.parse(JSON.stringify(await air.ok({ op: 'task-detail-scope', taskId: 't' })));
   assert.equal(manual.configuration.effectiveModel, 'gpt-a', 'a stale Auto line never leaks into a manual session');
 });
 
@@ -614,7 +617,7 @@ test('Air task entry resolves the pending route provider name instead of leaking
       : (session.provider === 'provider-a' ? 'Main Relay' : null),
     effectiveModel: () => 'gpt-a', effectiveEffort: () => 'low',
   });
-  const response = JSON.parse((await air.ok({ op: 'task-detail', taskId: 't' })).body);
+  const response = JSON.parse(JSON.stringify(await air.ok({ op: 'task-detail-scope', taskId: 't' })));
   assert.equal(response.configuration.providerName, 'Main Relay');
   assert.equal(response.configuration.pendingConfiguration.providerName, 'Backup Relay');
   // 只读的展示名落在 pending 上，不进 profile：应用这份配置时 profile 会被整体

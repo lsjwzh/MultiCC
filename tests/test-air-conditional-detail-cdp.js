@@ -43,10 +43,17 @@ test('Air 条件详情：重新打开同一条任务不能停在「正在读取�
     tasks: [{ id: 'tsk_a', title: TITLE, status: 'active', dirId: 'd1', updatedAt: 1000 }] });
   const detail = () => JSON.stringify({ ok: true, task: { id: 'tsk_a', title: TITLE, recordType: 'planned', workflowStage: 'doing' },
     sessionId: 'task-a', ownerShellId: 'shell-a', readOnly: false, execution: { busy: false, status: 'idle' },
-    resource: { residency: 'planned', lease: 'idle' }, attribution: {}, messages: [], roleBindings: { version: 0, bindings: [] }, configuration: {} });
+    resource: { residency: 'planned', lease: 'idle' }, attribution: {}, before:'s:m1', hasMore:true,
+    messages: Array.from({length:15},(_,i)=>({id:'m'+(i+1), messageKey:'s:m'+(i+1), role:'user',
+      content:'最新页 '+(i+1), toolsExcerpt:i===14?'工具结果摘要':undefined, truncated:i===14})), roleBindings: { version: 0, bindings: [] }, configuration: {} });
   const snapshotEtags = [], detailEtags = [];
   routes['/api/air'] = conditional(snapshot, snapshotEtags);
-  routes[DETAIL] = conditional(detail, detailEtags);
+  routes[DETAIL] = ({req}) => {
+    const query = new URL(req.url, 'http://localhost').searchParams;
+    if (query.get('messageId') === 's:m15') return json({message:{id:'m15',messageKey:'s:m15',tools:[{name:'Read',result:'工具结果末尾'}]}});
+    if (query.get('before') === 's:m1') return json({messages:[{id:'m0',messageKey:'s:m0',content:'最早的消息'}],hasMore:false,before:null});
+    return conditional(detail, detailEtags)({req});
+  };
   routes['/api/air/tasks/tsk_a/open'] = () => json({ ok: true, taskId: 'tsk_a', sessionId: 'task-a', readOnly: false,
     session: { id: 'task-a', kind: 'chat', cli: 'codex' } });
   routes['/api/settings/access-token'] = () => json({ hasToken: true, canEdit: false });
@@ -67,6 +74,14 @@ test('Air 条件详情：重新打开同一条任务不能停在「正在读取�
     await page.evaluate(`document.getElementById('task-state').click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-detail-groups').textContent.includes('tsk_a')`));
     assert.equal(detailEtags.length, 1, '展开详情时才读取审计数据');
+
+    const list = "document.querySelector('.detail-message-list')";
+    assert.ok(!await page.evaluate(`${list}.textContent.includes('工具结果末尾')`));
+    await page.evaluate(`[...${list}.querySelectorAll('article button')].pop().click()`);
+    assert.ok(await page.waitFor(`${list}.textContent.includes('工具结果末尾')`));
+    await page.evaluate(`${list}.scrollTop=0;${list}.dispatchEvent(new Event('scroll'))`);
+    assert.ok(await page.waitFor(`${list}.textContent.includes('最早的消息')`));
+    assert.equal(await page.evaluate(`${list}.querySelectorAll('article').length`),16);
 
     // 再点一次同一条任务仍不得回退到预取详情。
     assert.equal(await page.evaluate(`(() => { const row = document.querySelector('#tasks > button[data-task="tsk_a"]'); if (!row) return 'missing'; row.click(); return row.dataset.task; })()`), 'tsk_a');

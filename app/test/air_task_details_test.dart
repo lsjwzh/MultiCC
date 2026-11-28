@@ -8,6 +8,7 @@ import 'package:multicc_app/i18n.dart';
 import 'package:multicc_app/services/air_service.dart';
 import 'package:multicc_app/services/settings_service.dart';
 import 'package:multicc_app/widgets/air/air_task_details.dart';
+import 'package:multicc_app/widgets/air/air_task_messages.dart';
 
 /// 交付卡那一整段判断是「本轮 ≠ 任务完成 ≠ 归属生效」这条规则的唯一出口，
 /// 每种组合都得说一句对得上号的话，所以这些分支直接对着纯函数测。
@@ -272,6 +273,84 @@ void main() {
         '等待本轮代码按项目流程合入基分支。',
       );
     });
+  });
+
+  testWidgets('任务消息从最近页向前滚动，展开时只取选中的消息', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'multicc_host': 'http://localhost:3000',
+    });
+    final settings = await SettingsService.getInstance();
+    final requests = <Map<String, String>>[];
+    final client = MockClient((request) async {
+      final q = request.url.queryParameters;
+      requests.add(q);
+      final data = q.containsKey('messageId')
+          ? {
+              'message': {
+                'id': 'm14',
+                'tools': [
+                  {'name': 'Read', 'result': '工具结果末尾'},
+                ],
+              },
+            }
+          : q.containsKey('before')
+          ? {
+              'messages': [
+                {'id': 'old', 'content': '前一页'},
+              ],
+              'hasMore': false,
+            }
+          : {
+              'task': {'id': 't'},
+              'messages': List.generate(
+                15,
+                (i) => {
+                  'id': 'm$i',
+                  'role': 'user',
+                  'content': '摘要 $i',
+                  if (i == 14) 'toolsExcerpt': '工具结果摘要',
+                  'truncated': i == 14,
+                },
+              ),
+              'before': 'cursor:0',
+              'hasMore': true,
+            };
+      return http.Response.bytes(utf8.encode(jsonEncode(data)), 200);
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AirTaskDetailsPanel(
+            taskId: 't',
+            service: AirService(settings: settings, httpClient: client),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(requests, [isEmpty]);
+    await tester.scrollUntilVisible(
+      find.byType(AirTaskMessages),
+      320,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(find.text('展开完整内容'));
+    expect(find.textContaining('工具结果末尾'), findsNothing);
+    await tester.tap(find.text('展开完整内容'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('工具结果末尾'), findsOneWidget);
+    expect(requests.last, {'messageId': 'm14'});
+    final list = find.descendant(
+      of: find.byType(AirTaskMessages),
+      matching: find.byType(ListView),
+    );
+    await tester.drag(list, const Offset(0, 1600));
+    await tester.pumpAndSettle();
+    expect(requests.last, {'before': 'cursor:0'});
+    await tester.drag(list, const Offset(0, 800));
+    await tester.pumpAndSettle();
+    expect(find.text('前一页'), findsOneWidget);
+    expect(requests.length, 3);
   });
 
   testWidgets('任务详情面板：交付卡说清本轮发生了什么，核验按钮只交付时出现', (tester) async {

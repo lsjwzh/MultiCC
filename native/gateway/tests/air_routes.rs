@@ -282,7 +282,7 @@ fn refused(code: &str, status: i64, message: &str) -> Value {
 
 const SNAPSHOT_BODY: &str =
     r#"{"b":1.5,"ok":true,"tasks":[{"id":"tsk_1","extra":null}],"a":[1,2]}"#;
-const DETAIL_BODY: &str = r#"{"ok":true,"task":{"id":"tsk_1"},"roleBindings":null}"#;
+
 const SYNC_BODY: &str = r#"{"events":[],"cursor":"epoch:1","taskStats":{"all":{"total":2}},"checkedAt":0,"degraded":false}"#;
 const PAGE_BODY: &str = r#"{"ok":true,"revision":1,"page":1,"pages":1,"total":0,"tasks":[]}"#;
 
@@ -298,8 +298,8 @@ fn world() -> Value {
             "result": {"ok": true, "considered": 3, "hibernated": 2}})),
         "resolve": ok(json!({"taskId": "tsk_1", "dirId": "dir_1"})),
         "create-task": ok(json!({"task": {"id": "tsk_new"}, "dirId": "dir_1"})),
-        "task-detail:tsk_1": ok(json!({"body": DETAIL_BODY, "etag": "W/\"det-1\""})),
-        "task-detail:tsk/1": ok(json!({"body": DETAIL_BODY, "etag": "W/\"det-2\""})),
+        "task-detail-scope:tsk_1": ok(json!({"ok":true,"task":{"id":"tsk_1"},"sessionId":"s","messageScope":{"sessionIds":["s"]}})),
+        "task-detail-scope:tsk/1": ok(json!({"ok":true,"task":{"id":"tsk/1"},"messageScope":{}})),
         "task-open": ok(json!({"ok": true, "taskId": "tsk_1", "readOnly": false,
             "sessionId": "s1", "configuration": null, "roleBindings": null, "session": null})),
         "reconcile": ok(json!([{"artifactId": "report", "state": "published"}])),
@@ -383,30 +383,76 @@ fn snapshot_keeps_express_freshness_beyond_the_explicit_match() {
 #[test]
 fn task_detail_is_conditional_and_decodes_the_param() {
     let gateway = Gateway::start("detail", world());
-    let plain = gateway.get("/api/air/tasks/tsk_1");
-    assert_eq!(plain.status, 200);
-    assert_eq!(plain.body, DETAIL_BODY);
-    assert_eq!(plain.header("etag"), Some("W/\"det-1\""));
-    assert_eq!(gateway.calls()[0]["op"], "task-detail");
-    assert_eq!(gateway.calls()[0]["taskId"], "tsk_1");
-
-    let encoded = gateway.get("/api/air/tasks/tsk%2F1");
-    assert_eq!(encoded.status, 200);
-    assert_eq!(encoded.header("etag"), Some("W/\"det-2\""));
-    assert_eq!(
-        gateway.calls()[1]["taskId"],
-        "tsk/1",
-        "the path param is percent-decoded like Express"
+    let dir = gateway.dir.join("data/chat_history");
+    fs::create_dir(&dir).unwrap();
+    let tool = "界".repeat(16000);
+    let rows = (0..60)
+        .map(|i| {
+            json!({"id":format!("m{i}"),"role":"assistant","heldResultId":i,"ts":i,
+        "content":if i==59 {tool.as_str()} else {"text"}})
+            .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(dir.join("s.json"), rows).unwrap();
+    let url = "/api/air/tasks/tsk_1";
+    let plain = gateway.get(url);
+    assert_eq!(plain.status, 200, "{}", plain.body);
+    let json = plain.json();
+    assert_eq!(json["messages"].as_array().unwrap().len(), 50);
+    assert_eq!(json["messages"][49]["truncated"], true);
+    assert_eq!(json["messages"][49]["contentOriginalLength"], tool.len());
+    assert!(json.get("messageScope").is_none());
+    assert_eq!(json["hasMore"], true);
+    assert_eq!(json["before"], "s:m10");
+    let tag = plain.header("etag").unwrap();
+    let second = gateway.get_with(url, &[("If-None-Match", tag)]);
+    assert_eq!(second.status, 304);
+    assert!(second.body.is_empty());
+    let older = gateway.get_with(
+        &format!("{url}?before=s%3Am10&limit=15"),
+        &[("If-None-Match", tag)],
     );
+    assert_eq!(older.status, 200);
+    assert_eq!(older.json()["messages"].as_array().unwrap().len(), 10);
+    assert_eq!(older.json()["hasMore"], false);
+    assert_eq!(
+        gateway.get(&format!("{url}?messageId=s%3Am59")).json()["message"]["content"],
+        tool
+    );
+    assert_eq!(gateway.get(&format!("{url}?messageId=other")).status, 404);
+    assert_eq!(
+        gateway.get("/api/air/tasks/tsk%2F1").json()["task"]["id"],
+        "tsk/1"
+    );
+    assert_eq!(gateway.calls().last().unwrap()["taskId"], "tsk/1");
+    assert!(gateway
+        .calls()
+        .iter()
+        .all(|v| v["op"] == "task-detail-scope"));
+    let count = gateway.calls().len();
+    assert_eq!(gateway.get("/api/air/tasks/%zz").status, 400);
+    assert_eq!(gateway.calls().len(), count);
+}
 
-    let cached = gateway.get_with("/api/air/tasks/tsk_1", &[("If-None-Match", "W/\"det-1\"")]);
+#[test]
+fn oversized_expansion_streams_one_record_and_honors_etag() {
+    let gateway = Gateway::start("stream", world());
+    let dir = gateway.dir.join("data/chat_history");
+    fs::create_dir(&dir).unwrap();
+    let output = "x".repeat(16 * 1024 * 1024 + 1);
+    fs::write(
+        dir.join("s.json"),
+        json!({"id":"huge","role":"assistant","tools":[{"result":output}]}).to_string(),
+    )
+    .unwrap();
+    let url = "/api/air/tasks/tsk_1?messageId=s%3Ahuge";
+    let expanded = gateway.get(url);
+    assert_eq!(expanded.status, 200);
+    assert_eq!(expanded.json()["message"]["tools"][0]["result"], output);
+    let cached = gateway.get_with(url, &[("If-None-Match", expanded.header("etag").unwrap())]);
     assert_eq!(cached.status, 304);
-    assert_eq!(cached.body, "");
-    assert_eq!(cached.header("etag"), Some("W/\"det-1\""));
-
-    let bad = gateway.get("/api/air/tasks/%zz");
-    assert_eq!(bad.status, 400, "malformed escapes are a decode error");
-    assert_eq!(gateway.calls().len(), 3, "the bad path never reaches Node");
+    assert!(cached.body.is_empty());
 }
 
 #[test]

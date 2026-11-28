@@ -332,7 +332,9 @@
     $('task-details').hidden = false;
     $('details-toggle').setAttribute('aria-expanded', 'true');
     $('task-state').setAttribute('aria-expanded', 'true');
-    if (entry?.task?.id === taskId) return;
+    if (entry?.task?.id === taskId) return window.MultiCCAirDetailMessages.shown();
+    window.MultiCCAirDetailMessages.reset($('task-detail-messages'));
+    $('task-detail-groups').replaceChildren();
     $('delivery-card').hidden = false;
     $('delivery-title').textContent = t('airHeaderLoadingState');
     $('delivery-text').textContent = '';
@@ -2388,6 +2390,7 @@
     actions.append(removeAction);
     if (actions.childElementCount) groups[groups.length - 1].append(actions);
     $('task-detail-groups').replaceChildren(...groups);
+    window.MultiCCAirDetailMessages.render($('task-detail-messages'), value, api, t);
   }
 
   function candidateBlockers(value) {
@@ -2582,8 +2585,6 @@
     if (entry?.task?.id !== selected) resourceEtag.delete(path);
     try {
       const result = await apiConditional(path);
-      // 详情里 3.2MB 是消息正文；没变就别解析、别重建会话区（返回 false =
-      // 「没变」，null = 「这次读失败」，调用方据此决定要不要重画和退避）。
       if (result.unchanged) return false;
       if (taskId !== selected) return;
       entry = result;

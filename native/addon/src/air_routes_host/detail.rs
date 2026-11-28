@@ -200,7 +200,7 @@ fn detail_ready<'a>(ctx: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
             out.set(c"configuration", config(p, ctx.get(c"record")?, false)?)?;
             out.set(c"roleBindings", bindings)?;
             out.set(c"attribution", a[0])?;
-            timing::serialized(p, out)
+            Ok(out)
         },
     )
 }
@@ -277,7 +277,18 @@ pub(super) fn task<'a>(p: L<'a>, id: L<'a>, open: bool) -> Result<L<'a>> {
             open_ready,
         )
     } else {
-        then(call(shell(p)?, c"taskEntry", &[id])?, ctx, detail_ready)
+        let options = fields(
+            p,
+            &[
+                ("includeMessages", flag(p, false)?),
+                ("messageScope", flag(p, true)?),
+            ],
+        )?;
+        then(
+            call(shell(p)?, c"taskEntry", &[id, options])?,
+            ctx,
+            detail_ready,
+        )
     }
 }
 pub(super) fn resolve<'a>(p: L<'a>, b: L<'a>) -> Result<L<'a>> {
@@ -303,19 +314,29 @@ pub(super) fn resolve<'a>(p: L<'a>, b: L<'a>) -> Result<L<'a>> {
                 return fields(p, &[("taskId", null(p)?), ("dirId", null(p)?)]);
             }
             ctx.set(c"id", id)?;
-            then(call(s, c"taskEntry", &[id])?, ctx, |c, a| {
-                let p = c.get(c"p")?;
-                fields(
-                    p,
-                    &[
-                        ("taskId", c.get(c"id")?),
-                        (
-                            "dirId",
-                            value_or_null(rec(p, a[0].get(c"sessionId")?)?.optional(c"dirId")?)?,
-                        ),
-                    ],
-                )
-            })
+            then(
+                call(
+                    s,
+                    c"taskEntry",
+                    &[id, fields(p, &[("includeMessages", flag(p, false)?)])?],
+                )?,
+                ctx,
+                |c, a| {
+                    let p = c.get(c"p")?;
+                    fields(
+                        p,
+                        &[
+                            ("taskId", c.get(c"id")?),
+                            (
+                                "dirId",
+                                value_or_null(
+                                    rec(p, a[0].get(c"sessionId")?)?.optional(c"dirId")?,
+                                )?,
+                            ),
+                        ],
+                    )
+                },
+            )
         },
     )
 }

@@ -6,6 +6,7 @@ import '../../theme.dart';
 import '../../utils/status_presentation.dart';
 import 'air_role_editor.dart';
 import 'air_task_actions.dart';
+import 'air_task_messages.dart';
 import 'air_task_status.dart';
 
 /// 等用户回答的那个词。状态词只有一份（`utils/status_presentation.dart` 的
@@ -553,6 +554,15 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
     _load();
   }
 
+  @override
+  void didUpdateWidget(covariant AirTaskDetailsPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.taskId != widget.taskId) {
+      _value = null;
+      _load();
+    }
+  }
+
   /// 详情里那颗唯一的动作按钮：优先级同任务行（已忽略 > 手动待办 > 状态动作 >
   /// 标记待办）。没有快照行时退回「标记 / 取消待办」这一对，老调用点行为不变。
   AirTaskAction get _action {
@@ -623,17 +633,20 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
   }
 
   Future<void> _load() async {
+    final id = widget.taskId;
     setState(() {
       _loading = true;
       _error = '';
     });
     try {
-      final value = await widget.service.taskDetails(widget.taskId);
-      if (mounted) setState(() => _value = value);
+      final value = await widget.service.taskDetails(id);
+      if (mounted && widget.taskId == id) setState(() => _value = value);
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted && widget.taskId == id) {
+        setState(() => _error = error.toString());
+      }
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && widget.taskId == id) setState(() => _loading = false);
     }
   }
 
@@ -893,6 +906,13 @@ class _AirTaskDetailsPanelState extends State<AirTaskDetailsPanel> {
           _DetailGroupView(group: group),
           const SizedBox(height: 14),
         ],
+        if ((value['messages'] as List?)?.isNotEmpty == true)
+          AirTaskMessages(
+            key: ValueKey(value),
+            taskId: widget.taskId,
+            page: value,
+            service: widget.service,
+          ),
       ],
     );
   }

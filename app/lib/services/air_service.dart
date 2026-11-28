@@ -1139,9 +1139,22 @@ class AirService {
 
   /// 同一个端点，但读的是详情而不是会话：`attribution` / `execution` 只在这一份
   /// 响应里，任务行上那份 `/api/air` 快照没有它们。
-  Future<Map<String, dynamic>> taskDetails(String taskId) => openTask(taskId);
+  Future<Map<String, dynamic>> taskDetails(
+    String taskId, {
+    String? before,
+    String? messageId,
+  }) {
+    final params = <String, String>{
+      if (before != null) 'before': before,
+      if (messageId != null) 'messageId': messageId,
+    };
+    final path = '/api/air/tasks/${Uri.encodeComponent(taskId)}';
+    return _get(
+      params.isEmpty ? path : '$path?${Uri(queryParameters: params).query}',
+    );
+  }
 
-  /// Opening a chat must not download taskDetails' unbounded transcript.
+  /// Opening a chat must not download the task details transcript.
   /// The server resolves access and returns the small session projection too.
   Future<Session> openTaskSession(
     String taskId, {

@@ -39,6 +39,7 @@ mod host_battery;
 pub mod host_ops_routes;
 mod host_power;
 pub mod host_read;
+mod message_page;
 pub mod model_catalogs;
 mod notification_reads;
 pub mod orchestration_routes;

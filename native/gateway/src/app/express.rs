@@ -102,7 +102,7 @@ fn token_list(text: &str) -> Vec<&str> {
 }
 
 /// `fresh(req.headers, { etag })` (no Last-Modified is ever set here).
-fn fresh(headers: &NodeHeaders, etag: &str) -> bool {
+pub(super) fn fresh(headers: &NodeHeaders, etag: &str) -> bool {
     let modified_since = headers.get("if-modified-since").filter(|v| !v.is_empty());
     let none_match = headers.get("if-none-match").filter(|v| !v.is_empty());
     if modified_since.is_none() && none_match.is_none() {

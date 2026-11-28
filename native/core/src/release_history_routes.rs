@@ -68,10 +68,9 @@ impl Route {
             Route::UdidResult => "udid-result",
             Route::UdidCallback => "udid-callback",
             Route::MessageDelete => "message-delete",
-            Route::History => "history",
             Route::ContextLevel => "context-level",
             Route::ApkDownload => "apk-download",
-            Route::Root | Route::Options { .. } => return None,
+            Route::History | Route::Root | Route::Options { .. } => return None,
         })
     }
 
@@ -506,10 +505,10 @@ mod tests {
             Route::ContextLevel,
         ];
         let mut ops: Vec<&str> = all.iter().filter_map(|route| route.op()).collect();
-        assert_eq!(ops.len(), 9);
+        assert_eq!(ops.len(), 8);
         ops.sort_unstable();
         ops.dedup();
-        assert_eq!(ops.len(), 9);
+        assert_eq!(ops.len(), 8);
         assert_eq!(Route::Root.op(), None);
         let writes: Vec<Route> = all.iter().copied().filter(|r| r.is_write()).collect();
         assert_eq!(

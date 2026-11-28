@@ -533,6 +533,7 @@
             </div>
           </section>
           <div id="task-detail-groups"></div>
+          <section id="task-detail-messages" hidden></section>
         </aside>
       </div>
     </section>
@@ -820,6 +821,7 @@
   <script src="shared/user-presence.js"></script>
   <script src="air-notify-deck.js"></script>
   <script src="air-task-notify.js"></script>
+  <script src="air-detail-messages.js"></script>
   <script src="air-task-entry.js"></script>
   <!-- 目录首页顶部那道 Chat / Terminal 切换：模块自己管 DOM 与状态，air.js 每次
        渲染把快照递进去（同 air-admin.js 的 render(ctx) 契约）。要先于 air.js 注册，

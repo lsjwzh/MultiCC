@@ -224,7 +224,7 @@ impl SnapshotPairTracker {
     }
 }
 
-fn legacy_message_id(message: &mut V, session: &str, index: usize) {
+pub(crate) fn legacy_message_id(message: &mut V, session: &str, index: usize) {
     if js::truthy_opt(message.get("role")) && !js::truthy_opt(message.get("id")) {
         let mut hash = Sha256::new();
         hash.update(session.as_bytes());

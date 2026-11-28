@@ -841,8 +841,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // 新增 13 组双语键（+26 行），重跑生成器 countLines 口径实测 10948/716240。
     // 反重力工具步骤外显（toolStepsProgress）：新增 1 组双语键（+2 行），countLines 口径实测 10950/716354。
     // +5 bilingual Spaces labels, 14 missing English screen labels and 2 shared vault labels.
-    maxLines: 10978,
-    maxBytes: 717878,
+    // 任务详情消息列表、翻页和展开按钮的三组双语文案。
+    maxLines: 10984,
+    maxBytes: 718166,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

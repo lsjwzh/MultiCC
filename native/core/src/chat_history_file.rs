@@ -391,6 +391,23 @@ pub fn scan_json_lines<E>(
     max_record_bytes: Option<u64>,
     mut on_row: impl FnMut(&str) -> Result<Row, E>,
 ) -> Result<(), LineError<E>> {
+    scan_json_line_ranges(
+        reader,
+        allow_empty,
+        max_record_bytes,
+        false,
+        |_, _, text| on_row(text),
+    )
+}
+
+pub(super) fn scan_json_line_ranges<E>(
+    reader: &mut impl BufRead,
+    allow_empty: bool,
+    max_record_bytes: Option<u64>,
+    allow_large: bool,
+    mut on_row: impl FnMut(u64, usize, &str) -> Result<Row, E>,
+) -> Result<(), LineError<E>> {
+    let mut offset = 0;
     let mut bytes = Vec::new();
     let mut line = 0;
     let mut accepted = false;
@@ -406,12 +423,36 @@ pub fn scan_json_lines<E>(
         if count == 0 {
             break;
         }
-        if max_record_bytes.is_some_and(|limit| count as u64 > limit) {
+        let oversized = max_record_bytes.is_some_and(|limit| count as u64 > limit);
+        if oversized && !allow_large {
             return Err(LineError::TooLarge);
         }
+        let mut complete = bytes.last() == Some(&b'\n');
+        let mut total = count;
+        if oversized && !complete {
+            loop {
+                let buf = reader.fill_buf().map_err(LineError::Io)?;
+                if buf.is_empty() {
+                    break;
+                }
+                let n = match memchr::memchr(b'\n', buf) {
+                    Some(pos) => {
+                        complete = true;
+                        pos + 1
+                    }
+                    None => buf.len(),
+                };
+                reader.consume(n);
+                total += n;
+                if complete {
+                    break;
+                }
+            }
+        }
+        let start = offset;
+        offset += total as u64;
         line += 1;
-        let complete = bytes.last() == Some(&b'\n');
-        if complete {
+        if bytes.last() == Some(&b'\n') {
             bytes.pop();
         }
         let text = String::from_utf8_lossy(&bytes);
@@ -420,10 +461,17 @@ pub fn scan_json_lines<E>(
         } else {
             &text
         };
-        if text.chars().all(is_js_whitespace_char) {
+        if !oversized && text.chars().all(is_js_whitespace_char) {
             continue;
         }
-        match on_row(text).map_err(LineError::Callback)? {
+        let bom_bytes = usize::from(line == 1 && bytes.starts_with(&[0xef, 0xbb, 0xbf])) * 3;
+        match on_row(
+            start + bom_bytes as u64,
+            total - usize::from(complete) - bom_bytes,
+            text,
+        )
+        .map_err(LineError::Callback)?
+        {
             Row::Accepted => accepted = true,
             _ if !complete && accepted => break,
             Row::InvalidJson => return Err(LineError::InvalidJson(line)),
@@ -505,10 +553,20 @@ pub fn scan_legacy_records<R: Read, E, P>(
     parse: impl Fn(&str) -> Result<JsValue, P>,
     mut on_value: impl FnMut(&str, JsValue) -> Result<(), LegacyError<E>>,
 ) -> Result<(), LegacyError<E>> {
-    use std::io::Bytes;
+    scan_legacy_ranges(reader, false, |_, _, source| {
+        let value = parse(source).map_err(|_| LegacyError::Invalid)?;
+        on_value(source, value)
+    })
+}
+
+pub(super) fn scan_legacy_ranges<R: Read, E>(
+    reader: &mut BufReader<R>,
+    allow_large: bool,
+    mut on_value: impl FnMut(u64, usize, &str) -> Result<(), LegacyError<E>>,
+) -> Result<(), LegacyError<E>> {
     use std::iter::Peekable;
-    fn whitespace<R: Read, E>(
-        bytes: &mut Peekable<Bytes<&mut BufReader<R>>>,
+    fn whitespace<E>(
+        bytes: &mut Peekable<impl Iterator<Item = io::Result<u8>>>,
     ) -> Result<(), LegacyError<E>> {
         loop {
             match bytes.peek() {
@@ -520,15 +578,19 @@ pub fn scan_legacy_records<R: Read, E, P>(
             }
         }
     }
-    fn next<R: Read, E>(
-        bytes: &mut Peekable<Bytes<&mut BufReader<R>>>,
+    fn next<E>(
+        bytes: &mut Peekable<impl Iterator<Item = io::Result<u8>>>,
     ) -> Result<u8, LegacyError<E>> {
         bytes
             .next()
             .ok_or(LegacyError::Invalid)?
             .map_err(LegacyError::Io)
     }
-    let mut bytes = reader.bytes().peekable();
+    let pos = std::cell::Cell::new(0u64);
+    let mut bytes = reader
+        .bytes()
+        .inspect(|_| pos.set(pos.get() + 1))
+        .peekable();
     if matches!(bytes.peek(), Some(Ok(0xef)))
         && (next(&mut bytes)? != 0xef || next(&mut bytes)? != 0xbb || next(&mut bytes)? != 0xbf)
     {
@@ -549,6 +611,7 @@ pub fn scan_legacy_records<R: Read, E, P>(
             bytes.next();
             break;
         }
+        let start = pos.get().saturating_sub(1); // peek holds the first byte
         entry.clear();
         let mut depth = 0usize;
         let mut quoted = false;
@@ -563,8 +626,9 @@ pub fn scan_legacy_records<R: Read, E, P>(
                 break;
             }
             next(&mut bytes)?;
-            entry.push(byte);
-            if entry.len() as u64 > crate::chat_history_index::MAX_INDEX_RECORD_BYTES {
+            if (entry.len() as u64) < crate::chat_history_index::MAX_INDEX_RECORD_BYTES {
+                entry.push(byte);
+            } else if !allow_large {
                 return Err(LegacyError::TooLarge);
             }
             if quoted {
@@ -585,8 +649,8 @@ pub fn scan_legacy_records<R: Read, E, P>(
             }
         }
         let source = String::from_utf8_lossy(&entry);
-        let value = parse(&source).map_err(|_| LegacyError::Invalid)?;
-        on_value(&source, value)?;
+        let len = (pos.get() - 1 - start) as usize;
+        on_value(start, len, &source)?;
         match next(&mut bytes)? {
             b']' => break,
             b',' => first = false,
