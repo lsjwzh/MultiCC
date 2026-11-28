@@ -951,7 +951,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
     await page.evaluate(`document.getElementById('refresh').click()`);
     assert.ok(await page.waitFor(`document.getElementById('task-pins').hidden===true`), '手机上页头没有这一排');
     assert.equal(await page.evaluate(`getComputedStyle(document.getElementById('task-pins')).display`), 'none');
-    assert.ok(await page.waitFor(`document.querySelector('#tasks > button[data-task="tsk_far"]')`));
+    // The row can already exist before the refreshed pin state is painted.
+    assert.ok(await page.waitFor(`document.querySelector('#tasks > button[data-task="tsk_far"] .task-pin')`));
     const mobilePins = await page.evaluate(`(()=>{const rows=[...document.querySelectorAll('#tasks > button')];
       const first=rows[0];return { first: first && first.dataset.task, mark: first && first.querySelector('.task-pin') && first.querySelector('.task-pin').textContent,
         count: rows.length, overflow: document.documentElement.scrollWidth<=innerWidth };})()`);
@@ -1201,8 +1202,8 @@ test('Air task-first console, management views, roles, configuration, artifacts 
         // 📌 是 pin 的开关：桌面上它排在标题后面那排 tab 右边，手机上没有那排 tab，
         // 钉住/取消钉住就只剩这一处 —— 它必须在浮层里（名字跟着状态变，见 air.js 的
         // paintPinButton）。🚩 是「手动待办」的开关，同理住在浮层里（air-task-todo.js）。
-        assert.deepEqual(panel.icons, ['⎇', '⇡', '↗', '📌', '🚩', '⋯', '↻'], JSON.stringify(panel));
-        assert.deepEqual(panel.names, ['合并回基分支', '自动提交', '分享此任务', 'Pin 到页顶', '标记为待办', '更多', '刷新'], JSON.stringify(panel));
+        assert.deepEqual(panel.icons, ['🗃', '⎇', '⇡', '↗', '📌', '🚩', '⋯', '↻'], JSON.stringify(panel));
+        assert.deepEqual(panel.names, ['归档旧任务', '合并回基分支', '自动提交', '分享此任务', 'Pin 到页顶', '标记为待办', '更多', '刷新'], JSON.stringify(panel));
         // 图标一列、名字一列：每一行的名字都从同一条竖线开始，不会有的行有图标、
         // 有的行没有，也不会 ⎇ 宽 ↻ 窄把名字推得参差不齐。
         assert.equal(panel.iconLefts.length, 1, '图标都在同一列：' + JSON.stringify(panel));

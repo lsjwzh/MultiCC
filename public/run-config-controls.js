@@ -369,6 +369,7 @@
     let accountVanished = '';
     let commandcodeLogin;
     let commandcodeLoginLoading = false;
+    let commandcodeLoginNotice = '';
     let catalogAccount = '';
     let pinnedCatalog = null;
     let catalogRequest = 0;
@@ -515,6 +516,7 @@
 
     function refreshCommandcodeLogin() {
       if (commandcodeLoginLoading) return;
+      commandcodeLoginNotice = '';
       commandcodeLoginLoading = true;
       commandcodeLogin = null;
       request('/api/commandcode/auth/status', undefined, 'GET').then(
@@ -618,6 +620,7 @@
               ? tt('runConfigAccountLoginSaved', '本机已保存登录：{name}（有效性以实际调用为准）', { name: commandcodeLogin.userName || 'Command Code' })
               : tt('runConfigAccountLoginMissing', '本机尚未保存官方账号登录。');
         if (commandcodeLoginLoading) loginStatus.textContent = tt('runConfigAccountLoading', '加载中…');
+        if (commandcodeLoginNotice) loginStatus.textContent = commandcodeLoginNotice;
       } else if (cli === 'agy') {
         loginRefresh.disabled = agyLoading;
         loginRefresh.textContent = tt('runConfigAccountRefresh', '刷新登录状态');
@@ -671,6 +674,7 @@
       accountPicks = { ...accountPicks, [cli]: id || null };
       accountTouched.add(cli);
       if (accountVanished === cli) accountVanished = '';
+      if (cli === 'commandcode') commandcodeLoginNotice = '';
       show(loginLink, false);
       render();
       onChanged();
@@ -697,10 +701,12 @@
         loginLink.href = url;
         show(loginLink, true);
         if (popup) popup.location.replace((win && win.MultiCCMachineScope?.navigation(url)) || url);
-        loginStatus.textContent = tt('runConfigAccountLoginHint', '在登录终端完成浏览器授权，回来点击“刷新登录状态”。远程访问时，请在运行 MultiCC 的电脑上完成授权。');
+        commandcodeLoginNotice = tt('runConfigAccountLoginHint', '在登录终端完成浏览器授权，回来点击“刷新登录状态”。远程访问时，请在运行 MultiCC 的电脑上完成授权。');
+        if (lane() === 'commandcode') render();
       }, cause => {
         if (popup) popup.close();
-        loginStatus.textContent = cause.message;
+        commandcodeLoginNotice = cause.message;
+        if (lane() === 'commandcode') render();
       }).then(() => { loginBtn.disabled = false; });
     };
 

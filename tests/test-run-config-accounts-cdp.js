@@ -73,8 +73,13 @@ test('官方账号登录：移动端打开终端、刷新身份，保留已有 A
   if (!findChromeBinary()) return t.skip('Chrome required');
   let saved = false;
   let logins = 0;
+  let finishAccountList;
+  const accountList = new Promise(resolve => { finishAccountList = resolve; });
   const fixture = { ...routes,
-    'GET /api/cli-accounts/commandcode': () => json({ accounts: [{ id: OLD_ID, label: '独立密钥', keyHint: '…test' }] }),
+    'GET /api/cli-accounts/commandcode': async () => {
+      await accountList;
+      return json({ accounts: [{ id: OLD_ID, label: '独立密钥', keyHint: '…test' }] });
+    },
     'GET /api/commandcode/auth/status': () => json({ ok: true, credentialSaved: saved, userName: saved ? '官方测试用户' : '', environmentKey: false }),
     'POST /api/commandcode/auth/login': () => { logins++; saved = true; return json({ ok: true, sessionId: 'commandcode-login' }); },
   };
@@ -89,6 +94,9 @@ test('官方账号登录：移动端打开终端、刷新身份，保留已有 A
     await page.evaluate(`document.querySelector('.rc-account-login').click()`);
     assert.ok(await page.waitFor(`window.loginPopupUrl === '/?id=commandcode-login'`));
     assert.equal(logins, 1);
+    // The account-list response renders the control again after the login terminal opens.
+    finishAccountList();
+    assert.ok(await page.waitFor(`document.querySelector('.rc-account option:checked')?.textContent.includes('独立密钥')`));
     assert.equal(await page.evaluate(`document.querySelector('.rc-account').value`), OLD_ID);
     assert.match(await page.evaluate(`document.querySelector('.rc-account-login-row [role="status"]').textContent`), /完成浏览器授权/);
     await page.evaluate(`document.querySelector('.rc-account-login-refresh').click()`);
