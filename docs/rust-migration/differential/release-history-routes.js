@@ -133,7 +133,8 @@ function historyRepository(repo, dataDir) {
   }
   return R('src/native/binding').getNative().chatHistoryFileRepositoryCreate({
     root: R('src/paths').createPaths({ dataDir }).chatHistoryDir,
-    reportFailure: R('src/state/store').reportFailure,
+    reportFailure: (fs.existsSync(path.join(repo, 'src/state/store.js'))
+      ? R('src/state/store') : R('src/native/binding').stateStore).reportFailure,
   });
 }
 
@@ -214,8 +215,8 @@ const express = require(require.resolve('express', { paths: [repo] }));
 const { buildWorld } = require(${JSON.stringify(__filename)});
 const { createReleaseHistoryHost } = require(path.join(repo, 'src/routes/release-history-host'));
 const { mountApkDownload } = require(path.join(repo, 'src/routes/release-history-host'));
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
@@ -225,8 +226,8 @@ const world = buildWorld({
   createChatHistoryRuntime: require(path.join(repo, 'src/routes/chat-history/index')).createChatHistoryRuntime,
   createIosUdid: require(path.join(repo, 'src/ios-udid')).createIosUdid,
 });
-const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/http-errors'));
-const { jsonCompression } = require(path.join(repo, 'src/http/json-compression'));
+const { requestIdMiddleware, safeErrorHandler } = require(path.join(repo, 'src/native/binding')).httpErrors;
+const { jsonCompression } = require(path.join(repo, 'src/native/binding')).jsonCompression;
 const app = express(); app.use(requestIdMiddleware, jsonCompression); app.use(express.json({ limit: '50mb' }));
 // A request marked ?down=1 is dropped before it is answered: the host is broken.
 app.use((req, res, next) => {

@@ -4,7 +4,7 @@
 // double of the buffer or the membership: tests drive the same RustWsHost the
 // product uses, with fake sockets that record what the fan-out and the replay
 // burst actually send.
-const { createChatReplayHub, createWsHost } = require('../../src/ws/ws-host');
+const { createChatReplayHub, createWsHost } = require('../../src/native/binding').wsHost;
 
 const OPEN = 1;
 

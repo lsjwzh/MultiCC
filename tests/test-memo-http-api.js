@@ -17,7 +17,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createMemoFilePort, createMemoModule, MEMO_MAX_BYTES } = require('../src/memo');
-const { createDocsMemoryHost } = require('../src/routes/docs-memory-host');
+const { createDocsMemoryHost } = require('../src/native/binding').docsMemoryHost;
 const { assertTestDir, createPaths } = require('../src/paths');
 
 test('memo controller keeps memos in the store and delivers over the fake turn port', async (t) => {

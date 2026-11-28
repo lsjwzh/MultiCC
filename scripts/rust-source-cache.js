@@ -101,14 +101,31 @@ function probeAddon(file, node = process.execPath) {
   // The path rides an env var: the script is written to a temp file (see below),
   // so argv[1] is the script itself, not the addon.
   const script = `const a=require(process.env.MULTICC_PROBE_ADDON);
-    if(['taskBoardCoreApi','taskBoardStateApi','taskBoardProjectionApi','taskBoardLifecycleApi','taskBoardRoutePorts','taskBoardWorktreePorts','repoActorApi','gitServiceApi','tunnelMonitorApi','appPathsApi','sessionWorkHostApi','sessionWorkSchedulerApi','orchestrationRuntimeApi','orchestrationJsonApi','createNativeQueue','createOpencodeLimitResolver','openCodeCatalogApi','eventPolicyApi',
-      'contextSelectionApi','monitorAdmissionApi','createCliProviderRegistry','providerSelectionDtoValue',
+    if(['assertSessionMemoryDependencies','mountSessionMemoryRoutes','sessionMemoryRuntimeApi','memoryBrowserApi',
+      'taskReadModelHostApi','macosAgentProvisionApi','airSyncHostApi','airIndexHostApi','claudeEgressHost',
+      'claudeOauthRefreshHost','orchestrationServicesApi','chatLifecycleApi','chatCoordinatorApi','chatRuntimeApi',
+      'tailscaleFunnelHealthApi','sakuraFrpApi','apiErrorHostApi','channelHostApi','channelRegistryApi','pluginsRoutesApi','pluginCatalogApi','pluginInstallerApi',
+      'docsRegistryApi','workspaceNotesApi','docsMemoryHostApi','folderMemoryApis','artifactIdFromRegistryUrl','retainedArtifactIds','retainedArtifactIdsAsync','claudeSdkFingerprint','claudeSdkLaneOptions',
+      'workspaceResidencyApi','egressIpPolicyApi','outboundSystemProxy','outboundPolicyInstance','outboundBypassUrl','modelConnectTimers',
+      'usageLimitWiring','claudeBarState','quotaBarCacheApi','quotaBarCacheStore','cliUsageHost','officialUsageWindows',
+      'officialUsageSweeper','limitRecorderHost','providerCacheHost','quotaGuardHost','quotaHistoryHost','virtualProviderHost',
+      'observeProxyResponse','claudeQuotaHeaderHooks','accountCacheHost','claudeUsageQueueApi','gatewayProxyPeer','GatewayProxyReader','gatewayInternalPort','gatewayLifeline','startGatewayChatBridge','taskMigrationGate',
+      'auditedSecretCall','replayHub','chatReplayRuntime','recordOwnerFacade','publicOrchestrationStore','createSqliteHostStore',
+      'providerBindingMethods','providerDefaultsApi','providerErrorFields','secureRuntimePaths','runtimePrivatePath','runtimeAtomicText','hostEnvApi','globalProxyApi','authTicketProjection',
+      'jsonCompressionMiddleware','providerQuotaRuntime','taskMemoryRecorder','refreshHealthStore','accountReaderApi','quotaSelfHealApi',
+      'taskBoardDomainFacades','taskSearchApi','boardSearchSnapshot','boardLifecycleApi','boardRelocateApi','boardRetentionApi',
+      'taskPlanningRoutesApi','taskBoardRuntimeCreate','taskBoardCoreApi','taskBoardStateApi','taskBoardProjectionApi','taskBoardLifecycleApi','taskBoardRoutePorts','taskBoardWorktreePorts','repoActorApi','gitServiceApi','tunnelMonitorApi','appPathsApi','sessionWorkHostApi','sessionWorkSchedulerApi','orchestrationRuntimeApi','orchestrationJsonApi','createNativeQueue','createOpencodeLimitResolver','openCodeCatalogApi','eventPolicyApi',
+      'contextSelectionApi','monitorAdmissionApi','cliAdaptersApi','createCliProviderRegistry','providerSelectionDtoValue',
       'commandEnvelope','orchestrationCommandSync','codexMaterializeValue','codexStripOfficialEnv',
       'normalizeNativeError','turnStateApi','postTurnApi','finalizationApi',
       'adapterCompletionApi','createProviderInvocationFactory','createClaudeAdapter','createCodexAdapter',
       'createCodexExpAdapter','createAutoProviderHandoff','taskRelationsApi','taskStoreProgressApi',
       'turnLedgerApi','createCodexBackgroundEvents','accountSubscriptionValue','providerCredentialValue',
       'readProviderCliValue','wakeSyncResult','hostPromptsApi','pushNotificationApi','searchRankLive','RustNativeCounters',
+      'openCodeModelsApi','agyModelsApi','agyCliCatalogRead','modelCatalogsHostApi','providerModelsApi',
+      'providerRouterAdapterApi','nativeVendorApi','codexAccountCatalogApi','claudeModelListApi','officialProviderCatalogApi','relayModelCatalogApi',
+      'voiceWordsScan','voiceConfigApi','voiceCorrectorApi','voiceLearnerApi','voiceMinerApi','voiceLaunchRegistryApi',
+      'voiceGatewayDomainApi','voiceGatewayHostApi','voiceRuntimeHostApi','voiceSettingsHostApi','asrModelInstallerApi',
       'voiceSpeechValue','switchRouteResult','taskShellReferenceValue','taskShellContextApi',
       'openCodeFallbackLimit','createClassifyStateMachine'].some(key=>typeof a[key]!=='function')) process.exit(1);
     if(['turnProgressApi','monitorControlApi','processCloserApi','autoProviderPricingApi',
@@ -456,7 +473,7 @@ function probeAddon(file, node = process.execPath) {
       || ['start','observe','tick','flush','beginInjection','confirmInjection','acknowledgeHistory','historyPending','historyWritten','interruptInjections','requireAnswerHistory','pendingBoundaries','acknowledgeAnswer','abortInjection','capReached','dispose']
         .some(key=>typeof a.RustBackgroundHold.prototype[key]!=='function')
       || ['held','injections','maxMs'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustBackgroundHold.prototype,key)?.get!=='function')
-      || ['backgroundHoldMaxMs','backgroundHoldMayInject','backgroundHoldUserTyped',
+      || ['backgroundHoldApi','zcodeAppServerApi','backgroundHoldMaxMs','backgroundHoldMayInject','backgroundHoldUserTyped',
         'backgroundHoldProcessStale','backgroundHoldSpawnContract'].some(key=>typeof a[key]!=='function')) process.exit(1);
     {
       if(a.backgroundHoldMaxMs(undefined)!==3600000 || a.backgroundHoldMaxMs('0')!==0) process.exit(1);

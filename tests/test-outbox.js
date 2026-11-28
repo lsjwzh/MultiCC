@@ -5,9 +5,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-const { createOutbox } = require('../src/outbox');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+const { createOutbox } = require('../src/native/binding').outboxRuntime;
+const { createOutbox: createLegacyOutbox } = require('./helpers/frozen-e960f6eb/outbox');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const Database = require('better-sqlite3');
 const crypto = require('node:crypto');
 
@@ -52,7 +53,7 @@ test('SQLite claim does not treat an uninitialized Rust question as empty', asyn
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-outbox-question-missing-'));
   const store = createOrchestrationSqliteStore({ file: path.join(dir, 'state.sqlite') });
   t.after(async () => { await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, liveTurn: () => null,
     initialState: () => ({ pendingQuestion: { requestId: 'q', resolved: false }, activeTurn: null, category: 'W' }) });
   const outbox = createOutbox({ store });
@@ -311,7 +312,8 @@ test('Rust SQLite acknowledgement, failure and defer match the Node transaction'
           leasedUntil: 2000, leasedAt: 1, leaseOwner: 'w', leaseTokenHash: hash('token'), attempts: 1,
           payload: { body: '\ude00' } };
       });
-      const outbox = createOutbox({ store, now: Date.now, maxAttempts: 3, baseBackoffMs: 10, maxBackoffMs: 100 });
+      const makeOutbox = oracle ? createLegacyOutbox : createOutbox;
+      const outbox = makeOutbox({ store, now: Date.now, maxAttempts: 3, baseBackoffMs: 10, maxBackoffMs: 100 });
       const result = action === 'ack' ? await outbox.ack(id, token)
         : action === 'fail' ? await outbox.fail(id, token, reason, { retryable })
           : await outbox.defer(id, token, reason, { delayMs: 25 });
@@ -403,7 +405,8 @@ test('Rust SQLite lease recovery matches Node including no-op and custom-backoff
       draft.outbox.c = { id: 'c', sessionId: 's', state: 'leased', sequence: 3, attempts: 1,
         leasedUntil: 2000, leaseTokenHash: 'secret' };
     });
-    const outbox = createOutbox({ store, now: Date.now, maxAttempts: 2, baseBackoffMs: 100, maxBackoffMs: 500 });
+    const makeOutbox = oracle ? createLegacyOutbox : createOutbox;
+    const outbox = makeOutbox({ store, now: Date.now, maxAttempts: 2, baseBackoffMs: 100, maxBackoffMs: 500 });
     outcomes.push([await outbox.recoverExpired(), await outbox.recoverExpired(), await store.snapshot()]);
   }
   assert.deepEqual(outcomes[0], outcomes[1]);

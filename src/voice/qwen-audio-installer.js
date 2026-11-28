@@ -1,11 +1,11 @@
 'use strict';
 
-const { getChildProxyEnv, outboundFetch } = require('../network/outbound');
+const { getChildProxyEnv, outboundFetch } = require('../native/binding').outbound;
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
-const { atomicWriteJson, ensurePrivateDir } = require('../runtime-security');
+const { atomicWriteJson, ensurePrivateDir } = require('../native/binding').runtimeSecurity;
 
 const QWEN_AUDIO_PACKAGE = 'qwen-audio-agent';
 const QWEN_AUDIO_PACKAGE_VERSION = '1.1.1';

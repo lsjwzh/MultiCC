@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createOfficialImageBridge } = require('../src/codex/image-bridge');
+const { createOfficialImageBridge } = require('../src/native/binding').codexImageBridge;
 
 const PNG = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -162,4 +162,63 @@ test('bridge removes its copied auth material when the native worker fails', asy
     error => error.code === 'image_generation_failed',
   );
   assert.deepEqual(fs.existsSync(path.join(root, 'runs')) ? fs.readdirSync(path.join(root, 'runs')) : [], []);
+});
+
+test('stopAll cancels image preparation without blocking the next generation', { timeout: 5000 }, async t => {
+  const root = temp(t);
+  const runs = path.join(root, 'runs');
+  let spawns = 0;
+  const spawn = successfulSpawn({});
+  const bridge = createOfficialImageBridge({
+    artifactsDir: path.join(root, 'artifacts'),
+    tempRoot: runs,
+    resolveSessionCwd: () => root,
+    getProvider: officialProvider,
+    resolveAuthFile: () => authFile(root),
+    spawnImpl(...args) {
+      spawns++;
+      return spawn(...args);
+    },
+  });
+  const request = {
+    context: { sessionId: 'reused-session' },
+    session: { cli: 'codex', provider: 'official' },
+    prompt: 'a circle',
+  };
+  const pending = bridge.generate(request);
+  bridge.stopAll();
+  await assert.rejects(pending, { code: 'tool_call_cancelled' });
+  assert.equal(spawns, 0);
+  assert.deepEqual(fs.readdirSync(runs), []);
+
+  const result = await bridge.generate(request);
+  assert.equal(result.ok, true);
+  assert.equal(spawns, 1);
+  assert.deepEqual(fs.readdirSync(runs), []);
+});
+
+test('official runtime resolves current account credentials in list order on every call', () => {
+  const native = require('../src/native/binding').getNative();
+  const { officialAccountIdFromProvider } = require('../src/native/binding').officialAccounts;
+  const before = require('./helpers/frozen-state-leaves/image-bridge-runtime').createOfficialImageBridgeRuntime;
+  const id = '0123456789abcdef';
+  function trace(build) {
+    const reads = [];
+    let accounts = [{ id, loggedIn: true }, { id: 'expired', loggedIn: true, expired: true },
+      { id: 'signed-out' }, { id, loggedIn: true }];
+    const ports = build({
+      paths: { artifactsDir: '/artifacts' }, providers: { getProvider: (app, key) => [app, key] },
+      officialAccounts: { listCodexAccounts: () => accounts,
+        codexAuthFile(key) { reads.push(key); return path.join('/accounts', key, 'auth.json'); } },
+    });
+    const result = [ports.getProvider('codex', id), ports.resolveAuthFile({}),
+      ports.resolveAuthFile({ settingsConfig: { officialAccount: { id } } }), ports.fallbackAuthFiles()];
+    accounts = [];
+    result.push(ports.fallbackAuthFiles());
+    return { result, reads };
+  }
+  const host = { home: os.homedir, path, officialId: officialAccountIdFromProvider };
+  const actual = trace(options => native.officialImageBridgePorts(options, host));
+  assert.deepEqual(actual, trace(before));
+  assert.deepEqual(actual.reads, [id, id, id]);
 });

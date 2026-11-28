@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 
 // GET /api/claude/quota — the Claude subscription's usage windows
 // (5h session / weekly / monthly).
@@ -47,9 +47,9 @@ const { createChromeCdp, portsFromEnv, profileDirsFromEnv } = require('../chrome
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 const {
   configureClaudeUsageQueue, claudeUsageKey, readClaudeUsage, enqueueClaudeUsage,
-} = require('../quota/claude-usage-queue');
-const { fetchUsage, USAGE_URL } = require('../claude-auth/official-oauth');
-const { fetchCliUsage } = require('../quota/claude-cli-oauth');
+} = require('../native/binding').claudeUsageQueue;
+const { fetchUsage, USAGE_URL } = require('../native/binding').claudeOfficialOAuth;
+const { fetchCliUsage } = require('../native/binding').claudeCliUsage;
 
 const CDP_TIMEOUT_MS = Number(process.env.CLAUDE_QUOTA_TIMEOUT_MS || 15000);
 function panelTextTimeoutMs() {
@@ -354,7 +354,7 @@ function configureClaudeOAuthSource(source) {
 }
 
 function defaultOAuthSource() {
-  const { createOfficialAccountStore } = require('../official-accounts');
+  const { createOfficialAccountStore } = require('../native/binding').officialAccounts;
   const { createClaudeAccountCredentialService } = require('../claude-auth/account-credentials');
   const accounts = createOfficialAccountStore();
   return {

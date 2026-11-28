@@ -24,7 +24,7 @@
 //   unavailable        — anything else
 
 const fs = require('fs');
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 const path = require('path');
 
 const {

@@ -2,12 +2,12 @@
 
 // Stub the shared outbound transport: no test can accidentally use live credentials.
 let testFetch = async () => { throw new Error('unexpected outbound request'); };
-require('node:test').mock.method(require('../src/network/outbound'), 'outboundFetch',
+require('node:test').mock.method(require('../src/native/binding').outbound, 'outboundFetch',
   (...args) => testFetch(...args));
 
 const assert = require('assert');
 const { test } = require('node:test');
-const poller = require('../src/usage-limit-poller');
+const poller = require('../src/native/binding').usageLimitPoller;
 
 // Swap the outbound transport with a scripted stub for the duration of one call.
 async function withFetch(handler, fn) {
@@ -85,7 +85,7 @@ test('native polling admission shares a request, retains null failures and relea
 });
 
 test('a synchronous provider lookup error does not strand the polling key', async t => {
-  const providers = require('../src/providers/host');
+  const providers = require('../src/native/binding').providersHost;
   let lookups = 0, attempts = 0;
   t.mock.method(providers, 'getProvider', () => {
     if (++lookups === 1) throw new Error('temporary lookup failure');

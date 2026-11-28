@@ -46,26 +46,25 @@ fn assign_key<'a>(obj: L<'a>, key: L<'a>, value: L<'a>) -> Result<()> {
     }
     Ok(())
 }
-fn normal<'a>(value: L<'a>) -> Result<L<'a>> {
+pub(crate) fn normal<'a>(value: L<'a>) -> Result<L<'a>> {
     let canonical = canonical_live(value)?;
     let json = value.global()?.get(c"JSON")?;
     json.get(c"parse")?.call(json, &[canonical])
 }
-fn hash<'a>(value: L<'a>, crypto: L<'a>, secret: bool) -> Result<L<'a>> {
+pub(crate) fn hash<'a>(value: L<'a>, crypto: L<'a>, secret: bool) -> Result<L<'a>> {
     let context = crypto
         .get(c"createHash")?
         .call(crypto, &[text(value, "sha256")?])?;
+    let update = context.get(c"update")?;
     let data = if secret {
         value.global()?.get(c"String")?.call_plain(&[value])?
     } else {
         canonical_live(value)?
     };
     let updated = if secret {
-        context
-            .get(c"update")?
-            .call(context, &[data, text(value, "utf8")?])?
+        update.call(context, &[data, text(value, "utf8")?])?
     } else {
-        context.get(c"update")?.call(context, &[data])?
+        update.call(context, &[data])?
     };
     updated
         .get(c"digest")?
@@ -89,32 +88,6 @@ fn public<'a>(value: L<'a>) -> Result<L<'a>> {
     copy.delete(c"requestHash")?;
     copy.delete(c"resultHash")?;
     Ok(copy)
-}
-fn is_string(value: L<'_>) -> Result<bool> {
-    Ok(value.kind()? == sys::ValueType::napi_string)
-}
-fn object_type(value: L<'_>) -> Result<bool> {
-    Ok(value.kind()? == sys::ValueType::napi_object)
-}
-fn require_outbox_draft(draft: L<'_>) -> Result<()> {
-    if !draft.truthy()?
-        || !object_type(draft)?
-        || !draft.get(c"outbox")?.truthy()?
-        || !object_type(draft.get(c"outbox")?)?
-    {
-        return Err(draft.type_error("outbox mutation requires an orchestration/store draft"));
-    }
-    let number = draft.global()?.get(c"Number")?;
-    let sequence = draft.get(c"nextOutboxSequence")?;
-    if !number
-        .get(c"isSafeInteger")?
-        .call(number, &[sequence])?
-        .truthy()?
-        || sequence.number()? < 1.0
-    {
-        return Err(draft.type_error("outbox draft has an invalid sequence"));
-    }
-    Ok(())
 }
 fn admit_outbox<'a>(
     draft: L<'a>,
@@ -170,57 +143,17 @@ fn admit_outbox<'a>(
     set(source, c"kind", text(draft, "dispatch")?)?;
     set(source, c"operationId", operation_id)?;
     let at = now(draft, clock)?;
-    require_outbox_draft(draft)?;
-    if !id.truthy()? || !is_string(id)? {
-        return Err(id.type_error("outbox item requires id"));
-    }
-    if !session_id.truthy()? || !is_string(session_id)? {
-        return Err(session_id.type_error("outbox item requires sessionId"));
-    }
-    let number = draft.global()?.get(c"Number")?;
-    if !number.get(c"isFinite")?.call(number, &[at])?.truthy()? {
-        return Err(at.type_error("outbox timestamps must be finite numbers"));
-    }
-    let payload = normal(payload)?;
-    let payload_hash = hash(payload, crypto, false)?;
-    let source = normal(source)?;
-    let outbox = draft.get(c"outbox")?;
-    let existing = outbox.get_key(id)?;
-    if existing.truthy()? {
-        if existing.get(c"sessionId")?.equals(session_id)?
-            && existing.get(c"payloadHash")?.equals(payload_hash)?
-        {
-            return Ok(existing);
-        }
-        return Err(conflict.construct(&[id])?.throw_error());
-    }
-    let seq = draft.get(c"nextOutboxSequence")?.number()?;
-    draft.assign(c"nextOutboxSequence", val(draft, V::Number(seq + 1.0))?)?;
-    let item = object(draft)?;
-    for (name, value) in [
-        (c"id", id),
-        (c"sessionId", session_id),
-        (c"sequence", val(draft, V::Number(seq))?),
-        (c"state", text(draft, "pending")?),
-        (c"payload", payload),
-        (c"payloadHash", payload_hash),
-        (c"source", source),
-        (c"attempts", val(draft, V::Number(0.0))?),
-        (c"availableAt", at),
-        (c"createdAt", at),
-        (c"updatedAt", at),
-        (c"leasedAt", null(draft)?),
-        (c"leasedUntil", null(draft)?),
-        (c"leaseOwner", null(draft)?),
-        (c"leaseTokenHash", null(draft)?),
-        (c"deliveredAt", null(draft)?),
-        (c"deadLetterAt", null(draft)?),
-        (c"lastError", null(draft)?),
-    ] {
-        set(item, name, value)?;
-    }
-    assign_key(outbox, id, item)?;
-    Ok(item)
+    crate::outbox_runtime::admit::insert(
+        draft,
+        id,
+        session_id,
+        payload,
+        source,
+        at,
+        at,
+        (crypto, conflict),
+    )
+    .map(|(item, _)| item)
 }
 
 #[napi]

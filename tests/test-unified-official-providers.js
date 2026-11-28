@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { createOfficialCatalog, normalizeOfficialSessionReferences } = require('../src/providers/official-catalog');
+const { createOfficialCatalog, normalizeOfficialSessionReferences } = require('../src/native/binding').officialCatalog;
 const { mountCodexAccountRoutes } = require('../src/routes/codex-accounts');
 const { mountClaudeAccountRoutes } = require('../src/routes/claude-accounts');
 const A = 'aaaaaaaaaaaaaaaa', B = 'bbbbbbbbbbbbbbbb';
@@ -158,7 +158,12 @@ test('production core initializes from prior default account, persists switches 
     // the host's real signed-in accounts out of the catalog.
     const fakeHome = path.join(root, 'fake-home');
     fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
-    const run = (script, extraEnv = {}) => execFileSync(process.execPath, ['-e', `(async()=>{const p=require('./src/providers/host');p.enableUnifiedOfficialProviders();${script}})().catch(error=>{console.error(error);process.exitCode=1;});`], { cwd: path.join(__dirname, '..'), env: { ...process.env, MULTICC_DATA_DIR: root, HOME: fakeHome, ...extraEnv }, encoding: 'utf8' }).trim();
+    const run = (script, extraEnv = {}) => execFileSync(process.execPath, ['-e', `(async()=>{const p=require('./src/native/binding').providersHost;p.enableUnifiedOfficialProviders();${script}})().catch(error=>{console.error(error);process.exitCode=1;});`], { cwd: path.join(__dirname, '..'), env: { ...process.env, MULTICC_DATA_DIR: root, HOME: fakeHome, ...extraEnv }, encoding: 'utf8' }).trim();
+    run(`
+      const baseline = require('./tests/helpers/frozen-bc29761b/providers/host');
+      const exportsOf = api => Object.keys(api).map(name => [name, typeof api[name]]);
+      require('node:assert/strict').deepEqual(exportsOf(p), exportsOf(baseline));
+    `);
     assert.equal(run("process.stdout.write(p.getOfficialAccountSelection('codex'));"), A);
     run(`p.selectOfficialAccount('codex','${B}');`);
     assert.equal(run("process.stdout.write(p.getOfficialAccountSelection('codex'));"), B);
@@ -172,7 +177,7 @@ test('production core initializes from prior default account, persists switches 
       { slug: 'gpt-5', visibility: 'list', priority: 2 },
       { slug: 'hidden-draft', visibility: 'hide', priority: 0 },
     ] }));
-    run(`await require('./src/codex/model-catalog').defaultRuntime.hydrate();const a=require('node:assert/strict');const target=p.resolveAuxHttpTarget('openai','codex-official',{port:9111});a.equal(target.available,true);a.equal(target.wireApi,'responses');a.match(target.url,/codex-proxy\\/codex-official\\/responses$/);let native=null;try{native=require('./src/native/binding').getNative()}catch{}a.deepEqual(target.modelOptions,native?['gpt-5-codex','gpt-5']:[]);a.equal(target.apiKey,'multicc-aux');a.equal(p.resolveAuxHttpTarget('openai','codex-official').available,false);`, { HOME: fakeHome });
+    run(`await require('./src/native/binding').codexModelCatalog.defaultRuntime.hydrate();const a=require('node:assert/strict');const target=p.resolveAuxHttpTarget('openai','codex-official',{port:9111});a.equal(target.available,true);a.equal(target.wireApi,'responses');a.match(target.url,/codex-proxy\\/codex-official\\/responses$/);let native=null;try{native=require('./src/native/binding').getNative()}catch{}a.deepEqual(target.modelOptions,native?['gpt-5-codex','gpt-5']:[]);a.equal(target.apiKey,'multicc-aux');a.equal(p.resolveAuxHttpTarget('openai','codex-official').available,false);`, { HOME: fakeHome });
     // Two signed-in Claude accounts in the store → two per-account providers,
     // each routed through the proxy with its own account marker.
     for (const id of [A, B]) {

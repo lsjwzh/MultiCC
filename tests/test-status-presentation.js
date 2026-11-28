@@ -25,20 +25,10 @@ const { FREEZE_REASON_RUN_STATE } = require('../src/session-work');
 
 function read(rel) { return fs.readFileSync(path.join(ROOT, rel), 'utf8'); }
 
-/**
- * The server's run-state list is `TURN_RUN_STATES` in src/classify/vocab.js — ONE
- * list. src/task-board/normalize.js must build its Set from it rather than keep a
- * second hand copy (that copy is how `background` would go missing on the board
- * while every other surface learned about it).
- */
 function serverTaskRunStates() {
-  const src = read('src/task-board/normalize.js');
-  assert.match(
-    src,
-    /const TASK_RUN_STATES = new Set\(TURN_RUN_STATES\)/,
-    'src/task-board/normalize.js must build TASK_RUN_STATES from TURN_RUN_STATES',
-  );
-  return [...TURN_RUN_STATES];
+  const { TASK_RUN_STATES } = require('../src/native/binding').taskNormalize;
+  assert.deepEqual([...TASK_RUN_STATES], [...TURN_RUN_STATES]);
+  return [...TASK_RUN_STATES];
 }
 
 // ── Minimal DOM ─────────────────────────────────────────────────────────────

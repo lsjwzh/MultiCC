@@ -8,7 +8,7 @@ const test = require('node:test');
 const {
   OrchestrationStoreCorruptError,
   createOrchestrationStore,
-} = require('../src/orchestration/json-store-host');
+} = require('../src/native/binding').orchestrationJson;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 

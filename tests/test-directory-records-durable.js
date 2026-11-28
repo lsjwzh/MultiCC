@@ -12,10 +12,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createStore, CorruptedStateError } = require('../src/state/store');
-const { createSessionRecords } = require('../src/session/records');
-const { createStateOwner } = require('../src/state/owner');
-const { createDirectoryTable } = require('../src/directory/records');
+const { createStore, CorruptedStateError } = require('../src/native/binding').stateStore;
+const { createSessionRecords } = require('../src/native/binding').sessionRecordsHost;
+const { createStateOwner } = require('../src/native/binding').stateOwner;
+const { createDirectoryTable } = require('../src/native/binding').directoryRecords;
 const legacyTx = require('./helpers/legacy-state-tx');
 
 function tempRoot(t) {
@@ -385,8 +385,9 @@ test('identity: live records are the table values and deleted ones are collectab
 
   if (typeof global.gc !== 'function') return; // run with --expose-gc to check
   for (let attempt = 0; attempt < 10 && facadeRef.deref() !== undefined; attempt += 1) {
-    global.gc();
+    // WeakRef.deref() keeps its target alive for the rest of the current job.
     await new Promise(resolve => setImmediate(resolve));
+    global.gc();
   }
   assert.equal(facadeRef.deref(), undefined, 'an abandoned facade does not pin the table');
   let gone = { id: 'gone', big: 'x'.repeat(1024) };
@@ -395,8 +396,8 @@ test('identity: live records are the table values and deleted ones are collectab
   world.dirs.delete('gone');
   gone = null;
   for (let attempt = 0; attempt < 10 && ref.deref() !== undefined; attempt += 1) {
-    global.gc();
     await new Promise(resolve => setImmediate(resolve));
+    global.gc();
   }
   assert.equal(ref.deref(), undefined, 'no strong reference survives delete()');
 });

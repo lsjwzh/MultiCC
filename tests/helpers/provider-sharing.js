@@ -15,7 +15,7 @@ const { isLocalRequest, isPrivateRequestPeer } = require('../../src/request-loca
 const { createProviderRouterRuntime } = require('../../src/providers/router-runtime');
 const { createAuthRuntime } = require('../../src/routes/auth');
 const { mountProviderRoutes } = require('./legacy-provider-routes');
-const { createProviderRelayShareStore } = require('../../src/providers/relay-share-store');
+const { createProviderRelayShareStore } = require('../../src/native/binding').relayShares;
 
 const RELAY_UI_FILE = path.join(__dirname, '..', '..', 'public', 'manage-provider-relay.js');
 const ACCESS_TOKEN = 'two-ip-admin-secret';

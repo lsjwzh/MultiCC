@@ -655,14 +655,32 @@ extension SessionCliX on SessionCli {
       this == SessionCli.qoder ||
       this == SessionCli.codebuddy;
   bool get supportsSubagent => isClaudeFamily || isCodexFamily;
-  Map? get _effortSpec => (_serverEfforts ?? _offlineEfforts)[canonicalCliLane(name)];
-  bool get supportsEffort => effortOptions.isNotEmpty;
+  Map? get _effortSpec {
+    final spec = (_serverEfforts ?? _offlineEfforts)[canonicalCliLane(name)];
+    if (this == SessionCli.agy && spec?['concreteModels'] is Map &&
+        DateTime.now().difference(_effortsAt) >= const Duration(minutes: 10)) return _offlineEfforts['agy'];
+    return spec;
+  }
+  bool get supportsEffort => effortOptions.isNotEmpty ||
+      (_effortSpec?['modelLevels'] as Map?)?.values.any((levels) => levels is List && levels.isNotEmpty) == true;
+
+  Map? _modelEffortSpec(String? agyAccountId) {
+    if (this != SessionCli.agy || agyAccountId == null || agyAccountId.isEmpty) return _effortSpec;
+    final entry = _agyAccountEfforts[agyAccountId];
+    if (entry != null && DateTime.now().difference(entry.$1) < const Duration(minutes: 10)) return entry.$2;
+    return _offlineEfforts['agy'];
+  }
+
+  String agyModelLabel(String model, String? effort, {String? agyAccountId}) {
+    final labels = _modelEffortSpec(agyAccountId)?['concreteModels'] as Map?;
+    return (labels?['$model-$effort'] ?? labels?[model] ?? model) as String;
+  }
   String get effortFieldLabel => _effortSpec?['label'] as String? ?? '';
   String get defaultEffort => _effortSpec?['default'] as String? ?? '';
   List<String> get effortOptions => effortOptionsForModel(null);
 
-  List<String> effortOptionsForModel(String? model) {
-    final spec = _effortSpec;
+  List<String> effortOptionsForModel(String? model, {String? agyAccountId}) {
+    final spec = _modelEffortSpec(agyAccountId);
     if (spec == null) return const [];
     final id = (model ?? '').split('[').first.trim().toLowerCase();
     final family = spec['disabledModelFamily'] as String?;
@@ -676,11 +694,25 @@ extension SessionCliX on SessionCli {
 
 // 未连接或旧版服务没有返回目录时，保留客户端的离线选择。
 Map<String, Map>? _serverEfforts;
+DateTime _effortsAt = DateTime.fromMillisecondsSinceEpoch(0);
 void readCliEfforts(Object? value) {
+  _effortsAt = DateTime.now();
   _serverEfforts = value is Map ? {
     for (final entry in value.entries)
       if (entry.value is Map && entry.value['levels'] is List) entry.key.toString(): entry.value as Map,
   } : null;
+}
+
+final _agyAccountEfforts = <String, (DateTime, Map)>{};
+void readAgyEfforts(Object? spec, {String? accountId}) {
+  if (spec is Map && spec['levels'] is List) {
+    if (accountId != null && accountId.isNotEmpty) {
+      _agyAccountEfforts[accountId] = (DateTime.now(), spec);
+      return;
+    }
+    _effortsAt = DateTime.now();
+    _serverEfforts = {...(_serverEfforts ?? _offlineEfforts), 'agy': spec};
+  }
 }
 
 const _offlineEfforts = <String, Map>{
@@ -1424,6 +1456,7 @@ class SessionCliConfig {
   final String? providerBaseUrl;
   final String? model;
   final String? effectiveModel;
+  final String? agyAccountId;
   final bool claudeWorkflow;
   final bool preferSubtasks;
   final String? effort;
@@ -1447,6 +1480,7 @@ class SessionCliConfig {
     this.providerBaseUrl,
     this.model,
     this.effectiveModel,
+    this.agyAccountId,
     this.claudeWorkflow = false,
     this.preferSubtasks = false,
     this.effort,
@@ -1475,6 +1509,7 @@ class SessionCliConfig {
       providerBaseUrl: json['providerBaseUrl']?.toString(),
       model: json['model']?.toString(),
       effectiveModel: json['effectiveModel']?.toString(),
+      agyAccountId: (json['cliAccounts'] as Map?)?['agy']?.toString(),
       effort: json['effort'] == 'ultracode' ? 'xhigh' : json['effort']?.toString(),
       claudeWorkflow: json['claudeWorkflow'] == true || json['effort'] == 'ultracode',
       preferSubtasks: json['preferSubtasks'] == true,
@@ -1505,6 +1540,7 @@ class Session {
   final String? model;
   final String?
   effectiveModel; // model actually used at spawn time (override > provider > /model default)
+  final String? agyAccountId;
   final bool claudeWorkflow;
   final bool preferSubtasks;
   final String? effort; // Claude effort / Codex reasoning level override
@@ -1549,6 +1585,7 @@ class Session {
     this.label,
     this.model,
     this.effectiveModel,
+    this.agyAccountId,
     this.claudeWorkflow = false,
     this.preferSubtasks = false,
     this.effort,
@@ -1583,6 +1620,7 @@ class Session {
       label: json['label']?.toString(),
       model: json['model']?.toString(),
       effectiveModel: json['effectiveModel']?.toString(),
+      agyAccountId: (json['cliAccounts'] as Map?)?['agy']?.toString(),
       effort: json['effort'] == 'ultracode' ? 'xhigh' : json['effort']?.toString(),
       claudeWorkflow: json['claudeWorkflow'] == true || json['effort'] == 'ultracode',
       preferSubtasks: json['preferSubtasks'] == true,
@@ -1644,6 +1682,7 @@ class Session {
       label: label ?? this.label,
       model: model ?? this.model,
       effectiveModel: effectiveModel,
+      agyAccountId: agyAccountId,
       effort: effort ?? this.effort,
       preferSubtasks: preferSubtasks,
       claudeWorkflow: claudeWorkflow,

@@ -3,8 +3,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const { fixture } = require('./helpers/task-shell');
-const { createFolderMemoryService } = require('../src/memory/folder-service');
-const { readMemoryFolder } = require('../src/memory-store');
+const { createFolderMemoryService } = require('../src/native/binding').folderMemoryService;
+const { readMemoryFolder } = require('../src/native/binding').curatedMemoryStore;
 const { estimateTokens } = require('../src/native/binding').taskShellContext;
 const selectionApi = require('../src/native/binding').getContextSelection();
 const { selectContext } = selectionApi;
@@ -342,7 +342,7 @@ test('continuations send only facts the turn points at, not the rest of a MEMORY
 });
 
 test('vault rule is injected only for lanes without the host system prompt', async t => {
-  const { SYSTEM_PROMPT_SECRET_RULE_CLIS } = require('../src/memory/retrieval');
+  const { SYSTEM_PROMPT_SECRET_RULE_CLIS } = require('../src/native/binding').memoryRetrievalHost;
   const f = fixture(t), memory = memoryFor(f), d = await delivery(f, 'vault');
   const record = { ...f.records.get(d.sessionId), taskBoundTaskId: d.taskId };
   const ids = cli => memory.retrieve({ ...record, cli }, 'x').candidates.map(s => s.id);
@@ -351,7 +351,20 @@ test('vault rule is injected only for lanes without the host system prompt', asy
   assert.ok(ids('opencode').includes('builtin:secret-vault'));
   assert.ok(ids('opencode').includes('builtin:shared-files'));
   assert.ok(ids('claude').includes('builtin:docs-registry'));
+  const { createCodebuddyAdapter, createQoderAdapter, createPiAdapter } = require('../src/native/binding').cliAdapters;
+  const factories = { codebuddy: createCodebuddyAdapter, qoder: createQoderAdapter, pi: createPiAdapter };
   for (const cli of SYSTEM_PROMPT_SECRET_RULE_CLIS) {
+    if (factories[cli]) {
+      const systemPrompt = 'host instructions for ' + cli;
+      const result = factories[cli]({ cmd: cli }).buildInvocation({
+        spawnOpts: {}, historyHandle: { isFirstTurn: true }, systemPrompt,
+        contextLayers: [], userText: 'hello', suffix: '',
+      });
+      const at = result.args.indexOf('--append-system-prompt');
+      assert.ok(at >= 0, cli);
+      assert.equal(result.args[at + 1], systemPrompt, cli);
+      continue;
+    }
     const owner = cli === 'claude'
       ? path.join(__dirname, '../native/addon/src/claude_adapter.rs')
       : cli === 'codex' ? path.join(__dirname, '../native/addon/src/codex_adapter.rs')
@@ -363,7 +376,7 @@ test('vault rule is injected only for lanes without the host system prompt', asy
 });
 
 test('seeded rule paragraphs (current and legacy wording) never resurface as ordinary memory', async t => {
-  const { SECRET_VAULT_RULE, SHARED_FILES_RULE } = require('../src/memory/builtin-rules');
+  const { SECRET_VAULT_RULE, SHARED_FILES_RULE } = require('../src/native/binding').builtinMemoryRules;
   const f = fixture(t), memory = memoryFor(f), d = await delivery(f, 'rules');
   const record = { ...f.records.get(d.sessionId), cli: 'claude', taskBoundTaskId: d.taskId };
   const file = path.join(memory.sharedDir('d1'), 'MEMORY.md');

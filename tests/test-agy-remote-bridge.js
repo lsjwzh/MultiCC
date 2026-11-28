@@ -7,9 +7,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { accountEnv, hasAccount, hasRemoteAccount } = require('../src/agy-accounts');
-const { applyRouterMcpEnv } = require('../src/cli-adapters/router-mcp');
-const { createAgyAdapter } = require('../src/cli-adapters/index');
+const { accountEnv, hasAccount, hasRemoteAccount } = require('../src/native/binding').agyAccounts;
+const { applyRouterMcpEnv } = require('../src/native/binding').routerMcp;
+const { createAgyAdapter } = require('../src/native/binding').cliAdapters;
 const { gatewayPath } = require('../src/native/binding');
 
 function mkTempDir(tag) {
@@ -817,14 +817,13 @@ test('isCommandAvailable treats claude/codex as available when a Remote CLI rela
   const work = mkTempDir('cli-relay-avail');
   const prevDataDir = process.env.MULTICC_DATA_DIR;
   const prevPath = process.env.PATH;
-  const providersPath = require.resolve('../src/providers/host');
-  const commandsPath = require.resolve('../src/cli-adapters/commands');
+  const bindingPath = require.resolve('../src/native/binding');
+  const previousBinding = require.cache[bindingPath];
   try {
     process.env.MULTICC_DATA_DIR = work;
     process.env.PATH = path.join(work, 'empty-bin');
     fs.mkdirSync(process.env.PATH, { recursive: true });
-    delete require.cache[providersPath];
-    delete require.cache[commandsPath];
+    delete require.cache[bindingPath];
 
     writeJson(path.join(work, 'providers.json'), {
       providers: [
@@ -852,15 +851,15 @@ test('isCommandAvailable treats claude/codex as available when a Remote CLI rela
       ],
     });
 
-    const { isCommandAvailable } = require('../src/cli-adapters/commands');
+    const { isCommandAvailable } = require('../src/native/binding').cliCommands;
     assert.equal(isCommandAvailable('codex', { isWindows: false }), true);
     assert.equal(isCommandAvailable('/nonexistent/bin/codex', { isWindows: false }), true);
     assert.equal(isCommandAvailable('claude', { isWindows: false }), false);
     // Explicit env/fsImpl keeps unit-test isolation without reading host provider store.
     assert.equal(isCommandAvailable('codex', { isWindows: false, env: { PATH: process.env.PATH } }), false);
   } finally {
-    delete require.cache[providersPath];
-    delete require.cache[commandsPath];
+    if (previousBinding) require.cache[bindingPath] = previousBinding;
+    else delete require.cache[bindingPath];
     if (prevDataDir === undefined) delete process.env.MULTICC_DATA_DIR;
     else process.env.MULTICC_DATA_DIR = prevDataDir;
     if (prevPath === undefined) delete process.env.PATH;

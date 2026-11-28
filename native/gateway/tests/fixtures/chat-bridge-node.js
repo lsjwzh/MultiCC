@@ -1,7 +1,7 @@
 'use strict';
 
 // Test Node child for native/gateway/tests/ws_chat.rs. It loads the real bridge
-// client (src/ws/gateway-chat-bridge.js, from MULTICC_REPO_ROOT) and runs a tiny
+// client (the native gatewayChatBridge API, from MULTICC_REPO_ROOT) and runs a tiny
 // scripted "chat engine" on every virtual socket, so the test drives the real
 // front door and the real Node codec against each other.
 //
@@ -35,7 +35,11 @@ let run = 1;
 try { run = Number(fs.readFileSync(runsFile, 'utf8')) + 1; } catch (_) { /* first run */ }
 fs.writeFileSync(runsFile, String(run));
 
-const { connectChatBridge } = require(path.join(process.env.MULTICC_REPO_ROOT, 'src/ws/gateway-chat-bridge.js'));
+const binding = require(path.join(process.env.MULTICC_REPO_ROOT, 'src/native/binding'));
+if (process.env.MULTICC_RUST_ADDON) {
+  require('node:assert/strict').strictEqual(binding.getNative(), require(process.env.MULTICC_RUST_ADDON));
+}
+const { connectChatBridge } = binding.gatewayChatBridge;
 const port = Number(process.env.MULTICC_GATEWAY_CHAT_PORT);
 const capability = process.env.MULTICC_GATEWAY_CHAT_CAPABILITY;
 

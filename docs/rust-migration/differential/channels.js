@@ -25,7 +25,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { main } = require('./lib');
+const { main, waitForFixture } = require('./lib');
 
 // ---- scenarios: the facts channelHost.status() and channelRegistry.usage() would hold ----
 // `undefined` fields are included on purpose: Node's res.json drops them, and the
@@ -116,7 +116,7 @@ process.on('exit', () => { try { fs.rmSync(path.dirname(SCENARIO_FILE), { recurs
 const setScenario = name => fs.writeFileSync(SCENARIO_FILE, name);
 setScenario('mixed');
 
-// What the real host op answers with for a scenario (src/routes/plugins-host.js).
+// What the real host op answers with for a scenario (plugins_routes_host/internal.rs).
 const hostAnswer = name => {
   const s = SCENARIOS[name];
   return { ok: true, available: s.available, plugins: s.status, usage: s.usage };
@@ -126,8 +126,8 @@ function upstreamScript() {
   return `'use strict';
 const net = require('node:net'); const http = require('node:http'); const path = require('node:path'); const fs = require('node:fs');
 const repo = ${JSON.stringify(path.resolve(__dirname, '../../..'))};
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
@@ -137,6 +137,7 @@ const SCENARIOS = ${JSON.stringify(SCENARIOS)};
 const SCENARIO_FILE = ${JSON.stringify(SCENARIO_FILE)};
 const callsFile = path.join(process.env.MULTICC_DATA_DIR, 'channels-calls.jsonl');
 const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/__health') { res.end('ok'); return; }
   let raw = '';
   req.on('data', chunk => { raw += chunk; });
   req.on('end', () => {
@@ -252,6 +253,7 @@ function corpus(ctx) {
 
 main({
   name: 'channels',
+  ready: waitForFixture,
   mount(app, ctx) {
     const express = require(require.resolve('express', { paths: [ctx.repo] }));
     const { createLegacyChannelsRoute } = require(path.join(ctx.repo, 'tests/helpers/legacy-channels-route'));

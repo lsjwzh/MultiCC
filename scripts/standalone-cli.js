@@ -43,13 +43,13 @@ const { pidAlive, readRuntimeInfo } = require(path.join(LIB_DIR, 'orphan-reclaim
 const { translocationGuidance } = require(path.join(LIB_DIR, 'desktop-env'));
 
 // 独立包的 launcher 与完整 app-server 同级；开发时直接使用仓库模块。
-const appSource = fs.existsSync(path.join(__dirname, '..', 'app-server', 'src', 'network', 'outbound.js'))
+const appSource = fs.existsSync(path.join(__dirname, '..', 'app-server', 'src', 'native', 'binding.js'))
   ? path.join(__dirname, '..', 'app-server', 'src')
   : path.join(__dirname, '..', 'src');
-const networkModule = path.join(appSource, 'network', 'outbound');
+const networkModule = path.join(appSource, 'native', 'binding');
 // 本地 config/status/stop 不依赖网络模块，残缺安装也能进行本地修复。
-const outboundFetch = (...args) => require(networkModule).outboundFetch(...args);
-const getChildProxyEnv = (...args) => require(networkModule).getChildProxyEnv(...args);
+const outboundFetch = (...args) => require(networkModule).outbound.outboundFetch(...args);
+const getChildProxyEnv = (...args) => require(networkModule).outbound.getChildProxyEnv(...args);
 
 const REPO = 'lsjwzh/MultiCC';
 const RELEASES_URL = `https://github.com/${REPO}/releases`;

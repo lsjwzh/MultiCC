@@ -15,7 +15,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const util = require('node:util');
 const { getNative } = require('../src/native/binding');
-const observability = require('../src/observability');
+const observability = require('../src/native/binding').observability;
 const legacyText = require('./helpers/legacy-api-error-text');
 const { scrubProviderSemanticStructure: legacyScrub } = require('./helpers/legacy-provider-semantic-scrub');
 

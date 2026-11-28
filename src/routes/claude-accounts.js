@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 
 // Claude official-account management routes (multi-account OAuth).
 //
@@ -28,9 +28,9 @@ const {
   exchangeCode,
   fetchUsage,
   waitForCallback,
-} = require('../claude-auth/official-oauth');
-const { officialAccountIdFromProvider } = require('../official-accounts');
-const { accountProviderId } = require('../providers/official-catalog');
+} = require('../native/binding').claudeOfficialOAuth;
+const { officialAccountIdFromProvider } = require('../native/binding').officialAccounts;
+const { accountProviderId } = require('../native/binding').officialCatalog;
 const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');
 
 function sanitizeLabel(value) {
@@ -46,7 +46,7 @@ function assertDeps(deps) {
 function mountClaudeAccountRoutes(app, deps) {
   if (!app || typeof app.get !== 'function') throw new TypeError('[claude-accounts] Express-compatible app is required');
   assertDeps(deps);
-  require('../quota/account-subscription-reader').registerAccountSubscriptionReader('claude', deps);
+  require('../native/binding').accountReader.registerAccountSubscriptionReader('claude', deps);
   const { accounts, providers, credentials } = deps;
   const fetchImpl = deps.fetch || outboundFetch;
   const logger = deps.logger || { info() {}, warn() {}, error() {} };

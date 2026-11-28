@@ -20,8 +20,8 @@ const assert = require('node:assert/strict');
 
 const { createDirectoryHost, HOST_PATH } = require('../src/routes/directory-host');
 const { createFsDirectoryRepository } = require('../src/native/binding');
-const { createDirectoryTable } = require('../src/directory/records');
-const { createStateOwner } = require('../src/state/owner');
+const { createDirectoryTable } = require('../src/native/binding').directoryRecords;
+const { createStateOwner } = require('../src/native/binding').stateOwner;
 
 function makeWorld({
   dirs = [], sessions = [], fsDirs = new Set(), fsFiles = new Set(), mkdirError = null,

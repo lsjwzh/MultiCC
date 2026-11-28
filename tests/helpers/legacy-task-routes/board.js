@@ -7,20 +7,19 @@
 
 const fs = require('fs');
 const crypto = require('crypto');
-const core = require('../../../src/task-board/core');
-const planning = require('../../../src/task-board/planning');
+const { core, planning, retention, lifecycle, relocate, boardStore } = require('../load-frozen-task-board');
 const attention = require('../legacy-task-attention');
 const { isVoiceRouterRecord } = require('../../../src/voice/router');
 const { runStateForFreezeReason } = require('../../../src/session-work');
 const { runStateForClassify: runStateForLetter } = require('../../../src/classify/vocab');
 const { buildTaskRunContext: defaultBuildTaskRunContext } = require('../load-legacy-task-board-runtime');
-const { createTaskWorktreeService } = require('../../../src/task-worktree');
+const { createTaskWorktreeService } = require('../frozen-da8f52ee/task-worktree');
 const { taskFields } = require('../legacy-task-display-attribution');
 const { assertTaskBoardDeps, createRelatedTaskLinker } = require('../legacy-task-board-runtime-helpers');
 const { createColdStartSeed } = require('../legacy-task-cold-start-seed');
-const { createTaskRetention } = require('../../../src/task-board/retention');
+const { createTaskRetention } = retention;
 const { createTaskPlanningRuntime } = require('./planning');
-const { openBoardStore } = require('../../../src/task-board/board-store');
+const { openBoardStore } = boardStore;
 
 function createTaskBoardRuntime(deps) {
   assertTaskBoardDeps(deps);
@@ -1674,7 +1673,7 @@ function createTaskBoardRuntime(deps) {
     res.status(409).json({ error: 'task_shell_route_required' }); return true;
   }
 
-  const taskLifecycle = require('../../../src/task-board/lifecycle').createBoardTaskLifecycle({ deps, getBoard: () => board,
+  const taskLifecycle = lifecycle.createBoardTaskLifecycle({ deps, getBoard: () => board,
     resolveTask: resolvedTask, taskIdentityIds, commit: commitPlanningMutation, taskDto, notify,
     taskDirId: task => core.taskDirId(board, task), activeOperations: activeTaskOperations });
   const retention = createTaskRetention({ getBoard: () => board, records,
@@ -1686,7 +1685,7 @@ function createTaskBoardRuntime(deps) {
     deleteById: (id, options) => taskLifecycle.deleteById(id, options) });
 
   // Air 任务「移动」：编排会话工作区搬迁（带未提交改动）、shell 指针与板块记录。
-  const taskRelocate = require('../../../src/task-board/relocate').createTaskRelocate({ deps, resolveTask: resolvedTask,
+  const taskRelocate = relocate.createTaskRelocate({ deps, resolveTask: resolvedTask,
     taskIdentityIds, commit: commitPlanningMutation, taskDto, notify, taskDirId: task => core.taskDirId(board, task), isBusy: id => taskLifecycle.isBusy(id), logger });
 
   const planningRuntime = createTaskPlanningRuntime({

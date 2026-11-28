@@ -6,18 +6,18 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { readMemoryFolder } = require('../src/memory-store');
-const { ENTRY_DELIMITER, scanMemoryContent } = require('../src/memory-store');
+const { readMemoryFolder } = require('../src/native/binding').curatedMemoryStore;
+const { ENTRY_DELIMITER, scanMemoryContent } = require('../src/native/binding').curatedMemoryStore;
 const {
   DOCS_REGISTRY_RULE, DOCS_REGISTRY_RULE_MARKER, SECRET_VAULT_RULE, SECRET_VAULT_RULE_MARKER, SHARED_FILES_RULE, SHARED_FILES_RULE_MARKER, ensureBuiltinSharedMemory,
-} = require('../src/memory/builtin-rules');
+} = require('../src/native/binding').builtinMemoryRules;
 const {
   SESSION_MEM_CAP,
   SHARED_MEM_CAP,
   SESSION_CURATED_MEM_CAP,
   SHARED_CURATED_MEM_CAP,
   createFolderMemoryService,
-} = require('../src/memory/folder-service');
+} = require('../src/native/binding').folderMemoryService;
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-folder-memory-'));
@@ -89,7 +89,7 @@ test('curated memory STORE caps are large (>= 128k) so a project knowledge base 
 
 test('a large curated add that would have blown past the old 2200-char cap now succeeds', () => {
   const { service, cleanup } = fixture();
-  const { applyCuratedMemoryAction } = require('../src/memory-store');
+  const { applyCuratedMemoryAction } = require('../src/native/binding').curatedMemoryStore;
   try {
     const record = { id: 's1', dirId: 'd1', cli: 'claude' };
     const { shared } = service.ensureDirs(record);
@@ -252,6 +252,52 @@ test('seed write failure preserves existing contents and can be retried', t => {
   rename.mock.restore();
   assert.equal(ensureBuiltinSharedMemory(path.dirname(file)), true);
   assert.equal(fs.readFileSync(file, 'utf8'), 'user content' + ENTRY_DELIMITER + DOCS_REGISTRY_RULE + '\n' + ENTRY_DELIMITER + SECRET_VAULT_RULE + '\n' + ENTRY_DELIMITER + SHARED_FILES_RULE + '\n');
+});
+
+test('a rename hook can edit and seed the same shared memory without losing either write', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-reentrant-seed-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  function exerciseHook(root, bindingPath) {
+    const assert = require('node:assert/strict');
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const { builtinMemoryRules, curatedMemoryStore } = require(bindingPath);
+    const { ensureBuiltinSharedMemory, BUILTIN_RULES } = builtinMemoryRules;
+    const rename = fs.renameSync;
+    for (const nestedSeed of [false, true]) {
+      const dir = path.join(root, String(nestedSeed));
+      fs.mkdirSync(dir);
+      const file = path.join(dir, 'MEMORY.md');
+      fs.writeFileSync(file, 'original');
+      let calls = 0;
+      fs.renameSync = (source, staged) => {
+        calls++;
+        const edit = curatedMemoryStore.applyCuratedMemoryAction({
+          action: 'add', dir, content: 'entered from rename', charLimit: 32000,
+        });
+        assert.equal(edit.ok, true, edit.error);
+        if (nestedSeed) assert.equal(ensureBuiltinSharedMemory(dir), true);
+        rename(source, staged);
+      };
+      try {
+        assert.equal(ensureBuiltinSharedMemory(dir), !nestedSeed);
+      } finally {
+        fs.renameSync = rename;
+      }
+      assert.equal(calls, 1);
+      const contents = fs.readFileSync(file, 'utf8');
+      assert.ok(contents.startsWith('original' + curatedMemoryStore.ENTRY_DELIMITER + 'entered from rename'));
+      for (const { marker } of BUILTIN_RULES) assert.equal(contents.split(marker).length, 2);
+      assert.deepEqual(fs.readdirSync(dir), ['MEMORY.md']);
+    }
+  }
+  // A synchronous native deadlock also blocks timers in that process.
+  const result = require('node:child_process').spawnSync(process.execPath, [
+    '-e', '(' + exerciseHook.toString() + ')(...process.argv.slice(1))',
+    root, require.resolve('../src/native/binding'),
+  ], { encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL' });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
 });
 
 // ── 五层记忆（P1）：机器全局 / CLI / 任务 / 技能 ──────────────────────────

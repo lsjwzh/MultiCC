@@ -4,7 +4,7 @@
 // 公开路由、厂商 HTTP、查询编排、去重和失败回退由 Rust 前门执行。
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
 const { isLocalRequest } = require('../native/binding').requestLocality;
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 const { providerLimitSnapshot, getNative } = require('../native/binding');
 const HOST_PATH = '/api/__host/provider-balance';
 const mounts = new WeakMap();
@@ -16,13 +16,13 @@ async function credentials(target) {
   if (target.strategy !== 'claude-oauth-usage') return null;
   if (target.officialAccountId) {
     const service = require('../claude-auth/account-credentials').createClaudeAccountCredentialService({
-      accounts: require('../official-accounts').createOfficialAccountStore(),
+      accounts: require('../native/binding').officialAccounts.createOfficialAccountStore(),
     });
     const read = await service.peekAccountToken(target.officialAccountId);
     if (!read?.token) throw new Error(`Claude quota credential unavailable: ${read?.reason || 'missing'}`);
     return { accessToken: read.token };
   }
-  const read = await require('../quota/claude-cli-oauth').readCliCredentials();
+  const read = await require('../native/binding').claudeCliUsage.readCliCredentials();
   if (!read?.ok || !read.accessToken || (read.expiresAt != null && read.expiresAt <= Date.now())) {
     throw new Error('Claude quota CLI credential unavailable or expired');
   }
@@ -39,7 +39,7 @@ function mountProviderBalanceHost(app, options) {
     const appType = text(body.appType), id = text(body.id);
     if (body.op === 'list') return { ok: true, providers: deps.listProviders().map(p => ({ appType: p.appType, id: p.id, name: p.name || '' })) };
     if (body.op === 'credentials') return { ok: true, auth: await credentials(body.target || {}) };
-    if (body.op === 'refreshCodexAuth') return { ok: true, refreshed: await require('../usage-limit-poller').runCodexAuthRefresh({ authFile: body.target?.authFile || null }) };
+    if (body.op === 'refreshCodexAuth') return { ok: true, refreshed: await require('../native/binding').usageLimitPoller.runCodexAuthRefresh({ authFile: body.target?.authFile || null }) };
     if (body.op === 'record') {
       const entry = await deps.onResult?.(appType, id, body.result);
       return { ok: true, snapshot: providerLimitSnapshot(entry, body.now) };
@@ -51,7 +51,7 @@ function mountProviderBalanceHost(app, options) {
       return { ok: true, found: true, entry, snapshot: providerLimitSnapshot(entry, body.now) };
     }
     if (body.op === 'virtualMember') {
-      const virtual = require('../providers/virtual-provider');
+      const virtual = require('../native/binding').virtualProvider;
       const asyncCache = deps.lookupCached && deps.asyncLimitCache === true;
       await (asyncCache ? virtual.refreshAsync(provider) : virtual.refresh(provider));
       try {
@@ -66,7 +66,7 @@ function mountProviderBalanceHost(app, options) {
       return { ok: true, found: true, provider: { appType: provider.appType, id: provider.id, virtual: !!provider.virtual,
         egressBinding: provider.egressBinding || null, egressIpAllowlist: provider.egressIpAllowlist || [] },
         target: provider.virtual ? null : deps.getProviderLimitTarget(appType, id),
-        egress: require('../providers/egress-ip-policy').checkEgressIpAllowed(provider) };
+        egress: require('../native/binding').egressIpPolicy.checkEgressIpAllowed(provider) };
     }
     return null;
   }

@@ -345,6 +345,11 @@
       "lane": "flutter"
     },
     {
+      "path": "app/test/computer_spaces_shell_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/connection_probe_service_test.dart",
       "tier": "flow",
       "lane": "flutter"
@@ -4042,6 +4047,15 @@
       "lane": "deterministic",
       "entrypoints": [
         "npm:test:i18n"
+      ]
+    },
+    {
+      "path": "tests/test-im-channels-native.js",
+      "tier": "other",
+      "lane": "deterministic",
+      "owner": "npm:test:bridges",
+      "entrypoints": [
+        "npm:test:bridges"
       ]
     },
     {

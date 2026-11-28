@@ -21,7 +21,7 @@
 
 const { isLocalRequest } = require('../native/binding').requestLocality;
 const { safeCode, sanitizePublicText } = require('../native/binding').getPublicSafety();
-const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+const { STALE_MS_DEFAULT } = require('../native/binding').providerLimitCache;
 const { providerLimitBar } = require('../native/binding').getQuotaBarView();
 const { detachProviderReferences } = require('../providers/force-detach');
 const { reassignProviderSessions } = require('../provider-reassign');
@@ -118,7 +118,7 @@ function mountProvidersHostRoute(app, options = {}) {
       } catch (_) { /* a catalog refresh must never hide the Provider list */ }
     }
     const ccSwitchStatus = deps.providers.getCcSwitchStatus();
-    const subscriptions = require('../quota/account-subscription-cache');
+    const subscriptions = require('../native/binding').accountSubscriptionCache;
     await subscriptions.ready().catch(() => {});
     // 这里只读宿主快照；筛选、订阅投影、公开限额字段和虚拟线路选择由前门组装。
     const providers = deps.providers.listProviders(
@@ -151,7 +151,7 @@ function mountProvidersHostRoute(app, options = {}) {
       if (!provider.virtual) continue;
       const key = provider.appType + ':' + provider.id;
       try {
-        const virtual = require('../providers/virtual-provider');
+        const virtual = require('../native/binding').virtualProvider;
         virtualInputs[key] = cache?.isAsync
           ? await virtual.snapshotAsync(provider, deps.providers.listProviders())
           : virtual.snapshot(provider, deps.providers.listProviders());
@@ -524,7 +524,7 @@ function mountProvidersHostRoute(app, options = {}) {
           found: true,
           kind: 'claude',
           official: id === 'claude-official'
-            || !!require('../official-accounts').officialAccountIdFromProvider(provider),
+            || !!require('../native/binding').officialAccounts.officialAccountIdFromProvider(provider),
           hasKey: !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN),
           env: {
             ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
@@ -533,7 +533,7 @@ function mountProvidersHostRoute(app, options = {}) {
             ANTHROPIC_DEFAULT_SONNET_MODEL: env.ANTHROPIC_DEFAULT_SONNET_MODEL,
           },
           summary: deps.providerRouterRuntime.getProviderSummary('claude', id) || {},
-          fallbackModels: require('../claude-models').CLAUDE_MODELS_FALLBACK.map(entry => entry.model),
+          fallbackModels: require('../native/binding').claudeModels.CLAUDE_MODELS_FALLBACK.map(entry => entry.model),
           wireDefaultModel: deps.providers.WIRE_DEFAULT_MODEL,
         };
       } catch (error) {

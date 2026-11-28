@@ -12,14 +12,14 @@ main({
 const net = require('node:net'), http = require('node:http'), path = require('node:path');
 const repo = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [repo] }));
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
 const app = express();
-app.use(require(path.join(repo, 'src/http-errors')).requestIdMiddleware,
- require(path.join(repo, 'src/http/json-compression')).jsonCompression, express.json());
+app.use(require(path.join(repo, 'src/native/binding')).httpErrors.requestIdMiddleware,
+ require(path.join(repo, 'src/native/binding')).jsonCompression.jsonCompression, express.json());
 const { exercise } = require(path.join(repo, 'tests/helpers/session-notice-fixture'));
 const api = require(path.join(repo, 'src/native/binding')).getSessionNotices();
 app.post('/api/notice-fixture', async (req, res) => res.json(await exercise(api, req.body)));

@@ -18,7 +18,7 @@ const test = require('node:test');
 const {
   createCodexResidentRoutes,
   releaseResidentRoute,
-} = require('../src/codex/resident-route');
+} = require('../src/native/binding').codexResidentRoute;
 
 const ROOTS = [];
 const SOURCE_HOME = '/tmp/multicc-test-provider-home';
@@ -235,5 +235,14 @@ test('a teardown path that never ran a resident codex turn is inert', () => {
   // closed. Nothing above this test touched the shared singleton, which is
   // exactly the state a process that only ever served claude sessions is in.
   assert.equal(releaseResidentRoute('session-1'), false);
-  assert.equal(require.cache[require.resolve('../src/providers/host')], undefined);
+  let lookups = 0;
+  const isolated = require('../src/native/binding').getNative().residentProviderRoutesApi({
+    exists: fs.existsSync,
+    providers() { lookups++; throw new Error('unexpected provider lookup'); },
+  });
+  assert.equal(isolated.releaseResidentRoute('session-1'), false);
+  isolated.retainResidentRoute('/unused')();
+  assert.equal(lookups, 0);
+  assert.throws(() => isolated.prepareResidentChildEnv({}, {}), /unexpected provider lookup/);
+  assert.equal(lookups, 1);
 });

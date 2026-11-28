@@ -370,7 +370,14 @@ async fn fetch_ssh_quota(remote: &RemoteAgyTarget) -> Result<Value, String> {
         agy_bin,
         remote.remote_home.as_deref(),
         remote.host_account_id.as_deref(),
-        &["-p", "/usage", "--output-format", "json", "--print-timeout", "30s"],
+        &[
+            "-p",
+            "/usage",
+            "--output-format",
+            "json",
+            "--print-timeout",
+            "30s",
+        ],
     );
     let (code, stdout, stderr) = run_ssh_script(remote, &script, Duration::from_secs(35)).await?;
     if code != 0 {
@@ -394,7 +401,8 @@ async fn fetch_ssh_quota(remote: &RemoteAgyTarget) -> Result<Value, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "系统时间异常".to_string())?
         .as_millis() as u64;
-    render(&data, now_ms).ok_or_else(|| "远端反重力用量数据不完整，请确认远端已登录 agy".to_string())
+    render(&data, now_ms)
+        .ok_or_else(|| "远端反重力用量数据不完整，请确认远端已登录 agy".to_string())
 }
 
 fn unavailable_bar() -> Value {
@@ -860,6 +868,7 @@ printf '{"command":{"data":{"groups":[{"name":"Gemini Models","buckets":[{"windo
         use http_body_util::BodyExt;
         use std::os::unix::fs::PermissionsExt;
 
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
         let root = std::env::temp_dir().join(format!(
             "multicc-agy-ssh-quota-test-{}",
             std::time::SystemTime::now()

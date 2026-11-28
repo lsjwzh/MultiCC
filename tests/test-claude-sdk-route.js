@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const http = require('node:http');
-const { managedRoute, createRouteRelay } = require('../src/chat/claude-sdk-route');
+const { managedRoute, createRouteRelay } = require('../src/native/binding').claudeSdkRoute;
 
 test('relay requires its capability token and only reaches the bound local route', async t => {
   for (const url of ['https://127.0.0.1/claude-proxy/p/s', 'http://example.org/claude-proxy/p/s',

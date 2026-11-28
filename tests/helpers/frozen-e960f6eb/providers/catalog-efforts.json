@@ -1,0 +1,177 @@
+{
+  "agy": {
+    "label": "Thinking Level",
+    "levels": [
+      "",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "default": "",
+    "disabledModelFamily": "gemini-pro-orchestrator",
+    "tierSuffixes": [
+      "-low",
+      "-medium",
+      "-high",
+      "-xhigh",
+      "-max"
+    ],
+    "modelLevels": {
+      "claude-opus-5-5": [
+        "",
+        "low",
+        "medium",
+        "high"
+      ],
+      "claude-sonnet-5-5": [
+        "",
+        "low",
+        "medium",
+        "high"
+      ],
+      "gemini-3.8-flash": [
+        "",
+        "low",
+        "medium",
+        "high"
+      ],
+      "gemini-4-argon": [
+        "",
+        "low",
+        "medium",
+        "high"
+      ],
+      "gemini-4-carbon": [
+        "",
+        "low",
+        "medium",
+        "high"
+      ],
+      "gemini-4-hydrogen": [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "gemini-4-neon": [
+        "",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "gpt-oss-120b": [
+        "",
+        "medium"
+      ]
+    }
+  },
+  "claude": {
+    "label": "Effort",
+    "levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "default": "medium",
+    "modelLevels": {
+      "claude-haiku-4-5": [],
+      "claude-haiku-4-5-20251001": [],
+      "claude-opus-4-6": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
+      "claude-sonnet-4-6": [
+        "low",
+        "medium",
+        "high",
+        "max"
+      ]
+    }
+  },
+  "codebuddy": {
+    "label": "Reasoning Effort",
+    "levels": [
+      "",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "default": ""
+  },
+  "codex": {
+    "label": "Reasoning Level",
+    "levels": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    "default": "xhigh"
+  },
+  "codex-exp": {
+    "label": "Reasoning Level",
+    "levels": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra"
+    ],
+    "default": "xhigh"
+  },
+  "opencode": {
+    "label": "Variant",
+    "levels": [
+      "",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "default": ""
+  },
+  "pi": {
+    "label": "Thinking Level",
+    "levels": [
+      "",
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
+    "default": ""
+  },
+  "qoder": {
+    "label": "Reasoning Effort",
+    "levels": [
+      "",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "default": ""
+  }
+}

@@ -767,8 +767,8 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
     // The portable-git installer the one-click fix and install.sh run on a Mac
     // without the Command Line Tools (src/portable-git.js looks for it here).
     'install-git.sh',
-    'src/voice/asr-model-installer.js',
-    'plugins/bridges/wechat-ilink.js', 'plugins/cron/cron-tasks.js',
+    'src/native/binding.js',
+    'src/network/sdk-bridges.js', 'plugins/cron/cron-tasks.js',
     'skills/multicc-artifact/references/registration-rule.md',
     'package.json', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES]) {
     assert.ok(fs.existsSync(path.join(staged, must)), `staged tree missing ${must}`);
@@ -794,8 +794,14 @@ test('desktop-bundle-server stages a runnable server tree without the APK', { ti
   assert.equal(pkg.dependencies['sherpa-onnx-node'], undefined);
   assert.equal(pkg.dependencies['@iarna/toml'], undefined, 'the packaged server uses the native Grok config writer');
   assert.equal(pkg.version, require(path.join(ROOT, 'package.json')).version);
-  assert.equal(require(path.join(staged, 'src/memory/builtin-rules')).DOCS_REGISTRY_RULE,
-    require('../src/memory/builtin-rules').DOCS_REGISTRY_RULE);
+  const { builtinMemoryRules } = require(path.join(staged, 'src/native/binding'));
+  for (const [key, reference] of [
+    ['DOCS_REGISTRY_RULE', 'multicc-artifact/references/registration-rule.md'],
+    ['SECRET_VAULT_RULE', 'multicc-secrets/references/secret-vault-rule.md'],
+    ['SHARED_FILES_RULE', 'multicc-workspaces/references/shared-files-rule.md'],
+  ]) {
+    assert.equal(builtinMemoryRules[key], fs.readFileSync(path.join(staged, 'skills', reference), 'utf8').trim());
+  }
 });
 
 // A stub repo root is enough for the staging script: it copies these entries and
@@ -805,8 +811,8 @@ function stubRepoRoot(dir) {
     `${JSON.stringify({ name: 'stub', version: '1.0.0', dependencies: {} }, null, 2)}\n`);
   for (const rel of ['server.js', 'src/paths/index.js', 'public/chat.html', 'public/air.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
-    'src/voice/asr-model-installer.js', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
-    'plugins/bridges/wechat-ilink.js', 'skills/multicc-artifact/references/registration-rule.md',
+    'src/native/binding.js', ...MACOS_AGENT_FILES, ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
+    'src/network/sdk-bridges.js', 'skills/multicc-artifact/references/registration-rule.md',
     'native/core/src/task_planning_status.json']) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -1214,15 +1220,22 @@ test('host-env honors MULTICC_ENV_FILE for read and write', withEnv({ MULTICC_EN
   const dir = tmpdir('desktop-envfile-');
   const file = path.join(dir, 'multicc.env');
   process.env.MULTICC_ENV_FILE = file;
-  delete require.cache[require.resolve(path.join(ROOT, 'src', 'host-env.js'))];
-  const hostEnv = require(path.join(ROOT, 'src', 'host-env.js'));
+  const hostEnv = require(path.join(ROOT, 'src', 'native', 'binding')).hostEnv;
   assert.equal(hostEnv.envPath(), file);
   hostEnv.writeEnvFile({ VAPID_PUBLIC_KEY: 'pub-1' });
   assert.equal(fs.readFileSync(file, 'utf8').trim(), 'VAPID_PUBLIC_KEY=pub-1');
   assert.equal(hostEnv.readEnvFile().VAPID_PUBLIC_KEY, 'pub-1');
   hostEnv.writeEnvFile({ VAPID_PUBLIC_KEY: 'pub-2' });
   assert.equal(hostEnv.readEnvFile().VAPID_PUBLIC_KEY, 'pub-2');
-  delete require.cache[require.resolve(path.join(ROOT, 'src', 'host-env.js'))];
+  fs.writeFileSync(file, '# keep\nDUP=first\n\n  DUP = second  \nREMOVE=yes\n');
+  assert.equal(hostEnv.readEnvFile().DUP, 'second');
+  const parentMode = fs.statSync(dir).mode & 0o777;
+  hostEnv.writeEnvFile({ DUP: 'both', REMOVE: null, ADDED: 42 });
+  assert.equal(fs.readFileSync(file, 'utf8'), '# keep\nDUP=both\nDUP=both\nADDED=42\n');
+  if (process.platform !== 'win32') {
+    assert.equal(fs.statSync(dir).mode & 0o777, parentMode);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
 }));
 
 // ── static: security posture, purity, packaging, workflow, icon ─────────────

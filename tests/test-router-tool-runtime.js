@@ -8,10 +8,10 @@ const test = require('node:test');
 const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-router-audit-test-'));
 process.env.MULTICC_DATA_DIR = auditDir;
 test.after(() => fs.rmSync(auditDir, { recursive: true, force: true }));
-const { createOperationService } = require('../src/operation-service');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
+const { createOperationService } = require('../src/native/binding').orchestrationServices;
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const { createSessionWorkScheduler } = require('../src/session-work');
-const { createOutbox } = require('../src/outbox');
+const { createOutbox } = require('../src/native/binding').outboxRuntime;
 const { createRouterToolRuntime } = require('../src/router-tool-runtime');
 
 function fixture(t, overrides = {}) {

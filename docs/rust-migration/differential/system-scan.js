@@ -30,8 +30,8 @@ const net = require('node:net'); const http = require('node:http');
 const path = require('node:path'); const fs = require('node:fs');
 const repo = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [repo] }));
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0)); process.stdin.resume();
@@ -83,7 +83,7 @@ async function main() {
         app.get('/api/debug/codex-proxy-trace', (req, res) => {
           const requested = Number(req.query && req.query.limit);
           const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, 200) : 100;
-          res.json({ entries: require(path.join(repo, 'src/codex/proxy-trace')).codexProxyTrace().snapshot(limit) });
+          res.json({ entries: require(path.join(repo, 'tests/helpers/frozen-leaf-hosts/proxy-trace')).codexProxyTrace().snapshot(limit) });
         });
         scan.mountScanRoutes(app, { scanHistory: { seq: 7, passes: PASSES }, maxPasses: 5 });
         upstreamText = upstream(repo, rootDir);

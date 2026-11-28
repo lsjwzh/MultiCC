@@ -186,7 +186,7 @@ async function mountApp(dataRoot, historyFile, base) {
   process.env.MULTICC_DATA_DIR = dataRoot;
   const express = require('express');
   const ORACLE = require(ORACLE_PATH);
-  const providers = require(path.join(root, 'src', 'providers', 'host.js'));
+  const providers = require(path.join(root, 'tests/helpers/frozen-bc29761b/providers/host'));
   providers.enableUnifiedOfficialProviders();
   const history = ORACLE.createLegacyProviderQuotaHistory({
     file: historyFile,

@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const { test } = require('node:test');
-const { createUsageLimitWiring } = require('../src/chat/usage-limit-wiring');
+const { createUsageLimitWiring } = require('../src/native/binding').usageLimitWiring;
 
 function fakeProviders(target, summaries = {}) {
   return {
@@ -39,6 +39,16 @@ test('resolveTarget maps session→provider limit target; null for vendor CLI', 
   assert.strictEqual(sp.resolve('missing'), null, 'unknown session → no target');
 });
 
+test('用量接线支持从原型注入依赖，只读取声明的端口', () => {
+  const poller = stubPoller();
+  const options = Object.create({
+    persistedSessions: new Map(), providers: fakeProviders(null), chatBroadcast() {}, createPoller: poller.factory,
+  });
+  Object.defineProperty(options, 'unrelated', { enumerable: true, get() { throw Error('unexpected port read'); } });
+  createUsageLimitWiring(options);
+  assert.strictEqual(poller.resolve('missing'), null);
+});
+
 test('broadcast maps window DTO → rate_limit_event, balance DTO → usage_balance_event', () => {
   const events = [];
   const sp = stubPoller();
@@ -71,7 +81,7 @@ test('broadcast maps window DTO → rate_limit_event, balance DTO → usage_bala
 // way throws on every call, and the queue swallows that into the default key, so
 // every account quietly shares one reading.
 test('wiring installs a claude key resolver that resolves a session to its account', () => {
-  const Queue = require('../src/quota/claude-usage-queue');
+  const Queue = require('../src/native/binding').claudeUsageQueue;
   const sessions = new Map([
     ['acct-2-s', { provider: 'claude-official-bbb', cli: 'claude' }],
     ['relay-s', { provider: 'zhipu', cli: 'claude' }],
@@ -107,7 +117,7 @@ test('wiring installs a claude key resolver that resolves a session to its accou
 // user asks for it — the bar's ⟳ / tap sends `force=1`. So the wiring hands
 // onTurnComplete straight to the poller and never enqueues a Claude reading.
 test('a turn ending does not scrape Claude, and the poller still runs', async () => {
-  const Queue = require('../src/quota/claude-usage-queue');
+  const Queue = require('../src/native/binding').claudeUsageQueue;
   const sessions = new Map([['acct-s', { provider: 'p-official', cli: 'claude' }]]);
   Queue.resetClaudeUsageQueue();
   const scrapes = [];
@@ -146,8 +156,8 @@ test('throws when required deps are missing', () => {
 // ── quota self-heal wiring (src/quota/quota-self-heal.js) ────────────────────
 
 test('the guard\'s stale release re-reads the provider through the balance refresh port', async () => {
-  const { createQuotaGuard } = require('../src/quota/quota-guard');
-  const { wireQuotaSelfHeal } = require('../src/quota/quota-self-heal');
+  const { createQuotaGuard } = require('../src/native/binding').quotaGuard;
+  const { wireQuotaSelfHeal } = require('../src/native/binding').quotaSelfHeal;
   const NOW = 1_800_000_000_000;
   const quotaGuard = createQuotaGuard({
     cache: {
@@ -178,8 +188,8 @@ test('the guard\'s stale release re-reads the provider through the balance refre
 });
 
 test('a codex 401 routes to the shared or per-account OAuth refresher, never to a cliCopy', async (t) => {
-  const { wireCodexAuthRefresher } = require('../src/quota/quota-self-heal');
-  const poller = require('../src/usage-limit-poller');
+  const { wireCodexAuthRefresher } = require('../src/native/binding').quotaSelfHeal;
+  const poller = require('../src/native/binding').usageLimitPoller;
   t.after(() => poller.setCodexAuthRefresher(null));
   const attempts = [];
   const codexOAuthRefresh = {

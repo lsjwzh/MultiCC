@@ -70,12 +70,12 @@ function verifyReadOnlyImport(t, hasMeta) {
 
   const rowsBefore = readRows(ccDb);
   const fileBefore = snapshot(ccDb);
-  const providersPath = path.join(ROOT, 'src', 'providers', 'host.js');
+  const bindingPath = path.join(ROOT, 'src', 'native', 'binding.js');
   const childScript = `
     const assert = require('node:assert/strict');
     const fs = require('node:fs');
     const path = require('node:path');
-    const providers = require(${JSON.stringify(providersPath)});
+    const providers = require(${JSON.stringify(bindingPath)}).providersHost;
 
     const status = providers.getCcSwitchStatus();
     assert.equal(status.available, true);
@@ -113,16 +113,14 @@ function verifyReadOnlyImport(t, hasMeta) {
   assert.deepEqual(readRows(ccDb), rowsBefore, 'CC DB provider rows changed');
   assert.deepEqual(snapshot(ccDb), fileBefore, 'read-back changed CC DB metadata');
 
-  const source = fs.readFileSync(providersPath, 'utf8');
-  const sqliteMethods = [...new Set(
-    [...source.matchAll(/\bsqliteRuntime\.([A-Za-z][A-Za-z0-9_]*)/g)].map(match => match[1]),
-  )].sort();
-  assert.deepEqual(sqliteMethods, ['getStatus']);
+  const facade = fs.readFileSync(path.join(ROOT, 'native/addon/src/providers_host_runtime/facade.rs'), 'utf8');
+  const sqliteMethods = [...facade.matchAll(/get\(c"sqlite"\)\?\s*,\s*c"(\w+)"/g)].map(match => match[1]);
+  assert.deepEqual([...new Set(sqliteMethods)], ['getStatus']);
   const registry = fs.readFileSync(path.join(ROOT, 'native/addon/src/provider_service/registry.rs'), 'utf8');
   assert.match(registry, /cc_switch::read_rows/);
   const reader = fs.readFileSync(path.join(ROOT, 'native/core/src/cc_switch.rs'), 'utf8');
   assert.match(reader, /OpenFlags::SQLITE_OPEN_READ_ONLY/);
-  assert.doesNotMatch(source, /require\(['"]better-sqlite3['"]\)/);
+  assert.doesNotMatch(fs.readFileSync(bindingPath, 'utf8'), /require\(['"]better-sqlite3['"]\)/);
   assert.doesNotMatch(
     reader,
     /\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\s+(?:INTO\s+|FROM\s+|TABLE\s+)?providers\b/i,

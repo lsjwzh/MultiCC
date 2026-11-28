@@ -13,8 +13,8 @@ const { createAutoProviderRouting, textHash } = require('../src/chat/auto-provid
 const {
   providerSelectionDto,
   validateProviderSelection,
-} = require('../src/providers/auto-provider-config');
-const { JEV_GATEWAYS } = require('../src/providers/jev-client');
+} = require('../src/native/binding').autoProviderConfig;
+const { JEV_GATEWAYS } = require('../src/native/binding').jevClient;
 
 const NOW = 2_000_000;
 

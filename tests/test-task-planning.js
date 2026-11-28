@@ -5,9 +5,8 @@ const test = require('node:test');
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
-const core = require('../src/task-board/core');
-const planning = require('../src/task-board/planning');
-const { createTaskBoardRuntime } = require('../src/routes/task-board');
+const { taskBoardCore: core, taskPlanning: planning, taskBoardRuntime, taskPlanningRoutes, getNative } = require('../src/native/binding');
+const { createTaskBoardRuntime } = taskBoardRuntime;
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const { retiredRoutes } = require('./helpers/task-board-ports');
 
@@ -205,6 +204,54 @@ test('planning update atomically edits content and moves to the target Fleet sta
   assert.equal(updated.body.task.description, '新文案');
   assert.equal(updated.body.task.workflowStage, 'ready');
   assert.ok(updated.body.task.rank > tail.body.task.rank);
+});
+
+test('异步阶段预检期间其他任务可写，同任务等到前次失败后才重新读取', { timeout: 5000 }, async () => {
+  const board = core.createEmptyBoard();
+  for (const id of ['first', 'other']) {
+    const result = planning.createPlannedTask(board, { title: id, dirId: 'dir', workflowStage: 'ready' }, { id });
+    assert.equal(result.ok, true);
+  }
+  let enter, rejectStage, released = false;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const stage = new Promise((resolve, reject) => { rejectStage = reject; });
+  const reads = [];
+  const planningRuntime = taskPlanningRoutes.createTaskPlanningRuntime({
+    getBoard: () => board,
+    commitMutation(mutate) {
+      const result = mutate(board);
+      if (!result.ok) return result;
+      board.revision += 1;
+      return { ...result, taskId: result.task.id };
+    },
+    taskDto: task => ({ id: task.id, title: task.title }),
+    resolveTask(id) { reads.push([id, released]); return board.tasks[id]; },
+    taskDirId: task => task.dirId,
+    notify() {},
+    beforeStageChange() { enter(); return stage; },
+  });
+  const ports = getNative().taskBoardRoutePorts({ planningRuntime });
+  const first = ports.planningMove({
+    taskId: 'first',
+    body: { workflowStage: 'done', expectedRevision: board.tasks.first.planningRevision },
+  }, planningResponse());
+  const firstOutcome = assert.rejects(first, /stage preflight failed/);
+  await entered;
+  const later = planningResponse();
+  const queued = ports.planningRename({ taskId: 'first', body: { title: 'after failure' } }, later);
+  const other = planningResponse();
+  await ports.planningRename({ taskId: 'other', body: { title: 'parallel' } }, other);
+  assert.equal(other.body.task.title, 'parallel');
+  assert.deepEqual(reads.filter(([id]) => id === 'first'), [['first', false]]);
+  assert.equal(later.body, null);
+  assert.equal(board.tasks.first.workflowStage, 'ready');
+  released = true;
+  rejectStage(new Error('stage preflight failed'));
+  await firstOutcome;
+  await queued;
+  assert.deepEqual(reads.filter(([id]) => id === 'first'), [['first', false], ['first', true]]);
+  assert.equal(later.body.task.title, 'after failure');
+  assert.equal(board.tasks.first.workflowStage, 'ready');
 });
 
 test('planning rank is Fleet-scoped and survives repeated midpoint exhaustion by renumbering', () => {
@@ -493,7 +540,7 @@ test('计划变更与冻结实现使用相同的日期、时钟、ID 和任务�
   assert.equal(createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex'),
     '5d2e1b24ae127b25f1b28d386931396d041b88a1');
   const original = { exports: {} };
-  compileFunction(bytes.toString(), ['module','require'], { filename })(original,createRequire(filename));
+  compileFunction(bytes.toString(), ['module','require'], { filename })(original, require('./helpers/frozen-batch10').from(filename, createRequire(filename)));
   function trace(api) {
     const savedNow = Date.now, reads = [], snapshots = [];
     Date.now = () => { reads.push('clock'); return 101; };

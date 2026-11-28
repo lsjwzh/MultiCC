@@ -2,7 +2,7 @@
 
 const { getNative, getPublicSafety } = require('../native/binding');
 const { sanitizePublicText } = getPublicSafety();
-const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+const { STALE_MS_DEFAULT } = require('../native/binding').providerLimitCache;
 
 const AUX_SESSION_ID = '__aux__';
 const AUX_HISTORY_MAX = 200;

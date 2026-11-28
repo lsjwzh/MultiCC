@@ -54,7 +54,7 @@ function mountLiveComposition(expressApp, bag, options = {}) {
   const live = {
     create: require(path.join(repo, 'src/routes/session-create')),
     profile: require(path.join(repo, 'src/routes/session-profile')),
-    memory: require(path.join(repo, 'src/routes/session-memory')),
+    memory: require(path.join(repo, 'src/native/binding')).sessionMemoryRoutes,
     bundle: require(path.join(repo, 'src/routes/session-bundle')),
     lifecycle: require(path.join(repo, 'src/routes/session-lifecycle')),
   };

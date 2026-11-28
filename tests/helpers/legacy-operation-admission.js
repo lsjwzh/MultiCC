@@ -1,7 +1,7 @@
 'use strict';
 
 // Frozen Node oracle for differential admission tests; never used by production.
-const { admitOutboxItem, hashPayload, hashSecret, normalizeJson } = require('../../src/outbox');
+const { admitOutboxItem, hashPayload, hashSecret, normalizeJson } = require('./frozen-e960f6eb/outbox');
 
 function createLegacyOperationAdmission({ now, cryptoImpl, OperationConflictError, publicOperation }) {
   function findIdempotent(draft, { kind, ownerSessionId, idempotencyKeyHash }) {

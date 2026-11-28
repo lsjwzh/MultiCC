@@ -6,10 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const Database = require('better-sqlite3');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createOutbox } = require('../src/outbox');
-const { createOperationService } = require('../src/operation-service');
-const { createWaitService } = require('../src/wait/service');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
+const { createOutbox } = require('../src/native/binding').outboxRuntime;
+const { createOperationService } = require('../src/native/binding').orchestrationServices;
+const { createWaitService } = require('../src/native/binding').orchestrationServices;
 
 function fixture(t, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-receipts-'));

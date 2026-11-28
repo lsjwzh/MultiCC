@@ -238,7 +238,7 @@ module.exports = {
 
 if (require.main === module && process.argv[2] === '--request') {
   const root = path.resolve(process.argv[3]);
-  const config = require('./host-env').readEnvFile();
+  const config = require('./native/binding').hostEnv.readEnvFile();
   const port = Number(process.env.PORT || config.PORT || 3000);
   const host = process.env.HOST || config.HOST || '127.0.0.1';
   const net = require('node:net');

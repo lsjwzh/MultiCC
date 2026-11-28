@@ -7,8 +7,8 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
-const { validateUsageObserved } = require('../src/usage-observed');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { validateUsageObserved } = require('../src/native/binding').usageObserved;
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { REQUIRED_CAPABILITIES } = require('../src/providers/router-port');
 const {
   createHostEmbeddingPaths,
@@ -808,7 +808,7 @@ test('managed loopback routing stays bound to the claude/codex lane families', (
   // endpoint stays the provider's external URL and no loopback leaks in.
   // kimi/grok builders write real session homes on disk, so they stay
   // source-gated above instead of being driven here.
-  const providers = require('../src/providers/host');
+  const providers = require('../src/native/binding').providersHost;
   const dsh = providers.buildDshRoute({
     name: 'dsh-relay',
     settingsConfig: JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'k', ANTHROPIC_BASE_URL: 'https://api.example.com' } }),

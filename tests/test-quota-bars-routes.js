@@ -19,9 +19,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createQuotaRuntime } = require('../src/routes/quota-host');
-const { createQuotaBarCache } = require('../src/quota/quota-bar-cache');
-const Queue = require('../src/quota/claude-usage-queue');
-const BarState = require('../src/quota/claude-bar-state');
+const { createQuotaBarCache } = require('../src/native/binding').quotaBarCache;
+const Queue = require('../src/native/binding').claudeUsageQueue;
+const BarState = require('../src/native/binding').claudeBarState;
 
 function tmpCache() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-quota-bar-cache-test-'));
@@ -208,4 +208,16 @@ test('the claude bar only scrapes when the front door says force', async () => {
     Queue.resetClaudeUsageQueue();
     BarState.resetClaudeBarState();
   }
+});
+
+test('配额条缓存恢复失败时记录警告并使用空快照', () => {
+  const warnings = [];
+  const cache = createQuotaBarCache({ file: 'unused', logger: { warn: (...args) => warnings.push(args) },
+    storeFactory: () => ({ loadOrRecover: () => ({ present: true, data: {
+      entries: { old: {} }, updatedAt: { valueOf: 0, toString: 0 },
+    } }) }),
+  });
+  assert.deepEqual(cache.snapshot(), { entries: {}, updatedAt: 0 });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][0], /load failed/);
 });

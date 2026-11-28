@@ -16,8 +16,8 @@ const path = require('node:path');
 const test = require('node:test');
 const { spawn } = require('node:child_process');
 const { createCodexAppStream } = require('../src/chat/codex-app-stream');
-const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
-const { createBackgroundTaskTracker } = require('../src/cli-adapters/zcode-app-server');
+const { createZcodeAdapter } = require('../src/native/binding').cliAdapters;
+const { createBackgroundTaskTracker } = require('../src/native/binding').zcodeAppServer;
 const { writeFakeZcodeAppServer } = require('./helpers/fake-zcode-app-server');
 
 const BRIDGE = path.join(__dirname, '../src/cli-adapters/zcode-bridge.cjs');
@@ -378,4 +378,43 @@ test('the background ledger counts running tasks and prunes ones whose process i
   alive.delete(102);
   assert.equal(tasks.prune(), true, 'a task whose process died without a terminal report is dropped');
   assert.equal(tasks.active, 0);
+});
+
+test('native task ledger keeps unknown-pid tasks, updates probes and propagates injected failures', () => {
+  const visited = [];
+  const sentinel = {};
+  let fail = false;
+  const tasks = createBackgroundTaskTracker({ isAlive(pid) {
+    visited.push(pid);
+    if (fail) throw sentinel;
+    return pid === 202;
+  } });
+  const update = (taskId, status, pid) => tasks.observe({ type: 'session.updated', payload: { taskId, status, pid } });
+  assert.equal(update('no-pid', 'queued'), true);
+  assert.equal(update('with-pid', 'starting', 101), true);
+  assert.equal(update('with-pid', 'running', 202), false);
+  assert.equal(update('with-pid', 'pending', 'invalid'), false);
+  assert.equal(tasks.prune(), false);
+  assert.deepEqual(visited, [202]);
+  fail = true;
+  assert.throws(() => tasks.prune(), error => error === sentinel);
+  assert.equal(tasks.active, 2);
+  assert.equal(update('with-pid', 'unknown-status'), true);
+  assert.equal(update('no-pid', 'Running'), true, 'status matching is case sensitive');
+});
+
+test('native default pid probe treats EPERM as alive and other failures as dead', () => {
+  const { getNative } = require('../src/native/binding');
+  for (const [code, alive] of [['EPERM', true], ['ESRCH', false]]) {
+    const calls = [];
+    const api = getNative().zcodeAppServerApi({ kill(pid, signal) {
+      calls.push([pid, signal]);
+      throw Object.assign(new Error('synthetic probe'), { code });
+    } });
+    const tasks = api.createBackgroundTaskTracker();
+    tasks.observe({ type: 'session.updated', payload: { taskId: 't', status: 'running', pid: 123 } });
+    assert.equal(tasks.prune(), !alive);
+    assert.equal(tasks.active, alive ? 1 : 0);
+    assert.deepEqual(calls, [[123, 0]]);
+  }
 });

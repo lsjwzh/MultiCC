@@ -30,8 +30,8 @@ const {
   evaluatePostTurn,
   claimPostTurn,
 } = require('../src/chat');
-const { createProviderBinding } = require('../src/providers/binding');
-const { redactProviderRouteCapability } = require('../src/observability');
+const { createProviderBinding } = require('../src/native/binding').providerBinding;
+const { redactProviderRouteCapability } = require('../src/native/binding').observability;
 const {
   adapterReasoningProgressEvent,
   appendAdapterAssistantText,
@@ -42,7 +42,7 @@ const {
   recoverDispatchFromHistory,
   deriveCloseTurnFacts,
 } = require('../src/chat/turn-engine-host');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 
 function runtimeRouteProof(sessionId, turnId) {
   return Object.freeze({
@@ -1408,12 +1408,10 @@ test('production lifecycle uses append return, runner ownership and one guarded 
   assert.match(streamEffects, /call\(p\.get\(c"executor"\)\?, c"execute", &\[plan, context\]\)/);
   assert.match(source, /createChatHostRuntime\(\{[\s\S]{0,500}persistUsage: accumulateTokenUsage/,
     'production host must inject the authoritative usage writer into the coordinator');
-  const hostSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-coordinator.js'), 'utf8');
-  const usageStart = hostSource.indexOf('function commitUsage(');
-  const usageEnd = hostSource.indexOf('\n  function finalize(', usageStart);
-  const usageBody = hostSource.slice(usageStart, usageEnd);
-  assert.ok(usageBody.indexOf('ports.usage.commit(') < usageBody.indexOf('claimDurableUsage(runner'),
-    'main token usage must commit before the in-memory once claim');
+  const usageBody = fs.readFileSync(path.join(__dirname, '../native/addon/src/chat_host/coordinator/usage.rs'), 'utf8');
+  const write = usageBody.search(/call\(\s*port,\s*c"commit"/);
+  const claim = usageBody.indexOf('c"claimDurableUsage"');
+  assert.ok(write >= 0 && claim > write, 'main token usage must commit before the in-memory once claim');
   const tokenSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'token-usage.js'), 'utf8');
   const accumulateStart = tokenSource.indexOf('function accumulateTokenUsage(');
   const accumulateEnd = tokenSource.indexOf('\n  function seedTokenUsageFromHistory(', accumulateStart);
@@ -1454,19 +1452,20 @@ test('handoff, gateway, aux and normal post-turn routes remain explicit', () => 
 
 test('chat core modules import no runtime I/O dependencies', () => {
   const root = path.join(__dirname, '..');
-  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js']) {
+  for (const retired of ['src/chat/post-turn-router.js', 'src/chat/runtime-store.js', 'src/chat/turn-request.js', 'src/chat/turn-lifecycle.js', 'src/chat/host-coordinator.js', 'src/chat/host-runtime.js']) {
     assert.equal(fs.existsSync(path.join(root, retired)), false, retired);
   }
   for (const file of [
-    'native/addon/src/post_turn_router.rs', 'native/addon/src/turn_runtime_store.rs',
+    'native/addon/src/post_turn_router.rs', 'native/addon/src/turn_runtime_store.rs', 'native/addon/src/record_facades.rs',
+    'native/addon/src/turn_request.rs', 'native/core/src/turn_request.rs',
     'native/core/src/chat_runtime.rs', 'native/addon/src/retry_policy.rs',
+    'native/addon/src/chat_host/lifecycle.rs', 'native/addon/src/chat_host/attribution.rs',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.doesNotMatch(source, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/, file);
   }
   for (const file of [
-    'src/chat/turn-request.js', 'src/state/owner.js',
-    'src/chat/turn-lifecycle.js', 'src/chat/finalize-host.js',
+    'src/chat/finalize-host.js',
   ]) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false, `${file} must stay pure`);
@@ -1687,7 +1686,7 @@ return { ownsCurrentRunner, assignKillReason, clearErrorFlagsForSucceededTurn, r
 })();
 
 test('Rust turn mutations match legacy ownership, persistence and error recovery', () => {
-  const native = require('../src/chat/turn-lifecycle');
+  const native = require('../src/native/binding').turnLifecycle;
   const values = [undefined, null, false, true, 0, 1, '', 'x', ' key ', {}, Symbol('id')];
   let seed = 19517;
   const pick = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return values[seed % values.length]; };
@@ -1717,7 +1716,7 @@ test('Rust turn mutations match legacy ownership, persistence and error recovery
 });
 
 test('Rust turn mutations keep strict setters, reads, partial writes and reentry', () => {
-  const native = require('../src/chat/turn-lifecycle');
+  const native = require('../src/native/binding').turnLifecycle;
   const sentinel = new Error('turn property sentinel');
   for (const name of ['recordResultEvent', 'recordCloseResult', 'recordPartialCheckpoint', 'clearErrorFlagsForSucceededTurn']) {
     for (const throwAt of [null, 'get:turn.turnId', 'get:runner.runnerId', 'set:turn.resultRunnerId', 'get:facts.persisted', 'set:runner.apiErrorRaw']) {

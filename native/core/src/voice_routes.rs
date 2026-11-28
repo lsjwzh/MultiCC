@@ -3,7 +3,7 @@
 //! The front door owns the whole HTTP surface of these routes; Node keeps only
 //! the in-process voice service, the AuxQueue, the env file and the ASR model
 //! installer behind one host port (`POST /api/__host/voice`,
-//! `src/routes/voice-host.js`). Everything that used to be a decision in the
+//! the native voice settings host). Everything that used to be a decision in the
 //! Express handler lives here:
 //!
 //! * the three prompt templates (refine / confirm / progress-summary), byte for
@@ -39,6 +39,8 @@ use crate::js::string::{js_trim, utf16_len, utf16_prefix, utf16_suffix, JsString
 
 /// Machine code for an unavailable recogniser.
 pub const NOT_READY: &str = "voice_not_ready";
+
+pub const HOST_PATH: &str = "/api/__host/voice";
 
 pub const REFINE_ALLOW: &str = "POST";
 pub const FEEDBACK_ALLOW: &str = "POST";

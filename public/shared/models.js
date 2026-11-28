@@ -239,8 +239,8 @@
   // catalog whose pickable ids are family names, so its "default" is only
   // knowable by asking (`gemini-4-neon` vs. the tiered `gemini-4-neon-high`
   // actually in effect).
-  function createLiveCatalog(key, url, options) {
-    const ttl = 60 * 60 * 1000;
+  function createLiveCatalog(key, url, settings = {}) {
+    const ttl = (settings.keepCurrent ? 10 : 60) * 60 * 1000;
     let inflight = null;
     function read() {
       try {
@@ -250,23 +250,31 @@
         const at = Number(obj && obj.at) || 0;
         const models = obj && Array.isArray(obj.models) ? obj.models : [];
         if (!at || (Date.now() - at) >= ttl || !models.length) return null;
-        return { at, models, current: (obj && obj.current) || null };
+        if (settings.keepCurrent && !obj.efforts) return null;
+        return obj;
       } catch (_) { return null; }
     }
     async function load(options) {
       const force = !!(options && options.force);
       const cached = force ? null : read();
-      if (cached) return cached.models;
+      if (cached) {
+        if (settings.keepCurrent) window.MultiCCProviderCatalog?.readAgyEfforts(cached.efforts?.agy, settings.accountId);
+        return cached.models;
+      }
       if (!force && inflight) return inflight;
       inflight = (async () => {
         try {
-          const requestUrl = force ? `${url}?refresh=1` : url;
+          const requestUrl = force ? url + (url.includes('?') ? '&' : '?') + 'refresh=1' : url;
           const data = await window.fetch(requestUrl, { credentials: 'same-origin' }).then(r => (r && r.ok ? r.json() : null));
           const models = data && Array.isArray(data.models) ? data.models : [];
           // fallback / unauthenticated lists are served but never pinned for an hour
-          if (models.length && data.source === 'cli') {
+          if (models.length && (data.source === 'cli' || (settings.keepCurrent && ['ssh', 'relay'].includes(data.source)))) {
             const entry = { at: Date.now(), models };
-            if (options && options.keepCurrent && data.current && typeof data.current === 'object') {
+            if (settings.keepCurrent) {
+              entry.efforts = data.efforts || {};
+              window.MultiCCProviderCatalog?.readAgyEfforts(entry.efforts.agy, settings.accountId);
+            }
+            if (settings.keepCurrent && data.current && typeof data.current === 'object') {
               entry.current = {
                 model: String(data.current.model || ''),
                 label: String(data.current.label || data.current.model || ''),
@@ -283,6 +291,7 @@
       load,
       readSync: () => { const c = read(); return c ? c.models : []; },
       currentSync: () => { const c = read(); return (c && c.current) || null; },
+      snapshot: read,
     };
   }
   const commandcodeCatalog = createLiveCatalog('multicc.commandcode.models.v1', '/api/commandcode/models');
@@ -493,21 +502,29 @@
   window.loadGrokModels = grokCatalog.load;
   window.loadAgyModels = agyCatalog.load;
   window.readAgyCurrentSync = agyCatalog.currentSync;
-  // agy 不传 --model 时由它自己用账号里当前那一档（目录回报的 current，如
-  // gemini-4-neon-high）。空模型时药丸要把这一档写出来，否则「默认模型」什么也没说。
-  // 没有缓存就先拉一次目录，拿到了让调用方重画 —— air.js 已经贴着行长上限，逻辑放这。
-  let agyWarm = null;
-  window.agyDefaultModelSuffix = (cli, onReady) => {
-    if (cli !== 'agy') return '';
-    const current = agyCatalog.currentSync();
-    if (current) return current.label ? ` · ${current.label}` : '';
-    if (!agyWarm) {
-      agyWarm = Promise.resolve(agyCatalog.load())
-        .then(() => { agyWarm = null; if (agyCatalog.currentSync() && typeof onReady === 'function') onReady(); })
-        .catch(() => { agyWarm = null; });
+  const agyAccounts = new Map();
+  const agyLoading = new Set();
+  window.runConfigModelLabel = (cli, model, effort, accountId, defaultLabel, onReady) => {
+    if (cli !== 'agy') return model || defaultLabel;
+    if (accountId && !agyAccounts.has(accountId)) {
+      const url = '/api/agy/models?accountId=' + encodeURIComponent(accountId);
+      agyAccounts.set(accountId, createLiveCatalog('multicc.agy.models.v1.' + accountId, url, { keepCurrent: true, accountId }));
     }
-    return '';
+    const catalog = accountId ? agyAccounts.get(accountId) : agyCatalog;
+    const cached = catalog.snapshot();
+    if (!cached && !agyLoading.has(catalog)) {
+      agyLoading.add(catalog);
+      catalog.load().then(() => {
+        agyLoading.delete(catalog);
+        if (catalog.snapshot()) onReady?.();
+      });
+    }
+    if (!model) return cached?.current?.label ? defaultLabel + ' · ' + cached.current.label : defaultLabel;
+    const providers = window.MultiCCProviderCatalog;
+    const spec = providers?.agyAccountEfforts(accountId);
+    return providers?.agyModelLabel(model, effort, spec?.concreteModels ? spec : (cached?.efforts?.agy ?? spec)) || model;
   };
+  window.agyDefaultModelSuffix = (cli, onReady) => window.runConfigModelLabel(cli, '', '', null, '', onReady);
   window.readCodebuddyModelsSync = readCodebuddyModelsSync;
   window.loadCodexModels = loadCodexModels;
   window.watchCodexModels = watchCodexModels;

@@ -12,7 +12,7 @@ const dataDir = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-pro
 process.env.MULTICC_DATA_DIR = dataDir;
 
 const runtimePaths = createPaths({ dataDir });
-const { getProviderUsageStats, readDailyWindows } = require('../src/providers/host');
+const { getProviderUsageStats, readDailyWindows } = require('../src/native/binding').providersHost;
 
 function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2));

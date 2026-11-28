@@ -1,7 +1,7 @@
 'use strict';
 
 // Per-account Claude OAuth refresh through the claude CLI itself — the Claude
-// twin of codex/accounts-refresh.js (which points CODEX_HOME at each account).
+// twin of the Rust Codex refresh supervisor (which sets CODEX_HOME per account).
 //
 // The claude CLI keys its credential store on CLAUDE_CONFIG_DIR: with the
 // variable unset it uses the Keychain item "Claude Code-credentials"; with it
@@ -34,10 +34,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE, DEFAULT_MAX_PROBES_PER_WINDOW } = require('./oauth-refresh');
-const { parseCredentials } = require('../quota/claude-cli-oauth');
-const { atomicWriteJson, ensurePrivateDir, secureFile } = require('../runtime-security');
-const { isCliCopy } = require('../official-accounts');
+const { createClaudeOAuthRefresher, KEYCHAIN_SERVICE, DEFAULT_MAX_PROBES_PER_WINDOW } = require('../native/binding').claudeOAuthRefresh;
+const { parseCredentials } = require('../native/binding').claudeCliUsage;
+const { atomicWriteJson, ensurePrivateDir, secureFile } = require('../native/binding').runtimeSecurity;
+const { isCliCopy } = require('../native/binding').officialAccounts;
 const { planClaudeExpiredRefresh } = require('../native/binding');
 
 // Narrower than the shared refresher's 15 min: each attempt seeds and clears a

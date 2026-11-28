@@ -2,11 +2,11 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createProviderBinding } = require('../src/providers/binding');
+const { createProviderBinding } = require('../src/native/binding').providerBinding;
 const {
   createProviderAttemptRuntime,
   createProviderRevision,
-} = require('../src/chat/provider-attempt-runtime');
+} = require('../src/native/binding').providerAttemptRuntime;
 const { captureNativeSessionId } = require('./helpers/legacy-native-session-state');
 const {
   createProviderInvocationFactory,
@@ -646,10 +646,12 @@ function frozenInvocationFactory() {
   legacy.filename = filename;
   legacy.paths = Module._nodeModulePaths(path.dirname(filename));
   legacy.require = name => {
+    if (name === '../providers/native-vendor') return require('./helpers/frozen-catalog-inputs/native-vendor');
     if (name === '../providers/native-opencode') return require('./helpers/frozen-native-opencode');
     if (name === './model-request-policy') return require('./helpers/legacy-model-request-policy');
     return Module.prototype.require.call(legacy, name);
   };
+  legacy.require = require('./helpers/frozen-batch10').from(filename, legacy.require.bind(legacy));
   legacy._compile(source, filename);
   return legacy.exports.createProviderInvocationFactory;
 }

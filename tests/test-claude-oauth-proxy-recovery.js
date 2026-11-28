@@ -9,7 +9,7 @@ const path = require('node:path');
 const express = require('express');
 const router = require('cli-provider-router');
 const { createProviderRouterPort } = require('../src/providers/router-port');
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');
 const ACCOUNT_A = 'a'.repeat(16), ACCOUNT_B = 'b'.repeat(16);

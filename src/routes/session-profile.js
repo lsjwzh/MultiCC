@@ -7,21 +7,21 @@ const { getNative, assignHostProperty, auxVerdictStaleness } = require('../nativ
 const normalizeSubagentInput = input => getNative().sessionSubagentNormalize(input);
 const withSubagentSource = (next, previous, inherited) => getNative().sessionSubagentWithSource(next, previous, inherited);
 const forkConfiguration = (record, deps) => getNative().sessionForkConfiguration(record, deps);
-const { selectionKey } = require('../providers/auto-provider-config');
+const { selectionKey } = require('../native/binding').autoProviderConfig;
 const fs = require('fs');
 const path = require('path');
 
-const { normalizeManualMemory } = require('../memory/runtime');
-const { taskShortCode } = require('../native/task-domain');
+const { normalizeManualMemory } = require('../native/binding').memoryRuntime;
+const { taskShortCode } = require('../native/binding').taskDomainHost;
 const { isGoalState } = require('../native/binding').classifyVocab;
-const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../providers/auto-provider-config');
+const { primaryProviderCandidate, providerSelectionDto, validateProviderSelection } = require('../native/binding').autoProviderConfig;
 const {
   mergeCliAccountsPatch,
   releaseCliAccountReferences,
   retainExistingCliAccounts,
   sharedCliKeyAccountStore,
 } = require('../cli-key-accounts');
-const { nativeVendorName, nativeVendorOf } = require('../providers/native-vendor');
+const { nativeVendorName, nativeVendorOf } = require('../native/binding').nativeVendor;
 const { nativeOpenCodeId, nativeOpenCodeName } = require('../native/binding').getNativeOpenCodeCatalog();
 
 // Session profile routes: PATCH /api/sessions/:id (label/model/effort/agent/

@@ -193,6 +193,14 @@ class SettingsService {
   /// 后旧实例跟着走 —— 它发的 `/api/machines/<id>/proxy/...` 仍然打向入口。
   SettingsService? _entry;
   bool get isMachineScoped => machineId != null;
+  /// Pairing may rename a computer or update its origin without changing its
+  /// proxy identity or discarding the desktop's session and draft state.
+  void updateMachineMetadata(String name, {required String origin}) {
+    if (!isMachineScoped) return;
+    _machineName = name;
+    _machineOrigin = origin;
+  }
+
   String get storageScope =>
       isMachineScoped ? '${Uri.encodeComponent(host)}:$machineId' : '';
   String scopedKey(String key) =>

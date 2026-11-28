@@ -483,9 +483,9 @@ function specFor(group, upstream, options = {}) {
   return {
     name: `account-subscription-${group}${options.tag || ''}`,
     mount(app, ctx) {
-      const { createOfficialAccountStore } = require(path.join(ROOT, 'src/official-accounts'));
+      const { createOfficialAccountStore } = require(path.join(ROOT, 'tests/helpers/frozen-bc29761b/official-accounts'));
       const { createClaudeAccountCredentialService } = require(path.join(ROOT, 'src/claude-auth/account-credentials'));
-      const subscriptions = require(path.join(ROOT, 'src/quota/account-subscription-cache'));
+      const subscriptions = require(path.join(ROOT, 'src/native/binding')).accountSubscriptionCache;
       subscriptions.configure({ file: path.join(ctx.dataRoot, 'provider-limit-cache.db') });
       const accounts = createOfficialAccountStore({});
       ORACLE.mountAccountSubscriptionRoute(app, 'claude', {
@@ -509,8 +509,8 @@ const net = require('node:net');
 const http = require('node:http');
 const path = require('node:path');
 const REPO = ${JSON.stringify(ROOT)};
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.resume();

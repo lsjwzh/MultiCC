@@ -18,7 +18,7 @@ const dataDir = path.join(root, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 process.env.MULTICC_DATA_DIR = dataDir;
 
-const providers = require('../src/providers/host');
+const providers = require('../src/native/binding').providersHost;
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 

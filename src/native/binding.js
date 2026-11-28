@@ -323,7 +323,7 @@ let networkPolicy;
 function getNetworkPolicy() { return networkPolicy ??= getNative().networkPolicyApi(getNative(), process); }
 let sessionDto;
 function getSessionDto() {
-  return sessionDto ??= getNative().sessionDtoApi(getNative(), value => require('../providers/auto-provider-config').providerSelectionRequest(value));
+  return sessionDto ??= getNative().sessionDtoApi(getNative(), value => module.exports.autoProviderConfig.providerSelectionRequest(value));
 }
 let apiContract;
 function getApiContract() {
@@ -339,7 +339,7 @@ let deliveryAddon = null;
 let sessionDeliveryAddon = null;
 let sessionDeliveryApi = null;
 let taskFrames;
-function getTaskFrames() { return taskFrames ??= getNative().taskFramesApi(require('./task-domain').taskCodeRegistryState); }
+function getTaskFrames() { return taskFrames ??= getNative().taskFramesApi(module.exports.taskDomainHost.taskCodeRegistryState); }
 const installAuxHealthProvider = fn => getTaskFrames().installAuxHealthProvider(fn);
 const auxVerdictStaleness = () => getTaskFrames().auxVerdictStaleness();
 const fanOutAuxVerdictStaleness = ports => getTaskFrames().fanOutAuxVerdictStaleness(ports);
@@ -360,11 +360,11 @@ function getQuotaBarView() { return quotaBarView ||= getNative().quotaBarViewApi
 // Use the JS arithmetic operator for timestamps supplied by host extensions.
 const elapsedTime = (now, since) => now - since;
 function providerLimitSnapshot(entry, now = Date.now()) {
-  const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
+  const { STALE_MS_DEFAULT } = module.exports.providerLimitCache;
   return getNative().providerLimitSnapshot(entry, now, STALE_MS_DEFAULT, elapsedTime);
 }
 function connectProviderLimitSync(options) {
-  return getNative().subscribeProviderLimits(options, require('../quota/provider-limit-cache-native-host').STALE_MS_DEFAULT, elapsedTime);
+  return getNative().subscribeProviderLimits(options, module.exports.providerLimitCache.STALE_MS_DEFAULT, elapsedTime);
 }
 
 let eventPolicy;
@@ -578,7 +578,7 @@ function readCodexAuth(file) {
   return providerCredentials.credential({ operation: 'codexAuth',
     file: file || path.join(require('node:os').homedir(), '.codex', 'auth.json') });
 }
-function requestCodexUsage(auth, { fetch = require('../network/outbound').outboundFetch, signal } = {}) {
+function requestCodexUsage(auth, { fetch = module.exports.outbound.outboundFetch, signal } = {}) {
   return getNative().requestCodexUsage(auth, fetch, signal);
 }
 const taskShellCapacity = {
@@ -625,9 +625,9 @@ const artifactReference = {
 const providerInvocation = {
   createProviderInvocationFactory(options = {}) {
     return getNative().createProviderInvocationFactory(options, {
-      ProviderAttemptError: require('../chat/provider-attempt-runtime').ProviderAttemptError,
-      assertProviderBinding: require('../providers/binding').assertProviderBinding,
-      TurnRequestError: require('../chat/turn-request').TurnRequestError,
+      ProviderAttemptError: module.exports.providerAttemptRuntime.ProviderAttemptError,
+      assertProviderBinding: module.exports.providerBinding.assertProviderBinding,
+      TurnRequestError: module.exports.turnRequestHost.TurnRequestError,
     });
   },
   protocolFor: (cli, summary) => getNative().providerInvocationProtocol(cli, summary),
@@ -644,7 +644,7 @@ function createClaudeAdapter(deps = {}) {
 const codexAdapter = {
   createCodexAdapter(deps) {
     return getNative().createCodexAdapter(deps, {
-      extractUpstreamError: require('../upstream-error').extractUpstreamError,
+      extractUpstreamError: module.exports.upstreamError.extractUpstreamError,
       displayName: module.exports.cliCapability.displayNameOf('codex'),
     });
   },
@@ -678,7 +678,7 @@ function jsonClone(value) {
 }
 // `arguments[0]` keeps the legacy zero-length signature and the `= {}` default.
 function createSessionPersistence() {
-  return getNative().sessionPersistenceCreate(require('../session/records').sessionRecordsOwner, arguments[0]);
+  return getNative().sessionPersistenceCreate(module.exports.sessionRecordsHost.sessionRecordsOwner, arguments[0]);
 }
 function quickCommitMessage(porcelain) {
   let addon;
@@ -832,8 +832,1300 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+// Built-in channel policy/state is native. Only SDK loading, live Node handles
+// and timer/fetch/filesystem ports remain here; no fallback channel implementation.
+exposeHostApi('imChannelHost', () => {
+  const ports = options => ({
+    express: require('express'), fs: require('node:fs'), path: require('node:path'),
+    os: require('node:os'), crypto: require('node:crypto'),
+    legacyDir: require('node:path').resolve(__dirname, '../../plugins/bridges'),
+    bridgeConfig: module.exports.bridgeConfig, bridgeGateway: module.exports.bridgeGateway,
+    fetch: (...args) => globalThis.fetch(...args), AbortController, AbortSignal,
+    now: () => Date.now(), sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    setInterval, clearInterval,
+    loadLark: () => require('@larksuiteoapi/node-sdk'),
+    createLarkHttpInstance: (...args) => require('../network/sdk-bridges').createLarkHttpInstance(...args),
+    outboundAgent: module.exports.outbound.outboundAgent,
+    ...options,
+  });
+  return {
+    createWechatBridge: (options = {}) => getNative().wechatBridgeApi(ports(options)),
+    createFeishuBridge: (options = {}) => getNative().feishuBridgeApi(ports(options)),
+  };
+});
+exposeHostApi('wechatBridge', () => module.exports.imChannelHost.createWechatBridge());
+exposeHostApi('feishuBridge', () => module.exports.imChannelHost.createFeishuBridge());
+
+// Node owns the event-loop histogram and JavaScript's overloaded + operator.
+exposeHostApi('observability', () => {
+  const native = getNative();
+  return native.observabilityApi({
+    monitor: require('node:perf_hooks').monitorEventLoopDelay,
+    date: () => new Date(), add: (a, b) => a + b,
+  });
+});
+
+exposeHostApi('jevClient', () => getNative().jevClientApi(module.exports.outbound.outboundFetch));
+
+exposeHostApi('providerAttemptRuntime', () => {
+  class ProviderAttemptError extends Error {
+    constructor(message, code) {
+      super(message);
+      this.name = 'ProviderAttemptError';
+      this.code = code || 'PROVIDER_ATTEMPT_INVALID';
+    }
+  }
+  return getNative().providerAttemptRuntimeApi(ProviderAttemptError);
+});
+
+exposeHostApi('autoProviderConfig', () => getNative().providerSelectionHost());
+
+exposeHostApi('turnRequestHost', () => {
+  class TurnRequestError extends TypeError {
+    constructor(code, message) { super(message); this.name = 'TurnRequestError'; this.code = code; }
+  }
+  return getNative().turnRequestHost({ TurnRequestError, assertProviderBinding: module.exports.providerBinding.assertProviderBinding });
+});
+
+exposeHostApi('upstreamError', () => getNative().upstreamDiagnosticsApi(async (body, signal, timeout, limit) => {
+  const reader = body.getReader();
+  const chunks = [];
+  let length = 0, interrupted = false, stop;
+  const stopped = new Promise(resolve => {
+    stop = () => { interrupted = true; resolve({ done: true }); };
+  });
+  const timer = setTimeout(stop, timeout);
+  if (signal?.aborted) stop();
+  else signal?.addEventListener('abort', stop, { once: true });
+  try {
+    while (length < limit && !interrupted) {
+      const { value, done } = await Promise.race([reader.read(), stopped]);
+      if (done) break;
+      const chunk = Buffer.from(value).subarray(0, limit - length);
+      chunks.push(chunk);
+      length += chunk.length;
+    }
+  } catch {
+    // The received prefix can still contain the upstream diagnostic.
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
+    Promise.resolve(reader.cancel()).catch(() => {});
+  }
+  return Buffer.concat(chunks).toString('utf8').trim();
+}));
+
+exposeHostApi('outbound', () => {
+  const { Agent, ProxyAgent: FetchProxyAgent, Dispatcher, Request, fetch } = require('undici');
+  const { ProxyAgent } = require('proxy-agent');
+  const { createProxyPolicy } = module.exports.proxyPolicy;
+  class RoutingDispatcher extends Dispatcher {
+    constructor(policy) {
+      super();
+      this.policy = policy;
+      this.direct = new Agent();
+      this.proxies = new Map();
+      this.closed = false;
+    }
+    dispatch(options, handler) {
+      return getNative().outboundDispatch(this, options, handler, FetchProxyAgent);
+    }
+    async close() {
+      this.closed = true;
+      await Promise.all([this.direct, ...this.proxies.values()].map(agent => agent.close()));
+    }
+    async destroy(error) {
+      this.closed = true;
+      await Promise.all([this.direct, ...this.proxies.values()].map(agent => agent.destroy(error)));
+    }
+  }
+  async function abortable(promise, signal) {
+    if (!signal) return promise;
+    signal.throwIfAborted();
+    let onAbort;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+      })]);
+    } finally { signal.removeEventListener('abort', onAbort); }
+  }
+  function createOutbound(options = {}) {
+    const policy = options.policy || createProxyPolicy(options);
+    const dispatcher = new RoutingDispatcher(policy);
+    const agent = new ProxyAgent({ getProxyForUrl: url => policy.proxyForUrl(url) });
+    const ports = { fetch: options.fetch || fetch, policy, dispatcher, abortable };
+    async function outboundFetch(url, init = {}) {
+      try {
+        // Node's built-in Request and npm undici's Request have distinct
+        // constructors. Preserve the live body and AbortSignal on conversion.
+        if (url && typeof url.url === 'string' && !(url instanceof Request)) {
+          if (url.bodyUsed) throw new TypeError('请求正文已经被读取');
+          url = new Request(url.url, url);
+        }
+        const signal = init.signal ?? url?.signal;
+        signal?.throwIfAborted();
+        const target = new URL(typeof url === 'string' || url instanceof URL ? url : url.url);
+        return getNative().outboundRequest(ports, url, init, signal, target.hostname.toLowerCase());
+      } catch (error) {
+        if (error && typeof error === 'object') error.multiccProxyMode = 'proxy-discovery';
+        throw error;
+      }
+    }
+    async function getChildProxyEnv(base = process.env) {
+      const config = await policy.configuration();
+      return getNative().outboundChildEnv(base, config);
+    }
+    async function close() {
+      agent.destroy(); agent.httpAgent.destroy(); agent.httpsAgent.destroy();
+      await dispatcher.close();
+    }
+    outboundFetch.close = close;
+    return { outboundFetch, outboundAgent: agent, outboundDispatcher: dispatcher, getChildProxyEnv, policy, close };
+  }
+  const api = { ...createOutbound(), createOutbound, RoutingDispatcher };
+  Object.defineProperty(api, 'official', { configurable: true, get() {
+    const { createOutbound, outboundFetch } = api;
+    const { parseMacSystemProxy } = module.exports.proxyPolicy;
+    const value = {
+      parseMacProxy(text) {
+        const { httpProxy, httpsProxy } = parseMacSystemProxy(text);
+        return { httpProxy, httpsProxy };
+      },
+      createOfficialFetch: options => createOutbound(options).outboundFetch,
+      officialFetch: outboundFetch,
+    };
+    return Object.defineProperty(api, 'official', { value, writable: true }).official;
+  } });
+  return api;
+});
+
+exposeHostApi('cliAdapters', () => {
+  const { displayNameOf, supportsEffort, effortOf } = module.exports.cliCapability;
+  const { createCompletionTracker, createStepCompletionTracker, createProtocolCompletionTracker } = module.exports.cliCompletion;
+  const { createResultCompletionTracker, isMainResult, resultCompletion } = module.exports.cliResultCompletion;
+  const { classifyProviderError, errorFields } = module.exports.providerError;
+  const { resolveCliCommands, createCommandResolver } = module.exports.cliCommands;
+  return getNative().cliAdaptersApi({
+    getNative, process, gatewayPath, createCliProviderRegistry, createClaudeAdapter,
+    createCodexAdapter: codexAdapter.createCodexAdapter, createCodexExpAdapter: codexAppAdapter.createCodexExpAdapter,
+    createDshAdapter: module.exports.dshAdapter.createDshAdapter,
+    resolveCliCommands, createCommandResolver,
+    claudeLikeMcpArgs: module.exports.routerMcp.claudeLikeMcpArgs,
+    validateOpenCodeModel: module.exports.openCodeModels.validateOpenCodeModel,
+    extractUpstreamError: module.exports.upstreamError.extractUpstreamError,
+    messageComposer, renderPrompt: messageComposer.renderPrompt,
+    displayNameOf, supportsEffort, effortOf, classifyProviderError, errorFields, isZcodeSessionId,
+    createCompletionTracker, createStepCompletionTracker, createProtocolCompletionTracker,
+    createResultCompletionTracker, isMainResult, resultCompletion,
+    routerScript: path.join(__dirname, '../../scripts/multicc-router-mcp.js'),
+    zcodeBridgePath: path.join(__dirname, '../cli-adapters/zcode-bridge.cjs'),
+    zcodeTerminalPath: path.join(__dirname, '../cli-adapters/zcode-terminal.cjs'),
+    piExtensionPath: path.join(__dirname, '../cli-adapters/pi-router-extension.mjs'),
+    appendTerminalArg: (cmd, flag, value) => cmd + ` ${flag} ${value}`,
+  });
+});
+
+exposeHostApi('artifactRetention', () => {
+  const rows = entries => JSON.stringify(entries.map(({ url, permanent, relatedArtifactIds }) => ({
+    url: typeof url === 'string' ? url : null, permanent: !!permanent,
+    relatedArtifactIds: Array.isArray(relatedArtifactIds) ? relatedArtifactIds.filter(id => typeof id === 'string') : [],
+  })));
+  return {
+    artifactIdFromUrl: url => typeof url === 'string' ? getNative().artifactIdFromRegistryUrl(url) ?? null : null,
+    permanentArtifactIds: (entries, roots) => new Set(getNative().retainedArtifactIds(rows(entries), roots)),
+    permanentArtifactIdsAsync: (entries, roots) => getNative().retainedArtifactIdsAsync(rows(entries), roots),
+  };
+});
+
+exposeHostApi('claudeSdkConfig', () => {
+  const fs = require('node:fs');
+  const settings = cfg => cfg.settingsFile ? JSON.parse(fs.readFileSync(cfg.settingsFile, 'utf8')) : {};
+  return {
+    fingerprint(cfg) {
+      return getNative().claudeSdkFingerprint(cfg, module.exports.claudeSdkRoute.managedRoute(cfg.env), settings(cfg));
+    },
+    laneOptions(cfg, started, relayEnv) {
+      const parsed = settings(cfg);
+      const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'multicc-sdk-'));
+      const dispose = () => fs.rmSync(dir, { recursive: true, force: true });
+      try {
+        fs.chmodSync(dir, 0o700);
+        return getNative().claudeSdkLaneOptions(cfg, !!started, relayEnv, parsed, { path: path.join(dir, 'settings.json'), dispose });
+      } catch (error) { dispose(); throw error; }
+    },
+  };
+});
+
+exposeHostApi('workspaceResidency', () => ({
+  createWorkspaceResidency({ status, pending, closeAndWait }) {
+    const native = getNative();
+    const ports = {
+      entries: new Map(), status: name => status(name), pending: name => pending(name), closeAndWait,
+      setActivity(entry, callback) { entry.onActivity = callback; }, setParked(entry) { entry.parked = true; },
+      busy: () => Object.assign(new Error('workspace_busy'), { code: 'workspace_busy', backpressure: true }),
+      location(value) {
+        if (!value) return null;
+        try { return require('node:fs').realpathSync(value); } catch { return path.resolve(value); }
+      },
+    };
+    return native.workspaceResidencyApi(ports, native.workspaceResidency(ports));
+  },
+}));
+
+exposeHostApi('egressIpPolicy', () => getNative().egressIpPolicyApi(module.exports.egressIpMonitor));
+
+exposeHostApi('proxyPolicy', () => {
+  const run = require('node:util').promisify(require('node:child_process').execFile);
+  const ports = { get native() { return getNative(); }, valid(value) {
+    try { return ['http:', 'https:'].includes(new URL(value).protocol); } catch { return false; }
+  } };
+  function parseMacSystemProxy(text) { return JSON.parse(getNative().outboundSystemProxy(String(text))); }
+  async function readMacSystemProxy() {
+    const { stdout } = await run('/usr/sbin/scutil', ['--proxy'], { timeout: 2000, maxBuffer: 32768 });
+    return parseMacSystemProxy(stdout);
+  }
+  const hasProxyEnv = env => getNative().outboundProxyEnv(env);
+  const mergeLoopbackNoProxy = env => getNative().outboundMergeEnv(env);
+  return {
+    createProxyPolicy(options = {}) {
+      const config = { env: options.env || process.env, platform: options.platform || process.platform,
+        readSystem: options.readSystemProxy || readMacSystemProxy, now: options.now || Date.now, options };
+      let instance;
+      const policy = () => instance ??= getNative().outboundPolicyInstance(ports, config);
+      return { async configuration() { return policy().configuration(); }, async proxyForUrl(url) { return policy().proxyForUrl(url); },
+        invalidate() { instance?.invalidate(); } };
+    },
+    parseMacSystemProxy, readMacSystemProxy, hasProxyEnv, mergeLoopbackNoProxy,
+    ensureLoopbackNoProxyEnv: env => env && typeof env === 'object' && hasProxyEnv(env) ? mergeLoopbackNoProxy(env) : env,
+    resolveProxyConfig: (env, system) => getNative().outboundResolve(env, system, hasProxyEnv(env), ports.valid),
+    cidrToRange: entry => getNative().outboundCidr(String(entry)) ?? null,
+    bypassProxy: (url, entries) => getNative().outboundBypassUrl(ports, url, entries),
+    isLoopback: host => getNative().outboundLoopback(host.toLowerCase()),
+  };
+});
+
+exposeHostApi('modelConnectWatch', () => {
+  const scope = new (require('node:async_hooks').AsyncLocalStorage)();
+  const { channel } = require('node:diagnostics_channel');
+  let owner;
+  const timers = () => owner ??= getNative().modelConnectTimers({ schedule: getNative().scheduleRequestTimer });
+  channel('undici:request:create').subscribe(({ request }) => { if (scope.getStore()) timers().begin(request, scope.getStore()); });
+  // HTTP/2 skips sendHeaders. Both transports publish bodySent or headers.
+  for (const name of ['undici:client:sendHeaders', 'undici:request:bodySent', 'undici:request:headers', 'undici:request:error']) {
+    channel(name).subscribe(({ request }) => owner?.end(request));
+  }
+  channel('http.client.request.start').subscribe(({ request }) => {
+    if (!scope.getStore()?.stall?.isArmed()) return;
+    const end = () => timers().end(request);
+    function watchSocket(socket) {
+      if (!socket.connecting) return;
+      timers().begin(request, scope.getStore());
+      const connected = socket.encrypted ? 'secureConnect' : 'connect';
+      const done = () => {
+        end();
+        for (const event of [connected, 'error', 'close']) socket.removeListener(event, done);
+      };
+      for (const event of [connected, 'error', 'close']) socket.once(event, done);
+    }
+    if (request.socket) watchSocket(request.socket);
+    else request.once('socket', watchSocket);
+    request.once('error', end);
+    request.once('close', end);
+  });
+  return { withModelConnectWatch: (context, fn) => scope.run(context, fn) };
+});
+
+let cliEnvironment;
+function getCliEnvironment() {
+  return cliEnvironment ??= getNative().cliEnvironmentApi({
+    fs: require('node:fs'),
+    path,
+    homedir: require('node:os').homedir,
+    childProcess: require('node:child_process'),
+    pluginsDir: path.resolve(__dirname, '../..', 'plugins'),
+    hasCliRelayProvider(cli) { return module.exports.providersHost.hasCliRelayProvider(cli); },
+  });
+}
+
+exposeHostApi('dshAdapter', () => getNative().dshAdapterApi({
+  fs: require('node:fs'), path, homedir: require('node:os').homedir,
+  runnerSrcDir: path.join(__dirname, '../..', 'vendor', 'dsh-runner'),
+}));
+exposeHostApi('usageLimitPoller', () => getNative().usageLimitPollerHost({
+  crypto: require('node:crypto'),
+  State: getNative().RustUsageLimitPoller,
+  outboundFetch: module.exports.outbound.outboundFetch,
+  readCodexAuth, requestCodexUsage,
+  publicTransportError: module.exports.upstreamError.publicTransportError,
+  providers: module.exports.providersHost,
+  checkEgressIpAllowed: module.exports.egressIpPolicy.checkEgressIpAllowed,
+}));
+exposeHostApi('claudeSdkRoute', () => getNative().claudeSdkRouteApi({
+  http: require('node:http'), crypto: require('node:crypto'),
+  closeMethod: closeRelay => async function close() { await closeRelay(this); },
+}));
+exposeHostApi('orchestrationDraft', () => getNative().orchestrationDraftApi({
+  ...module.exports.orchestrationJson, isProxy: require('node:util').types.isProxy,
+}));
+exposeHostApi('claudeOfficialOAuth', () => {
+  const native = getNative();
+  class ClaudeOAuthError extends Error {
+    constructor(message, options) {
+      super(message);
+      native.initializeClaudeOauthError(this, options);
+    }
+    get retryable() { return native.claudeOauthRetryable(this); }
+  }
+  return native.claudeOfficialOauthHost({
+    crypto: require('node:crypto'), http: require('node:http'),
+    ClaudeOAuthError, subscriptionFromBody,
+  });
+});
+exposeHostApi('egressIpMonitor', () => getNative().egressIpMonitorApi(require('node:https')));
+exposeHostApi('gatewayChatBridge', () => {
+  const native = getNative();
+  const { EventEmitter } = require('node:events');
+  class FrameError extends Error {}
+  class BridgeSocket extends EventEmitter {
+    constructor(bridge, conn, info) {
+      super();
+      native.initializeGatewayBridgeSocket(this, bridge, conn, info);
+    }
+  }
+  return native.gatewayChatBridgeHost({
+    FrameError, BridgeSocket, net: require('node:net'), crypto: require('node:crypto'),
+  });
+});
+exposeHostApi('orchestrationNativeStore', () => getNative().orchestrationNativeStoreApi({
+  get native() { return module.exports.getNative(); },
+  addonPath, promiseThen, AsyncLocalStorage: require('node:async_hooks').AsyncLocalStorage,
+  isProxy: require('node:util').types.isProxy, isNativeError: require('node:util').types.isNativeError,
+  Buffer: require('node:buffer').Buffer, crypto: require('node:crypto'),
+  getOutboxConflictError: () => module.exports.outboxRuntime.OutboxConflictError,
+  commandOverride: () => module.exports.getNative === getNative ? undefined : module.exports.getNative(),
+}));
+exposeHostApi('outboxRuntime', () => {
+  class OutboxConflictError extends Error {
+    constructor(id) {
+      super(`outbox item ${id} already exists with different content`);
+      this.name = 'OutboxConflictError';
+      this.code = 'OUTBOX_PAYLOAD_CONFLICT';
+      this.statusCode = 409;
+      this.outboxId = id;
+    }
+  }
+  return getNative().outboxRuntimeApi(require('node:crypto'), OutboxConflictError);
+});
+exposeHostApi('routerMcp', () => getNative().routerMcpApi({ path, homedir: require('node:os').homedir }));
+exposeHostApi('cliCommands', () => getCliEnvironment().cliCommands);
+exposeHostApi('windowsEnv', () => getCliEnvironment().windowsEnv);
+exposeHostApi('agyAccounts', () => getCliEnvironment().agyAccounts);
+
+exposeHostApi('codexAttemptHome', () => getNative().codexAttemptHomeApi({ path }));
+exposeHostApi('codexSessionHome', () => getNative().codexSessionHomeApi({ path, os: require('node:os') }));
+exposeHostApi('officialAccounts', () => getNative().officialAccountsApi({ path, os: require('node:os') }));
+
+exposeHostApi('codexResidentRoute', () => getNative().residentProviderRoutesApi({
+  exists: file => require('node:fs').existsSync(file),
+  providers: () => module.exports.providersHost,
+}));
+
+exposeHostApi('codexOfficialRelay', () => getNative().codexOfficialRelayApi({
+  authFile: path.join(require('node:os').homedir(), '.codex', 'auth.json'),
+  officialFetch: () => module.exports.outbound.official.officialFetch,
+  uuid: require('node:crypto').randomUUID,
+  history: module.exports.modelHistoryConverter,
+  errors: module.exports.upstreamError,
+  async pump(reader, isOpen, write) {
+    while (isOpen()) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      write(value);
+    }
+  },
+}));
+
+exposeHostApi('providersHost', () => getNative().providersHostApi({
+  sdk: require('cli-provider-router'), environment: process.env, homedir: require('node:os').homedir, home: require('node:os').homedir(),
+  paths: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }),
+  defaults: module.exports.providerDefaults, official: module.exports.officialCatalog,
+  accounts: module.exports.officialAccounts, settings: module.exports.claudeSettingsOverride,
+  modelLimits: module.exports.openCodeModelLimits.createOpencodeModelLimitResolver(),
+  sessionHomeApi: module.exports.codexSessionHome, attemptHome: module.exports.codexAttemptHome.createCodexAttemptHome,
+  resident: module.exports.codexResidentRoute, relay: module.exports.codexOfficialRelay,
+  codexHome: module.exports.codexProviderHome, exists: require('node:fs').existsSync,
+  nativeCode, uuid: require('node:crypto').randomUUID,
+  defaultModels: () => module.exports.codexModelCatalog.defaultRuntime,
+  runProbeChild: (command, args, env) => new Promise(resolve => {
+    const child = require('node:child_process').spawn(command, args, { env, windowsHide: true });
+    let output = '';
+    const capture = chunk => { if (output.length < 2048) output += chunk.toString(); };
+    child.stdout.on('data', capture);
+    child.stderr.on('data', capture);
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 25000);
+    child.on('error', () => { clearTimeout(timer); resolve(null); });
+    child.on('close', () => { clearTimeout(timer); resolve(output); });
+  }),
+}));
+
+exposeHostApi('codexProxyTrace', () => getNative().codexProxyTraceApi());
+
+exposeHostApi('proxyOutcome', () => {
+  function proxyRequestKind(protocol, req) {
+    return getNative().proxyClassifyRequest(protocol === 'claude', String(req?.method || '').toUpperCase(), String(req?.url || req?.originalUrl || ''));
+  }
+  return { proxyRequestKind, normalizeProxyOutcome: value => getNative().proxyNormalizeOutcome(value),
+    observeProxyRequest(protocol, req, res, onTerminal = () => {}, beforeDisconnect = () => false) {
+      const native = getNative();
+      return native.observeProxyResponse({ id: require('node:crypto').randomUUID(), kind: proxyRequestKind(protocol, req),
+        state: new native.ProxyObservationState(), onTerminal, beforeDisconnect }, req, res);
+    },
+  };
+});
+
+exposeHostApi('claudeQuotaBridge', () => ({
+  createClaudeQuotaBridge(app, options) {
+    const extract = headers => claudeQuota('extract', { headers });
+    if (typeof options.onRateLimit !== 'function' || extract({}) === undefined) return { app, options };
+    const hooks = getNative().claudeQuotaHeaderHooks({ extract, options });
+    const contexts = new (require('node:async_hooks').AsyncLocalStorage)();
+    return {
+      app: { use(path, handler) {
+        return app.use(path, (req, res, next) => {
+          const state = { context: null, fallback: null };
+          const original = res.writeHead;
+          res.writeHead = function (status, ...args) {
+            res.writeHead = original;
+            try { hooks.writeHead(state, res, status, args); } catch { /* An observer cannot interrupt forwarding. */ }
+            return original.call(this, status, ...args);
+          };
+          return contexts.run(state, () => handler(req, res, next));
+        });
+      } },
+      options: { ...options, onActivity: event => hooks.activity(contexts.getStore(), event),
+        onRateLimit: event => hooks.rateLimit(contexts.getStore(), event) },
+    };
+  },
+}));
+
+function createAccountSubscriptionCache(native = getNative(), run = runNative) {
+  return getNative().accountCacheHost({
+    async access(file, input) { return JSON.parse(await run(() => native.accountSubscriptionCache(file, JSON.stringify(input)))); },
+    project: (providers, subscriptions) => JSON.parse(native.projectAccountSubscriptions(JSON.stringify({ providers, subscriptions }))),
+  });
+}
+exposeHostApi('accountSubscriptionCache', () => createAccountSubscriptionCache());
+module.exports.createAccountSubscriptionCache = createAccountSubscriptionCache;
+
+exposeHostApi('claudeUsageQueue', () => {
+  const native = getNative();
+  const defaultNow = () => Date.now();
+  const ports = { entries: new Map(), inflight: new Map(), defaultNow, now: defaultNow };
+  ports.store = native.claudeUsageCache({
+    entries: ports.entries, inflight: ports.inflight, now: () => ports.now(),
+    before: (at, other) => at < other, fresh: entry => ports.now() - entry.at < 60000,
+    get configured() { return typeof ports.fetchUsage === 'function'; },
+    resolved: value => Promise.resolve(value), account: name => name.slice('claude:'.length),
+    async fetch(name, accountId) {
+      const fetchUsage = ports.fetchUsage;
+      let result;
+      try { result = await (accountId ? fetchUsage({ accountId }) : fetchUsage()); }
+      catch (err) { result = { status: 'unavailable', error: String(err?.message || err) }; }
+      return ports.store.finish(name, result);
+    },
+  });
+  return native.claudeUsageQueueApi(ports);
+});
+
+// These values must be captured before the source child selects its addon.
+// Consume the six control variables as soon as the gateway adapter is loaded.
+exposeHostApi('gatewayChild', () => {
+  const net = require('node:net');
+  const GATEWAY_PROTOCOL = 15;
+  const MAX_HEADER_BYTES = 107, HEADER_TIMEOUT_MS = 5000;
+  function isGatewayChild(env = process.env, ppid = process.ppid) {
+    return String(env?.MULTICC_GATEWAY_CHILD || '').trim() === '1'
+      && String(env?.MULTICC_GATEWAY_PID || '').trim() === String(ppid);
+  }
+  function capture(channel) {
+    const prefix = 'MULTICC_GATEWAY_' + channel;
+    const bootstrap = isGatewayChild() ? { port: Number(process.env[prefix + '_PORT']),
+      capability: process.env[prefix + '_CAPABILITY'] || '' } : null;
+    delete process.env[prefix + '_PORT'];
+    delete process.env[prefix + '_CAPABILITY'];
+    return bootstrap;
+  }
+  const auth = capture('AUTH'), source = capture('SOURCE'), chat = capture('CHAT');
+  function applySourceAddonEnv(root, env = process.env) {
+    if (isGatewayChild(env) && env.MULTICC_SOURCE_ROOT === root && env.MULTICC_DESKTOP !== '1') {
+      env.MULTICC_RUST_ADDON = require(path.join(root, 'scripts', 'ensure-source-rust')).addonForSourceChild(root);
+    }
+    delete env.MULTICC_SOURCE_ROOT;
+  }
+  function connectAuthControl(owner) {
+    if (!auth) return;
+    owner.connectGateway(auth.port, auth.capability);
+    auth.capability = '';
+  }
+  function connectWorkspaceControl(owner, directoryReader, contextReader, authSecurity) {
+    if (!source) return;
+    const args = [source.port, source.capability, directoryReader, contextReader];
+    if (authSecurity) authSecurity.connectWorkspaceGateway(owner, ...args);
+    else owner.connectGateway(...args);
+    source.capability = '';
+  }
+  function startChatBridge({ wss, logger = console, bootstrap = chat,
+    connect = module.exports.gatewayChatBridge.connectChatBridge } = {}) {
+    return getNative().startGatewayChatBridge({ wss, logger, bootstrap, connect });
+  }
+  function raiseSigint(platform = process.platform) {
+    if (platform === 'win32') process.emit('SIGINT', 'SIGINT');
+    else process.kill(process.pid, 'SIGINT');
+  }
+  function watchGatewayLifeline({ env = process.env, stdin = process.stdin, logger = console,
+    signal = () => raiseSigint(), hasHandler = () => process.listenerCount('SIGINT') > 0, retryMs = 1000 } = {}) {
+    if (!isGatewayChild(env) || !stdin || stdin.isTTY) return false;
+    const lost = getNative().gatewayLifeline({ logger, signal, hasHandler, retryMs });
+    for (const name of ['end', 'close', 'error']) stdin.on(name, lost);
+    stdin.resume();
+    return true;
+  }
+  function listenBehindGateway(httpServer, { port, logger = console, headerTimeoutMs = HEADER_TIMEOUT_MS, onListening } = {}) {
+    const host = '127.0.0.1';
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      logger.error('gateway_child_internal_port_invalid', { port });
+      process.exit(1);
+    }
+    const sockets = new Set(), awaiting = new Set();
+    let closing = false;
+    const Reader = getNative().GatewayProxyReader;
+    const listener = net.createServer({ pauseOnConnect: true }, socket => {
+      const reader = new Reader();
+      sockets.add(socket);
+      awaiting.add(socket);
+      const timer = setTimeout(() => socket.destroy(), headerTimeoutMs);
+      timer.unref();
+      socket.once('close', () => { clearTimeout(timer); sockets.delete(socket); awaiting.delete(socket); });
+      socket.on('error', () => {});
+      function onData(chunk) {
+        const result = reader.feed(chunk, null);
+        if (result === null) return;
+        socket.removeListener('data', onData);
+        clearTimeout(timer);
+        if (!result) return socket.destroy();
+        socket.pause();
+        if (chunk.length > result.offset) socket.unshift(chunk.subarray(result.offset));
+        for (const [name, value] of Object.entries(result.peer)) {
+          Object.defineProperty(socket, name, { value, enumerable: true, configurable: true, writable: false });
+        }
+        awaiting.delete(socket);
+        httpServer.emit('connection', socket);
+        socket.resume();
+      }
+      socket.on('data', onData);
+      socket.resume();
+    });
+    Object.defineProperty(httpServer, 'listening', { enumerable: true, configurable: true, get: () => listener.listening && !closing });
+    httpServer.address = () => listener.address();
+    httpServer.close = function close(callback) {
+      const done = typeof callback === 'function' ? callback : () => {};
+      if (closing) return void process.nextTick(done, Object.assign(new Error('Server is not running'), { code: 'ERR_SERVER_NOT_RUNNING' }));
+      closing = true;
+      for (const socket of awaiting) socket.destroy();
+      if (!listener.listening) return void process.nextTick(done);
+      listener.close(() => done());
+      httpServer.closeIdleConnections?.();
+    };
+    listener.once('error', error => {
+      logger.error('gateway_child_listen_failed', { host, port, error: error.message, code: error.code });
+      process.exit(error.code === 'EADDRINUSE' ? 75 : 1);
+    });
+    listener.listen(port, host, () => {
+      httpServer.emit('listening');
+      logger.info('gateway_child_listening', { host, port, protocol: GATEWAY_PROTOCOL });
+      if (typeof onListening === 'function') onListening();
+    });
+    return { listener, get port() { const address = listener.address(); return address && address.port; },
+      close(callback) { httpServer.close(callback); }, connectionCount: () => sockets.size };
+  }
+  return { GATEWAY_PROTOCOL, applySourceAddonEnv, connectAuthControl, connectWorkspaceControl, startChatBridge,
+    MAX_HEADER_BYTES, HEADER_TIMEOUT_MS, isGatewayChild,
+    internalPort: (env = process.env) => getNative().gatewayInternalPort(String(env?.MULTICC_GATEWAY_INTERNAL_PORT || '').trim()) ?? null,
+    parseProxyHeader: line => getNative().gatewayProxyPeer(line.toString('latin1')),
+    listenBehindGateway, watchGatewayLifeline, raiseSigint };
+});
+
+exposeHostApi('migrationGate', () => {
+  function startPage({ file, port, host, behindGateway = false }) {
+    const signal = new SharedArrayBuffer(4), flag = new Int32Array(signal);
+    let worker;
+    try {
+      const { Worker } = require('node:worker_threads');
+      worker = new Worker(path.join(__dirname, '../task-shell/migration-page-worker.js'), {
+        workerData: { signal, port, host: ['127.0.0.1', '::1', 'localhost'].includes(host) ? host : '127.0.0.1',
+          behindGateway, progressFile: file + '.migration.json' },
+      });
+    } catch { return null; }
+    worker.on('error', () => {});
+    Atomics.wait(flag, 0, 0, 3000);
+    if (Atomics.load(flag, 0) !== 1) { worker.terminate(); return null; }
+    return { fail(failure) { worker.postMessage({ type: 'failure', failure }); }, stop() {
+      worker.postMessage({ type: 'stop' }); Atomics.wait(flag, 0, 1, 3000); worker.unref();
+    } };
+  }
+  function runTaskStoreMigrationGate({ file, port, host, addon, logger = console, openPage = startPage, sleep }) {
+    const native = getNative();
+    return native.taskMigrationGate({ file, port, host, addon, logger, openPage, sleep }, addon === native);
+  }
+  function runAtBoot(env = process.env) {
+    const file = module.exports.appPaths.createPaths({ dataDir: env.MULTICC_DATA_DIR }).taskShellDbFile;
+    return runTaskStoreMigrationGate({ file, addon: getNative(), openPage() {
+      try {
+        const { port, host } = getNetworkPolicy().resolveNetworkPolicy(env);
+        const gateway = module.exports.gatewayChild;
+        if (!gateway.isGatewayChild(env)) return startPage({ file, port, host });
+        const internal = gateway.internalPort(env);
+        return internal ? startPage({ file, port: internal, host: '127.0.0.1', behindGateway: true }) : null;
+      } catch { return null; }
+    } });
+  }
+  return { runTaskStoreMigrationGate, startPage, runAtBoot };
+});
+
+exposeHostApi('providerDefaults', () => getNative().providerDefaultsApi({ path, Owner: getNative().RustProviderDefaultsStore }));
+
+let providerBindingPorts;
+function getProviderBindingPorts() {
+  if (providerBindingPorts) return providerBindingPorts;
+  class ProviderBindingError extends Error {
+    constructor(message, code = 'INVALID_PROVIDER_BINDING') { super(message); this.name = 'ProviderBindingError'; this.code = code; }
+  }
+  const SUPPORTED_CLIS = new Set(['claude', 'claude-exp', 'codex', 'codex-exp', 'opencode', 'zcode', 'qoder', 'kimi', 'codebuddy', 'dsh', 'gemini', 'grok', 'agy', 'commandcode', 'pi']);
+  const ROLE_KINDS = new Set(['main', 'sub', 'aux']), AGENT_ROLES = new Set(['default', 'worker', 'explorer', 'custom']);
+  return providerBindingPorts = { SUPPORTED_CLIS, ROLE_KINDS, AGENT_ROLES, ProviderBindingError, brand: Symbol('MultiCC.ProviderBinding') };
+}
+exposeHostApi('httpErrors', () => {
+  const native = getNative();
+  const { safeCode, sanitizeCompatibility, sanitizePublicText } = getPublicSafety();
+  const domain = Symbol('MultiCC.DomainError');
+  const infrastructure = Symbol('MultiCC.InfrastructureError');
+  const http = Symbol('MultiCC.HttpError');
+  function isDomainError(value) { return !!(value && value[domain] === true); }
+  function isInfrastructureError(value) { return !!(value && value[infrastructure] === true); }
+  function isHttpError(value) { return !!(value && value[http] === true); }
+  class DomainError extends Error {
+    constructor(kind, message, { code, publicMessage, compatibility, cause } = {}) {
+      super(native.domainErrorMessage(message, false));
+      native.domainErrorInitialize(this, kind, code, publicMessage, compatibility, cause);
+      Object.defineProperty(this, domain, { value: true });
+    }
+  }
+  class InfrastructureError extends Error {
+    constructor(message, { code, compatibility, cause } = {}) {
+      super(native.domainErrorMessage(message, true));
+      native.infrastructureErrorInitialize(this, code, compatibility, cause);
+      Object.defineProperty(this, infrastructure, { value: true });
+    }
+  }
+  class HttpError extends Error {
+    constructor({ status, code, message, compatibility, cause } = {}) {
+      const normalized = native.httpErrorTrustedStatus(status);
+      super(native.httpErrorMessage(normalized, message, sanitizePublicText));
+      native.httpErrorInitialize(this, normalized, code, compatibility, cause, ports);
+      Object.defineProperty(this, http, { value: true });
+      Object.freeze(this);
+    }
+  }
+  const ports = { HttpError, isHttpError, isDomainError, isInfrastructureError,
+    safeCode, sanitizeCompatibility, sanitizePublicText };
+  let kinds, definitions;
+  function domainErrorMap() { return definitions ??= native.httpErrorDefinitions(ports); }
+  const middleware = native.httpErrorsMiddleware({
+    process, API_VERSION: getApiContract().API_VERSION,
+    elapsedMs: start => Number(process.hrtime.bigint() - start) / 1e6,
+  });
+  return {
+    HttpError, isHttpError,
+    trustedStatus(value) { return native.httpErrorTrustedStatus(value); },
+    mapError(error) { return native.httpErrorMap(error, ports, domainErrorMap()); },
+    DomainError, InfrastructureError, isDomainError, isInfrastructureError,
+    get DOMAIN_KINDS() { return kinds ??= native.domainErrorKinds(ports); },
+    get DOMAIN_ERROR_MAP() { return domainErrorMap(); },
+    ...middleware,
+    makeRequestId() { return native.httpEntryMakeRequestId(); },
+    cleanIncomingId(value) { return native.httpEntryCleanId(value); },
+  };
+});
+
+exposeHostApi('airIndexPort', () => {
+  const addon = getNative();
+  return addon.airIndexHostApi({ getAddon: () => module.exports.getNative(),
+    describe: addon.airDescribeIssue, record: addon.airRecordStorageNotice,
+    uuid: require('node:crypto').randomUUID, createModel: module.exports.taskReadModel.createTaskReadModel });
+});
+exposeHostApi('airSyncRuntime', () => getNative().airSyncHostApi({
+  createIndex: module.exports.airIndexPort.createAirIndex, describe: module.exports.airIndexPort.describeAirIssue,
+}));
+
+function addonWithMethod(name) {
+  const addon = getNative();
+  if (typeof addon[name] !== 'function') throw new Error('rust_backend_unavailable');
+  return addon;
+}
+exposeHostApi('macosAgentProvision', () => addonWithMethod('macosAgentProvisionApi').macosAgentProvisionApi({
+  fs: require('node:fs'), path, os: require('node:os'), spawn: require('node:child_process').spawn,
+  platform: process.platform, env: process.env, logger: console,
+}));
+
+exposeHostApi('claudeEgress', () => getNative().claudeEgressHost({
+  process, pluginsDir: path.resolve(__dirname, '../..', 'plugins'),
+  pluginsFactory: () => module.exports.pluginsRoutes.createPluginsRoutes,
+  proxyClass: () => require('proxy-agent').ProxyAgent,
+}));
+exposeHostApi('channelHost', () => getNative().channelHostApi({
+  process, path, spawn: require('node:child_process').spawn,
+}));
+exposeHostApi('channelRegistry', () => getNative().channelRegistryApi({}));
+
+exposeHostApi('pluginCatalog', () => getNative().pluginCatalogApi({
+  process, crypto: require('node:crypto'), os: require('node:os'), path: require('node:path'),
+  execFile: require('node:child_process').execFile, rootDir: path.resolve(__dirname, '../..'),
+  version: require('../../package.json').version,
+  agent: rootDir => module.exports.macosAgentProvision.sharedMacosAgentProvisioner({ rootDir }).inspect(),
+}));
+exposeHostApi('pluginInstaller', () => {
+  class PluginInstallError extends Error {
+    constructor(code, message) { super(message); this.code = code; }
+  }
+  return getNative().pluginInstallerApi({ process, PluginInstallError, crypto: require('node:crypto') });
+});
+exposeHostApi('pluginsRoutes', () => getNative().pluginsRoutesApi({
+  process, catalog: module.exports.pluginCatalog, installer: module.exports.pluginInstaller,
+  channel: module.exports.channelHost, registry: module.exports.channelRegistry,
+  local: module.exports.requestLocality.isLocalRequest,
+  fetch: (...args) => module.exports.outbound.outboundFetch(...args),
+  spawn: require('node:child_process').spawn, path: require('node:path'),
+}));
+
+exposeHostApi('taskReadModel', () => {
+  const addon = addonWithMethod('taskReadModelHostApi');
+  return addon.taskReadModelHostApi({ addon, Owner: addon.RustTaskReadModel, runNative });
+});
+
+exposeHostApi('taskWorktree', () => getNative().taskWorktreeApi({ crypto: require('node:crypto'), existsSync: require('node:fs').existsSync }));
+
+exposeHostApi('airCardCache', () => getNative().airCardCacheApi({ Owner: getNative().RustAirCardCache, runNative, boardStoreOf: module.exports.taskDomainHost.boardStoreOf }));
+
+exposeHostApi('taskBoardStore', () => getNative().taskBoardStoreApi({ Owner: getNative().RustTaskBoard, domain: module.exports.taskDomainHost, wireDate: module.exports.taskPlanning.wireDate, compare: (a, b) => a.localeCompare(b), runNative, nativeCode }));
+
+exposeHostApi('zcodeAuth', () => getNative().zcodeAuthHost({
+  process, path, fs: require('node:fs'), homedir: require('node:os').homedir,
+  spawn: require('node:child_process').spawn, reportFailure: module.exports.stateStore.reportFailure,
+}));
+
+exposeHostApi('kimiAuth', () => getNative().kimiAuthHost({
+  process, path, homedir: require('node:os').homedir,
+  spawn: require('node:child_process').spawn, findExecutableOnPath: module.exports.cliCommands.findExecutableOnPath,
+}));
+
+// Adapt the Node process callback to the outcome consumed by the native refresh ladder.
+exposeHostApi('claudeOAuthRefresh', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const { execFile } = require('node:child_process');
+  return getNative().claudeOauthRefreshHost({
+    process, tmpdir: os.tmpdir, defaultFile: () => path.join(os.homedir(), '.claude', '.credentials.json'),
+    defaultRead: file => fs.promises.readFile(file, 'utf8'),
+    buildChildEnv: module.exports.providersHost.buildChildEnv,
+    defaultRun(file, args, { timeoutMs, cwd, env }) {
+      return new Promise(resolve => {
+        execFile(file, args, { cwd, env, timeout: timeoutMs, killSignal: 'SIGKILL',
+          maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+          resolve({ code: error ? (Number.isInteger(error.code) ? error.code : 1) : 0,
+            stdout: String(stdout || ''), stderr: String(stderr || ''),
+            timedOut: !!error?.killed, error: error?.message ?? null });
+        });
+      });
+    },
+  });
+});
+
+exposeHostApi('codexOAuthRefresh', () => getNative().codexOauthRefreshHost({
+  process, path, fs: require('node:fs'), os: require('node:os'),
+  providerPorts: () => module.exports.providersHost, execFile: require('node:child_process').execFile,
+}));
+
+exposeHostApi('codexImageBridge', () => {
+  class ImageBridgeError extends Error {
+    constructor(code, message = 'image generation is unavailable') {
+      super(message);
+      this.name = 'ImageBridgeError';
+      this.code = code;
+    }
+  }
+  return getNative().codexImageBridgeHost({
+    ImageBridgeError, process, path, fs: require('node:fs'), crypto: require('node:crypto'),
+    spawn: require('node:child_process').spawn, tmpdir: require('node:os').tmpdir,
+  });
+});
+
+exposeHostApi('airRoutesHost', () => getNative().airRoutesHostApi({
+  domain: module.exports.taskDomainHost, boardCore: module.exports.taskBoardCore,
+  cache: module.exports.airCardCache, abnormal: module.exports.classifyVocab.isAbnormalLetter,
+  createSync: options => module.exports.airSyncRuntime.createAirSyncRuntime(options),
+  deliveryView: module.exports.deliveryView, local: module.exports.requestLocality.isLocalRequest,
+  path: require('node:path'), crypto: require('node:crypto'), process,
+}));
+
+exposeHostApi('usageObserved', () => {
+  class UsageObservedError extends Error {
+    constructor(message, code = 'INVALID_USAGE_OBSERVED') {
+      super(message);
+      this.name = 'UsageObservedError';
+      this.code = code;
+    }
+  }
+  return getNative().usageObservedApi({ binding: getProviderBindingPorts(), UsageObservedError });
+});
+exposeHostApi('providerBinding', () => {
+  const ports = getProviderBindingPorts();
+  const { SUPPORTED_CLIS, ROLE_KINDS, AGENT_ROLES, ProviderBindingError } = ports;
+  let api;
+  const methods = () => api ??= getNative().providerBindingMethods(ports);
+  return { AGENT_ROLES, ROLE_KINDS, SUPPORTED_CLIS, ProviderBindingError,
+    assertProviderBinding: value => methods().assertProviderBinding(value),
+    createProviderBinding: value => methods().createProviderBinding(value),
+    isProviderBinding: value => methods().isProviderBinding(value),
+    toLegacyProviderView: value => methods().toLegacyProviderView(value),
+  };
+});
+exposeHostApi('providerError', () => {
+  function errorFields(raw, depth = 0, budget = { nodes: 24, chars: 65536 }) {
+    return getNative().providerErrorFields(raw, depth, budget);
+  }
+  function classifyProviderError(raw, { provider, source } = {}) {
+    if (provider !== 'opencode') return null;
+    try { return JSON.parse(getNative().classifyProviderError(JSON.stringify({ provider, source, error: errorFields(raw) }))); }
+    catch { return null; }
+  }
+  return { errorFields, classifyProviderError };
+});
+
+exposeHostApi('secretAudit', () => {
+  const { AsyncLocalStorage } = require('node:async_hooks');
+  const scope = new AsyncLocalStorage();
+  const ports = { scope, auditFile: () => module.exports.appPaths.createPaths().secretAuditFile };
+  return {
+    call(operation, context, names, action) {
+      let native;
+      try { native = getNative(); } catch {
+        throw Object.assign(new Error('Secret audit is unavailable; vault access cannot continue.'),
+          { code: 'secret_audit_unavailable', statusCode: 503, secretToolError: true });
+      }
+      return native.auditedSecretCall(ports, operation, context, names, action);
+    },
+    withContext: (context, action) => scope.run({ ...scope.getStore(), ...context }, action),
+  };
+});
+
+exposeHostApi('stateOwner', () => {
+  const origins = new WeakMap();
+  function createStateOwner() {
+    const addon = getNative();
+    if (typeof addon.RustSessionRecords !== 'function') throw new Error('rust_session_records_unavailable');
+    const anchor = Object.create(null), native = new addon.RustSessionRecords(anchor);
+    Object.defineProperty(native, Symbol('host-value-anchor'), { value: anchor });
+    origins.set(native, addon);
+    const api = addon.recordOwnerFacade({ native, anchor, error: module.exports.directoryRecords.corruptedStateError });
+    const configure = api.configure;
+    api.configure = function (options) { configure(options); return this; };
+    return api;
+  }
+  return { createTurnRuntimeStore(options = {}) {
+    const addon = getNative(); return addon.turnRuntimeStore(options, createStateOwner, origins, addon);
+  }, createStateOwner };
+});
+exposeHostApi('wsHost', () => {
+  function createWsHost() {
+    const anchor = { stringifyWithFields: (value, fields) => JSON.stringify({ ...value, ...fields }) };
+    const host = new (getNative().RustWsHost)(anchor);
+    Object.defineProperty(host, Symbol('ws host anchor'), { value: anchor });
+    return host;
+  }
+  return { createWsHost, createChatReplayHub: ({ host }) => getNative().replayHub(host),
+    createChatReplayRuntime: sessions => getNative().chatReplayRuntime(createWsHost(), sessions) };
+});
+
+exposeHostApi('orchestrationJson', () => {
+  class OrchestrationStoreCorruptError extends Error {
+    constructor(message, meta = {}) {
+      super(message);
+      this.name = 'OrchestrationStoreCorruptError';
+      this.code = 'ORCHESTRATION_STORE_CORRUPT';
+      Object.assign(this, meta);
+    }
+  }
+  // Preserve the AsyncFunction surface for mutating callers.
+  const asyncMethods = store => ({
+    async mutate(mutator) { return store.mutate(mutator); },
+    async mutateIf(predicate, mutator, skippedResult) { return store.mutateIf(predicate, mutator, skippedResult); },
+  });
+  const publicStore = store => getNative().publicOrchestrationStore(store, asyncMethods);
+  const ports = orchestrationJsonPorts(createOrchestrationStore, { fs: require('node:fs'), path, publicStore, CorruptError: OrchestrationStoreCorruptError });
+  let api;
+  const native = () => api ??= getNative().orchestrationJsonApi(ports);
+  function createOrchestrationStore(options = {}) { return publicStore(native().createOrchestrationStore(options)); }
+  return { SCHEMA_VERSION: 3, OrchestrationStoreCorruptError, createOrchestrationStore,
+    _cloneJson: value => native()._cloneJson(value), _deepFreeze: value => native()._deepFreeze(value),
+    _initialState: () => native()._initialState(), _loadState: options => native()._loadState(options),
+    _validateState: (input, file) => native()._validateState(input, file), _writeAtomic: options => native()._writeAtomic(options),
+  };
+});
+
+exposeHostApi('orchestrationSqlite', () => {
+  class OrchestrationSqliteError extends Error {
+    constructor(message, meta = {}) {
+      super(message);
+      this.name = 'OrchestrationSqliteError';
+      this.code = 'ORCHESTRATION_SQLITE_ERROR';
+      Object.assign(this, meta);
+    }
+  }
+
+  class OrchestrationSqliteConflictError extends OrchestrationSqliteError {
+    constructor(file, expectedRevision, actualRevision) {
+      super(
+        `orchestration SQLite revision changed concurrently in ${file} (expected ${expectedRevision}, found ${actualRevision})`,
+        { file, expectedRevision, actualRevision },
+      );
+      this.name = 'OrchestrationSqliteConflictError';
+      this.code = 'ORCHESTRATION_SQLITE_CONFLICT';
+      this.retryable = true;
+    }
+  }
+  function createOrchestrationSqliteStore(options = {}) {
+    const { OrchestrationStoreCorruptError, _cloneJson: cloneJson, _deepFreeze: deepFreeze } = module.exports.orchestrationJson;
+    const { createDraft, COLLECTIONS } = module.exports.orchestrationDraft;
+    return getNative().createSqliteHostStore(options, { createDraft, COLLECTIONS, cloneJson, deepFreeze, OrchestrationStoreCorruptError,
+      OrchestrationSqliteError, OrchestrationSqliteConflictError, createNativeStore: module.exports.orchestrationNativeStore.createNativeStore });
+  }
+  return { DATABASE_SCHEMA_VERSION: 2, OrchestrationSqliteConflictError, OrchestrationSqliteError, createOrchestrationSqliteStore };
+});
+
+exposeHostApi('taskDomainHost', () => getNative().liveTaskDomainHost({
+  environment: process.env,
+  // Let V8 project caller-owned properties and raise its own destructuring errors.
+  planAttributionAction({ mode, relation, targetTaskId, currentTaskId } = {}) {
+    return getNative().planHostAttributionAction(mode, relation, targetTaskId, currentTaskId);
+  },
+  createStore: options => module.exports.stateStore.createStore(options),
+  defaultFile: key => module.exports.appPaths.createPaths()[key],
+  readText: file => require('node:fs').readFileSync(file, 'utf8'),
+  async runQueuedDomain(input) {
+    try { return JSON.parse(await runNative(() => getNative().taskDomainAsync(input))); }
+    catch (error) { throw nativeCode(error); }
+  },
+}));
+
+exposeHostApi('stateStore', () => {
+  class CorruptedStateError extends Error {
+    constructor(message, meta) {
+      super(message);
+      this.name = 'CorruptedStateError';
+      Object.assign(this, meta || {});
+    }
+  }
+  const fs = require('node:fs');
+  return getNative().stateStoreHost({ fs, path, CorruptedStateError });
+});
+
+exposeHostApi('runtimeSecurity', () => {
+  const fs = require('node:fs');
+  const store = module.exports.stateStore;
+  function write(file, body, options = {}) {
+    const opts = { mode: 0o600, dirMode: 0o700, ...options };
+    // StateStore supports live beforeRename hooks and Node-specific fs argument
+    // validation. Ordinary string writes use Rust's durable replacement.
+    if (typeof file !== 'string' || typeof body !== 'string' || typeof opts.beforeRename === 'function'
+      || opts.enforceDirMode || !Number.isInteger(opts.mode) || !Number.isInteger(opts.dirMode)) {
+      return store.writeTextAtomic(file, body, opts);
+    }
+    getNative().runtimeAtomicText(file, body, opts.mode, opts.dirMode, store.reportFailure);
+  }
+  return {
+    ensurePrivateDir(dir) {
+      if (typeof dir === 'string') return getNative().runtimePrivatePath(dir, true);
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+    },
+    secureFile(file) {
+      if (typeof file === 'string') return getNative().runtimePrivatePath(file, false);
+      try { fs.chmodSync(file, 0o600); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    },
+    secureRuntimeData: paths => getNative().secureRuntimePaths(paths),
+    atomicWriteJson: (file, value, options) => write(file, JSON.stringify(value, null, 2), options),
+    atomicWriteText: (file, value, options) => write(file, String(value), options),
+  };
+});
+
+exposeHostApi('hostEnv', () => getNative().hostEnvApi({
+  environment: process.env, reportFailure: module.exports.stateStore.reportFailure,
+  envPath: () => process.env.MULTICC_ENV_FILE ? path.resolve(process.env.MULTICC_ENV_FILE) : path.resolve(__dirname, '../..', '.env'),
+}));
+
+exposeHostApi('refreshHealth', () => ({
+  KEY_PATTERN: /^[a-z0-9_-]{1,64}$/i,
+  createRefreshHealthStore: options => getNative().refreshHealthStore(options, { path, reportFailure: module.exports.stateStore.reportFailure }),
+}));
+
+exposeHostApi('taskDistill', () => {
+  const fs = require('node:fs');
+  return {
+    AUTO_SECTION: '## 自动蒸馏', DEFAULT_MAX_AUTO_LINES: 24,
+    cleanMemoryCandidate: value => getNative().cleanTaskMemory(String(value ?? '')),
+    similar: (a, b) => getNative().similarTaskMemory(String(a || '').trim(), String(b || '').trim()),
+    mergeAutoSection: (content, candidate, { maxAutoLines = 24 } = {}) =>
+      getNative().mergeTaskMemory(String(content || '').trim(), `- ${candidate}`, () => String(candidate || ''), () => +(-maxAutoLines)),
+    createTaskMemoryDistiller(deps) {
+      const max = Number.isInteger(deps.maxAutoLines) && deps.maxAutoLines > 0 ? deps.maxAutoLines : 24;
+      return { record: getNative().taskMemoryRecorder({ deps, max, path: deps.path || path,
+        fs: deps.fs && deps.fs !== fs ? deps.fs : undefined, logger: deps.logger || console }) };
+    },
+  };
+});
+
+// The control task holds a weak JS callback. Keep the runtime and its owner
+// visible to V8 so metadata may refer to the facade without rooting a cycle.
+function authTicketReader(anchor) {
+  const weak = new WeakRef(anchor);
+  return (_error, slot) => {
+    const slots = weak.deref()?.slots;
+    if (!slots || !Object.hasOwn(slots, slot)) return null;
+    const value = slots[slot];
+    delete slots[slot];
+    return getNative().authTicketProjection(value);
+  };
+}
+exposeHostApi('authSecurity', () => ({
+  COOKIE_VERSION: 1, DEFAULT_COOKIE_TTL_MS: 30 * 86400000, DEFAULT_TICKET_TTL_MS: 30000,
+  createAuthSecurity(options) {
+    const anchor = {};
+    const runtime = new (getNative().RustAuthSecurity)(options, anchor);
+    Object.defineProperty(runtime, Symbol('auth host references'), { value: anchor });
+    return {
+      accessToken: runtime.accessToken.bind(runtime), setAccessToken: runtime.setAccessToken.bind(runtime),
+      shuttingDown: runtime.shuttingDown.bind(runtime), setShuttingDown: runtime.setShuttingDown.bind(runtime),
+      connectGateway: (port, capability) => runtime.connectGateway(port, capability, authTicketReader(anchor)),
+      connectWorkspaceGateway: (owner, ...args) => owner.connectGateway(...args, runtime),
+      createCookie: runtime.createCookie.bind(runtime), verifyCookie: runtime.verifyCookie.bind(runtime),
+      verifyAccessToken: runtime.verifyAccessToken.bind(runtime), issueWsTicket: (p, metadata) => runtime.issueWsTicket(p, metadata),
+      consumeWsTicket: (ticket, p) => runtime.consumeWsTicket(ticket, p), pruneTickets: runtime.pruneTickets.bind(runtime),
+      ticketCount: runtime.ticketCount.bind(runtime),
+    };
+  },
+  timingSafeEqualText: (a,b) => getNative().authTimingSafeEqualText(a,b),
+  normalizeRedirect: (v, fallback) => getNative().authNormalizeRedirect(v, fallback),
+  normalizeWsPath: v => getNative().authNormalizeWsPath(v),
+  escapeHtmlAttribute: v => getNative().authEscapeHtmlAttribute(v),
+}));
+
+exposeHostApi('globalProxy', () => {
+  const network = module.exports.outbound;
+  const http = require('node:http'), https = require('node:https');
+  return getNative().globalProxyApi({ ...module.exports.proxyPolicy,
+    outbound: options => Object.keys(options).length ? network.createOutbound(options) : network,
+    log: message => console.log(`[multicc] ${message}`),
+    agents: () => ({ fetch: globalThis.fetch, http: http.globalAgent, https: https.globalAgent }),
+    installAgents(shared) {
+      globalThis.fetch = shared.outboundFetch;
+      http.globalAgent = https.globalAgent = shared.outboundAgent;
+    },
+    restoreAgents(shared, previous) {
+      if (globalThis.fetch === shared.outboundFetch) globalThis.fetch = previous.fetch;
+      if (http.globalAgent === shared.outboundAgent) http.globalAgent = previous.http;
+      if (https.globalAgent === shared.outboundAgent) https.globalAgent = previous.https;
+    },
+  });
+});
+
+exposeHostApi('jsonCompression', () => {
+  const zlib = require('node:zlib');
+  function createJsonCompression({ minBytes = 1024, level = zlib.constants.Z_DEFAULT_COMPRESSION } = {}) {
+    return getNative().jsonCompressionMiddleware({
+      get: (res, key) => res.getHeader(key), set: (res, key, value) => res.setHeader(key, value),
+      below200: value => value < 200,
+      largeEnough: (chunk, enc) => (Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), enc || 'utf8')) >= minBytes,
+      buffer: (chunk, enc) => Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), enc || 'utf8'),
+      gzip: (body, done) => zlib.gzip(body, { level }, done),
+    });
+  }
+  return { DEFAULT_MIN_BYTES: 1024, createJsonCompression, jsonCompression: createJsonCompression() };
+});
+
+function defaultCodexAuth() { return path.join(require('node:os').homedir(), '.codex', 'auth.json'); }
+// The addon owns quota policy and per-instance state. These ports keep injected
+// JavaScript stores, transports, and timers in the isolate that supplied them.
+exposeHostApi('usageLimitWiring', () => ({
+  createUsageLimitWiring: ({ persistedSessions, providers, chatBroadcast, createPoller, recordLimit }) => getNative().usageLimitWiring({
+    persistedSessions, providers, chatBroadcast, createPoller, recordLimit,
+    now: () => Date.now(), queue: module.exports.claudeUsageQueue,
+    live: module.exports.claudeBarState, view: getQuotaBarView() }),
+}));
+exposeHostApi('claudeBarState', () => getNative().claudeBarState({
+  now: () => Date.now(), queue: module.exports.claudeUsageQueue,
+  merge: input => claudeQuota('merge', input), claudeBar: getQuotaBarView().claudeBar,
+}));
+exposeHostApi('quotaBarCache', () => ({
+  ...getNative().quotaBarCacheApi({}),
+  createQuotaBarCache({ file, now = Date.now, storeFactory = module.exports.stateStore.createStore, logger = console } = {}) {
+    if (!file || typeof file !== 'string') throw new TypeError('[quota-bar-cache] requires { file }');
+    const store = storeFactory({ file, kind: 'quota-bar-cache', schemaVersion: 1, legacyIsArray: false });
+    return getNative().quotaBarCacheStore({ file, now,
+      load: () => store.loadOrRecover(),
+      loadFailed: error => logger?.warn?.('[multicc/quota-bar-cache] load failed:', error.message),
+      save(state) { try { store.save(state); } catch (error) { logger?.warn?.('[multicc/quota-bar-cache] save failed:', error.message); } },
+    });
+  },
+}));
+exposeHostApi('limitRecorder', () => {
+  const native = getNative();
+  return { ...native.limitCacheRecorderRequestValue('constants', {}),
+    isRevokedCategory: category => native.limitCacheRecorderRequestValue('isRevokedCategory', { category }),
+    createLimitRecorder: ({ cache, persistedSessions, providers, now = Date.now } = {}) =>
+      native.limitRecorderHost({ cache, persistedSessions, providers, now }),
+  };
+});
+exposeHostApi('providerLimitCache', () => {
+  function createNativeProviderLimitCache({ file, legacyJsonFile = null, now = Date.now, onRecord = null, logger = console } = {}) {
+    return getNative().providerCacheHost({ file, legacyJsonFile, now, onRecord, logger, Owner: getNative().RustProviderLimitStore,
+      submit: (handle, op, input) => runNative(() => handle.requestAsync(op, input)),
+    });
+  }
+  return { createNativeProviderLimitCache, createProviderLimitCache: createNativeProviderLimitCache,
+    STALE_MS_DEFAULT: 600000, DATABASE_SCHEMA_VERSION: 1 };
+});
+exposeHostApi('quotaHistory', () => {
+  const DEFAULT_RETENTION_MS = 14 * 86400000;
+  function createProviderQuotaHistory({ file, native, retentionMs = DEFAULT_RETENTION_MS, logger = console } = {}) {
+    return getNative().quotaHistoryHost({ file, retentionMs, logger, now: () => Date.now(), native: native || getNative(),
+      submit: (handle, data) => runNative(() => handle.record(JSON.stringify(data))),
+    });
+  }
+  return { DEFAULT_RETENTION_MS, createProviderQuotaHistory };
+});
+exposeHostApi('quotaGuard', () => {
+  const native = getNative(), request = native.quotaGuardRequestValue;
+  const DEFAULTS = Object.freeze(request('defaults', null));
+  return { DEFAULTS, envConfig: (env = process.env) => request('envConfig', env),
+    normalizeConfig: raw => Object.freeze(request('normalizeConfig', raw)),
+    liveWindows: entry => request('liveWindows', entry), readingAgeOf: value => request('readingAgeOf', value),
+    windowKind: value => request('windowKind', value), thresholdFor: (kind, config) => request('thresholdFor', { kind, config }),
+    guardVerdict: (entry, { config = DEFAULTS, now = Date.now() } = {}) => Object.freeze(request('guardVerdict', { entry, config, now })),
+    createQuotaGuard: ({ cache, configFile, env = process.env, now = Date.now, logger, onStale } = {}) =>
+      native.quotaGuardHost({ Owner: native.RustQuotaGuard, request, cache, configFile, env, now, logger, onStale }),
+  };
+});
+exposeHostApi('claudeCliUsage', () => getNative().cliUsageHost({
+  credentials: providerCredentials, platform: process.platform,
+  file: path.join(require('node:os').homedir(), '.claude', '.credentials.json'),
+  readFile: file => require('node:fs/promises').readFile(file, 'utf8'), now: () => Date.now(),
+  outboundFetch: module.exports.outbound.outboundFetch, fetchUsage: module.exports.claudeOfficialOAuth.fetchUsage,
+}));
+exposeHostApi('officialUsage', () => ({
+  claudeUsageWindows: usage => getNative().officialUsageWindows(usage, false),
+  codexDtoWindows: dto => getNative().officialUsageWindows(dto, true),
+  createOfficialAccountUsageSweeper: ({ accounts, recorder, logger = console, now = Date.now, intervalMs = 600000,
+    pollCodex = module.exports.usageLimitPoller.pollCodexUsage } = {}) => getNative().officialUsageSweeper({
+    accounts, recorder, logger, now, intervalMs, pollCodex, authFile: dir => path.join(dir, 'auth.json'),
+    accountProviderId: module.exports.officialCatalog.accountProviderId,
+  }),
+}));
+exposeHostApi('virtualProvider', () => getNative().virtualProviderHost({
+  now: () => Date.now(), subscriptions: module.exports.accountSubscriptionCache,
+  egress: provider => module.exports.egressIpPolicy.checkEgressIpAllowed(provider),
+  listProviders: () => module.exports.providersHost.listProviders(),
+  routingView: (appType, id) => module.exports.providersHost.routingProviderView(appType, id),
+}));
+
+exposeHostApi('providerQuota', () => ({
+  createProviderQuotaRuntime: options => getNative().providerQuotaRuntime(options, {
+    history: module.exports.quotaHistory.createProviderQuotaHistory,
+    limitCache: module.exports.providerLimitCache.createNativeProviderLimitCache,
+    recorder: module.exports.limitRecorder.createLimitRecorder,
+    connect: module.exports.connectProviderLimitSync, barCache: module.exports.quotaBarCache.createQuotaBarCache,
+    guard: module.exports.quotaGuard.createQuotaGuard,
+    subscriptions: opts => module.exports.accountSubscriptionCache.configure(opts),
+    virtualProvider: opts => module.exports.virtualProvider.configure(opts),
+  }),
+}));
+exposeHostApi('quotaSelfHeal', () => getNative().quotaSelfHealApi({
+  defaultCodexAuth,
+  setCodexAuthRefresher: fn => module.exports.usageLimitPoller.setCodexAuthRefresher(fn),
+  setVirtualRefresher: fn => module.exports.virtualProvider.setRefresher(fn),
+}));
+
+exposeHostApi('accountReader', () => {
+  const native = getNative();
+  const { policy } = module.exports.outbound;
+  // HTTP policy and parsing belong to the native query. AbortSignal and the
+  // injected fetch/Response pair must be created in the caller's JS realm.
+  async function query(input, { fetch } = {}) {
+    const { mode, result, plan, request, timeout } = JSON.parse(await native.accountSubscriptionStart(JSON.stringify(input), !!fetch));
+    if (mode === 'done') return result;
+    if (mode === 'proxy') {
+      plan.proxyUrl = await policy.proxyForUrl(plan.url) || null;
+      return JSON.parse(await native.queryAccountSubscription(JSON.stringify(plan)));
+    }
+    let status = 0, body = null;
+    try {
+      const response = await fetch(plan.url, { ...request, signal: AbortSignal.timeout(timeout) });
+      status = response.status;
+      if (response.ok) body = await response.json();
+    } catch { status = 0; }
+    return JSON.parse(native.accountSubscriptionResult(JSON.stringify({ plan, status, body, now: Date.now() })));
+  }
+  return native.accountReaderApi({ defaultCodexAuth, query, cache: module.exports.accountSubscriptionCache,
+    readCliCredentials: () => module.exports.claudeCliUsage.readCliCredentials() });
+});
+
+exposeHostApi('artifacts', () => getNative().artifactCleanupApi({
+  artifactsDir: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).artifactsDir,
+  environment: process.env, path, fs: require('node:fs'), home: require('node:os').homedir(),
+}));
+
+exposeHostApi('roleTokenTracker', () => {
+  const native = getNative();
+  const { validateUsageObserved } = module.exports.usageObserved;
+  // Legacy token buckets and Date-like inputs use V8's additive coercion.
+  const add = (a, b) => a + b;
+  const ports = { add, path, fs: require('node:fs'), now: () => new Date(),
+    reportFailure: module.exports.stateStore.reportFailure,
+    onError: err => console.error(`[multicc] role token tracker: ${err.message}`) };
+  return {
+    emptyBucket: native.emptyRoleTokenBucket, hasUsage: native.roleBucketHasUsage,
+    addUsage: (bucket, usage) => native.accumulateRoleBucket(bucket, usage, add),
+    localDayKey: date => native.roleLocalDay(date, add),
+    usageObservedToRoleTokenInfo: value => native.roleObservedInfo(validateUsageObserved(value)),
+    createRoleTokenTracker(options) {
+      const api = native.createRoleTokenRuntime(options, ports);
+      const ingest = api.accumulateObserved;
+      api.accumulateObserved = value => ingest(validateUsageObserved(value));
+      return api;
+    },
+  };
+});
+
+exposeHostApi('officialImageBridgeRuntime', () => {
+  const { createOfficialImageBridge } = module.exports.codexImageBridge;
+  const host = { home: require('node:os').homedir, path,
+    officialId: module.exports.officialAccounts.officialAccountIdFromProvider };
+  return { createOfficialImageBridgeRuntime: options =>
+    createOfficialImageBridge(getNative().officialImageBridgePorts(options, host)) };
+});
+
 exposeHostApi('macosPower', () => getNative().macosPowerApi({
-  platform: process.platform, fs: require('node:fs'), DomainError: require('../http-errors').DomainError,
+  platform: process.platform, fs: require('node:fs'), DomainError: module.exports.httpErrors.DomainError,
   installer: path.resolve(__dirname, '../../scripts/install-powerd.sh'),
   username: () => require('node:os').userInfo().username,
   executeInjected: (run, file, args, options) => new Promise((resolve, reject) => {
@@ -848,11 +2140,185 @@ exposeHostApi('appPaths', () => getNative().appPathsPublicApi({
   fs: require('node:fs'), os: require('node:os'), path, process, pkgRoot: path.resolve(__dirname, '../..'),
 }, pathSafety));
 
+// V8 owns the Map prototype and the iterators returned to JavaScript. The
+// native record owner keeps all membership, insertion order and live values.
+function recordMapPrototype(prefix, ownerOf) {
+  const method = name => prefix ? prefix + name[0].toUpperCase() + name.slice(1) : name;
+  const size = method('size'), get = method('get'), set = method('set');
+  const has = method('has'), remove = method('delete'), clear = method('clear');
+  const snapshot = prefix ? method('entries') : 'entriesSnapshot';
+  const entries = map => ownerOf(map)[snapshot]();
+  return class extends Map {
+    get size() { return ownerOf(this)[size](); }
+    get(key) { return ownerOf(this)[get](key); }
+    set(key, value) { ownerOf(this)[set](key, value); return this; }
+    has(key) { return ownerOf(this)[has](key); }
+    delete(key) { return ownerOf(this)[remove](key); }
+    clear() { ownerOf(this)[clear](); }
+    keys() { return entries(this).map(pair => pair[0])[Symbol.iterator](); }
+    values() { return entries(this).map(pair => pair[1])[Symbol.iterator](); }
+    entries() { return entries(this)[Symbol.iterator](); }
+    [Symbol.iterator]() { return this.entries(); }
+    forEach(callback, thisArg) {
+      for (const [key, value] of entries(this)) callback.call(thisArg, value, key, this);
+    }
+  };
+}
+
+exposeHostApi('memoryRuntime', () => getNative().sessionMemoryRuntimeApi({}));
+exposeHostApi('memoryBrowser', () => getNative().memoryBrowserApi({}));
+
+exposeHostApi('docsRegistry', () => getNative().docsRegistryApi({
+  STORE: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).docsRegistryFile,
+  servedRoots: () => module.exports.artifacts.servedRoots(),
+  reportFailure: module.exports.stateStore.reportFailure,
+}));
+
+exposeHostApi('workspaceNotes', () => getNative().workspaceNotesApi());
+
+exposeHostApi('docsMemoryHost', () => getNative().docsMemoryHostApi({
+  docs: () => module.exports.docsRegistry,
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+  mapError: module.exports.httpErrors.mapError,
+}));
+
+let folderMemoryApis;
+function getFolderMemoryApis() {
+  const fs = require('node:fs');
+  return folderMemoryApis ??= getNative().folderMemoryApis({
+    fs, path, rename: fs.renameSync, skills: path.resolve(__dirname, '../../skills'),
+  });
+}
+for (const key of ['curatedMemoryStore', 'builtinMemoryRules', 'memoryRetrievalHost', 'folderMemoryService']) {
+  exposeHostApi(key, () => getFolderMemoryApis()[key]);
+}
+
+exposeHostApi('sessionMemoryRoutes', () => {
+  const native = getNative();
+  return {
+    assertDependencies(deps) { return native.assertSessionMemoryDependencies(deps); },
+    mountSessionMemoryRoutes(app, deps) { return native.mountSessionMemoryRoutes(app, deps); },
+  };
+});
+
+exposeHostApi('sessionRecordsHost', () => {
+  const slots = new WeakMap();
+  const sessionRecordsOwner = records => slots.get(records)?.native || null;
+  class SessionRecordMap extends recordMapPrototype('', sessionRecordsOwner) {
+    constructor(shared) { super(); slots.set(this, shared); }
+    listByDir(dirId) { return sessionRecordsOwner(this).listByDir(dirId); }
+  }
+  return getNative().sessionTableHost({ SessionRecordMap, ownerOf: sessionRecordsOwner,
+    payload: module.exports.taskStatePayload, emit: bus => (event, ...args) => bus.emit(event, ...args) });
+});
+
+exposeHostApi('chatSessions', () => {
+  const slots = new WeakMap();
+  const chatSessionsOwner = map => slots.get(map)?.native ?? null;
+  class ChatSessionMap extends recordMapPrototype('chat', map => {
+    const owner = chatSessionsOwner(map);
+    if (!owner) throw new TypeError('chat session owner is required');
+    return owner;
+  }) {
+    constructor(shared) {
+      super();
+      slots.set(this, getNative().newChatTableSlot(shared));
+    }
+    delete(key) {
+      return getNative().chatTableAfterDelete(slots.get(this), key, super.delete(key));
+    }
+    clear() {
+      const keys = [...super.keys()];
+      super.clear();
+      getNative().chatTableAfterClear(slots.get(this), keys);
+    }
+    setForgetHook(fn) { getNative().chatTableHook(slots.get(this), fn, false); return this; }
+    onForget(fn) { getNative().chatTableHook(slots.get(this), fn, true); return this; }
+  }
+  return { ChatSessionMap, createChatSessions: shared => new ChatSessionMap(shared), chatSessionsOwner,
+    get createChatReplayRuntime() { return module.exports.wsHost.createChatReplayRuntime; } };
+});
+
+exposeHostApi('directoryRecords', () => {
+  const slots = new WeakMap();
+  const directoryOwner = map => slots.get(map)?.native || null;
+  class DirectoryMap extends recordMapPrototype('directory', map => {
+    const owner = directoryOwner(map);
+    if (!owner) throw new TypeError('directory table owner is required');
+    return owner;
+  }) {
+    constructor(shared) { super(); slots.set(this, shared); }
+  }
+  function createDirectoryTable(shared) {
+    if (typeof shared?.native?.directoryEntries !== 'function') {
+      throw new TypeError('directory table requires the native state owner');
+    }
+    return new DirectoryMap(shared);
+  }
+  function corruptedStateError(file, result) {
+    return getNative().stateRecordError(module.exports.stateStore.CorruptedStateError, file, result);
+  }
+  function loadDirectories(shared, file) {
+    if (!shared?.native) throw new TypeError('state owner is required');
+    const result = shared.native.loadDirectories();
+    if (result.errorKind) throw corruptedStateError(file, result);
+    return result;
+  }
+  return { DirectoryMap, createDirectoryTable, directoryOwner, corruptedStateError, loadDirectories };
+});
+
+exposeHostApi('relayShares', () => getNative().relayShareApi(globalThis));
+
 exposeHostApi('requestLocality', () => getNative().requestLocalityApi(getNative()));
+
+// V8 owns the injected comparison operators and the public async Promise.
+exposeHostApi('processProbe', () => {
+  const native = getNative();
+  const { DEFAULT_ROLLOUT_WINDOW_MS, DEFAULT_OUTBOUND_TTL_MS } = native;
+  function api({ outboundHttps, rolloutGrew }) {
+    async function probe(pid, rolloutPath) {
+      const [hasOutboundConnection, rolloutGrowing] = await Promise.all([
+        outboundHttps(pid).catch(() => false),
+        Promise.resolve().then(() => rolloutGrew(rolloutPath)).catch(() => false),
+      ]);
+      return { hasOutboundConnection, rolloutGrowing, pid: pid || null };
+    }
+    return { probe, outboundHttps, rolloutGrew };
+  }
+  function createProcessProbe({ execFile, statMtimeMs, now = Date.now,
+    rolloutWindowMs = DEFAULT_ROLLOUT_WINDOW_MS, outboundTtlMs = DEFAULT_OUTBOUND_TTL_MS } = {}) {
+    return api(native.processProbeRuntime({ execFile, statMtimeMs, now: () => now(),
+      fresh: (at, prev) => at - prev <= outboundTtlMs, expired: (at, prev) => at - prev > outboundTtlMs,
+      recent: mtime => now() - mtime <= rolloutWindowMs, advanced: (mtime, prev) => mtime > prev,
+    }, false));
+  }
+  return { createProcessProbe, createSystemProcessProbe: () => api(native.processProbeRuntime({}, true)),
+    DEFAULT_ROLLOUT_WINDOW_MS, DEFAULT_OUTBOUND_TTL_MS };
+});
 
 exposeHostApi('cliResultCompletion', () => getNative().cliResultApi(getNative()));
 
+exposeHostApi('zcodeAppServer', () => getNative().zcodeAppServerApi(process));
+
+exposeHostApi('backgroundHold', () => getNative().backgroundHoldApi({
+  native: getNative(), process, isMainResult: module.exports.cliResultCompletion.isMainResult,
+}));
+
 exposeHostApi('cliCompletion', () => getNative().cliCompletionApi(getNative()));
+
+// V8's relational operators preserve coercion of legacy threshold values.
+exposeHostApi('batteryGuard', () => getNative().batteryGuardApi({
+  platform: process.platform, ge: (a, b) => a >= b, le: (a, b) => a <= b, gt: (a, b) => a > b,
+}));
+
+exposeHostApi('codexAccountsRefresh', () => {
+  const { createCodexOAuthRefresher, stripOpenAiEnv } = module.exports.codexOAuthRefresh;
+  return getNative().codexAccountRefreshApi({
+    process, createCodexOAuthRefresher, stripOpenAiEnv, quietLogger: { info() {}, warn() {}, error() {} },
+  });
+});
+
+exposeHostApi('dispatchProgress', () => getNative().dispatchProgressApi({}));
 
 exposeHostApi('cliCapability', () => {
   const native = getNative();
@@ -907,17 +2373,103 @@ exposeHostApi('gitQueue', () => getNative().defaultGitQueue(module.exports.repoA
 exposeHostApi('gitService', () => getNative().gitServiceApi(module.exports.repoActor.defaultRepoActor, process.execPath,
   callback => require('node:async_hooks').AsyncResource.bind(callback, 'MultiCCGitOperation')));
 
+// The resident board is identified by the host's WeakMap. Keep V8 date,
+// collation, and Array species behavior when preparing native commands.
+let boardDomainFacades;
+function getBoardDomainFacades() {
+  if (boardDomainFacades) return boardDomainFacades;
+  const { taskDomain, boardStoreOf, replace } = module.exports.taskDomainHost;
+  boardDomainFacades = getNative().taskBoardDomainFacades({
+    taskDomain, boardStoreOf, replace,
+    turnRunStates: module.exports.classifyVocab.TURN_RUN_STATES,
+    compareIds: (a, b) => a.localeCompare(b),
+    uuid: () => require('node:crypto').randomUUID().replace(/-/g, ''),
+    mapTasks: (rows, board) => rows.map(task => board.tasks[task.id]),
+    moduleEntry: (board, task) => ({ [task.moduleId]: board.modules?.[task.moduleId] }),
+    wireDate(value) {
+      if (value == null || value === '') return null;
+      const date = value instanceof Date ? value : typeof value === 'number' ? new Date(value) : new Date(String(value));
+      return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+    },
+  });
+  return boardDomainFacades;
+}
+exposeHostApi('taskPlanning', () => getBoardDomainFacades().planning);
+exposeHostApi('taskNormalize', () => getBoardDomainFacades().normalize);
+exposeHostApi('taskBoardBridge', () => getBoardDomainFacades().bridge);
+
+exposeHostApi('taskLifecycle', () => getNative().boardLifecycleApi({
+  boardRule: module.exports.taskBoardBridge.boardRule, historyRefusal: getNative().taskHistoryRefusal,
+}));
+exposeHostApi('taskRelocate', () => getNative().boardRelocateApi({
+  plan: getNative().taskRelocatePlan, commit: getNative().taskRelocateCommit, assign: assignHostProperty,
+}));
+exposeHostApi('taskRetention', () => getNative().boardRetentionApi({
+  domain: module.exports.taskDomainHost.taskDomain, isOpen: module.exports.classifyVocab.isOpenRunState,
+  limit: module.exports.taskShellCapacity.MAX_TASKS_PER_DIRECTORY,
+}));
+
+let taskSearchApi;
+function getTaskSearchApi() {
+  return taskSearchApi ??= getNative().taskSearchApi({ addon: getNative(), tokenizer: searchTokenizer, runNative, record });
+}
+// Importing routes or creating an injected host can precede loading the platform addon.
+module.exports.taskSearch = {
+  tokenize: searchTokenizer.tokenize,
+  normalizeText: searchTokenizer.normalizeText,
+  get FIELD_WEIGHTS() { return getTaskSearchApi().FIELD_WEIGHTS; },
+  analyzeQuery(query) { return getTaskSearchApi().analyzeQuery(query); },
+  buildSnippet(doc, query) { return getTaskSearchApi().buildSnippet(doc, query); },
+  buildTaskSearchIndex(board, options = {}) { return getTaskSearchApi().buildTaskSearchIndex(board, options); },
+  searchBoard(board, query, options = {}) { return getTaskSearchApi().searchBoard(board, query, options); },
+  searchTaskIndex(index, query, options = {}) { return getTaskSearchApi().searchTaskIndex(index, query, options); },
+  taskSearchFields(board, task) { return getTaskSearchApi().taskSearchFields(board, task); },
+  async buildIndex(board, options = {}) { return getTaskSearchApi().buildIndex(board, options); },
+  async searchIndex(index, query, options = {}) { return getTaskSearchApi().searchIndex(index, query, options); },
+  createTaskSearchBackend() {
+    let backend;
+    return async function searchTasks(board, query, options = {}) {
+      return (backend ??= getTaskSearchApi().createTaskSearchBackend())(board, query, options);
+    };
+  },
+};
+
+exposeHostApi('taskPlanningRoutes', () => getNative().taskPlanningRoutesApi({
+  planning: module.exports.taskPlanning, cloneBoard: module.exports.taskDomainHost.cloneBoard,
+}));
+exposeHostApi('taskBoardRuntime', () => {
+  const native = getNative();
+  const { taskAttention, createTaskBoardRepository } = module.exports.taskDomainHost;
+  const host = {
+    core: module.exports.taskBoardCore, planning: module.exports.taskPlanning,
+    recentTaskIds: module.exports.taskBoardBridge.recentTaskIds, attention: taskAttention, createTaskBoardRepository,
+    crypto: require('node:crypto'), existsSync: require('node:fs').existsSync,
+    isVoiceRouterRecord: module.exports.voiceRouter.isVoiceRouterRecord,
+    runStateForFreezeReason: module.exports.sessionWork.runStateForFreezeReason,
+    runStateForLetter: module.exports.classifyVocab.runStateForClassify,
+    openBoardStore: module.exports.taskBoardStore.openBoardStore,
+    createTaskWorktreeService: module.exports.taskWorktree.createTaskWorktreeService,
+    createTaskRetention: module.exports.taskRetention.createTaskRetention,
+    createTaskPlanningRuntime: module.exports.taskPlanningRoutes.createTaskPlanningRuntime,
+    createBoardTaskLifecycle: module.exports.taskLifecycle.createBoardTaskLifecycle,
+    createTaskRelocate: module.exports.taskRelocate.createTaskRelocate,
+    Classification: native.TaskBoardClassification,
+  };
+  return { assertTaskBoardDeps: native.taskBoardAssertDeps,
+    createTaskBoardRuntime: deps => native.taskBoardRuntimeCreate(deps, host) };
+});
+
 exposeHostApi('taskBoardCore', () => getNative().taskBoardCoreApi({
-  planning: require('../task-board/planning'),
-  normalize: require('../task-board/normalize'),
-  bridge: require('../task-board/native-bridge'),
+  planning: module.exports.taskPlanning,
+  normalize: module.exports.taskNormalize,
+  bridge: module.exports.taskBoardBridge,
   routing: module.exports.taskBoardRouting,
 }));
 
 exposeHostApi('sessionWork', () => getNative().sessionWorkApi(getNative(), () => ({
-  crypto: require('node:crypto'), zcodeAuth: require('../cli-adapters/zcode-auth'),
-  kimiAuth: require('../cli-adapters/kimi-auth'),
-  createQuestionOwner: require('../orchestration/native-store-host').createQuestionOwner,
+  crypto: require('node:crypto'), zcodeAuth: module.exports.zcodeAuth,
+  kimiAuth: module.exports.kimiAuth,
+  createQuestionOwner: module.exports.orchestrationNativeStore.createQuestionOwner,
 })));
 
 exposeHostApi('codexHistoryHooks', () => getNative().codexHistoryHooksApi(undefined));
@@ -929,10 +2481,123 @@ exposeHostApi('stateContainer', () => getNative().sharedStateContainer());
 
 exposeHostApi('eventBus', () => getNative().sharedEventBus(require('node:events').EventEmitter));
 
-exposeHostApi('airRoutes', () => getNative().airMountApi(require('../workspace/air-routes-host').createAirRuntime));
+exposeHostApi('airRoutes', () => getNative().airMountApi(module.exports.airRoutesHost.createAirRuntime));
 
 exposeHostApi('chatHistoryService', () => getNative().chatHistoryServiceApi(getNative()));
 
+exposeHostApi('claudeModels', () => getNative().claudeModelListApi({
+  root: () => module.exports.appPaths.createPaths().root,
+}));
+exposeHostApi('officialCatalog', () => getNative().officialProviderCatalogApi({
+  officialCodex: provider => module.exports.codexOfficialRelay.isOfficialCodexOAuthProvider(provider),
+}));
+exposeHostApi('codexModelCatalog', () => getNative().codexAccountCatalogApi({
+  getNative, runNative, providers: () => module.exports.providersHost,
+  createAccounts: () => module.exports.officialAccounts.createOfficialAccountStore(),
+  accountId: provider => module.exports.officialAccounts.officialAccountIdFromProvider(provider),
+  officialCodex: provider => module.exports.codexOfficialRelay.isOfficialCodexOAuthProvider(provider),
+  globalHome: () => path.join(require('node:os').homedir(), '.codex'), env: () => process.env,
+  stripEnv: env => module.exports.codexOAuthRefresh.stripOpenAiEnv(env),
+  childProxyEnv: env => module.exports.outbound.getChildProxyEnv(env),
+  createEgress: () => module.exports.claudeEgress.createClaudeEgressAgentResolver(),
+  commands: options => module.exports.cliCommands.resolveCliCommands(options),
+}));
+
+exposeHostApi('providerModels', () => getNative().providerModelsApi({
+  providers: () => module.exports.providersHost,
+}));
+exposeHostApi('providerRouterAdapter', () => getNative().providerRouterAdapterApi({
+  pathJoin: require('node:path').join,
+}));
+exposeHostApi('nativeVendor', () => getNative().nativeVendorApi({
+  displayNameOf: module.exports.cliCapability.displayNameOf,
+  getVendorCatalog: cli => module.exports.modelCatalogsHost.getVendorCatalog(cli),
+  peekAgyModels: () => module.exports.agyModels.peekAgyModels(),
+}));
+
+exposeHostApi('openCodeModels', () => getNative().openCodeModelsApi({
+  homedir: require('node:os').homedir, execFile: require('node:child_process').execFile,
+}));
+exposeHostApi('agyModels', () => getNative().agyModelsApi({
+  accountEnv: () => module.exports.agyAccounts.accountEnv(), read: getNative().agyCliCatalogRead,
+}));
+exposeHostApi('modelCatalogsHost', () => getNative().modelCatalogsHostApi({
+  openCode: () => module.exports.openCodeModels, VendorCatalog: getNative().RustVendorModelCatalog,
+  execFile: require('node:child_process').execFile,
+  resolveCliCommands: () => module.exports.cliCommands.resolveCliCommands(),
+  providerRuntime: () => module.exports.providerModels.getSharedProviderModelsRuntime(),
+  codexRuntime: () => module.exports.codexModelCatalog.defaultRuntime,
+  isOfficial: provider => module.exports.codexOfficialRelay.isOfficialCodexOAuthProvider(provider),
+  isLocal: module.exports.requestLocality.isLocalRequest,
+}));
+
+exposeHostApi('relayModelCatalog', () => getNative().relayModelCatalogApi({
+  outboundFetch: module.exports.outbound.outboundFetch,
+  officialAccountId: provider => module.exports.officialAccounts.officialAccountIdFromProvider(provider),
+}));
+
+exposeHostApi('voiceCorrector', () => {
+  const native = getNative();
+  return native.voiceCorrectorApi({
+    windows: native.HotwordWindows, loadPinyin: () => require('pinyin-pro').pinyin,
+  });
+});
+exposeHostApi('voiceMiner', () => {
+  const native = getNative();
+  return native.voiceMinerApi({ corrector: module.exports.voiceCorrector, list: native.voiceHotwordList });
+});
+exposeHostApi('voiceLearner', () => {
+  const native = getNative();
+  return native.voiceLearnerApi({
+    miner: module.exports.voiceMiner, scan: native.voiceWordsScan, fs: require('node:fs'),
+    atomicWriteJson: module.exports.runtimeSecurity.atomicWriteJson, basename: require('node:path').basename,
+  });
+});
+exposeHostApi('voiceConfig', () => getNative().voiceConfigApi({
+  env: process.env, fs: require('node:fs'), atomicWriteJson: module.exports.runtimeSecurity.atomicWriteJson,
+  paths: module.exports.appPaths.createPaths({ dataDir: process.env.MULTICC_DATA_DIR }),
+  learner: module.exports.voiceLearner, corrector: module.exports.voiceCorrector,
+}));
+
+exposeHostApi('voiceLaunchRegistry', () => getNative().voiceLaunchRegistryApi({
+  isVoiceRouterRecord: module.exports.voiceRouter.isVoiceRouterRecord,
+}));
+exposeHostApi('voiceGatewayDomain', () => getNative().voiceGatewayDomainApi({
+  resolveDirectoryCommander: module.exports.taskBoardCore.resolveDirectoryCommander,
+}));
+exposeHostApi('voiceGatewayHost', () => getNative().voiceGatewayHostApi({
+  domain: module.exports.voiceGatewayDomain,
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+  acpAgentPath: path.join(__dirname, '..', 'voice', 'multicc-acp-agent.mjs'),
+}));
+exposeHostApi('voiceRuntimeHost', () => getNative().voiceRuntimeHostApi({
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+}));
+exposeHostApi('asrModelInstaller', () => {
+  const { Transform, Readable } = require('node:stream');
+  const { pipeline } = require('node:stream/promises');
+  return getNative().asrModelInstallerApi({
+    async writeBody(body, part, append, onChunk, controller, idleTimeout) {
+      const guard = setTimeout(() => controller.abort(), idleTimeout);
+      guard.unref?.();
+      try {
+        const source = Readable.fromWeb(body);
+        const counter = new Transform({
+          transform(chunk, _encoding, next) {
+            try { onChunk(chunk.length); guard.refresh(); }
+            catch (err) { next(err); return; }
+            next(null, chunk);
+          },
+        });
+        const output = require('node:fs').createWriteStream(part, { flags: append ? 'a' : 'w' });
+        await pipeline(source, counter, output, { signal: controller.signal });
+      } finally { clearTimeout(guard); }
+    },
+  });
+});
+exposeHostApi('voiceSettingsHost', () => getNative().voiceSettingsHostApi({
+  isLocalRequest: module.exports.requestLocality.isLocalRequest,
+}));
 exposeHostApi('voiceRouter', () => getNative().voiceRouterApi(getNative(),
   ({ records, mutate, runtimeRoot, cli, now } = {}) => ({ records, mutate, runtimeRoot, cli, now }),
   (records, mutate, root, cli, now = () => new Date().toISOString()) => {
@@ -951,28 +2616,50 @@ exposeHostApi('rolloutPath', () => getNative().rolloutPathApi(getNative(), (deps
   key: (dir, record) => `${dir}::${record.cliSessionId}`, fresh: at => now() - at <= ttl,
 })));
 
+function tunnelHostPorts() {
+  return {
+    path, process, fs: require('node:fs'), os: require('node:os'), crypto: require('node:crypto'),
+    http: require('node:http'), https: require('node:https'),
+  };
+}
+exposeHostApi('tailscaleFunnelHealth', () => getNative().tailscaleFunnelHealthApi(tunnelHostPorts()));
+exposeHostApi('sakuraFrp', () => getNative().sakuraFrpApi(tunnelHostPorts()));
 exposeHostApi('tunnelMonitor', () => {
-  const { atomicWriteJson } = require('../runtime-security');
-  const { createTailscaleFunnelProbe } = require('../tailscale-funnel-health');
-  const { readLauncherToken, getUserInfo, discoverAccess } = require('../tunnel-sakurafrp-api');
+  const { atomicWriteJson } = module.exports.runtimeSecurity;
   return getNative().tunnelMonitorApi({
-    pkgRoot: path.resolve(__dirname, '../..'), path, process,
-    fs: require('node:fs'), os: require('node:os'), http: require('node:http'), https: require('node:https'),
-    execFile: require('node:child_process').execFile, atomicWriteJson, createTailscaleFunnelProbe,
-    findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp, readLauncherToken, getUserInfo, discoverAccess,
+    ...tunnelHostPorts(), pkgRoot: path.resolve(__dirname, '../..'),
+    execFile: require('node:child_process').execFile, atomicWriteJson,
+    findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp,
   });
 });
 
+let orchestrationServicePorts;
+exposeHostApi('orchestrationServices', () => {
+  class OperationConflictError extends Error {
+    constructor(message, operationId) {
+      super(message);
+      this.name = 'OperationConflictError';
+      this.code = 'OPERATION_CONFLICT';
+      this.statusCode = 409;
+      this.operationId = operationId || null;
+    }
+  }
+  orchestrationServicePorts = {
+    crypto: require('node:crypto'), OperationConflictError, outboxConflict: module.exports.outboxRuntime.OutboxConflictError,
+    overrideAddon: () => module.exports.getNative === getNative ? undefined : module.exports.getNative(),
+  };
+  return getNative().orchestrationServicesApi(orchestrationServicePorts);
+});
+
 exposeHostApi('orchestrationHost', () => {
-  const { createOrchestrationStore } = require('../orchestration/json-store-host');
-  const { createOrchestrationSqliteStore } = require('../orchestration/sqlite-store');
-  const { createOutbox } = require('../outbox');
-  const { createWaitService } = require('../wait/service');
-  const { createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES } = require('../operation-service');
+  const { createOrchestrationStore } = module.exports.orchestrationJson;
+  const { createOrchestrationSqliteStore } = module.exports.orchestrationSqlite;
+  const { createOutbox } = module.exports.outboxRuntime;
+  const { TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES } = module.exports.orchestrationServices;
   const api = getNative().orchestrationRuntimeApi({
     crypto: require('node:crypto'), process, AsyncLocalStorage: require('node:async_hooks').AsyncLocalStorage,
-    createOrchestrationStore, createOrchestrationSqliteStore, createOutbox, createWaitService,
-    createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES,
+    createOrchestrationStore, createOrchestrationSqliteStore, createOutbox, servicePorts: orchestrationServicePorts,
+    TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES,
     jsonStorePorts: orchestrationJsonPorts(createOrchestrationStore),
     asyncMethod(native) {
       const method = async (...args) => native(...args);
@@ -984,17 +2671,28 @@ exposeHostApi('orchestrationHost', () => {
     get DEFAULTS() { return api.DEFAULTS; } };
 });
 
+exposeHostApi('turnLifecycle', () => getNative().chatLifecycleApi(getNative()));
+exposeHostApi('chatHostCoordinator', () => getNative().chatCoordinatorApi({
+  lifecycle: module.exports.turnLifecycle, router: module.exports.postTurnRouter,
+}));
+exposeHostApi('chatHostRuntime', () => getNative().chatRuntimeApi({
+  coordinator: module.exports.chatHostCoordinator, redact: module.exports.observability.redactProviderRouteCapability,
+  protocol: module.exports.cliCapability.protocolFamilyOf, turnProgress: getTurnProgress,
+}));
 exposeHostApi('chatApi', () => getNative().chatHostExports([
-  () => require('../chat/turn-request'), getRetryPolicy, () => module.exports.apiErrorPolicy,
-  () => require('../chat/api-error-host'), () => module.exports.postTurnRouter,
-  () => ({ createTurnRuntimeStore: require('../state/owner').createTurnRuntimeStore }),
-  () => require('../chat/turn-lifecycle'), () => require('../chat/provider-attempt-runtime'),
-  () => providerInvocation, () => require('../chat/host-coordinator'), () => require('../chat/host-runtime'),
+  () => module.exports.turnRequestHost, getRetryPolicy, () => module.exports.apiErrorPolicy,
+  () => getNative().apiErrorHostApi({
+    vendorLoginForCli: getVendorLogin().vendorLoginForCli,
+    systemProxyHijackHint: module.exports.globalProxy.systemProxyHijackHint,
+  }), () => module.exports.postTurnRouter,
+  () => ({ createTurnRuntimeStore: module.exports.stateOwner.createTurnRuntimeStore }),
+  () => module.exports.turnLifecycle, () => module.exports.providerAttemptRuntime,
+  () => providerInvocation, () => module.exports.chatHostCoordinator, () => module.exports.chatHostRuntime,
   () => module.exports.finalizationPlan, () => require('../chat/finalize-host'),
 ]));
 
 exposeHostApi('taskBoardRouting', () => getNative().taskBoardRoutingApi({
-  taskDomain: require('./task-domain').taskDomain, taskDirId: require('../task-board/normalize').taskDirId,
+  taskDomain: module.exports.taskDomainHost.taskDomain, taskDirId: module.exports.taskNormalize.taskDirId,
   entries: values => [...values || []],
   affinity: task => new Set((task.refs || []).map(ref => ref.sessionId).filter(Boolean)),
   rankInputs(records, { dirId = null, contextTerms = new Map(), affinitySessionIds = new Set(), options = {} } = {}, check) {
@@ -1016,8 +2714,8 @@ exposeHostApi('classifyVocab', () => {
 });
 
 exposeHostApi('apiErrorPolicy', () => {
-  const { extractUpstreamError } = require('../upstream-error');
-  const { errorFields } = require('../provider-error');
+  const { extractUpstreamError } = module.exports.upstreamError;
+  const { errorFields } = module.exports.providerError;
   policyBinding = { process, addonPath: process.env.MULTICC_RUST_ADDON, prebuiltDir: process.env.MULTICC_RUST_PREBUILT_DIR };
   return getNative().apiErrorPolicyApi(getNative, extractUpstreamError, errorFields, policyBinding);
 });
@@ -1039,3 +2737,10 @@ function createHostBatteryReader() {
 }
 module.exports.createHostBatteryReader = createHostBatteryReader;
 module.exports.hostBatteryUnavailable = hostBatteryUnavailable;
+
+// The official ACP SDK, streams and Node network/timer interfaces remain host ports.
+// Rust owns routing, session state, continuation order and admission decisions.
+exposeHostApi('voiceAcpBridge', () => getNative().voiceAcpBridgeApi({
+  WebSocket: require('ws'), randomUUID: require('node:crypto').randomUUID,
+  setTimeout, clearTimeout,
+}));

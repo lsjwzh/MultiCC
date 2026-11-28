@@ -14,7 +14,7 @@
 
 const NOTE_KIND = 'auto_route';
 const ROUTE_PHASES = new Set(['selected', 'switched']);
-const { selectionKey } = require('../providers/auto-provider-config');
+const { selectionKey } = require('../native/binding').autoProviderConfig;
 
 function clean(value, max = 256) {
   return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null;

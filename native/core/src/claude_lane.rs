@@ -663,6 +663,11 @@ fn valid_error_code(code: &str) -> bool {
         .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
 }
 
+pub fn sdk_config_hash(serialized: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(serialized.as_bytes()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

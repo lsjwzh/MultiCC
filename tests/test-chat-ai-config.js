@@ -838,3 +838,41 @@ test('Antigravity default row names the tier the CLI is actually running', async
     delete require.cache[modulePath];
   }
 });
+
+test('agy 目录刷新后，族名选项和具体模型标签同步变化', () => {
+  const before = providerCatalog.cliEffort('agy');
+  try {
+    providerCatalog.readAgyEfforts({ levels: [], default: '', tierSuffixes: ['-high'],
+      modelLevels: { 'gemini-4-carbon': ['', 'low'], 'new-family': ['', 'high'] },
+      concreteModels: { 'new-family-high': 'New Family (High)' } });
+    const levels = model => ai.effortOptions('agy', model).map(row => row.value);
+    assert.deepEqual(levels('gemini-4-carbon'), ['', 'low']);
+    assert.deepEqual(levels('new-family'), ['', 'high']);
+    assert.deepEqual(levels('new-family-high'), []);
+    assert.deepEqual(levels('gemini-4-neon'), []);
+    assert.equal(providerCatalog.agyModelLabel('new-family', 'high'), 'New Family (High)');
+    assert.equal(providerCatalog.agyModelLabel('gemini-4-carbon', 'high'), 'gemini-4-carbon');
+  } finally {
+    providerCatalog.readAgyEfforts(before);
+  }
+});
+
+test('agy 运行配置卡片首次打开即按固定账号读取具体档位，默认账号独立', async () => {
+  const model = 'gemini-4-carbon';
+  const current = { model: model + '-high', label: 'Carbon (High)' };
+  const spec = { levels: [], modelLevels: { [model]: ['', 'high'] }, concreteModels: { [current.model]: current.label } };
+  const before = providerCatalog.cliEffort('agy');
+  try {
+    providerCatalog.readAgyEfforts({ levels: [], concreteModels: { [current.model]: 'Default account model' } });
+    const { win, calls } = loadModelsModule({ responses: [{ source: 'relay', models: [{ model }], current, efforts: { agy: spec } }] });
+    win.MultiCCProviderCatalog = providerCatalog;
+    const account = 'pinned-card';
+    await new Promise(resolve => {
+      assert.equal(win.runConfigModelLabel('agy', model, 'high', account, '默认', resolve), model);
+    });
+    assert.deepEqual(calls, ['/api/agy/models?accountId=pinned-card']);
+    assert.equal(win.runConfigModelLabel('agy', model, 'high', account, '默认'), current.label);
+    assert.equal(win.runConfigModelLabel('agy', '', '', account, '默认'), '默认 · Carbon (High)');
+    assert.equal(providerCatalog.agyModelLabel(model, 'high'), 'Default account model');
+  } finally { providerCatalog.readAgyEfforts(before); }
+});

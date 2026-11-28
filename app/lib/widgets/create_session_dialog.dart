@@ -1084,6 +1084,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                       _customModel = false;
                       _pickedModel = v;
                     }
+                    if (!_modelEfforts.contains(_pickedEffort)) _pickedEffort = _defaultEffort;
                   });
                 },
               ),
@@ -1118,7 +1119,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 const SizedBox(height: 6),
                 TextField(
                   controller: _customModelCtrl,
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (_) => setState(() {
+                    if (!_modelEfforts.contains(_pickedEffort)) _pickedEffort = _defaultEffort;
+                  }),
                   style: const TextStyle(
                     color: Color(0xFF233249),
                     fontSize: 13,

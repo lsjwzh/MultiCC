@@ -610,7 +610,9 @@ test('quota snapshots and subscriptions match the pre-migration host on identica
     return record.exports;
   }
   const legacyBar = frozenSource('quota-bar-view.js', 'legacy-quota-bar-host.js');
-  const legacy = frozenSource('provider-limit-sync.js', 'legacy-provider-limit-sync.js', { './quota-bar-view': legacyBar });
+  const legacy = frozenSource('provider-limit-sync.js', 'legacy-provider-limit-sync.js', {
+    './quota-bar-view': legacyBar, './provider-limit-cache-native-host': { STALE_MS_DEFAULT: 600000 },
+  });
   const live = require('../src/native/binding');
   const now = 1700000000000;
   t.mock.method(Date, 'now', () => now);

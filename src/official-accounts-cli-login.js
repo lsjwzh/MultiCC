@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('./network/outbound');
+const { outboundFetch } = require('./native/binding').outbound;
 
 // Notices the login the CLI itself holds (Keychain "Claude Code-credentials",
 // ~/.codex/auth.json) so the accounts panel can say "your CLI is signed in as X
@@ -54,8 +54,8 @@ function readCodexCliLogin(file) {
 function createCliLoginDetector({
   accounts,
   fetchImpl = outboundFetch,
-  readClaudeCli = () => require('./quota/claude-cli-oauth').readCliCredentials(),
-  fetchProfile = require('./claude-auth/official-oauth').fetchProfile,
+  readClaudeCli = () => require('./native/binding').claudeCliUsage.readCliCredentials(),
+  fetchProfile = require('./native/binding').claudeOfficialOAuth.fetchProfile,
   codexAuthFile = defaultCodexAuthFile(),
   intervalMs = DEFAULT_INTERVAL_MS,
 } = {}) {

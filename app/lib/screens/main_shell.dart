@@ -13,6 +13,7 @@ import '../services/voice_launch_service.dart';
 import '../i18n.dart';
 import '../theme.dart';
 import '../widgets/directory_card.dart';
+import '../widgets/computer_spaces_shell.dart';
 import '../widgets/air_tasks_view.dart';
 import '../widgets/server_switch_dialog.dart';
 import '../widgets/workspace_navigation_drawer.dart';
@@ -267,9 +268,14 @@ class _ChatSheetState extends State<_ChatSheet>
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => LayoutBuilder(builder: _buildSheet);
+
+  Widget _buildSheet(BuildContext context, BoxConstraints constraints) {
     final mq = MediaQuery.of(context);
-    final h = mq.size.height;
+    // 多电脑页头已占用部分屏幕，浮层和拖动手势共用剩余的实际高度。
+    final h = constraints.maxHeight.isFinite && constraints.maxHeight > 0
+        ? constraints.maxHeight
+        : mq.size.height;
     final statusBar = mq.padding.top;
 
     return AnimatedBuilder(
@@ -372,10 +378,7 @@ class _DirectoryListBodyState extends State<_DirectoryListBody> {
     // Same reconnect lifecycle as SettingsScreen: replace the shell and dispose
     // its sockets/providers. Server-side tasks continue running independently.
     navigator.pushAndRemoveUntil(
-      MaterialPageRoute<void>(builder: (_) => ChangeNotifierProvider(
-        create: (_) => SessionManager(settings: settings),
-        child: MainShell(settings: settings),
-      )),
+      MaterialPageRoute<void>(builder: (_) => ComputerSpacesShell(settings: settings)),
       (_) => false,
     );
   }

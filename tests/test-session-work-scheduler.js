@@ -6,9 +6,9 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('node:child_process');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createOutbox } = require('../src/outbox');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
+const { createOutbox } = require('../src/native/binding').outboxRuntime;
 const {
   FREEZE_REASON_CLASSIFY,
   createSessionWorkScheduler,
@@ -82,8 +82,11 @@ function loadDomainMigrationOracle(mutate = source => source) {
   oracle.filename = filename;
   oracle.paths = Module._nodeModulePaths(path.dirname(filename));
   const originalRequire = oracle.require.bind(oracle);
-  oracle.require = id => id === './user-input'
-    ? require('./helpers/legacy-session-work-user-input') : originalRequire(id);
+  oracle.require = id => {
+    if (id === './user-input') return require('./helpers/legacy-session-work-user-input');
+    if (id === '../outbox') return require('./helpers/frozen-e960f6eb/outbox');
+    return originalRequire(id);
+  };
   oracle._compile(mutate(snapshot), filename);
   return oracle.exports.createSessionWorkScheduler;
 }
@@ -513,7 +516,7 @@ test('a missing Rust question snapshot fails closed inside a scheduler draft', a
     draft.sessionSchedules.s = { sessionId: 's', state: 'running', classifyState: 'P',
       active: { entryId: 'active', taskId: 'task' } };
   });
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 10, liveTurn: () => null,
     initialState: () => ({ pendingQuestion: { requestId: 'q', taskId: 'task' },
       activeTurn: null, category: 'W' }) });

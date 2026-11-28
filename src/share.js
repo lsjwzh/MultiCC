@@ -22,8 +22,8 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const { createPaths } = require('./native/binding').appPaths;
-const { atomicWriteJson } = require('./runtime-security');
-const { timingSafeEqualText } = require('./auth-security');
+const { atomicWriteJson } = require('./native/binding').runtimeSecurity;
+const { timingSafeEqualText } = require('./native/binding').authSecurity;
 
 const FILE = createPaths({ dataDir: process.env.MULTICC_DATA_DIR }).sharesFile;
 const MAX_SHARE_PASSWORD_BYTES = 4096;

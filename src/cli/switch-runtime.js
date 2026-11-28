@@ -4,10 +4,10 @@
 // identity, persistence transactions, process handles and asynchronous ports.
 const crypto = require('node:crypto');
 const { getNative } = require('../native/binding');
-const { selectionKey } = require('../providers/auto-provider-config');
+const { selectionKey } = require('../native/binding').autoProviderConfig;
 const capability = require('../native/binding').cliCapability;
 const { nativeSessionExists } = require('./native-session-exists');
-const { nativeVendorOf } = require('../providers/native-vendor');
+const { nativeVendorOf } = require('../native/binding').nativeVendor;
 const { createCliToolsHost, OFFICIAL_INSTALL_SPECS } = require('./tools-host');
 const { mountCliSwitchHostRoute, hostFailure } = require('../routes/cli-switch-host');
 

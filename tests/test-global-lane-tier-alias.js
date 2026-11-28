@@ -30,12 +30,12 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 
 // Data root and the ZCode/Kimi home roots resolve at require time, so both
 // environment overrides must be in place before the module loads.
-const providers = require('../src/providers/host.js');
-const { createProviderBinding } = require('../src/providers/binding');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const providers = require('../src/native/binding').providersHost;
+const { createProviderBinding } = require('../src/native/binding').providerBinding;
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createProviderInvocationFactory } = require('../src/native/binding').providerInvocation;
 const { normalizeTurnRequest, createTurnLifecycle } = require('../src/chat');
-const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+const { createKimiAdapter } = require('../src/native/binding').cliAdapters;
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 

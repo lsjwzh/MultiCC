@@ -1,5 +1,5 @@
 'use strict';
-const { createAirSyncRuntime } = require('../../src/workspace/air-sync-runtime');
+const { createAirSyncRuntime } = require('../../src/native/binding').airSyncRuntime;
 const { createAirReadIndex } = require('./legacy-air-read-index');
 const { WebSocketServer } = require('ws');
 

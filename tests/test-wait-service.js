@@ -6,9 +6,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-const { createWaitService } = require('../src/wait/service');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+const { createWaitService } = require('../src/native/binding').orchestrationServices;
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const Database = require('better-sqlite3');
 
 test('SQLite wait cancellation matches the legacy state machine and preserves record data', async t => {

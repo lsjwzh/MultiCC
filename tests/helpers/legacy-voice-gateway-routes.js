@@ -5,7 +5,7 @@
 
 const path = require('path');
 const { createErrorDto, requestContext, withApiMeta } = require('./frozen-file-batch20/api-contract');
-const { createVoiceGatewayService, GATEWAY_PROVIDER } = require('../../src/voice/gateway');
+const { createVoiceGatewayService, GATEWAY_PROVIDER } = require('./frozen-voice-domain/gateway');
 
 function resultStatus(code) {
   if (code === 'directory_not_found' || code === 'voice_gateway_not_found') return 404;

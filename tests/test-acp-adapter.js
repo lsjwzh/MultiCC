@@ -7,8 +7,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const test = require('node:test');
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
-const { createAcpAdapter, createGeminiAdapter, createGrokAdapter } = require('../src/cli-adapters/acp');
-const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
+const { createAcpAdapter, createGeminiAdapter, createGrokAdapter, createOpencodeAdapter } = require('../src/native/binding').cliAdapters;
 const { pickPermissionOption, routerMcpServers } = require('./helpers/native-acp-bridge');
 const { gatewayPath } = require('../src/native/binding');
 
@@ -277,7 +276,7 @@ test('OpenCode legacy JSON context failures use the same structured diagnosis', 
 });
 
 test('协议投影保留数值码和嵌套类型，巨大文案不会挤掉类型或带入请求正文', () => {
-  const { errorFields, classifyProviderError } = require('../src/provider-error');
+  const { errorFields, classifyProviderError } = require('../src/native/binding').providerError;
   const wire = errorFields({ code: -32603, message: 'x'.repeat(100000), data: {
     errorName: 'ContextOverflowError', statusCode: 400,
     prompt: { message: '不得透传的请求正文' }, authorization: '不得透传的认证字段',

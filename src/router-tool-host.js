@@ -2,7 +2,7 @@
 
 const path = require('path');
 const { createRouterToolRuntime } = require('./router-tool-runtime');
-const { applyRouterMcpEnv } = require('./cli-adapters/router-mcp');
+const { applyRouterMcpEnv } = require('./native/binding').routerMcp;
 const secretsVault = require('./secrets-vault');
 const { getWriterGroup } = require('./native/binding');
 

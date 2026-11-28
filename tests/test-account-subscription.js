@@ -6,9 +6,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { subscriptionFromBody, codexAuthSubscription } = require('../src/native/binding');
 const { mountAccountSubscriptionRoute } = require('./helpers/legacy-account-subscription-route');
-const { registerAccountSubscriptionReader } = require('../src/quota/account-subscription-reader');
-const subscriptions = require('../src/quota/account-subscription-cache');
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { registerAccountSubscriptionReader } = require('../src/native/binding').accountReader;
+const subscriptions = require('../src/native/binding').accountSubscriptionCache;
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 
 const DATE = '2030-05-12T12:00:00Z';
 const MS = Date.parse(DATE);
@@ -271,20 +271,8 @@ test('record 之后落库的外部写入不会被事后指纹吞掉（确定性�
     },
   };
 
-  const runtimePath = require.resolve('../src/native/binding');
-  const cachePath = require.resolve('../src/quota/account-subscription-cache');
-  const runtime = require(runtimePath);
-  const saved = { getNative: runtime.getNative, runNative: runtime.runNative };
-  t.after(() => {
-    runtime.getNative = saved.getNative;
-    runtime.runNative = saved.runNative;
-    delete require.cache[cachePath];
-    require(cachePath);
-  });
-  runtime.getNative = () => fakes;
-  runtime.runNative = operation => Promise.resolve().then(operation);
-  delete require.cache[cachePath];
-  const cache = require(cachePath);
+  const { createAccountSubscriptionCache } = require('../src/native/binding');
+  const cache = createAccountSubscriptionCache(fakes, operation => Promise.resolve().then(operation));
   cache.configure({ file });
 
   await cache.record('codex', '1111111111111111', { status: 'ok' }, Date.now());
@@ -375,7 +363,7 @@ test('多写者、record 与 project 交错时所有写入最终都可见', asyn
 
 test('订阅读取与冻结版使用相同的提前返回、请求和回退结果', async () => {
   const previous = require('./helpers/frozen-file-batch8/native-subscription').query;
-  const current = require('../src/quota/account-subscription-reader').query;
+  const current = require('../src/native/binding').accountReader.query;
   async function sample(query, input, mode) {
     const calls = [];
     const result = await query(input, { fetch: async (url, options) => {
@@ -390,4 +378,26 @@ test('订阅读取与冻结版使用相同的提前返回、请求和回退结�
       assert.deepEqual(await sample(current, input, mode), await sample(previous, input, mode));
     }
   }
+});
+
+test('an outstanding read of the previous database cannot replace a reconfigured cache', async () => {
+  let finishA, startedA;
+  const started = new Promise(resolve => { startedA = resolve; });
+  const native = {
+    accountSubscriptionCache(file) {
+      if (file === 'B') return JSON.stringify({ source: 'B' });
+      startedA();
+      return new Promise(resolve => { finishA = () => resolve(JSON.stringify({ source: 'A' })); });
+    },
+  };
+  const { createAccountSubscriptionCache } = require('../src/native/binding');
+  const cache = createAccountSubscriptionCache(native, operation => operation());
+  cache.configure({ file: 'A' });
+  const first = cache.ready();
+  await started;
+  cache.configure({ file: 'B' });
+  await cache.ready();
+  finishA();
+  await first;
+  assert.deepEqual(cache.snapshot(), { source: 'B' });
 });

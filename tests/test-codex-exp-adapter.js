@@ -199,6 +199,7 @@ function frozenCodexAdapter() {
   const legacy = new Module(filename); legacy.filename = filename;
   legacy.paths = Module._nodeModulePaths(path.dirname(filename));
   legacy.require = function (id) {
+    if (id === '../upstream-error') return require('./helpers/frozen-batch10').frozen('upstream-error');
     if (id === '../message-composer') return require('./helpers/legacy-message-composer');
     return Module.prototype.require.call(this, id);
   };
@@ -425,7 +426,7 @@ const legacy=new Module(filename);legacy.filename=filename;legacy.paths=Module._
 const req=legacy.require.bind(legacy);legacy.require=name=>{
  if(name!=='./codex-background-events.cjs')return req(name);
  const bgFile=path.join(path.dirname(filename),'codex-background-events.cjs');const bg=new Module(bgFile);
- bg.filename=bgFile;bg.paths=Module._nodeModulePaths(path.dirname(bgFile));bg._compile(fs.readFileSync(${JSON.stringify(path.join(__dirname, 'helpers/legacy-codex-background-events.cjs.txt'))},'utf8'),bgFile);return bg.exports;
+ bg.filename=bgFile;bg.paths=Module._nodeModulePaths(path.dirname(bgFile));bg.require=require(${JSON.stringify(require.resolve('./helpers/frozen-batch10'))}).from(bgFile);bg._compile(fs.readFileSync(${JSON.stringify(path.join(__dirname, 'helpers/legacy-codex-background-events.cjs.txt'))},'utf8'),bgFile);return bg.exports;
 };legacy._compile(source,filename);`);
   return { cmd: process.execPath, args: [launcher] };
 }

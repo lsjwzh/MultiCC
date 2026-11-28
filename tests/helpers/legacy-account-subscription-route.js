@@ -16,7 +16,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 
 function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
   const pending = new Map();
-  const cache = require(path.join(ROOT, 'src/quota/account-subscription-cache'));
+  const cache = require(path.join(ROOT, 'src/native/binding')).accountSubscriptionCache;
   async function read(id) {
     if (vendor === 'claude' && id && !deps.accounts.listClaudeAccounts().some(a => a.id === id)) {
       return { status: 'no_auth' };
@@ -32,7 +32,7 @@ function mountAccountSubscriptionRoute(app, vendor, deps = {}) {
         let token;
         if (id) token = (await deps.credentials.peekAccountToken(id))?.token;
         else {
-          const read = await (deps.readCliCredentials || require(path.join(ROOT, 'src/quota/claude-cli-oauth')).readCliCredentials)();
+          const read = await (deps.readCliCredentials || require(path.join(ROOT, 'src/native/binding')).claudeCliUsage.readCliCredentials)();
           if (read?.ok && (read.expiresAt == null || read.expiresAt > Date.now())) token = read.accessToken;
         }
         return require(path.join(__dirname, 'frozen-file-batch8/native-subscription')).query({ vendor, token }, { fetch: deps.fetch });

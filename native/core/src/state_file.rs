@@ -18,6 +18,15 @@ use crate::js::serde::js_json_stringify_indent;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Unique sibling name for native writes and the public Node fs adapter.
+pub fn temporary_suffix() -> String {
+    format!(
+        ".tmp.{}.{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 pub const FILE_MODE: u32 = 0o600;
 pub const DIR_MODE: u32 = 0o700;
 
@@ -156,12 +165,23 @@ pub fn write_bytes_atomic_traced_before_rename(
     dir_mode: u32,
     before_rename: impl FnOnce() -> io::Result<()>,
 ) -> Result<(), WriteFailure> {
-    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let dir = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let existed = dir.exists();
     // `writeTextAtomic` swallows EEXIST from the recursive mkdir and lets the
     // temp-file open surface the real failure (a file where a directory
     // belongs fails ENOTDIR there, exactly like Node).
-    if let Err(error) = fs::create_dir_all(dir) {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        // Match mkdirSync({recursive: true, mode}) for newly created ancestors.
+        builder.mode(dir_mode);
+    }
+    if let Err(error) = builder.create(dir) {
         if error.kind() != io::ErrorKind::AlreadyExists {
             return Err(WriteFailure::new(WriteStage::Mkdir, error, dir));
         }
@@ -171,11 +191,7 @@ pub fn write_bytes_atomic_traced_before_rename(
             .map_err(|error| WriteFailure::new(WriteStage::ChmodDir, error, dir))?;
     }
     let mut name = target.as_os_str().to_os_string();
-    name.push(format!(
-        ".tmp.{}.{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    name.push(temporary_suffix());
     let temp = PathBuf::from(name);
     let result = (|| {
         let mut options = fs::OpenOptions::new();

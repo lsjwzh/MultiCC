@@ -104,7 +104,7 @@ fn sanitize<'a>(state: L<'a>, value: L<'a>, fallback: L<'a>) -> Result<L<'a>> {
         "message.slice",
     )
 }
-fn error_dto<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
+pub(crate) fn error_dto<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
     if source.nullish()? {
         return Err(source.type_error("Cannot destructure property 'message' of '(intermediate value)(intermediate value)(intermediate value)' as it is null."));
     }
@@ -396,12 +396,8 @@ fn wait<'a>(state: L<'a>, source: L<'a>) -> Result<L<'a>> {
     )
 }
 
-#[napi]
-pub fn api_contract_api(env: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
-    let anchor = L::new(&env, anchor);
-    let state = fields(anchor, &[])?;
-    crate::session_dto::install_safety(&env, state)?;
-    let regexp = anchor.global()?.get(c"RegExp")?;
+pub(crate) fn install_error_patterns(state: L<'_>) -> Result<()> {
+    let regexp = state.global()?.get(c"RegExp")?;
     for (key, pattern) in [
         (c"idPattern", "^[A-Za-z0-9._:-]{1,128}$"),
         (c"codePattern", "^[a-z0-9_.-]{1,96}$"),
@@ -423,6 +419,15 @@ pub fn api_contract_api(env: Env, anchor: Unknown<'_>) -> Result<sys::napi_value
         (r"(?:/[A-Za-z0-9._-]+){2,}", "g"),
     ].iter().enumerate() { patterns.set_element(i as u32, regexp.construct(&[text(state, pattern)?, text(state, flags)?])?)?; }
     state.set(c"patterns", patterns)?;
+    Ok(())
+}
+
+#[napi]
+pub fn api_contract_api(env: Env, anchor: Unknown<'_>) -> Result<sys::napi_value> {
+    let anchor = L::new(&env, anchor);
+    let state = fields(anchor, &[])?;
+    crate::session_dto::install_safety(&env, state)?;
+    install_error_patterns(state)?;
     state.set(
         c"isString",
         method(&env, state, "", 1, 1, |s, a| {

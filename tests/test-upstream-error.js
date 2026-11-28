@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { extractUpstreamError, publicUpstreamError, publicTransportError, readUpstreamError } = require('../src/upstream-error');
+const { extractUpstreamError, publicUpstreamError, publicTransportError, readUpstreamError } = require('../src/native/binding').upstreamError;
 
 const cause = {
   message: "Invalid 'input[6].id': 'tool_a'. Expected an ID that begins with 'fc'.",
@@ -59,4 +59,26 @@ test('cyclic error objects do not recurse forever', () => {
   const error = { message: 'socket closed' };
   error.error = error;
   assert.equal(extractUpstreamError(error).message, 'socket closed');
+});
+
+test('public diagnostics preserve UTF-16 boundaries and scrub overlapping secrets longest-first', () => {
+  const { sanitizeUpstreamText } = require('../src/native/binding').upstreamError;
+  assert.equal(sanitizeUpstreamText(' tokenXx   x\r\n😀', ['x', 'tokenXx'], -1),
+    '[REDACTED]   [REDACTED] \ud83d');
+  const diagnostic = 'sk-short at /tmp/a and A@example.test, https://me:pw@invalid.test/';
+  assert.equal(sanitizeUpstreamText(diagnostic),
+    '[REDACTED] at [PATH] and [ACCOUNT], https://[REDACTED]@invalid.test/');
+});
+
+test('aborting an upstream diagnostic returns the bytes already received and cancels its reader', async () => {
+  const controller = new AbortController();
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(stream) { stream.enqueue(new TextEncoder().encode('received prefix')); },
+    pull() { setImmediate(() => controller.abort()); },
+    cancel() { cancelled = true; },
+  });
+  const result = await readUpstreamError(new Response(body), { signal: controller.signal });
+  assert.deepEqual(result, { message: 'received prefix' });
+  assert.equal(cancelled, true);
 });

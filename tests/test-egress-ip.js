@@ -8,7 +8,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { CANDIDATES, createDetector, isValidIp } = require('../src/providers/egress-ip');
+const { CANDIDATES, createDetector, isValidIp } = require('../src/native/binding').egressIpMonitor;
 
 const MIN = 60 * 1000;
 
@@ -150,4 +150,23 @@ test('every candidate parser reads the shape its service actually answers with',
   // A service answering with an error page must not produce an address.
   assert.equal(byId.aws.parse('<html>blocked</html>').startsWith('<'), true);
   assert.equal(isValidIp(byId.aws.parse('<html>blocked</html>')), false, 'and isValidIp rejects it');
+});
+
+test('egress policy starts the monitor only for a restricted provider and uses the current reading', () => {
+  let starts = 0, reading = {};
+  const policy = require('../src/native/binding').getNative().egressIpPolicyApi({
+    ensureMonitorStarted() { starts++; }, getCachedEgressIp() { return reading; },
+  });
+  assert.deepEqual(policy.checkEgressIpAllowed({}), { allowed: true, code: null, detail: '' });
+  assert.equal(starts, 0);
+  const provider = { egressIpAllowlist: [' 192.0.2.7 ', '192.0.2.7'] };
+  assert.deepEqual(policy.normalizeAllowlist(provider.egressIpAllowlist), ['192.0.2.7']);
+  assert.throws(() => policy.assertEgressIpAllowed(provider), { code: 'EGRESS_IP_UNKNOWN' });
+  reading = { error: 'offline' };
+  assert.match(policy.checkEgressIpAllowed(provider).detail, /offline/);
+  reading = { ip: '192.0.2.8' };
+  assert.throws(() => policy.assertEgressIpAllowed(provider), { code: 'EGRESS_IP_MISMATCH' });
+  reading = { ip: '192.0.2.7' };
+  assert.equal(policy.assertEgressIpAllowed(provider), true);
+  assert.equal(starts, 4);
 });

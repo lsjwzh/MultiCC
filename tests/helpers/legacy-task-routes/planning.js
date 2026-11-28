@@ -3,8 +3,8 @@
 // migration commit). Only relative require paths were rewritten; the handler
 // logic is unchanged. Mounted by tests/helpers/legacy-task-routes.js.
 
-const planning = require('../../../src/task-board/planning');
-const { cloneBoard } = require('../../../src/native/task-domain');
+const { planning } = require('../load-frozen-task-board');
+const { cloneBoard } = require('../frozen-batch10').frozen('native/task-domain');
 
 function responseStatus(error) {
   if (error === 'task_not_found') return 404;
@@ -192,7 +192,8 @@ function createTaskPlanningRuntime({
       (req, res) => withTaskLock(req.params.taskId, () => handleMove(req, res)), 'move'));
   }
 
-  return Object.freeze({ mountRoutes, handleCreate, handleUpdate, handleRename, handleMove });
+  // The captured loopback runtime calls this same lock directly.
+  return Object.freeze({ mountRoutes, withTaskLock, handleCreate, handleUpdate, handleRename, handleMove });
 }
 
 module.exports = { createTaskPlanningRuntime };

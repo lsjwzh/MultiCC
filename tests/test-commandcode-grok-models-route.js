@@ -14,8 +14,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const cc = require('../src/routes/model-catalogs-host').getVendorCatalog('commandcode');
-const grok = require('../src/routes/model-catalogs-host').getVendorCatalog('grok');
+const cc = require('../src/native/binding').modelCatalogsHost.getVendorCatalog('commandcode');
+const grok = require('../src/native/binding').modelCatalogsHost.getVendorCatalog('grok');
 
 const CC_REAL = fs.readFileSync(path.join(__dirname, 'fixtures', 'commandcode-list-models.txt'), 'utf8');
 const GROK_AUTHED = 'Default model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n  - grok-5-preview\n';
@@ -137,8 +137,8 @@ test('四份 CLI 模型目录与冻结版逐项核对顺序、截断、缓存和
   const cases = [
     [cc, require('./helpers/frozen-file-batch7/commandcode-models'), 'parseCommandcodeList', 'peekCommandcodeModels', 'listCommandcodeModels', 3600000],
     [grok, require('./helpers/frozen-file-batch7/grok-models'), 'parseGrokModels', 'peekGrokModels', 'listGrokModels', 3600000],
-    [require('../src/routes/model-catalogs-host').getVendorCatalog('qoder'), require('./helpers/frozen-file-batch7/qoder-models'), 'parseQoderStdout', 'peekQoderModels', 'listQoderModels', 86400000],
-    [require('../src/routes/model-catalogs-host').getVendorCatalog('codebuddy'), require('./helpers/frozen-file-batch7/codebuddy-models'), 'parseCodebuddyHelp', 'peekCodebuddyModels', 'listCodebuddyModels', 3600000],
+    [require('../src/native/binding').modelCatalogsHost.getVendorCatalog('qoder'), require('./helpers/frozen-file-batch7/qoder-models'), 'parseQoderStdout', 'peekQoderModels', 'listQoderModels', 86400000],
+    [require('../src/native/binding').modelCatalogsHost.getVendorCatalog('codebuddy'), require('./helpers/frozen-file-batch7/codebuddy-models'), 'parseCodebuddyHelp', 'peekCodebuddyModels', 'listCodebuddyModels', 3600000],
   ];
   const ids = Array.from({ length: 450 }, (_, i) => 'model-' + i);
   const captures = [null, 0, {}, Symbol('catalog'), CC_REAL, GROK_ANON, GROK_AUTHED,
@@ -176,12 +176,12 @@ test('四份 CLI 模型目录与冻结版逐项核对顺序、截断、缓存和
 test('同一 CLI 并发刷新按子进程完成顺序发布，解析失败后仍可刷新', async t => {
   const callbacks = [];
   t.mock.method(require('node:child_process'), 'execFile', (_bin, _args, _opts, done) => callbacks.push(done));
-  const hostPath = require.resolve('../src/routes/model-catalogs-host');
-  const cachedHost = require.cache[hostPath];
-  delete require.cache[hostPath];
-  let catalog;
-  try { catalog = require(hostPath).getVendorCatalog('grok'); }
-  finally { require.cache[hostPath] = cachedHost; }
+  const native = require('../src/native/binding').getNative();
+  const catalog = native.modelCatalogsHostApi({
+    VendorCatalog: native.RustVendorModelCatalog,
+    execFile: require('node:child_process').execFile,
+    resolveCliCommands: () => ({}),
+  }).getVendorCatalog('grok');
 
   const gate = Promise.withResolvers();
   const prototype = require('../src/native/binding').getNative().RustVendorModelCatalog.prototype;

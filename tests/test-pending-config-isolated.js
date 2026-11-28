@@ -16,7 +16,7 @@ function gatewayBinary() {
     process.platform === 'win32' ? 'multicc-gateway.exe' : 'multicc-gateway');
 }
 
-const { writeJsonAtomic, readJson } = require('../src/state/store');
+const { writeJsonAtomic, readJson } = require('../src/native/binding').stateStore;
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-pending-config-isolated-')));
 const data = path.join(root, 'data'), home = path.join(root, 'home'), project = path.join(root, 'project');
 for (const dir of [data, home, project]) fs.mkdirSync(dir);

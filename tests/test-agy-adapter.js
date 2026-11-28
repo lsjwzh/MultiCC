@@ -2,7 +2,18 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createAgyAdapter } = require('../src/cli-adapters/index');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const previousAccountsHome = process.env.MULTICC_AGY_ACCOUNTS_HOME;
+const accountsHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-adapter-'));
+test.before(() => { process.env.MULTICC_AGY_ACCOUNTS_HOME = accountsHome; });
+test.after(() => {
+  if (previousAccountsHome === undefined) delete process.env.MULTICC_AGY_ACCOUNTS_HOME;
+  else process.env.MULTICC_AGY_ACCOUNTS_HOME = previousAccountsHome;
+  fs.rmSync(accountsHome, { recursive: true, force: true });
+});
+const { createAgyAdapter } = require('../src/native/binding').cliAdapters;
 const { createAdapterCompletion } = require('../src/cli-adapters/completion');
 const { getNative } = require('../src/native/binding');
 
@@ -242,5 +253,100 @@ test('Agy 终端命令和启动参数与冻结适配器一致', () => {
         assert.deepEqual(current.buildInvocation(envelope(options)), previous.buildInvocation(envelope(options)));
       }
     }
+  }
+});
+
+test('启动强度被拒时在原回合重试一次，已有步骤或取消会阻止重放', async () => {
+  const { EventEmitter } = require('node:events');
+  const native = getNative();
+  const provider = createAgyAdapter({ cmd: 'agy' });
+  const diagnostic = 'invalid model selection: --effort=high is not supported for model "gemini-4-carbon"';
+  const rejection = { event: 'result', result: { status: 'ERROR', error: diagnostic } };
+  for (const scenario of ['stderr', 'stdout', 'catalog', 'tool', 'cancel', 'second']) {
+    const notices = [], errors = [], launches = [], closed = [], outcomes = [], hostErrors = [];
+    const cs = { cli: 'agy', clients: new Set(), lineBuf: '', currentAssistantText: '' };
+    const turn = { turnId: 'one-turn', agyEffortRetried: scenario === 'second' };
+    const input = envelope({ first: false, sessionId: 'previous', model: 'gemini-4-carbon', effort: 'high' });
+    input.spawnOpts.agyAccountKey = scenario === 'catalog' ? '0000000000000066' : 'runner-test-' + scenario;
+    const prepared = { invocation: provider.buildInvocation(input), invocationEnvelope: input, binding: {}, attempt: {} };
+    assert.ok(prepared.invocation.args.includes('--effort'));
+    const ports = {
+      createAdapterCompletion: () => createAdapterCompletion(provider),
+      createRunnerOwnership: (_, runner) => runner,
+      crypto: require('node:crypto'), getPort: () => 1234, logger: { warn() {}, error(...args) { hostErrors.push(args); } },
+      providerRouterRuntime: { buildChildEnv: () => ({ env: {} }) },
+      providers: { releaseCodexProxyConfig() {} }, resolveCliRelayTarget: () => null,
+      processSpawnArgs: invocation => [...invocation.args, invocation.payload],
+      routerToolHost: { spawnProcess: req => req.spawn(req.command, req.args, {}) },
+      spawn(cmd, args) {
+        const proc = new EventEmitter();
+        proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+        launches.push({ cmd, args, proc });
+        return proc;
+      },
+      turnTiming: { markSpawned() {}, markSent() {}, markFirstByte() {} },
+      attemptRuntime: { acceptEvent: () => true, snapshot: () => ({}) },
+      isCurrentTurnRunner: () => true,
+      isKnownHarmlessStderrLine: () => false, sanitizeApiErrorMessage: value => value,
+      applyAdapterChatEvent(_provider, _cs, _record, _session, event, _forward, _turn, runner) {
+        const decoded = provider.decodeEvent(event);
+        runner.completion.observe(event, decoded);
+        errors.push(...decoded.filter(e => e.type === 'error'));
+      },
+      async closeTurn(state, code, signal) {
+        const ctx = { sessionName: 's', cs, persisted: { cli: 'agy' }, turn, runner: state.runner, code, signal };
+        const closePorts = { ...ports, provider,
+          assignHostProperty: (object, key, value) => { object[key] = value; },
+          meaningfulTurnOutput: () => false, turnHasSideEffects: () => false,
+          chatBroadcast: (_, notice) => notices.push(notice),
+          spawnChat: (next, retry) => start(next, retry).proc,
+        };
+        closed.push(native.chatObserveProcessExit(closePorts, ctx, state));
+        outcomes.push(ctx.completionOutcome?.state);
+      },
+    };
+    const start = (prepared, isRetry) => native.chatSpawnProcess(ports, {
+      cs, turn, provider, prepared, isRetry, persisted: { cli: 'agy' }, sessionName: 's',
+    });
+    const state = start(prepared, false);
+    if (scenario === 'catalog') {
+      const dir = path.join(accountsHome, '.multicc', 'official-accounts', 'agy', 'model-cache');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, input.spawnOpts.agyAccountKey + '.json'), JSON.stringify({
+        fetched: Math.floor(Date.now() / 1000), models: { 'gemini-4-carbon-high': 'Gemini 4 Carbon (High)' },
+      }));
+    }
+    if (scenario === 'tool') state.proc.stdout.emit('data', JSON.stringify({
+      event: 'step_update', step_update: { step_type: 'tool', state: 'ACTIVE', tool_name: 'write_file' },
+    }) + '\n');
+    if (scenario === 'stderr') state.proc.stderr.emit('data', diagnostic);
+    else state.proc.stdout.emit('data', JSON.stringify(rejection)); // EOF flush
+    state.proc.emit('close', 1, scenario === 'cancel' ? 'SIGTERM' : null);
+    await new Promise(resolve => setImmediate(resolve));
+    const retry = ['stdout', 'stderr', 'catalog'].includes(scenario);
+    assert.deepEqual(hostErrors, [], scenario);
+    assert.deepEqual(closed, [!retry], scenario);
+    assert.equal(launches.length, retry ? 2 : 1, scenario);
+    assert.equal(notices.length, retry ? 1 : 0, scenario);
+    if (retry) {
+      assert.equal(notices[0].subtype, 'warning');
+      assert.match(notices[0].message, /gemini-4-carbon.*重试/);
+      assert.ok(!launches[1].args.includes('--effort'));
+      const model = launches[1].args[launches[1].args.indexOf('--model') + 1];
+      assert.equal(model, scenario === 'catalog' ? 'gemini-4-carbon-high' : 'gemini-4-carbon');
+      assert.deepEqual(launches[1].args.slice(-4), ['--conversation', 'previous', '-p', 'hello']);
+      assert.equal(errors.length, 0);
+      assert.ok(!provider.buildInvocation(input).args.includes('--effort'));
+      const success = scenario === 'stderr';
+      const result = success ? { event: 'result', result: { status: 'SUCCESS', response: 'done' } } : rejection;
+      launches[1].proc.stdout.emit('data', JSON.stringify(result));
+      launches[1].proc.emit('close', success ? 0 : 1, null);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(hostErrors, [], scenario);
+      assert.deepEqual(closed, [false, true]);
+      if (success) assert.equal(outcomes.at(-1), 'completed');
+      assert.equal(launches.length, 2);
+    }
+    assert.equal(errors.length, scenario === 'stderr' ? 0 : 1, scenario);
   }
 });

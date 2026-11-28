@@ -15,15 +15,15 @@ const {
   isVoiceGatewayRecord,
   resolveVoiceGateway,
   voiceGatewayId,
-} = require('../src/voice/gateway');
-const { createVoiceGatewayHost, HOST_PATH } = require('../src/routes/voice-gateway-host');
-const { createVoiceRuntimeHost, HOST_PATH: VOICE_RUNTIME_HOST_PATH } = require('../src/routes/voice-runtime-host');
+} = require('../src/native/binding').voiceGatewayDomain;
+const { createVoiceGatewayHost, HOST_PATH } = require('../src/native/binding').voiceGatewayHost;
+const { createVoiceRuntimeHost, HOST_PATH: VOICE_RUNTIME_HOST_PATH } = require('../src/native/binding').voiceRuntimeHost;
 const {
   createVoiceAcpBridge,
   stableQueueEntryId,
   textFromPrompt,
   validateTransportSecurity,
-} = require('../src/voice/acp-bridge');
+} = require('../src/native/binding').voiceAcpBridge;
 
 function commander(id = 'commander-1', dirId = 'dir-1') {
   return {

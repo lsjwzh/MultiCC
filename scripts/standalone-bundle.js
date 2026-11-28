@@ -534,7 +534,7 @@ function sanityGate({ bundleDir, resourcesDir, platform, arch, install, runtime,
   const must = [
     path.join(appServerDir, 'server.js'),
     path.join(appServerDir, 'public', 'air.html'),
-    path.join(appServerDir, 'plugins', 'bridges', 'wechat-ilink.js'),
+    path.join(appServerDir, 'src', 'native', 'binding.js'),
     path.join(resourcesDir, 'launcher', 'standalone-launcher.js'),
     path.join(resourcesDir, 'launcher', 'standalone-cli.js'),
     path.join(bundleDir, platform === 'win32' ? 'multicc.cmd' : 'multicc'),

@@ -13,7 +13,7 @@ const {
   requestHealth,
   resolvePublicFunnelAddresses,
   validateHealthResponse,
-} = require('../src/tailscale-funnel-health');
+} = require('../src/native/binding').tailscaleFunnelHealth;
 
 const HOSTNAME = 'node-a.example-tail.ts.net';
 const PUBLIC_IPS = ['185.40.234.37', '185.40.234.172'];
@@ -316,4 +316,38 @@ test('local origin or control-plane failure never triggers public repair eligibi
   assert.equal(control.verdict, 'indeterminate');
   assert.equal(control.error, 'tailscale_offline');
   assert.equal(control.repairEligible, false);
+});
+
+test('Funnel caches public addresses until the exact TTL boundary and clears them after full failure', async () => {
+  let at = 0;
+  let requests = 0;
+  let edgeDown = false;
+  const probe = createTailscaleFunnelProbe({
+    run: runStatus(), now: () => at, nonce: () => 'health-probe',
+    originRequest: healthyRequest(),
+    dohRequest: async ({ type }) => {
+      requests++;
+      return { ok: true, answers: type === 'A' ? [{ type: 1, data: PUBLIC_IPS[0], TTL: 1 }] : [] };
+    },
+    edgeRequest: () => edgeDown ? { verdict: 'unhealthy', reason: 'edge_http_unreachable' }
+      : { verdict: 'healthy', httpCode: 200, get reason() { throw new Error('unused healthy reason'); } },
+  });
+  const run = () => probe.probe({ originPort: 3000 });
+  assert.equal((await run()).verdict, 'healthy');
+  assert.equal(requests, 4);
+  at = 29999;
+  assert.equal((await run()).verdict, 'healthy');
+  assert.equal(requests, 4);
+  at = 30000;
+  assert.equal((await run()).verdict, 'healthy');
+  assert.equal(requests, 8);
+  edgeDown = true;
+  assert.equal((await run()).repairEligible, true);
+  assert.equal(requests, 8);
+  edgeDown = false;
+  assert.equal((await run()).verdict, 'healthy');
+  assert.equal(requests, 12);
+  probe.clearCache();
+  await run();
+  assert.equal(requests, 16);
 });

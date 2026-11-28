@@ -12,8 +12,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { fixture: shellFixture } = require('./helpers/task-shell');
-const { createFolderMemoryService } = require('../src/memory/folder-service');
-const { readMemoryFolder } = require('../src/memory-store');
+const { createFolderMemoryService } = require('../src/native/binding').folderMemoryService;
+const { readMemoryFolder } = require('../src/native/binding').curatedMemoryStore;
 const { estimateTokens, verifySnapshot } = require('../src/native/binding').taskShellContext;
 const { historySnapshot } = require('../src/task-shell/history-context');
 const { boundedSnapshot, boundedHandoff } = require('../src/task-shell/context-plan');

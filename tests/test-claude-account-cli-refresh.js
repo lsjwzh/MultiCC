@@ -23,12 +23,12 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createOfficialAccountStore } = require('../src/official-accounts');
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createCliLoginDetector } = require('../src/official-accounts-cli-login');
-const { createCodexAccountRefreshSupervisor } = require('../src/codex/accounts-refresh');
+const { createCodexAccountRefreshSupervisor } = require('../src/native/binding').codexAccountsRefresh;
 const { createClaudeAccountCredentialService } = require('../src/claude-auth/account-credentials');
 const { createClaudeAccountRefreshSupervisor, createCliCredentialSlot, keychainServiceFor, jitteredIntervalMs, accountPhaseMs } = require('../src/claude-auth/accounts-refresh');
-const { TOKEN_URL } = require('../src/claude-auth/official-oauth');
+const { TOKEN_URL } = require('../src/native/binding').claudeOfficialOAuth;
 
 const MIN = 60 * 1000;
 

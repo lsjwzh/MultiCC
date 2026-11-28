@@ -2,11 +2,11 @@
 
 const { randomUUID } = require('node:crypto');
 const { isMainResult } = require('../native/binding').cliResultCompletion;
-const { managedRoute, createRouteRelay } = require('./claude-sdk-route');
-const { fingerprint, laneOptions } = require('./claude-sdk-config');
+const { managedRoute, createRouteRelay } = require('../native/binding').claudeSdkRoute;
+const { fingerprint, laneOptions } = require('../native/binding').claudeSdkConfig;
 const { envDigest } = require('../secrets-vault');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../native/binding').getMonitorAdmission();
-const { createBackgroundHold, processStale } = require('./background-hold');
+const { createBackgroundHold, processStale } = require('../native/binding').backgroundHold;
 const { decideMissingResume } = require('../native/binding').missingResumeRecovery;
 const { bundledClaudeCodeBinary } = require('../native/binding').cliCapability;
 const { getWriterGroup, getNative } = require('../native/binding');

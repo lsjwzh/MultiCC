@@ -1,7 +1,7 @@
 'use strict';
 
-const { cleanMemoryCandidate } = require('../memory/task-distill');
-const taskSearch = require('../task-board/search');
+const { cleanMemoryCandidate } = require('../native/binding').taskDistill;
+const taskSearch = require('../native/binding').taskSearch;
 
 // How much of the current turn is used as the retrieval query. The user message
 // states the intent in a sentence or two; the reply is long and mostly narration,
@@ -420,7 +420,7 @@ function createClassifyStateMachine(deps) {
   return require('../native/binding').getNative().createClassifyStateMachine(deps, {
     attribution: module.exports,
     crypto: require('node:crypto'),
-    shortCodes: require('../native/task-domain').taskCodeRegistryState,
+    shortCodes: require('../native/binding').taskDomainHost.taskCodeRegistryState,
   });
 }
 

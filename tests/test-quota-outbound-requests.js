@@ -7,12 +7,12 @@ const os = require('node:os');
 const path = require('node:path');
 
 let handler = async () => { throw new Error('unexpected outbound request'); };
-mock.method(require('../src/network/outbound'), 'outboundFetch', (...args) => handler(...args));
+mock.method(require('../src/native/binding').outbound, 'outboundFetch', (...args) => handler(...args));
 const { fetchCodexUsage } = require('../src/routes/codex-quota');
-const { pollCodexUsage } = require('../src/usage-limit-poller');
+const { pollCodexUsage } = require('../src/native/binding').usageLimitPoller;
 const { fetchKimiBalance } = require('../src/routes/kimi-quota');
 const { fetchWithCookies } = require('../src/routes/qoder-quota');
-const { fetchCliUsage } = require('../src/quota/claude-cli-oauth');
+const { fetchCliUsage } = require('../src/native/binding').claudeCliUsage;
 const { fetchZenGoUsage } = require('../src/quota/opencode-zen');
 const { createProviderBalanceRuntime } = require('../src/routes/provider-balance-host');
 const { mountProviderBalanceHost } = require('../src/routes/provider-balance-host');
@@ -141,7 +141,7 @@ test('供应商余额兼容层只调用 Rust 前门，编码线路参数并携�
 
 test('余额凭据宿主只提供既有凭据，不执行厂商网络查询且拒绝远端调用', async t => {
   let credentialReads = 0;
-  t.mock.method(require('../src/quota/claude-cli-oauth'), 'readCliCredentials', async () => {
+  t.mock.method(require('../src/native/binding').claudeCliUsage, 'readCliCredentials', async () => {
     credentialReads++;
     return { ok: true, accessToken: 'fixture-credential', expiresAt: Date.now() + 60000 };
   });
@@ -177,18 +177,33 @@ test('Qoder 代理请求保留手动重定向和登录失效语义', async () =>
 
 test('余量和账户请求不能重新绕过统一网络入口', () => {
   const files = [
-    'src/usage-limit-poller.js', 'src/routes/codex-quota.js', 'src/routes/claude-accounts.js',
+    'src/routes/codex-quota.js', 'src/routes/claude-accounts.js',
     'src/routes/claude-usage-quota.js', 'src/routes/provider-balance-host.js', 'src/routes/qoder-quota.js',
-    'src/routes/kimi-quota.js', 'src/quota/claude-cli-oauth.js', 'src/quota/opencode-zen.js',
-    'src/official-accounts-cli-login.js', 'src/providers/jev-client.js',
+    'src/routes/kimi-quota.js', 'src/quota/opencode-zen.js',
+    'src/official-accounts-cli-login.js',
   ];
+  const binding = fs.readFileSync(require.resolve('../src/native/binding'), 'utf8');
+  const cliUsage = binding.slice(binding.indexOf("exposeHostApi('claudeCliUsage'"), binding.indexOf("exposeHostApi('officialUsage'"));
+  assert.match(cliUsage, /\boutbound\.outboundFetch\b/);
+  const jev = binding.match(/exposeHostApi\('jevClient'[\s\S]*?(?=\nexposeHostApi\(|$)/)?.[0] || '';
+  assert.match(jev, /\boutbound\b/);
+  assert.doesNotMatch(jev, /globalThis\.fetch|global\.fetch|\bhttps?\.(request|get)\s*\(/);
+  assert.doesNotMatch(cliUsage, /globalThis\.fetch|global\.fetch|\bhttps?\.(request|get)\s*\(/);
   for (const file of files) {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     assert.doesNotMatch(source, /globalThis\.fetch|global\.fetch|\bhttps?\.(request|get)\s*\(/, file);
     // Relative fetch inside browser-evaluated scripts belongs to Chrome.
     assert.doesNotMatch(source, /\bfetch\(\s*(?!['"]\/)[A-Za-z_$'"`]/, file);
   }
-  for (const file of ['src/usage-limit-poller.js', 'src/routes/codex-quota.js']) {
+  const poller = binding.match(/exposeHostApi\('usageLimitPoller'[\s\S]*?(?=\nexposeHostApi\(|$)/)?.[0] || '';
+  assert.match(poller, /outboundFetch: module\.exports\.outbound\.outboundFetch/);
+  assert.match(poller, /\brequestCodexUsage\b/);
+  const transport = 'native/addon/src/usage_limit_host/transport.rs';
+  const rust = fs.readFileSync(path.join(__dirname, '..', transport), 'utf8');
+  assert.match(rust, /c"outboundFetch"/);
+  assert.match(rust, /c"requestCodexUsage"/);
+  assert.doesNotMatch(rust, /reqwest::|hyper::|TcpStream::connect|globalThis\.fetch/);
+  for (const file of [transport, 'native/addon/src/usage_limit_host.rs', 'src/routes/codex-quota.js']) {
     assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), /['"]https:\/\/chatgpt\.com\/backend-api\/wham\/usage['"]/,
       `${file} 不得复制 Codex 余量请求实现`);
   }

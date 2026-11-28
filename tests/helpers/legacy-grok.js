@@ -1,6 +1,6 @@
 'use strict';
 
-const { createAcpAdapter } = require('../../src/cli-adapters/acp');
+const { createAcpAdapter } = require('./legacy-acp-adapter');
 const { displayNameOf } = require('../../src/cli/cli-capability');
 
 // Grok Build (@xai-official/grok) over ACP (`grok agent stdio`). Model and

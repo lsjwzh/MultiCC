@@ -7,7 +7,7 @@ const { getNative } = require('../../src/native/runtime');
 const { isResident } = require('../../src/cli/cli-capability');
 const {
   createExactSecretStreamRedactor, redactProviderRouteCapability, maybeRouteCapability,
-} = require('../../src/observability');
+} = require('./frozen-batch10').frozen('observability');
 
 const FENCE_ORDER = Object.freeze({
   none: 0,

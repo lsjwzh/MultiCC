@@ -162,7 +162,7 @@ function createWorld(options) {
   const defaultsFile = options.defaultsFile;
   try { fs.writeFileSync(defaultsFile, JSON.stringify(scenario.defaults || { claude: null, codex: null })); } catch (_) {}
   deps.defaultsOwner = new native.RustProviderDefaultsStore(defaultsFile);
-  deps.providerDefaults = require(${JSON.stringify(path.join(repo, 'src/providers/defaults-port'))})
+  deps.providerDefaults = require(${JSON.stringify(path.join(repo, 'src/native/binding'))}).providerDefaults
     .providerDefaultsView(deps.defaultsOwner);
   deps.saveProviderDefaults = function () { deps.defaultsOwner.persist(); return true; };
   deps.validProviderId = function () { return { ok: false }; };
@@ -193,8 +193,8 @@ const http = require('node:http');
 const path = require('node:path');
 const REPO = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [REPO] }));
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
@@ -326,7 +326,7 @@ main({
 
     // Express 4 does not catch async rejections; the repo's own asyncHandler is
     // how every current async route reaches safeErrorHandler.
-    const { asyncHandler } = require(path.join(repo, 'src/http-errors'));
+    const { asyncHandler } = require(path.join(repo, 'tests/helpers/frozen-da8f52ee/http-errors'));
     const wrapped = {};
     for (const method of ['get', 'post', 'patch', 'delete', 'put', 'options', 'all', 'use']) {
       wrapped[method] = function (first, ...rest) {

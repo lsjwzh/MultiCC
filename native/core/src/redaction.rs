@@ -126,8 +126,8 @@ fn redact_view(view: &str) -> String {
         .into_owned()
 }
 
-/// `redactProviderRouteCapability(text)` for a string.
-pub fn redact_route_capability(text: &JsString) -> JsString {
+/// Necessary prefix for a route capability in a string or object key.
+pub fn has_route_anchor(text: &JsString) -> bool {
     // Every change contains an anchor (see `every_change_contains_an_anchor`).
     static FINDERS: OnceLock<Vec<UnitFinder>> = OnceLock::new();
     let finders = FINDERS.get_or_init(|| {
@@ -136,13 +136,38 @@ pub fn redact_route_capability(text: &JsString) -> JsString {
             .map(|anchor| UnitFinder::new(&anchor.encode_utf16().collect::<Vec<_>>()))
             .collect()
     });
-    if !finders
+    finders
         .iter()
         .any(|finder| finder.find(text.as_units(), 0).is_some())
-    {
+}
+
+/// `redactProviderRouteCapability(text)` for a string.
+pub fn redact_route_capability(text: &JsString) -> JsString {
+    if !has_route_anchor(text) {
         return text.clone();
     }
     from_unit_view(&route_capability_view(&to_unit_view(text)))
+}
+
+/// Match a necessary ASCII keyword without converting UTF-16 text to UTF-8.
+/// Non-ASCII units cannot participate in these case-insensitive JS patterns.
+pub fn has_text_keyword(text: &JsString) -> bool {
+    let units = text.as_units();
+    units.iter().enumerate().any(|(i, &first)| {
+        if first > 127 {
+            return false;
+        }
+        TEXT_ANCHORS.iter().any(|word| {
+            let bytes = word.as_bytes();
+            (first as u8).eq_ignore_ascii_case(&bytes[0])
+                && units.get(i..i + bytes.len()).is_some_and(|slice| {
+                    slice
+                        .iter()
+                        .zip(bytes)
+                        .all(|(&unit, byte)| unit < 128 && (unit as u8).eq_ignore_ascii_case(byte))
+                })
+        })
+    })
 }
 
 /// `redact(text)` for a string: route capabilities, then bearer tokens, query
@@ -218,6 +243,37 @@ pub fn sanitize_message(text: &JsString) -> JsString {
     let text = local_path().replace_all(&text, "[PATH]");
     let text = account().replace_all(&text, "[ACCOUNT]");
     from_unit_view(&text)
+}
+
+/// Public upstream diagnostics keep ordinary identifiers intact. Work on the
+/// UTF-16 unit view so literal secrets can include an isolated surrogate.
+pub fn sanitize_upstream(value: &JsString, mut secrets: Vec<JsString>) -> JsString {
+    static TOKEN: OnceLock<Regex> = OnceLock::new();
+    static JWT: OnceLock<Regex> = OnceLock::new();
+    static URL_AUTH: OnceLock<Regex> = OnceLock::new();
+    static CONTROLS: OnceLock<Regex> = OnceLock::new();
+    let mut seen = std::collections::HashSet::new();
+    secrets.retain(|s| !s.is_empty() && seen.insert(s.clone()));
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    let mut view = to_unit_view(value);
+    for secret in secrets {
+        view = view.replace(&to_unit_view(&secret), "[REDACTED]");
+    }
+    let view = redact_view(&view);
+    let token = compile(&TOKEN, || format!(r"{BOUNDARY}(?:sk|sess)-[A-Za-z0-9_-]+"));
+    let jwt = compile(&JWT, || {
+        format!(r"{BOUNDARY}eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?")
+    });
+    let auth = compile(&URL_AUTH, || {
+        format!(r"https?://[^{SPACE}/@]+:[^{SPACE}/@]+@")
+    });
+    let controls = compile(&CONTROLS, || r"[\r\n\t]+".to_owned());
+    let view = token.replace_all(&view, "[REDACTED]");
+    let view = jwt.replace_all(&view, "[REDACTED]");
+    let view = auth.replace_all(&view, "https://[REDACTED]@");
+    let view = local_path().replace_all(&view, "[PATH]");
+    let view = account().replace_all(&view, "[ACCOUNT]");
+    from_unit_view(&controls.replace_all(&view, " ")).trim()
 }
 
 #[cfg(test)]

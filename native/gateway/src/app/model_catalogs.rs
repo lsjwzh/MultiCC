@@ -33,7 +33,7 @@ use crate::app::express::{self, RequestCtx};
 use crate::host_port;
 
 /// The host port the Node child serves (`src/routes/model-catalogs-host.js`).
-const HOST_PATH: &str = "/api/__host/model-catalogs";
+use multicc_core::cli_catalog_host::HOST_PATH;
 
 /// The legacy Codex path (`GET /api/codex/models` without `providerId`/`poll`)
 /// waits for a full native refresh; Node had no timeout on it.
@@ -234,6 +234,8 @@ pub async fn catalog(catalog: Catalog, ctx: &RequestCtx, host_port_num: u16) -> 
                 &json!({
                     "models": found.models,
                     "current": found.current,
+                    "efforts": {"agy": found.concrete.as_ref().map(multicc_core::agy_models::effort_spec)
+                        .unwrap_or_else(|| json!(multicc_core::cli_capability::effort_of("agy")))},
                     "source": found.source,
                     "cached": found.cached,
                 }),

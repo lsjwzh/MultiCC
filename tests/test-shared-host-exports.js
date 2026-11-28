@@ -94,7 +94,7 @@ test('注入的回合所有者保留子类和实例方法覆写', () => {
   const timeline = native.turnProgressApi(native).createTurnTimelinePort(owner);
   assert.equal(timeline.startTurn('s', 't', 10), owner);
 
-  const { createStateOwner, createTurnRuntimeStore } = require('../src/state/owner');
+  const { createStateOwner, createTurnRuntimeStore } = require('../src/native/binding').stateOwner;
   const state = createStateOwner();
   const store = createTurnRuntimeStore({ owner: state });
   state.native.turnList = function () { return this; };

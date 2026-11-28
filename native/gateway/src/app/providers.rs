@@ -410,7 +410,14 @@ async fn catalog(app: &Arc<App>, ctx: &RequestCtx, host_port_num: u16) -> Respon
     if !succeeded(&answer) {
         return unavailable(ctx);
     }
-    let catalog = catalog_view::project(&answer, &cli);
+    let mut catalog = catalog_view::project(&answer, &cli);
+    let pin = query_trimmed(ctx, "accountId").unwrap_or_default();
+    super::agy_catalog::project_efforts(
+        &mut catalog,
+        &cli,
+        (!pin.is_empty()).then_some(pin.as_str()),
+    )
+    .await;
     if !matches!(query_param(&ctx.original_url, "poll"), QueryParam::Text(value) if value == "1") {
         let ids = catalog_view::refresh_ids(&catalog);
         if !ids.is_empty() {

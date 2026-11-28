@@ -19,7 +19,7 @@ const {
   createTaskShortCodeRegistry,
   initTaskShortCodeRegistry,
   CODE_LEN,
-} = require('../src/native/task-domain');
+} = require('../src/native/binding').taskDomainHost;
 
 // The pre-registry deterministic derivation, reproduced here so the upgrade
 // continuity test pins salt-0 to the exact codes users already saw.
@@ -212,7 +212,7 @@ test('production registry matches frozen mint, reverse lookup and recovery behav
     '7402ec3dafeed61b25d2ea4893d3853fd58013655a4d13ffc0969f5ce38f1fb9');
   const filename = path.resolve(__dirname, '../src/classify/task-short-code.js');
   const frozen = { exports: {} };
-  compileFunction(source.toString(), ['require', 'module'], { filename })(createRequire(filename), frozen);
+  compileFunction(source.toString(), ['require', 'module'], { filename })(require('./helpers/frozen-batch10').from(filename, createRequire(filename)), frozen);
   const live = { taskShortCode, taskIdForShortCode, labelWithCode, createTaskShortCodeRegistry, initTaskShortCodeRegistry };
 
   function trace(api) {

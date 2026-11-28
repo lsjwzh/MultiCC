@@ -8,9 +8,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { createChatSessions } = require('../src/chat/sessions');
-const { createChatReplayHub, createChatReplayRuntime } = require('../src/ws/ws-host');
-const { createStateOwner } = require('../src/state/owner');
+const { createChatSessions } = require('../src/native/binding').chatSessions;
+const { createChatReplayHub, createChatReplayRuntime } = require('../src/native/binding').wsHost;
+const { createStateOwner } = require('../src/native/binding').stateOwner;
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 const CLOSED = 3;

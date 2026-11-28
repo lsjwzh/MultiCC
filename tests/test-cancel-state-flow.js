@@ -26,10 +26,10 @@ const { EventEmitter } = require('node:events');
 
 const { createProductionQuestionHost, createProductionWorkHost, createSessionWorkScheduler } = require('../src/session-work');
 const { createClassifyStateMachine } = require('../src/classify/task-attribution');
-const { createTaskStateStore } = require('../src/session/records');
-const { createTaskBoardRuntime } = require('../src/routes/task-board');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createOutbox } = require('../src/outbox');
+const { createTaskStateStore } = require('../src/native/binding').sessionRecordsHost;
+const { createTaskBoardRuntime } = require('../src/native/binding').taskBoardRuntime;
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
+const { createOutbox } = require('../src/native/binding').outboxRuntime;
 const { createOrchestrationRoutes } = require('../src/routes/orchestration');
 const { classifyDisplay } = require('../src/classify/vocab');
 const { createSessionPersistence } = require('../src/native/binding');

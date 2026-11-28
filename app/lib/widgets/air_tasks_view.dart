@@ -54,6 +54,7 @@ import 'air/air_mobile_setup.dart';
 import '../screens/air_settings_screen.dart';
 import '../screens/machine_settings_screen.dart';
 import 'create_session_dialog.dart';
+import 'computer_spaces_shell.dart';
 
 import 'tour_overlay.dart';
 import 'workspace_navigation_drawer.dart';

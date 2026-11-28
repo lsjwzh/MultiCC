@@ -287,8 +287,8 @@ const path = require('node:path');
 // serving, otherwise every claimed route answers 503 "authentication runtime
 // unavailable". Reuse the production wiring and a real RustAuthSecurity.
 const REPO = ${JSON.stringify(ROOT)};
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 // Keep the security object alive: dropping it aborts the napi control task and
 // the gateway sees EOF on the auth stream. A CommonJS top-level const is not
 // retained after module evaluation, so pin it on the global object.
@@ -682,7 +682,7 @@ function specFor(group) {
       // the package root (src/paths.js `path.resolve(PKG_ROOT, raw)`), not cwd.
       process.env.MULTICC_DATA_DIR = group === 'relative-data-dir'
         ? path.relative(ROOT, dataRoot) : dataRoot;
-      const providers = require(path.join(ROOT, 'src/providers/host.js'));
+      const providers = require(path.join(ROOT, 'tests/helpers/frozen-bc29761b/providers/host'));
       providers.enableUnifiedOfficialProviders();
       const history = ORACLE.createLegacyProviderQuotaHistory({
         file: path.join(dataRoot, 'provider-quota-history.db'),

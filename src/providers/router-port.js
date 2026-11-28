@@ -6,17 +6,17 @@ const {
   assertProviderBinding,
   createProviderBinding,
   toLegacyProviderView,
-} = require('./binding');
-const { mountCodexOfficialRelay } = require('../codex/official-relay');
-const { codexProxyTrace } = require('../codex/proxy-trace');
+} = require('../native/binding').providerBinding;
+const { mountCodexOfficialRelay } = require('../native/binding').codexOfficialRelay;
+const { codexProxyTrace } = require('../native/binding').codexProxyTrace;
 const { createCodexHistoryHooks } = require('../native/binding').codexHistoryHooks;
 const { createClaudeOAuthProxyRecovery } = require('../claude-auth/proxy-recovery');
-const { createClaudeQuotaBridge } = require('./claude-quota-bridge');
+const { createClaudeQuotaBridge } = require('../native/binding').claudeQuotaBridge;
 const {
   createProviderProxyAdmission,
   createProviderProxyGuard,
 } = require('./proxy-guard');
-const { createUsageObserved } = require('../usage-observed');
+const { createUsageObserved } = require('../native/binding').usageObserved;
 
 const PORT_API_VERSION = '1.0.0';
 const PORT_MODES = Object.freeze(['legacy', 'shadow', 'cpr']);

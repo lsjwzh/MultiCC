@@ -1,5 +1,481 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 16 批（2026-11-27，MacPro x86_64）
+
+基线为 `d6c814fe`。本批退役的十个生产模块涵盖 插件内部宿主、隧道探测、持久等待与操作、API 错误、OAuth 续期和聊天生命周期，共 4,060 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 225 / 69,738 | 215 / 65,732 |
+| server.js 与 src/ | 226 / 72,591 | 216 / 68,585 |
+| 含生产插件 | 238 / 76,510 | 228 / 72,504 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/routes/plugins-host.js` | 111 | 插件内部宿主与频道状态 |
+| `src/tailscale-funnel-health.js` | 496 | Tailscale 公网健康探测 |
+| `src/tunnel-sakurafrp-api.js` | 170 | SakuraFrp API 与状态整理 |
+| `src/wait/service.js` | 191 | 持久等待的注册和结算 |
+| `src/operation-service.js` | 479 | 操作记录及查询 |
+| `src/chat/api-error-host.js` | 444 | API 错误决策与通知 |
+| `src/claude-auth/oauth-refresh.js` | 872 | Claude OAuth 续期和隔离状态 |
+| `src/chat/turn-lifecycle.js` | 360 | 回合生命周期及归属 |
+| `src/chat/host-coordinator.js` | 625 | 聊天宿主协调与分派 |
+| `src/chat/host-runtime.js` | 312 | 聊天宿主运行时接线 |
+
+Rust 接管插件宿主、隧道探测、等待及操作状态与聊天协调。Node 宿主保留 Express 注册、可注入的 HTTP/TLS、事件、进程和凭据 SDK 等现有接口。相关调用方迁出 Node 后可移除相应端口。
+
+x64 产物源码指纹为 `9a72f494196b2d6b6804e6f0`。48 个关联 Node 入口通过 980 项，跳过 1 项。分类脚本以合成回环 URL 通过 19 项，14 条插件宿主 HTTP 行为与冻结基线一致。Rust 通过 254 项，真实网关 WebSocket 回环通过 1 项。
+
+4 组 HTTP 差分得到 484 项一致结果，并验证 14 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,614 个文件，覆盖本批 47 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `46aff17d16975c43e73af2769d676586828816efa6a787c70c24269f56210a05`。
+
+插件内部 HTTP 对照使用本批基线源码，前门 HTTP 对照使用冻结的插件、频道、编排及事件处理器；OAuth 与出站调用均使用隔离测试夹具。
+
+## server.js 可达模块第 15 批（2026-11-27，MacPro x86_64）
+
+基线为 `1f3d27cc`。本批退役的十个生产模块涵盖 Air 同步、任务读模型、专用出口、插件管理与频道投递，共 2,650 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 235 / 72,297 | 225 / 69,738 |
+| server.js 与 src/ | 236 / 75,150 | 226 / 72,591 |
+| 含生产插件 | 248 / 79,069 | 238 / 76,510 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/workspace/air-sync-runtime.js` | 216 | Air 快照同步、队列、订阅与重放 |
+| `src/workspace/air-index-port.js` | 97 | Air 索引及存储告警 |
+| `src/native/task-read-model.js` | 70 | 任务读模型的队列与排序重试 |
+| `src/claude-auth/egress-agent.js` | 152 | 账号专用出口与连接复用 |
+| `src/routes/plugins.js` | 389 | 插件路由与本机运行时接线 |
+| `src/plugins/catalog.js` | 573 | 插件目录签名与更新 |
+| `src/macos-agent-provision.js` | 283 | macOS Agent 检查、安装与归属 |
+| `src/plugins/installer.js` | 272 | 插件包校验、安装替换与回退 |
+| `src/plugins/channel-host.js` | 449 | 常驻频道子进程及请求结算 |
+| `src/plugins/channel-registry.js` | 149 | 共享频道注册、分类与投递 |
+
+Rust 接管 Air 发布与重放、读模型队列、插件目录与安装状态、Agent 配置和频道投递。Node 宿主提供 Express、WebSocket、可注入进程和代理 Agent 类型，这些调用方迁出 Node 后可移除相应端口。
+
+x64 产物源码指纹为 `71262c04ae13318c2d37f084`。31 个关联 Node 入口通过 385 项，跳过 0 项。另有 7 项 macOS Agent 隔离用例通过，覆盖安装决策、版本归属、单飞与模拟子进程。Rust 通过 205 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+7 组 HTTP 差分得到 445 项一致结果，并验证 13 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,579 个文件，覆盖本批 33 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `e1617bc2c73818fd99f5bdc26f67100dbc9c1e5a60e635f50a12e681ed675b27`。
+
+差分测试旧侧继续使用发布基线的 Air 依赖链、频道注册表与 macOS Agent 配置逻辑。
+
+## server.js 可达模块第 14 批（2026-11-27，MacPro x86_64）
+
+基线为 `da8f52ee`。本批退役的十个生产模块涵盖用量事件、HTTP、CLI 账号、任务板、工作树与 Air，共 3,217 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 245 / 75,402 | 235 / 72,297 |
+| server.js 与 src/ | 246 / 78,255 | 236 / 75,150 |
+| 含生产插件 | 258 / 82,174 | 248 / 79,069 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/usage-observed.js` | 93 | 用量事件校验、绑定归属与结果冻结 |
+| `src/codex/image-bridge.js` | 348 | 官方图片工作器的账号选择、结果和生命周期 |
+| `src/http-errors.js` | 199 | Express 请求编号及错误处理 |
+| `src/codex/oauth-refresh.js` | 435 | Codex OAuth 刷新门控、单飞与 CLI 轮替 |
+| `src/task-board/board-store.js` | 487 | 任务板驻留镜像、增量与事务 |
+| `src/task-worktree.js` | 227 | 任务工作树归属、合入和清理 |
+| `src/cli-adapters/zcode-auth.js` | 372 | ZCode 登录、配置与模型选择 |
+| `src/cli-adapters/kimi-auth.js` | 118 | Kimi 登录状态与原生 CLI 探测 |
+| `src/workspace/air-routes-host.js` | 789 | Air 宿主协议、快照和投影 |
+| `src/workspace/air-card-cache.js` | 149 | Air 卡片缓存和串行刷新 |
+
+Rust 接管用量、HTTP 中间件、账号工作器、任务板和 Air 缓存策略。Node 宿主提供 V8 错误类、Express 对象、现有子进程与可注入的运行时端口。对应宿主完成迁移后可移除这些接口。
+
+x64 产物源码指纹为 `9e64475547ca456becf3194f`。53 个关联 Node 入口通过 870 项，跳过 0 项。Rust 通过 230 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+20 组 HTTP 差分得到 2,139 项一致结果，并验证 36 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,548 个文件，覆盖本批 31 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `dc42384da4f3c9f6e1adb8503ab4681c90e8701873b50e335e97cb4f897b2de2`。
+
+Air 回归用例覆盖串行队列的续体顺序、原生任务开始时的快照序列化，以及条件请求在手动刷新时的行为。会话 Git 差分等待测试宿主就绪后再发送第一个用例。
+
+## server.js 可达模块第 13 批（2026-11-27，MacPro x86_64）
+
+基线为 `e960f6eb`。本批退役十个 CLI、网关、编排和账号业务模块，共 3,805 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 255 / 79,137 | 245 / 75,402 |
+| server.js 与 src/ | 256 / 81,990 | 246 / 78,255 |
+| 含生产插件 | 268 / 85,909 | 258 / 82,174 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/cli-adapters/dsh.js` | 171 | DeepSeek Harness 配置和适配器 |
+| `src/cli-adapters/router-mcp.js` | 165 | CLI 路由 MCP 配置与子进程环境 |
+| `src/chat/claude-sdk-route.js` | 132 | Claude SDK 回环中继与生命周期 |
+| `src/providers/egress-ip.js` | 267 | 出口 IP 探测与缓存 |
+| `src/ws/gateway-chat-bridge.js` | 401 | 网关聊天虚拟套接字和帧传递 |
+| `src/orchestration/draft-host.js` | 439 | 编排草稿与变更跟踪 |
+| `src/orchestration/native-store-host.js` | 1135 | 隔离数据库所有者与事务调度 |
+| `src/outbox.js` | 412 | 发件箱幂等提交、租约与恢复 |
+| `src/claude-auth/official-oauth.js` | 391 | 官方 OAuth 及回环回调 |
+| `src/usage-limit-poller.js` | 292 | 账号额度轮询、缓存和刷新 |
+
+Rust 实现 CLI 配置、网关协议、编排与发件箱操作以及账号请求策略。Node 宿主继续提供运行中套接字、事件、SDK 和可注入端口；对应调用方迁出 Node 后可继续移除这些接口。
+
+x64 产物源码指纹为 `8ad9a7b2d90bdbab5400a0a5`。63 个关联 Node 入口通过 1049 项，跳过 0 项。Rust 通过 268 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+5 组 HTTP 差分得到 855 项一致结果，并验证 6 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,525 个文件，覆盖本批 36 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+供应商 HTTP 对照使用批次基线已发布的 CLI 强度目录和 v3 分享码格式（提交 `b99b1d25`、`47b7e219`）。旧侧从基线目录数据独立生成固定快照，并按 v3 协议编码；对照继续逐字节检查响应、HEAD 长度和 ETag，同时核对分享创建的参数。
+
+SDK 本地中继按解析后的目标路径复核所绑定的会话范围。手工粘贴 OAuth 回调时，同时验证回调与最终兑换使用的 state，不匹配的输入会被拒绝。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `eb3f91875346b6d199f6f8420133da469ced5a6c7fee06b63be943d92c3f3614`。
+
+## server.js 可达模块第 12 批（2026-11-27，MacPro x86_64）
+
+基线为 `bc29761b`。本批退役十个 CLI、供应商和 Codex 业务模块，共 3,585 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 265 / 82,657 | 255 / 79,137 |
+| server.js 与 src/ | 266 / 85,510 | 256 / 81,990 |
+| 含生产插件 | 278 / 89,429 | 268 / 85,909 |
+
+验收基线包含本机并发合入的提交，最终构建和全部测试在 `03406ac2ec17ec40978030464bec280d8cdc7c49` 上叠加本批改动完成。
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/cli-adapters/commands.js` | 430 | CLI 命令发现与版本选择 |
+| `src/windows-env.js` | 283 | Windows 工具路径与异步刷新 |
+| `src/agy-accounts.js` | 103 | Antigravity 账号环境与选择 |
+| `src/providers/host.js` | 450 | 供应商注册表和宿主 API |
+| `src/codex/attempt-home.js` | 591 | 每次尝试的 Codex 目录与租约清理 |
+| `src/codex/session-home.js` | 330 | 会话目录、历史迁移与线路同步 |
+| `src/codex/official-relay.js` | 677 | Codex 官方中继与流式响应 |
+| `src/official-accounts.js` | 394 | 官方账号存储与凭据回调 |
+| `src/codex/proxy-trace.js` | 131 | 代理追踪、结算与快照 |
+| `src/codex/resident-route.js` | 196 | 常驻子进程的线路持有与释放 |
+
+Rust 保存命令解析状态、会话目录的归属与清理规则，以及代理和中继状态。Node 继续提供 CLI SDK、可注入的 OS 端口、Fetch、Express 响应及事件回调。仍使用这些 JavaScript 对象的调用方迁移后，可移除相应宿主桥。
+
+x64 产物源码指纹为 `a1aec2bd8d0c7969f86ff904`。62 个关联 Node 入口通过 806 项，跳过 0 项。Rust 通过 133 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+4 组 HTTP 差分得到 226 项一致结果，并验证 4 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,495 个文件，覆盖本批 25 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `d357bf71da77bdffbd1cbfd42d1e92345e0784971af7788e04da312f9c90d601`。
+
+## server.js 可达模块第 11 批（2026-11-27，MacPro x86_64）
+
+基线为 `06ebf5fa`。本批退役十个文档、笔记和记忆模块，共 3,079 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 275 / 85,700 | 265 / 82,657 |
+| server.js 与 src/ | 276 / 88,561 | 266 / 85,510 |
+| 含生产插件 | 288 / 92,480 | 278 / 89,429 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/docs-registry.js` | 520 | 服务登记与探测、持久化和依赖保留 |
+| `src/memory-store.js` | 299 | 短事实增删改、原子写入与内容检查 |
+| `src/memory/builtin-rules.js` | 83 | 三份内置规则的读取、标记识别和种入 |
+| `src/memory/retrieval.js` | 123 | 分层文件检索与选择 |
+| `src/memory/folder-service.js` | 351 | 作用域目录、快照与提示词 |
+| `src/memory/runtime.js` | 357 | 会话记忆合并、复盘和蒸馏单飞 |
+| `src/notes-store.js` | 69 | 工作区笔记与事件环 |
+| `src/routes/docs-memory-host.js` | 250 | 文档、记忆与备忘录的内部路由 |
+| `src/routes/session-memory.js` | 180 | 会话私有与共享记忆读写处理器 |
+| `src/routes/memory-browser.js` | 847 | 记忆图、目录树与文件操作 |
+
+记忆图与目录树的生产扫描在 Rust 工作线程执行，返回后从当前目录和会话记录取得显示名称。Node 保留 Express 挂载、实时 Map、Promise、回调及可注入文件系统端口。原调用方依赖这些对象的身份与异常语义。调用方迁至 Rust 后，可移除相应宿主桥。三份内置规则仍从包内技能目录读取。
+
+x64 产物源码指纹为 `f8984453fab60b5f62ccef46`。22 个关联 Node 入口通过 259 项，跳过 0 项。Rust 通过 91 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+两组 HTTP 差分得到 220 项一致结果，并验证 0 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,468 个文件，覆盖本批 29 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+## server.js 可达模块第 10 批（2026-11-27，MacPro x86_64）
+
+本批从 `d7f8cf99` 迁移了十个生产模块，共 2,534 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 285 / 88,040 | 275 / 85,700 |
+| server.js 与 src/ | 286 / 90,901 | 276 / 88,561 |
+| 含生产插件 | 298 / 94,820 | 288 / 92,480 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/providers/auto-provider-config.js` | 299 | 供应商池校验、按需目录查询及候选对象身份 |
+| `src/providers/jev-client.js` | 505 | Jev 请求构造、响应解读与梯队选择 |
+| `src/network/outbound.js` | 107 | 出站请求代理选择及子进程网络环境 |
+| `src/native/task-domain.js` | 270 | 任务板命令、短码注册与 Air 列表 |
+| `src/state/store.js` | 246 | 原子状态写入、备份轮换、读取与恢复 |
+| `src/chat/provider-attempt-runtime.js` | 451 | 尝试归属、流式脱敏与重放限制 |
+| `src/observability.js` | 212 | 日志脱敏、指标与事件循环观测 |
+| `src/chat/turn-request.js` | 180 | 回合输入归一化、准入与启动证明 |
+| `src/upstream-error.js` | 147 | 上游错误的有界读取、字段提取与公开脱敏 |
+| `src/session/records.js` | 117 | 会话记录所有权、快照迭代与状态更新 |
+
+Node 宿主保留 undici 与 Node Agent 的构造和释放、Web Stream 读取与取消、V8 参数解构和对象身份，以及用户注入的回调。指标读取使用 Node 的事件循环直方图。状态文件字符串写入复用 Rust 原子替换。Buffer、特殊权限和被替换的 fs 方法使用 Node 的调用语义。备份轮换期间主文件保持可读。调用方迁出这些 SDK 和对象接口后可继续缩减宿主桥。
+
+本批 x64 源码指纹为 `fcd06ca3ebe96e2c9f9d13b3`。89 个关联 Node 测试入口共通过 1684 项，跳过 0 项。Rust 通过 301 项，真实网关 WebSocket 回环通过 1 项，桌面打包通过 4 项。隔离分类网关验证了 19 项，跳过 0 项。历史通过隔离磁盘写入和新 owner 重载验证。
+
+六组 HTTP 差分得到 404 项一致响应，逐项验证了 3 项预期差异。源码行数、运行时写入治理和打包索引门禁通过。npm 清单共 1,440 项，含本批全部 31 个改动的 Rust 源文件，十个旧生产路径均已退出 Git 索引与包。
+
+## server.js 可达模块第 9 批（2026-11-27，MacPro x86_64）
+
+从 `3cc11ba5` 迁移了模型目录与供应商适配调用链。[逐文件可达清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 295 / 90,155 | 285 / 88,040 |
+| server.js 与 src/ | 296 / 93,016 | 286 / 90,901 |
+| server.js、src/ 与 plugins/ | 308 / 96,935 | 298 / 94,820 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/codex/model-catalog.js` | 152 | Codex 账号目录的缓存、单次刷新和身份切换 |
+| `src/providers/official-catalog.js` | 215 | 官方账号目录与会话引用迁移 |
+| `src/providers/router-adapter.js` | 158 | CPR 路由与兼容回调 |
+| `src/providers/native-vendor.js` | 111 | 厂商原生线路、模型与合成供应商 |
+| `src/claude-models.js` | 96 | Claude 模型清单及同步缓存 |
+| `src/routes/agy-models.js` | 228 | AGY ACP 模型枚举与预热 |
+| `src/routes/model-catalogs-host.js` | 207 | 回环目录宿主及四个厂商 CLI 缓存 |
+| `src/routes/opencode-models.js` | 475 | OpenCode 模型发现与同步校验 |
+| `src/routes/provider-models.js` | 234 | 供应商模型抓取、缓存与回退 |
+| `src/providers/relay-model-catalog.js` | 290 | 借道目录同步、响应大小上限与身份校验 |
+
+十个生产文件共 2,166 行。Node 桥接提供宿主账号与网络接口、Express 请求对象和子进程回调。宿主继续使用这些接口期间，同步读取方通过 addon 取得同一批缓存，异步读取方按原回调次序取得结果。冻结的厂商数据适配仅供差分测试使用。
+
+整批复验使用源码指纹 `4605dbe5c7b99cf53878a1dd` 对应的五件 x64 产物。36 个关联测试文件通过 576 项，桌面打包通过 4 项，隔离真实网关 WebSocket 回环通过 1 项。Rust 核心通过 67 项，网关集成和单元测试共通过 30 项。源码行数、46 项写入治理及打包索引校验通过。npm 包含本批全部 25 个新增或改动的 Rust 源文件，十个旧生产路径已同时退出 npm 包和 Git 索引。
+
+Claude 模型与通用模型目录的 HTTP 差分分别得到 1,298 和 59 项一致响应，另有 4 项预期差异逐项核验。Claude 的本机已安装 CLI 样本因缺少相应二进制跳过，合成 bundle 与回退清单均通过。首轮发现的 AGY 子进程清理及命中缓存回调取值时机均已复验。浏览器测试使用独立 profile 和模拟钥匙串。AGY 的 SSH 与 HTTP 借道测试共享进程环境变量，在网关单元测试中串行执行。
+
+## server.js 可达模块第 8 批（2026-11-27，MacPro x86_64）
+
+基线为 `e0732e88`。从 `server.js` 追踪语音宿主、语音网关和模型安装器。[逐文件调用方](reachable-current.tsv) · [依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 305 / 92,715 | 295 / 90,155 |
+| server.js 与 src/ | 306 / 95,576 | 296 / 93,016 |
+| server.js、src/ 与 plugins/ | 318 / 99,495 | 308 / 96,935 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/voice/config.js` | 315 | 热更新语音配置，构建 Whisper 提示，解析流式识别后处理响应 |
+| `src/voice/hotword-corrector.js` | 156 | 拼音和 ASCII 热词纠错，词表匹配缓存 |
+| `src/voice/hotword-learner.js` | 277 | 学习样例和定时刷新，在工作线程扫描历史 |
+| `src/voice/hotword-miner.js` | 176 | 提取纠错词对，统计拼写、会话频次与否决词 |
+| `src/voice/launch.js` | 216 | 签发、消费和撤回票据，重新校验会话绑定 |
+| `src/voice/gateway.js` | 375 | 派生语音网关记录，持久化网关状态 |
+| `src/voice/asr-model-installer.js` | 339 | 单飞下载、断点续传、镜像切换与取消 |
+| `src/routes/voice-gateway-host.js` | 143 | 回环校验和语音网关操作 |
+| `src/routes/voice-runtime-host.js` | 236 | 运行时探测与启动票据回调 |
+| `src/routes/voice-host.js` | 389 | 读取设置与词汇，按阶段应用和补偿回滚 |
+
+十个旧文件共 2,622 行。JavaScript 提供 Express 和宿主回调、可选拼音 SDK、Web Stream 与 Node 文件流的连接。HTTP 协议、模型传输控制、配置事务和学习策略由 Rust 实现。模型目录的零字节 `.download.guard` 保持跨进程锁的文件身份。
+
+本批显式加载 x64 绑定，关联 Node 测试 221 项、桌面打包 4 项、真实网关回环 WebSocket 冒烟 1 项通过。Rust 内核 53 项、网关集成 62 项通过。三组 HTTP 差分和配置流式回调的基线对拍通过。十个旧路径均已退出 Git 索引和 npm 包。模型下载使用受控的分片响应。
+
+首次发布构建检出一处缺失的生命周期标注。集中修复后构建成功，五件 x64 产物通过架构、SHA-256 和来源指纹 `2172587416e30aaf56432a53` 检查。HTTP 差分包含 669 项一致响应和 61 项按原契约分别核验的差异。源码行数和 46 项写入治理通过。
+
+## server.js 可达模块第 7 批（2026-11-27，MacPro x86_64）
+
+基线为 `3ce99615`。生产入口通过 `src/native/binding.js` 调用 Rust 适配器工厂。注册表保留命令对象的身份，命令变化时为后续调用刷新适配器，已开始的轮次继续使用原实例。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 315 / 94,053 | 305 / 92,715 |
+| server.js 与 src/ | 316 / 96,914 | 306 / 95,576 |
+| server.js、src/ 与 plugins/ | 328 / 100,833 | 318 / 99,495 |
+
+| 退役生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/cli-adapters/index.js` | 154 | 构建适配器注册表并按命令配置刷新，复用 AGY 的原生解码器 |
+| `src/cli-adapters/opencode.js` | 80 | 选择 ACP 或旧 JSON 协议，验证模型并返回结构化错误 |
+| `src/cli-adapters/opencode-like.js` | 123 | 生成旧 JSON 协议命令，解码步骤、文本和用量 |
+| `src/cli-adapters/acp.js` | 263 | 驱动 ACP 启动与事件协议，隔离会话的工具和思考状态 |
+| `src/cli-adapters/zcode.js` | 154 | 选择 ZCode 终端和流式桥接脚本，处理会话与步骤事件 |
+| `src/cli-adapters/qoder.js` | 122 | 生成 Qoder 参数，转接 Claude 风格事件和 HTTP 错误状态 |
+| `src/cli-adapters/kimi.js` | 179 | 构建 Kimi 调用，处理恢复提示、工具事件、重试及结束状态 |
+| `src/cli-adapters/codebuddy.js` | 112 | 保留 CodeBuddy 的独立推理等级和结构化错误字段 |
+| `src/cli-adapters/command-code.js` | 64 | 构建 Command Code 调用，归并嵌套事件并在最终结果计量 |
+| `src/cli-adapters/pi.js` | 113 | 生成 Pi 调用，接入路由扩展并归集最终成本与用量 |
+
+十个旧文件共 1,364 行。Node 桥接提供进程、脚本路径、现有命令解析器以及宿主注入的回调。ZCode 两个子进程脚本和 Pi 扩展仍由外部 CLI 按原路径加载。等相应宿主和外部协议入口迁至 Rust 后，可移除这些端口。Gemini 和 Grok 的冻结测试使用独立的旧 ACP 源码。
+
+一次 x64 发布构建用时 5 分 24 秒，五件产物通过架构、SHA-256 和来源指纹 `804c83c8b411f084f79104ca` 校验。31 个关联 Node 测试文件显式加载本批绑定，511 项通过，0 失败。1 项可选的真实 Claude 轨迹回放因本机缺少录制样本跳过。Rust 内核定向 27 项、网关 CLI 切换集成 13 项通过。真实网关与 Node 宿主的回环 WebSocket 冒烟 1 项通过，未验证局域网客户端。
+
+从基线十份源码构造独立参考，覆盖 13 种适配器组合和 132 个流事件帧。146 项与基线一致，另有 2 项终端引号变化按 shell 实际参数单独验证。Qoder、CodeBuddy 把含空格和撇号的模型名作为单个参数传递，ZCode 的带空格引擎路径也通过参数验证。源码行数、46 项写入治理和打包索引通过。npm 包 1,381 项，包含本批全部 17 个变更 Rust 文件，10 个旧生产路径均已退出索引和包。
+
+## server.js 可达模块第 6 批（2026-11-27，MacPro x86_64）
+
+基线为 `956c635a`。从 `server.js` 追踪任务看板、分类器检索和任务规划路由。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 325 / 95,229 | 315 / 94,053 |
+| server.js 与 src/ | 326 / 98,090 | 316 / 96,914 |
+| server.js、src/ 与 plugins/ | 338 / 102,009 | 328 / 100,833 |
+
+| 退役生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/task-board/planning.js` | 49 | 规划卡创建、编辑、排序与修订号校验 |
+| `src/task-board/normalize.js` | 100 | 看板归一化、目录解析、分组与路由字段 |
+| `src/task-board/native-bridge.js` | 65 | 将操作送入常驻看板或调用方提供的看板 |
+| `src/task-board/relocate.js` | 88 | 等待工作树和任务壳迁移回调完成后提交看板 |
+| `src/task-board/lifecycle.js` | 122 | 任务删除、归档、恢复及占用检查 |
+| `src/task-board/retention.js` | 148 | 目录保留策略、候选排序与清理 |
+| `src/task-board/search.js` | 316 | 分类器同步索引、相关性排序与摘要 |
+| `src/routes/task-board/index.js` | 120 | 组装看板运行时及其宿主回调 |
+| `src/routes/task-planning.js` | 178 | 同任务写入 FIFO、阶段预检与写入后通知 |
+| `src/native/task-search.js` | 83 | 路由异步索引构建、查询与索引缓存 |
+
+十个旧文件共 1,269 行。分类器仍能在同一调用栈读取搜索结果，异步检索沿用原生工作线程。规划队列按任务隔离，同任务在前一请求失败后再读取看板。独立冻结的 JS 实现用于测试对照。兼容宿主提供常驻对象、会话与文件端口及 V8 属性键、日期和排序语义，待调用方迁至原生后可去掉对应桥接。
+
+第一次整批构建发现共享模块更名后有一处导入未更新。修复后，首轮关联测试暴露缺失 `moduleId` 的属性键转换问题，新增 FIFO 用例也遗漏了修订号。集中修正后整批 x64 发布补构建耗时 3 分 24 秒。五件产物通过架构、SHA-256 和来源指纹 `0ee4abd0d7e34a875d7e8296` 校验。
+
+Node 测试显式加载本批绑定。31 个关联测试文件共 554 项通过，再覆盖任务图、历史保留及上层调用方的 9 个文件，80 项通过，合计 634 项，零失败、零跳过。Rust 内核定向 69 项、网关任务路由 26 项通过。任务路由 79 个 HTTP 场景、Air 路由 62 个场景的响应与副作用均与参考实现一致。Air 同步差分 39 项一致，另有 1 项既有差异通过验证。用基线 JS 和同一绑定复现了该差异：Express 在 HEAD 后刷新 checkedAt，客户端沿用旧 ETag 得到 200，Rust 网关保持原 ETag 并返回 304。新用例另验两端在快照未变时均返回 304。
+
+真实网关与 Node 宿主的回环 WebSocket 冒烟 1 项通过，本次未验证局域网客户端。源码行数、46 项运行时写入规则及打包索引通过。npm 包 1,367 项，含全部 32 个变更 Rust 源文件，10 个旧生产路径均已移出 Git 索引及包。
+
+## server.js 可达模块第 5 批（2026-11-27，MacPro x86_64）
+
+基线为 `93470d5b`。从 `server.js` 及其原生绑定追踪配额、用量和虚拟供应商的调用方。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 335 / 96,408 | 325 / 95,229 |
+| server.js 与 src/ | 336 / 99,269 | 326 / 98,090 |
+| server.js、src/ 与 plugins/ | 348 / 103,188 | 338 / 102,009 |
+
+| 退役生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/chat/usage-limit-wiring.js` | 116 | 将会话用量关联到账号、轮询器及广播 |
+| `src/providers/virtual-provider.js` | 88 | 根据已提交的配额快照选择成员并处理重试 |
+| `src/quota/claude-bar-state.js` | 119 | 合并账号与会话的实时用量 |
+| `src/quota/claude-cli-oauth.js` | 109 | 选择 CLI 凭据来源、检查有效期并读取用量 |
+| `src/quota/limit-cache-recorder.js` | 212 | 按供应商归集配额、失败和恢复事件 |
+| `src/quota/official-account-usage.js` | 131 | 投影账号窗口并按退避时间轮询 Codex 账号 |
+| `src/quota/provider-limit-cache-native-host.js` | 138 | 串行提交限额缓存读写并分发已提交的变更 |
+| `src/quota/provider-quota-history.js` | 81 | 首个有效采样到来时打开历史库并处理降级 |
+| `src/quota/quota-bar-cache.js` | 164 | 维护展示用快照、缓存淘汰及损坏恢复 |
+| `src/quota/quota-guard.js` | 105 | 根据阈值和快照评估配额并触发过期刷新 |
+
+十个旧文件合计 1,263 行。Node 兼容层仍向原生绑定提供现有宿主的 HTTP 传输、持久化实例、日志与调用方注入的回调。相应调用方迁到 Rust 后即可移除这些端口。账号轮询器提前停止时会同时取消首次和周期定时器，现有服务入口仅调用启动方法。
+
+首轮关联测试暴露三处回归。修复后执行了一次 x64 发布补构建，耗时 3 分 16 秒，五件产物的源码指纹均为 `b3e266cc88fbc15f22580fe7`。架构、SHA-256 和绑定加载探针通过。29 个 Node 测试文件显式加载本批绑定，660 项通过，含 FIFO 清理时的集合读取、历史库惰性降级和损坏缓存恢复，零失败、零跳过。Rust 内核定向测试 63 项通过。真实 Rust 网关与 Node 宿主的回环 WebSocket 冒烟 1 项通过。源码行数和 46 项写入规则通过。npm 打包清单含 1,350 项，包含 11 个 Rust 变更文件，10 个退役文件均已移出 Git 索引和包。
+
+## server.js 可达模块第 4 批（2026-11-27，MacPro x86_64）
+
+从 `1f2838ea` 追踪生产依赖，统计包括无末尾换行符的最后一行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 345 / 96,845 | 335 / 96,408 |
+| server.js 与 src/ | 346 / 99,706 | 336 / 99,269 |
+| server.js、src/ 与 plugins/ | 358 / 103,625 | 348 / 103,188 |
+
+| 退役生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/artifact-retention.js` | 79 | 共用网关的有界依赖扫描，保留文件缓存，异步计算清理和注册表淘汰所需的保留集合 |
+| `src/network/proxy-policy.js` | 76 | 解析系统代理、合并环境、选择出口，合并在途查询并保留上次成功配置 |
+| `src/providers/claude-quota-bridge.js` | 56 | 合并响应头、按状态码提取限额、关联请求上下文和处理回调 |
+| `src/providers/egress-ip-policy.js` | 75 | 规范化允许列表，使用当前探测结果决定准入和错误码 |
+| `src/providers/model-connect-watch.js` | 74 | 管理每次连接的超时、撤销和响应关闭清理 |
+| `src/providers/proxy-outcome.js` | 54 | 监听 HTTP 终止事件，区分上下游断连，确保每个请求只通知一次 |
+| `src/quota/account-subscription-cache.js` | 76 | 按序执行异步数据库读写，按文件变化刷新同步快照，隔离重配置前的在途读取 |
+| `src/quota/claude-usage-queue.js` | 50 | 配置账号键、取数和时钟，复用每账号缓存与在途 Promise |
+| `src/chat/claude-sdk-config.js` | 64 | 生成会话配置指纹和原生执行参数，保留模型热切换和凭据轮换语义 |
+| `src/chat/workspace-residency.js` | 36 | 在抢占前冻结条目快照并依次等待旧进程退出，保留回调对象与写入屏障 |
+
+十个旧文件共 640 行，可达生产代码净减 437 行。Node 仍连接诊断通道、HTTP socket、Express 响应和请求级异步上下文，提供 SDK 私有临时目录、V8 对象及宿主回调。原有同步注册表 API 继续支持本地调用方。日常清理和前门文档端口在 Rust 工作线程扫描依赖，注册表在扫描期间变化会触发重新计算。下游迁离这些 Node 专属接口后可移除相应桥接。
+
+一次 x64 Cargo 发布构建耗时 5 分 04 秒。五件产物的源码指纹均为 `f21b3ac1f17516147e6bddbe`，架构和 SHA-256 均通过校验。测试进程显式加载该绑定，43 个关联测试文件共 714 项通过，0 失败、0 跳过。真实网关与 Node 宿主的回环 WebSocket 冒烟通过，未覆盖局域网客户端。文档与记忆路由差分 94/94 一致，订阅缓存差分 6/6 一致。源码行数、46 项写入治理及打包索引通过。npm 包共 1,340 项，包含本批 15 个 Rust 变更文件，十个退役文件已退出 Git 索引和包。构建输出保留一条网关扫描器抽取后未使用导入的警告。
+
+## server.js 与网关子进程第 3 批（2026-11-27，MacPro x86_64）
+
+以 `2d80fc0a` 为基线，从 `server.js` 及其网关子进程适配器追踪生产调用。物理行数计入没有换行符的末行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 355 / 97,413 | 345 / 96,845 |
+| server.js 与 src/ | 356 / 100,274 | 346 / 99,706 |
+| server.js、src/ 与 plugins/ | 368 / 104,193 | 358 / 103,625 |
+
+| 删除的生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/gateway-child.js` | 338 | 增量解析 PROXY v1 头、校验对端地址、断线重连与父进程退出处理 |
+| `src/task-shell/migration-gate.js` | 94 | 启动前检查任务数据库、执行迁移、等待维护页面释放端口 |
+| `src/providers/defaults-port.js` | 43 | 默认供应商存储实例复用、快照及配置读写 |
+| `src/providers/binding.js` | 62 | 校验供应商绑定、识别绑定对象、投影兼容视图 |
+| `src/provider-error.js` | 34 | 按字段白名单、递归层数和 UTF-16 长度提取错误信息 |
+| `src/secret-audit.js` | 67 | 写入操作开始和结束事件、过滤元数据、处理审计不可用 |
+| `src/state/owner.js` | 76 | 包装会话与目录记录，配置恢复和运行时存储 |
+| `src/ws/ws-host.js` | 49 | 接入原生连接注册表、会话重放和监听 |
+| `src/orchestration/json-store-host.js` | 41 | 包装编排存储的读取、快照和异步修改接口 |
+| `src/orchestration/sqlite-store.js` | 50 | 组装原生 SQLite 存储并传递损坏及版本冲突异常 |
+
+删除路径合计 854 行，保留的可达文件净增 286 行，合计净减 568 行。Node 桥接在加载源码 addon 之前验证网关子进程身份并清除控制通道环境变量。HTTP、socket、worker、AsyncLocalStorage、V8 异步函数和异常类仍由宿主提供，待启动器和下游调用方脱离这些接口后可移除相应桥接。
+
+一次 x64 Cargo 发布构建耗时 4 分 05 秒。五件产物均通过来源指纹 `0584add80c105440a9ddb467`、SHA-256 和架构校验。测试通过 `MULTICC_RUST_ADDON` 加载新绑定。67 个关联测试文件首轮 1,114 项通过，另 3 项在显式配置 SQLite 所有者二进制后全部通过。真实网关与宿主的回环 WebSocket 冒烟通过，未覆盖局域网客户端。模型目录差分有 59 项响应一致，另 2 项预期差异通过核对。构建工具测试首次发现短年份断言依赖 UTC，改用原 JS 本地日期函数计算期望值后，43 项全部通过。源码行数、46 项写入治理和 1,333 项打包索引检查均通过。
+
+## server.js 直连模块第 2 批（2026-11-27，MacPro x86_64）
+
+从 `39a884cf` 的 `server.js` 静态追踪字面量模块依赖和脚本路径。物理行统计包括无末尾换行符的最后一行。[逐文件行数与调用方](reachable-current.tsv) · [模块依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| server.js 与 src/ | 366 / 100,794 | 356 / 100,274 |
+| server.js、src/ 与 plugins/ | 378 / 104,713 | 368 / 104,193 |
+
+| 删除的生产文件 | 原物理行 | Rust 接管或复用的行为 |
+|---|---:|---|
+| `src/runtime-security.js` | 46 | 启动时收紧目录、文件和备份的权限，复用原子写入和分阶段错误上报 |
+| `src/host-env.js` | 91 | 配置读取和逐行更新、保留父目录权限、VAPID 密钥初始化 |
+| `src/network/global-proxy.js` | 89 | 代理刷新、定时器、保留上次成功配置及子进程环境 |
+| `src/auth-security.js` | 64 | 复用 Rust 认证所有者，投影跨进程票据元数据 |
+| `src/http/json-compression.js` | 47 | 安装及恢复响应结束钩子、选择压缩、设置响应头 |
+| `src/quota/provider-runtime.js` | 23 | 按原顺序创建配额存储并连接缓存、守卫及订阅 |
+| `src/memory/task-distill.js` | 68 | 复用 UTF-16 蒸馏规则，合并自动小节并原子替换记忆文件 |
+| `src/claude-auth/refresh-health.js` | 96 | 账号健康记录的缓存、私有文件读写和软失败 |
+| `src/quota/account-subscription-reader.js` | 81 | 选择账号凭据、合并同账号在途查询、等待缓存写入 |
+| `src/quota/quota-self-heal.js` | 80 | 过期配额重读与 401 刷新，跳过共享 CLI 令牌的副本 |
+
+删除路径合计 685 行，保留文件净增 165 行，可达生产代码净减 520 行。Node 桥接保留 Express 响应、异步 zlib、V8 弱引用和对象转换、进程全局代理、Web Push SDK 及注入的凭据和文件端口。默认字符串路径的原子写入走 Rust，有 `beforeRename`、`enforceDirMode` 等特殊选项的调用仍复用既有 StateStore。调用方解除这些宿主接口依赖后可移除对应桥接。
+
+一次 x64 Cargo 发布构建用时 5 分 1 秒，五件产物均通过来源指纹 `100656db36ffb5e181f38c5c`、SHA-256 和架构校验。测试进程显式使用这份 addon。35 个关联测试文件共 408 项通过，另有桌面配置与权限测试 1 项、真实网关就绪及两条回环 WebSocket 的冒烟 1 项通过。首次测试将模拟主目录放在 os.tmpdir() 内，触发一项测试目录断言；分离二者后整组通过。源码行数门禁、46 项写入治理和 1,328 项打包索引检查均通过。包及 Git 索引均包含本批全部 10 个有改动的 Rust 源文件。
+
+## server.js 直连模块第 1 批（2026-11-27，MacPro x86_64）
+
+以 `92f9dbae` 为迁前基线，按字面量模块依赖和脚本路径复算。物理行数计入没有换行符的末行。每个文件的行数及调用方见 [逐文件清单](reachable-current.tsv)，依赖类型见 [模块依赖表](node-module-dependencies.md)。
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| server.js 与 src/ | 376 / 101,409 | 366 / 100,794 |
+| server.js、src/ 与 plugins/ | 388 / 105,328 | 378 / 104,713 |
+
+| 删除的生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/battery-guard.js` | 103 | 电量及合盖采样、休眠阈值、重入保护、轮询生命周期 |
+| `src/artifacts.js` | 99 | 目录解析、保留项和过期清理，生产扫描调度到工作线程 |
+| `src/role-token-tracker.js` | 113 | 用量投影、按本地日期分桶、账本原子落盘 |
+| `src/chat/sessions.js` | 98 | 会话表及删除观察者 |
+| `src/directory/records.js` | 103 | 目录表、读取、损坏状态错误映射 |
+| `src/codex/image-bridge-runtime.js` | 30 | 为图像请求组装官方账号鉴权文件列表 |
+| `src/providers/relay-share-store.js` | 45 | 按调用顺序执行分享操作、错误映射及冻结返回值 |
+| `src/codex/accounts-refresh.js` | 86 | 多账号刷新对账和状态查询，跳过 CLI 凭据副本 |
+| `src/dispatch/progress.js` | 58 | 订阅归属过滤与首次回放去重 |
+| `src/liveness/process-probe.js` | 44 | 带超时的 lsof 子进程、文件修改时间和探测缓存 |
+
+删除的十个文件合计 779 行。保留文件新增净计 164 行，两个可达范围均净减 615 行。现有 JavaScript 调用方依赖 V8 的 Map 原型、迭代器、Promise、运算符强制转换和可注入的宿主回调，原生绑定保留这些接口。对应调用方迁入 Rust 并解除这些契约后，可移除适配。
+
+Intel macOS 的一次 Cargo 发布构建生成五件原生产物。工作树内的产物均通过源码指纹 `bb26fe54be63f5cb5e922794`、SHA-256 和架构校验。显式指定新 addon 的 32 个关联测试文件共 399 项通过，失败、跳过、待办均为 0。首次测试环境把回环地址传给四项局域网共享测试，改用本机局域网地址后四项通过，随后整组复跑通过。真实网关和独立宿主另通过回环就绪检查及工作区、元数据 WebSocket 冒烟。冒烟使用隔离电源端口，原生电池采样另在禁用休眠触发的条件下验证。
+
 ## 退役电源守护进程的 Node 兼容入口（2026-11-27）
 
 从 `fd968912` 的 `server.js` 出发，按 `scripts/inventory-node-backend.js` 递归追踪字面量模块依赖和以 `__dirname` 为根的字面量脚本路径。以下统计覆盖 `.js`、`.mjs`、`.cjs`。仓库内的 `docs/rust-migration/reachable-baseline-fd968912.tsv` 列出每个文件的物理行数和静态可达调用方。

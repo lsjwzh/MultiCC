@@ -534,7 +534,7 @@ test('decode shapes, stale runners and throwing ports agree', () => {
 });
 
 test('an asynchronously rejected question resumes the native text effect before finalization', async () => {
-  const { recordAdapterQuestion } = require('../src/chat/host-coordinator');
+  const { recordAdapterQuestion } = require('../src/native/binding').chatHostCoordinator;
   const run = createRun(baseScenario('codex'));
   makePorts(run);
   run.cs._activeTurn = run.turn;

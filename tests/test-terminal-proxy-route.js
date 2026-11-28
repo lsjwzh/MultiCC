@@ -13,7 +13,7 @@ const test = require('node:test');
 const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { getNative } = require('../src/native/binding');
 // Frozen independently from the deleted production module before this batch.
 const { createTerminalProxyRoutes: legacyTerminalRoutes } = require('./helpers/legacy-terminal-route');

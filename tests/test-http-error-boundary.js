@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const current = require('../src/http-errors');
+const current = require('../src/native/binding').httpErrors;
 const { DOMAIN_KINDS, DomainError, InfrastructureError, HttpError, mapError, safeErrorHandler } = current;
 const { presentError } = require('../src/http/error-presenter');
 

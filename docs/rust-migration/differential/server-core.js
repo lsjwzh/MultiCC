@@ -33,8 +33,8 @@ function assertMetricOrder(names) {
   }
 }
 
-function metricsText(repo, table) {
-  const { createMetrics } = require(path.join(repo, 'src/observability'));
+function metricsText(table) {
+  const { createMetrics } = require('../../../tests/helpers/frozen-batch10').frozen('observability');
   const metrics = createMetrics();
   for (const [name, value] of Object.entries(table)) metrics.set(name, value);
   return metrics.render();
@@ -59,8 +59,8 @@ const stateDir = process.env.MULTICC_DATA_DIR;
 // the real child opens it in src/gateway-child.js. Keep the security object on
 // globalThis exactly like the other differential stubs (the native runtime must
 // find it still alive when a later snapshot is requested).
-const { createAuthSecurity } = require(path.join(repo, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(repo, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(repo, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(repo, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
@@ -122,7 +122,7 @@ function oracleMount(repo, state) {
     uptime: () => state.health.uptimeSeconds,
     isReady: () => state.health.ready,
     readinessDetails: () => state.health.checks,
-    renderMetrics: () => metricsText(repo, state.metrics),
+    renderMetrics: () => metricsText(state.metrics),
     status: id => (Object.prototype.hasOwnProperty.call(state.ops, id) ? state.ops[id] : null),
   };
   return createLegacyServerCoreRoutes(deps);

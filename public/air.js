@@ -1083,7 +1083,7 @@
     const cli = quickCli();
     const nativeRoute = window.MultiCCProviderCatalog.nativeRouteLabel(cli); // 自持账号的 CLI 显示产品名（共享 CLI 目录出）
     const route = nativeRoute || providerDisplayName(quickRuntime.providerName || quickRuntime.provider || '') || t('airQuickDefaultRoute');
-    const model = quickRuntime.model || t('airQuickDefaultModel') + window.agyDefaultModelSuffix(cli, render);
+    const model = window.runConfigModelLabel(cli, quickRuntime.model, quickRuntime.effort, quickRuntime.cliAccounts?.agy, t('airQuickDefaultModel'), render);
     const pillApi = window.MultiCCRunConfig;
     const pillView = pillApi ? pillApi.pillModel({
       current: { ...quickRuntime, cli },
@@ -2492,7 +2492,7 @@
     // ⚡ 自动 · 按难度/按顺序 · N 条 ｜本轮 …）。这里只把已经兜底好的名字递进去，
     // 输出的字符串和以前逐字节一致 —— 一堆 CDP 断言钉着它。
     const shownModel = shown
-      ? ((pending ? shown.model : shown.effectiveModel || shown.model) || t('airQuickDefaultModel') + window.agyDefaultModelSuffix(shown.cli, render))
+      ? window.runConfigModelLabel(shown.cli, pending ? shown.model : shown.effectiveModel || shown.model, pending ? shown.effort : shown.effectiveEffort || shown.effort, shown.cliAccounts?.agy, t('airQuickDefaultModel'), render)
       : '';
     const pillApi = window.MultiCCRunConfig;
     const pill = shown && pillApi

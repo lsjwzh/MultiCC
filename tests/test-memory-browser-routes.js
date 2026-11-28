@@ -5,16 +5,8 @@
 // live suite in native/gateway/tests/docs_memory_routes.rs). Status codes,
 // query/body reading, the traversal verdict and the DTO envelopes are Rust's.
 //
-// What stayed in Node is the host port surface these tests pin:
-//   src/routes/memory-browser.js  buildMemoryGraph / buildMemoryTree /
-//                                 pathFacts / readMemoryFile / writeMemoryFile /
-//                                 deleteMemoryFile — the directory walks, the
-//                                 realpath facts the kernel judges, and the
-//                                 filesystem writes with their broadcasts.
-//   src/routes/docs-memory-host.js the op envelope the front door calls.
-//
-// Each file operation re-resolves `rel` through the original path guard, so a
-// caller that skips the Rust verdict still cannot leave the store.
+// The native host exposes the graph, tree and file operations behind that
+// front door. Every file operation resolves its path under the store root.
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -26,8 +18,8 @@ const {
   MEMORY_FILE_MAX_CHARS,
   createMemoryBrowserRoutes,
   estimateMemTokens,
-} = require('../src/routes/memory-browser');
-const { createDocsMemoryHost } = require('../src/routes/docs-memory-host');
+} = require('../src/native/binding').memoryBrowser;
+const { createDocsMemoryHost } = require('../src/native/binding').docsMemoryHost;
 
 test('token estimates preserve UTF-16 units and JavaScript string conversion', () => {
   assert.equal(estimateMemTokens(null), 0);
@@ -238,6 +230,38 @@ test('memory tree preserves DTOs and enforces one global file cap', async () => 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('the worker scan matches the synchronous graph and tree and reads live labels on completion', async t => {
+  const root = tempStore();
+  const outside = tempStore();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  const note = write(root, 'project-a/sessions/session-a/note.md', '# Note\n\n[[index]] [[some -_slug]] [[toString]] [[toString]] [[constructor]] [[__proto__]]');
+  write(root, 'project-a/_shared/index.md', '# Index\n\n[[note]] [[alias]]');
+  write(root, '_machine/global.md', '# Global');
+  fs.symlinkSync(note, path.join(root, 'project-a/_shared/alias.md'));
+  fs.symlinkSync(write(outside, 'outside.md', 'private'), path.join(root, 'project-a/_shared/out.md'));
+  const { runtime, deps } = createHarness(root, { nativeMemoryScan: true });
+  const graphPromise = runtime.buildMemoryGraphAsync('all');
+  const treePromise = runtime.buildMemoryTreeAsync();
+  deps.directories.set('project-a', { name: 'Renamed project', path: '/latest' });
+  deps.persistedSessions.set('session-a', { label: 'Renamed session', cli: 'codex' });
+  const [graph, tree] = await Promise.all([graphPromise, treePromise]);
+  assert.deepEqual(graph, runtime.buildMemoryGraph('all'));
+  assert.deepEqual(tree, runtime.buildMemoryTree());
+  assert.equal(tree.projects[0].sessions[0].label, 'Renamed session');
+  assert.equal(graph.nodes.find(row => row.missing).title, 'some  slug');
+  const strength = slug => graph.edges.find(edge =>
+    edge.source === 'project-a::session:session-a::note' && edge.target.endsWith('::' + slug)
+  )?.strength;
+  assert.equal(strength('index'), 1);
+  assert.equal(strength('toString'), '0' + Object.prototype.toString + '11');
+  assert.equal(strength('constructor'), '0' + Object.prototype.constructor + '1');
+  assert.equal(strength('__proto__'), undefined);
+  assert.ok(!Object.hasOwn(graph, 'inheritedEdgeIndices'));
+  assert.ok(graph.nodes.some(row => row.file === 'alias.md'));
+  assert.ok(!graph.nodes.some(row => row.file === 'out.md'));
 });
 
 test('generic file editor reads, atomically writes, broadcasts, and idempotently deletes', async () => {

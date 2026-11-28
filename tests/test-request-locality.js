@@ -111,7 +111,7 @@ test('locality checks stay limited to authentication and sensitive host controls
   const server = fs.readFileSync('server.js', 'utf8');
   const authRoutes = fs.readFileSync('src/routes/auth.js', 'utf8');
   const routerToolHost = fs.readFileSync('src/router-tool-host.js', 'utf8');
-  const taskBoardRoutes = ['src/routes/task-board/index.js', 'native/addon/src/task_board_runtime/route_ports.rs',
+  const taskBoardRoutes = ['native/addon/src/task_board_runtime/setup.rs', 'native/addon/src/task_board_runtime/route_ports.rs',
     'native/addon/src/task_board_runtime/lifecycle/status.rs'].map(file => fs.readFileSync(file, 'utf8')).join('\n');
   const hostReadHost = fs.readFileSync('src/routes/host-read-host.js', 'utf8');
   const hostWriteRoutes = fs.readFileSync('src/routes/host-write.js', 'utf8');
@@ -139,6 +139,7 @@ test('locality checks stay limited to authentication and sensitive host controls
     'server.js',
     // The runtime only forwards the injected probe to the host port.
     'src/cli/switch-runtime.js',
+    'src/native/binding.js',
     'src/router-tool-host.js',
     // One host port per migrated route group: each internal listener accepts
     // loopback calls only, so a request forwarded from a real client is 404.
@@ -146,17 +147,13 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/auth.js',
     'src/routes/cli-switch-host.js',
     'src/routes/directory-host.js',
-    'src/routes/docs-memory-host.js',
     'src/routes/events-host.js',
     'src/routes/file-transfer-host.js',
     'src/routes/host-ops-host.js',
     'src/routes/host-power.js',
     'src/routes/host-read-host.js',
     'src/routes/host-write.js',
-    'src/routes/model-catalogs-host.js',
     'src/routes/orchestration-host.js',
-    'src/routes/plugins-host.js',
-    'src/routes/plugins.js',
     'src/routes/provider-balance-host.js',
     // Passes the dependency through to the provider runtime, does not decide.
     'src/routes/providers-host.js',
@@ -174,15 +171,12 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/share-machines-host.js',
     'src/routes/subagent-defaults-host.js',
     'src/routes/task-routes-host.js',
-    'src/routes/voice-gateway-host.js',
-    'src/routes/voice-host.js',
-    'src/routes/voice-runtime-host.js',
     'src/task-shell/host.js',
-    // The air host port lives with its runtime rather than under routes/.
-    'src/workspace/air-routes-host.js',
     'src/ws/connection-router.js',
   ]);
   const predicates = fs.readFileSync('native/addon/src/request_locality_api.rs', 'utf8');
+  const pluginHost = fs.readFileSync('native/addon/src/plugins_routes_host/internal.rs', 'utf8');
+  assert.match(pluginHost, /request_locality::evaluate\("local", req\)/);
   assert.match(predicates, /\("isLocalRequest", "local"\)/);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
   assert.match(authRoutes, /httpEntryAuthenticated\(req, entryPort\)/);

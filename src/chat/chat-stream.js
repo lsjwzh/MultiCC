@@ -3,7 +3,7 @@
 const { isMainResult } = require('../native/binding').cliResultCompletion;
 const { isMonitorHandoffResult } = require('../native/binding').getMonitorAdmission();
 const { createMonitorControl } = require('../native/binding').getMonitorControl();
-const { createBackgroundHold } = require('./background-hold');
+const { createBackgroundHold } = require('../native/binding').backgroundHold;
 const { decideMissingResume } = require('../native/binding').missingResumeRecovery;
 const { envDigest } = require('../secrets-vault');
 

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
 const { createAutoProviderRouting } = require('../src/chat/auto-provider-routing');
-const { selectionKey } = require('../src/providers/auto-provider-config');
+const { selectionKey } = require('../src/native/binding').autoProviderConfig;
 const { failoverSafety } = require('../src/native/binding').getAutoProviderPolicy();
 const { decideApiErrorPolicy: evaluateApiError } = require('../src/chat/api-error-policy');
 
@@ -457,7 +457,7 @@ test('OpenCode runtime discovers Codex-pool candidates and reads their own quota
 });
 
 test('OpenCode and ZCode fail over across API dialects after a pool is saved and reloaded', () => {
-  const { validateProviderSelection, providerSelectionDto } = require('../src/providers/auto-provider-config');
+  const { validateProviderSelection, providerSelectionDto } = require('../src/native/binding').autoProviderConfig;
   for (const cli of ['opencode', 'zcode']) {
     const catalog = [
       { id: 'anthropic-route', appType: 'claude', apiFormat: 'anthropic', model: 'claude-model' },
@@ -1525,7 +1525,7 @@ function opencodeProviders() {
 }
 
 test('a native OpenCode line is a pool candidate whose models come from the opencode cache', async () => {
-  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/opencode-models');
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/native/binding').openCodeModels;
   _setCacheForTest(Date.now(), [
     { provider: 'opencode', model: 'big-pickle', label: 'opencode/big-pickle' },
     { provider: 'opencode', model: 'grok-code', label: 'opencode/grok-code' },
@@ -1573,7 +1573,7 @@ test('a native OpenCode line is a pool candidate whose models come from the open
 });
 
 test('a native OpenCode line without a cached model list still routes on its default', () => {
-  const { _resetCacheForTest } = require('../src/routes/opencode-models');
+  const { _resetCacheForTest } = require('../src/native/binding').openCodeModels;
   _resetCacheForTest();
   const providers = opencodeProviders();
   const events = [];
@@ -1783,7 +1783,7 @@ test('preferMaxQuota (byQuota) only intervenes when a line runs low on quota', (
 });
 
 test('official account usage sweeper records every signed-in codex account under its own provider id', async () => {
-  const { createOfficialAccountUsageSweeper, claudeUsageWindows } = require('../src/quota/official-account-usage');
+  const { createOfficialAccountUsageSweeper, claudeUsageWindows } = require('../src/native/binding').officialUsage;
   assert.deepEqual(claudeUsageWindows({ five_hour: { utilization: 42, resets_at: null }, seven_day: { utilization: null } }),
     [{ window: '5h', label: 'Current session', usedPercent: 42, resetMs: null }]);
   const recorded = [];
@@ -1908,7 +1908,7 @@ test('a remembered line on another lane moves a fresh failover session there bef
 });
 
 test('a Command Code native line runs as a provider-less lane with the vendor model', () => {
-  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/model-catalogs-host').getVendorCatalog('commandcode');
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/native/binding').modelCatalogsHost.getVendorCatalog('commandcode');
   _setCacheForTest(Date.now(), [
     { model: 'deepseek/deepseek-v4-flash', group: 'Open Source' },
     { model: 'claude-sonnet-5-5', group: 'Anthropic' },
@@ -1950,7 +1950,7 @@ test('a Command Code native line runs as a provider-less lane with the vendor mo
 });
 
 test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () => {
-  const { _setCacheForTest, _resetCacheForTest } = require('../src/routes/model-catalogs-host').getVendorCatalog('codebuddy');
+  const { _setCacheForTest, _resetCacheForTest } = require('../src/native/binding').modelCatalogsHost.getVendorCatalog('codebuddy');
   _setCacheForTest(Date.now(), [{ model: 'hy4-preview-f', label: 'hy4-preview-f' }]);
   try {
     const backup = { id: 'backup', name: 'Backup', appType: 'claude', apiFormat: 'anthropic', compatibleClis: ['claude'], model: 'good-model', modelOptions: ['good-model'] };
@@ -1979,8 +1979,8 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
       reasonCode: 'auto_initial_selection',
     });
     assert.equal(runtime.snapshot('wb-native').providerName, 'WorkBuddy');
-    const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
-    const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+    const { createCodebuddyAdapter } = require('../src/native/binding').cliAdapters;
+    const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
     const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
     const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
     const attempts = createProviderAttemptRuntime();
@@ -2019,8 +2019,8 @@ test('a WorkBuddy quota error echoed as assistant text admits the next CLI', () 
 });
 
 test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具仍阻止重放', () => {
-  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
-  const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+  const { createQoderAdapter } = require('../src/native/binding').cliAdapters;
+  const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
   const { reconcileBoundaryErrorEnvelope } = require('../src/chat/turn-engine-host');
   const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
   const adapter = createQoderAdapter({ cmd: 'qoder' });
@@ -2063,8 +2063,8 @@ test('同一份失败证据适用于 Qoder 的 503，已交付的正文和工具
 });
 
 test('只有状态码时，适配器保留结果正文，不用正文证明自己是纯报错', () => {
-  const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
-  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+  const { createCodebuddyAdapter } = require('../src/native/binding').cliAdapters;
+  const { createQoderAdapter } = require('../src/native/binding').cliAdapters;
   const { chatClaudeBoundaryEnvelope } = require('../src/native/binding').getNative();
   const answer = '第一页已完成。';
   for (const [adapter, fields] of [

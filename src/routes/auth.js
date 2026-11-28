@@ -8,7 +8,7 @@
 // Credentials and shutdown state are read on each request, never snapshotted.
 
 const { getNative } = require('../native/binding');
-const { isGatewayChild } = require('../gateway-child');
+const { isGatewayChild } = require('../native/binding').gatewayChild;
 
 function assertFunction(value, name) {
   if (typeof value !== 'function') {

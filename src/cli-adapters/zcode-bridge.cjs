@@ -20,7 +20,7 @@
  *      Protocol stdio 服务端（引擎 0.16.x，实测 0.16.5）。bridge 起一个子进程，
  *      走 session/create|resume → session/subscribe → session/send，然后**边收
  *      `session/event` 边往 stdout 写** opencode 事件（文字/思考/工具调用/用量都是
- *      实时分片），一轮结束才退出。逐条映射逻辑在 ./zcode-app-server.js（纯函数，
+ *      实时分片），一轮结束才退出。逐条映射逻辑在 native/addon/src/zcode_app_server/（Rust，
  *      可单测）。
  *   2. **legacy（自动回退）**：握手失败（引擎没有 app-server 子命令、进程提前退出、
  *      请求超时/报错、create 拿不到合法 sess_ id）时，原样退回旧的 `--json
@@ -61,8 +61,8 @@ const {
   buildRuntimeModel,
   createZcodeTurnMapper,
   createBackgroundTaskTracker,
-} = require('./zcode-app-server');
-const { holdMaxMs } = require('../chat/background-hold');
+} = require('../native/binding').zcodeAppServer;
+const { holdMaxMs } = require('../native/binding').backgroundHold;
 
 // 引擎路径：优先 ZCODE_ENGINE env（可移植、可追溯），回退到本机 .app 内的默认位置。
 const ZCODE_ENGINE = process.env.ZCODE_ENGINE || DEFAULT_ZCODE_ENGINE;
@@ -572,7 +572,7 @@ async function runAppServer() {
 // 引擎进程和原生会话跨轮存活，所以 run_in_background 起的后台任务不会随轮末被杀
 // （一次性路径轮末收掉引擎，后台进程 1.5s 内跟着死，2026-09-26 实测）。
 //
-// 后台 hold（语义同 Claude 常驻车道的 src/chat/background-hold.js）：本轮
+// ZCode 常驻 hold 保留独立上限；Claude 的 Rust hold 上限只提示。本轮
 // turn.completed 时引擎还有后台任务在跑 → 先不发 turn_end；任务完成后引擎会自唤醒
 // （turn.started，payload.inputSource=background_task），那几轮接着流进同一个宿主
 // 回合。没有运行中任务、引擎空闲且静默 HOLD_QUIET_MS 后才收轮。

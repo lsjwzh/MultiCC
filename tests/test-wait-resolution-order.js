@@ -5,8 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
-const { createWaitService } = require('../src/wait/service');
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
+const { createWaitService } = require('../src/native/binding').orchestrationServices;
 const { legacyWaitResolver } = require('./helpers/legacy-wait-resolution');
 
 test('an extra asynchronous worker wait changes the legacy mutation clock observation', async () => {
@@ -29,16 +29,15 @@ test('an extra asynchronous worker wait changes the legacy mutation clock observ
 });
 
 test('wait.resolve uses a Rust command and synchronous commit', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'wait', 'service.js'), 'utf8');
-  const start = source.indexOf('  async function resolveInternal(');
-  const end = source.indexOf('  async function resolveCallback(', start);
-  assert.ok(start >= 0 && end > start, 'wait.resolve implementation is present');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'native', 'addon', 'src',
+    'orchestration_runtime', 'services', 'waits.rs'), 'utf8');
+  const start = source.indexOf('fn resolve<');
+  const end = source.indexOf('fn cancel<', start);
+  assert.ok(start >= 0 && end > start, 'wait resolution must have its own native entry point');
   const body = source.slice(start, end);
-  assert.match(body, /store\.runNativeCommandSync\s*\(/,
-    'wait.resolve must execute a Rust command with synchronous commit');
-  assert.match(body, /waitResolve/, 'wait.resolve must delegate its state transition to Rust');
-  assert.doesNotMatch(body, /normalizeJson\s*\(|hashPayload\s*\(/,
-    'wait.resolve must not retain Node-owned canonicalization or payload hashing');
+  assert.match(body, /c"runNativeCommandSync"/, 'the SQLite path must retain synchronous commit');
+  assert.match(body, /wait_resolve_live::wait_resolve_live/, 'the custom-store transaction uses the same Rust transition');
+  assert.doesNotMatch(body, /hashPayload|normalizeJson/);
 });
 
 async function testOrdering(t, useLegacy) {

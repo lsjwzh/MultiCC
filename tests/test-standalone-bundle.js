@@ -908,7 +908,7 @@ function pluginTree(root, platform, plugins, { manifest } = {}) {
   const resources = cliScript.bundleResources(root, platform);
   const dir = path.join(resources, 'app-server', 'plugins');
   fs.mkdirSync(path.join(dir, 'bridges'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'bridges', 'wechat-ilink.js'), '// internal module, not a plugin\n');
+  fs.writeFileSync(path.join(dir, 'bridges', 'internal-fixture.js'), '// internal module, not a plugin\n');
   for (const [id, version] of Object.entries(plugins)) {
     fs.mkdirSync(path.join(dir, id, 'bin'), { recursive: true });
     fs.writeFileSync(path.join(dir, id, 'plugin.json'), JSON.stringify({ id, version }));
@@ -949,7 +949,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
     assert.equal(fs.realpathSync(path.join(to, 'linked-tool')), fs.realpathSync(linked));
     assert.equal(pluginVersion(to, 'chrome-proxy-launcher'), '1.7.0', 'a built-in is the new package\'s own');
     assert.equal(fs.existsSync(path.join(to, 'retired-builtin')), false, 'a built-in the new package dropped is not brought back');
-    assert.equal(fs.readFileSync(path.join(to, 'bridges', 'wechat-ilink.js'), 'utf8'), '// internal module, not a plugin\n');
+    assert.equal(fs.readFileSync(path.join(to, 'bridges', 'internal-fixture.js'), 'utf8'), '// internal module, not a plugin\n');
     // A hand-installed plugin whose id is a built-in now gives way, but is kept.
     assert.equal(pluginVersion(to, 'my-tool'), '3.0.0');
     assert.equal(result.backedUp.length, 1);
@@ -1018,15 +1018,15 @@ test('旧终端交接给新包的 __swap 仍可使用同一安装器重验已下
   const logPath = path.join(data, 'logs', 'update.log');
   const preload = path.join(scratch, 'test-network.js');
   const script = 'printf "%s\\n" "$@"\n';
-  fs.writeFileSync(preload, `require.cache[${JSON.stringify(require.resolve('../src/network/outbound'))}] = {
-    exports: {
+  fs.writeFileSync(preload, `const id = ${JSON.stringify(require.resolve('../src/native/binding'))};
+const binding = require(id);
+require.cache[id].exports = Object.create(binding, { outbound: { value: {
       getChildProxyEnv: async env => env,
       outboundFetch: async url => {
         if (url !== 'https://raw.githubusercontent.com/lsjwzh/MultiCC/main/install.sh') throw Error(url);
         return new Response(${JSON.stringify(script)});
       }
-    }
-  };\n`);
+    } } });\n`);
   const run = spawnSync(process.execPath, [
     '--require', preload, path.join(ROOT, 'scripts', 'standalone-cli.js'), '__swap',
     '--root', root, '--staged', path.join(scratch, 'staged'), '--wait-pid', '0', '--version', '9.9.9',

@@ -2,7 +2,7 @@
 // Existing account locks, platform network policy and injected SDK callbacks
 // are host ports. Rust owns credential file reads, HTTP, parsing and fallback.
 const { getNative } = require('../../../src/native/runtime');
-const { policy } = require('../../../src/network/outbound');
+const { policy } = require('../frozen-b10-network/outbound');
 async function query(input, { fetch } = {}) {
   const native = getNative();
   const plan = JSON.parse(await native.accountSubscriptionPlan(JSON.stringify(input)));

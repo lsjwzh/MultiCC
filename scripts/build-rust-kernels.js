@@ -84,7 +84,7 @@ function probeCdpdVersion(file, { run = spawnSync } = {}) {
 }
 
 // --version 打印一行 `multicc-gateway 15 <crate 版本>`；协议号必须和
-// native/gateway/src/lib.rs、src/gateway-child.js 的 GATEWAY_PROTOCOL 一致。
+// native/gateway/src/lib.rs、src/native/binding.js 的 GATEWAY_PROTOCOL 一致。
 // 2：加了 --stdin-lifeline，Node 以 0 退出时前门随之退出（docs/gateway.md §7）。
 // 3：L7 前门（hyper/axum，按连接独占上游 HTTP 连接）。
 // 4：认证控制通道与 Rust 前门登录、交换、WS 票据端点。

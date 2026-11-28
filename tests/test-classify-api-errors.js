@@ -6,7 +6,7 @@
  * ==================================================
  * Verifies end-to-end:
  *   1. classify prompt → E detection (keyword + live debug API)
- *   2. Normal retry path: E → safeInject fires immediately, count is tracked
+ *   2. Normal retry path: E projects the retry decision made at the runner boundary
  *   3. Recovery path: aux down → restore → reclassify unfinished sessions
  *   4. classifyHistory persistence in taskState
  *
@@ -15,6 +15,11 @@
  *   node tests/test-classify-api-errors.js --base http://localhost:8080
  */
 
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const os = require('node:os');
+const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
+const { createSessionPersistence, sessionRecordsHost, stateOwner } = require('../src/native/binding');
 const http = require('http');
 const https = require('https');
 const fs   = require('fs');
@@ -81,22 +86,22 @@ function readServerCode() {
   // Concatenate the current runtime boundaries used by the code-path checks.
   // Prompt text itself is generated below through buildClassifySystemPrompt(),
   // so a shared/dynamic vocabulary cannot make a source-text scan lie.
-  try {
-    const relativePaths = [
-      'server.js',
-      'src/session/records.js',
-      'src/classify/vocab.js',
-      'native/addon/src/classify_machine/dispatch.rs',
-      'native/addon/src/classify_machine/dispatch/settle.rs',
-      'native/addon/src/classify_machine/turn.rs',
-      'src/chat/api-error-policy.js',
-      'src/chat/api-error-host.js',
-      'src/chat/turn-engine-host.js',
-    ];
-    return relativePaths.map(relativePath => fs.readFileSync(
-      path.join(__dirname, '..', relativePath), 'utf8',
-    )).join('\n');
-  } catch (_) { return ''; }
+  const relativePaths = [
+    'server.js',
+    'native/addon/src/session_records.rs',
+    'src/classify/vocab.js',
+    'native/addon/src/classify_machine/dispatch.rs',
+    'native/addon/src/classify_machine/dispatch/settle.rs',
+    'native/addon/src/classify_machine/turn.rs',
+    'src/chat/api-error-policy.js',
+    'native/addon/src/api_error_host.rs',
+    'native/addon/src/api_error_host/decision.rs',
+    'native/addon/src/api_error_host/decision/notices.rs',
+    'src/chat/turn-engine-host.js',
+  ];
+  return relativePaths.map(relativePath => fs.readFileSync(
+    path.join(__dirname, '..', relativePath), 'utf8',
+  )).join('\n');
 }
 
 // ── Main ──────────────────────────────────────────────────────────────
@@ -187,68 +192,62 @@ function readServerCode() {
     if (liveSession) ok('Live classify path', 'debug submission accepted');
     else skip('Live classify path', lastReason || 'no active session accepted the request');
 
-    // Wait a moment for aux to process, then check classifyHistory
-    if (liveSession) await new Promise(r => setTimeout(r, 3000));
   }
 
-  // ===================================================================
-  // SECTION 4: classifyHistory persistence
-  // ===================================================================
+  // Session detail is a public summary. Verify history against the same
+  // persistence and boot readers the server uses, in an isolated store.
   console.log('\n━━━ 4. classifyHistory persistence ━━━');
-
-  // Check any session that has classifyHistory
-  let histFound = 0;
-  for (const c of cases.slice(0, 10)) {
-    try {
-      const res = await get(`/api/sessions/${c.sessionId}`);
-      if (res.status !== 200) continue;
-      const ts = (res.body && res.body.taskState) || {};
-      const hist = ts.classifyHistory;
-      if (Array.isArray(hist) && hist.length > 0) {
-        const last = hist[hist.length - 1];
-        ok(`classifyHistory: ${c.sessionId}`, `${hist.length} entries, last: state=${last.state} goal="${(last.goal||'').slice(0,30)}"`);
-        histFound++;
-      }
-    } catch (_) {}
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'classify-history-'));
+  try {
+    const file = path.join(root, 'sessions.json');
+    const records = recordsOf([['sample', { id: 'sample' }]]);
+    createSessionPersistence({ records, file, kind: 'sessions', root });
+    const states = sessionRecordsHost.createTaskStateStore({ persistedSessions: records, bus: new EventEmitter() });
+    assert.deepEqual(states.getTaskState('sample').classifyHistory, []);
+    ok('classifyHistory defaults to an empty array');
+    const at = Date.now();
+    const cutoff = at - 7 * 24 * 60 * 60 * 1000;
+    for (const time of [cutoff - 1, cutoff, cutoff + 1]) {
+      appendClassifyHistory(records, 'sample', { at: time, state: 'P' }, 0);
+    }
+    appendClassifyHistory(records, 'sample', { at, state: 'D' }, cutoff);
+    states.setTaskState('sample', { classifyState: 'D' });
+    const [reloaded] = stateOwner.createStateOwner().configure({ sessionsFile: file }).loadSessions().data;
+    assert.deepEqual(reloaded.taskState.classifyHistory, [{ at: cutoff + 1, state: 'P' }, { at, state: 'D' }]);
+    ok('classifyHistory: a fresh owner reloads the retained entries');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
-  if (histFound === 0) skip('classifyHistory', 'no sessions with classify history yet (needs live classify to run first)');
 
   // ===================================================================
   // SECTION 5: Code-level retry path verification
   // ===================================================================
   console.log('\n━━━ 5. Retry code path verification ━━━');
 
-  if (!serverCode) {
-    skip('Code path check', 'cannot read server.js');
-  } else {
-    // The retry path is now centralized in apiErrorHost/evaluateTurnApiError:
-    // the runner boundary owns the single bounded retry (or fail-fast), and
-    // classify's E branch only delegates as a legacy fallback — it must NEVER
-    // open a second retry channel. The old safeInject('继续') + API_RETRY_DELAY_MS
-    // mechanism is fully retired.
-    const checks = [
-      { name: 'centralized API-error policy host wired (createApiErrorHost)', pattern: /createApiErrorHost/ },
-      // The branch condition has since grown a guard (`error && !cancel`), so match
-      // the head of the condition rather than pinning its exact text — this check
-      // is about the delegation, not about how the branch is spelled.
-      { name: 'classify E branch delegates to evaluateTurnApiError as legacy fallback', pattern: /if \(error[^)]*\)[\s\S]{0,120}_lastApiErrorDecision[\s\S]{0,160}evaluateTurnApiError/ },
-      { name: 'a deterministic turn verdict goes through the shared applier', pattern: /fn end[\s\S]*?c"cancelClassifyFor"[\s\S]*?turn_state::resolve_live\(facts\)[\s\S]*?verdict::apply\(/ },
-      { name: 'retry vs fail_fast gated by policy decision .action', pattern: /_lastApiErrorDecision\?\.action/ },
-      { name: 'wait message driven by retryNotice(decision), not injection', pattern: /retryNotice\(cs\._lastApiErrorDecision\)/ },
-    ];
-    for (const c of checks) {
-      if (c.pattern.test(serverCode)) ok(c.name);
-      else fail(c.name, 'pattern not found in classification runtime');
-    }
-    // Negative guards: the retired auto-continue retry machinery must stay gone.
-    const retired = [
-      { name: 'no API_RETRY_DELAY_MS constant remains', pattern: /API_RETRY_DELAY_MS/ },
-      { name: "no safeInject('继续') auto-continue retry remains", pattern: /safeInject\([^)]*['"`]继续/ },
-    ];
-    for (const c of retired) {
-      if (!c.pattern.test(serverCode)) ok(c.name);
-      else fail(c.name, 'retired retry mechanism still present in runtime');
-    }
+  // The retry path is now centralized in apiErrorHost/evaluateTurnApiError:
+  // the runner boundary owns the single bounded retry (or fail-fast), and
+  // classify's E branch only delegates as a legacy fallback — it must NEVER
+  // open a second retry channel. The old safeInject('继续') + API_RETRY_DELAY_MS
+  // mechanism is fully retired.
+  const checks = [
+    { name: 'centralized API-error policy host wired (createApiErrorHost)', pattern: /createApiErrorHost/ },
+    { name: 'E dispatch evaluates a missing decision', pattern: /if !decision\(\)\?\.truthy\(\)\? \{[\s\S]*?port\(p, c"evaluateTurnApiError", &\[facts\]\)\?;\s*\}/ },
+    { name: 'a deterministic turn verdict goes through the shared applier', pattern: /fn end[\s\S]*?c"cancelClassifyFor"[\s\S]*?turn_state::resolve_live\(facts\)[\s\S]*?verdict::apply\(/ },
+    { name: 'retry vs fail_fast gated by policy decision .action', pattern: /decision\(\)\?\.optional\(c"action"\)\?\.is_string\("retry"\)/ },
+    { name: 'wait message driven by retryNotice(decision), not injection', pattern: /port\(p, c"retryNotice", &\[decision\]\)/ },
+  ];
+  for (const c of checks) {
+    if (c.pattern.test(serverCode)) ok(c.name);
+    else fail(c.name, 'pattern not found in classification runtime');
+  }
+  // Negative guards: the retired auto-continue retry machinery must stay gone.
+  const retired = [
+    { name: 'no API_RETRY_DELAY_MS constant remains', pattern: /API_RETRY_DELAY_MS/ },
+    { name: "no safeInject('继续') auto-continue retry remains", pattern: /safeInject\([^)]*['"`]继续/ },
+  ];
+  for (const c of retired) {
+    if (!c.pattern.test(serverCode)) ok(c.name);
+    else fail(c.name, 'retired retry mechanism still present in runtime');
   }
 
   // ===================================================================
@@ -256,20 +255,15 @@ function readServerCode() {
   // ===================================================================
   console.log('\n━━━ 6. Recovery path verification ━━━');
 
-  if (!serverCode) {
-    skip('Recovery check', 'cannot read server.js');
-  } else {
-    const recoveryChecks = [
-      { name: 'scanAndReclassify covers recovery', pattern: /scanAndReclassify/ },
-      { name: 'classifyState persists state letters', pattern: /classifyState.*[DCWBEP]/ },
-      { name: 'classifyHistory in TASK_STATE_DEFAULTS', pattern: /classifyHistory:\s*\[\]/ },
-      { name: 'classifyHistory prunes >7 days', pattern: /7\s*\*\s*24\s*\*\s*60|SEVEN_DAYS_MS/ },
-      { name: 'parseClassifyResult handles all 6 states', pattern: /[DCWBEP]/ },
-    ];
-    for (const c of recoveryChecks) {
-      if (c.pattern.test(serverCode)) ok(c.name);
-      else fail(c.name, 'pattern not found in server.js');
-    }
+  const recoveryChecks = [
+    { name: 'scanAndReclassify covers recovery', pattern: /scanAndReclassify/ },
+    { name: 'classifyState persists state letters', pattern: /classifyState.*[DCWBEP]/ },
+    { name: 'classifyHistory prunes >7 days', pattern: /c"appendClassifyHistory",\s*&\[name, entry, num\(p, at\.number\(\)\? - 604800000\./ },
+    { name: 'parseClassifyResult handles all 6 states', pattern: /[DCWBEP]/ },
+  ];
+  for (const c of recoveryChecks) {
+    if (c.pattern.test(serverCode)) ok(c.name);
+    else fail(c.name, 'pattern not found in server.js');
   }
 
   // ===================================================================

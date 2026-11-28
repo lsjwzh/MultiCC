@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter, once } = require('node:events');
 const test = require('node:test');
 const { WebSocket, WebSocketServer } = require('ws');
-const { createLogger } = require('../src/observability');
+const { createLogger } = require('../src/native/binding').observability;
 const { mountWsConnectionRouter } = require('../src/ws/connection-router');
 
 class FakeSocket extends EventEmitter {

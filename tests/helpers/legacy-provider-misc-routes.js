@@ -118,8 +118,8 @@ function runSpeedtestRequest(options) {
 }
 
 // ── Auto Provider · 难度路由「测试一下」 ─────────────────────────────────────
-const { createJevClient } = require('../../src/providers/jev-client');
-const { jevTarget, validateRoutingTarget } = require('../../src/providers/auto-provider-config');
+const { createJevClient } = require('./frozen-b10-network/jev-client');
+const { jevTarget, validateRoutingTarget } = require('./frozen-b10-network/auto-provider-config');
 const { safeCode } = require('./frozen-file-batch19/public-safety');
 
 const MAX_TEXT_LENGTH = 2000;
@@ -220,9 +220,9 @@ function claudeSpeedtestModel(env, summary) {
   if (explicit) return explicit;
   const fromCatalog = preferredSpeedtestModel(summary && summary.modelOptions);
   if (fromCatalog) return fromCatalog;
-  const { relayRouteFromBaseUrl } = require('../../src/providers/relay-share-store');
+  const { relayRouteFromBaseUrl } = require('../../src/native/binding').relayShares;
   if (relayRouteFromBaseUrl(env.ANTHROPIC_BASE_URL)) {
-    const { CLAUDE_MODELS_FALLBACK } = require('../../src/claude-models');
+    const { CLAUDE_MODELS_FALLBACK } = require('./legacy-claude-models-route');
     return preferredSpeedtestModel(CLAUDE_MODELS_FALLBACK.map(entry => entry.model));
   }
   return '';
@@ -232,8 +232,8 @@ function mountSpeedtestRoute(app, deps) {
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
   const setTimeoutFn = deps.setTimeout || setTimeout;
   const clearTimeoutFn = deps.clearTimeout || clearTimeout;
-  const { isOfficialCodexOAuthProvider } = require('../../src/codex/official-relay');
-  const { officialAccountIdFromProvider } = require('../../src/official-accounts');
+  const { isOfficialCodexOAuthProvider } = require('./frozen-bc29761b/codex/official-relay');
+  const { officialAccountIdFromProvider } = require('./frozen-bc29761b/official-accounts');
 
   app.post('/api/providers/:appType/:id/speedtest', async (req, res) => {
     const startedAt = now();

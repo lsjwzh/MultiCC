@@ -14,7 +14,7 @@ const {
   protocolOf,
   trustDomainOf,
   validateProviderSelection,
-} = require('../providers/auto-provider-config');
+} = require('../native/binding').autoProviderConfig;
 const {
   NATIVE_OPENCODE_PREFIX,
   nativeOpenCodeId,
@@ -23,14 +23,14 @@ const {
 const {
   VENDOR_NATIVE_SET,
   syntheticVendorProvider,
-} = require('../providers/native-vendor');
-const { peekOpenCodeModels } = require('../routes/opencode-models');
+} = require('../native/binding').nativeVendor;
+const { peekOpenCodeModels } = require('../native/binding').openCodeModels;
 const { limitState } = require('../native/binding').getAutoProviderPolicy();
 const { createAutoProviderRouting } = require('./auto-provider-routing');
 const { expandCandidates, modelChoices, priceLadder } = require('../native/binding').getAutoProviderPricing();
 const { createRoutingAdmissionPhase } = require('./admission-progress');
-const { STALE_MS_DEFAULT } = require('../quota/provider-limit-cache-native-host');
-const { selectionKey } = require('../providers/auto-provider-config');
+const { STALE_MS_DEFAULT } = require('../native/binding').providerLimitCache;
+const { selectionKey } = require('../native/binding').autoProviderConfig;
 const { getNative } = require('../native/binding');
 
 class AutoProviderError extends Error {

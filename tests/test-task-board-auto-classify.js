@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const core = require('../src/task-board/core');
-const { createTaskBoardRuntime } = require('../src/routes/task-board');
+const { createTaskBoardRuntime } = require('../src/native/binding').taskBoardRuntime;
 
 function fixture(overrides = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-auto-'));

@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAutoProviderHandoff } = require('../src/native/binding');
-const { normalizeTurnRequest } = require('../src/chat/turn-request');
+const { normalizeTurnRequest } = require('../src/native/binding').turnRequestHost;
 
 function preparation() {
   return {

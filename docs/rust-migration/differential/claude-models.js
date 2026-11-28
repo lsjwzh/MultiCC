@@ -33,7 +33,7 @@ const { run, send } = require('./lib');
 
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 const ORACLE = require(path.join(ROOT, 'tests/helpers/legacy-claude-models-route.js'));
-const { listClaudeModelsSync, _resetCacheForTest } = require(path.join(ROOT, 'src/claude-models.js'));
+const { listClaudeModelsSync, _resetCacheForTest } = require(path.join(ROOT, 'src/native/binding')).claudeModels;
 
 const GROUP = process.argv[5] || '';
 const BASE = process.env.CM_WORK || '/tmp/claude-models-port';
@@ -666,8 +666,8 @@ const net = require('node:net');
 const http = require('node:http');
 const path = require('node:path');
 const REPO = ${JSON.stringify(ROOT)};
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.resume();

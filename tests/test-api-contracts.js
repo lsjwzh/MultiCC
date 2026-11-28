@@ -22,7 +22,7 @@ const {
   validateSchemaDocument,
 } = require('./helpers/contract-validator');
 const { toSessionDto } = require('../src/native/binding').getSessionDto();
-const { gatewayDto } = require('../src/voice/gateway');
+const { gatewayDto } = require('../src/native/binding').voiceGatewayDomain;
 
 const ROOT = path.join(__dirname, '..');
 const CONTRACT_DIR = path.join(ROOT, 'contracts', API_VERSION);
@@ -402,10 +402,10 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.ok(source.includes("createVoiceHost } = require('./src/voice/host')"));
   assert.ok(source.includes('getBaseUrl: () => `http://127.0.0.1:${PORT}`'));
   assert.doesNotMatch(source, /getBaseUrl:\s*\(\)\s*=>[^\n]*\bgetPort\(\)/);
-  assert.ok(voiceHost.includes("createVoiceGatewayHost } = require('../routes/voice-gateway-host')"));
+  assert.ok(voiceHost.includes("createVoiceGatewayHost } = require('../native/binding').voiceGatewayHost"));
   // The public global voice gateway / voice runtime routes are owned by the Rust
   // front door; Node keeps only the internal host port it calls back into.
-  assert.ok(voiceHost.includes("createVoiceRuntimeHost } = require('../routes/voice-runtime-host')"));
+  assert.ok(voiceHost.includes("createVoiceRuntimeHost } = require('../native/binding').voiceRuntimeHost"));
   assert.doesNotMatch(voiceHost, /routes\/voice-gateway-global|routes\/qwen-audio-runtime/);
   assert.ok(source.includes('JSON.stringify(createWsEnvelope(payload))'));
   // The outward task short-code registry must be the persisted one — without
@@ -424,7 +424,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   // JavaScript source line, which is what keeps the two producers honest.
   const frameHost = fs.readFileSync(path.join(ROOT, 'native/addon/src/chat_connect_frames.rs'), 'utf8');
   const runtime = fs.readFileSync(path.join(ROOT, 'src/native/binding.js'), 'utf8');
-  assert.ok(runtime.includes("taskFramesApi(require('./task-domain').taskCodeRegistryState)"));
+  assert.ok(runtime.includes('taskFramesApi(module.exports.taskDomainHost.taskCodeRegistryState)'));
   assert.ok(frameHost.includes('fn task_frame'));
   assert.ok(frameHost.includes('aux_verdict_health::freshness(source.get(c"provider")?, false)'));
   assert.ok(frameHost.includes('chat_task_state_payload(encode(envelope)?)'));
@@ -466,7 +466,7 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   assert.deepEqual(frames, ['chat_history', 'task_state']);
   // The live broadcast is the task-state store's: server.js builds it and
   // keeps no inline copy, so the cancel-flow tests run the production code.
-  assert.ok(source.includes("require('./src/session/records')"),
+  assert.ok(source.includes('sessionRecordsHost'),
     'server.js must build its task state from the one store');
   assert.ok(source.includes('createTaskStateStore({'));
   assert.doesNotMatch(source, /TASK_STATE_DEFAULTS|taskStatePayload\(/,
@@ -474,8 +474,16 @@ test('server composition uses canonical adapters and retires legacy dispatch end
   const taskStateStore = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'task_state_store.rs'), 'utf8');
   assert.ok(taskStateStore.includes('taskStatePayload'),
     'the store must share the payload contract');
-  assert.ok(taskStateStore.includes('resolve_owner') && fs.readFileSync(path.join(ROOT, 'src', 'session', 'records.js'), 'utf8').includes('taskStateStore(deps, sessionRecordsOwner,'),
-    'merge and write must stay in the one native record owner');
+  assert.ok(taskStateStore.includes('resolve_owner'));
+  const { createTaskStateStore } = require('../src/native/binding').sessionRecordsHost;
+  const { recordsOf } = require('./helpers/session-records');
+  const records = recordsOf([['contract', { id: 'contract' }]]);
+  const taskState = createTaskStateStore({ persistedSessions: records, now: () => 1,
+    bus: { emit() {} }, chatBroadcast() {}, workspaceBroadcast() {},
+  });
+  taskState.setTaskState('contract', { classifyState: 'P' }, { save: false });
+  assert.equal(records.get('contract').taskState.classifyState, 'P',
+    'the task store writes into the original live table');
   assert.ok(taskStateStore.includes('busEmit'),
     'the event hub derives task.* events from every write');
   const recordOwner = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'session_records.rs'), 'utf8');
@@ -558,26 +566,15 @@ test('/api pricing and vendor-quota routes are owned by the Rust front door; Nod
   assert.ok(host.includes("'/api/__host/quota'"), 'and it is not a public path');
 });
 
-test('/api/air public routes are owned by the Rust front door; Node keeps only the host port', () => {
+test('/api/air registers only its private host port through the Rust front door', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
   const binding = fs.readFileSync(path.join(ROOT, 'src', 'native', 'binding.js'), 'utf8');
-  const mount = fs.readFileSync(path.join(ROOT, 'native', 'addon', 'src', 'host_composition.rs'), 'utf8');
-  const host = fs.readFileSync(path.join(ROOT, 'src', 'workspace', 'air-routes-host.js'), 'utf8');
-  assert.ok(source.includes("require('./src/native/binding').airRoutes.mountAirRoutes(app,"),
-    'server.js still wires the air mount point');
-  assert.ok(binding.includes("airMountApi(require('../workspace/air-routes-host').createAirRuntime)"),
-    'the mount API receives the Air host runtime factory');
-  // The 15 public routes live in native/gateway/src/app/air_routes.rs. If Node
-  // starts registering them again the front door and Node would disagree about
-  // status codes, ETag/304 and the `{ ok: … }` envelope.
-  for (const retired of [
-    "app.get('/api/air'", "app.post('/api/air/worktrees/reclaim'", "app.get('/api/air/resolve'",
-    "app.post('/api/air/tasks'", "app.get('/api/air/tasks/:id'", "app.get('/api/air/pins'",
-    "app.post('/api/air/pins'", "app.get('/api/air/todos'", "app.post('/api/air/todos'",
-  ]) assert.equal(host.includes(retired), false, `Node must not register ${retired}`);
-  assert.ok(mount.includes('call(runtime, c"mount", &[a[0]])?'), 'Rust mounts the host runtime on the app');
-  assert.ok(host.includes("const HOST_PATH = '/api/__host/air'") && host.includes('app.post(HOST_PATH,'),
-    'the host runtime registers its internal port');
+  const mount = fs.readFileSync(path.join(ROOT, 'native/addon/src/host_composition.rs'), 'utf8');
+  assert.ok(source.includes("require('./src/native/binding').airRoutes.mountAirRoutes(app,"));
+  assert.ok(binding.includes('airMountApi(module.exports.airRoutesHost.createAirRuntime)'));
+  assert.ok(mount.includes('call(runtime, c"mount", &[a[0]])?'));
+  const { app } = require('./helpers/air-host').mountAir();
+  assert.deepEqual([...app.routes.keys()], ['POST /api/__host/air']);
 });
 
 test('/api events, triggers and annotation-live routes are owned by the Rust front door', () => {
@@ -607,11 +604,8 @@ test('/api events, triggers and annotation-live routes are owned by the Rust fro
 
 test('/api docs, memory, memo and directory-event routes are owned by the Rust front door', () => {
   const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
-  const docs = fs.readFileSync(path.join(ROOT, 'src', 'docs-registry.js'), 'utf8');
-  const memory = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'memory-browser.js'), 'utf8');
-  const notes = fs.readFileSync(path.join(ROOT, 'src', 'notes-store.js'), 'utf8');
-  const host = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'docs-memory-host.js'), 'utf8');
-  assert.ok(source.includes("require('./src/routes/docs-memory-host')"),
+  const { docsMemoryHost } = require('../src/native/binding');
+  assert.ok(source.includes("nativeBinding.docsMemoryHost"),
     'server.js requires the docs-memory host port');
   assert.ok(source.includes('createDocsMemoryHost({'), 'and mounts it once');
   assert.ok(source.includes('memo: memoModule.controller'),
@@ -626,16 +620,22 @@ test('/api docs, memory, memo and directory-event routes are owned by the Rust f
     'the memo module no longer exposes a router');
   assert.equal(source.includes('memoryBrowser.mountRoutes(app)'), false,
     'the memory browser no longer mounts public routes');
-  for (const [file, text] of [
-    ['src/docs-registry.js', docs],
-    ['src/routes/memory-browser.js', memory],
-    ['src/notes-store.js', notes],
-  ]) {
-    assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false,
-      `${file} must not register routes`);
+  for (const file of ['src/docs-registry.js', 'src/routes/memory-browser.js', 'src/notes-store.js', 'src/routes/docs-memory-host.js']) {
+    assert.equal(fs.existsSync(path.join(ROOT, file)), false, file);
   }
-  assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
-  assert.ok(host.includes("'/api/__host/docs-memory'"), 'and it is not a public path');
+  const routes = new Map();
+  let probes = 0;
+  const host = docsMemoryHost.createDocsMemoryHost({
+    docs: { startProbeLoop() { probes += 1; } },
+    artifactExists: () => false,
+    isLocal: () => false,
+  });
+  host.mount({ post(path, handler) { routes.set(path, handler); } });
+  assert.equal(docsMemoryHost.HOST_PATH, '/api/__host/docs-memory');
+  assert.deepEqual([...routes.keys()], [docsMemoryHost.HOST_PATH]);
+  assert.equal(probes, 1);
+  const res = { status(code) { assert.equal(code, 404); return this; }, json(data) { return data; } };
+  assert.deepEqual(routes.get(docsMemoryHost.HOST_PATH)({}, res), { error: 'not found' });
   // The store file keeps its historical underscore spelling: the kernel and the
   // host agree on `docs_registry.json`, not `docs-registry.json`.
   assert.ok(source.includes('docsRegistry'), 'the registry runtime is still the host dependency');
@@ -659,15 +659,18 @@ test('/api task-board, search, task-graph, mark-achieved and task-attribution ro
     'the search runtime no longer mounts public routes');
   assert.equal(source.includes('mountTaskGoalRoutes'), false,
     'mark-achieved is no longer mounted by Node');
-  for (const file of [
-    'task-board', 'task-planning', 'task-search', 'task-goal', 'task-graph',
-  ]) {
+  for (const file of ['task-board', 'task-planning']) {
+    assert.equal(fs.existsSync(path.join(ROOT, 'src', 'routes', file + '.js')), false,
+      file + ' was retired when the task board moved to Rust');
+  }
+  for (const file of ['task-search', 'task-goal', 'task-graph']) {
     const text = fs.readFileSync(require.resolve(path.join(ROOT, 'src', 'routes', file)), 'utf8');
     assert.equal(/app\.(get|post|put|patch|delete)\(/.test(text), false, `${file}.js must not register routes`);
   }
-  const attribution = fs.readFileSync(path.join(ROOT, 'src', 'native', 'task-domain.js'), 'utf8');
-  assert.equal(/app\.(get|post|put|patch|delete)\(/.test(attribution), false,
-    'the task domain compatibility port must not register routes');
+  assert.equal(fs.existsSync(path.join(ROOT, 'src', 'native', 'task-domain.js')), false);
+  const taskDomainCompatibility = require('../src/native/binding').taskDomainHost;
+  assert.equal(typeof taskDomainCompatibility.taskDomain, 'function');
+  assert.equal(typeof taskDomainCompatibility.mountRoutes, 'undefined');
   assert.ok(host.includes('HOST_PATH'), 'the internal host port path stays in the runtime');
   assert.ok(host.includes("'/api/__host/task-routes'"), 'and it is not a public path');
   assert.ok(host.includes("case 'mark-achieved-facts':"),

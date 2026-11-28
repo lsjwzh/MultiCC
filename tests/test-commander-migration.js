@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const test = require('node:test');
 const { assertTestDir } = require('../src/paths');
-const { createTaskBoardRuntime } = require('../src/routes/task-board');
+const { createTaskBoardRuntime } = require('../src/native/binding').taskBoardRuntime;
 const {
   COMMANDER_LABEL,
   chooseCommanderRuntime,

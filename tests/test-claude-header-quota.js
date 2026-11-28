@@ -7,12 +7,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { claudeQuota } = require('../src/native/binding');
 const { createProxyBroadcasters } = require('../src/chat/proxy-broadcast');
-const Queue = require('../src/quota/claude-usage-queue');
-const State = require('../src/quota/claude-bar-state');
+const Queue = require('../src/native/binding').claudeUsageQueue;
+const State = require('../src/native/binding').claudeBarState;
 const Renderer = require('../src/native/binding').getQuotaBarView();
 const { resolveQuotaBar } = require('../public/quota-bar-view');
 const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
-const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
+const { createLimitRecorder } = require('../src/native/binding').limitRecorder;
 const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
 
 const available = claudeQuota('extract', { headers: {} }) !== undefined;

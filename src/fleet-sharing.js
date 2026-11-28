@@ -92,7 +92,7 @@ function createFleetSharing({
   const owner = new (getNative().RustWorkspaceSharing)(sharesFile);
   // Native creates shares; this port only reads the authoritative live map.
   // A weak capture lets callback -> facade -> native cycles be collected.
-  require('./gateway-child').connectWorkspaceControl(owner, workspaceDirectoryReader(getDirectory),
+  require('./native/binding').gatewayChild.connectWorkspaceControl(owner, workspaceDirectoryReader(getDirectory),
     workspaceContextReader(getDirectory, listSessions), authSecurity);
   let tail = Promise.resolve();
   const query = (operation, input = null) => unwrap(owner.query(operation, JSON.stringify(input), Number(now())));

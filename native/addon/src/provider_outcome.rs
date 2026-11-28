@@ -9,6 +9,7 @@
 //! Error codes are sanitized and 429 rejections normalized by
 //! [`crate::api_error_text`] directly.
 mod observation;
+pub(crate) use observation::normalize as normalize_proxy_outcome;
 
 use crate::{
     api_error_text::{normalize_rejection, sanitize},

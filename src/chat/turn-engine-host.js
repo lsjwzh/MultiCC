@@ -28,16 +28,16 @@ const {
   sanitizeMessage: sanitizeApiErrorMessage,
 } = require('../native/binding').chatApi;
 const { createProviderAttemptRuntime, markHostErrorEnvelope, providerAttemptFields,
-  tagProviderAttemptEvent } = require('./provider-attempt-runtime');
+  tagProviderAttemptEvent } = require('../native/binding').providerAttemptRuntime;
 const { createProviderInvocationFactory } = require('../native/binding').providerInvocation;
 const { createAutoProviderRuntime } = require('./auto-provider-runtime');
 const { createAutoRouteNotes } = require('./auto-route-notes');
 const { deliverAfterPendingMemory, createQueuedTurnPreparation } = require('./admission-progress');
 const { createAutoProviderHandoff } = require('../native/binding');
-const { redactProviderRouteCapability } = require('../observability');
-const { taskIdForShortCode } = require('../native/task-domain');
+const { redactProviderRouteCapability } = require('../native/binding').observability;
+const { taskIdForShortCode } = require('../native/binding').taskDomainHost;
 const { taskStateSeed } = require('../native/binding');
-const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
+const { recordAdapterQuestion, prepareQuestionReplay } = require('../native/binding').chatHostCoordinator;
 const { buildSubagentProviderHint } = require('../native/binding').getHostPrompts();
 const managedContext = require('../native/binding').managedContext;
 const {
@@ -51,19 +51,19 @@ const chatStream = require('./chat-stream');
 const { spawnContractOf } = require('./held-turn-injection');
 const secretsVault = require('../secrets-vault');
 const waitInjector = require('../wait/injector');
-const providers = require('../providers/host');
+const providers = require('../native/binding').providersHost;
 const { claudeSettingsExtra, appendAdapterAssistantText, adapterReasoningProgressEvent,
   normalizeClaudeToolResultContent, normalizeClaudeAssistantSnapshot, closeOpenThinkingTool,
   markReplaySafeAssistantEnvelope, reconcileBoundaryErrorEnvelope } = getNative().chatTurnEventHelpers({
     providers, markHostErrorEnvelope, redactProviderRouteCapability,
   });
 
-const { checkEgressIpAllowed } = require('../providers/egress-ip-policy');
+const { checkEgressIpAllowed } = require('../native/binding').egressIpPolicy;
 const { deriveOpenTasks } = require('../native/binding').getTurnEventReplay();
 const { createCodexRolloutGuard, enforceCodexRolloutForTurn } = require('./codex-rollout-guard');
 const hasNativeHistory = (record, options) => getNative().claudeExpHasNativeHistory(record, options);
 const { createOpencodeContextGuard, enforceOpencodeContextForTurn } = require('./opencode-context');
-const { providerSelectionDto } = require('../providers/auto-provider-config');
+const { providerSelectionDto } = require('../native/binding').autoProviderConfig;
 const { isResident, isResidentSession } = require('../native/binding').cliCapability;
 
 const { chatRecoverDispatchFromHistory: recoverDispatchFromHistory,

@@ -4,7 +4,7 @@ use multicc_core::{js::JsValue, search_tokens};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
 
-fn normalized(value: LiveValue<'_>, query: bool) -> Result<LiveValue<'_>> {
+pub(crate) fn normalized(value: LiveValue<'_>, query: bool) -> Result<LiveValue<'_>> {
     let string = value.global()?.get(c"String")?;
     let input = if value.nullish()? {
         value.from_value(&JsValue::string(""))?
@@ -51,13 +51,16 @@ pub fn search_tokenize(env: Env, value: Unknown<'_>) -> Result<sys::napi_value> 
 
 #[napi]
 pub fn search_board_query_terms(env: Env, value: Unknown<'_>) -> Result<sys::napi_value> {
-    let value = LiveValue::new(&env, value);
+    Ok(live_board_query_terms(LiveValue::new(&env, value))?.raw())
+}
+
+pub(crate) fn live_board_query_terms(value: LiveValue<'_>) -> Result<LiveValue<'_>> {
     let text = token_input(value, false)?;
     let terms = search_tokens::board_query_terms(&text)
         .into_iter()
         .map(|(term, weight)| JsValue::Array(vec![term.into(), weight.into()]))
         .collect();
-    Ok(value.from_value(&JsValue::Array(terms))?.raw())
+    value.from_value(&JsValue::Array(terms))
 }
 
 #[napi]

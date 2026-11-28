@@ -356,7 +356,14 @@ fn sanitize_relay_current(raw: Option<&Value>) -> Option<Value> {
 pub async fn fetch_relay_models(
     target: &RemoteAgyTarget,
     refresh: bool,
-) -> Result<(Vec<Value>, Option<Value>), RelayCatalogError> {
+) -> Result<
+    (
+        Vec<Value>,
+        Option<Value>,
+        Option<multicc_core::agy_models::Models>,
+    ),
+    RelayCatalogError,
+> {
     let base_url = target
         .relay_base_url
         .as_deref()
@@ -415,7 +422,11 @@ pub async fn fetch_relay_models(
             .to_string();
         return Err(RelayCatalogError::Unavailable(detail));
     }
-    Ok((models, sanitize_relay_current(body.get("current"))))
+    Ok((
+        models,
+        sanitize_relay_current(body.get("current")),
+        multicc_core::agy_models::concrete_models(&body["availableModels"], "model", "label"),
+    ))
 }
 
 /// 探测借道分享码连通性（`GET <relayBaseUrl>/ping`）。
@@ -736,7 +747,7 @@ exit 0
             "relayAuthToken": "mcr1.0123456789abcdef.secret9999",
         }))
         .unwrap();
-        let (models, current) = fetch_relay_models(&target, true).await.unwrap();
+        let (models, current, _) = fetch_relay_models(&target, true).await.unwrap();
         let _ = srv.await;
         assert_eq!(models.len(), 2);
         assert_eq!(models[0]["model"], "gemini-4-neon");

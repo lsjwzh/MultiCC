@@ -11,7 +11,7 @@ const path = require('node:path');
 const legacy = require('./helpers/legacy-chat-history-file-repository');
 const { getNative } = require('../src/native/binding');
 const { createPaths } = require('../src/paths');
-const stateStore = require('../src/state/store');
+const stateStore = require('../src/native/binding').stateStore;
 const native = {
   createChatHistoryFileRepository: ({ dataDir, appendEnabled } = {}) => getNative().chatHistoryFileRepositoryCreate({
     root: createPaths({ dataDir }).chatHistoryDir, appendEnabled, reportFailure: stateStore.reportFailure,

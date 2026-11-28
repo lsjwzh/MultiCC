@@ -8,7 +8,7 @@ const { randomUUID } = require('node:crypto');
 const { createSdkStream } = require('../src/chat/claude-sdk-stream');
 const { createStreamRouter } = require('../src/chat/stream-router');
 const { createBackgroundTaskRuntime } = require('../src/chat/background-task-runtime');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createSessionDelivery } = require('../src/native/binding').getSessionDeliveryApi();
 const sdkFixture = require('./helpers/claude-sdk-fixture');
 const { createMonitorAdmission, isMonitorHandoffResult } = require('../src/native/binding').getMonitorAdmission();
@@ -49,7 +49,7 @@ test('Monitor hook only captures known native notifications and never captures s
 });
 
 test('background hold releases after quiet, keeps holding past the cap while background work is alive, and lets the last self-wake decide the outcome', async () => {
-  const { createBackgroundHold } = require('../src/chat/background-hold');
+  const { createBackgroundHold } = require('../src/native/binding').backgroundHold;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const main = { type: 'result', subtype: 'success', is_error: false, result: 'first', usage: { input_tokens: 1 } };
   const wake = (result, extra = {}) => ({ type: 'result', subtype: 'success', is_error: false, result,

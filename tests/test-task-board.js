@@ -6,8 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const core = require('../src/task-board/core');
-const planning = require('../src/task-board/planning');
-const { createTaskBoardRuntime, assertTaskBoardDeps } = require('../src/routes/task-board');
+const { taskPlanning: planning, taskBoardRuntime: { createTaskBoardRuntime, assertTaskBoardDeps } } = require('../src/native/binding');
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const { retiredRoutes } = require('./helpers/task-board-ports');
 require('./test-task-planning');
@@ -1409,7 +1408,11 @@ test('看板视图与冻结实现逐项核对 DTO、会话采集顺序与失败�
   assert.equal(createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex'),
     '002c4a04b0d1c8aad249fdb7a17aaccdbbbf1db4');
   const original = { exports: {} };
-  compileFunction(bytes.toString(), ['module', 'require'], { filename: file })(original, createRequire(file));
+  const load = require('./helpers/frozen-batch10').from(file, createRequire(file));
+  const { bridge, planning: referencePlanning } = require('./helpers/load-frozen-task-board');
+  const overrides = { './native-bridge': bridge, './planning': referencePlanning };
+  compileFunction(bytes.toString(), ['module', 'require'], { filename: file })(original,
+    id => Object.hasOwn(overrides, id) ? overrides[id] : load(id));
   const run = (api, mode) => {
     const calls = [];
     const board = { modules: {}, tasks: {}, taskGroups: {} };

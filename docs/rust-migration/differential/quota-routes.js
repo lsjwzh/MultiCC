@@ -652,8 +652,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const REPO = ${JSON.stringify(repo)};
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
@@ -752,7 +752,7 @@ main({
     // refresh reaches safeErrorHandler exactly as it did in production. The
     // handler goes onto the same deps object the world mutates, never a copy:
     // `accounts.enabled === false` is applied by removing the member.
-    const { asyncHandler } = require(path.join(repo, 'src/http-errors'));
+    const { asyncHandler } = require(path.join(repo, 'tests/helpers/frozen-da8f52ee/http-errors'));
     bag.deps.asyncHandler = asyncHandler;
     legacy.mountQuotaRoutes(app, bag.deps);
     upstreamText = upstreamSource(repo);

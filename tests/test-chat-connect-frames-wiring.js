@@ -31,7 +31,7 @@ const { getNative, installAuxHealthProvider, auxVerdictStaleness, taskStateSeed,
 // registry is stubbed; the Aux health reading stays the real module.
 let shortCode = '';
 const shortCodeCalls = [];
-test.mock.getter(require('../src/native/task-domain'), 'taskCodeRegistryState', () => taskId => {
+test.mock.getter(require('../src/native/binding').taskDomainHost, 'taskCodeRegistryState', () => taskId => {
   shortCodeCalls.push(taskId);
   return shortCode;
 });

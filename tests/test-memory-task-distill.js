@@ -15,7 +15,7 @@ const {
   similar,
   createTaskMemoryDistiller,
   AUTO_SECTION,
-} = require('../src/memory/task-distill');
+} = require('../src/native/binding').taskDistill;
 const {
   buildTaskAttributionSystemPrompt,
   parseTaskAttribution,
@@ -208,7 +208,7 @@ test('evidence published hook fires with the correlated task binding', async t =
 
 test('01e931f1 differential: UTF-16 cleaning, bigram similarity, markdown boundaries and coercions', () => {
   const before = require('./helpers/frozen-state-leaves/task-distill');
-  const after = require('../src/memory/task-distill');
+  const after = require('../src/native/binding').taskDistill;
   for (const raw of [undefined, null, false, '无', '- · • * 消息记录已更新成功', '同词【 标签 】 测试',
     '候选内容包含：\n换行\ufeff文本', 'a'.repeat(238) + '😀很多内容', 'x\udfff😀'.repeat(92), '\u0085任务的持久记忆文本']) {
     assert.equal(after.cleanMemoryCandidate(raw), before.cleanMemoryCandidate(raw));

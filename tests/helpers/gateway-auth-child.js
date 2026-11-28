@@ -1,15 +1,15 @@
 'use strict';
 // Isolated transport fixture using the real Rust authentication owner. No user
 // settings, providers, sessions, or external network requests are loaded.
-const gateway = require('../../src/gateway-child');
+const gateway = require('../../src/native/binding').gatewayChild;
 const http = require('node:http');
 const express = require('express');
 const WebSocket = require('ws');
-const auth = require('../../src/auth-security');
+const auth = require('../../src/native/binding').authSecurity;
 const { createAuthRuntime } = require('../../src/routes/auth');
 const { isLocalRequest } = require('../../src/request-locality');
 const { createErrorDto } = require('../../src/native/binding').getApiContract();
-const { requestIdMiddleware, safeErrorHandler } = require('../../src/http-errors');
+const { requestIdMiddleware, safeErrorHandler } = require('../../src/native/binding').httpErrors;
 const security = auth.createAuthSecurity({ secret: 'fixture-token' });
 gateway.connectAuthControl(security);
 const app = express();
@@ -19,7 +19,7 @@ let sourceDirectories;
 let failDirectoryRead = false;
 let failMemberRead = false;
 const hits = [];
-app.use(requestIdMiddleware, require('../../src/http/json-compression').jsonCompression);
+app.use(requestIdMiddleware, require('../../src/native/binding').jsonCompression.jsonCompression);
 app.use((req, _res, next) => { hits.push(req.path); next(); });
 // Explicit test-only control surface, never mounted by the product.
 app.get('/fixture/state', (_req, res) => res.json({ pid: process.pid, hits, count: security.ticketCount(),

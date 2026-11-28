@@ -15,7 +15,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const Queue = require('../src/quota/claude-usage-queue');
+const Queue = require('../src/native/binding').claudeUsageQueue;
 
 const NOW = 1_700_000_000_000;
 const OK = (extra = {}) => ({ status: 'ok', fetchedAt: NOW, summary: [{ window: '5h', usedPercent: 3 }], ...extra });

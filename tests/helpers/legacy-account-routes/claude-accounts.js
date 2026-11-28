@@ -5,7 +5,7 @@
 // tests/helpers/legacy-account-routes.js over the scripted world in
 // tests/helpers/account-routes-scripted-world.js.
 
-const { outboundFetch } = require('../../../src/network/outbound');
+const { outboundFetch } = require('../frozen-b10-network/outbound');
 
 // Claude official-account management routes (multi-account OAuth).
 //
@@ -33,9 +33,9 @@ const {
   exchangeCode,
   fetchUsage,
   waitForCallback,
-} = require('../../../src/claude-auth/official-oauth');
-const { officialAccountIdFromProvider } = require('../../../src/official-accounts');
-const { accountProviderId } = require('../../../src/providers/official-catalog');
+} = require('../frozen-e960f6eb/claude-auth/official-oauth');
+const { officialAccountIdFromProvider } = require('../frozen-bc29761b/official-accounts');
+const { accountProviderId } = require('../frozen-catalog-inputs/official-account-ids');
 const { createAccountEgressFetch, parseEgressBinding } = require('../../../src/network/egress-fetch');
 
 function sanitizeLabel(value) {
@@ -51,7 +51,7 @@ function assertDeps(deps) {
 function mountClaudeAccountRoutes(app, deps) {
   if (!app || typeof app.get !== 'function') throw new TypeError('[claude-accounts] Express-compatible app is required');
   assertDeps(deps);
-  require('../../../src/quota/account-subscription-reader').registerAccountSubscriptionReader('claude', deps);
+  require('../../../src/native/binding').accountReader.registerAccountSubscriptionReader('claude', deps);
   const { accounts, providers, credentials } = deps;
   const fetchImpl = deps.fetch || outboundFetch;
   const logger = deps.logger || { info() {}, warn() {}, error() {} };

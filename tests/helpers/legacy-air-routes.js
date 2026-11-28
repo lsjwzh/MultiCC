@@ -9,12 +9,12 @@
 
 
 const crypto = require('node:crypto');
-const core = require('../../src/task-board/core');
-const { taskDomain, taskDomainAsync } = require('../../src/native/task-domain');
+const { core } = require('./load-frozen-task-board');
+const { taskDomain, taskDomainAsync } = require('./frozen-batch10').frozen('native/task-domain');
 const { isAbnormalLetter, isGoalState } = require('../../src/classify/vocab');
-const { createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('../../src/native/task-domain');
+const { createAirPinRuntime, createAirTodoRuntime, createAirTodoIgnoreRuntime } = require('./frozen-batch10').frozen('native/task-domain');
 const { pendingAttention } = require('./legacy-task-attention');
-const { createAirCardCache } = require('../../src/workspace/air-card-cache');
+const { createAirCardCache } = require('./frozen-da8f52ee/workspace/air-card-cache');
 
 // 旧 App 的完整快照与按需详情继续支持 ETag/304。生产快照正文按摘要版本复用；
 // Web 首页走分页索引与游标增量，不再每 15 秒请求完整快照。
@@ -484,7 +484,7 @@ function mountAirRoutes(app, deps) {
   }
   // 分相位计时记录后台生产者的成本，数字不进入摘要正文。
   const reportPhases = createPhaseReporter(deps.phaseDiagnostics, { lastLogAt: 0 });
-  const liveSync = deps.registerSync ? require('../../src/workspace/air-sync-runtime').createAirSyncRuntime({
+  const liveSync = deps.registerSync ? require('./frozen-1f3d27cc/workspace/air-sync-runtime').createAirSyncRuntime({
     build: async ids => {
       const timing = createPhaseTimer();
       const snapshot = await airSnapshot(timing, { ids, cooperative: true });

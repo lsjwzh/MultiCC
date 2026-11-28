@@ -71,6 +71,7 @@ class RunConfigSheet extends StatefulWidget {
     this.claudeWorkflow = false,
     this.preferSubtasks = false,
     this.defaultModel = '',
+    this.agyAccountId,
     this.providerSelection,
     this.subProviderId,
     this.subModel,
@@ -97,6 +98,7 @@ class RunConfigSheet extends StatefulWidget {
   /// picker highlights it when the session has no explicit model; empty for
   /// drafts that have no session yet.
   final String defaultModel;
+  final String? agyAccountId;
   final SessionProviderSelection? providerSelection;
   final String? subProviderId;
   final String? subModel;
@@ -771,7 +773,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       if (_choicesFor(_provider).contains(seeded)) _model = seeded;
     }
     if (_model.isEmpty) _model = _defaultModelFor(_provider);
-    final rungs = effortRungsFor(widget.cli, _model);
+    final rungs = effortRungsFor(widget.cli, _model, widget.agyAccountId);
     final values = rungs.map((rung) => rung.$1).toList();
     final selected = widget.effort == 'ultracode' ? 'xhigh' : widget.effort;
     _effort = values.contains(selected) || selected.isEmpty
@@ -865,6 +867,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       final rung = autoRungFor(candidate, selection.routing?.tiers ?? const []);
       _rows.add(
         RunPoolRow(
+          agyAccountId: widget.agyAccountId,
           lane: lane,
           providerId: candidate.providerId,
           model: candidate.model ?? '',
@@ -931,7 +934,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   }
 
   List<String> _choicesFor(String provider) =>
-      runModelChoices(_cli, provider, _providers);
+      runModelChoices(_cli, provider, _providers, agyAccountId: widget.agyAccountId);
 
   /// 池子里同时有官方线路和用户自管线路吗 —— 相当于 web 的 selectionCrossesTrust
   /// （trust 域有两个就跨域）。混用本来就是这个面板的常态：跨域时不该拦，只是
@@ -1094,7 +1097,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       } else if (cli == SessionCli.commandcode) {
         await CommandCodeModelsService(settings: settings).load();
       } else if (cli == SessionCli.agy) {
-        await AgyModelsService(settings: settings).load();
+        await AgyModelsService(settings: settings).load(accountId: widget.agyAccountId);
       } else if (cli == SessionCli.grok) {
         await GrokModelsService(settings: settings).load();
       } else {
@@ -1102,7 +1105,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       }
     } catch (_) {}
     if (!mounted || _cli != cli) return;
-    setState(() {});
+    setState(_clearUnavailableEffort);
   }
 
   /// 换到一条新车道时的默认线路：官方那条，找不到就用第一条。
@@ -1181,13 +1184,15 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       currentCli: widget.cli.name,
       providerId: _provider,
       model: model,
-      effort: _cli.effortOptionsForModel(model).contains(_effort) ? _effort : '',
+      effort: _cli.effortOptionsForModel(model, agyAccountId: widget.agyAccountId).contains(_effort) ? _effort : '',
       claudeWorkflow: _workflow || widget.claudeWorkflow ? _workflow && _supportsWorkflow(_cli, _provider, model) : null,
       preferSubtasks: _preferSubtasks || widget.preferSubtasks ? _preferSubtasks : null,
       providerLabel: providerLabel,
       modelLabel: model.isEmpty
           ? '默认'
-          : runModelOptionLabel(_cli, _provider, model, _providers),
+          : _cli == SessionCli.agy
+              ? _cli.agyModelLabel(model, _effort, agyAccountId: widget.agyAccountId)
+              : runModelOptionLabel(_cli, _provider, model, _providers),
       subProviderId: _subProvider,
       subModel: subModel,
       includeAgent: _cli.supportsAgent,
@@ -1512,7 +1517,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       ],
       const SizedBox(height: 12),
       _modelPicker(),
-      if (effortRungsFor(_cli, _customModel ? _customCtrl.text : _model).isNotEmpty) ...[
+      if (effortRungsFor(_cli, _customModel ? _customCtrl.text : _model, widget.agyAccountId).isNotEmpty) ...[
         const SizedBox(height: 12),
         _effortPicker(),
       ],
@@ -1809,6 +1814,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           onChanged: (v) => setState(() {
             _customModel = v == '__custom__';
             if (!_customModel) _model = v ?? '';
+            _clearUnavailableEffort();
           }),
         ),
         if (_cli.isCodexFamily &&
@@ -1829,7 +1835,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
           const SizedBox(height: 8),
           TextField(
             controller: _customCtrl,
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => setState(_clearUnavailableEffort),
             autofocus: true,
             style: const TextStyle(
               color: AppColors.text,
@@ -1845,8 +1851,13 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     );
   }
 
+  void _clearUnavailableEffort() {
+    final model = _customModel ? _customCtrl.text : _model;
+    if (!_cli.effortOptionsForModel(model, agyAccountId: widget.agyAccountId).contains(_effort)) _effort = _cli.defaultEffort;
+  }
+
   Widget _effortPicker() {
-    final rungs = effortRungsFor(_cli, _customModel ? _customCtrl.text : _model);
+    final rungs = effortRungsFor(_cli, _customModel ? _customCtrl.text : _model, widget.agyAccountId);
     final index = effortRungIndexFor(_cli, _effort, rungs);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2629,7 +2640,7 @@ Future<_RunConfigInputBundle> _loadRunConfigInputs(
   // 刚在别处换了车道）再按真实车道补取一次。prepareAIConfigInputs 自己吞错，
   // 运行时那一路失败时它不会变成无人接的异常。
   final runtimeFuture = manager.fetchSessionCliConfig(sessionId);
-  final hinted = cliHint == null
+  final hinted = cliHint == null || cliHint == SessionCli.agy
       ? null
       : prepareAIConfigInputs(settings, cliHint, httpClient: httpClient);
   final runtime = await runtimeFuture;
@@ -2640,6 +2651,7 @@ Future<_RunConfigInputBundle> _loadRunConfigInputs(
           settings,
           cli,
           httpClient: httpClient,
+          agyAccountId: runtime.agyAccountId,
         );
   return _RunConfigInputBundle(
     runtime,
@@ -2712,6 +2724,7 @@ class _RunConfigSheetLoader extends StatelessWidget {
         return RunConfigSheet(
           cli: cli,
           providers: bundle.inputs.providers,
+          agyAccountId: runtime.agyAccountId,
           cliAvailability: bundle.inputs.cliAvailability,
           provider: (pending == null ? runtime.provider : pending.provider) ?? '',
           providerSelection: (pending == null ? runtime.providerSelection : pending.providerSelection),

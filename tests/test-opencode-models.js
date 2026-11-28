@@ -26,7 +26,7 @@ const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-models-'));
 process.env.HOME = tmpHome;
 after(() => fs.rmSync(tmpHome, { recursive: true, force: true }));
 
-const modelsRoute = require('../src/routes/opencode-models.js');
+const modelsRoute = require('../src/native/binding').openCodeModels;
 const {
   mergeOpenCodeModels,
   parseOpenCodeStdout,
@@ -36,7 +36,7 @@ const {
   _setCacheForTest,
   _resetCacheForTest,
 } = modelsRoute;
-const { createOpencodeAdapter } = require('../src/cli-adapters/opencode.js');
+const { createOpencodeAdapter } = require('../src/native/binding').cliAdapters;
 
 const CLI = parseOpenCodeStdout([
   'opencode/big-pickle',

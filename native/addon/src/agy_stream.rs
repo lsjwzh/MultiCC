@@ -13,6 +13,7 @@ pub struct AgyInvocationInput {
     pub cmd: String,
     pub model: Option<String>,
     pub effective_model: Option<String>,
+    pub account_key: Option<String>,
     pub effort: Option<String>,
     pub conversation_id: Option<String>,
     pub is_first_turn: bool,
@@ -29,16 +30,22 @@ pub struct AgyInvocationOutput {
 
 #[napi]
 pub fn agy_build_invocation(input: AgyInvocationInput) -> AgyInvocationOutput {
-    let out = agy_stream::build_invocation(&InvocationInput {
-        cmd: input.cmd,
-        model: input.model,
-        effective_model: input.effective_model,
-        effort: input.effort,
-        conversation_id: input.conversation_id,
-        is_first_turn: input.is_first_turn,
-        role_prompt: input.role_prompt,
-        prompt: input.prompt,
-    });
+    let account = input
+        .account_key
+        .unwrap_or_else(|| multicc_core::agy_models::account_key(None));
+    let out = agy_stream::build_for_account(
+        &InvocationInput {
+            cmd: input.cmd,
+            model: input.model,
+            effective_model: input.effective_model,
+            effort: input.effort,
+            conversation_id: input.conversation_id,
+            is_first_turn: input.is_first_turn,
+            role_prompt: input.role_prompt,
+            prompt: input.prompt,
+        },
+        &account,
+    );
     AgyInvocationOutput {
         cmd: out.cmd,
         args: out.args,
@@ -91,6 +98,28 @@ pub fn agy_terminal(
     let quote = L::new(&env, quote);
     let support = L::new(&env, support);
     let mut command = quote.call_plain(&[L::new(&env, cmd)])?;
+    let model = read(session, c"model")?
+        .string()?
+        .map(|s| s.to_string_lossy());
+    let level = read(session, c"effort")?
+        .string()?
+        .map(|s| s.to_string_lossy());
+    let pin = session
+        .optional(c"cliAccounts")?
+        .optional(c"agy")?
+        .string()?
+        .map(|s| s.to_string_lossy());
+    let account = multicc_core::agy_models::account_key(pin.as_deref());
+    let concrete = level.as_deref().and_then(|level| {
+        agy_stream::effort::concrete(
+            multicc_core::agy_models::cached(&account).as_ref(),
+            model.as_deref(),
+            level,
+        )
+    });
+    let rejected = level.as_deref().is_some_and(|level| {
+        agy_stream::effort::rejected(&account, model.as_deref().unwrap_or(""), level)
+    });
     for (key, flag) in [
         (c"model", " --model "),
         (c"effort", " --effort "),
@@ -100,17 +129,23 @@ pub fn agy_terminal(
             continue;
         }
         if key == c"effort"
-            && !support
-                .call_plain(&[
-                    command.from_value(&"agy".into())?,
-                    read(session, c"model")?,
-                    read(session, key)?,
-                ])?
-                .truthy()?
+            && (concrete.is_some()
+                || rejected
+                || !support
+                    .call_plain(&[
+                        command.from_value(&"agy".into())?,
+                        read(session, c"model")?,
+                        read(session, key)?,
+                    ])?
+                    .truthy()?)
         {
             continue;
         }
-        let value = quote.call_plain(&[read(session, key)?])?;
+        let raw = match (key == c"model", &concrete) {
+            (true, Some(id)) => session.from_value(&id.as_str().into())?,
+            _ => read(session, key)?,
+        };
+        let value = quote.call_plain(&[raw])?;
         command = crate::host_methods::call(
             command,
             c"concat",
@@ -161,6 +196,7 @@ pub fn agy_host_invocation(
         &[
             ("cmd", L::new(&env, cmd)),
             ("model", model),
+            ("accountKey", read(options, c"agyAccountKey")?),
             (
                 "effectiveModel",
                 if effective.truthy()? {

@@ -8,7 +8,7 @@
 const assert = require('node:assert/strict'), fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
-const { writeJsonAtomic } = require('../src/state/store');
+const { writeJsonAtomic } = require('../src/native/binding').stateStore;
 const { waitServerReady } = require('./helpers/wait-server-ready');
 const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-cron-fanout-upgrade-')));
 const data = path.join(root, 'data'), home = path.join(root, 'home'), project = path.join(root, 'project');

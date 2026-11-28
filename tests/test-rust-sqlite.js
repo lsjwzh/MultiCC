@@ -137,7 +137,7 @@ test('真实打包副本加载自己的 Rust 模块，移除产物后宿主环�
   fs.rmSync(path.join(serverDir,'native','prebuilt'),{recursive:true});
   assert.throws(()=>verifyRuntimeSqlite(options),/cannot open a SQLite database/);
   const refusal = spawnSync(process.execPath, ['-e',
-    "process.stdout.write(String(require('./src/routes/task-planning').responseStatus('revision_conflict')))"],
+    "process.stdout.write(String(require('./src/native/binding').taskPlanningRoutes.responseStatus('revision_conflict')))"],
   { cwd: serverDir, env: { ...process.env, MULTICC_RUST_ADDON: path.join(root, 'missing.node') }, encoding: 'utf8' });
   assert.equal(refusal.status, 0, refusal.stderr);
   assert.equal(refusal.stdout, '409');

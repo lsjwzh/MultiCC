@@ -1,6 +1,6 @@
 'use strict';
 
-const { getChildProxyEnv } = require('./network/outbound');
+const { getChildProxyEnv } = require('./native/binding').outbound;
 const { startWindowsStandaloneUpdate } = require('./windows-standalone-update');
 
 // ── Run the updater from the web UI ──

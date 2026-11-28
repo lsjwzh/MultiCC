@@ -5,13 +5,13 @@
 // behind the upload admission gate. Every other voice route (refine, confirm,
 // progress-summary, feedback, vocab, readiness, hotwords, test-sse and the
 // `/api/settings/voice*` family) is owned by the Rust front door; the Node-only
-// facts and side effects those handlers need live in `voice-host.js`.
+// facts and side effects those handlers need live in the native voice settings host.
 //
 // The full pre-migration implementation is frozen in
 // tests/helpers/legacy-voice-routes.js as the differential oracle.
 
 const { getNative } = require('../native/binding');
-const { mountVoiceHostRoute } = require('./voice-host');
+const { mountVoiceHostRoute } = require('../native/binding').voiceSettingsHost;
 
 function requireFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`voice routes require ${name}`);

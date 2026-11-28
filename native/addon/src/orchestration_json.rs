@@ -105,3 +105,58 @@ pub fn orchestration_json_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_
     });
     Ok(api.raw())
 }
+
+/// Public stores expose ordinary VM promises for mutate/mutateIf. The
+/// internal runtime can still recognize and use the native store factory.
+#[napi]
+pub fn public_orchestration_store(
+    env: Env,
+    store: Unknown<'_>,
+    async_methods: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    use crate::host_methods::variadic_method;
+    let s = L::new(&env, store);
+    let asynchronous = L::new(&env, async_methods).call_plain(&[s])?;
+    let out = fields(
+        s,
+        &[
+            ("backend", s.get(c"backend")?),
+            ("file", s.get(c"file")?),
+            ("mutate", asynchronous.get(c"mutate")?),
+            ("mutateIf", asynchronous.get(c"mutateIf")?),
+        ],
+    )?;
+    out.set(
+        c"runNativeCommandSync",
+        variadic_method(&env, s, "runNativeCommandSync", 1, |s, a| {
+            call(s, c"runNativeCommandSync", a)
+        })?,
+    )?;
+    for (name, n) in [(c"read", 1), (c"snapshot", 0), (c"flush", 0)] {
+        out.set(
+            name,
+            function(s, name.to_str().unwrap(), n, n, move |s, a| {
+                call(s, name, a)
+            })?,
+        )?;
+    }
+    Ok(out.freeze()?.raw())
+}
+#[napi]
+pub fn create_sqlite_host_store(
+    env: Env,
+    options: Unknown<'_>,
+    ports: Unknown<'_>,
+) -> Result<sys::napi_value> {
+    let options = default_object(L::new(&env, options))?;
+    for key in [c"Database", c"fsImpl", c"pathImpl"] {
+        if !options.get(key)?.nullish()? {
+            return Err(options.type_error(&format!(
+                "[orchestration-sqlite-store] {} injection is unsupported by the Rust store",
+                key.to_string_lossy()
+            )));
+        }
+    }
+    let p = L::new(&env, ports);
+    Ok(call(p, c"createNativeStore", &[options, p])?.raw())
+}

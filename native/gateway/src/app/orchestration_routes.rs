@@ -40,7 +40,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{Method, Response};
+use axum::http::{uri::Authority, Method, Response, Uri};
+use futures_util::future::{ready, Either};
 use multicc_core::auth_runtime::Snapshot;
 use multicc_core::http_gate::{
     self, error_dto, is_private_network_address, query_value, QueryValue,
@@ -161,6 +162,72 @@ fn request_headers(ctx: &RequestCtx) -> Value {
     Value::Object(headers)
 }
 
+/// Check the raw authority before URL parsing can discard whitespace or normalize paths.
+fn valid_http_origin(origin: &str) -> bool {
+    let Some((scheme, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+        && !authority.is_empty()
+        && !authority.ends_with(':')
+        && !authority.contains(['/', '\\', '?', '#', '@'])
+        && !authority
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+        && url::Url::parse(origin).is_ok_and(|url| {
+            url.host_str()
+                .is_some_and(|host| host.parse::<Authority>().is_ok())
+        })
+}
+
+fn wait_callback_origin(ctx: &RequestCtx, body: &Value) -> Result<Option<String>, ()> {
+    let mut explicit = None;
+    for name in ["callbackBaseUrl", "callback_base_url"] {
+        if let Some(field) = body.get(name) {
+            let value = field.as_str().ok_or(())?;
+            let origin = value.strip_suffix('/').unwrap_or(value);
+            if !valid_http_origin(origin) {
+                return Err(());
+            }
+            explicit.get_or_insert(origin);
+        }
+    }
+    if let Some(origin) = explicit {
+        return Ok(Some(origin.to_owned()));
+    }
+    let proto = ctx
+        .headers
+        .get("x-forwarded-proto")
+        .and_then(|s| s.split(',').next());
+    if proto.is_some_and(|s| s.trim().eq_ignore_ascii_case("https")) {
+        if let Some(host) = ctx.headers.get("host") {
+            let origin = format!("https://{host}");
+            return Ok(valid_http_origin(&origin).then_some(origin));
+        }
+    }
+    Ok(None)
+}
+
+fn rewrite_wait_callback(answer: &mut Value, origin: &str) {
+    if answer["status"].as_u64() != Some(200) {
+        return;
+    }
+    let Some(field) = answer.pointer_mut("/body/callbackUrl") else {
+        return;
+    };
+    let Some(uri) = field.as_str().and_then(|s| s.parse::<Uri>().ok()) else {
+        return;
+    };
+    if matches!(uri.scheme_str(), Some("http" | "https")) && uri.authority().is_some() {
+        if let Some(suffix) = uri
+            .path_and_query()
+            .filter(|p| p.path().starts_with("/api/wait/"))
+        {
+            *field = Value::String(format!("{origin}{suffix}"));
+        }
+    }
+}
+
 /// One host round trip carrying the op, the decoded parameters and the facts
 /// the retired handler read. The host answers `{ ok: true, value }`; `value` is
 /// the `{ status, body, headers }` (or `{ threw, … }`) the retired handler
@@ -269,8 +336,12 @@ pub async fn handle(
             &[],
         );
     }
-    if let Some(refusal) = app.gate(ctx, peer, snapshot).await {
-        return refusal;
+    let public_resolve = matches!(route, Route::WaitResolve)
+        && multicc_core::http_entry::public_path(ctx.method.as_str(), &ctx.path.as_str().into());
+    if !public_resolve {
+        if let Some(refusal) = app.gate(ctx, peer, snapshot).await {
+            return refusal;
+        }
     }
 
     let parts = segments(&ctx.path).unwrap_or_default();
@@ -313,6 +384,31 @@ pub async fn handle(
             Err(error) => express::json(ctx, 500, &json!({"error":error}), &[]),
         };
     }
+    let parse_body = match route.body_parser() {
+        BodyParser::Global => express::json_body(ctx, body, express::JSON_LIMIT),
+    };
+    let mut callback_origin = None;
+    let parse_body = if route == Route::SessionWaitPost {
+        // Reject invalid origins before even the session guard calls the host.
+        // Defer JSON parser errors until after the guard, as on other routes.
+        let parsed = parse_body.await;
+        if let Ok(body) = &parsed {
+            callback_origin = match wait_callback_origin(ctx, body) {
+                Ok(origin) => origin,
+                Err(()) => {
+                    return express::json(
+                        ctx,
+                        400,
+                        &json!({"error":"invalid callbackBaseUrl"}),
+                        &[],
+                    )
+                }
+            };
+        }
+        Either::Left(ready(parsed))
+    } else {
+        Either::Right(parse_body)
+    };
     let guard_segment = match route {
         Route::Options { guard_segment, .. } => guard_segment,
         _ => guard_index(&parts),
@@ -336,11 +432,9 @@ pub async fn handle(
     };
 
     // Every route in this cluster sits after the global `express.json`.
-    let request_body = match route.body_parser() {
-        BodyParser::Global => match express::json_body(ctx, body, express::JSON_LIMIT).await {
-            Ok(value) => value,
-            Err(error) => return express::error(ctx, error.status, error.reason),
-        },
+    let request_body = match parse_body.await {
+        Ok(value) => value,
+        Err(error) => return express::error(ctx, error.status, error.reason),
     };
 
     if !app.node_enabled && route == Route::AuxConfigGet {
@@ -387,7 +481,12 @@ pub async fn handle(
 
     let budget = route.long_poll().then_some(LONG_POLL);
     match call(ctx, host, Value::Object(payload), budget).await {
-        Ok(answer) => relay(ctx, answer),
+        Ok(mut answer) => {
+            if let Some(origin) = callback_origin {
+                rewrite_wait_callback(&mut answer, &origin);
+            }
+            relay(ctx, answer)
+        }
         Err(response) => response,
     }
 }
@@ -455,6 +554,24 @@ mod tests {
             Some(json!(["a", ["b"]]))
         );
         assert_eq!(query_json_value(&QueryValue::Object), Some(json!({})));
+    }
+
+    #[test]
+    fn only_successful_wait_callback_urls_are_rewritten() {
+        for (status, callback) in [
+            (400, json!("http://localhost/api/wait/w1/resolve?token=t")),
+            (200, Value::Null),
+            (200, json!("/api/wait/w1/resolve?token=t")),
+            (
+                200,
+                json!("http://localhost/other?next=/api/wait/w1/resolve"),
+            ),
+        ] {
+            let answer = json!({"status": status, "body": {"callbackUrl": callback}});
+            let mut actual = answer.clone();
+            rewrite_wait_callback(&mut actual, "https://tunnel.example.test");
+            assert_eq!(actual, answer);
+        }
     }
 
     #[test]

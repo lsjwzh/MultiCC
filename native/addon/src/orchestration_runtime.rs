@@ -3,6 +3,7 @@
 mod delivery;
 mod lifecycle;
 mod operations;
+mod services;
 mod setup;
 mod waits;
 

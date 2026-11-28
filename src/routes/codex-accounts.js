@@ -21,9 +21,9 @@
 //   POST   /api/codex/accounts/:id/login-callback finish from a pasted address/code
 //   DELETE /api/codex/accounts/:id                remove an inactive credential dir
 
-const { outboundFetch } = require('../network/outbound');
-const { officialAccountIdFromProvider } = require('../official-accounts');
-const { accountProviderId } = require('../providers/official-catalog');
+const { outboundFetch } = require('../native/binding').outbound;
+const { officialAccountIdFromProvider } = require('../native/binding').officialAccounts;
+const { accountProviderId } = require('../native/binding').officialCatalog;
 const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');
 const {
   generatePkce,
@@ -135,7 +135,7 @@ function mountCodexAccountRoutes(app, deps) {
         loginStates.set(account.id, { state: 'complete', email: credential.email || '' });
         logger.info('codex_account_login_complete', { accountId: account.id, email: credential.email || '' });
         // 目录失败不改变已完成的登录状态，也不等待 CLI 启动。
-        Promise.resolve().then(() => (deps.modelCatalogRuntime || require('../codex/model-catalog').defaultRuntime)
+        Promise.resolve().then(() => (deps.modelCatalogRuntime || require('../native/binding').codexModelCatalog.defaultRuntime)
           .refreshAccount(account.id, { force: true })).catch(() => {
           logger.warn('codex_account_models_refresh_failed', { accountId: account.id });
         });

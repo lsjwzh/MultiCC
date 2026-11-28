@@ -87,7 +87,7 @@ function mountSystemHostRoute(app, options = {}) {
       // 再封顶只是防御，正常流量上恒等。
       const limit = Number.isSafeInteger(body.limit) && body.limit > 0 ? Math.min(body.limit, 200) : 100;
       // 与退役路由一致：proxy-trace 保持惰性加载。
-      return res.json({ entries: require('../../../src/codex/proxy-trace').codexProxyTrace().snapshot(limit) });
+      return res.json({ entries: require('../frozen-leaf-hosts/proxy-trace').codexProxyTrace().snapshot(limit) });
     }
     return res.status(400).json({ error: 'unknown host operation' });
   });

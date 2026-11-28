@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const planning = require('../src/task-board/planning');
+const planning = require('../src/native/binding').taskPlanning;
 const { mkRuntime } = require('./helpers/task-board-runtime');
 const migration = require('../plugins/cron/fanout-migration');
 

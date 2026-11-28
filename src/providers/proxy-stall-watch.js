@@ -1,6 +1,6 @@
 'use strict';
 
-const { proxyRequestKind } = require('./proxy-outcome');
+const { proxyRequestKind } = require('../native/binding').proxyOutcome;
 const { performance } = require('node:perf_hooks');
 
 const { createModelStreamProgress } = require('../native/binding');

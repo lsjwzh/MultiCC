@@ -12,8 +12,8 @@
 // redaction, error-envelope detection, completion persistence, recordResultEvent)
 // are imported, exactly as the old code imported them.
 const { detectErrorEnvelope, envelopeSourceFor } = require('../../src/chat/api-error-policy');
-const { redactProviderRouteCapability } = require('../../src/observability');
-const { recordResultEvent } = require('../../src/chat/turn-lifecycle');
+const { redactProviderRouteCapability } = require('./frozen-batch10').frozen('observability');
+const { recordResultEvent } = require('./frozen-d6c814fe/chat/turn-lifecycle');
 const { canPersistAdapterCompletion } = require('./legacy-adapter-completion');
 
 function statusOf(value) {

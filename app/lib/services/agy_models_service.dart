@@ -1,3 +1,4 @@
+import '../models/message.dart';
 import 'live_model_catalog.dart';
 import 'settings_service.dart';
 
@@ -8,9 +9,18 @@ class AgyModelsService {
   AgyModelsService({required this.settings});
   final SettingsService settings;
 
-  static final LiveModelCatalog catalog = LiveModelCatalog(
-    path: '/api/agy/models',
+  static final _catalogs = <String, LiveModelCatalog>{};
+  static LiveModelCatalog forAccount(String? accountId) => _catalogs.putIfAbsent(
+    accountId ?? '',
+    () => LiveModelCatalog(
+      path: Uri(path: '/api/agy/models', queryParameters:
+          accountId == null || accountId.isEmpty ? null : {'accountId': accountId}).toString(),
+      ttl: const Duration(minutes: 10),
+      cacheSources: const {'cli', 'ssh', 'relay'},
+      onCatalog: (body) => readAgyEfforts((body['efforts'] as Map?)?['agy'], accountId: accountId),
+    ),
   );
+  static LiveModelCatalog get catalog => forAccount(null);
 
   static List<LiveModel> get cached => catalog.cached;
 
@@ -19,18 +29,19 @@ class AgyModelsService {
   static LiveModel? get current => catalog.current;
 
   /// 「默认」行的人话：目录已回报当前档位就写出来，否则只写跟随配置。
-  static String get defaultLabel {
-    final now = current;
+  static String get defaultLabel => defaultLabelFor(null);
+  static String defaultLabelFor(String? accountId) {
+    final now = forAccount(accountId).current;
     return now == null ? '默认（跟随 Antigravity 配置）' : '默认 · ${now.label}';
   }
 
-  static List<MapEntry<String, String>> options() => [
-    MapEntry('', defaultLabel),
-    for (final m in cached) MapEntry(m.id, m.label),
+  static List<MapEntry<String, String>> options([String? accountId]) => [
+    MapEntry('', defaultLabelFor(accountId)),
+    for (final m in forAccount(accountId).cached) MapEntry(m.id, m.label),
   ];
 
   /// Shown when the picker has nothing but the pinned default.
   static const emptyHint = '未读到反重力模型，请确认已登录 agy 并检查网络';
 
-  Future<List<LiveModel>> load() => catalog.load(settings);
+  Future<List<LiveModel>> load({String? accountId}) => forAccount(accountId).load(settings);
 }

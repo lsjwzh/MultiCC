@@ -1,6 +1,6 @@
 'use strict';
 
-const { connectAuthControl, applySourceAddonEnv } = require('./src/gateway-child');
+const { connectAuthControl, applySourceAddonEnv } = require('./src/native/binding').gatewayChild;
 applySourceAddonEnv(__dirname);
 
 {
@@ -19,7 +19,7 @@ try {
   });
 } catch (_) { /* .env not found, skip */ }
 // Start every child from clean routing env; per-session providers re-apply theirs.
-const { ANTHROPIC_ROUTING_KEYS } = require('./src/providers/host');
+const { ANTHROPIC_ROUTING_KEYS } = require('./src/native/binding').providersHost;
 for (const k of ANTHROPIC_ROUTING_KEYS) {
   if (process.env[k]) { console.log(`[multicc] stripping inherited ${k} so claude uses the OAuth subscription`); delete process.env[k]; }
 }
@@ -30,8 +30,8 @@ for (const k of [
   'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ID',]) {
   if (process.env[k]) { console.log(`[multicc] stripping leaked ${k} so spawned claude keeps the full tool set`); delete process.env[k]; }
 }
-require('./src/task-shell/migration-gate').runAtBoot();
-require('./src/network/global-proxy').installGlobalProxy();
+require('./src/native/binding').migrationGate.runAtBoot();
+require('./src/native/binding').globalProxy.installGlobalProxy();
 const express = require('express');
 const http = require('http');
 const https = require('https');
@@ -41,12 +41,13 @@ const os = require('os');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
 const { spawn, execFile } = require('child_process');
-const { createUploadSuite } = require('./src/native/binding');
+const nativeBinding = require('./src/native/binding');
+const { createUploadSuite } = nativeBinding;
 const chokidar = require('chokidar');
 const cron = require('node-cron');
 const upload = createUploadSuite();
-const wechatBridge = require('./plugins/bridges/wechat-ilink');
-const feishuBridge = require('./plugins/bridges/feishu-bridge');
+const wechatBridge = require('./src/native/binding').wechatBridge;
+const feishuBridge = require('./src/native/binding').feishuBridge;
 const telegramBridge = require('./plugins/bridges/telegram-bridge');
 const discordBridge = require('./plugins/bridges/discord-bridge');
 const slackBridge = require('./plugins/bridges/slack-bridge');
@@ -55,18 +56,18 @@ const ttsService = require('./src/voice/tts-service');
 const cronTasks = require('./plugins/cron/cron-tasks');
 const webpush = require('web-push');
 const macosPower = require('./src/native/binding').macosPower;
-const batteryGuardRuntime = require('./src/battery-guard').createBatteryGuardRuntime({ macosPower, logger: console }).start(); // 掉电保护，详见 src/battery-guard.js 头注
+const batteryGuardRuntime = nativeBinding.batteryGuard.createSystemBatteryGuardRuntime({ logger: console }).start();
 const gitPush = require('./plugins/utils/git-push');
 const { runGit: gitRunQueued, queueDepth: gitQueueDepth } = require('./src/native/binding').gitQueue;
 
 const crypto = require('crypto');
 const bus = require('./src/native/binding').eventBus;
 const state = require('./src/native/binding').stateContainer;
-const artifacts = require('./src/artifacts'), docsRegistry = require('./src/docs-registry'), secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/routes/plugins');
-const providers = require('./src/providers/host');
-providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/codex/model-catalog').startDefaultRuntime();
+const artifacts = nativeBinding.artifacts, docsRegistry = nativeBinding.docsRegistry, secretsVault = require('./src/secrets-vault'), pluginsRoutes = require('./src/native/binding').pluginsRoutes;
+const providers = require('./src/native/binding').providersHost;
+providers.enableUnifiedOfficialProviders(); const codexCatalog = require('./src/native/binding').codexModelCatalog.startDefaultRuntime();
 const { executeAuxHttp } = require('./src/aux-http');
-const { createRoleTokenTracker } = require('./src/role-token-tracker');
+const { createRoleTokenTracker } = nativeBinding.roleTokenTracker;
 const {
   createCodexUsageHost,
   projectHistoryUsage,
@@ -75,7 +76,7 @@ const {
 const { createProviderRouterRuntime } = require('./src/providers/router-runtime');
 const { appPaths: { createPaths }, getNative, findProviderReferences, messageComposer, bootstrapState,
   synchronizeCodexProfileRoute, installAuxHealthProvider, fanOutAuxVerdictStaleness, getNetworkPolicy, createSessionPersistence, getSessionNotices } = require('./src/native/binding');
-const { createCliAdapters } = require('./src/cli-adapters');
+const { createCliAdapters } = require('./src/native/binding').cliAdapters;
 
 const { createSessionPolicy, createReportedModelRuntime, pollCodexSessionId } = require('./src/cli/session-policy');
 const { isResidentSession, displayNameOf, isAlias, bundledClaudeCodeBinary, nameOf: canonicalCli, watchEffortCatalog } = require('./src/native/binding').cliCapability;
@@ -86,7 +87,7 @@ const {
   atomicWrite: atomicWriteMemoryFile,
   readMemoryFolder: readFolderMemory,
   scanMemoryContent,
-} = require('./src/memory-store');
+} = nativeBinding.curatedMemoryStore;
 const {
   SUPPORTED_CHAT_CLIS,
   ensureCliStates,
@@ -99,20 +100,20 @@ const {
 } = require('./src/cli-switch');
 const CLIENT_CHAT_CLIS = Object.freeze(SUPPORTED_CHAT_CLIS.filter(cli => !isAlias(cli)));
 // MULTICC_DATA_DIR owns state; stores use atomic writes.
-const stateStore = require('./src/state/store');
-const { createSessionRecords, createTaskStateStore } = require('./src/session/records');
-const { createStateOwner } = require('./src/state/owner');
-const { createChatSessions, createChatReplayRuntime } = require('./src/chat/sessions');
-const { createDirectoryTable } = require('./src/directory/records');
+const stateStore = require('./src/native/binding').stateStore;
+const { createSessionRecords, createTaskStateStore } = require('./src/native/binding').sessionRecordsHost;
+const { createStateOwner } = require('./src/native/binding').stateOwner;
+const { createChatSessions, createChatReplayRuntime } = nativeBinding.chatSessions;
+const { createDirectoryTable } = nativeBinding.directoryRecords;
 const mountPublicSessionAccessGuard = (app, options) =>
   require('./src/native/binding').getNative().sessionPublicAccessApi().mountPublicSessionAccessGuard(app, options);
 const { initializeSessionWorktrees, resolveSessionCwd } = require('./src/session/hibernation');
 const { createOrchestrationRuntime } = require('./src/native/binding').orchestrationHost;
-const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = require('./src/codex/image-bridge-runtime');
+const { createRouterToolHost } = require('./src/router-tool-host'); const { createSecretTools } = require('./src/secret-tools'); const { createOfficialImageBridgeRuntime } = nativeBinding.officialImageBridgeRuntime;
 const { createHostLifecycle } = require('./src/host-lifecycle');
 const { createLanDiscoveryRuntime } = require('./src/lan-discovery');
-const gatewayChild = require('./src/gateway-child'); gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
-const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/http-errors');
+const gatewayChild = nativeBinding.gatewayChild; gatewayChild.watchGatewayLifeline(); // behind the Rust front door: exit when it is gone
+const { requestIdMiddleware, safeErrorHandler, asyncHandler } = require('./src/native/binding').httpErrors;
 const { createMemoModule } = require('./src/memo');
 const { createReleaseHistoryHost } = require('./src/routes/release-history-host');
 const { createApkDistribution } = require('./src/apk-distribution');
@@ -120,20 +121,20 @@ const { mountSystemHostRoute, mountProviderRelayHostRoute, mountHostReadHostRout
 const { mountPushHostRoute } = require('./src/routes/push-host');
 const { createVoiceHost } = require('./src/voice/host');
 const { mountAuxGoalRoutes } = require('./src/routes/aux-goal');
-const { createTaskBoardRuntime } = require('./src/routes/task-board/index'); const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
+const { createTaskBoardRuntime } = require('./src/native/binding').taskBoardRuntime; const { createTaskSearchRoutes } = require('./src/routes/task-search'); const { getSharedSearchRuntime } = require('./src/search/runtime');
 const { createCommanderMigrationState } = require('./src/commander-migration');
 const { mountFileTransferHostRoute } = require('./src/routes/file-transfer-host');
 const { createSkillSyncRuntime } = require('./src/skill-sync');
 const skillConverter = require('./src/skill-converter');
-const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = require('./src/providers/relay-share-store');
-const { mountModelCatalogsHostRoute } = require('./src/routes/model-catalogs-host');
-const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/official-accounts'); const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = require('./src/codex/accounts-refresh'); const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
+const { createProviderRoutes } = require('./src/routes/providers'); const { createProviderRelayShareStore } = nativeBinding.relayShares;
+const { mountModelCatalogsHostRoute } = require('./src/native/binding').modelCatalogsHost;
+const { createOfficialAccountStore, sanitizeLoginEnv, DEFAULT_ROOT: OFFICIAL_ACCOUNTS_ROOT } = require('./src/native/binding').officialAccounts; const { mountCodexAccountRoutes } = require('./src/routes/codex-accounts'); const { createCodexAccountRefreshSupervisor } = nativeBinding.codexAccountsRefresh; const { mountClaudeAccountRoutes } = require('./src/routes/claude-accounts'); const { createClaudeAccountCredentialService } = require('./src/claude-auth/account-credentials'); // multi-account official credentials (see src/official-accounts.js)
 const { mountQuotaHostRoute } = require('./src/routes/quota-host');
 const { mountProviderBalanceRoutes } = require('./src/routes/provider-balance-host');
-const { createProviderRelayModelCatalogRuntime } = require('./src/providers/relay-model-catalog');
-const { createMemoryBrowserRoutes } = require('./src/routes/memory-browser');
-const { createDocsMemoryHost } = require('./src/routes/docs-memory-host');
-const { mountSessionMemoryRoutes } = require('./src/routes/session-memory');
+const { createProviderRelayModelCatalogRuntime } = require('./src/native/binding').relayModelCatalog;
+const { createMemoryBrowserRoutes } = nativeBinding.memoryBrowser;
+const { createDocsMemoryHost } = nativeBinding.docsMemoryHost;
+const { mountSessionMemoryRoutes } = nativeBinding.sessionMemoryRoutes;
 const { createAgentResourcesRuntime } = require('./src/routes/agent-resources');
 const { mountSecretsVaultHostRoute } = require('./src/routes/secrets-vault-host');
 const { mountSessionCreateRoutes } = require('./src/routes/session-create');
@@ -143,7 +144,7 @@ const { createAccountRoutesHost, mountCliKeyAccountRoutes, mountCommandcodeAuthR
 const { createClaudeOAuthSurface } = require('./src/routes/claude-oauth');
 const { mountZcodeAuthRoutes, mountZcodeAuthLoginRoute } = require('./src/routes/zcode-auth'); const { mountKimiAuthRoutes, mountKimiAuthLoginRoute } = require('./src/routes/kimi-auth');
 const { createOrchestrationRoutes } = require('./src/routes/orchestration');
-const { createChatTurnEngine } = require('./src/chat/turn-engine-host'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/providers/auto-provider-config');
+const { createChatTurnEngine } = require('./src/chat/turn-engine-host'); const { primaryProviderCandidate, validateProviderSelection } = require('./src/native/binding').autoProviderConfig;
 const { createTuiChatMirrorRuntime, isEnabled: tuiChatMirrorEnabled, validateExperimentalSession } = require('./src/experiments/tui-chat-mirror-runtime');
 const { createSessionGitRuntime } = require('./src/routes/session-git');
 const { createSessionProfileRoutes } = require('./src/routes/session-profile');
@@ -152,18 +153,18 @@ const { createSessionLifecycleRuntime } = require('./src/routes/session-lifecycl
 const { createServerRestartRoute } = require('./src/routes/server-restart-route');
 const { createUpdateRoute } = require('./src/routes/update-route');
 const { createAuthRuntime } = require('./src/routes/auth');
-const { createNotesStore } = require('./src/notes-store');
+const { createNotesStore } = nativeBinding.workspaceNotes;
 const {
   listInstalledSkills,
   listClaudeHistory,
   removeClaudeHistorySession,
 } = require('./src/skills');
-const { createFolderMemoryService } = require('./src/memory/folder-service');
+const { createFolderMemoryService } = nativeBinding.folderMemoryService;
 const {
   createMemoryRuntime,
   getMemoryEntries,
   normalizeManualMemory,
-} = require('./src/memory/runtime');
+} = nativeBinding.memoryRuntime;
 const createTaskHistoryRetention = deps => require('./src/native/binding').getNative().createTaskHistoryRetention(deps);
 const taskHistoryRefusal = error => require('./src/native/binding').getNative().taskHistoryRefusal(error);
 const { createChatHistoryRuntime, buildReplayMessages } = require('./src/routes/chat-history/index');
@@ -174,23 +175,23 @@ const { createSessionTriggers } = require('./src/triggers');
 const {
   createClaudeOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CLAUDE_OAUTH_CHECK_INTERVAL_MS,
-} = require('./src/claude-auth/oauth-refresh');
+} = require('./src/native/binding').claudeOAuthRefresh;
 const {
   createCodexOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
-} = require('./src/codex/oauth-refresh');
+} = require('./src/native/binding').codexOAuthRefresh;
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/native/binding').classifyVocab;
-const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/task-domain');
-const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
+const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/binding').taskDomainHost;
+const { recordAdapterUserInput } = require('./src/native/binding').chatHostCoordinator;
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/native/binding').sessionWork;
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/binding').getHostPrompts();
 const { createDispatchTargeting } = require('./src/dispatch/targeting');
 const { createGatewayHost } = require('./src/dispatch/gateway-host');
-const { createDispatchProgressSubscription } = require('./src/dispatch/progress');
+const { createDispatchProgressSubscription } = nativeBinding.dispatchProgress;
 const { createClassifyStateMachine } = require('./src/classify/task-attribution');
 const { createAuxRunLog } = require('./src/classify/aux-run-log');
 const { createLivenessRuntime } = require('./src/liveness/runtime');
-const { createProcessProbe } = require('./src/liveness/process-probe');
+const { createSystemProcessProbe } = nativeBinding.processProbe;
 const { createRolloutPathResolver } = require('./src/native/binding').rolloutPath;
 const { createProcessingWatchdog, PROCESS_WATCHDOG_INTERVAL_MS } = require('./src/chat/process-watchdog');
 const { createStalledTurnRecovery, STALLED_RECOVERY_INTERVAL_MS } = require('./src/chat/stalled-turn-recovery');
@@ -236,16 +237,16 @@ const {
   createAuthSecurity,
   normalizeRedirect,
   escapeHtmlAttribute,
-} = require('./src/auth-security');
+} = nativeBinding.authSecurity;
 const { envEnabled, resolveNetworkPolicy, selectListenPort } = getNetworkPolicy();
 const { isLocalRequest, isPrivateRequestPeer } = require('./src/native/binding').requestLocality;
-const { createObservability, installConsoleRedaction } = require('./src/observability');
+const { createObservability, installConsoleRedaction } = require('./src/native/binding').observability;
 const { mountWsConnectionRouter } = require('./src/ws/connection-router');
 const { mountServerCoreHostRoute } = require('./src/routes/server-core-host');
-const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = require('./src/runtime-security');
-const { createHostEnv } = require('./src/host-env');
+const { secureRuntimeData, atomicWriteJson, atomicWriteText, ensurePrivateDir } = nativeBinding.runtimeSecurity;
+const { createHostEnv } = nativeBinding.hostEnv;
 // Windows keeps its startup PATH: widen it from install dirs + registry now.
-const windowsEnv = require('./src/windows-env'); windowsEnv.prepare();
+const windowsEnv = require('./src/native/binding').windowsEnv; windowsEnv.prepare();
 const MULTICC_PATHS = createPaths({ dataDir: process.env.MULTICC_DATA_DIR });
 const providerRelayShares = createProviderRelayShareStore({ file: MULTICC_PATHS.providerRelaySharesFile }); initTaskShortCodeRegistry({ file: MULTICC_PATHS.taskShortCodesFile });
 const MEMORY_STORE_ROOT = process.env.MULTICC_MEMORY_ROOT || path.join(__dirname, 'memories');
@@ -333,7 +334,7 @@ logger.info('provider_router_runtime', {
 });
 installConsoleRedaction(console);
 secureRuntimeData(MULTICC_PATHS);
-const { airNotices } = require('./src/workspace/air-index-port');
+const { airNotices } = require('./src/native/binding').airIndexPort;
 airNotices.installStateStoreReporter(stateStore, { metrics, logger });
 const networkPolicy = resolveNetworkPolicy(process.env);
 const app = express();
@@ -353,7 +354,7 @@ const ALLOW_LEGACY_WS_COOKIE = envEnabled(process.env.MULTICC_ALLOW_LEGACY_WS_CO
 
 const { httpParseCookies: parseCookies } = getNative();
 
-app.use(requestIdMiddleware, require('./src/http/json-compression').jsonCompression);
+app.use(requestIdMiddleware, nativeBinding.jsonCompression.jsonCompression);
 routerToolHost.mount(app);
 // Auth gates shutdown, login and scoped grants.
 // It stays mounted before every API/relay route so mutable credentials apply
@@ -478,11 +479,11 @@ const { commands: cliCommands, registry: cliAdapterRegistry } = createCliAdapter
 const CLAUDE_CMD = cliCommands.claude;
 
 function cliCommandAvailable(command) {
-  return require('./src/cli-adapters/commands').isCommandAvailable(command, { isWindows });
+  return require('./src/native/binding').cliCommands.isCommandAvailable(command, { isWindows });
 }
 
 // Re-resolve when the environment moved: a just-installed CLI must show up.
-const commandsForAvailability = require('./src/cli-adapters/commands').createCommandResolver({ isWindows, seed: cliCommands });
+const commandsForAvailability = require('./src/native/binding').cliCommands.createCommandResolver({ isWindows, seed: cliCommands });
 function cliAvailabilitySummary() {
   return getNative().cliAvailabilitySummary(CLIENT_CHAT_CLIS, commandsForAvailability(),
     bundledClaudeCodeBinary, providers, cliCommandAvailable);
@@ -518,7 +519,7 @@ const {
   gitSyncFromBase, gitRebaseResolve, gitWorktreeSnapshot, gitExportSessionBundle,
   gitImportSessionBundle, defaultRepoActor,
 } = require('./src/native/binding').gitService;
-const { slotOwnsWorktree } = require('./src/task-worktree');
+const { slotOwnsWorktree } = require('./src/native/binding').taskWorktree;
 
 // RepoActor operations are retained in a bounded in-memory history. Destructive
 // endpoint responses include operationId; callers can inspect progress and the
@@ -611,7 +612,7 @@ const directories = createDirectoryTable(stateOwner);
 mountPublicSessionAccessGuard(app, { records: persistedSessions, logger, v1NotFound: (req, res) => v1Error(req, res, 404, 'session not found', 'session_not_found') });
 
 // 供应商余量共享缓存：写入成功后向使用该线路的会话同步展示快照。
-const { providerQuotaHistory, providerLimitCache, limitRecorder, quotaBarCache, quotaGuard } = require('./src/quota/provider-runtime').createProviderQuotaRuntime({ paths: MULTICC_PATHS, persistedSessions, providers, broadcast: (id, data) => chatBroadcast(id, data), logger });
+const { providerQuotaHistory, providerLimitCache, limitRecorder, quotaBarCache, quotaGuard } = nativeBinding.providerQuota.createProviderQuotaRuntime({ paths: MULTICC_PATHS, persistedSessions, providers, broadcast: (id, data) => chatBroadcast(id, data), logger });
 // The native owner writes sessions.json itself (same envelope, `.bak1..3`
 // rotation, file+directory fsync). It honours the same isolated-test failure
 // marker inside a temporary MULTICC_DATA_DIR, under NODE_ENV=test only.
@@ -654,7 +655,7 @@ const backfillReportedModels = reportedModelRuntime.backfill;
 // records keep their active top-level fields for backward compatibility; the
 // map is hydrated from those fields once and then maintained on every switch.
 for (const session of persistedSessions.values()) {
-  if (require('./src/providers/official-catalog').normalizeOfficialSessionReferences(session, providers.normalizeOfficialProviderId)) _state.needsSave = true;
+  if (require('./src/native/binding').officialCatalog.normalizeOfficialSessionReferences(session, providers.normalizeOfficialProviderId)) _state.needsSave = true;
   if (ensureCliStates(session)) _state.needsSave = true;
 }
 
@@ -729,14 +730,8 @@ async function destroySessionCascade(s, d, opts = {}) {
   };
 }
 
-// Notes/events store (src/notes-store.js): event ring + append-only per-dir
-// logs and the shared inter-agent notes pool. Owns its mutable `notes` array
-// (never exported by reference) and hydrates it here at boot, exactly where the
-// inline loadNotes() ran before extraction. Created before every consumer —
-// seedCommanderSession/destroySessionCascade/directoryModule all take
-// appendEvent/purgeNotesForSession by value. The events route itself is served
-// by the Rust front door; src/routes/docs-memory-host.js only answers its
-// `notes-events` host lookup against the directory map composed below.
+// Hydrate notes before session and directory consumers capture appendEvent and
+// purgeNotesForSession. The workspace event ring gets its broadcast port later.
 const notesStore = createNotesStore({
   eventsDir: MULTICC_PATHS.eventsDir,
   notesFile: MULTICC_PATHS.notesFile,
@@ -1100,10 +1095,7 @@ const {
 // streaming flags / turn heartbeat, and an on-demand process probe so the UI can
 // tell "working" (producing / waiting on the model) from "idle" and "stalled".
 // chatStreamStatus is a lazy closure — chatStream is required further below.
-const livenessProcessProbe = createProcessProbe({
-  execFile,
-  statMtimeMs: p => { try { return fs.statSync(p).mtimeMs; } catch (_) { return null; } },
-});
+const livenessProcessProbe = createSystemProcessProbe();
 // Best-effort resolve a codex session's rollout file (for the growth signal).
 // The walk is memoized inside the resolver — see src/liveness/rollout-path.js.
 const livenessRolloutResolver = createRolloutPathResolver({
@@ -1153,7 +1145,7 @@ const { createProxyBroadcasters } = require('./src/chat/proxy-broadcast');
 // 每条线路的「专用出口」：CPR 拨上游前按线路问出口（「Chrome 隔离出口启动器」插件里的身份），
 // Claude 与 Codex 两条协议代理共用同一个解析器；装着的 CPR 不认这个钩子时，绑了出口的线路
 // 在读令牌处失败，绝不悄悄从本机 IP 直连。
-const claudeEgress = require('./src/claude-auth/egress-agent');
+const claudeEgress = require('./src/native/binding').claudeEgress;
 const claudeEgressSupported = providerRouterRuntime.routerSupports('upstreamAgent');
 if (!claudeEgressSupported) logger.error('claude_egress_router_outdated', { need: 'cli-provider-router >= 0.5.2 (CAPABILITIES.upstreamAgent)' });
 const claudeEgressResolver = claudeEgress.createClaudeEgressAgentResolver({ logger });
@@ -1483,7 +1475,7 @@ const folderMemory = createFolderMemoryService({
 });
 // P4 任务级记忆蒸馏：归因 aux 的 memory_candidate 与交付回执都经它写入
 // tasks/<taskId>/MEMORY.md 的「自动蒸馏」小节（去重→替换、容量上限，只碰小节）。
-const taskMemoryDistiller = require('./src/memory/task-distill').createTaskMemoryDistiller({
+const taskMemoryDistiller = nativeBinding.taskDistill.createTaskMemoryDistiller({
   fs,
   path,
   taskDir: (dirId, taskId) => folderMemory.taskDir(dirId, taskId),
@@ -1508,6 +1500,7 @@ mountSessionMemoryRoutes(sessionRoutesHost.app, {
 // Session-level curated memory routes above retain their separate semantics.
 // This object is the filesystem half of the docs/memory host port below.
 const memoryBrowser = createMemoryBrowserRoutes({
+  nativeMemoryScan: true,
   fs,
   path,
   memoryStoreRoot: MEMORY_STORE_ROOT,
@@ -1603,9 +1596,6 @@ const updateRoute = createUpdateRoute({
 });
 
 // ── Per-session metadata: inter-agent notes + liveness ──
-// Handler logic lives in the native session meta routes; only host wiring stays
-// here. `notes` lives inside src/notes-store.js and is never exposed by
-// reference — the module receives getNotes()/saveNotes()/pendingNotesFor().
 createSessionMetaRuntime({
   persistedSessions,
   asyncHandler,
@@ -1633,7 +1623,7 @@ mountFileTransferHostRoute(app, {
 });
 
 // ── Host .env management + Web Push (PWA notifications) ──
-// .env read/write helpers and VAPID key provisioning extracted to src/host-env.js.
+// The native host environment owns the editable configuration and VAPID provisioning.
 // The startup order below is preserved verbatim: DEFAULT_CLI migration, voice
 // route wiring, then VAPID key provisioning + setVapidDetails.
 const hostEnv = createHostEnv({ webpush });
@@ -1681,8 +1671,8 @@ const sessionDelivery = require('./src/native/binding').getSessionDeliveryApi().
   admit: (session, text, opts) => chatTurnEngine.admitChatWork(session, text, opts),
   log: message => console.log('[multicc/delivery]', message),
 });
-const authHealth = require('./src/claude-auth/refresh-health').createRefreshHealthStore({ root: OFFICIAL_ACCOUNTS_ROOT, logger }); const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger, health: authHealth, healthKey: 'claude-cli' });
-const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore({ onCredentialWritten: id => limitRecorder.releaseProviderFailure({ providerId: require('./src/providers/official-catalog').accountProviderId('claude', id) }) }); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger, health: authHealth }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive, onNeedsRefresh: id => claudeAccountRefresh.checkAccount(id, 'read-miss') }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
+const authHealth = nativeBinding.refreshHealth.createRefreshHealthStore({ root: OFFICIAL_ACCOUNTS_ROOT, logger }); const claudeOAuthRefresh = createClaudeOAuthRefresher({ logger, health: authHealth, healthKey: 'claude-cli' });
+const codexOAuthRefresh = createCodexOAuthRefresher({ logger }); const officialAccounts = createOfficialAccountStore({ onCredentialWritten: id => limitRecorder.releaseProviderFailure({ providerId: require('./src/native/binding').officialCatalog.accountProviderId('claude', id) }) }); const cliLogin = require('./src/official-accounts-cli-login').createCliLoginDetector({ accounts: officialAccounts }); const codexAccountRefresh = createCodexAccountRefreshSupervisor({ accounts: officialAccounts, logger }); const claudeAccountRefresh = require('./src/claude-auth/accounts-refresh').createClaudeAccountRefreshSupervisor({ accounts: officialAccounts, logger, health: authHealth }); const claudeAccountCredentials = createClaudeAccountCredentialService({ accounts: officialAccounts, logger, exclusive: claudeAccountRefresh.exclusive, onNeedsRefresh: id => claudeAccountRefresh.checkAccount(id, 'read-miss') }); cliLogin.start(); claudeAccountRefresh.start(); // each own-token account is refreshed by the claude CLI under its own CLAUDE_CONFIG_DIR // the CLI's own login is only detected (panel reminder), never copied: a copy would share its single-use refresh token // multi-account: per-account credentials (the shared refreshers only watch ~/.codex + the Keychain)
 const apiErrorHost = createApiErrorHost({ replay: chatReplay,
   policy: apiErrorPolicy, logger, persistedSessions, setTaskState, chatBroadcast,
   setSessionStatus, isShuttingDown: () => authSecurity.shuttingDown(),
@@ -2001,8 +1991,8 @@ mountQuotaHostRoute(app, {
 // `?account=` quota reads and the subscription panel resolve the same auth
 // files through the account-subscription reader; the retired codex mount
 // registered it, so it is registered explicitly here.
-require('./src/quota/account-subscription-reader').registerAccountSubscriptionReader('codex', { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
-mountCodexOAuthRoutes(accountRoutesHost.app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/quota/official-account-usage').claudeUsageWindows(usage) }) }); require('./src/quota/official-account-usage').createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
+nativeBinding.accountReader.registerAccountSubscriptionReader('codex', { resolveAccountAuthFile: id => officialAccounts.codexAuthFile(id) });
+mountCodexOAuthRoutes(accountRoutesHost.app, { getStatus: () => codexOAuthRefresh.status(), directories, createSessionRecord, disposeLoginTerminal }); mountCodexAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, directories, createSessionRecord, persistedSessionExists: id => persistedSessions.has(id), refresherStatus: id => codexAccountRefresh.status(id), cliLogin }); mountClaudeAccountRoutes(accountRoutesHost.app, { accounts: officialAccounts, providers, credentials: claudeAccountCredentials, logger, cliLogin, recordUsage: (providerId, usage) => limitRecorder.recordOfficialWindows('claude', providerId, { windows: require('./src/native/binding').officialUsage.claudeUsageWindows(usage) }) }); require('./src/native/binding').officialUsage.createOfficialAccountUsageSweeper({ accounts: officialAccounts, recorder: limitRecorder, logger }).start(); // multi-account management under /api/{codex,claude}/accounts — see src/routes/{codex,claude}-accounts.js
 const claudeOAuthSurface = createClaudeOAuthSurface({ refresher: claudeOAuthRefresh, directories, createSessionRecord, persistedSessions, destroySessionCascade, sessionPersistence, appendEvent, disposeLoginTerminal }); claudeOAuthSurface.mountRoutes(accountRoutesHost.app); // see src/routes/claude-oauth.js header
 // The token-usage host port stays between the two Provider route phases: the
 // public token APIs are served by the Rust front door, accounting still lives here.
@@ -2015,7 +2005,7 @@ providerRoutes.mountManagementRoutes(app);
 // the usage-limit poller's adapters. Outcomes mirror into the provider-limit cache
 // (onResult); lookupCached reads it back so a transient failure answers last-known-
 // good cached+stale — never for a 借道 lender (relay routes pass no lookupCached).
-require('./src/quota/quota-self-heal').wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes, getPort: () => PORT }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
+nativeBinding.quotaSelfHeal.wireQuotaSelfHeal({ app, providers, limitRecorder, providerLimitCache, quotaGuard, codexOAuthRefresh, codexAccountRefresh, officialAccounts, mountProviderBalanceRoutes, getPort: () => PORT }); // shared quota refresh port + stale-gate re-read + codex 401 self-heal
 
 // ZCode / Kimi auth management (desktop key sync, manual key, pre-turn auth
 // check) rides the account host port; only their blocking login POSTs stay
@@ -2147,10 +2137,10 @@ const subscribeDispatchProgress = createDispatchProgressSubscription({
   streamReplayOf: chatReplay.events,
 });
 
-// Usage-limit poller — a turn's own provider only; Claude readings are manual-refresh (see src/chat/usage-limit-wiring.js).
-const usageLimitPoller = require('./src/chat/usage-limit-wiring').createUsageLimitWiring({
+// Usage-limit poller — a turn's own provider only; Claude readings are manual-refresh.
+const usageLimitPoller = require('./src/native/binding').usageLimitWiring.createUsageLimitWiring({
   persistedSessions, providers, chatBroadcast,
-  createPoller: require('./src/usage-limit-poller').createUsageLimitPoller,
+  createPoller: nativeBinding.usageLimitPoller.createUsageLimitPoller,
   recordLimit: limitRecorder.recordSession,
 });
 
@@ -2371,7 +2361,7 @@ workspaceAdmission = require('./src/workspace/admission').createWorkspaceAdmissi
     // Best-effort: a running task or failed removal keeps the worktree for
     // the manual one-click action.
     if (process.env.MULTICC_TASK_WORKTREE_AUTOCLEANUP !== '0' && taskBoardRuntime?.taskWorktree?.cleanupWorktree) {
-      require('./src/task-worktree').cleanupAfterPublication({ repoActor: defaultRepoActor, dirPath: directories.get(persistedSessions.get(sessionId)?.dirId)?.path, taskId, cleanup: taskBoardRuntime.taskWorktree.cleanupWorktree })
+      require('./src/native/binding').taskWorktree.cleanupAfterPublication({ repoActor: defaultRepoActor, dirPath: directories.get(persistedSessions.get(sessionId)?.dirId)?.path, taskId, cleanup: taskBoardRuntime.taskWorktree.cleanupWorktree })
         .then(result => { if (result?.removed) logger.info('task_worktree_autocleanup', { taskId }); })
         .catch(error => logger.warn('task_worktree_autocleanup_failed', { taskId, code: error?.code || 'failed' }));
     }
@@ -2792,7 +2782,7 @@ app.use(safeErrorHandler(logger));
       process.exit(1);
     }
   }
-  // Behavior lives in src/gateway-child.js; this is only the wiring. Hidden
+  // The gateway adapter owns this behavior; this is only the wiring. Hidden
   // behind the front door we must not bind the public port: the Rust gateway
   // owns it and forwards one PROXY v1 line per connection to the loopback port.
   if (!gatewayChildMode) {
@@ -2835,7 +2825,11 @@ app.use(safeErrorHandler(logger));
       .catch(error => logger.warn('provider_log_watchdog_sweep_failed', { error: error.message })), providerLogWatchdog.PROVIDER_LOG_WATCHDOG_INTERVAL_MS));
     logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message }));
     trackServiceTimer(setInterval(() => logHousekeeping.runOnce().catch(err => logger.warn('log_housekeeping_failed', { error: err.message })), LOG_HOUSEKEEPING_INTERVAL_MS));
-const cleanupArtifacts = () => { try { return artifacts.cleanup(undefined, docsRegistry.listPermanentArtifactIds()); } catch (error) { logger.warn('artifact_cleanup_pin_read_failed'); return 0; } }; cleanupArtifacts();
+    const cleanupArtifacts = async () => {
+      try { return await artifacts.cleanupAsync(undefined, await docsRegistry.listPermanentArtifactIdsAsync()); }
+      catch { logger.warn('artifact_cleanup_pin_read_failed'); return 0; }
+    };
+    void cleanupArtifacts();
     trackServiceTimer(setInterval(cleanupArtifacts, 6 * 3600 * 1000));
     if (!gatewayChildMode) {
       const retention = new (getNative().AssistSnapshotRetention)(MULTICC_PATHS.assistDir);

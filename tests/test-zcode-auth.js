@@ -9,12 +9,12 @@ const { EventEmitter } = require('node:events');
 const { execFileSync } = require('node:child_process');
 const { mountZcodeAuthRoutes } = require('../src/routes/zcode-auth');
 
-const MODULE = path.join(__dirname, '..', 'src', 'cli-adapters', 'zcode-auth.js');
+const BINDING = require.resolve('../src/native/binding');
 
 function runWithHome(home, source) {
   const stdout = execFileSync(process.execPath, ['-e', source], {
     encoding: 'utf8',
-    env: { ...process.env, HOME: home, ZCODE_AUTH_MODULE: MODULE },
+    env: { ...process.env, HOME: home, MULTICC_TEST_BINDING: BINDING },
   });
   return JSON.parse(stdout);
 }
@@ -36,7 +36,7 @@ test('native auth recognizes custom ZCode provider kinds without assuming Z.ai/B
   }));
 
   const status = runWithHome(home, `
-    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    const auth = require(process.env.MULTICC_TEST_BINDING).zcodeAuth;
     process.stdout.write(JSON.stringify(auth.getZcodeAuthStatus()));
   `);
   assert.deepEqual(status, {
@@ -65,7 +65,7 @@ test('turn admission never auto-copies a desktop key into the native CLI config'
 
   const result = runWithHome(home, `
     const fs = require('node:fs');
-    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    const auth = require(process.env.MULTICC_TEST_BINDING).zcodeAuth;
     const native = auth.ensureZcodeAuth({ cli: 'zcode', provider: null });
     const routed = auth.ensureZcodeAuth({ cli: 'zcode', provider: 'multicc-provider' });
     process.stdout.write(JSON.stringify({
@@ -90,7 +90,7 @@ test('native model catalog offers glm-5.3 on both zai and bigmodel without chang
 
   const result = runWithHome(home, `
     const assert = require('node:assert/strict');
-    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    const auth = require(process.env.MULTICC_TEST_BINDING).zcodeAuth;
     const expected = ['glm-5.3', 'glm-5.2', 'glm-5-turbo'];
     for (const providerId of ['zai', 'bigmodel']) {
       for (const model of expected) {
@@ -214,7 +214,7 @@ test('engine 0.16.9 personal provider_config.json satisfies the native gate and 
   }));
 
   const status = runWithHome(home, `
-    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    const auth = require(process.env.MULTICC_TEST_BINDING).zcodeAuth;
     process.stdout.write(JSON.stringify(auth.getZcodeAuthStatus()));
   `);
   assert.equal(status.configured, true);
@@ -222,7 +222,7 @@ test('engine 0.16.9 personal provider_config.json satisfies the native gate and 
   assert.equal(status.source, 'provider_config');
 
   runWithHome(home, `
-    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    const auth = require(process.env.MULTICC_TEST_BINDING).zcodeAuth;
     process.stdout.write(JSON.stringify(auth.setZcodeApiKey('zai', 'new-key')));
   `);
   const written = JSON.parse(fs.readFileSync(path.join(v2, 'provider_config.json'), 'utf8'));
@@ -235,7 +235,7 @@ test('engine 0.16.9 personal provider_config.json satisfies the native gate and 
   assert.deepEqual(written.config.modelConfigRules, { providerModelRules: [], manualProviderModelRules: [] });
 
   runWithHome(home, `
-    const auth = require(process.env.ZCODE_AUTH_MODULE);
+    const auth = require(process.env.MULTICC_TEST_BINDING).zcodeAuth;
     process.stdout.write(JSON.stringify(auth.setZcodeApiKey('bigmodel', 'relay-key', { baseURL: 'https://relay.example/api/anthropic' })));
   `);
   const relayed = JSON.parse(fs.readFileSync(path.join(v2, 'provider_config.json'), 'utf8')).config.providerConfigRules.providerRules;

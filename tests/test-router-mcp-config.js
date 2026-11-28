@@ -8,7 +8,7 @@ const test = require('node:test');
 const {
   applyRouterMcpEnv,
   claudeLikeMcpArgs,
-} = require('../src/cli-adapters/router-mcp');
+} = require('../src/native/binding').routerMcp;
 
 function tempProjectDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-zcode-mcp-'));
@@ -17,6 +17,40 @@ function tempProjectDir() {
 function readWorkspaceConfig(dir) {
   return JSON.parse(fs.readFileSync(path.join(dir, '.zcode', 'config.json'), 'utf8'));
 }
+
+test('Kimi 保留已有工具和 null 配置，损坏的 JSON 从空配置恢复', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-kimi-mcp-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'mcp.json');
+  const env = { KIMI_CODE_HOME: dir };
+  const entry = { command: '/opt/node', args: ['/opt/router.js'], env: {} };
+  for (const [input, expected] of [
+    ['null', null],
+    ['{bad', { multicc_router: entry }],
+    ['{"other":{"args":[]}}', { other: { args: [] }, multicc_router: entry }],
+  ]) {
+    fs.writeFileSync(file, input);
+    const conversions = [];
+    const node = { toString() { conversions.push('node'); return '/opt/node'; } };
+    const script = { toString() { conversions.push('script'); return '/opt/router.js'; } };
+    assert.strictEqual(applyRouterMcpEnv(env, 'kimi', node, script), env);
+    assert.deepEqual(conversions, ['node', 'script', 'node', 'script']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), expected);
+  }
+});
+
+test('路由环境通过原对象的 setter 写入，其他 CLI 也保留命令的字符串转换异常', () => {
+  let content;
+  const env = {
+    get OPENCODE_CONFIG_CONTENT() { return '{"mcp":{"other":{}}}'; },
+    set OPENCODE_CONFIG_CONTENT(value) { content = JSON.parse(value); },
+  };
+  assert.strictEqual(applyRouterMcpEnv(env, 'opencode', 'node', 'router'), env);
+  assert.deepEqual(Object.keys(content.mcp), ['other', 'multicc_router']);
+  const failure = new Error('无法转换命令');
+  const node = { toString() { throw failure; } };
+  assert.throws(() => applyRouterMcpEnv({}, 'unknown', node, 'router'), error => error === failure);
+});
 
 test('Claude/Qoder receive an isolated inline stdio MCP config', () => {
   const args = claudeLikeMcpArgs('/opt/node', '/opt/router.js');

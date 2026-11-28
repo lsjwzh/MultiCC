@@ -5,11 +5,11 @@ const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createProviderQuotaRuntime } = require('../src/quota/provider-runtime');
+const { createProviderQuotaRuntime } = require('../src/native/binding').providerQuota;
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
-const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
+const { createNativeProviderLimitCache } = require('../src/native/binding').providerLimitCache;
+const { createLimitRecorder } = require('../src/native/binding').limitRecorder;
 
 test('production quota commits precede auto selection and final proxy admission', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-quota-production-'));
@@ -90,4 +90,19 @@ test('production quota commits precede auto selection and final proxy admission'
     quota.providerQuotaHistory.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('缓存清理在轮到自己的事务时才读取保留集合', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-quota-prune-'));
+  const cache = createNativeProviderLimitCache({ file: path.join(root, 'limits.db') });
+  t.after(async () => { await cache.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  await cache.record('claude', 'retained', { summaryText: 'retained' });
+  const keys = new Set();
+  const pruning = cache.prune(keys);
+  keys.add(cache.key('claude', 'retained'));
+  assert.equal(await pruning, 0);
+  assert.equal((await cache.get('claude', 'retained')).summaryText, 'retained');
+  await cache.close();
+  const invalid = { [Symbol.iterator]() { throw Error('already closed'); } };
+  await assert.rejects(cache.prune(invalid), /database is closed/);
 });

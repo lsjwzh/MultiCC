@@ -1,7 +1,7 @@
 'use strict';
 
 const { sanitizePublicText } = require('../native/binding').getPublicSafety();
-const { sharedMacosAgentProvisioner } = require('../macos-agent-provision');
+const { sharedMacosAgentProvisioner } = require('../native/binding').macosAgentProvision;
 const { sharedCdpdProvisioner } = require('../cdpd');
 
 // Names bundled skills used to ship under. Keep entries here permanently:

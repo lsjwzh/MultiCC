@@ -484,8 +484,8 @@ const http = require('node:http');
 const path = require('node:path');
 const REPO = ${JSON.stringify(repo)};
 const express = require(require.resolve('express', { paths: [REPO] }));
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
@@ -688,7 +688,7 @@ main({
 
     // Express 4 does not catch async rejections; the repo's own asyncHandler
     // is how every current async route reaches safeErrorHandler.
-    const { asyncHandler } = require(path.join(repo, 'src/http-errors'));
+    const { asyncHandler } = require(path.join(repo, 'tests/helpers/frozen-da8f52ee/http-errors'));
     const wrapped = {};
     for (const method of ['get', 'post', 'patch', 'delete', 'put', 'options', 'all', 'use']) {
       wrapped[method] = function (first, ...rest) {
@@ -1021,6 +1021,8 @@ main({
     // ── relay share ────────────────────────────────────────────────────────
     const SHARE_BODY = { publicBaseUrl: 'https://Share.Example.com:443/base?x=1', token: 'tok-12345678', label: 'L' };
     add('relay share ok', sc(), post('/api/providers/claude/claude-1/relay-share', SHARE_BODY));
+    add('relay share CLI mode', sc(), post('/api/providers/claude/claude-1/relay-share', { ...SHARE_BODY, mode: 'cli' }));
+    add('relay share invalid mode', sc(), post('/api/providers/claude/claude-1/relay-share', { ...SHARE_BODY, mode: 'other' }));
     add('relay share http', sc(), post('/api/providers/claude/claude-1/relay-share', {
       publicBaseUrl: 'http://share.example.com/', token: 'tok-12345678',
     }));
@@ -1100,6 +1102,9 @@ main({
       credential: 'mcr1.AbCdEf0123456789.secret-value',
     };
     add('relay share code ok', sc({ credential: CREDENTIAL_SHARE }), get('/api/provider-relay-shares/share-1/code'));
+    add('relay share code stored CLI mode', sc({ credential: {
+      ...CREDENTIAL_SHARE, share: { ...CREDENTIAL_SHARE.share, mode: 'cli' },
+    } }), get('/api/provider-relay-shares/share-1/code'));
     add('relay share code not found', sc({ credential: { ok: false, code: 'not_found' } }), get('/api/provider-relay-shares/share-1/code'));
     add('relay share code revoked', sc({ credential: { ok: false, code: 'revoked' } }), get('/api/provider-relay-shares/share-1/code'));
     add('relay share code legacy', sc({ credential: { ok: false, code: 'legacy' } }), get('/api/provider-relay-shares/share-1/code'));
@@ -1124,6 +1129,9 @@ main({
       relayImportToken: 'mcr1.AbCdEf0123456789.secret-value',
     };
     add('relay import ok', sc(IMPORT_RELAY), get('/api/providers/claude/claude-1/relay-import-code'));
+    add('relay import CLI mode', sc({ ...IMPORT_RELAY, summaries: {
+      ...IMPORT_RELAY.summaries, 'claude:claude-1': { ...IMPORT_RELAY.summaries['claude:claude-1'], cliRelay: true },
+    } }), get('/api/providers/claude/claude-1/relay-import-code'));
     add('relay import not relay', sc(), get('/api/providers/claude/claude-1/relay-import-code'));
     add('relay import appType mismatch', sc({
       summaries: Object.assign({}, baseScenario().summaries, {

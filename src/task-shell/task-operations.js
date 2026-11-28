@@ -42,7 +42,7 @@ function createAttributionOverlay(store) {
   return { get, apply };
 }
 
-function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, taskTitle, effectiveTaskOf, turnOrderOf,
+function createTaskOperations({ store, revisionOf, isTurnBusy, readCurrentTurn, resolveTarget, taskTitle, effectiveTaskOf, turnOrderOf,
   scopeOf, notify, now = () => Date.now() }) {
   const overlay = createAttributionOverlay(store);
   const flights = new Map();
@@ -144,15 +144,28 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
     });
   }
 
-  function blockedTurns(turns) {
-    return turns.filter(({ sessionId, turnId }) => isTurnBusy?.(sessionId, turnId) === true)
+  function blockedTurns(turns, busy = isTurnBusy) {
+    return turns.filter(({ sessionId, turnId }) => busy?.(sessionId, turnId) === true)
       .map(({ sessionId, turnId }) => ({ sessionId, turnId, reason: 'turn_busy' }));
+  }
+
+  // Read the ordered session owner once per session, including for range selections.
+  async function readBlockedTurns(turns) {
+    const ids = [...new Set(turns.map(turn => turn.sessionId))];
+    const current = new Map(await Promise.all(ids.map(async id => [id, await readCurrentTurn(id)])));
+    return blockedTurns(turns, (sessionId, turnId) => current.get(sessionId) === turnId);
   }
 
   function preview({ scope, turns, target, range }) {
     const normalizedTurns = resolveTurns(scope, { range, turns }), normalizedTarget = normalizeTarget(target);
+    const finish = busy => previewResult(scope, normalizedTurns, normalizedTarget, busy);
+    if (readCurrentTurn) return readBlockedTurns(normalizedTurns).then(finish);
+    return finish(blockedTurns(normalizedTurns));
+  }
+
+  function previewResult(scope, normalizedTurns, normalizedTarget, busy) {
     const revision = revisionOf(scope);
-    const blocked = [...missingTurns(normalizedTurns), ...blockedTurns(normalizedTurns)];
+    const blocked = [...missingTurns(normalizedTurns), ...busy];
     const effects = effectsOf(normalizedTurns, normalizedTarget);
     return {
       previewToken: hash({ shellId: scope.shellId, revision, turns: normalizedTurns, target: normalizedTarget }),
@@ -198,11 +211,11 @@ function createTaskOperations({ store, revisionOf, isTurnBusy, resolveTarget, ta
     if (existing?.status === 'reverted') return publicOperation(existing);
 
     const run = (async () => {
+      const blocked = readCurrentTurn ? await readBlockedTurns(normalizedTurns) : blockedTurns(normalizedTurns);
       const revision = revisionOf(scope);
       if (expectedRevision && expectedRevision !== revision) {
         throw fail('scope_revision_conflict', 'The conversation changed since this change was previewed', 409);
       }
-      const blocked = blockedTurns(normalizedTurns);
       if (blocked.length) {
         if (queue === true) return enqueue({ scope, key, clientMsgId, fingerprint, existing,
           turns: normalizedTurns, target: normalizedTarget, blocked });

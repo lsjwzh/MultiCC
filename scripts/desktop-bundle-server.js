@@ -192,7 +192,7 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   }
   // 2) the scripts the installed tree still reaches for: the router MCP child
   //   that src/ spawns, and the manual local-ASR model fetcher. The server
-  //   downloads those weights itself (src/voice/asr-model-installer.js), but
+  //   downloads those weights through the native ASR installer, but
   //   the shell script is the offline fallback the voice panel names when the
   //   download keeps failing — and it used to be absent from the bundle
   //   entirely, which left on-device ASR unreachable for every standalone
@@ -246,10 +246,10 @@ function stageServer({ repoRoot, out, install = true, npmEnv = {}, logger = cons
   }
 
   // 4) sanity gate — a silent missing file here becomes "app won't start" there
-  for (const must of ['server.js', 'src/paths/index.js', 'src/voice/asr-model-installer.js',
+  for (const must of ['server.js', 'src/paths/index.js', 'src/native/binding.js',
     'public/air.html', 'public/chat.html',
     'scripts/multicc-router-mcp.js', 'scripts/setup-local-asr.sh', 'install-git.sh',
-    'plugins/bridges/wechat-ilink.js', ...MACOS_AGENT_FILES,
+    'src/network/sdk-bridges.js', ...MACOS_AGENT_FILES,
     ...POWERD_FILES, ...LINUX_AGENT_FILES, ...WINDOWS_AGENT_FILES,
     'skills/multicc-artifact/references/registration-rule.md',
     // A quick file sentinel; verifyServerDependencies below checks every

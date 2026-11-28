@@ -733,10 +733,7 @@ async fn ensure_mutagen_session(
     Ok(())
 }
 
-async fn flush_mutagen_session(
-    target: &RemoteAgyTarget,
-    session_name: &str,
-) -> Result<(), String> {
+async fn flush_mutagen_session(target: &RemoteAgyTarget, session_name: &str) -> Result<(), String> {
     let bin = mutagen_bin();
     let env_dirs = prepare_mutagen_ssh_env(target)?;
     let mut flush_cmd = Command::new(&bin);
@@ -1269,7 +1266,11 @@ mod tests {
 
         let routes_path = ssh_dir.join("routes.tsv");
         assert_eq!(
-            std::fs::metadata(&routes_path).unwrap().permissions().mode() & 0o777,
+            std::fs::metadata(&routes_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
             0o600
         );
 
@@ -1314,14 +1315,7 @@ mod tests {
 
         // 2) Mutagen `-l user -p port host` style
         let out2 = std::process::Command::new(&wrapper)
-            .args([
-                "-l",
-                "Zhuanz",
-                "-p",
-                "32303",
-                "ssh-api.example.com",
-                "sh",
-            ])
+            .args(["-l", "Zhuanz", "-p", "32303", "ssh-api.example.com", "sh"])
             .output()
             .unwrap();
         assert!(out2.status.success());
@@ -1338,16 +1332,14 @@ mod tests {
             .unwrap();
         assert!(out3.status.success());
         let args3 = String::from_utf8_lossy(&out3.stdout);
-        assert!(!args3.contains("-i "), "unexpected -i for foreign host: {args3}");
+        assert!(
+            !args3.contains("-i "),
+            "unexpected -i for foreign host: {args3}"
+        );
 
         // 4) scp -P 32303 local Zhuanz@ssh-api.example.com:/tmp/file
         let out4 = std::process::Command::new(&scp_wrapper)
-            .args([
-                "-P",
-                "32303",
-                "/tmp/a",
-                "Zhuanz@ssh-api.example.com:/tmp/b",
-            ])
+            .args(["-P", "32303", "/tmp/a", "Zhuanz@ssh-api.example.com:/tmp/b"])
             .output()
             .unwrap();
         assert!(out4.status.success());

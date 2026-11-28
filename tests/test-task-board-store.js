@@ -8,11 +8,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const core = require('../src/task-board/core');
-const planning = require('../src/task-board/planning');
-const { boardRule } = require('../src/task-board/native-bridge');
-const { taskDomain, taskDomainAsync, cloneBoard } = require('../src/native/task-domain');
-const { openBoardStore } = require('../src/task-board/board-store');
-const { createTaskBoardRepository } = require('../src/native/task-domain');
+const planning = require('../src/native/binding').taskPlanning;
+const { boardRule } = require('../src/native/binding').taskBoardBridge;
+const { taskDomain, taskDomainAsync, cloneBoard } = require('../src/native/binding').taskDomainHost;
+const { openBoardStore } = require('../src/native/binding').taskBoardStore;
+const { createTaskBoardRepository } = require('../src/native/binding').taskDomainHost;
 
 const NEW_IDS = Array.from({ length: 32 }, (_, i) => `${String(i).padStart(2, '0')}`.padEnd(32, 'a'));
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -189,7 +189,7 @@ test('异步只读与卡片缓存直接读常驻副本，结果与无状态一�
   const shellTasks = Object.keys(reference.tasks).map(id => ({ id, dirId: 'd1', ready: true }));
   const sync = taskDomain({ op: 'airVisible', board: reference, shellTasks });
   assert.deepEqual(await taskDomainAsync({ op: 'airVisible', board: store.board, shellTasks }), sync);
-  const { createAirCardCache } = require('../src/workspace/air-card-cache');
+  const { createAirCardCache } = require('../src/native/binding').airCardCache;
   const command = board => ({ op: 'airInputs', board, records: [], admission: { workspaces: [], leases: [] }, shellTasks, epoch: null });
   const viaStore = await createAirCardCache({ mode: 'on' }).prepareAsync(command(store.board));
   const viaJson = await createAirCardCache({ mode: 'on' }).prepareAsync(command(reference));

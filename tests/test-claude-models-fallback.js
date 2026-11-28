@@ -6,7 +6,7 @@
 // The route itself (bundle scan, curation, TTL and bundle-key invalidation)
 // moved to the Rust front door; native/gateway/tests/claude_models.rs and
 // docs/rust-migration/differential/claude-models.js cover it. Here we pin the
-// two things Node still owns:
+// two behaviors exposed by the addon:
 //   1. CLAUDE_MODELS_FALLBACK must equal native/gateway/tests/fixtures/claude-models.json
 //      (`fallback`), which the Rust side also answers with — drift fails both suites.
 //   2. listClaudeModelsSync() reads `<data root>/claude-models-cache.json` and
@@ -25,7 +25,7 @@ const {
   CACHE_FILE_NAME,
   listClaudeModelsSync,
   _resetCacheForTest,
-} = require('../src/claude-models');
+} = require('../src/native/binding').claudeModels;
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-claude-models-fallback-'));
 const firstData = path.join(root, 'data-a');
@@ -57,7 +57,7 @@ test('the fallback list mirrors the shared gateway fixture', () => {
   assert.deepEqual(
     CLAUDE_MODELS_FALLBACK.map((entry) => ({ ...entry })),
     fixture.fallback,
-    'src/claude-models.js drifted from native/gateway/tests/fixtures/claude-models.json',
+    'claudeModels binding drifted from native/gateway/tests/fixtures/claude-models.json',
   );
   assert.equal(CACHE_FILE_NAME, 'claude-models-cache.json');
   const fromFixture = fixture.fallback.map((entry) => entry.model);

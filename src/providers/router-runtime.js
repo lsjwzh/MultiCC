@@ -11,13 +11,13 @@ const {
   createLegacyProviderRouterAdapter,
   createProviderStoreAdapter,
   createReadOnlyShadowRouter,
-} = require('./router-adapter');
-const { toLegacyProviderView } = require('./binding');
-const { VENDOR_NATIVE_SET } = require('./native-vendor');
+} = require('../native/binding').providerRouterAdapter;
+const { toLegacyProviderView } = require('../native/binding').providerBinding;
+const { VENDOR_NATIVE_SET } = require('../native/binding').nativeVendor;
 const { applyCliKeyAccountEnv, selectedAccountId } = require('../cli-key-accounts');
-const { ensureLoopbackNoProxyEnv, hasProxyEnv } = require('../network/proxy-policy');
-const { latestChildProxyEnv } = require('../network/global-proxy');
-const { accountEnv: agyAccountEnv } = require('../agy-accounts');
+const { ensureLoopbackNoProxyEnv, hasProxyEnv } = require('../native/binding').proxyPolicy;
+const { latestChildProxyEnv } = require('../native/binding').globalProxy;
+const { accountEnv: agyAccountEnv } = require('../native/binding').agyAccounts;
 
 const DEFAULT_MODE = 'legacy';
 

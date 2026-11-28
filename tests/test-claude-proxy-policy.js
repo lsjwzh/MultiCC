@@ -32,7 +32,7 @@ process.env.MULTICC_DATA_DIR = path.join(root, 'data');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 fs.mkdirSync(process.env.MULTICC_DATA_DIR, { recursive: true });
 
-const providers = require('../src/providers/host');
+const providers = require('../src/native/binding').providersHost;
 
 function captured(call) {
   try { return { value: call() }; }

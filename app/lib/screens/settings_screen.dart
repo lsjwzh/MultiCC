@@ -3,12 +3,10 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
-import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../i18n.dart';
 import '../models/message.dart';
-import '../providers/session_manager.dart';
 import '../services/background_service.dart';
 import '../services/connection_probe_service.dart';
 import '../services/settings_service.dart';
@@ -21,7 +19,7 @@ import 'agent_resources_screen.dart';
 import 'aux_screen.dart';
 import 'bridge_settings_screen.dart';
 import 'events_screen.dart';
-import 'main_shell.dart';
+import '../widgets/computer_spaces_shell.dart';
 import 'provider_screen.dart';
 import 'push_settings_screen.dart';
 import 'secrets_screen.dart';
@@ -309,12 +307,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await widget.settings.rememberServer(result.normalizedHost, token);
     if (!mounted) return;
     // Reconnect with a fresh SessionManager / MainShell, same as first setup.
-    Navigator.of(context).pushAndRemoveUntil(
+    Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
       MaterialPageRoute(
-        builder: (_) => ChangeNotifierProvider(
-          create: (_) => SessionManager(settings: widget.settings),
-          child: MainShell(settings: widget.settings),
-        ),
+        builder: (_) => ComputerSpacesShell(settings: widget.settings),
       ),
       (route) => false,
     );

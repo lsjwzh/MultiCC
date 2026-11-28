@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict'), fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { createPaths, assertTestDir } = require('../src/paths');
-const { writeJsonAtomic, readJson } = require('../src/state/store');
+const { writeJsonAtomic, readJson } = require('../src/native/binding').stateStore;
 const isolatedHostEnv = require('./helpers/isolated-host-env');
 const commitPolicy = require('./helpers/git-test-identity');
 const accessToken = process.argv.includes('--no-token') ? '' : 'isolated-only';

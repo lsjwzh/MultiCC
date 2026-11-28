@@ -6,12 +6,12 @@ const os = require('node:os');
 const path = require('node:path');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-test-virtual-provider-'));
 process.env.MULTICC_DATA_DIR = root;
-const core = require('../src/providers/host');
-const virtual = require('../src/providers/virtual-provider');
+const core = require('../src/native/binding').providersHost;
+const virtual = require('../src/native/binding').virtualProvider;
 const { createProviderLimitCache } = require('./helpers/legacy-provider-limit-cache');
-const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
-const { createLimitRecorder } = require('../src/quota/limit-cache-recorder');
-const { createProviderRelayShareStore } = require('../src/providers/relay-share-store');
+const { createNativeProviderLimitCache } = require('../src/native/binding').providerLimitCache;
+const { createLimitRecorder } = require('../src/native/binding').limitRecorder;
+const { createProviderRelayShareStore } = require('../src/native/binding').relayShares;
 const { createInstance, listen, listenHttp, closeServer, serverOrigin, postJson, ACCESS_TOKEN } = require('./helpers/provider-sharing');
 const native = require('../src/native/binding').getNative();
 const available = typeof native?.selectVirtualProvider === 'function';
@@ -118,8 +118,8 @@ test('virtual validation rejects cross-CLI and nested members without mutating t
 });
 
 test('账号订阅查询持久化后参与自动切换，续费恢复、失败及旧快照不会串号或覆盖新数据', { skip: !available }, async t => {
-  const subscriptions = require('../src/quota/account-subscription-cache');
-  const { registerAccountSubscriptionReader } = require('../src/quota/account-subscription-reader');
+  const subscriptions = require('../src/native/binding').accountSubscriptionCache;
+  const { registerAccountSubscriptionReader } = require('../src/native/binding').accountReader;
   const account = 'aaaaaaaaaaaaaaaa', other = 'bbbbbbbbbbbbbbbb';
   const file = path.join(root, 'subscription-limits.db');
   const cache = createProviderLimitCache({ file });

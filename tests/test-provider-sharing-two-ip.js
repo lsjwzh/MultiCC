@@ -7,7 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const providerRouter = require('cli-provider-router');
 const { assertTestDir } = require('../src/paths');
-const { createProviderRelayShareStore } = require('../src/providers/relay-share-store');
+const { createProviderRelayShareStore } = require('../src/native/binding').relayShares;
 const { findLanIPv4, listen, listenHttp, closeServer, serverOrigin, loadRelayUiModule,
   providerFacade, createInstance, postJson, requestJson, ACCESS_TOKEN, RELAY_TOKEN,
   UPSTREAM_TOKEN, CLIENT_TOKEN, MODEL } = require('./helpers/provider-sharing');

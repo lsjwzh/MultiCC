@@ -13,9 +13,9 @@ const {
   isProxyStallCode,
   terminateStalledResponse,
 } = require('../src/providers/proxy-stall-watch');
-const { observeProxyRequest } = require('../src/providers/proxy-outcome');
+const { observeProxyRequest } = require('../src/native/binding').proxyOutcome;
 const { createProviderProxyAdmission, createProviderProxyGuard } = require('../src/providers/proxy-guard');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createApiErrorPolicyRuntime } = require('../src/chat/api-error-policy');
 const { failoverSafety } = require('../src/native/binding').getAutoProviderPolicy();
 const { createAutoProviderRuntime } = require('../src/chat/auto-provider-runtime');
@@ -711,7 +711,7 @@ const { resolveModelRequestPolicy } = require('../src/native/binding');
 // the stall budget is read straight off the Rust-owned policy value.
 const stallBudget = (session, env) => resolveModelRequestPolicy(session, env).stallTimeoutMs;
 const { recoverModelTimeout } = require('../src/providers/proxy-stall-watch');
-const { withModelConnectWatch } = require('../src/providers/model-connect-watch');
+const { withModelConnectWatch } = require('../src/native/binding').modelConnectWatch;
 const { createModelStreamProgress } = require('../src/native/binding');
 
 test('native stream progress handles split UTF-8, mixed chunks and oversized frames', () => {

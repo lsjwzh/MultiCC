@@ -2,10 +2,10 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createApiErrorHost } = require('../src/chat/api-error-host');
+const { createApiErrorHost } = require('../src/native/binding').chatApi;
 const { createApiErrorPolicyRuntime, detectErrorEnvelope, decideApiErrorPolicy } = require('../src/chat/api-error-policy');
 const { createChatTurnEngine } = require('../src/chat/turn-engine-host');
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
 const { createTestChatHub } = require('./helpers/native-chat-hub');
 
 function decision(overrides = {}) {
@@ -389,6 +389,23 @@ test('turn duration is diagnostic only and creates no recovery-window state', ()
   });
   assert.equal(observed[1].turnElapsedMs, 209_000);
   assert.equal('recoveryElapsedMs' in observed[1], false);
+});
+
+test('raw route identifiers retain the final fallback value before string normalization', () => {
+  const h = harness();
+  let observed;
+  h.decideWith((raw, context) => {
+    observed = context;
+    return decision({ duplicate: true });
+  });
+  h.host.evaluateTurnApiError({
+    sessionName: 'session-1', cs: {}, runner: {},
+    raw: { providerName: 0, decisionId: 0, routeAttemptId: false, httpStatus: 503 },
+  });
+  assert.equal(observed.providerName, '0');
+  assert.equal(observed.decisionId, '0');
+  assert.equal(observed.routeAttemptId, 'false');
+  assert.match(observed.idempotencyKey, /:_runtime_:false$/);
 });
 
 test('turn policy binds errors and idempotency to the owned provider route attempt', () => {

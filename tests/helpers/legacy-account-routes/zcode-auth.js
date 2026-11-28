@@ -40,7 +40,7 @@ function authStatusDto(status) {
 
 function mountZcodeAuthRoutes(app, deps = {}) {
   assertApp(app);
-  const zcodeAuth = deps.zcodeAuth || require('../../../src/cli-adapters/zcode-auth');
+  const zcodeAuth = deps.zcodeAuth || require('../frozen-da8f52ee/cli-adapters/zcode-auth');
 
   // GET /api/zcode/auth -- get current auth status
   app.get('/api/zcode/auth', (req, res) => {

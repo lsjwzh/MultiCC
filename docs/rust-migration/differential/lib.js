@@ -96,10 +96,10 @@ function nodePipeline(repo, dataRoot, spec, ctx) {
   const express = require(require.resolve('express', { paths: [repo] }));
   const R = p => require(path.join(repo, p));
   const { requestIdMiddleware, safeErrorHandler } = R('tests/helpers/frozen-file-batch20/http-errors');
-  const { jsonCompression } = R('src/http/json-compression');
+  const { jsonCompression } = R('src/native/binding').jsonCompression;
   const legacy = spec.auth ? spec.auth(repo) : {};
-  const { normalizeRedirect, escapeHtmlAttribute } = R('src/auth-security');
-  const createAuthSecurity = legacy.createAuthSecurity || R('src/auth-security').createAuthSecurity;
+  const { normalizeRedirect, escapeHtmlAttribute } = R('src/native/binding').authSecurity;
+  const createAuthSecurity = legacy.createAuthSecurity || R('src/native/binding').authSecurity.createAuthSecurity;
   const { isLocalRequest, isPrivateRequestPeer } = R('src/request-locality');
   const { createErrorDto } = R('tests/helpers/frozen-file-batch20/api-contract');
   const createAuthRuntime = legacy.createAuthRuntime || R('src/routes/auth').createAuthRuntime;

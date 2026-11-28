@@ -45,10 +45,10 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
   });
   t.after(() => { runtime.getNative = original; });
 
-  const { createWaitService } = require('../src/wait/service');
-  const { createOperationService } = require('../src/operation-service');
+  const { createWaitService } = require('../src/native/binding').orchestrationServices;
+  const { createOperationService } = require('../src/native/binding').orchestrationServices;
   const { createSessionWorkScheduler } = require('../src/session-work');
-  const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+  const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
   const now = () => 1000;
   const item = () => ({ id: 'entry', sessionId: 'session', state: 'pending', sequence: 1,
     attempts: 1, createdAt: 2, payload: { type: 'session.work', workKind: 'task', message: 'queued' } });
@@ -121,33 +121,15 @@ test('migrated orchestration commands reach Rust for normal and unusual inputs',
   await reaches('operationAdmitLive', () => unusualOperation.admitDetached({ operationId: 'op_live_sqlite', sessionId: 'session', spec: { command: 'test' } }));
 });
 
-test('migrated command entry points contain no JavaScript state machine', () => {
-  const files = {
-    operation: fs.readFileSync(path.join(__dirname, '../src/operation-service.js'), 'utf8'),
-    wait: fs.readFileSync(path.join(__dirname, '../src/wait/service.js'), 'utf8'),
-  };
-  function body(source, name) {
-    const start = source.indexOf(`  async function ${name}(`);
-    assert.notEqual(start, -1, `missing ${name}`);
-    const next = source.slice(start + 1).search(/\n  (?:async )?function \w+\(/);
-    return source.slice(start, next < 0 ? source.length : start + next + 1);
-  }
-  const requirements = [
-    ['operation', 'admitDetached', 'operationAdmitLive'],
-    ['operation', 'admitDispatch', 'operationAdmitLive'],
-    ['wait', 'cancel', 'waitCancelLive'],
-    ['wait', 'resolveInternal', 'waitResolveLive'],
-  ];
-  for (const [file, name, native] of requirements) {
-    const command = body(files[file], name);
-    assert.match(command, new RegExp(`getNative\\(\\)\\.${native}\\(`), `${file}.${name} must call Rust`);
-    assert.doesNotMatch(command, /\b(?:draft|schedule|wait|item|operation)(?:\.[\w$]+|\[[^\]]+\])+\s*(?:=(?!=)|\+\+|--|\+=|-=)/,
-      `${file}.${name} must not mutate state in JavaScript`);
-    assert.doesNotMatch(command, /\b(?:admitOutboxItem|admitBase|findIdempotent|normalizeJson|hashPayload)\s*\(/,
-      `${file}.${name} must not execute the retired JavaScript domain implementation`);
-  }
-  for (const [file, source] of Object.entries(files)) {
-    assert.doesNotMatch(source, /require\s*\([^)]*(?:tests\/helpers|legacy-operation-admission)/,
-      `${file} must not import a test-only legacy oracle`);
+test('the durable service entry points use the Rust command implementations', () => {
+  const root = path.join(__dirname, '..');
+  const sources = ['admission.rs', 'waits.rs'].map(name =>
+    fs.readFileSync(path.join(root, 'native/addon/src/orchestration_runtime/services', name), 'utf8'));
+  assert.match(sources[0], /operation_admit_live::operation_admit_live/);
+  assert.match(sources[1], /wait_cancel_live::wait_cancel_live/);
+  assert.match(sources[1], /wait_resolve_live::wait_resolve_live/);
+  for (const source of sources) assert.doesNotMatch(source, /tests\/helpers|legacy-operation-admission/);
+  for (const retired of ['src/operation-service.js', 'src/wait/service.js']) {
+    assert.equal(fs.existsSync(path.join(root, retired)), false);
   }
 });

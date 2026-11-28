@@ -4,12 +4,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createAdapterCompletion, isCompleted } = require('../src/cli-adapters/completion');
 const { settleAdapterCompletion, canPersistAdapterCompletion, finalizeCompletionStream } = require('../src/native/binding').adapterCompletion;
-const { clearErrorFlagsForSucceededTurn, evaluatePostTurn } = require('../src/chat/turn-lifecycle');
+const { clearErrorFlagsForSucceededTurn, evaluatePostTurn } = require('../src/native/binding').turnLifecycle;
 const { planTurnFinalization, resolveTurnFinalization } = require('../src/native/binding').finalizationPlan;
-const { createProviderAttemptRuntime } = require('../src/chat/provider-attempt-runtime');
-const { observeProxyRequest } = require('../src/providers/proxy-outcome');
+const { createProviderAttemptRuntime } = require('../src/native/binding').providerAttemptRuntime;
+const { observeProxyRequest } = require('../src/native/binding').proxyOutcome;
 const { createTurnEventJournal } = require('../src/chat/turn-event-journal');
-const { recordResultEvent } = require('../src/chat/turn-lifecycle');
+const { recordResultEvent } = require('../src/native/binding').turnLifecycle;
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -20,12 +20,12 @@ const adapters = [
   require('../src/native/binding').codexAdapter.createCodexAdapter({}),
   require('../src/native/binding').codexAppAdapter.createCodexExpAdapter({}),
   // Legacy JSON lane; the default ACP lane's completion is covered by test-acp-adapter.js.
-  require('../src/cli-adapters/opencode').createOpencodeAdapter({ env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } }),
-  require('../src/cli-adapters/zcode').createZcodeAdapter({}),
-  require('../src/cli-adapters/qoder').createQoderAdapter({}),
-  require('../src/cli-adapters/kimi').createKimiAdapter({}),
-  require('../src/cli-adapters/codebuddy').createCodebuddyAdapter({}),
-  require('../src/cli-adapters/dsh').createDshAdapter({}),
+  require('../src/native/binding').cliAdapters.createOpencodeAdapter({ env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } }),
+  require('../src/native/binding').cliAdapters.createZcodeAdapter({}),
+  require('../src/native/binding').cliAdapters.createQoderAdapter({}),
+  require('../src/native/binding').cliAdapters.createKimiAdapter({}),
+  require('../src/native/binding').cliAdapters.createCodebuddyAdapter({}),
+  require('../src/native/binding').dshAdapter.createDshAdapter({}),
 ];
 const successResult = { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed' };
 const traces = {
@@ -368,7 +368,7 @@ function legacyPiHooks() {
 
 test('Kimi and Pi native completion states match legacy recovery, errors and tool settlement', () => {
   const kimi = adapters.find(adapter => adapter.name === 'kimi');
-  const pi = require('../src/cli-adapters/pi').createPiAdapter({});
+  const pi = require('../src/native/binding').cliAdapters.createPiAdapter({});
   let seed = 74247;
   const pick = list => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return list[seed % list.length]; };
   const values = [undefined, null, false, '', 'stop', 'aborted', 'length', 'error', '\ud800', 'x'.repeat(200), 0, 1, {}];

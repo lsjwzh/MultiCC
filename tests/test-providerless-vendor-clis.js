@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const providers = require('../src/providers/host');
+const providers = require('../src/native/binding').providersHost;
 
 test('vendor-auth CLIs stay providerless while pool-capable CLIs resolve MultiCC provider pools', () => {
   assert.equal(providers.appTypeForCli('claude'), 'claude');

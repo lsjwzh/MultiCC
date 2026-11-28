@@ -89,7 +89,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             }
           }
           const virtual = provider?.virtual ? provider : null;
-          const virtualRuntime = options.virtualProviders || require('./virtual-provider');
+          const virtualRuntime = options.virtualProviders || require('../native/binding').virtualProvider;
           if (virtual) {
             if (!refreshed) { await (options.getProviderAsync ? virtualRuntime.refreshAsync(virtual) : virtualRuntime.refresh(virtual)); refreshed = true; }
             provider = options.getProviderAsync
@@ -116,7 +116,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               const credential = official.readCredential
                 ? await official.readCredential({ provider, providerId: provider.id })
                 : accountId && !authFile ? { ok: false, reason: 'account_credential_unresolved' }
-                  : require('../codex/official-relay').readCodexOfficialCredential({ authFile });
+                  : require('../native/binding').codexOfficialRelay.readCodexOfficialCredential({ authFile });
               if (!credential?.ok) return credentialFailure(503, { error: 'Codex 官方账号凭据不可用，请重新登录',
                 code: 'CODEX_OFFICIAL_OAUTH_UNAVAILABLE', reason: credential?.reason || 'credential_unavailable' });
               input.codexCredential = credential;
@@ -128,7 +128,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
               const arg = accountId ? { provider, providerId: route.providerId, accountId, keychainService } : keychainService;
               const credential = await (options.readOfficialCredential || (async service => {
                 if (service && typeof service === 'object') return { token: null, reason: 'account_credential_unresolved' };
-                const value = await require('../quota/claude-cli-oauth').readCliCredentials({ keychainService: service });
+                const value = await require('../native/binding').claudeCliUsage.readCliCredentials({ keychainService: service });
                 return value.ok && (value.expiresAt == null || value.expiresAt > Date.now())
                   ? { token: value.accessToken } : { token: null, reason: value.reason || 'access_token_expired' };
               }))(arg);
@@ -153,7 +153,7 @@ function createRustCprRouter(router, { native, env = process.env } = {}) {
             else if (await resolver(args)) throw Object.assign(new Error('Rust CPR 需要出口地址接口，无法使用 Node 专属 Agent'), { code: 'RUST_CPR_EGRESS_UNSUPPORTED' });
           }
           // 复用宿主统一网络策略（含 macOS 系统代理和旁路规则），避免原生请求绕过它。
-          plan.proxyUrl ||= await require('../network/outbound').policy.proxyForUrl(plan.url) || undefined;
+          plan.proxyUrl ||= await require('../native/binding').outbound.policy.proxyForUrl(plan.url) || undefined;
           for (let attempt = 1; ; attempt++) {
             if (gone) return;
             // 修复后重新进入 Rust，统一重新计算模型和 Content-Length。

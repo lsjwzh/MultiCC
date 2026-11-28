@@ -2,6 +2,7 @@
 //! only when validation reaches it. Set membership and errors use the public
 //! objects of the calling module.
 use crate::js_live::LiveValue;
+use crate::route_response::{call, text, L};
 use multicc_core::js::{JsString, JsValue};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
@@ -170,4 +171,74 @@ pub fn legacy_provider_binding_view(env: Env, binding: Unknown<'_>) -> Result<sy
         view.set(target, binding.get(source)?)?;
     }
     Ok(view.raw())
+}
+
+fn branded<'a>(p: L<'a>, v: L<'a>) -> Result<bool> {
+    Ok(v.truthy()?
+        && v.get_key(p.get(c"brand")?)?.is_true()?
+        && call(p.global()?.get(c"Object")?, c"isFrozen", &[v])?.truthy()?)
+}
+pub(crate) fn checked<'a>(p: L<'a>, v: L<'a>) -> Result<L<'a>> {
+    if !branded(p, v)? {
+        return Err(p
+            .get(c"ProviderBindingError")?
+            .construct(&[text(
+                p,
+                "a ProviderBinding created by createProviderBinding is required",
+            )?])?
+            .throw_error());
+    }
+    Ok(v)
+}
+
+/// Brand belongs to the realm; inherited brands still count on frozen views.
+#[napi]
+pub fn provider_binding_methods(env: Env, host: Unknown<'_>) -> Result<sys::napi_value> {
+    use crate::{
+        host_methods::{arg, env as scope, function, raw},
+        route_response::*,
+    };
+    let p = L::new(&env, host);
+    Ok(fields(
+        p,
+        &[
+            (
+                "createProviderBinding",
+                function(p, "createProviderBinding", 1, 1, |p, a| {
+                    let v = raw(
+                        p,
+                        normalize_provider_binding(scope(p), arg(a[0])?, arg(p)?)?,
+                    );
+                    call(
+                        p.global()?.get(c"Object")?,
+                        c"defineProperty",
+                        &[
+                            v,
+                            p.get(c"brand")?,
+                            fields(p, &[("value", flag(p, true)?)])?,
+                        ],
+                    )?;
+                    v.freeze()
+                })?,
+            ),
+            (
+                "isProviderBinding",
+                function(p, "isProviderBinding", 1, 1, |p, a| {
+                    flag(p, branded(p, a[0])?)
+                })?,
+            ),
+            (
+                "assertProviderBinding",
+                function(p, "assertProviderBinding", 1, 1, |p, a| checked(p, a[0]))?,
+            ),
+            (
+                "toLegacyProviderView",
+                function(p, "toLegacyProviderView", 1, 1, |p, a| {
+                    let v = checked(p, a[0])?;
+                    raw(p, legacy_provider_binding_view(scope(p), arg(v)?)?).freeze()
+                })?,
+            ),
+        ],
+    )?
+    .raw())
 }

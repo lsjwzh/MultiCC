@@ -15,7 +15,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 
 const { createSessionPersistence } = require('../src/native/binding');
-const { createTaskStateStore } = require('../src/session/records');
+const { createTaskStateStore } = require('../src/native/binding').sessionRecordsHost;
 const { recordsOf, appendClassifyHistory } = require('./helpers/session-records');
 const {
   createLegacySessionPersistence,

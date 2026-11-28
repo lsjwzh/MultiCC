@@ -651,8 +651,8 @@ function heldRun() {
 }
 
 test('兼容协议在逐帧收取和收尾时，对相同错误采用一致的证据', () => {
-  const { createCodebuddyAdapter } = require('../src/cli-adapters/codebuddy');
-  const { createQoderAdapter } = require('../src/cli-adapters/qoder');
+  const { createCodebuddyAdapter } = require('../src/native/binding').cliAdapters;
+  const { createQoderAdapter } = require('../src/native/binding').cliAdapters;
   const message = '本次请求暂时无法处理';
   for (const [adapter, fields, status] of [
     [createCodebuddyAdapter({ cmd: 'codebuddy' }), { errors_info: [{ status: 429, details: message }] }, 429],

@@ -292,8 +292,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const REPO = ${JSON.stringify(repo)};
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
@@ -306,7 +306,7 @@ const { createWorld, FROZEN_NOW } = require(path.join(REPO, 'tests/helpers/legac
 Date.now = () => FROZEN_NOW;
 
 const express = require(require.resolve('express', { paths: [REPO] }));
-const { DomainError } = require(path.join(REPO, 'src/http-errors'));
+const { DomainError } = require(path.join(REPO, 'src/native/binding')).httpErrors;
 const world = createWorld({ rootDir: process.env.HOST_OPS_ROOT, DomainError });
 
 // Both detached launchers are fakes; the log is written so this process can

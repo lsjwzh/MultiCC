@@ -2,7 +2,7 @@
 
 // Stub the shared outbound transport: no test can accidentally use live credentials.
 let testFetch = async () => { throw new Error('unexpected outbound request'); };
-require('node:test').mock.method(require('../src/network/outbound'), 'outboundFetch',
+require('node:test').mock.method(require('../src/native/binding').outbound, 'outboundFetch',
   (...args) => testFetch(...args));
 // Tests for the SQLite-backed provider-limit cache and its recorder
 // (src/quota/provider-limit-cache.js + src/quota/limit-cache-recorder.js).
@@ -29,9 +29,9 @@ const {
 } = require('./helpers/legacy-provider-limit-cache');
 const {
   createLimitRecorder, PROVIDER_FAILURE_COOLDOWN_MS, AUTH_REVOKED_BLOCKED_UNTIL_MS,
-} = require('../src/quota/limit-cache-recorder');
+} = require('../src/native/binding').limitRecorder;
 const { compactBarText } = require('../src/native/binding').getQuotaBarView();
-const { writeJsonAtomic } = require('../src/state/store');
+const { writeJsonAtomic } = require('../src/native/binding').stateStore;
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -362,8 +362,8 @@ function testRevokedParkAndRelease() {
   // hook is the release signal. Pinned here because the two halves live in
   // different modules — a rename on either side would otherwise leave the
   // account parked forever with every unit test still green.
-  const { createOfficialAccountStore } = require('../src/official-accounts');
-  const { accountProviderId } = require('../src/providers/official-catalog');
+  const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
+  const { accountProviderId } = require('../src/native/binding').officialCatalog;
   const store = createOfficialAccountStore({
     root: tmpDir('hook'),
     onCredentialWritten: id => recorder.releaseProviderFailure({ providerId: accountProviderId('claude', id) }),
@@ -550,7 +550,7 @@ function testWeeklyWindowAndRejectionRefresh() {
 
 function testEverySourceKeepsItsCycles() {
   const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
-  const { pollCodexUsage } = require('../src/usage-limit-poller');
+  const { pollCodexUsage } = require('../src/native/binding').usageLimitPoller;
   const file = tmpDb('cycles');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file, now: clock.now });
@@ -967,7 +967,7 @@ async function testNativeTransactionalStore() {
 }
 
 async function testAsyncNativeCacheHost() {
-  const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
+  const { createNativeProviderLimitCache } = require('../src/native/binding').providerLimitCache;
   const dir = tmpDir('native-host');
   const file = path.join(dir, 'limits.db');
   const legacy = path.join(dir, 'limits.json');
@@ -1002,7 +1002,7 @@ async function testAsyncNativeCacheHost() {
 }
 
 async function testAsyncRecorderParity() {
-  const { createNativeProviderLimitCache } = require('../src/quota/provider-limit-cache-native-host');
+  const { createNativeProviderLimitCache } = require('../src/native/binding').providerLimitCache;
   const now = () => 1_700_000_000_000;
   const oldCache = createProviderLimitCache({ file: tmpDb('recorder-old'), now });
   const newCache = createNativeProviderLimitCache({ file: tmpDb('recorder-native'), now, logger: null });

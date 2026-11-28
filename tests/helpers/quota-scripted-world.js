@@ -31,8 +31,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const barView = require('../../src/native/binding').getQuotaBarView();
-const barState = require('../../src/quota/claude-bar-state');
-const usageQueue = require('../../src/quota/claude-usage-queue');
+const barState = require('../../src/native/binding').claudeBarState;
+const usageQueue = require('../../src/native/binding').claudeUsageQueue;
 const kimi = require('../../src/routes/kimi-quota');
 
 const CACHE_FILE = 'quota-bar-cache.json';
@@ -257,7 +257,7 @@ function buildDeps(initialWorld = {}, options = {}) {
 
   function currentCache() {
     if (cache) return cache;
-    const { createQuotaBarCache } = require('../../src/quota/quota-bar-cache');
+    const { createQuotaBarCache } = require('../../src/native/binding').quotaBarCache;
     cacheFile = path.join(dataRoot, CACHE_FILE);
     cache = createQuotaBarCache({ file: cacheFile, now: clock, logger: { warn() {} } });
     return cache;

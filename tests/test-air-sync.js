@@ -3,12 +3,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createAirReadIndex } = require('./helpers/legacy-air-read-index');
-const { createAirSyncRuntime } = require('../src/workspace/air-sync-runtime');
-const airIssueApi = require('../src/workspace/air-index-port');
+const { createAirSyncRuntime } = require('../src/native/binding').airSyncRuntime;
+const airIssueApi = require('../src/native/binding').airIndexPort;
 const { airNotices: airNoticeHooks } = airIssueApi;
 const { createAirStorageNotice } = airIssueApi;
 const { create } = require('../public/air-sync');
-const { createAirCardCache } = require('../src/workspace/air-card-cache');
+const { createAirCardCache } = require('../src/native/binding').airCardCache;
 
 const tick = () => new Promise(done => setImmediate(done));
 const task = (id, patch = {}) => ({ id: String(id), dirId: 'd', title: `任务 ${id}`, status: 'active',

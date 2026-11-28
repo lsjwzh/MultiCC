@@ -11,15 +11,15 @@ const {
   createAuthSecurity,
   normalizeRedirect,
   timingSafeEqualText,
-} = require('../src/auth-security');
+} = require('../src/native/binding').authSecurity;
 const { resolveNetworkPolicy, selectListenPort } = require('../src/native/binding').getNetworkPolicy();
 const {
   createExactSecretStreamRedactor, createLogger, createMetrics, redact, redactProviderRouteCapability,
-} = require('../src/observability');
-const { atomicWriteJson, secureRuntimeData } = require('../src/runtime-security');
+} = require('../src/native/binding').observability;
+const { atomicWriteJson, secureRuntimeData } = require('../src/native/binding').runtimeSecurity;
 const { createPaths } = require('../src/paths');
 const { installWsBackpressure } = require('./helpers/legacy-ws-backpressure');
-const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/http-errors');
+const { requestIdMiddleware, cleanIncomingId, makeRequestId } = require('../src/native/binding').httpErrors;
 
 test('authenticated installs auto-bind to IPv4 LAN while explicit policy stays fail-closed', () => {
   assert.deepStrictEqual(resolveNetworkPolicy({}), {
@@ -381,4 +381,27 @@ test('WebSocket backpressure coalesces snapshots and disconnects on bounded over
   assert.equal(overflow.closed.code, 1013);
   assert.ok(metrics.get('multicc_ws_queue_overflows_total') >= 1);
   assert.ok(metrics.get('multicc_ws_backpressure_disconnects_total') >= 1);
+});
+
+test('metric methods retain live Map keys, JS addition and render-only overrides', () => {
+  const { createMetrics } = require('../src/native/binding').observability;
+  const { get, inc, render, set } = createMetrics();
+  const key = new String('counter');
+  inc(key, '2');
+  assert.equal(get(key), '02');
+  assert.equal(get('counter'), 0);
+  set('other', '3');
+  assert.equal(render({ other: 4 }), 'counter 02\nother 4\n');
+  assert.equal(get('other'), 3);
+  assert.throws(() => inc('bad name'), TypeError);
+});
+
+test('log redaction observes own properties at the time their entries are read', () => {
+  const { redact } = require('../src/native/binding').observability;
+  const parent = { get later() { throw new Error('inherited field must not enter log'); } };
+  const changing = { __proto__: parent, get first() { delete this.later; return 1; }, later: 2 };
+  assert.deepEqual(redact(changing), { first: 1 });
+  let reads = 0;
+  const recursive = { get child() { return reads++ === 0 ? recursive : 7; } };
+  assert.deepEqual(redact(recursive), { child: { child: 7 } });
 });

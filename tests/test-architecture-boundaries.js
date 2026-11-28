@@ -28,7 +28,6 @@ test('session bounded-context core has no host or cross-context dependencies', (
       // the shared addon loader.
       // This grants no other session module a host import.
       const nativeCorePort = (file === path.join('src/session', 'hibernation-composition.js')
-        || file === path.join('src/session', 'records.js')
         || file === path.join('src/session', 'hibernation.js')
         || file === path.join('src/session', 'workspace-service.js')
         || file === path.join('src/session', 'query-service.js'))
@@ -70,11 +69,7 @@ test('production request paths do not run synchronous child processes', () => {
   // and the delayed restart manager spawn it as its own process (`node
   // src/server-processes.js list|stop|lock-alive|owner`), so it never runs
   // inside a request path and may deliberately block.
-  // src/cli-adapters/commands.js probes Qoder install candidates with
-  // `--version` once per process (resolveCliCommands() is a synchronous
-  // startup-time API and the probe is memoized), so it never blocks a request;
-  // removing the memo or probing per request must also remove this exemption.
-  const exempt = new Set(['src/server-processes.js', 'src/cli-adapters/commands.js']);
+  const exempt = new Set(['src/server-processes.js']);
   const files = ['server.js'];
   const visit = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -190,10 +185,10 @@ test('only the shutdown drain reads raw liveness for a work decision', () => {
   assert.match(gateway, /active: !!isTargetBusy\(s\.id\)/);
   assert.doesNotMatch(gateway, /activeChat\.isStreaming|clients\.size > 0/);
   for (const file of [
-    'native/addon/src/task_board_runtime/core.rs', 'src/task-board/core/index.js', 'src/task-board/normalize.js',
-    'src/task-board/native-bridge.js', 'src/task-board/routing.js', 'native/addon/src/task_board_runtime/routing.rs',
-    'native/addon/src/task_board_view.rs', 'src/task-board/planning.js',
-    'src/routes/task-board/index.js', 'native/addon/src/task_board_runtime/projection/events.rs',
+    'native/addon/src/task_board_runtime/core.rs', 'src/task-board/core/index.js', 'native/addon/src/board_domain_facade/normalize.rs',
+    'native/addon/src/board_domain_facade/bridge.rs', 'src/task-board/routing.js', 'native/addon/src/task_board_runtime/routing.rs',
+    'native/addon/src/task_board_view.rs', 'native/addon/src/board_domain_facade/planning.rs',
+    'native/addon/src/task_board_runtime/setup.rs', 'native/addon/src/task_board_runtime/projection/events.rs',
     'native/addon/src/task_board_runtime/projection/view.rs',
   ]) {
     assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /isStreaming|claudeProc/, file);

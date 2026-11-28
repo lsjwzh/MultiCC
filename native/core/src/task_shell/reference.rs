@@ -22,7 +22,7 @@ pub fn lazy_context_prompt(task_id: &str) -> String {
     format!("[Task shell context policy] This turn carries only native context for {task_id} to avoid unrelated tokens. If the request depends on another task (same or other project), call `get_task_context` first; do not guess missing context, and do not call it routinely. Task ownership and the executing session are independent: history stays in its source workspace and does not authorize edits there. Params: omit `task_id` for in-shell history, pass `task_id` for any task, `before` to page older, `message_id`+`offset` for long chunks.\n")
 }
 
-fn digest(value: &V) -> String {
+pub(crate) fn digest(value: &V) -> String {
     format!(
         "{:x}",
         Sha256::digest(js::json_stringify_or_undefined(value))

@@ -255,8 +255,8 @@ const net = require('node:net');
 const http = require('node:http');
 const path = require('node:path');
 const REPO = ${JSON.stringify(repo)};
-const { createAuthSecurity } = require(path.join(REPO, 'src/auth-security'));
-const { connectAuthControl } = require(path.join(REPO, 'src/gateway-child'));
+const { createAuthSecurity } = require(path.join(REPO, 'src/native/binding')).authSecurity;
+const { connectAuthControl } = require(path.join(REPO, 'src/native/binding')).gatewayChild;
 globalThis.__gatewayAuthSecurity = createAuthSecurity({ secret: process.env.ACCESS_TOKEN });
 connectAuthControl(globalThis.__gatewayAuthSecurity);
 process.stdin.on('end', () => process.exit(0));
@@ -264,8 +264,8 @@ process.stdin.on('error', () => process.exit(0));
 process.stdin.resume();
 
 const express = require(require.resolve('express', { paths: [REPO] }));
-const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/http-errors'));
-const { jsonCompression } = require(path.join(REPO, 'src/http/json-compression'));
+const { requestIdMiddleware, safeErrorHandler } = require(path.join(REPO, 'src/native/binding')).httpErrors;
+const { jsonCompression } = require(path.join(REPO, 'src/native/binding')).jsonCompression;
 const world = require(path.join(REPO, 'tests/helpers/directory-scripted-world'));
 const { createDirectoryHost } = require(path.join(REPO, 'src/routes/directory-host'));
 

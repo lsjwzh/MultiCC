@@ -16,11 +16,14 @@ const legacyPath = path.resolve(__dirname, '../src/session/persistence.js');
 const legacyModule = new Module(legacyPath, module);
 legacyModule.filename = legacyPath;
 legacyModule.paths = Module._nodeModulePaths(path.dirname(legacyPath));
+const requireLegacy = Module.createRequire(legacyPath);
+// Both persistence adapters operate on the same live-record facade contract.
+legacyModule.require = id => id === './records' ? require('../src/native/binding').sessionRecordsHost : requireLegacy(id);
 legacyModule._compile(fs.readFileSync(path.join(__dirname, 'helpers/legacy-session-persistence.js'), 'utf8'), legacyPath);
 const legacy = legacyModule.exports;
 const runtime = require('../src/native/binding');
 const { recordsOf } = require('./helpers/session-records');
-const { sessionRecordsOwner } = require('../src/session/records');
+const { sessionRecordsOwner } = require('../src/native/binding').sessionRecordsHost;
 
 const impls = {
   legacy: { create: legacy.createSessionPersistence, PersistenceError: legacy.PersistenceError },

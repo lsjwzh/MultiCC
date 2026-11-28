@@ -7,15 +7,15 @@ const path = require('path');
 const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const Database = require('better-sqlite3');
-const { createOperationService } = require('../src/operation-service');
+const { createOperationService } = require('../src/native/binding').orchestrationServices;
 const { createOrchestrationRuntime } = require('../src/orchestration/host');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const {
   OrchestrationSqliteConflictError,
   OrchestrationSqliteError,
   createOrchestrationSqliteStore,
-} = require('../src/orchestration/sqlite-store');
-const { createWaitService } = require('../src/wait/service');
+} = require('../src/native/binding').orchestrationSqlite;
+const { createWaitService } = require('../src/native/binding').orchestrationServices;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -308,7 +308,7 @@ test('question owner bridge backfills once and answers a replacement from the sa
   const activeTurn = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'new-task' };
   const legacy = { pendingQuestion: { requestId: 'old', taskId: 'old-task', turnId: 'turn',
     question: 'old', resolved: false }, activeTurn, category: { classifyState: 'W' } };
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   let legacyAvailable = true;
   const owner = createQuestionOwner({ getStore: () => store, initialState: () => {
     if (!legacyAvailable) throw new Error('legacy snapshot unavailable');
@@ -342,7 +342,7 @@ test('question owner bridge moves a question across two Rust-owned sessions', as
     try { await store.close({ exportRollback: false }); }
     finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
-  const { createQuestionOwner } = require('../src/orchestration/native-store-host');
+  const { createQuestionOwner } = require('../src/native/binding').orchestrationNativeStore;
   const owner = createQuestionOwner({ getStore: () => store, now: () => 10, liveTurn: () => null,
     initialState: id => ({ pendingQuestion: id === 'source'
       ? { requestId: 'q', turnId: 'turn', taskId: 'old', question: 'Q', resolved: false } : null,
@@ -403,7 +403,7 @@ test('synchronous question creation and settlement survive an overlapping async 
   // is parked cannot hang the entire test runner.
   const script = `
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1], now: () => 10 });
       await store.mutate(draft => {
@@ -466,7 +466,7 @@ for (const variant of ['promise-returning callback', 'async callback with hooks'
     // instead of hanging the rest of the suite.
     const script = `
       const assert = require('node:assert/strict');
-      const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+      const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
       (async () => {
         const variant = process.argv[2];
         const store = createOrchestrationSqliteStore({ file: process.argv[1], now: () => 10,
@@ -630,7 +630,7 @@ test('question reads inside a detached draft keep its snapshot and protect its w
   const files = tempPaths(t, 'question-draft-footprint');
   const script = `
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1], now: () => 10 });
       const active = { _activeTurn: { turnId: 'turn' }, isStreaming: true, _currentTaskId: 'task' };
@@ -672,7 +672,7 @@ test('read-only asynchronous question observations retain the original Rust snap
   const files = tempPaths(t, 'question-read-footprint');
   const script = `
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/orchestration/sqlite-store'))});
+    const { createOrchestrationSqliteStore } = require(${JSON.stringify(require.resolve('../src/native/binding'))}).orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1] });
       const active = { _activeTurn: { turnId: 'turn' }, isStreaming: true };
@@ -1231,31 +1231,43 @@ test('storage uses the Rust driver; the npm addon remains a development oracle',
   assert.match(driver, /ccSwitchDatabaseApi/);
   assert.doesNotMatch(driver, /require\('node:sqlite'\)/);
   for (const file of ['src/task-shell/store.js',
-    'src/orchestration/sqlite-store.js']) {
+    'src/native/binding.js']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     // task-shell 仓储迁移后不再经 JS 打开 SQLite：整个 store 由原生
     // RustTaskStore 承载，同属“只用 Rust、绝不碰 npm addon”的边界。
     assert.match(source, /sqlite\/driver|RustTaskStore|createNativeStore/, `${file} must use the shared driver or the native Rust store`);
     assert.doesNotMatch(source, /require\('better-sqlite3'\)/, `${file} must not require the addon`);
   }
-  const host = fs.readFileSync(path.join(root, 'src/orchestration/native-store-host.js'), 'utf8');
-  assert.match(host, /new native\.RustIsolatedOrchestrationStore\(/);
-  assert.doesNotMatch(host, /new native\.RustOrchestrationStore\(/,
-    'the production host must never open the orchestration database in-process');
+  for (const retired of ['src/orchestration/native-store-host.js', 'src/orchestration/draft-host.js', 'src/outbox.js']) {
+    assert.equal(fs.existsSync(path.join(root, retired)), false, retired);
+  }
+  const readSource = file => fs.readFileSync(path.join(root, file), 'utf8');
+  const factory = readSource('native/addon/src/orchestration_native_store/mod.rs');
+  assert.match(factory, /"createNativeStore"[^;]*transport::create\(/s);
+  const transport = readSource('native/addon/src/orchestration_native_store/transport.rs');
+  const create = transport.match(/fn create\b[\s\S]*?\n\}/)?.[0];
+  assert.ok(create, 'the registered factory must have an owner constructor');
+  assert.match(create, /get\(c"RustIsolatedOrchestrationStore"\)\?\s*\.construct\(/);
+  assert.doesNotMatch(create, /RustOrchestrationStore|Connection::open|better-sqlite3|node:sqlite/);
+  const owner = readSource('native/addon/src/orchestration_owner.rs');
+  assert.match(owner, /impl RustIsolatedOrchestrationStore\b[\s\S]*?OwnerSession::open\(&file, &owner_binary, &open\)/);
+  const ownerClient = readSource('native/core/src/orchestration_owner.rs');
+  assert.match(ownerClient, /if !binary\.is_absolute\(\)/);
+  assert.match(ownerClient, /Command::new\(binary\)\s*\.arg\("orchestration-owner"\)[^;]*\.spawn\(\)/);
 
   // The retired quota facade must stay absent. The lifecycle adapter retains
   // its compatibility aliases and submits storage to Rust; a Node SQLite
   // fallback must not hide behind its exports.
   assert.equal(fs.existsSync(path.join(root, 'src/quota/provider-limit-cache.js')), false);
-  const quotaHost = fs.readFileSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js'), 'utf8');
-  const dependencies = source => [...source.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)]
-    .map(match => match[1]);
-  assert.deepEqual(dependencies(quotaHost), ['../native/binding']);
-  const quotaExports = require('../src/quota/provider-limit-cache-native-host');
+  assert.equal(fs.existsSync(path.join(root, 'src/quota/provider-limit-cache-native-host.js')), false);
+  const binding = fs.readFileSync(path.join(root, 'src/native/binding.js'), 'utf8');
+  assert.match(binding, /createNativeStore: module\.exports\.orchestrationNativeStore\.createNativeStore/);
+  const quotaHost = binding.slice(binding.indexOf("exposeHostApi('providerLimitCache'"), binding.indexOf("exposeHostApi('quotaHistory'"));
+  const quotaExports = require('../src/native/binding').providerLimitCache;
   assert.equal(quotaExports.createProviderLimitCache, quotaExports.createNativeProviderLimitCache);
   assert.equal(quotaExports.STALE_MS_DEFAULT, 10 * 60 * 1000);
   assert.equal(quotaExports.DATABASE_SCHEMA_VERSION, 1);
-  assert.match(quotaHost, /new\s+addon\.RustProviderLimitStore\s*\(/);
+  assert.match(quotaHost, /Owner: getNative\(\)\.RustProviderLimitStore/);
   assert.match(quotaHost, /handle\.requestAsync\s*\(\s*op\s*,\s*input\s*\)/);
   for (const source of [quotaHost]) {
     assert.doesNotMatch(source, /(?:node:sqlite|better-sqlite3|sqlite\/driver)/,
@@ -1370,7 +1382,7 @@ test('large terminal history opens and selects active candidates under a bounded
   seed.close();
   const script = String.raw`
     const assert = require('node:assert/strict');
-    const { createOrchestrationSqliteStore } = require('./src/orchestration/sqlite-store');
+    const { createOrchestrationSqliteStore } = require('./src/native/binding').orchestrationSqlite;
     (async () => {
       const store = createOrchestrationSqliteStore({ file: process.argv[1] });
       assert.equal(await store.count('tasks', {}), 6001);

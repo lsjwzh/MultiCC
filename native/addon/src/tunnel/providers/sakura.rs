@@ -7,9 +7,7 @@ fn token(s: L<'_>) -> Result<L<'_>> {
         return Ok(configured);
     }
     fallback(
-        s.get(c"readLauncherToken")?
-            .call_plain(&[])?
-            .optional(c"token")?,
+        super::super::sakura_api::launcher(s.get(c"ports")?, undefined(s)?)?.optional(c"token")?,
         V::Null,
     )
 }
@@ -90,16 +88,18 @@ pub(super) fn access<'a>(s: L<'a>, opts: L<'a>, apply: bool) -> Result<L<'a>> {
         return denied(s, "no_token");
     }
     let f = frame(s, &[("boundDomain", bound)])?;
-    let get = |key: &CStr| {
-        s.get(key)?
-            .call_plain(&[fields(s, &[("token", token), ("fetch", fetch)])?])
-    };
+    let ports = s.get(c"ports")?;
+    let auth = fields(s, &[("token", token), ("fetch", fetch)])?;
     let gather = async_result(s, || {
         if apply {
-            return after(f, get(c"discoverAccess")?, |_, v| v.get(c"access"));
+            return after(
+                f,
+                super::super::sakura_api::discover(ports, auth)?,
+                |_, v| v.get(c"access"),
+            );
         }
-        let user = get(c"getUserInfo")?;
-        let found = get(c"discoverAccess")?;
+        let user = super::super::sakura_api::user(ports, auth)?;
+        let found = super::super::sakura_api::discover(ports, auth)?;
         let gathered = call(promise(s)?, c"all", &[array(s, &[user, found])?])?;
         after(s, gathered, |s, values| {
             let discovered = values.element(1)?;

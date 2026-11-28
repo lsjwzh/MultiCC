@@ -32,14 +32,17 @@ function pickLister(options, name, modulePath, exportName) {
   if (options.cliListers && typeof options.cliListers[name] === 'function') {
     return options.cliListers[name];
   }
-  return (callback, opts = {}) => repoModule(modulePath)[exportName](callback, opts);
+  return (callback, opts = {}) => {
+    const api = name === 'opencode' ? repoModule(modulePath).openCodeModels : repoModule(modulePath);
+    return api[exportName](callback, opts);
+  };
 }
 
 // GET /api/opencode/models（退役 mountOpenCodeModelRoutes 的 handler 逐字副本，
 // 只把 listOpenCodeModels 换成可注入的 list）。
 function mountOpenCodeModelRoutes(app, options) {
   if (!app || typeof app.get !== 'function') return;
-  const list = pickLister(options, 'opencode', 'src/routes/opencode-models', 'listOpenCodeModels');
+  const list = pickLister(options, 'opencode', 'src/native/binding', 'listOpenCodeModels');
   // ?refresh=1 skips the 1-hour cache (the picker 刷新模型 button, or a paid model unlocked by a new key).
   app.get('/api/opencode/models', (req, res) => {
     const refresh = String((req.query && req.query.refresh) || '') === '1';
@@ -69,7 +72,7 @@ function mountCliModelRoutes(app, options, name, route, modulePath, exportName, 
 function mountProviderModelRoutes(app, options) {
   if (!app || typeof app.get !== 'function') return;
   const runtime = options.providerRuntime
-    || repoModule('src/routes/provider-models').getSharedProviderModelsRuntime();
+    || repoModule('src/native/binding').providerModels.getSharedProviderModelsRuntime();
   app.get('/api/providers/:id/models', async (req, res) => {
     const result = await runtime.listProviderModels(req.params && req.params.id, {
       refresh: isRefresh(req.query && req.query.refresh),
@@ -85,11 +88,11 @@ function mountCodexModelRoutes(app, runtime, accountRuntime, providerModelsRunti
   if (!app || typeof app.get !== 'function') return;
   const isOfficialCodexOAuthProvider = typeof options.isOfficialCodexOAuthProvider === 'function'
     ? options.isOfficialCodexOAuthProvider
-    : repoModule('src/codex/official-relay').isOfficialCodexOAuthProvider;
+    : repoModule('tests/helpers/frozen-bc29761b/codex/official-relay').isOfficialCodexOAuthProvider;
   // Existing embedders may inject the legacy single-account runtime. The
   // production API uses the Rust account catalog; Express only projects its
   // snapshot and schedules work, never waits for a CLI discovery.
-  if (!runtime) accountRuntime ||= repoModule('src/codex/model-catalog').defaultRuntime;
+  if (!runtime) accountRuntime ||= repoModule('src/native/binding').codexModelCatalog.defaultRuntime;
   async function accountResponse(req, res, pollOnly = false) {
     const providerId = String(req.query?.providerId || req.body?.providerId || 'codex-official');
     const provider = accountRuntime.resolveProvider(providerId);
@@ -101,7 +104,7 @@ function mountCodexModelRoutes(app, runtime, accountRuntime, providerModelsRunti
       // rows carry their own base URL/key, not an OAuth account, so delegate to
       // the provider live-catalog path (same fetch as /api/providers/:id/models).
       // The response keeps the account-catalog shape loadCodexModels() expects.
-      const catalogRuntime = providerModelsRuntime || repoModule('src/routes/provider-models').getSharedProviderModelsRuntime();
+      const catalogRuntime = providerModelsRuntime || repoModule('src/native/binding').providerModels.getSharedProviderModelsRuntime();
       const result = await catalogRuntime.listProviderModels(provider.id, {
         refresh: /^(?:1|true)$/i.test(String(req.query?.refresh || '')),
       });

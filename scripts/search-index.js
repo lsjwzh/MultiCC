@@ -26,7 +26,7 @@ const { resolveDataDir, createPaths } = require('../src/paths');
 const { createSearchIndex } = require('../src/search/index-store');
 const { createMessageCorpus, MESSAGE_SCOPE } = require('../src/search/message-corpus');
 const { getNative } = require('../src/native/binding');
-const { reportFailure } = require('../src/state/store');
+const { reportFailure } = require('../src/native/binding').stateStore;
 
 function parseArgs(argv) {
   const positional = [];

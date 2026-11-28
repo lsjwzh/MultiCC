@@ -7,7 +7,7 @@ const {
   createDispatchProgressSubscription,
   reasoningDeltaFromPart,
   textDeltaFromPart,
-} = require('../src/dispatch/progress');
+} = require('../src/native/binding').dispatchProgress;
 
 test('sync dispatch progress forwards text and safe tool names but never tool payloads', () => {
   const progress = [];
@@ -172,6 +172,23 @@ test('dispatch progress subscription filters by session and operation lineage, t
   assert.deepEqual(progress.map(u => u.message), ['early', 'live']);
 });
 
+test('live reducer failures stay isolated and replay failures propagate after attachment', () => {
+  const { EventEmitter } = require('node:events');
+  const bus = new EventEmitter();
+  const error = new Error('reducer failed');
+  let replay = [];
+  const subscribe = createDispatchProgressSubscription({
+    bus, cliOf: () => 'codex', activeTurnOf: () => ({ lineage: { kind: 'dispatch', operationId: 'op' } }),
+    streamReplayOf: () => replay, createReducer: () => ({ push() { throw error; } }),
+  });
+  const detach = subscribe({ operationId: 'op', targetSessionId: 's' });
+  assert.doesNotThrow(() => bus.emit('chat:stream-progress', 's', {}));
+  detach();
+  replay = [{}];
+  assert.throws(() => subscribe({ operationId: 'op', targetSessionId: 's' }), caught => caught === error);
+  assert.equal(bus.listenerCount('chat:stream-progress'), 1);
+});
+
 test('dispatch progress subscription requires a real bus', () => {
   assert.throws(() => createDispatchProgressSubscription({}), /requires a bus/);
 });
@@ -193,5 +210,5 @@ require('node:test')('67f54869 differential: dispatch/progress', async () => {
       },
     } });
     return trace;
-  });
+  }, require('../src/native/binding').dispatchProgress);
 });

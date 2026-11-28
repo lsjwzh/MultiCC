@@ -5,7 +5,7 @@
 //   node scripts/generate-outbound-proxy-corpus.js          # verify
 //   node scripts/generate-outbound-proxy-corpus.js --write  # rewrite
 //
-// Every expectation comes from the real src/network/proxy-policy.js, still the
+// Every expectation comes from the frozen, independent Node implementation of the
 // Node policy for every other outbound request. The Rust port
 // (native/core/src/outbound_proxy.rs) replays the same file, so a semantic
 // drift on either side fails a unit test instead of a live request.
@@ -24,7 +24,7 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..');
 const target = path.join(root, 'native', 'core', 'tests', 'fixtures', 'outbound-proxy-cases.json');
-const policy = require(path.join(root, 'src', 'network', 'proxy-policy.js'));
+const policy = require(path.join(root, 'tests', 'helpers', 'frozen-leaf-hosts', 'proxy-policy.js'));
 
 const SYSTEM_TEXTS = [
   ['empty', ''],

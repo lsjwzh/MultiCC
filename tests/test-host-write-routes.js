@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { safeErrorHandler } = require('../src/http-errors');
+const { safeErrorHandler } = require('../src/native/binding').httpErrors;
 const {
   persistThenApply,
   normalizeTunnelUpdate,

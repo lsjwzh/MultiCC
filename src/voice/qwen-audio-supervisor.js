@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
-const { getChildProxyEnv, outboundFetch } = require('../network/outbound');
+const { getChildProxyEnv, outboundFetch } = require('../native/binding').outbound;
 const { spawn } = require('child_process');
 const {
   GLOBAL_VOICE_GATEWAY_ID,
@@ -12,8 +12,8 @@ const {
   isGlobalVoiceGatewayRecord,
   isVoiceGatewayRecord,
   resolveVoiceGateway,
-} = require('./gateway');
-const { ensurePrivateDir } = require('../runtime-security');
+} = require('../native/binding').voiceGatewayDomain;
+const { ensurePrivateDir } = require('../native/binding').runtimeSecurity;
 
 // Realtime voice is a single machine-wide child. GLOBAL_KEY is its slot in the
 // same state map the per-Fleet runtimes use, so restart budgets, health polling

@@ -4,10 +4,8 @@ const assert = require('assert');
 const { createClaudeAdapter } = require('../src/native/binding');
 const { createCodexAdapter } = require('../src/native/binding').codexAdapter;
 const { createCodexExpAdapter } = require('../src/native/binding').codexAppAdapter;
-const { createOpencodeAdapter } = require('../src/cli-adapters/opencode');
-const { createZcodeAdapter } = require('../src/cli-adapters/zcode');
-const { createQoderAdapter } = require('../src/cli-adapters/qoder');
-const { createKimiAdapter } = require('../src/cli-adapters/kimi');
+const { createOpencodeAdapter, createZcodeAdapter, createQoderAdapter, createKimiAdapter,
+  createCodebuddyAdapter } = require('../src/native/binding').cliAdapters;
 
 const claude = createClaudeAdapter({
   cmd: 'claude', resolveSessionWireModel: model => model,
@@ -26,6 +24,18 @@ const codexExp = createCodexExpAdapter({ codexCmd: 'codex' });
 const opencode = createOpencodeAdapter({ cmd: 'opencode', env: { MULTICC_OPENCODE_LEGACY_JSON: '1' } });
 const zcode = createZcodeAdapter({ cmd: 'zcode' });
 const qoder = createQoderAdapter({ cmd: 'qoderclicn' });
+// Parse the terminal arguments with the shell without launching a vendor CLI.
+if (process.platform !== 'win32') {
+  const model = "model owner's copy";
+  for (const adapter of [qoder, createCodebuddyAdapter({ cmd: 'codebuddy' }), zcode]) {
+    const command = adapter.buildTerminalCmd({ model });
+    const args = require('node:child_process').execFileSync('/bin/sh',
+      ['-c', `set -- ${command}\nprintf '%s\\0' "$@"`], { encoding: 'utf8' }).split('\0');
+    const at = args.indexOf('--model');
+    assert.ok(at >= 0, adapter.name);
+    assert.equal(args[at + 1], model, adapter.name);
+  }
+}
 const kimi = createKimiAdapter({ cmd: 'kimi' });
 
 for (const adapter of [claude, codex, codexExp, opencode, zcode, qoder, kimi]) {
@@ -512,7 +522,7 @@ require('./test-claude-adapter');
 // CODEX_CMD 指向不存在的绝对路径时回退自动探测; 可执行/裸命令名原样保留
 {
   const assert = require('assert');
-  const { resolveCliCommands } = require('../src/cli-adapters/commands');
+  const { resolveCliCommands } = require('../src/native/binding').cliCommands;
   const quiet = { log() {}, warn() {} };
   const pick = cmd => resolveCliCommands({ env: { CODEX_CMD: cmd }, homeDir: '/nonexistent-home', logger: quiet }).codex;
   assert.notStrictEqual(pick('/nonexistent/codex'), '/nonexistent/codex');

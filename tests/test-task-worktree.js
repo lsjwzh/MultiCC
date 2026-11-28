@@ -18,7 +18,7 @@ const {
   taskWorktreeToken,
   slotOwnsWorktree,
   createTaskWorktreeService,
-} = require('../src/task-worktree');
+} = require('../src/native/binding').taskWorktree;
 
 function fixture(overrides = {}) {
   const calls = { add: [], remove: [], merge: [], update: [] };
@@ -77,6 +77,7 @@ test('slotOwnsWorktree is true only for the slot\'s deterministic own branch', (
   assert.equal(slotOwnsWorktree({ id: 'slot-1', branch: 'multicc/slot-1' }), true);
   assert.equal(slotOwnsWorktree({ id: 'slot-1', branch: 'multicc/task-abcd1234' }), false);
   assert.equal(slotOwnsWorktree({ id: 'slot-1' }), false);
+  assert.equal(slotOwnsWorktree({ id: '\ud800', branch: 'multicc/\ud800' }), true);
   assert.equal(slotOwnsWorktree(null), false);
 });
 

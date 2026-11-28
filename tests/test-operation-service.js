@@ -5,9 +5,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOperationService, OperationConflictError } = require('../src/operation-service');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
-const { createOrchestrationSqliteStore } = require('../src/orchestration/sqlite-store');
+const { OutboxConflictError } = require('../src/native/binding').outboxRuntime;
+const { createOperationService, OperationConflictError } = require('../src/native/binding').orchestrationServices;
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
+const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const Database = require('better-sqlite3');
 const { createLegacyOperationAdmission } = require('./helpers/legacy-operation-admission');
 
@@ -364,7 +365,8 @@ test('native dispatch admission keeps an existing conflicting outbox and inserts
   const before = await store.snapshot();
   await assert.rejects(createOperationService({ store }).admitDispatch({ operationId: 'op_conflict', ownerSessionId: 'owner',
     spec: { chatId: 'target', targetId: 'agent', message: 'hello' } }),
-  error => error.code === 'OUTBOX_PAYLOAD_CONFLICT' && error.outboxId === 'operation:op_conflict:request');
+  error => error instanceof OutboxConflictError
+    && error.code === 'OUTBOX_PAYLOAD_CONFLICT' && error.outboxId === 'operation:op_conflict:request');
   assert.deepEqual(await store.snapshot(), before);
 });
 
@@ -397,7 +399,7 @@ test('native admission reads a snapshot established before a spec getter writes 
   const store = createOrchestrationSqliteStore({ file });
   const db = new Database(file);
   t.after(async () => { db.close(); await store.close({ exportRollback: false }); fs.rmSync(dir, { recursive: true, force: true }); });
-  const { hashPayload, hashSecret } = require('../src/outbox');
+  const { hashPayload, hashSecret } = require('./helpers/frozen-e960f6eb/outbox');
   const spec = { get command() {
     const operation = { id: 'op_external', kind: 'detached', ownerSessionId: 'owner', status: 'admitted',
       idempotencyKeyHash: hashSecret('key'), requestHash: hashPayload({ command: 'echo ok' }),
@@ -1047,4 +1049,43 @@ test('startup task interruption uses indexed active rows without enumerating ter
   assert.equal((await service.interruptActiveTasks())[0].status, 'interrupted');
   assert.equal(draft.outbox['task:live:interrupted'].payload.taskId, 'cli-task');
   assert.equal(active.completedAt, 100);
+});
+
+test('wait, task and operation changes keep the baseline transaction results and projections', async () => {
+  const native = require('../src/native/binding').orchestrationServices;
+  const baseline = {
+    ...require('./helpers/frozen-d6c814fe/wait/service'),
+    ...require('./helpers/frozen-d6c814fe/operation-service'),
+  };
+  async function run(api) {
+    let state = { operations: {}, tasks: {}, waits: {}, outbox: {}, nextOutboxSequence: 1 };
+    let tick = 100;
+    const options = {
+      store: {
+        read: async fn => structuredClone(fn(state)),
+        mutate: async fn => {
+          const next = structuredClone(state);
+          const result = fn(next);
+          state = next;
+          return structuredClone(result);
+        },
+      },
+      now: () => ++tick, callbackTokenFactory: () => 'fixed-token', callbackBaseUrl: 'https://fixture.invalid///',
+    };
+    const waits = api.createWaitService(options), ops = api.createOperationService(options), results = [];
+    results.push(await waits.register({ id: 'a/一', sessionId: 's', metadata: { x: 4 } }));
+    results.push(await waits.register({ id: 'b', sessionId: 's', mode: 'delay' }));
+    results.push(await waits.list({ sessionId: 's', status: 'pending' }), await waits.cancelForSession('s'), await waits.get('b'));
+    results.push(await ops.observeTask({ sessionId: 's', taskId: 't', detail: { description: 'one' } }));
+    results.push(await ops.interruptActiveTasks(), await ops.observeTask({ sessionId: 's', taskId: 't' }), await ops.listTasks({ statuses: 'interrupted' }));
+    results.push(await ops.admitDispatch({ operationId: 'op_a', ownerSessionId: 's',
+      spec: { chatId: 'worker', targetId: 'target', message: 'work', targetLabel: '演示', resultMode: 'async' } }));
+    results.push(await ops.markRunning('op_a', { externalId: 'x', pid: '19' }));
+    results.push(await ops.completeDispatch('op_a', { status: 'failed', error: 'first' }));
+    results.push(await ops.completeDispatch('op_a', { status: 'completed', text: '  late  ' }, { resettle: true }));
+    results.push(await ops.cancelDispatch('op_a'), await ops.listReferences({ excludeTerminal: true }));
+    results.push(await ops.get('op_a'), await ops.listReferences(), await ops.list({ statuses: [] }));
+    return { results, state };
+  }
+  assert.deepEqual(await run(native), await run(baseline));
 });

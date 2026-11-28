@@ -39,7 +39,7 @@ for (const provider of ['openai', 'volcano', 'funasr']) {
     const agent = {};
     const voice = loadIsolated('plugins/voice/voice-asr.js', {
       ws: Socket,
-      '../../src/network/outbound': { outboundAgent: agent },
+      '../../src/native/binding': { outbound: { outboundAgent: agent } },
       '../../src/voice/asr-local': {},
     });
     voice.applyConfig({ OPENAI_REALTIME_API_KEY: 'test-key', VOLC_ASR_APP_ID: 'test-app', VOLC_ASR_ACCESS_TOKEN: 'test-token', FUNASR_WS_URL: 'ws://127.0.0.1:10095' });
@@ -57,7 +57,7 @@ for (const provider of ['openai', 'volcano', 'funasr']) {
 test('火山语音合成连接传递统一代理', () => {
   const { Socket, sockets } = fakeSockets();
   const agent = {};
-  const tts = loadIsolated('src/voice/tts-service.js', { ws: Socket, '../network/outbound': { outboundAgent: agent } });
+  const tts = loadIsolated('src/voice/tts-service.js', { ws: Socket, '../native/binding': { outbound: { outboundAgent: agent } } });
   tts.applyConfig({ VOLC_TTS_APP_ID: 'test-app', VOLC_TTS_ACCESS_TOKEN: 'test-token' });
   const ws = peer();
   tts.handleTtsWs(ws);
@@ -71,7 +71,7 @@ test('飞书 HTTP 适配保留 SDK 的响应行为且关闭 axios 二次代理',
   const agent = {};
   let options;
   const base = { request: async (value) => { options = value; return { preserved: true }; } };
-  const { createLarkHttpInstance } = loadIsolated('src/network/sdk-bridges.js', { './outbound': { outboundAgent: agent } });
+  const { createLarkHttpInstance } = loadIsolated('src/network/sdk-bridges.js', { '../native/binding': { outbound: { outboundAgent: agent } } });
   const client = createLarkHttpInstance(base);
   assert.deepEqual(await client.post('https://example.invalid/auth', { test: true }, { $return_headers: true }), { preserved: true });
   assert.equal(options.httpAgent, agent);
@@ -92,8 +92,14 @@ function loadBridge(name, sdk, agent) {
     createGatewayLifecycle: () => gateway,
     createChatWsClient: () => ({ connect: noop, disconnect: noop }),
   };
-  const exports = loadIsolated(`plugins/bridges/${name}-bridge.js`, {
-    '../../src/network/outbound': { outboundAgent: agent, outboundFetch: noop },
+  const exports = name === 'feishu' ? require('../src/native/binding').imChannelHost.createFeishuBridge({
+    fs: core.deps.fs,
+    bridgeConfig: { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
+    bridgeGateway: core,
+    loadLark: () => sdk(captured)['@larksuiteoapi/node-sdk'],
+    createLarkHttpInstance: () => ({}), outboundAgent: agent,
+  }) : loadIsolated(`plugins/bridges/${name}-bridge.js`, {
+    '../../src/native/binding': { outbound: { outboundAgent: agent, outboundFetch: noop } },
     './secure-config': { bridgeConfigFile: () => '', bridgeHistoryFile: noop, saveBridgeConfig: noop },
     './gateway-core': core,
     '../../src/network/sdk-bridges': { createLarkHttpInstance: () => ({}), buildDiscordStrategy: noop },
@@ -157,7 +163,7 @@ test('Discord SDK 的真实握手使用注入代理，销毁连接且不污染�
   agent.addRequest = function (...args) { requests++; return addRequest.apply(this, args); };
   const shared = require('@discordjs/ws');
   const sharedConstructor = WebSocket.WebSocket;
-  const { buildDiscordStrategy } = loadIsolated('src/network/sdk-bridges.js', { './outbound': { outboundAgent: agent } });
+  const { buildDiscordStrategy } = loadIsolated('src/network/sdk-bridges.js', { '../native/binding': { outbound: { outboundAgent: agent } } });
   const server = new WebSocket.Server({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');
   const url = `ws://127.0.0.1:${server.address().port}`;

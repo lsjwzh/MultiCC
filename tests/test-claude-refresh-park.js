@@ -18,9 +18,9 @@ const {
   classifyFailure,
   credentialFingerprint,
   redactCliOutput,
-} = require('../src/claude-auth/oauth-refresh');
-const { createRefreshHealthStore } = require('../src/claude-auth/refresh-health');
-const { createOfficialAccountStore } = require('../src/official-accounts');
+} = require('../src/native/binding').claudeOAuthRefresh;
+const { createRefreshHealthStore } = require('../src/native/binding').refreshHealth;
+const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');
 
 const T0 = 1_700_000_000_000;
@@ -293,4 +293,24 @@ test('a re-login in the account file reopens the ladder', async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test('refresh health retains the latest observation when persistence fails', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-refresh-health-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const warnings = [];
+  const health = createRefreshHealthStore({ root, logger: { warn: (...args) => warnings.push(args) } });
+  assert.equal(health.read('cli'), null);
+  fs.writeFileSync(health.dir, 'blocked');
+  assert.equal(health.write('cli', { parked: true, version: 2 }), false);
+  const cached = health.read('cli');
+  assert.equal(cached.parked, true);
+  assert.equal(cached.version, 2);
+  assert.equal(health.read('cli'), cached);
+  assert.equal(warnings[0][0], 'claude_refresh_health_write_failed');
+  assert.equal(health.write('../escape', {}), false);
+  fs.unlinkSync(health.dir);
+  assert.equal(health.clear('cli'), true);
+  assert.equal(health.read('cli'), null);
 });

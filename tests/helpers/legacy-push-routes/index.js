@@ -27,7 +27,7 @@ const { sanitizePublicText } = require('../frozen-file-batch19/public-safety');
 const { BusinessPushRequestError } = require('../../../src/push/business');
 const { BarkDeviceError } = require('../../../src/push/bark-devices');
 const { ChannelSubscriptionError } = require('../../../src/push/channel-subscriptions');
-const registry = require('../../../src/plugins/channel-registry');
+const registry = require('../frozen-1f3d27cc/plugins/channel-registry');
 
 // HEAD:src/push/fcm-devices.js validators, verbatim.
 const FCM_ID = /^[a-zA-Z0-9_-]{16,128}$/;

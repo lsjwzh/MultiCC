@@ -2,7 +2,10 @@
 //!
 //! Authentication happens before accessing the untrusted payload. The caller
 //! owns the transaction and invokes this command synchronously.
-use crate::{js_live::LiveValue as L, wait_canonical::canonical_live};
+use crate::{
+    js_live::LiveValue as L,
+    operation_admit_live::{hash, normal},
+};
 use multicc_core::js::{JsString, JsValue as V};
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
 use napi_derive::napi;
@@ -23,21 +26,6 @@ fn null(root: L<'_>) -> Result<L<'_>> {
 fn set<'a>(object: L<'a>, name: &'static CStr, value: L<'a>) -> Result<()> {
     object.set(name, value)
 }
-fn normal<'a>(value: L<'a>) -> Result<L<'a>> {
-    let canonical = canonical_live(value)?;
-    let json = value.global()?.get(c"JSON")?;
-    json.get(c"parse")?.call(json, &[canonical])
-}
-fn hash<'a>(value: L<'a>, crypto: L<'a>) -> Result<L<'a>> {
-    let context = crypto
-        .get(c"createHash")?
-        .call(crypto, &[text(value, "sha256")?])?;
-    let data = canonical_live(value)?;
-    let updated = context.get(c"update")?.call(context, &[data])?;
-    updated
-        .get(c"digest")?
-        .call(updated, &[text(value, "hex")?])
-}
 fn valid_hash(expected: L<'_>) -> Result<bool> {
     let Some(value) = expected.string()? else {
         return Ok(false);
@@ -48,36 +36,40 @@ fn valid_hash(expected: L<'_>) -> Result<bool> {
             .iter()
             .all(|c| matches!(*c, 48..=57 | 65..=70 | 97..=102)))
 }
-fn token_equal(expected_hex: L<'_>, raw: L<'_>, crypto: L<'_>) -> Result<bool> {
+pub(crate) fn token_equal<'a>(expected_hex: L<'a>, raw: L<'a>, crypto: L<'a>) -> Result<L<'a>> {
     let context = crypto
         .get(c"createHash")?
         .call(crypto, &[text(raw, "sha256")?])?;
+    let update = context.get(c"update")?;
     let raw_string = raw.global()?.get(c"String")?.call_plain(&[raw])?;
-    let updated = context
-        .get(c"update")?
-        .call(context, &[raw_string, text(raw, "utf8")?])?;
+    let updated = update.call(context, &[raw_string, text(raw, "utf8")?])?;
     let actual = updated.get(c"digest")?.call(updated, &[])?;
-    let length = actual.get(c"length")?;
     let buffer = raw.global()?.get(c"Buffer")?;
-    let mut expected = buffer.get(c"alloc")?.call(buffer, &[length])?;
+    let mut expected = buffer
+        .get(c"alloc")?
+        .call(buffer, &[actual.get(c"length")?])?;
     let valid = if valid_hash(expected_hex)? {
         expected = buffer
             .get(c"from")?
             .call(buffer, &[expected_hex, text(raw, "hex")?])?;
-        expected.get(c"length")?.equals(length)?
+        expected.get(c"length")?.equals(actual.get(c"length")?)?
     } else {
         false
     };
+    let compare_fn = crypto.get(c"timingSafeEqual")?;
     let compare = if valid {
         expected
     } else {
-        buffer.get(c"alloc")?.call(buffer, &[length])?
+        buffer
+            .get(c"alloc")?
+            .call(buffer, &[actual.get(c"length")?])?
     };
-    let equal = crypto
-        .get(c"timingSafeEqual")?
-        .call(crypto, &[actual, compare])?
-        .truthy()?;
-    Ok(valid && equal)
+    let equal = compare_fn.call(crypto, &[actual, compare])?;
+    if valid {
+        Ok(equal)
+    } else {
+        val(raw, V::Bool(false))
+    }
 }
 fn string_interpolate<'a>(root: L<'a>, prefix: &str, value: L<'a>) -> Result<L<'a>> {
     let value = value.coerce_string()?;
@@ -87,88 +79,6 @@ fn string_interpolate<'a>(root: L<'a>, prefix: &str, value: L<'a>) -> Result<L<'
         .collect();
     val(root, V::String(JsString::from_units(units)))
 }
-fn outbox_admit<'a>(
-    draft: L<'a>,
-    id: L<'a>,
-    session: L<'a>,
-    payload: L<'a>,
-    source: L<'a>,
-    at: L<'a>,
-    ports: (L<'a>, L<'a>),
-) -> Result<(L<'a>, bool)> {
-    let (crypto, conflict) = ports;
-    let obj_type = |x: L<'_>| -> Result<bool> { Ok(x.kind()? == sys::ValueType::napi_object) };
-    if !draft.truthy()?
-        || !obj_type(draft)?
-        || !draft.get(c"outbox")?.truthy()?
-        || !obj_type(draft.get(c"outbox")?)?
-    {
-        return Err(draft.type_error("outbox mutation requires an orchestration/store draft"));
-    }
-    let number = draft.global()?.get(c"Number")?;
-    let sequence = draft.get(c"nextOutboxSequence")?;
-    if !number
-        .get(c"isSafeInteger")?
-        .call(number, &[sequence])?
-        .truthy()?
-        || sequence.number()? < 1.0
-    {
-        return Err(draft.type_error("outbox draft has an invalid sequence"));
-    }
-    if !id.truthy()? || id.kind()? != sys::ValueType::napi_string {
-        return Err(draft.type_error("outbox item requires id"));
-    }
-    if !session.truthy()? || session.kind()? != sys::ValueType::napi_string {
-        return Err(draft.type_error("outbox item requires sessionId"));
-    }
-    if !number.get(c"isFinite")?.call(number, &[at])?.truthy()? {
-        return Err(draft.type_error("outbox timestamps must be finite numbers"));
-    }
-    let payload = normal(payload)?;
-    let payload_hash = hash(payload, crypto)?;
-    let source = normal(source)?;
-    let outbox = draft.get(c"outbox")?;
-    let existing = outbox.get_key(id)?;
-    if existing.truthy()? {
-        if existing.get(c"sessionId")?.equals(session)?
-            && existing.get(c"payloadHash")?.equals(payload_hash)?
-        {
-            return Ok((existing, true));
-        }
-        return Err(conflict.construct(&[id])?.throw_error());
-    }
-    draft.assign(
-        c"nextOutboxSequence",
-        val(draft, V::Number(sequence.number()? + 1.0))?,
-    )?;
-    let item = object(draft)?;
-    let nil = null(draft)?;
-    for (name, value) in [
-        (c"id", id),
-        (c"sessionId", session),
-        (c"sequence", sequence),
-        (c"state", text(draft, "pending")?),
-        (c"payload", payload),
-        (c"payloadHash", payload_hash),
-        (c"source", source),
-        (c"attempts", val(draft, V::Number(0.0))?),
-        (c"availableAt", at),
-        (c"createdAt", at),
-        (c"updatedAt", at),
-        (c"leasedAt", nil),
-        (c"leasedUntil", nil),
-        (c"leaseOwner", nil),
-        (c"leaseTokenHash", nil),
-        (c"deliveredAt", nil),
-        (c"deadLetterAt", nil),
-        (c"lastError", nil),
-    ] {
-        set(item, name, value)?;
-    }
-    outbox.set_key(id, item)?;
-    Ok((item, false))
-}
-
 #[napi]
 #[allow(clippy::too_many_arguments)] // Live ports preserve ordered getters, custom crypto and clock semantics.
 pub fn wait_resolve_live(
@@ -213,11 +123,12 @@ pub fn wait_resolve_live(
             input.get(c"callbackToken")?,
             crypto,
         )?
+        .truthy()?
     {
         return Ok(fail("invalid_token")?.raw());
     }
     let payload = normal(payload)?;
-    let payload_hash = hash(payload, crypto)?;
+    let payload_hash = hash(payload, crypto, false)?;
     if wait.get(c"status")?.is_string("resolved")? {
         let idempotent = wait.get(c"resolutionPayloadHash")?.equals(payload_hash)?;
         let result = object(draft)?;
@@ -292,12 +203,13 @@ pub fn wait_resolve_live(
     let source = object(draft)?;
     set(source, c"type", text(draft, "wait")?)?;
     set(source, c"waitId", wait.get(c"id")?)?;
-    let (item, idempotent) = outbox_admit(
+    let (item, idempotent) = crate::outbox_runtime::admit::insert(
         draft,
         outbox_id,
         wait.get(c"sessionId")?,
         out_payload,
         source,
+        at,
         at,
         (default_crypto, conflict),
     )?;

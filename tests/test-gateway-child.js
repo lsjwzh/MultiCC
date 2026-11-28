@@ -22,7 +22,7 @@ const {
   watchGatewayLifeline,
   raiseSigint,
   startChatBridge,
-} = require('../src/gateway-child');
+} = require('../src/native/binding').gatewayChild;
 const { isLocalRequest, isPrivateRequestPeer } = require('../src/request-locality');
 
 const quietLogger = { info() {}, warn() {}, error() {} };
@@ -302,11 +302,11 @@ test('EADDRINUSE exits with code 75 so the front door can pick another port', as
   const blocker = net.createServer();
   await new Promise(resolve => blocker.listen(0, '127.0.0.1', resolve));
   const { port } = blocker.address();
-  const script = 'const http=require("http");const g=require(process.argv[1]);'
+  const script = 'const http=require("http");const g=require(process.argv[1]).gatewayChild;'
     + 'const s=http.createServer((q,r)=>r.end());'
     + 'g.listenBehindGateway(s,{port:Number(process.argv[2]),logger:{info(){},warn(){},error(){}}});';
   try {
-    const child = spawn(process.execPath, ['-e', script, path.join(__dirname, '..', 'src', 'gateway-child.js'), String(port)],
+    const child = spawn(process.execPath, ['-e', script, path.join(__dirname, '..', 'src', 'native', 'binding.js'), String(port)],
       { stdio: ['ignore', 'ignore', 'pipe'] });
     const code = await new Promise(resolve => child.once('exit', resolve));
     assert.equal(code, 75);
@@ -400,4 +400,16 @@ test('the chat bridge starter delivers sockets as connections and redials after 
   assert.equal(handles[handles.length - 1].ended, true, 'stop ends the live stream');
   await sleep(600);
   assert.equal(dials.length, 3, 'nothing is dialled after stop');
+});
+
+test('stopping while the private chat connection is opening closes its eventual handle', async () => {
+  let resolve, closed = 0;
+  const bridge = startChatBridge({
+    wss: { emit() {} }, logger: quietLogger, bootstrap: { port: 42000, capability: 'fixture' },
+    connect: () => new Promise(done => { resolve = done; }),
+  });
+  bridge.stop();
+  resolve({ end() { closed++; } });
+  await new Promise(done => setImmediate(done));
+  assert.equal(closed, 1);
 });

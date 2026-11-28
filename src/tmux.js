@@ -6,7 +6,7 @@ const os = require('os');
 const net = require('net');
 const path = require('path');
 const { execFile } = require('child_process');
-const { mergeLoopbackNoProxy } = require('./network/proxy-policy');
+const { mergeLoopbackNoProxy } = require('./native/binding').proxyPolicy;
 
 const TMUX_PREFIX = 'multicc-';
 const TMUX_FIFO_DIR = path.join(os.tmpdir(), 'multicc-fifos');

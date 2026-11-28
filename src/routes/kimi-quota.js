@@ -1,6 +1,6 @@
 'use strict';
 
-const { outboundFetch } = require('../network/outbound');
+const { outboundFetch } = require('../native/binding').outbound;
 
 // GET /api/kimi/quota — fetch Moonshot/Kimi (api.moonshot.cn) prepaid balance for
 // every configured Kimi provider.
@@ -21,8 +21,8 @@ const { outboundFetch } = require('../network/outbound');
 //   { status:'not_configured' }      — no Kimi provider configured (HTTP 404)
 //   { status:'unavailable', sites }  — configured but every fetch failed (HTTP 502)
 
-const providers = require('../providers/host');
-const { keyHash } = require('../usage-limit-poller');
+const providers = require('../native/binding').providersHost;
+const { keyHash } = require('../native/binding').usageLimitPoller;
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 
 // The last response that actually carried a balance. A Kimi balance fetch fails
@@ -145,7 +145,7 @@ async function fetchKimiBalance(target, timeoutMs = 6000, fetchImpl = outboundFe
   } catch (error) {
     // Flatten the undici cause chain (fetch failed ← ENOTFOUND/ECONNREFUSED/…)
     // so the poller/balance layer can surface the OS-level root cause.
-    const { publicTransportError } = require('../upstream-error');
+    const { publicTransportError } = require('../native/binding').upstreamError;
     return { error: true, httpStatus: null, reason: 'network_error', detail: publicTransportError(error).message };
   } finally {
     clearTimeout(timer);

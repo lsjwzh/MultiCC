@@ -17,7 +17,7 @@ const {
   ARTIFACTS,
   TOTAL_BYTES,
   SV_DIR,
-} = require('../src/voice/asr-model-installer');
+} = require('../src/native/binding').asrModelInstaller;
 
 function tempRoot(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'asr-installer-'));

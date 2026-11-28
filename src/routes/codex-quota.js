@@ -37,7 +37,7 @@ async function fetchCodexUsage(nowMs = Date.now(), options = {}) {
   // in. One refresh attempt, then one retry with the re-read credential.
   const refreshAuth = typeof options.refreshAuth === 'function'
     ? options.refreshAuth
-    : input => require('../usage-limit-poller').runCodexAuthRefresh(input);
+    : input => require('../native/binding').usageLimitPoller.runCodexAuthRefresh(input);
 
   async function attempt() {
     const auth = readCodexAuth(options.authFile);

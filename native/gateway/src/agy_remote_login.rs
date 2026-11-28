@@ -487,6 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_login_captures_oauth_url_accepts_callback_and_records_email() {
+        let _guard = crate::egress_runtime::TEST_ENV_LOCK.lock().await;
         let root = std::env::temp_dir().join(format!(
             "multicc-remote-login-test-{}",
             std::time::SystemTime::now()

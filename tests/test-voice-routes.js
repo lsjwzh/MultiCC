@@ -11,7 +11,7 @@
 // deleted here on purpose; re-adding them would test code that no longer runs.
 //
 // What remains is:
-//   * the Node host port `/api/__host/voice` (src/routes/voice-host.js): its
+//   * the Node host port `/api/__host/voice` (voiceSettingsHost): its
 //     loopback gate, every op's input/output branches, the settingsApply
 //     transaction and each compensation stage, the auxEnqueue failure shape,
 //     and the settingsFacts key whitelist;
@@ -20,7 +20,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { mountVoiceRoutes } = require('../src/routes/voice');
-const { mountVoiceHostRoute, HOST_PATH } = require('../src/routes/voice-host');
+const { mountVoiceHostRoute, HOST_PATH } = require('../src/native/binding').voiceSettingsHost;
 
 function createApp() {
   const routes = new Map();
@@ -54,7 +54,7 @@ function createDeps(overrides = {}) {
     errors: [],
     reports: [],
   };
-  // Stand-in for src/voice/asr-model-installer.js: routes only ever ask it for
+  // Stand-in for asrModelInstaller: routes only ever ask it for
   // a status snapshot, a start and a cancel. The real one reaches the network;
   // a route test must never do that, so this one only records the call.
   const asrModelInstaller = {
@@ -519,6 +519,24 @@ test('settingsApply compensates every transaction stage and stays out of degrade
       });
     });
   }
+});
+
+test('settings rollback preserves nested config references and own undefined environment keys', async () => {
+  const env = { PRESENT: undefined };
+  const nested = { labels: ['old'] };
+  const harness = mountHostOnly({ runtimeEnv: env }, h => {
+    h.voice.cfg.nested = nested;
+    h.voice.applyEnvUpdates = () => {
+      nested.labels.push('changed');
+      nested.extra = true;
+      throw new Error('partial write');
+    };
+  });
+  const res = await hostCall(harness, { op: 'settingsApply', updates: { PRESENT: 'new', ABSENT: 'new' } });
+  assert.deepEqual(res.body, { ok: false, error: { message: 'partial write' } });
+  assert.equal(harness.voice.cfg.nested, nested);
+  assert.deepEqual(nested, { labels: ['old'] });
+  assert.deepEqual(env, { PRESENT: undefined });
 });
 
 test('settingsApply reports bounded degraded state when compensation also fails', async () => {

@@ -16,10 +16,10 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
-  CATALOG_KEYS, CATALOG_SOURCES, compareVersions, satisfies, parseCatalog, verifySignature,
+  CATALOG_KEYS, CATALOG_SOURCES, STATE_ORDER, compareVersions, satisfies, parseCatalog, verifySignature,
   unmetRequirement, appsReferenced, computeStates, createHostFacts, createPluginCatalog,
-} = require('../src/plugins/catalog');
-const { createPluginsRoutes } = require('../src/routes/plugins');
+} = require('../src/native/binding').pluginCatalog;
+const { createPluginsRoutes } = require('../src/native/binding').pluginsRoutes;
 
 const pair = crypto.generateKeyPairSync('ed25519');
 const KEYS = { 'test-key': pair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64') };
@@ -63,6 +63,10 @@ test('versions: comparison and the three range forms the list uses', () => {
   assert.ok(compareVersions('2.11.0-beta.1', '2.11.0') < 0);
   assert.equal(compareVersions('13', '13.0.0'), 0);
   assert.ok(Number.isNaN(compareVersions('abc', '1.0.0')));
+  assert.ok(Number.isNaN(compareVersions('\u00851.2.0', '1.2.0')));
+  assert.equal(compareVersions('\uFEFF1.2.0\uFEFF', '1.2.0'), 0);
+  assert.equal(satisfies('2.5.0', '>=2.0\u0085<3'), false);
+  assert.equal(satisfies('2.5.0', '\uFEFF>=2.0\uFEFF<3\uFEFF'), true);
   assert.equal(satisfies('2.13.0', '>=2.13.0'), true);
   assert.equal(satisfies('2.12.9', '>=2.13.0'), false);
   assert.equal(satisfies('2.99.0', '^2.13.0'), true);
@@ -130,6 +134,52 @@ test('requirements: the first unmet one, cheapest-to-never-fix first', () => {
   assert.deepEqual(unmetRequirement({ gpu: 'metal' }, HOST), { code: 'unknownRequirement', requirement: 'gpu' });
   assert.equal(unmetRequirement({ permissions: ['accessibility'] }, HOST), null, 'permissions are shown, not judged');
   assert.deepEqual(appsReferenced(parseCatalog(JSON.stringify(sampleCatalog())), []).map(app => app.id), [WECHAT.id]);
+});
+
+test('local plugin platform constraints preserve empty lists and short-circuit on the first OS match', async t => {
+  const pluginsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-plugin-platforms-'));
+  t.after(() => fs.rmSync(pluginsDir, { recursive: true, force: true }));
+  writePlugin(pluginsDir, 'local-demo', { requires: { platforms: [] } });
+  const routes = createPluginsRoutes({
+    pluginsDir, userPluginsDir: path.join(pluginsDir, '.user'), catalogDir: path.join(pluginsDir, '.catalog'),
+    platform: HOST.os, arch: HOST.arch, logger: {}, hostFacts: async () => HOST,
+    get paths() { throw new Error('explicit plugin directories did not need fallback paths'); },
+  });
+  const [row] = (await routes.catalogPayload()).plugins;
+  assert.equal(row.state, 'incompatible');
+  assert.deepEqual(row.reason, { code: 'os', current: HOST.os, supported: [] });
+
+  const unread = { get os() { throw new Error('read beyond the first matching platform'); } };
+  assert.equal(unmetRequirement({ platforms: [{ os: HOST.os }, unread] }, HOST), null);
+  assert.throws(() => unmetRequirement({ platforms: {} }, HOST), TypeError);
+  assert.equal(unmetRequirement({ '': true, futureRule: 'unknown' }, HOST), null);
+});
+
+test('catalog sorting uses the exported state order', () => {
+  const catalog = parseCatalog(JSON.stringify(sampleCatalog()));
+  const installed = [
+    { id: 'chrome-proxy-launcher', version: '1.6.3' },
+    { id: 'standalone-tool', version: '1.0.0' },
+  ];
+  const states = () => computeStates({ catalog, installed, host: HOST })
+    .filter(row => row.local).map(row => row.state);
+  assert.deepEqual(states(), ['builtin', 'installed']);
+  STATE_ORDER.reverse();
+  try {
+    assert.deepEqual(states(), ['installed', 'builtin']);
+  } finally {
+    STATE_ORDER.reverse();
+  }
+});
+
+test('signed list validation rejects falsy application identifiers', () => {
+  const data = sampleCatalog();
+  for (const id of [false, 0]) {
+    data.plugins[0].requires = { apps: [{ id }] };
+    const { plugins, warnings } = parseCatalog(JSON.stringify(data));
+    assert.equal(plugins.some(plugin => plugin.id === data.plugins[0].id), false);
+    assert.ok(warnings.some(warning => warning.includes('requires.apps[].id is not a bundle id')));
+  }
 });
 
 test('states: builtin, installed, update, installable, unsupported, incompatible, unlisted', () => {

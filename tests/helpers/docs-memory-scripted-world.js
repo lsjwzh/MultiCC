@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { atomicWriteJson, ensurePrivateDir } = require('../../src/runtime-security');
+const { atomicWriteJson, ensurePrivateDir } = require('../../src/native/binding').runtimeSecurity;
 
 // The memory store the graph/tree walk, plus the file-editing corpus.
 const MEMORY_FILES = {

@@ -5,20 +5,20 @@
 //
 // Model files live OUTSIDE the repo (they are ~229MB) in ~/.multicc/asr-models
 // by default, shared across worktrees. Fetch them from the voice settings panel
-// (src/voice/asr-model-installer.js, which also runs on first boot), or with
+// (the native model installer also runs on first boot), or with
 // scripts/setup-local-asr.sh on a Unix host. When the model dir or the
 // sherpa-onnx-node addon is missing,
 // isAvailable() returns false and callers fall back to the cloud path — this
 // module must never take the voice feature down with it.
 //
-// Config mirrors src/voice/config.js: a mutable `cfg` keyed by env var name so the
+// Config mirrors the native voice configuration: a mutable `cfg` keyed by env var name so the
 // settings route can hot-apply updates via applyEnvUpdates(). Never destructure
-// `cfg` (stale-binding trap, see src/voice/config.js header).
+// `cfg` (updates must be visible to existing callers).
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { correctWithHotwords } = require('./hotword-corrector');
+const { correctWithHotwords } = require('../native/binding').voiceCorrector;
 
 const SENSE_VOICE_DIR_NAME = 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17';
 
@@ -39,7 +39,7 @@ function applyEnvUpdates(updates) {
 }
 
 function modelDir() { return path.join(cfg.ASR_LOCAL_MODEL_DIR, SENSE_VOICE_DIR_NAME); }
-// The parent of modelDir(): what asr-model-installer.js writes into, and what
+// The parent of modelDir(): what the model installer writes into, and what
 // the settings panel shows. Read from cfg at call time so a hot-applied
 // ASR_LOCAL_MODEL_DIR takes effect without a restart.
 function modelRoot() { return cfg.ASR_LOCAL_MODEL_DIR; }
@@ -144,14 +144,14 @@ function status() {
 // ASCII term matches itself case-insensitively with optional internal spaces
 // ("multi cc" → "multicc"). The user's own hotword list (the voice settings
 // "Prompt" field) additionally gets pinyin matching for Chinese terms and
-// `term=alias` spellings, see hotword-corrector.js.
+// `term=alias` spellings, see the native hotword corrector.
 let _vocabCache = { at: 0, regexes: [] };
 function vocabRegexes() {
   const now = Date.now();
   if (now - _vocabCache.at < 30000) return _vocabCache.regexes;
   const regexes = [];
   try {
-    const { loadWhisperVocab } = require('./config');
+    const { loadWhisperVocab } = require('../native/binding').voiceConfig;
     const terms = loadWhisperVocab().slice(0, 40).map(v => v.term)
       .filter(t => /^[A-Za-z][A-Za-z0-9_./-]{2,}$/.test(t));
     for (const term of terms) {
@@ -170,7 +170,7 @@ function applyVocabCorrections(text) {
   try {
     // Read at call time: the settings route hot-applies WHISPER_PROMPT, and
     // the learned list grows as the user corrects transcripts.
-    out = correctWithHotwords(out, require('./config').hotwordList());
+    out = correctWithHotwords(out, require('../native/binding').voiceConfig.hotwordList());
   } catch (_) {}
   return out;
 }

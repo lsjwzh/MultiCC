@@ -7,8 +7,8 @@ const {
   createSessionRecords: createSessionTable,
   appendClassifyHistory,
   resetTaskState,
-} = require('../../src/session/records');
-const { createStateOwner } = require('../../src/state/owner');
+} = require('../../src/native/binding').sessionRecordsHost;
+const { createStateOwner } = require('../../src/native/binding').stateOwner;
 
 // A session-only world gets its own owner; production passes one owner for the
 // session table, the directory table and the journal.

@@ -2,7 +2,7 @@
 
 // Stub the shared outbound transport: no test can accidentally use live credentials.
 let testFetch = async () => { throw new Error('unexpected outbound request'); };
-require('node:test').mock.method(require('../src/network/outbound'), 'outboundFetch',
+require('node:test').mock.method(require('../src/native/binding').outbound, 'outboundFetch',
   (...args) => testFetch(...args));
 
 // 保留 provider target 解析与后台 poller 的借道错误契约。公开出借方路由与
@@ -19,8 +19,8 @@ const { assertTestDir, createPaths } = require('../src/paths');
 const dataDir = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-relay-quota-')));
 process.env.MULTICC_DATA_DIR = dataDir;
 const runtimePaths = createPaths({ dataDir });
-const { getProviderLimitTarget } = require('../src/providers/host');
-const poller = require('../src/usage-limit-poller');
+const { getProviderLimitTarget } = require('../src/native/binding').providersHost;
+const poller = require('../src/native/binding').usageLimitPoller;
 
 const RELAY_CREDENTIAL = 'mcr1.abcdefghijklmnop.secret-token-1';
 

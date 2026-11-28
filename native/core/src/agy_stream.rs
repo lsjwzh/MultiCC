@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 
+pub mod effort;
 const MAX_TRACKED_CONVERSATIONS: usize = 64;
 const AGY_LABEL: &str = "Antigravity";
 const USAGE_SOURCE: &str = "agy_stream";
@@ -46,22 +47,38 @@ fn non_empty(value: Option<&str>) -> Option<&str> {
 
 /// 构造 `agy --output-format stream-json` 的调用参数与 prompt 载荷。
 pub fn build_invocation(input: &InvocationInput) -> InvocationOutput {
+    build_for_account(input, &crate::agy_models::account_key(None))
+}
+
+pub fn build_for_account(input: &InvocationInput, account: &str) -> InvocationOutput {
+    let models =
+        non_empty(input.effort.as_deref()).and_then(|_| crate::agy_models::cached(account));
+    build_with_models(input, account, models.as_ref())
+}
+
+fn build_with_models(
+    input: &InvocationInput,
+    account: &str,
+    models: Option<&crate::agy_models::Models>,
+) -> InvocationOutput {
+    let model = non_empty(input.model.as_deref());
+    let effort = non_empty(input.effort.as_deref());
+    let effective = model.or(input.effective_model.as_deref()).unwrap_or("");
+    let concrete = effort.and_then(|level| effort::concrete(models, model, level));
     let mut args = vec![
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--dangerously-skip-permissions".to_string(),
     ];
-    if let Some(model) = non_empty(input.model.as_deref()) {
-        args.push("--model".to_string());
-        args.push(model.to_string());
+    if let Some(id) = concrete.as_deref().or(model) {
+        args.extend(["--model".into(), id.into()]);
     }
-    if let Some(effort) = non_empty(input.effort.as_deref()) {
-        let model = non_empty(input.model.as_deref())
-            .or(input.effective_model.as_deref())
-            .unwrap_or("");
-        if crate::cli_capability::supports_effort("agy", model, effort) {
-            args.push("--effort".to_string());
-            args.push(effort.to_string());
+    if let Some(level) = effort {
+        if concrete.is_none()
+            && !effort::rejected(account, effective, level)
+            && crate::cli_capability::supports_effort("agy", effective, level)
+        {
+            args.extend(["--effort".into(), level.into()]);
         }
     }
     if !input.is_first_turn {
@@ -388,6 +405,14 @@ impl AgyStreamDecoder {
                 "type": "session_started",
                 "sessionId": id,
             }));
+        }
+        if let Some(model) = obj
+            .get("init")
+            .and_then(|init| init.get("model"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            out.push(json!({"type":"session_init", "model":model}));
         }
         out.push(json!({
             "type": "status",
@@ -740,6 +765,45 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn concrete_tier_precedes_flag_and_preserves_requested_family() {
+        let models = crate::agy_models::Models::from([(
+            "gemini-4-carbon-high".into(),
+            "Gemini 4 Carbon (High)".into(),
+        )]);
+        let mut input = InvocationInput {
+            model: Some("gemini-4-carbon".into()),
+            effort: Some("high".into()),
+            conversation_id: Some("resume".into()),
+            prompt: "-prompt".into(),
+            ..Default::default()
+        };
+        let with_catalog = build_with_models(&input, "test", Some(&models));
+        assert_eq!(
+            &with_catalog.args[3..],
+            [
+                "--model",
+                "gemini-4-carbon-high",
+                "--conversation",
+                "resume",
+                "-p"
+            ]
+        );
+        assert_eq!(with_catalog.payload, "-prompt");
+        for catalog in [None, Some(&crate::agy_models::Models::new())] {
+            let fallback = build_with_models(&input, "test", catalog);
+            assert_eq!(
+                &fallback.args[3..7],
+                ["--model", "gemini-4-carbon", "--effort", "high"]
+            );
+        }
+        input.model = Some("gemini-4-carbon-high".into());
+        assert_eq!(
+            build_with_models(&input, "test", Some(&models)).args,
+            with_catalog.args
+        );
+    }
+
+    #[test]
     fn invocation_puts_print_flag_last_and_wraps_first_turn_role() {
         let first = build_invocation(&InvocationInput {
             cmd: "/bin/agy".into(),
@@ -849,7 +913,12 @@ mod tests {
             "conversation_id": "c-1",
             "init": { "model": "gemini-4-neon" }
         }));
-        assert_eq!(init.len(), 2);
+        assert_eq!(init.len(), 3);
+        assert_eq!(
+            init[1],
+            json!({"type":"session_init", "model":"gemini-4-neon"})
+        );
+        assert_eq!(init[2], json!({"type":"status", "status":"thinking"}));
         assert_eq!(init[0]["type"], "session_started");
         assert_eq!(init[0]["sessionId"], "c-1");
 

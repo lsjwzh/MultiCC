@@ -33,7 +33,7 @@ function authStatusDto(status) {
 
 function mountKimiAuthRoutes(app, deps = {}) {
   assertApp(app);
-  const kimiAuth = deps.kimiAuth || require('../../../src/cli-adapters/kimi-auth');
+  const kimiAuth = deps.kimiAuth || require('../frozen-da8f52ee/cli-adapters/kimi-auth');
   const getBrowser = deps.getBrowser
     || (() => require('../../../src/quota-managed-browser').getManagedQuotaBrowser());
   const loginWaitMs = Number.isFinite(deps.loginWaitMs) ? deps.loginWaitMs : LOGIN_WAIT_MS;

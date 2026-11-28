@@ -80,3 +80,75 @@ pub fn claude_usage_cache(env: Env, ports: Unknown<'_>) -> Result<sys::napi_valu
     )?
     .raw())
 }
+
+fn provider_key<'a>(p: L<'a>, name: L<'a>) -> Result<L<'a>> {
+    let resolver = p.get(c"keyResolver")?;
+    if resolver.truthy()? {
+        if let Some(value) =
+            p.catch(|| string(fallback(resolver.call_plain(&[name])?, "".into())?))?
+        {
+            return Ok(value);
+        }
+    }
+    text(p, "")
+}
+#[napi]
+pub fn claude_usage_queue_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_value> {
+    let p = L::new(&env, ports);
+    let undef = p.from_value(&V::Undefined)?;
+    let configure = function(p, "configureClaudeUsageQueue", 0, 1, |p, a| {
+        for key in [c"fetchUsage", c"now"] {
+            let v = a[0].optional(key)?;
+            if v.kind()? == sys::ValueType::napi_function {
+                p.set(key, v)?;
+            }
+        }
+        p.from_value(&V::Undefined)
+    })?;
+    let resolve = function(p, "configureClaudeKeyResolver", 1, 1, |p, a| {
+        p.set(
+            c"keyResolver",
+            if a[0].kind()? == sys::ValueType::napi_function {
+                a[0]
+            } else {
+                null(p)?
+            },
+        )?;
+        p.from_value(&V::Undefined)
+    })?;
+    p.set(c"keyResolver", undef)?;
+    let store = p.get(c"store")?;
+    Ok(fields(
+        p,
+        &[
+            ("MIN_INTERVAL_MS", num(p, 60000.)?),
+            ("DEFAULT_KEY", text(p, DEFAULT)?),
+            ("configureClaudeUsageQueue", configure),
+            ("configureClaudeKeyResolver", resolve),
+            (
+                "claudeProviderKey",
+                function(p, "claudeProviderKey", 1, 1, |p, a| provider_key(p, a[0]))?,
+            ),
+            (
+                "claudeUsageKey",
+                function(p, "claudeUsageKey", 1, 1, |p, a| {
+                    key(provider_key(p, a[0])?)
+                })?,
+            ),
+            ("readClaudeUsage", store.get(c"read")?),
+            ("enqueueClaudeUsage", store.get(c"enqueue")?),
+            (
+                "resetClaudeUsageQueue",
+                function(p, "resetClaudeUsageQueue", 0, 0, |p, _| {
+                    call(p.get(c"entries")?, c"clear", &[])?;
+                    call(p.get(c"inflight")?, c"clear", &[])?;
+                    p.set(c"fetchUsage", null(p)?)?;
+                    p.set(c"keyResolver", null(p)?)?;
+                    p.set(c"now", p.get(c"defaultNow")?)?;
+                    p.from_value(&V::Undefined)
+                })?,
+            ),
+        ],
+    )?
+    .raw())
+}

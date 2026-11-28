@@ -1,10 +1,10 @@
 'use strict';
 
-const { withModelConnectWatch } = require('./model-connect-watch');
-const { markStage } = require('../codex/proxy-trace');
+const { withModelConnectWatch } = require('../native/binding').modelConnectWatch;
+const { markStage } = require('../native/binding').codexProxyTrace;
 
 const { AsyncLocalStorage } = require('node:async_hooks');
-const { observeProxyRequest } = require('./proxy-outcome');
+const { observeProxyRequest } = require('../native/binding').proxyOutcome;
 const { createProxyStallWatch } = require('./proxy-stall-watch');
 
 function clean(value) {

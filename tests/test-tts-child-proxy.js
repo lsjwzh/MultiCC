@@ -21,7 +21,7 @@ function harness(getChildProxyEnv, proxyForUrl = async () => 'http://proxy.test:
     module, exports: module.exports, process, Buffer, setTimeout, clearTimeout,
     console: { log() {}, error() {}, warn() {} },
     require(name) {
-      if (name === '../network/outbound') return { getChildProxyEnv, outboundAgent: {}, policy: { proxyForUrl } };
+      if (name === '../native/binding') return { outbound: { getChildProxyEnv, outboundAgent: {}, policy: { proxyForUrl } } };
       if (name === 'child_process') return { spawn(command, args, options) {
         calls.push({ command, args, options });
         return child;

@@ -2,8 +2,8 @@
 
 const { randomUUID } = require('node:crypto');
 const { WebSocket } = require('ws');
-const { createWsHost } = require('./ws-host');
-const { startChatBridge } = require('../gateway-child');
+const { createWsHost } = require('../native/binding').wsHost;
+const { startChatBridge } = require('../native/binding').gatewayChild;
 const { getNative, assignHostProperty } = require('../native/binding');
 const isInternalExecutionSlot = record => getNative().sessionIsInternalExecutionSlot(record);
 

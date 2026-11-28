@@ -15,7 +15,7 @@ const router = require('cli-provider-router');
 const {
   createClaudeEgressAgentResolver,
   guardCredentialReader,
-} = require('../src/claude-auth/egress-agent');
+} = require('../src/native/binding').claudeEgress;
 
 const PROVIDER_ID = 'claude-official-aaaaaaaaaaaaaaaa';
 const BINDING = { pluginId: 'chrome-proxy-launcher', profileId: 'us-home' };

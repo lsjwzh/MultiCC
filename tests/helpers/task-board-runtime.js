@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createTaskBoardRuntime } = require('../../src/routes/task-board');
+const { createTaskBoardRuntime } = require('../../src/native/binding').taskBoardRuntime;
 
 function mkRuntime(overrides = {}, createRuntime = createTaskBoardRuntime) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-taskboard-'));
@@ -82,7 +82,7 @@ function mkRuntime(overrides = {}, createRuntime = createTaskBoardRuntime) {
   };
   // 故障注入端口仅存在于测试；正常测试与产品都使用 Rust 文件仓储。
   if (overrides.atomicWriteJson) {
-    const repository = require('../../src/native/task-domain').createTaskBoardRepository(file);
+    const repository = require('../../src/native/binding').taskDomainHost.createTaskBoardRepository(file);
     const readRevision = f => {
       try { return Number(JSON.parse(fs.readFileSync(f, 'utf8')).revision) || 0; } catch (_) { return 0; }
     };

@@ -1,8 +1,8 @@
 'use strict';
 
 // Compatibility names: official and other outbound requests share one policy.
-const { createOutbound, outboundFetch } = require('../../src/network/outbound');
-const { parseMacSystemProxy } = require('../../src/network/proxy-policy');
+const { createOutbound, outboundFetch } = require('./frozen-b10-network/outbound');
+const { parseMacSystemProxy } = require('../../src/native/binding').proxyPolicy;
 function parseMacProxy(text) {
   const { httpProxy, httpsProxy } = parseMacSystemProxy(text);
   return { httpProxy, httpsProxy };

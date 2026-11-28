@@ -28,8 +28,8 @@ const legacyTiming = require('./helpers/legacy-turn-timing');
 const legacyTimeline = require('./helpers/legacy-turn-timeline');
 const legacyProbe = require('./helpers/legacy-delivery-probe');
 const progress = require('../src/native/binding').getTurnProgress();
-const { createStateOwner } = require('../src/state/owner');
-const { createChatSessions } = require('../src/chat/sessions');
+const { createStateOwner } = require('../src/native/binding').stateOwner;
+const { createChatSessions } = require('../src/native/binding').chatSessions;
 
 const ROOT = path.join(__dirname, '..');
 const read = file => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -1068,7 +1068,7 @@ test('wiring source guard: server.js creates one owner and wires every reader', 
       `legacy-${gone}.js frozen oracle`);
   }
   const sources = [
-    'server.js', 'src/chat/turn-engine-host.js', 'src/chat/host-runtime.js', 'src/chat/finalize-host.js',
+    'server.js', 'src/chat/turn-engine-host.js', 'native/addon/src/chat_host/runtime.rs', 'src/chat/finalize-host.js',
     'src/codex/usage.js', 'src/liveness/runtime.js',
   ].map(read).join('\n');
   assert.doesNotMatch(sources, /require\(['"]\.\/?(?:progress-heartbeat|turn-timing|turn-timeline|delivery-probe)['"]\)/);

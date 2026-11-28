@@ -69,10 +69,10 @@ function containsAll(actual, expected) {
 // the report, count these entries.
 const bridges = [
   { name: 'discord', path: '../plugins/bridges/discord-bridge', extras: [] },
-  { name: 'feishu', path: '../plugins/bridges/feishu-bridge', extras: [] },
+  { name: 'feishu', native: 'createFeishuBridge', extras: [] },
   { name: 'slack', path: '../plugins/bridges/slack-bridge', extras: [] },
   { name: 'telegram', path: '../plugins/bridges/telegram-bridge', extras: [] },
-  { name: 'wechat', path: '../plugins/bridges/wechat-ilink', extras: WECHAT_EXTRA_ROUTES },
+  { name: 'wechat', native: 'createWechatBridge', extras: WECHAT_EXTRA_ROUTES },
 ];
 
 // Point every bridge at a hermetic data dir BEFORE requiring any of them —
@@ -81,7 +81,11 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-contract-'));
 process.env.MULTICC_DATA_DIR = tmp;
 
 // Preload the bridges so require caches are fresh with the tmp config dir.
-const modules = bridges.map(b => require(b.path));
+// Native factories also isolate the gateway cwd: MULTICC_DATA_DIR alone does
+// not move the legacy ~/.multicc/<platform>-gateway workspace.
+const modules = bridges.map(b => b.native
+  ? require('../src/native/binding').imChannelHost[b.native]({ os: { homedir: () => tmp } })
+  : require(b.path));
 
 // ── 1. Public module shape ────────────────────────────────────────────
 for (let i = 0; i < bridges.length; i++) {

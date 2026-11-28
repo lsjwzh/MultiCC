@@ -14,8 +14,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const test = require('node:test');
-const { createOperationService } = require('../src/operation-service');
-const { createOrchestrationStore } = require('../src/orchestration/json-store-host');
+const { createOperationService } = require('../src/native/binding').orchestrationServices;
+const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const { createRouterToolRuntime } = require('../src/router-tool-runtime');
 
 function fixture(t, overrides = {}) {

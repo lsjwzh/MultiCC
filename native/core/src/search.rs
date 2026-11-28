@@ -2,11 +2,17 @@
 mod board;
 use crate::search_tokens::weighted_terms as tokenize;
 pub use board::search_board;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 const WEIGHTS: [f64; 4] = [6.0, 2.0, 3.0, 4.0];
 const FIELDS: [&str; 4] = ["title", "module", "areas", "body"];
+/// Per-field BM25 shared with the synchronous API over caller-owned index views.
+pub fn field_score(weight: f64, idf: f64, tf: f64, length: f64, average: f64) -> f64 {
+    weight * idf * ((tf * (1.4 + 1.0)) / (tf + 1.4 * (1.0 - 0.6 + 0.6 * (length / average))))
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Document {
@@ -17,7 +23,8 @@ pub struct Document {
 }
 struct IndexedDocument {
     source: Document,
-    terms: HashMap<String, [f64; 4]>,
+    terms: IndexMap<String, [f64; 4]>,
+    input_index: usize,
     lengths: [Option<f64>; 4],
 }
 pub struct SearchIndex {
@@ -60,13 +67,26 @@ impl SearchIndex {
             crate::json_lenient::from_str(json).map_err(|_| "invalid_search_documents")?;
         Ok(Self::from_documents(documents))
     }
+    /// The live board's JS Map permits repeated IDs. Its last indexed row wins,
+    /// while document frequency still counts every token-bearing input row.
+    pub fn build_board_snapshot(json: &str) -> Result<Self, String> {
+        let documents =
+            crate::json_lenient::from_str(json).map_err(|_| "invalid_search_documents")?;
+        Ok(Self::index_documents(documents, true))
+    }
+
     fn from_documents(documents: Vec<Document>) -> Self {
+        Self::index_documents(documents, false)
+    }
+
+    fn index_documents(documents: Vec<Document>, replace_duplicates: bool) -> Self {
         let mut docs = Vec::new();
         let mut frequencies: HashMap<String, usize> = HashMap::new();
         let mut sums = [0.0; 4];
         let mut counts = [0usize; 4];
-        for source in documents {
-            let mut terms: HashMap<String, [f64; 4]> = HashMap::new();
+        let mut positions = HashMap::new();
+        for (input_index, source) in documents.into_iter().enumerate() {
+            let mut terms: IndexMap<String, [f64; 4]> = IndexMap::new();
             let mut lengths = [None; 4];
             for (i, text) in source.fields.iter().enumerate() {
                 if text.is_empty() {
@@ -86,17 +106,32 @@ impl SearchIndex {
             for term in terms.keys() {
                 *frequencies.entry(term.clone()).or_default() += 1;
             }
-            for (i, length) in lengths.iter().enumerate() {
+            let position = if replace_duplicates {
+                *positions
+                    .entry(source.task_id.clone())
+                    .or_insert(docs.len())
+            } else {
+                docs.len()
+            };
+            let doc = IndexedDocument {
+                source,
+                input_index,
+                terms,
+                lengths,
+            };
+            if position == docs.len() {
+                docs.push(doc);
+            } else {
+                docs[position] = doc;
+            }
+        }
+        for doc in &docs {
+            for (i, length) in doc.lengths.iter().enumerate() {
                 if let Some(n) = length {
                     sums[i] += n;
                     counts[i] += 1;
                 }
             }
-            docs.push(IndexedDocument {
-                source,
-                terms,
-                lengths,
-            });
         }
         let n = docs.len() as f64;
         let idf = frequencies
@@ -112,6 +147,39 @@ impl SearchIndex {
         });
         Self { docs, idf, average }
     }
+    /// Expose the same read-only inspection data as the synchronous board index.
+    /// Only synchronous API clients need the per-field lengths and term lists.
+    pub fn board_view(&self) -> serde_json::Value {
+        use serde_json::{json, Map, Value};
+        let named = |values: [Option<f64>; 4]| -> Map<String, Value> {
+            FIELDS
+                .iter()
+                .zip(values)
+                .filter_map(|(key, n)| n.map(|v| (key.to_string(), json!(v))))
+                .collect()
+        };
+        let rows: Vec<_> = self
+            .docs
+            .iter()
+            .map(|doc| {
+                let terms: Vec<_> = doc
+                    .terms
+                    .iter()
+                    .map(|(term, tf)| json!([term, named(tf.map(|n| (n > 0.0).then_some(n)))]))
+                    .collect();
+                json!([doc.input_index, named(doc.lengths), terms])
+            })
+            .collect();
+        json!({"rows": rows, "average": named(self.average.map(Some))})
+    }
+
+    pub fn term_idf(&self, term: &str) -> f64 {
+        self.idf
+            .get(term)
+            .copied()
+            .unwrap_or_else(|| (1.0 + (self.docs.len() as f64 + 0.5) / 0.5).ln())
+    }
+
     pub fn search(&self, json: &str) -> Result<String, String> {
         let query: Query =
             crate::json_lenient::from_str(json).map_err(|_| "invalid_search_query")?;
@@ -158,10 +226,8 @@ impl SearchIndex {
                         continue;
                     }
                     let length = doc.lengths[i].unwrap_or(self.average[i]);
-                    let part = WEIGHTS[i]
-                        * self.idf[term]
-                        * ((tf[i] * (1.4 + 1.0))
-                            / (tf[i] + 1.4 * (1.0 - 0.6 + 0.6 * (length / self.average[i]))));
+                    let part =
+                        field_score(WEIGHTS[i], self.idf[term], tf[i], length, self.average[i]);
                     if part > 0.0 && !matched_fields.contains(&FIELDS[i]) {
                         matched_fields.push(FIELDS[i]);
                     }
