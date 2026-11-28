@@ -53,6 +53,7 @@ function buildRuntime(shared, overrides = {}) {
   return createOrchestrationRuntime({
     file: shared.file,
     databaseFile: overrides.databaseFile,
+    probe: overrides.probe,
     onSchedulerEvent: overrides.onSchedulerEvent,
     now: () => ++shared.clock.value,
     runChatTurn,
@@ -449,3 +450,166 @@ test('deleting a dispatch target cancels its request and durably notifies the su
   assert.equal(shared.deliveries[0].sessionId, 'parent');
   assert.match(shared.deliveries[0].text, /分发任务已中断/);
 });
+
+for (const backend of ['json', 'sqlite']) {
+  function fixture(t) {
+    let rt;
+    t.after(() => rt?.dispose());
+    const shared = dataFixture(t);
+    const detached = fakeDetached();
+    const events = [];
+    let busy = true;
+    rt = buildRuntime(shared, {
+      databaseFile: backend === 'sqlite' ? path.join(shared.dataDir, 'state.sqlite') : null,
+      detachedAdapter: detached, isBusy: () => busy, onSchedulerEvent: event => events.push(event),
+      probe: m => detached.status(m.detachedTaskId)?.done ? 'READY' : 'running',
+    });
+    const turn = entryId => rt.store.mutate(draft => {
+      draft.sessionSchedules.owner = { sessionId: 'owner', state: entryId ? 'running' : 'idle',
+        active: entryId ? { entryId, deliveryId: entryId } : null, updatedAt: shared.clock.value };
+    });
+    const start = async label => (await rt.startDetached({
+      sessionId: 'owner', spec: { command: label, label },
+    })).operation;
+    const poll = (target, opts) => rt.register({ session: 'owner', mode: 'poll',
+      pollUrl: '/api/detached/' + target, untilContains: 'READY', intervalSec: 3, ...opts });
+    const finish = op => Object.assign(detached.status(op.externalId),
+      { running: false, done: true, exitCode: 0, logTail: 'finished' });
+    const queue = async () => (await rt.sessionScheduler.status('owner')).queued.map(row => row.entryId);
+    return { rt, shared, events, turn, start, poll, finish, queue, idle() { busy = false; } };
+  }
+
+  for (const triggered of [false, true]) {
+    test(`same-turn progress withdraws a finished task and its ${triggered ? 'queued' : 'pending'} poll (${backend})`, async t => {
+      const { rt, shared, events, turn, start, poll, finish, queue } = fixture(t);
+      await turn('entry-1');
+      const first = await start('first');
+      const old = await poll(first.externalId);
+      const parallel = await start('parallel');
+      const keep = await poll(parallel.externalId, {
+        pollUrl: null, pollCmd: 'curl /api/detached/' + parallel.externalId,
+      });
+      assert.equal((await rt.waits.get(old.id)).status, 'pending');
+      assert.equal((await rt.waits.get(keep.id)).metadata.detachedTaskId, parallel.externalId);
+      assert.equal((await rt.operations.get(first.id)).metadata.createdInEntryId, 'entry-1');
+      assert.equal((await rt.waits.get(old.id)).metadata.createdInEntryId, 'entry-1');
+      finish(first);
+      if (triggered) {
+        shared.clock.value += 3000;
+        await rt.tick();
+        assert.deepEqual(new Set(await queue()), new Set(['wait:' + old.id, 'operation:' + first.id + ':result']));
+      }
+      const next = await start('next');
+      const newest = await poll(next.externalId);
+      const notice = await rt.outbox.get('operation:' + first.id + ':result');
+      assert.equal(notice.state, 'cancelled');
+      assert.equal(notice.lastError, 'superseded_in_same_turn');
+      if (triggered) {
+        assert.equal((await rt.outbox.get('wait:' + old.id)).state, 'cancelled');
+        assert.equal(events.filter(e => e.type === 'queued_cancelled' && e.entryId === 'wait:' + old.id).length, 1);
+      } else {
+        assert.equal((await rt.waits.get(old.id)).status, 'cancelled');
+        assert.equal(await rt.outbox.get('wait:' + old.id), null);
+      }
+      assert.deepEqual(await queue(), []);
+      assert.equal((await rt.waits.get(keep.id)).status, 'pending');
+      assert.equal((await rt.waits.get(newest.id)).status, 'pending');
+    });
+  }
+
+  test(`registering a wait also advances the active turn and removes terminal wake-ups (${backend})`, async t => {
+    const { rt, turn, start, poll, finish, queue } = fixture(t);
+    await turn('active');
+    const first = await start('done before next poll');
+    const old = await poll(first.externalId);
+    finish(first);
+    const next = await poll('next-monitor');
+    assert.equal((await rt.waits.get(old.id)).status, 'cancelled');
+    assert.equal((await rt.waits.get(next.id)).status, 'pending');
+    assert.equal((await rt.outbox.get('operation:' + first.id + ':result')).state, 'cancelled');
+    assert.deepEqual(await queue(), []);
+  });
+
+  test(`slot replacement is atomic and scoped to its session; last wake-up still delivers (${backend})`, async t => {
+    const { rt, shared, turn, poll, queue, idle } = fixture(t);
+    const slot = session => rt.register({ session, mode: 'callback', dedupeKey: '  watch-main  ' });
+    await turn('entry-one');
+    const old = await slot('owner');
+    await assert.rejects(rt.register({ session: 'owner', mode: 'callback', dedupeKey: 'x'.repeat(257) }),
+      /dedupeKey/);
+    const other = await slot('other');
+    const p = await poll('unrelated-a');
+    const q = await poll('unrelated-b');
+    assert.equal(old.dedupeKey, 'watch-main');
+    await rt.resolveCallback(old.id, old.token, 'obsolete');
+    assert.deepEqual(await queue(), ['wait:' + old.id]);
+    const replacements = await Promise.all([slot('owner'), slot('owner')]);
+    const statuses = await Promise.all(replacements.map(w => rt.waits.get(w.id)));
+    assert.deepEqual(statuses.map(w => w.status).sort(), ['cancelled', 'pending']);
+    assert.equal((await rt.outbox.get('wait:' + old.id)).lastError, 'superseded_by_dedupe_key');
+    for (const w of [other, p, q]) assert.equal((await rt.waits.get(w.id)).status, 'pending');
+    const last = replacements.find(w => statuses.some(row => row.id === w.id && row.status === 'pending'));
+    await rt.resolveCallback(last.id, last.token, 'last result');
+    assert.deepEqual(await queue(), ['wait:' + last.id]);
+    await turn(null);
+    idle();
+    await rt.tick();
+    assert.deepEqual(shared.deliveries.map(row => row.opts.deliveryId), ['wait:' + last.id]);
+    assert.deepEqual(await rt.cancel(last.id), { ok: false, code: 'not_pending', status: 'resolved' });
+  });
+
+  test(`claim protects delivery while acknowledgement still retires its bound poll (${backend})`, async t => {
+    const { rt, start, poll, finish } = fixture(t);
+    const job = await start('leased');
+    const bound = await poll(job.externalId, { intervalSec: 300 });
+    finish(job);
+    await rt.tick();
+    const [leased] = await rt.outbox.claim({ workerId: 'consumer' });
+    assert.equal(leased.id, 'operation:' + job.id + ':result');
+    const inspect = version => rt.sessionScheduler.detachedResult('owner', job.id, version);
+    const read = await inspect();
+    assert.equal((await inspect(read.result_version)).notification, 'leased');
+    assert.equal((await rt.outbox.get(leased.id)).state, 'leased');
+    assert.equal((await rt.waits.get(bound.id)).status, 'cancelled');
+    assert.equal(rt.hasPending('owner'), false);
+    const waiting = await rt.register({ session: 'second', mode: 'callback' });
+    await rt.resolveCallback(waiting.id, waiting.token, 'ready');
+    const [claimed] = await rt.outbox.claim({ workerId: 'other-consumer' });
+    assert.equal(claimed.id, 'wait:' + waiting.id);
+    assert.deepEqual(await rt.cancel(waiting.id), { ok: false, code: 'not_pending', status: 'resolved' });
+  });
+
+  test(`a new turn preserves earlier waits; only verified acknowledgement withdraws bound waits (${backend})`, async t => {
+    const { rt, shared, turn, start, poll, finish, queue } = fixture(t);
+    await turn('entry-1');
+    const job = await start('observed');
+    const old = await poll(job.externalId);
+    const late = await poll(job.externalId, { intervalSec: 300 });
+    finish(job);
+    shared.clock.value += 3000;
+    await rt.tick();
+    await turn('entry-2');
+    const keep = await poll('unrelated');
+    const entry = 'wait:' + old.id;
+    const inspect = version => rt.sessionScheduler.detachedResult('owner', job.id, version);
+    // A pre-upgrade wait has the poll target but no structured binding yet.
+    await rt.store.mutate(draft => {
+      delete draft.waits[late.id].metadata.detachedTaskId;
+      delete draft.waits[late.id].metadata.createdInEntryId;
+    });
+    const read = await inspect();
+    assert.equal((await inspect('wrong')).code, 'detached_result_version_mismatch');
+    assert.equal((await rt.sessionScheduler.detachedResult('other', job.id, read.result_version)).ok, false);
+    assert.deepEqual(new Set(await queue()), new Set([entry, 'operation:' + job.id + ':result']));
+    assert.equal((await rt.waits.get(late.id)).status, 'pending');
+    assert.equal((await inspect(read.result_version)).notification, 'withdrawn');
+    assert.deepEqual(await queue(), []);
+    assert.equal((await rt.waits.get(late.id)).status, 'cancelled');
+    assert.equal((await rt.waits.get(keep.id)).status, 'pending');
+    // The notification may already be withdrawn when another bound wait is registered.
+    const retry = await poll(job.externalId);
+    assert.equal((await inspect(read.result_version)).notification, 'withdrawn');
+    assert.equal((await rt.waits.get(retry.id)).status, 'cancelled');
+    assert.equal((await rt.outbox.get(entry)).state, 'cancelled');
+  });
+}

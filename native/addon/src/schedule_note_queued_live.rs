@@ -223,12 +223,32 @@ pub fn schedule_note_queued_live(
     select_port: Unknown<'_>,
     project: Unknown<'_>,
 ) -> Result<sys::napi_value> {
-    let draft = L::new(&env, draft);
-    let entry = L::new(&env, entry_id);
-    let clock = L::new(&env, clock);
-    let queue_port = L::new(&env, queue_port);
-    let select_port = L::new(&env, select_port);
-    let project = L::new(&env, project);
+    note_queued(
+        L::new(&env, draft),
+        L::new(&env, entry_id),
+        L::new(&env, clock),
+        L::new(&env, queue_port),
+        L::new(&env, select_port),
+        L::new(&env, project),
+        clone_item,
+    )
+}
+
+pub(crate) fn clone_item(item: L<'_>) -> Result<L<'_>> {
+    let json = item.global()?.get(c"JSON")?;
+    let encoded = json.get(c"stringify")?.call(json, &[item])?;
+    json.get(c"parse")?.call(json, &[encoded])
+}
+
+pub(crate) fn note_queued<'a>(
+    draft: L<'a>,
+    entry: L<'a>,
+    clock: L<'a>,
+    queue_port: L<'a>,
+    select_port: L<'a>,
+    project: L<'a>,
+    snapshot: fn(L<'a>) -> Result<L<'a>>,
+) -> Result<sys::napi_value> {
     let item = draft.get(c"outbox")?.get_key(entry)?;
     if !item.truthy()? {
         return Ok(draft.from_value(&V::Null)?.raw());
@@ -237,12 +257,10 @@ pub fn schedule_note_queued_live(
     let schedule = ensure(draft, item.get(c"sessionId")?, at)?;
     let queue = queue_port.call_plain(&[item.get(c"sessionId")?])?;
     let selected = select_port.call_plain(&[queue, at])?;
-    let json = draft.global()?.get(c"JSON")?;
-    let encoded = json.get(c"stringify")?.call(json, &[item])?;
-    let cloned = json.get(c"parse")?.call(json, &[encoded])?;
+    let cloned = snapshot(item)?;
     let index = queue
         .get(c"findIndex")?
-        .call(queue, &[finder(&env, item)?])?;
+        .call(queue, &[finder(&crate::host_methods::env(draft), item)?])?;
     let position = plus_one(index)?;
     let queued = !selected.optional(c"id")?.equals(item.get(c"id")?)?;
     let state = schedule.get(c"state")?;

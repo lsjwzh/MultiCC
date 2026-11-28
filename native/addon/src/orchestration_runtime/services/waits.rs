@@ -1,8 +1,12 @@
 use super::*;
 
-fn register<'a>(p: L<'a>, args: &mut [L<'a>]) -> Result<L<'a>> {
+pub(in crate::orchestration_runtime) fn register<'a>(
+    p: L<'a>,
+    options: L<'a>,
+    wakeup: L<'a>,
+) -> Result<L<'a>> {
     async_result(p, || {
-        let o = default_object(args[0])?;
+        let o = default_object(options)?;
         let id = default_id(p, read(o, c"id")?)?;
         let session = read(o, c"sessionId")?;
         let mode = with_default(read(o, c"mode")?, text(p, "callback")?)?;
@@ -52,6 +56,7 @@ fn register<'a>(p: L<'a>, args: &mut [L<'a>]) -> Result<L<'a>> {
                 ("prefix", prefix),
                 ("meta", meta),
                 ("digest", digest),
+                ("wakeup", wakeup),
             ],
             c"mutate",
             |f, a| {
@@ -87,7 +92,15 @@ fn register<'a>(p: L<'a>, args: &mut [L<'a>]) -> Result<L<'a>> {
                     ],
                 )?;
                 write_entry(waits, id, wait)?;
-                public(wait, WAIT_PRIVATE, true)
+                let wakeup = f.get(c"wakeup")?;
+                if wakeup.undefined()? {
+                    return public(wait, WAIT_PRIVATE, true);
+                }
+                let row = waits.get_key(id)?;
+                let changes = super::super::wakeups::on_admission(wakeup, a[0], row, false)?;
+                let result = public(row, WAIT_PRIVATE, true)?;
+                result.set(c"wakeupChanges", changes)?;
+                Ok(result)
             },
         )?;
         then(written, f, |f, a| {
@@ -277,11 +290,14 @@ fn cancel_for<'a>(p: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     })
 }
 pub(in crate::orchestration_runtime) fn create<'a>(ports: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
-    let p = state(ports, a[0], true)?;
+    api(state(ports, a[0], true)?)
+}
+
+pub(in crate::orchestration_runtime) fn api(p: L<'_>) -> Result<L<'_>> {
     defaulted_methods(
         p,
         &[
-            ("register", 0, 1, register),
+            ("register", 0, 1, |p, a| register(p, a[0], undef(p)?)),
             ("resolveCallback", 3, 3, |p, a| resolve(p, a, "callback")),
             ("resolvePoll", 2, 3, |p, a| resolve(p, a, "poll")),
             ("resolveDelay", 2, 3, |p, a| resolve(p, a, "delay")),

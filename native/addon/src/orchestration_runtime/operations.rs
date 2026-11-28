@@ -14,7 +14,7 @@ fn complete<'a>(s: L<'a>, id: L<'a>, result: L<'a>) -> Result<L<'a>> {
         after(out, lifecycle::tick(s)?, |out, _| Ok(out))
     })
 }
-fn update_detached<'a>(frame: L<'a>, state: L<'a>) -> Result<L<'a>> {
+pub(super) fn update_detached<'a>(frame: L<'a>, state: L<'a>) -> Result<L<'a>> {
     let s = frame.get(c"runtime")?;
     let op = frame.get(c"operation")?;
     let id = op.get(c"id")?;
@@ -304,12 +304,7 @@ fn start_detached<'a>(s: L<'a>, spec: L<'a>) -> Result<L<'a>> {
     if !s.get(c"detachedAdapter")?.truthy()? {
         return Err(fail(s, "detached adapter is not configured"));
     }
-    let op = service(
-        s,
-        c"operations",
-        c"admitDetached",
-        &[crate::host_methods::default_object(spec)?],
-    )?;
+    let op = wakeups::admit(s, crate::host_methods::default_object(spec)?, true)?;
     after(s, op, |s, op| {
         let f = saved(s, &[("operation", op)])?;
         let ready = if terminal(s, op.get(c"status")?)? {

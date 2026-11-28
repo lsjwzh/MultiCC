@@ -199,11 +199,12 @@ fn build_services<'a>(h: L<'a>, s: L<'a>) -> Result<()> {
             port(h, c"createOperationService", &[base()?])?,
         )?;
     } else {
-        s.set(c"waits", services::waits::create(ports, &mut [w])?)?;
-        s.set(
-            c"operations",
-            services::operations::create(ports, &mut [base()?])?,
-        )?;
+        let waits = services::state(ports, w, true)?;
+        let ops = services::state(ports, base()?, false)?;
+        s.set(c"waitServiceState", waits)?;
+        s.set(c"operationServiceState", ops)?;
+        s.set(c"waits", services::waits::api(waits)?)?;
+        s.set(c"operations", services::operations::api(ops)?)?;
     }
     let sch = base()?;
     for (to, from) in [
@@ -249,6 +250,14 @@ fn build_services<'a>(h: L<'a>, s: L<'a>) -> Result<()> {
             })?,
         )?;
     }
+    sch.set(
+        c"onWaitCancelled",
+        callback(s, "", 2, 2, |s, a| {
+            waits::remove_pending(s, a[0], a[1])?;
+            undef(s)
+        })?,
+    )?;
+    s.set(c"schedulerEvents", sch)?;
     s.set(
         c"sessionScheduler",
         crate::session_work_scheduler::create(sch)?,

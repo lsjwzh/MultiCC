@@ -470,17 +470,27 @@ fn draft_operation<'a>(f: L<'a>, op: Op, d: L<'a>) -> Result<L<'a>> {
             arg(queue_fn()?)?,
             arg(project()?)?,
         )?,
-        Note => schedule_note_queued_live::schedule_note_queued_live(
-            env(d),
-            arg(d)?,
-            arg(a)?,
-            clock,
-            arg(queue_fn()?)?,
-            arg(function(ctx, "", 2, 2, |c, v| {
-                select(c.get(c"owner")?, v[0], c.get(c"draft")?, v[1])
-            })?)?,
-            arg(project()?)?,
-        )?,
+        Note => {
+            let item = d.get(c"outbox")?.get_key(a)?;
+            if has(
+                item.optional(c"payload")?.optional(c"type")?,
+                &multicc_core::orchestration_store::queue_preview::WAIT_TYPES,
+            )? && !item.get(c"state")?.is_string("pending")?
+            {
+                return null(d);
+            }
+            schedule_note_queued_live::note_queued(
+                d,
+                a,
+                owner.get(c"now")?,
+                queue_fn()?,
+                function(ctx, "", 2, 2, |c, v| {
+                    select(c.get(c"owner")?, v[0], c.get(c"draft")?, v[1])
+                })?,
+                project()?,
+                events::note_fields,
+            )?
+        }
         _ => unreachable!(),
     };
     Ok(raw(d, result))

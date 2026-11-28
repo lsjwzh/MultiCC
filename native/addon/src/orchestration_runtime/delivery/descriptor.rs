@@ -80,14 +80,10 @@ fn delivery_text(it: L<'_>) -> Result<L<'_>> {
         return Ok(message);
     }
     let mode = p.get(c"mode")?;
-    let prefix = if mode.is_string("poll")? {
-        "[轮询条件已满足]"
-    } else if mode.is_string("delay")? {
-        "[延迟条件已到]"
-    } else {
-        "[等待的数据已返回]"
-    };
-    let prefix = or(p.get(c"injectPrefix")?, text(it, prefix)?)?;
+    let default = multicc_core::orchestration_store::queue_preview::default_wait_prefix(
+        mode.string()?.as_ref(),
+    );
+    let prefix = or(p.get(c"injectPrefix")?, text(it, default)?)?;
     let data = p.get(c"data")?;
     let rendered = if data.kind()? == sys::ValueType::napi_string {
         data

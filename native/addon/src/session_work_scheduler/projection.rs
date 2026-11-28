@@ -32,7 +32,7 @@ fn projected_item(item: L<'_>) -> Result<V> {
             read(payload.optional(c"options")?.optional(c"clientMsgId")?)?,
         )]),
     ));
-    p.push(("message", bounded_text(payload)?));
+    p.push(("message", read(queue_text::bounded_text(payload)?)?));
     Ok(V::object(vec![
         ("id", read(item.get(c"id")?)?),
         ("state", read(item.get(c"state")?)?),
@@ -48,21 +48,6 @@ fn projected_item(item: L<'_>) -> Result<V> {
         ("payload", V::object(p)),
     ]))
 }
-fn bounded_text(payload: L<'_>) -> Result<V> {
-    let mut value = payload.optional(c"message")?;
-    if !value.truthy()? {
-        value = payload.optional(c"taskText")?;
-    }
-    if !value.truthy()? {
-        value = payload.optional(c"deliveryText")?;
-    }
-    let value = string(fallback(value, V::string(""))?)?;
-    read(call(
-        value,
-        c"slice",
-        &[num(value, 0.)?, num(value, 20_000.)?],
-    )?)
-}
 fn active_input(item: L<'_>) -> Result<V> {
     let payload = item.optional(c"payload")?;
     let id = payload.optional(c"options")?.optional(c"clientMsgId")?;
@@ -73,7 +58,7 @@ fn active_input(item: L<'_>) -> Result<V> {
         "payload",
         V::object(vec![
             ("options", V::object(vec![("clientMsgId", read(id)?)])),
-            ("message", bounded_text(payload)?),
+            ("message", read(queue_text::bounded_text(payload)?)?),
         ]),
     )]))
 }

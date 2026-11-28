@@ -108,6 +108,51 @@ const hasText = (frames, needle) => frames.some(frame =>
 const terminal = frames => frames.some(frame =>
   frame?.type === 'stream_end' || (frame?.type === 'result' && !frame.partial));
 
+async function checkWaitQueue(api, socket, sessionId, pollUrl) {
+  const route = `/api/sessions/${sessionId}`;
+  const poll = { mode: 'poll', pollUrl, untilContains: 'READY', intervalSec: 3, maxChecks: 1 };
+  const cases = [
+    { spec: poll, expected: '[轮询条件已满足]\nREADY' },
+    { spec: { ...poll, injectPrefix: '外部检查' }, expected: '外部检查\nREADY' },
+    { spec: { mode: 'callback' }, data: '完成', expected: '[等待的数据已返回]\n完成' },
+    { spec: { mode: 'callback' }, data: { ok: true, parts: ['检查', '😀'.repeat(26_000)] } },
+  ];
+  for (const item of cases) {
+    const registered = await api('POST', route + '/wait', item.spec);
+    item.entryId = 'wait:' + registered.id;
+    if (item.spec.mode === 'callback') {
+      const url = new URL(registered.callbackUrl);
+      const resolve = () => api('POST', url.pathname + url.search, { data: item.data });
+      assert.equal((await resolve()).duplicate, false);
+      assert.equal((await resolve()).duplicate, true);
+      item.expected ??= ('[等待的数据已返回]\n' + JSON.stringify(item.data)).slice(0, 20_000).replace(/[\uD800-\uDBFF]$/, '');
+    }
+  }
+  const queuedEvent = (frame, id) => frame.type === 'session_queue' && frame.event === 'queued'
+    && frame.entryId === id;
+  await socket.until(frames => cases.every(item => frames.some(frame => queuedEvent(frame, item.entryId))),
+    'poll and callback queue notifications');
+  const { queue } = await api('GET', route + '/queue');
+  for (const { entryId, expected } of cases) {
+    const events = socket.frames.filter(frame => queuedEvent(frame, entryId));
+    assert.equal(events.length, 1, 'each outbox entry is announced once');
+    const [frame] = events;
+    assert.equal(frame.queued, true);
+    const row = queue.queued.find(item => item.entryId === entryId);
+    assert.equal(row?.source, 'wait');
+    assert.equal(row.workKind, 'callback');
+    assert.equal(row.text, expected);
+    assert.equal(frame.message, row.text);
+    assert.equal(frame.items.find(item => item.entryId === entryId)?.text, row.text);
+    const cancel = () => api('DELETE', '/api/wait/' + entryId.slice('wait:'.length));
+    assert.deepEqual(await cancel(), { ok: true, withdrawnFromQueue: true, status: 'cancelled', idempotent: false });
+    assert.equal((await cancel()).idempotent, true);
+    await socket.until(frames => frames.some(f => f.type === 'session_queue' && f.event === 'queued_cancelled'
+      && f.entryId === entryId && !f.items.some(item => item.entryId === entryId)), 'queue withdrawal');
+    assert.ok(!(await api('GET', route + '/queue')).queue.queued.some(item => item.entryId === entryId));
+  }
+}
+
 (async () => {
   const root = assertTestDir(fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-chat-turn-')));
   const dataDir = assertTestDir(path.join(root, 'data'));
@@ -202,6 +247,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 
   const upstreamRequests = [];
   const upstream = http.createServer((req, res) => {
+    if (req.url === '/poll') return res.end('READY');
     req.resume();
     req.on('end', () => {
       upstreamRequests.push({ url: req.url, authorization: req.headers.authorization, apiKey: req.headers['x-api-key'] });
@@ -375,6 +421,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     await waitUntil(() => fourth.frames.length > 0, 'no session B chat frame');
     sendUser(fourth, 'HANG_FOREVER_TWO');
     await fourth.until(frames => hasText(frames, 'hang:partial'), 'session B hang delta');
+    await checkWaitQueue(apiOk, fourth, sessionB, `http://127.0.0.1:${upstream.address().port}/poll`);
     const taskB = [...fourth.frames].reverse().find(frame => frame.taskId)?.taskId;
     assert.match(String(taskB), /^tsk_/, 'running session B must carry its task id');
     const refusedRoom = await api('DELETE', `/api/sessions/${sessionB}?force=1`);
@@ -413,6 +460,22 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     sendUser(third, 'PING_THREE');
     await third.until(frames => hasText(frames, 'echo:PING_THREE'), 'post-delete turn');
     await third.until(terminal, 'post-delete completion');
+    // Observe a real claimed delivery before issuing DELETE on its wait.
+    const wakeSession = await apiOk('POST', `/api/directories/${dirB.id}/sessions`, {
+      cli: 'claude', kind: 'chat', label: 'claimed wait',
+    });
+    const wakeId = wakeSession.id || wakeSession.sessionId;
+    const wakeSocket = await connect(
+      `ws://127.0.0.1:${port}/ws/chat?session=${encodeURIComponent(wakeId)}&token=${TOKEN}`);
+    sockets.push(wakeSocket.ws);
+    await waitUntil(() => wakeSocket.frames.length > 0, 'no wake session frame');
+    const wake = await apiOk('POST', `/api/sessions/${wakeId}/wait`, { mode: 'callback' });
+    const callback = new URL(wake.callbackUrl);
+    await apiOk('POST', callback.pathname + callback.search, { data: 'PING_CLAIMED' });
+    await wakeSocket.until(frames => hasText(frames, 'echo:PING_CLAIMED'), 'claimed callback delivered');
+    const consumed = await api('DELETE', '/api/wait/' + wake.id);
+    assert.equal(consumed.status, 409);
+    assert.deepEqual(consumed.body, { ok: false, code: 'not_pending', status: 'resolved' });
     console.log('isolated gateway + server chat turn/native runtime check passed');
   } catch (error) {
     console.error(output);

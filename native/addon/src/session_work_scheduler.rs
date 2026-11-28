@@ -1,8 +1,14 @@
 //! Scheduler policy and its asynchronous transaction boundary. Per-call frames
 //! retain host values until the store settles. The store owns all durable state.
 mod events;
+pub(crate) use events::publish_withdrawals;
 mod operations;
 mod projection;
+pub(crate) fn project_queue<'a>(draft: L<'a>, session: L<'a>) -> Result<L<'a>> {
+    let schedule = draft.get(c"sessionSchedules")?.get_key(session)?;
+    projection::project(draft, schedule, projection::queue(draft, session)?)
+}
+mod queue_text;
 mod recovery;
 use crate::host_methods::{arg, async_result, default_object, env, function, raw};
 use crate::route_response::*;
@@ -242,6 +248,7 @@ pub(crate) fn create(options: L<'_>) -> Result<L<'_>> {
         c"getPendingUserInput",
         c"getUnattendedState",
         c"getRunActive",
+        c"onWaitCancelled",
         c"ensureSessionWorkState",
     ] {
         s.set(k, opts.get(k)?)?;

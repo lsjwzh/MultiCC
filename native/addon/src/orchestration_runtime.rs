@@ -6,6 +6,7 @@ mod operations;
 mod services;
 mod setup;
 mod waits;
+pub(crate) mod wakeups;
 
 use crate::host_methods::{async_result, function as callback};
 use crate::route_response::*;

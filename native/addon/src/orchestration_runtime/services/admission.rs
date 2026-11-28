@@ -69,7 +69,12 @@ fn mutate<'a>(f: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     ))
 }
 
-pub(super) fn admit<'a>(p: L<'a>, options: L<'a>, detached: bool) -> Result<L<'a>> {
+pub(in crate::orchestration_runtime) fn admit<'a>(
+    p: L<'a>,
+    options: L<'a>,
+    detached: bool,
+    wakeup: L<'a>,
+) -> Result<L<'a>> {
     async_result(p, || {
         let o = default_object(options)?;
         let id = default_id(p, read(o, c"operationId")?)?;
@@ -111,9 +116,25 @@ pub(super) fn admit<'a>(p: L<'a>, options: L<'a>, detached: bool) -> Result<L<'a
         input.set(c"spec", spec)?;
         let kind = text(p, if detached { "detached" } else { "dispatch" })?;
         let f = fields(p, &[("state", p), ("input", input), ("kind", kind)])?;
-        let action = function(f, "mutate", 1, 1, mutate)?;
+        let action = if !wakeup.undefined()? {
+            // Compound admissions must share the writer with their withdrawals.
+            f.set(c"wakeup", wakeup)?;
+            function(f, "mutate", 1, 1, |f, a| {
+                let result = mutate(f, a)?;
+                if !result.get(c"idempotent")?.truthy()? {
+                    let row = a[0].get(c"operations")?.get_key(result.get(c"id")?)?;
+                    let changes =
+                        super::super::wakeups::on_admission(f.get(c"wakeup")?, a[0], row, true)?;
+                    result.set(c"metadata", copy(row.get(c"metadata")?)?)?;
+                    result.set(c"wakeupChanges", changes)?;
+                }
+                Ok(result)
+            })?
+        } else {
+            function(f, "mutate", 1, 1, mutate)?
+        };
         let store = p.get(c"store")?;
-        if callable(store.get(c"executeOperationAdmit")?)? {
+        if wakeup.undefined()? && callable(store.get(c"executeOperationAdmit")?)? {
             let params = fields(
                 p,
                 &[

@@ -240,7 +240,9 @@ fn finish_poll<'a>(st: L<'a>, output: L<'a>, error: L<'a>) -> Result<L<'a>> {
                 if r.get(c"ok")?.truthy()? {
                     remove_pending(st.get(c"s")?, claim.get(c"sessionId")?, claim.get(c"id")?)?;
                 }
-                st.get(c"outcome")
+                after(st, notify_queued(st.get(c"s")?, r)?, |st, _| {
+                    st.get(c"outcome")
+                })
             })
         },
     )
@@ -290,36 +292,7 @@ fn process_delay<'a>(st: L<'a>, claim: L<'a>) -> Result<L<'a>> {
             if !st.get(c"scheduled")?.truthy()? {
                 return undef(s);
             }
-            let notified = async_result(s, || {
-                service(
-                    s,
-                    c"sessionScheduler",
-                    c"noteQueued",
-                    &[r.get(c"outboxId")?],
-                )
-            })?;
-            let logged = after(s, notified, |s, notice| {
-                if !notice.optional(c"ok")?.truthy()? {
-                    log_parts(
-                        s,
-                        &[
-                            text(s, "[orchestration] scheduled message queue notice failed: ")?,
-                            fallback(notice.optional(c"code")?, "unknown".into())?,
-                        ],
-                    )?;
-                }
-                undef(s)
-            })?;
-            recover(s, logged, |s, e| {
-                log_parts(
-                    s,
-                    &[
-                        text(s, "[orchestration] scheduled message queue notice failed: ")?,
-                        e.get(c"message")?,
-                    ],
-                )?;
-                undef(s)
-            })
+            notify_queued(s, r)
         },
     )
 }

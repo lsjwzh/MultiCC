@@ -1,5 +1,6 @@
 //! The originating model reads the terminal result first. Only a subsequent
 //! acknowledgement of that exact version can withdraw a pending FIFO wake-up.
+use crate::orchestration_runtime::wakeups::Withdrawals;
 use crate::{js_live::LiveValue as L, schedule_lifecycle_live::cancel_pending_entry};
 use multicc_core::js::JsValue as V;
 use napi::{bindgen_prelude::Unknown, sys, Env, Result};
@@ -64,31 +65,51 @@ pub fn detached_result_live(
     {
         return error("detached_notification_mismatch");
     }
+    let clock = L::new(&env, clock);
+    let state = item.get(c"state")?;
     if item.get(c"acknowledgedResultHash")?.equals(version)? {
         reply.set(c"notification", draft.from_value(&V::string("withdrawn"))?)?;
-        return Ok(reply.raw());
-    }
-    let state = item.get(c"state")?;
-    if !state.is_string("pending")? {
+    } else if state.is_string("pending")? {
+        let changed = cancel_pending_entry(
+            draft,
+            session,
+            outbox_id,
+            draft.from_value(&V::string("result_recipient"))?,
+            draft.from_value(&V::string(
+                "terminal result acknowledged by originating session",
+            ))?,
+            clock,
+            L::new(&env, project),
+        )?;
+        if !changed.get(c"ok")?.is_true()? {
+            return Ok(changed.raw());
+        }
+        item.assign(c"acknowledgedResultHash", version)?;
+        reply.set(c"notification", draft.from_value(&V::string("withdrawn"))?)?;
+        reply.set(c"queueChange", changed)?;
+    } else {
         reply.set(c"notification", state)?;
-        return Ok(reply.raw());
     }
-    let changed = cancel_pending_entry(
-        draft,
-        session,
-        outbox_id,
-        draft.from_value(&V::string("result_recipient"))?,
-        draft.from_value(&V::string(
-            "terminal result acknowledged by originating session",
-        ))?,
-        L::new(&env, clock),
-        L::new(&env, project),
-    )?;
-    if !changed.get(c"ok")?.is_true()? {
-        return Ok(changed.raw());
+    let external = operation.get(c"externalId")?;
+    if external.kind()? == sys::ValueType::napi_string && external.truthy()? {
+        let withdrawals = Withdrawals::new(draft, session, clock)?;
+        withdrawals.matching_waits(
+            &[external],
+            None,
+            None,
+            draft.from_value(&V::Undefined)?,
+            "detached_result_acknowledged",
+        )?;
+        let changes = withdrawals.finish()?;
+        if changes.get(c"cancelled")?.get(c"length")?.truthy()?
+            || changes.get(c"pendingWaitIds")?.get(c"length")?.truthy()?
+        {
+            let result_change = reply.get(c"queueChange")?;
+            if result_change.truthy()? && changes.get(c"schedule")?.truthy()? {
+                result_change.set(c"schedule", changes.get(c"schedule")?)?;
+            }
+            reply.set(c"wakeupChanges", changes)?;
+        }
     }
-    item.assign(c"acknowledgedResultHash", version)?;
-    reply.set(c"notification", draft.from_value(&V::string("withdrawn"))?)?;
-    reply.set(c"queueChange", changed)?;
     Ok(reply.raw())
 }

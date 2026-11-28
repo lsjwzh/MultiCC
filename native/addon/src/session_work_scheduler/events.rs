@@ -67,6 +67,24 @@ fn queued_cancel<'a>(s: L<'a>, id: L<'a>, result: L<'a>) -> Result<()> {
         schedule,
     )
 }
+pub(crate) fn publish_withdrawals<'a>(owner: L<'a>, changes: L<'a>) -> Result<()> {
+    let session = changes.get(c"sessionId")?;
+    let removed = owner.get(c"onWaitCancelled")?;
+    if callable(removed)? {
+        changes.get(c"pendingWaitIds")?.for_each(|id| {
+            removed.call_plain(&[session, id])?;
+            Ok(())
+        })?;
+    }
+    let schedule = changes.get(c"schedule")?;
+    changes.get(c"cancelled")?.for_each(|entry| {
+        queued_cancel(
+            owner,
+            session,
+            fields(owner, &[("schedule", schedule), ("cancelled", entry)])?,
+        )
+    })
+}
 pub(super) fn settled<'a>(f: L<'a>, op: Op, r: L<'a>) -> Result<L<'a>> {
     use Op::*;
     let owner = f.get(c"owner")?;
@@ -85,6 +103,10 @@ pub(super) fn settled<'a>(f: L<'a>, op: Op, r: L<'a>) -> Result<L<'a>> {
         reply.delete(c"queueChange")?;
         if change.truthy()? {
             queued_cancel(owner, id, change)?;
+        }
+        if r.get(c"wakeupChanges")?.truthy()? {
+            publish_withdrawals(owner, r.get(c"wakeupChanges")?)?;
+            reply.delete(c"wakeupChanges")?;
         }
         return Ok(reply);
     }
@@ -284,57 +306,54 @@ fn admission<'a>(owner: L<'a>, r: L<'a>, schedule: L<'a>) -> Result<()> {
         schedule,
     )
 }
-fn note<'a>(owner: L<'a>, info: L<'a>) -> Result<L<'a>> {
-    let item = info.get(c"item")?;
+// Only event metadata may escape the draft. A wait's data can be much
+// larger than its preview, so do not JSON-clone the full outbox item here.
+pub(super) fn note_fields(item: L<'_>) -> Result<L<'_>> {
+    let typ = item.optional(c"payload")?.optional(c"type")?;
+    let item = if has(
+        typ,
+        &multicc_core::orchestration_store::queue_preview::WAIT_TYPES,
+    )? {
+        item
+    } else {
+        crate::schedule_note_queued_live::clone_item(item)?
+    };
     let p = item.get(c"payload")?;
+    fields(
+        item,
+        &[
+            ("sessionId", item.get(c"sessionId")?),
+            ("entryId", item.get(c"id")?),
+            ("taskId", task_id(item)?),
+            (
+                "source",
+                or(
+                    p.optional(c"taskSource")?,
+                    fallback(
+                        item.optional(c"source")?.optional(c"type")?,
+                        V::string("dispatch"),
+                    )?,
+                )?,
+            ),
+            ("workKind", kind(item)?),
+            ("message", queue_text::bounded_text(p)?),
+            (
+                "clientMsgId",
+                fallback(p.optional(c"options")?.optional(c"clientMsgId")?, V::Null)?,
+            ),
+        ],
+    )
+}
+fn note<'a>(owner: L<'a>, info: L<'a>) -> Result<L<'a>> {
+    let event = info.get(c"item")?;
     let sched = info.get(c"schedule")?;
     let position = fallback(info.get(c"position")?, V::Null)?;
-    let value = or(
-        p.optional(c"message")?,
-        or(
-            p.optional(c"taskText")?,
-            fallback(p.optional(c"deliveryText")?, V::string(""))?,
-        )?,
-    )?;
-    let message = call(
-        string(value)?,
-        c"slice",
-        &[num(owner, 0.)?, num(owner, 20000.)?],
-    )?;
-    emit(
-        owner,
-        "queued",
-        fields(
-            owner,
-            &[
-                ("sessionId", item.get(c"sessionId")?),
-                ("entryId", item.get(c"id")?),
-                ("taskId", task_id(item)?),
-                (
-                    "source",
-                    or(
-                        p.optional(c"taskSource")?,
-                        fallback(
-                            item.optional(c"source")?.optional(c"type")?,
-                            V::string("dispatch"),
-                        )?,
-                    )?,
-                ),
-                ("workKind", kind(item)?),
-                ("message", message),
-                (
-                    "clientMsgId",
-                    fallback(p.optional(c"options")?.optional(c"clientMsgId")?, V::Null)?,
-                ),
-                ("duplicate", flag(owner, false)?),
-                ("queued", info.get(c"queued")?),
-                ("queuePosition", position),
-                ("schedulerState", info.get(c"schedulerState")?),
-                ("freezeReason", sched.get(c"freezeReason")?),
-                ("queuedItems", sched.get(c"queued")?),
-            ],
-        )?,
-        sched,
-    )?;
+    event.set(c"duplicate", flag(owner, false)?)?;
+    event.set(c"queued", info.get(c"queued")?)?;
+    event.set(c"queuePosition", position)?;
+    event.set(c"schedulerState", info.get(c"schedulerState")?)?;
+    event.set(c"freezeReason", sched.get(c"freezeReason")?)?;
+    event.set(c"queuedItems", sched.get(c"queued")?)?;
+    emit(owner, "queued", event, sched)?;
     fields(owner, &[("ok", flag(owner, true)?), ("position", position)])
 }
