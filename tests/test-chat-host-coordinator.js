@@ -67,8 +67,10 @@ test('host ports are narrow and coordinator imports no runtime I/O', async () =>
   assert.throws(() => assertChatHostPorts({
     ...ports, usage: { ...ports.usage, afterCommit: true },
   }), /usage\.afterCommit/);
-  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'chat', 'host-coordinator.js'), 'utf8');
-  assert.equal(/require\(['"](?:fs|child_process|express|ws)['"]\)/.test(source), false);
+  for (const part of ['coordinator.rs', 'coordinator/append.rs', 'coordinator/usage.rs', 'delivery.rs']) {
+    const source = fs.readFileSync(path.join(__dirname, '../native/addon/src/chat_host', part), 'utf8');
+    assert.doesNotMatch(source, /(?:std|tokio)::(?:fs|net|process)|rusqlite|reqwest/);
+  }
 });
 
 test('production helper surface exposes ownership and byte-compatible assistant checkpoint keys', async () => {

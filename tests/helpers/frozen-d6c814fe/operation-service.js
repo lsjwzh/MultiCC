@@ -13,8 +13,8 @@ const {
   hashPayload,
   normalizeJson,
   OutboxConflictError,
-} = require('./native/binding').outboxRuntime;
-const { getNative } = require('./native/binding');
+} = require('../../../src/native/binding').outboxRuntime;
+const { getNative } = require('../../../src/native/binding');
 
 const TERMINAL_OPERATION_STATES = new Set([
   'completed', 'failed', 'interrupted', 'cancelled',

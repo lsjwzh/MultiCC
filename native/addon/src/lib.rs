@@ -31,6 +31,7 @@ pub mod air_storage_notice;
 pub mod air_task_list;
 pub mod air_todo_ignore;
 mod api_contract;
+pub mod api_error_host;
 pub mod api_error_policy;
 pub mod api_error_text;
 mod ark_quota;
@@ -86,6 +87,7 @@ pub mod chat_history;
 pub mod chat_history_repository;
 pub mod chat_history_runtime;
 pub mod chat_notices;
+mod chat_host;
 pub mod chat_turn_effects;
 pub mod chat_turn_lifecycle;
 pub mod chat_work_admission;
@@ -414,6 +416,7 @@ pub fn compute_usage(input: String) -> AsyncTask<Usage> {
     AsyncTask::new(Usage { input })
 }
 
+mod claude_oauth_refresh;
 pub mod claude_refresh;
 pub mod codex_adapter;
 pub mod codex_app_adapter;

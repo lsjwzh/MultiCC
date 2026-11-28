@@ -7,7 +7,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
-const { createWaitService } = require('../src/wait/service');
+const { createWaitService } = require('../src/native/binding').orchestrationServices;
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const Database = require('better-sqlite3');
 

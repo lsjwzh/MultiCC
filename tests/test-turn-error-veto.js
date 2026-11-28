@@ -7,7 +7,7 @@
 // real API failure can never reach it — these tests pin both directions.
 
 const assert = require('assert');
-const { clearErrorFlagsForSucceededTurn } = require('../src/chat/turn-lifecycle');
+const { clearErrorFlagsForSucceededTurn } = require('../src/native/binding').turnLifecycle;
 
 function stateful(over = {}) {
   return {

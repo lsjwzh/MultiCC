@@ -175,14 +175,14 @@ const { createSessionTriggers } = require('./src/triggers');
 const {
   createClaudeOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CLAUDE_OAUTH_CHECK_INTERVAL_MS,
-} = require('./src/claude-auth/oauth-refresh');
+} = require('./src/native/binding').claudeOAuthRefresh;
 const {
   createCodexOAuthRefresher,
   DEFAULT_CHECK_INTERVAL_MS: CODEX_OAUTH_CHECK_INTERVAL_MS,
 } = require('./src/native/binding').codexOAuthRefresh;
 const { parseClassifyResult, buildClassifySystemPrompt, classifyDisplay, phaseLabel } = require('./src/native/binding').classifyVocab;
 const { taskShortCode, initTaskShortCodeRegistry, readStoredPinIds } = require('./src/native/binding').taskDomainHost;
-const { recordAdapterUserInput } = require('./src/chat/host-coordinator');
+const { recordAdapterUserInput } = require('./src/native/binding').chatHostCoordinator;
 const { createProductionQuestionHost, createProductionWorkHost } = require('./src/native/binding').sessionWork;
 const { createHostPrompts, buildPlanProgressPrompt, markPlanContextReset } = require('./src/native/binding').getHostPrompts();
 const { createDispatchTargeting } = require('./src/dispatch/targeting');

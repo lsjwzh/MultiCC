@@ -8,7 +8,7 @@ const test = require('node:test');
 
 const { DEFAULT_TRIGGER_PROMPT, createSessionTriggers } = require('../src/triggers');
 const { createEventsRuntime } = require('../src/routes/events-host');
-const { createChatHostRuntime } = require('../src/chat/host-runtime');
+const { createChatHostRuntime } = require('../src/native/binding').chatHostRuntime;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));

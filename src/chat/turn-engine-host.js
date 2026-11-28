@@ -37,7 +37,7 @@ const { createAutoProviderHandoff } = require('../native/binding');
 const { redactProviderRouteCapability } = require('../native/binding').observability;
 const { taskIdForShortCode } = require('../native/binding').taskDomainHost;
 const { taskStateSeed } = require('../native/binding');
-const { recordAdapterQuestion, prepareQuestionReplay } = require('./host-coordinator');
+const { recordAdapterQuestion, prepareQuestionReplay } = require('../native/binding').chatHostCoordinator;
 const { buildSubagentProviderHint } = require('../native/binding').getHostPrompts();
 const managedContext = require('../native/binding').managedContext;
 const {

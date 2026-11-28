@@ -1,6 +1,24 @@
 //! Claude 续期预算的纯决策；凭据读写、探测与尝试标记持久化由调用方负责。
 use serde::{Deserialize, Serialize};
 
+/// Match the explicit revocation phrases used by account refresh and turn errors.
+pub fn looks_like_revoked_oauth(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "token revoked",
+        "token has been revoked",
+        "token was revoked",
+        "credential revoked",
+        "credential have been revoked",
+        "credential were revoked",
+        "credentials revoked",
+        "credentials have been revoked",
+        "credentials were revoked",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Input {

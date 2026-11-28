@@ -116,7 +116,7 @@ process.on('exit', () => { try { fs.rmSync(path.dirname(SCENARIO_FILE), { recurs
 const setScenario = name => fs.writeFileSync(SCENARIO_FILE, name);
 setScenario('mixed');
 
-// What the real host op answers with for a scenario (src/routes/plugins-host.js).
+// What the real host op answers with for a scenario (plugins_routes_host/internal.rs).
 const hostAnswer = name => {
   const s = SCENARIOS[name];
   return { ok: true, available: s.available, plugins: s.status, usage: s.usage };

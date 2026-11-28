@@ -17,7 +17,7 @@ const {
   listNodes,
   describeTunnelAccess,
   discoverAccess,
-} = require('../src/tunnel-sakurafrp-api');
+} = require('../src/native/binding').sakuraFrp;
 
 const TOKEN = 'kbl' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4' + 'x3'; // 32 alnum chars
 

@@ -100,7 +100,7 @@ test('every persist and result path carries the timeline (source guard)', () => 
   assert.match(engine, /observeAdapter: \(cs, event, session\) => turnTimeline\.observeAdapter\(session, cs, event\)/);
   assert.match(engine, /timelineField: \(cs, session\) => turnTimeline\.field\(session, cs\)/);
   // Result/persist readers carry the session name they already have.
-  assert.match(read('src/chat/host-runtime.js'), /timelineField\(sessionId, state\)/);
+  assert.match(read('native/addon/src/chat_host/runtime.rs'), /get\(c"timelineField"\)\?\s*\.call_plain\(\s*&\[id, state\]/);
   assert.match(read('src/codex/usage.js'), /timelineField\(sessionName, cs, now\(\)\)/);
   assert.match(read('src/chat/finalize-host.js'), /chatExecuteTurnFinalization\(plan, rawContext, ports, runtime\)/);
   assert.match(read('native/addon/src/chat_finalize_execution.rs'),

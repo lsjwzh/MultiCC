@@ -94,7 +94,9 @@ function readServerCode() {
     'native/addon/src/classify_machine/dispatch/settle.rs',
     'native/addon/src/classify_machine/turn.rs',
     'src/chat/api-error-policy.js',
-    'src/chat/api-error-host.js',
+    'native/addon/src/api_error_host.rs',
+    'native/addon/src/api_error_host/decision.rs',
+    'native/addon/src/api_error_host/decision/notices.rs',
     'src/chat/turn-engine-host.js',
   ];
   return relativePaths.map(relativePath => fs.readFileSync(

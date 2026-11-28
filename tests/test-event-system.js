@@ -11,7 +11,7 @@ const { createEventRuleEngine } = require('../src/events/engine');
 const { validateEventRule } = require('../src/native/binding').getEventPolicy().rules;
 const { isPrivateAddress, sign } = require('../src/events/actions');
 const { createSessionTriggers } = require('../src/triggers');
-const { createChatHostRuntime } = require('../src/chat/host-runtime');
+const { createChatHostRuntime } = require('../src/native/binding').chatHostRuntime;
 
 const base = { taskId: 't1', goal: 'ship it', phase: 'impl', startedAt: 1, classifyState: 'P', goalState: null };
 

@@ -154,7 +154,6 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/routes/host-read-host.js',
     'src/routes/host-write.js',
     'src/routes/orchestration-host.js',
-    'src/routes/plugins-host.js',
     'src/routes/provider-balance-host.js',
     // Passes the dependency through to the provider runtime, does not decide.
     'src/routes/providers-host.js',
@@ -176,6 +175,8 @@ test('locality checks stay limited to authentication and sensitive host controls
     'src/ws/connection-router.js',
   ]);
   const predicates = fs.readFileSync('native/addon/src/request_locality_api.rs', 'utf8');
+  const pluginHost = fs.readFileSync('native/addon/src/plugins_routes_host/internal.rs', 'utf8');
+  assert.match(pluginHost, /request_locality::evaluate\("local", req\)/);
   assert.match(predicates, /\("isLocalRequest", "local"\)/);
   assert.doesNotMatch(taskBoardRoutes, /\bisLocalRequest\b/);
   assert.match(authRoutes, /httpEntryAuthenticated\(req, entryPort\)/);

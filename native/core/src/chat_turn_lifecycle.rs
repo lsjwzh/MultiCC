@@ -124,3 +124,9 @@ mod tests {
         assert!(retry.claim_usage());
     }
 }
+
+/// Hash JSON already serialized by the host with its property order and UTF-8 encoding.
+pub fn checkpoint_digest(json: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(json.as_bytes()))
+}

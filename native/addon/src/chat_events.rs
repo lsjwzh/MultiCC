@@ -1721,7 +1721,7 @@ fn has_side_effects(cs: LV<'_>) -> Result<bool> {
 }
 
 /// `!!(String(cs?.currentAssistantText || '').trim() && !isErrorOnlyText(text))`.
-fn meaningful_output(cs: LV<'_>) -> Result<bool> {
+pub(crate) fn meaningful_output(cs: LV<'_>) -> Result<bool> {
     let text = string_or_empty(cs.optional(c"currentAssistantText")?)?;
     if text.trim().is_empty() {
         return Ok(false);
