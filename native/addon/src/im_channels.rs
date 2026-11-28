@@ -69,6 +69,25 @@ fn frame<'a>(s: L<'a>, values: &[(&str, L<'a>)]) -> Result<L<'a>> {
 fn state(f: L<'_>) -> Result<L<'_>> {
     f.get(c"state")
 }
+// Undefined marks an independent REST/Feishu operation. Poll descendants carry
+// the exact run object, never a mutable "currently running" boolean alone.
+fn current<'a>(s: L<'a>, run: L<'a>) -> Result<bool> {
+    if run.undefined()? {
+        return Ok(true);
+    }
+    Ok(!run.nullish()?
+        && s.get(c"running")?.truthy()?
+        && s.get(c"run")?.equals(run)?
+        && !run.get(c"stopped")?.truthy()?)
+}
+fn owned_frame<'a>(s: L<'a>, run: L<'a>, values: &[(&str, L<'a>)]) -> Result<L<'a>> {
+    let f = frame(s, values)?;
+    f.set(c"run", run)?;
+    Ok(f)
+}
+fn active(f: L<'_>) -> Result<bool> {
+    current(state(f)?, f.get(c"run")?)
+}
 fn gateway(s: L<'_>) -> Result<L<'_>> {
     call(s.get(c"gateway")?, c"get", &[])
 }
@@ -139,7 +158,7 @@ fn lifecycle_log<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     log(s, &fold_string(a[0])?, message)
 }
 fn on_turn<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
-    outbound(s, a[0])
+    outbound_owned(s, a[0], if wx(s)? { s.get(c"run")? } else { undef(s)? })
 }
 fn init<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     let o = a[0];
@@ -185,6 +204,7 @@ fn init<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
             ("persistedSessions", s.get(c"persistedSessions")?),
             ("chatSessions", s.get(c"chatSessions")?),
             ("savePersistedSessions", s.get(c"savePersistedSessions")?),
+            ("clearBridgeHistory", o.get(c"clearBridgeHistory")?),
             (
                 "bridgeHistoryFile",
                 s.get(c"ports")?
@@ -212,12 +232,21 @@ fn init<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     undef(s)
 }
 fn deliver<'a>(s: L<'a>, message: L<'a>) -> Result<L<'a>> {
+    deliver_owned(s, message, undef(s)?)
+}
+fn deliver_owned<'a>(s: L<'a>, message: L<'a>, run: L<'a>) -> Result<L<'a>> {
+    if !current(s, run)? {
+        return resolved(undef(s)?);
+    }
     let ws = s.get(c"chatWs")?;
     if !call(ws, c"isOpen", &[])?.truthy()? {
         call(ws, c"connect", &[])?;
     }
-    let f = frame(s, &[("message", message)])?;
+    let f = owned_frame(s, run, &[("message", message)])?;
     then(call(ws, c"ensureOpen", &[num(s, 2000.)?])?, f, |f, _| {
+        if !active(f)? {
+            return undef(f);
+        }
         call(
             state(f)?.get(c"chatWs")?,
             c"sendUserMessage",
@@ -226,7 +255,13 @@ fn deliver<'a>(s: L<'a>, message: L<'a>) -> Result<L<'a>> {
     })
 }
 fn outbound<'a>(s: L<'a>, message: L<'a>) -> Result<L<'a>> {
-    async_result(s, || {
+    outbound_owned(s, message, undef(s)?)
+}
+fn outbound_owned<'a>(s: L<'a>, message: L<'a>, run: L<'a>) -> Result<L<'a>> {
+    let pending = async_result(s, || {
+        if !current(s, run)? {
+            return undef(s);
+        }
         let attached = if wx(s)? {
             s.get(c"currentUser")?.truthy()?
                 && s.get(c"contextToken")?.truthy()?
@@ -256,11 +291,21 @@ fn outbound<'a>(s: L<'a>, message: L<'a>) -> Result<L<'a>> {
             c"chunkOutbound",
             &[message, fields(s, &[("max", num(s, 3800.)?)])?],
         )?;
-        let f = frame(s, &[("chunks", chunks), ("index", num(s, 0.)?)])?;
+        let f = owned_frame(s, run, &[("chunks", chunks), ("index", num(s, 0.)?)])?;
         send_chunk(f)
+    })?;
+    let f = owned_frame(s, run, &[])?;
+    recover(pending, f, |f, a| {
+        if !active(f)? {
+            return undef(f);
+        }
+        Err(a[0].throw_error())
     })
 }
 fn send_chunk(f: L<'_>) -> Result<L<'_>> {
+    if !active(f)? {
+        return undef(f);
+    }
     let s = state(f)?;
     let i = f.get(c"index")?.number()?;
     if i >= f.get(c"chunks")?.get(c"length")?.number()? {
@@ -269,11 +314,20 @@ fn send_chunk(f: L<'_>) -> Result<L<'_>> {
     let body = f.get(c"chunks")?.element(i as u32)?;
     call(s.get(c"echo")?, c"add", &[body])?;
     let pending = if wx(s)? {
-        wechat::send_message(s, s.get(c"currentUser")?, body, s.get(c"contextToken")?)?
+        wechat::send_owned(
+            s,
+            s.get(c"currentUser")?,
+            body,
+            s.get(c"contextToken")?,
+            f.get(c"run")?,
+        )?
     } else {
         feishu::send_message(s, body)?
     };
     then(pending, f, |f, _| {
+        if !active(f)? {
+            return undef(f);
+        }
         let s = state(f)?;
         let i = f.get(c"index")?.number()?;
         log(s, "out", preview(f.get(c"chunks")?.element(i as u32)?)?)?;
@@ -288,6 +342,17 @@ fn send_chunk(f: L<'_>) -> Result<L<'_>> {
     })
 }
 fn command<'a>(s: L<'a>, input: L<'a>) -> Result<L<'a>> {
+    command_owned(s, input, undef(s)?)
+}
+fn command_owned<'a>(s: L<'a>, input: L<'a>, run: L<'a>) -> Result<L<'a>> {
+    async_result(s, || {
+        if !current(s, run)? {
+            return undef(s);
+        }
+        command_body(s, input, run)
+    })
+}
+fn command_body<'a>(s: L<'a>, input: L<'a>, run: L<'a>) -> Result<L<'a>> {
     let t = string(input)?.coerce_string()?.trim();
     let end = t
         .as_units()
@@ -297,6 +362,19 @@ fn command<'a>(s: L<'a>, input: L<'a>) -> Result<L<'a>> {
     let command_units = t.slice_units(0, end).to_lowercase();
     let cmd = command_units.to_string_lossy();
     let rec = gateway(s)?;
+    if cmd == "/reset" {
+        let f = owned_frame(s, run, &[])?;
+        return then(
+            call(s.get(c"gateway")?, c"resetHistory", &[])?,
+            f,
+            |f, _| {
+                if !active(f)? {
+                    return undef(f);
+                }
+                command_reply(state(f)?, text(f, "✅ 已清空对话历史")?, f.get(c"run")?)
+            },
+        );
+    }
     let reply = match cmd.as_str() {
         "/help" => {
             if wx(s)? {
@@ -304,10 +382,6 @@ fn command<'a>(s: L<'a>, input: L<'a>) -> Result<L<'a>> {
             } else {
                 "📋 可用命令:\n/status — 网关状态\n/reset — 清空对话历史\n/help — 显示帮助".into()
             }
-        }
-        "/reset" => {
-            call(s.get(c"gateway")?, c"resetHistory", &[])?;
-            "✅ 已清空对话历史".into()
         }
         "/sessions" if wx(s)? => String::new(),
         "/status" => {
@@ -350,9 +424,6 @@ fn command<'a>(s: L<'a>, input: L<'a>) -> Result<L<'a>> {
         }
         _ => format!("未知命令: {cmd}，输入 /help 查看帮助"),
     };
-    if wx(s)? && (!s.get(c"currentUser")?.truthy()? || !s.get(c"contextToken")?.truthy()?) {
-        return resolved(undef(s)?);
-    }
     let output = if wx(s)? && cmd == "/sessions" {
         js(s, memory::sessions(s)?)?
     } else if matches!(cmd.as_str(), "/help" | "/reset" | "/status") {
@@ -363,7 +434,20 @@ fn command<'a>(s: L<'a>, input: L<'a>) -> Result<L<'a>> {
         body.push_str("，输入 /help 查看帮助");
         js(s, body)?
     };
-    recover(outbound(s, output)?, s, |s, a| {
+    command_reply(s, output, run)
+}
+fn command_reply<'a>(s: L<'a>, output: L<'a>, run: L<'a>) -> Result<L<'a>> {
+    if !current(s, run)?
+        || (wx(s)? && (!s.get(c"currentUser")?.truthy()? || !s.get(c"contextToken")?.truthy()?))
+    {
+        return resolved(undef(s)?);
+    }
+    let f = owned_frame(s, run, &[])?;
+    recover(outbound_owned(s, output, run)?, f, |f, a| {
+        if !active(f)? {
+            return undef(f);
+        }
+        let s = state(f)?;
         let prefix = if wx(s)? { "Reply send failed: " } else { "" };
         log_text(s, "error", &format!("{prefix}{}", err_text(a[0])?))?;
         undef(s)
@@ -428,6 +512,7 @@ fn create<'a>(p: L<'a>, platform: &str) -> Result<L<'a>> {
         c"wsClient",
         c"lark",
         c"pollAbort",
+        c"run",
         c"currentUser",
         c"contextToken",
         c"currentChat",

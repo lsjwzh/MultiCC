@@ -11,7 +11,7 @@ fn timeout(s: L<'_>, ms: f64) -> Result<L<'_>> {
         &[num(s, ms)?],
     )
 }
-fn headers(s: L<'_>) -> Result<L<'_>> {
+fn headers<'a>(s: L<'a>, client: L<'a>) -> Result<L<'a>> {
     let bytes = call(
         s.get(c"ports")?.get(c"crypto")?,
         c"randomBytes",
@@ -30,10 +30,7 @@ fn headers(s: L<'_>) -> Result<L<'_>> {
                 "Authorization",
                 text(
                     s,
-                    &format!(
-                        "Bearer {}",
-                        fold_string(s.get(c"client")?.get(c"botToken")?)?
-                    ),
+                    &format!("Bearer {}", fold_string(client.get(c"botToken")?)?),
                 )?,
             ),
             ("X-WECHAT-UIN", encoded),
@@ -41,17 +38,28 @@ fn headers(s: L<'_>) -> Result<L<'_>> {
     )
 }
 fn response<'a>(f: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
+    if !request_live(f)? {
+        return undef(f);
+    }
     let res = a[0];
     if f.get(c"typing")?.truthy()? {
         return Ok(res);
     }
     if res.get(c"ok")?.truthy()? {
-        return call(res, c"json", &[]);
+        return then(call(res, c"json", &[])?, f, |f, a| {
+            if !request_live(f)? {
+                return undef(f);
+            }
+            Ok(a[0])
+        });
     }
     f.set(c"status", res.get(c"status")?)?;
     if f.get(c"errorBody")?.truthy()? {
         let pending = recover(call(res, c"text", &[])?, f, |f, _| text(f, ""))?;
         return then(pending, f, |f, a| {
+            if !request_live(f)? {
+                return undef(f);
+            }
             fail(
                 f,
                 &format!(
@@ -72,6 +80,63 @@ fn response<'a>(f: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
         ),
     )
 }
+fn request_live(f: L<'_>) -> Result<bool> {
+    if !active(f)? {
+        return Ok(false);
+    }
+    let signal = f.get(c"signal")?;
+    if signal.truthy()? && signal.get(c"aborted")?.truthy()? {
+        return Err(signal.get(c"reason")?.throw_error());
+    }
+    Ok(true)
+}
+fn aborted<'a>(f: L<'a>, _: &mut [L<'a>]) -> Result<L<'a>> {
+    f.get(c"rejectAbort")?
+        .call_plain(&[f.get(c"signal")?.get(c"reason")?])
+}
+fn watch_abort<'a>(f: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
+    f.set(c"rejectAbort", a[1])?;
+    let signal = f.get(c"signal")?;
+    if signal.get(c"aborted")?.truthy()? {
+        return aborted(f, &mut []);
+    }
+    let listener = function(f, "requestAborted", 1, 1, aborted)?;
+    f.set(c"abortListener", listener)?;
+    call(
+        signal,
+        c"addEventListener",
+        &[
+            text(f, "abort")?,
+            listener,
+            fields(f, &[("once", flag(f, true)?)])?,
+        ],
+    )?;
+    undef(f)
+}
+fn unwatch_abort(f: L<'_>) -> Result<()> {
+    let listener = f.get(c"abortListener")?;
+    if listener.truthy()? {
+        call(
+            f.get(c"signal")?,
+            c"removeEventListener",
+            &[text(f, "abort")?, listener],
+        )?;
+        f.set(c"abortListener", undef(f)?)?;
+    }
+    Ok(())
+}
+fn race_abort<'a>(f: L<'a>, pending: L<'a>) -> Result<L<'a>> {
+    // Cover fetch AND its body promise, even when an injected IO port ignores
+    // cancellation. Promise.race also observes late rejection of the loser.
+    let abort =
+        f.global()?
+            .get(c"Promise")?
+            .construct(&[function(f, "watchAbort", 2, 2, watch_abort)?])?;
+    let waits = array(f)?;
+    waits.set_element(0, pending)?;
+    waits.set_element(1, abort)?;
+    call(f.global()?.get(c"Promise")?, c"race", &[waits])
+}
 fn request<'a>(
     s: L<'a>,
     url: &str,
@@ -79,16 +144,22 @@ fn request<'a>(
     operation: &str,
     error_body: bool,
     typing: bool,
+    run: L<'a>,
 ) -> Result<L<'a>> {
-    async_result(s, || {
-        let f = frame(
-            s,
-            &[
-                ("operation", text(s, operation)?),
-                ("errorBody", flag(s, error_body)?),
-                ("typing", flag(s, typing)?),
-            ],
-        )?;
+    let f = owned_frame(
+        s,
+        run,
+        &[
+            ("operation", text(s, operation)?),
+            ("errorBody", flag(s, error_body)?),
+            ("typing", flag(s, typing)?),
+            ("signal", options.get(c"signal")?),
+        ],
+    )?;
+    let pending = async_result(s, || {
+        if !request_live(f)? {
+            return undef(f);
+        }
         then(
             s.get(c"ports")?
                 .get(c"fetch")?
@@ -96,6 +167,20 @@ fn request<'a>(
             f,
             response,
         )
+    })?;
+    let pending = then(race_abort(f, pending)?, f, |f, a| {
+        unwatch_abort(f)?;
+        if !active(f)? {
+            return undef(f);
+        }
+        Ok(a[0])
+    })?;
+    recover(pending, f, |f, a| {
+        unwatch_abort(f)?;
+        if !active(f)? {
+            return undef(f);
+        }
+        Err(a[0].throw_error())
     })
 }
 pub(super) fn qrcode(s: L<'_>) -> Result<L<'_>> {
@@ -106,6 +191,7 @@ pub(super) fn qrcode(s: L<'_>) -> Result<L<'_>> {
         "QR code request failed",
         false,
         false,
+        undef(s)?,
     )
 }
 pub(super) fn login_status(s: L<'_>) -> Result<L<'_>> {
@@ -123,6 +209,7 @@ pub(super) fn login_status(s: L<'_>) -> Result<L<'_>> {
         "Login poll failed",
         false,
         false,
+        undef(s)?,
     )
 }
 fn post<'a>(
@@ -132,21 +219,38 @@ fn post<'a>(
     signal: L<'a>,
     operation: &str,
     typing: bool,
+    run: L<'a>,
 ) -> Result<L<'a>> {
+    if !current(s, run)? {
+        return resolved(undef(s)?);
+    }
+    let client = if run.undefined()? {
+        s.get(c"client")?
+    } else {
+        run.get(c"client")?
+    };
+    let signal = if run.undefined()? {
+        signal
+    } else {
+        let signals = array(s)?;
+        signals.set_element(0, run.get(c"abort")?.get(c"signal")?)?;
+        signals.set_element(1, signal)?;
+        call(s.get(c"ports")?.get(c"AbortSignal")?, c"any", &[signals])?
+    };
     let url = format!(
         "{}/ilink/bot/{endpoint}",
-        fold_string(s.get(c"client")?.get(c"baseUrl")?)?
+        fold_string(client.get(c"baseUrl")?)?
     );
     let options = fields(
         s,
         &[
             ("method", text(s, "POST")?),
-            ("headers", headers(s)?),
+            ("headers", headers(s, client)?),
             ("body", json_call(s, c"stringify", body)?),
             ("signal", signal),
         ],
     )?;
-    request(s, &url, options, operation, true, typing)
+    request(s, &url, options, operation, true, typing, run)
 }
 pub(super) fn send_message<'a>(
     s: L<'a>,
@@ -154,7 +258,19 @@ pub(super) fn send_message<'a>(
     input: L<'a>,
     context: L<'a>,
 ) -> Result<L<'a>> {
+    send_owned(s, user, input, context, undef(s)?)
+}
+pub(super) fn send_owned<'a>(
+    s: L<'a>,
+    user: L<'a>,
+    input: L<'a>,
+    context: L<'a>,
+    run: L<'a>,
+) -> Result<L<'a>> {
     async_result(s, || {
+        if !current(s, run)? {
+            return undef(s);
+        }
         let random = call(s.global()?.get(c"Math")?, c"random", &[])?;
         let random = call(random, c"toString", &[num(s, 36.)?])?;
         let random = call(random, c"slice", &[num(s, 2.)?, num(s, 8.)?])?;
@@ -194,10 +310,11 @@ pub(super) fn send_message<'a>(
             timeout(s, 15000.)?,
             "sendMessage",
             false,
+            run,
         )
     })
 }
-fn typing<'a>(s: L<'a>, context: L<'a>) -> Result<L<'a>> {
+fn typing<'a>(s: L<'a>, context: L<'a>, run: L<'a>) -> Result<L<'a>> {
     async_result(s, || {
         post(
             s,
@@ -209,6 +326,7 @@ fn typing<'a>(s: L<'a>, context: L<'a>) -> Result<L<'a>> {
             timeout(s, 5000.)?,
             "sendTyping",
             true,
+            run,
         )
     })
 }
@@ -227,9 +345,15 @@ fn extract(message: L<'_>) -> Result<L<'_>> {
     Ok(out)
 }
 fn batch(f: L<'_>) -> Result<L<'_>> {
+    if !active(f)? {
+        return undef(f);
+    }
     let s = state(f)?;
     let messages = f.get(c"messages")?;
     loop {
+        if !active(f)? {
+            return undef(f);
+        }
         let i = f.get(c"index")?.number()?;
         if i >= messages.get(c"length")?.number()? {
             return undef(f);
@@ -249,13 +373,13 @@ fn batch(f: L<'_>) -> Result<L<'_>> {
         }
         log(s, "in", decorate(s, "[WeChat] ", preview(input)?, "")?)?;
         let pending = if call(input, c"startsWith", &[text(s, "/")?])?.truthy()? {
-            command(s, input)?
+            command_owned(s, input, f.get(c"run")?)?
         } else if !gateway(s)?.truthy()? {
             if !context.truthy()? {
                 continue;
             }
             recover(
-                send_message(
+                send_owned(
                     s,
                     message.get(c"from_user_id")?,
                     text(
@@ -263,23 +387,27 @@ fn batch(f: L<'_>) -> Result<L<'_>> {
                         "⚠ Gateway 未创建。请在 MultiCC 管理页面创建 WeChat Gateway。",
                     )?,
                     context,
+                    f.get(c"run")?,
                 )?,
                 s,
                 |s, _| undef(s),
             )?
         } else {
             if context.truthy()? {
-                ignored(s, || typing(s, context))?;
+                ignored(s, || typing(s, context, f.get(c"run")?))?;
             }
-            deliver(s, input)?
+            deliver_owned(s, input, f.get(c"run")?)?
         };
         return then(pending, f, |f, _| batch(f));
     }
 }
-fn cycle(s: L<'_>) -> Result<L<'_>> {
-    let client = s.get(c"client")?;
-    let abort = s.get(c"ports")?.get(c"AbortController")?.construct(&[])?;
-    s.set(c"pollAbort", abort)?;
+fn cycle(f: L<'_>) -> Result<L<'_>> {
+    if !active(f)? {
+        return undef(f);
+    }
+    let s = state(f)?;
+    let run = f.get(c"run")?;
+    let client = run.get(c"client")?;
     let body = fields(
         s,
         &[
@@ -287,26 +415,31 @@ fn cycle(s: L<'_>) -> Result<L<'_>> {
             ("base_info", base_info(s)?),
         ],
     )?;
-    let f = frame(s, &[("pollClient", client)])?;
     then(
         post(
             s,
             "getupdates",
             body,
-            abort.get(c"signal")?,
+            timeout(s, 45000.)?,
             "getUpdates",
             false,
+            run,
         )?,
         f,
         |f, a| {
+            if !active(f)? {
+                return undef(f);
+            }
             let s = state(f)?;
             let data = a[0];
             if data.get(c"get_updates_buf")?.truthy()? {
-                f.get(c"pollClient")?
+                f.get(c"run")?
+                    .get(c"client")?
                     .set(c"cursor", data.get(c"get_updates_buf")?)?;
             }
-            let next = frame(
+            let next = owned_frame(
                 s,
+                f.get(c"run")?,
                 &[
                     ("messages", keep(data.get(c"msgs")?, array(s)?)?),
                     ("index", num(s, 0.)?),
@@ -316,12 +449,16 @@ fn cycle(s: L<'_>) -> Result<L<'_>> {
         },
     )
 }
-fn poll(s: L<'_>) -> Result<L<'_>> {
-    if !s.get(c"running")?.truthy()? || !s.get(c"client")?.truthy()? {
-        return resolved(undef(s)?);
+fn poll(f: L<'_>) -> Result<L<'_>> {
+    if !active(f)? {
+        return resolved(undef(f)?);
     }
-    let pending = async_result(s, || cycle(s))?;
-    let iteration = recover(pending, s, |s, a| {
+    let pending = async_result(f, || cycle(f))?;
+    let iteration = recover(pending, f, |f, a| {
+        if !active(f)? {
+            return undef(f);
+        }
+        let s = state(f)?;
         if a[0].get(c"name")?.is_string("AbortError")? {
             return undef(s);
         }
@@ -330,9 +467,17 @@ fn poll(s: L<'_>) -> Result<L<'_>> {
     })?;
     // Each completed poll releases its Promise chain. Adopting the recursive
     // poll Promise would retain every earlier iteration until bridge stop.
-    then(iteration, s, |s, _| {
-        poll(s)?;
-        undef(s)
+    let pending = then(iteration, f, |f, _| {
+        if active(f)? {
+            poll(f)?;
+        }
+        undef(f)
+    })?;
+    recover(pending, f, |f, a| {
+        if !active(f)? {
+            return undef(f);
+        }
+        Err(a[0].throw_error())
     })
 }
 pub(super) fn start(s: L<'_>) -> Result<L<'_>> {
@@ -357,17 +502,30 @@ pub(super) fn start(s: L<'_>) -> Result<L<'_>> {
             ],
         )?,
     )?;
+    let abort = s.get(c"ports")?.get(c"AbortController")?.construct(&[])?;
+    let run = fields(
+        s,
+        &[
+            ("client", s.get(c"client")?),
+            ("abort", abort),
+            ("stopped", flag(s, false)?),
+        ],
+    )?;
+    s.set(c"run", run)?;
+    s.set(c"pollAbort", abort)?;
     s.set(c"running", flag(s, true)?)?;
     log_text(s, "system", "Bridge started")?;
     call(s.get(c"chatWs")?, c"connect", &[])?;
-    poll(s)?;
+    poll(owned_frame(s, run, &[])?)?;
     undef(s)
 }
 pub(super) fn stop(s: L<'_>) -> Result<()> {
-    let abort = s.get(c"pollAbort")?;
-    if abort.truthy()? {
-        call(abort, c"abort", &[])?;
-        s.set(c"pollAbort", null(s)?)?;
+    let run = s.get(c"run")?;
+    s.set(c"run", null(s)?)?;
+    if run.truthy()? {
+        run.set(c"stopped", flag(s, true)?)?;
+        call(run.get(c"abort")?, c"abort", &[])?;
     }
+    s.set(c"pollAbort", null(s)?)?;
     Ok(())
 }
