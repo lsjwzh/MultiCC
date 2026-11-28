@@ -216,6 +216,45 @@ fn list_reads_registry_and_release_is_idempotent() {
     assert_eq!(listed["writers"]["w-1"]["state"], json!("released"));
 }
 
+/// A host restart rewrites the lease epoch in place (registry recover keeps
+/// id/generation/session), while a writer registered by the previous process
+/// still carries the epoch it acquired under. That writer's exit report is the
+/// only thing that can clear the fence, so it must be accepted: the epoch is
+/// the host generation, not part of the writer's identity.
+#[test]
+fn writer_release_survives_host_epoch_recovery() {
+    let mut f = Fixture::new();
+    acquire(&mut f.store, "w-1", "session").unwrap();
+    let mut lease = read(&mut f.store, "workspace:lease", "w");
+    lease["epoch"] = json!("e2");
+    lease["state"] = json!("uncertain");
+    call(
+        &mut f.store,
+        json!({"op":"set","kind":"workspace:lease","id":"w","body":lease.to_string()}),
+    )
+    .unwrap();
+    let mut release = identity("writerLeaseRelease", "w-1", "session");
+    release["epoch"] = json!("e2");
+    call(&mut f.store, release).unwrap();
+    let listed = call(
+        &mut f.store,
+        json!({"op":"writerLeaseList","workspaceId":"w"}),
+    )
+    .unwrap();
+    assert_eq!(listed["writers"]["w-1"]["state"], json!("released"));
+    // With the writer released, the recovered lease can finally be released.
+    call(
+        &mut f.store,
+        json!({"op":"workspaceTransition","workspaceId":"w","leaseId":"lease",
+            "epoch":"e2","generation":1,"sessionId":"s","state":"released","now":1}),
+    )
+    .unwrap();
+    assert_eq!(
+        read(&mut f.store, "workspace:lease", "w")["state"],
+        json!("released")
+    );
+}
+
 #[test]
 fn identity_validation_is_fail_closed() {
     let mut f = Fixture::new();
