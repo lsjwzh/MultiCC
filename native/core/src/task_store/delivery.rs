@@ -62,8 +62,14 @@ impl TaskStore {
         }
         let result = self.atomic(|store| {
             let mut record = store.get("workspace:writer-leases", &workspace)?;
-            let same = record["leaseId"] == input["leaseId"] && record["epoch"] == input["epoch"]
-                && record["generation"] == input["generation"] && record["sessionId"] == input["sessionId"];
+            // The epoch names the host generation, not the writer's identity: a
+            // recovered lease keeps its id, generation and session but advances
+            // the epoch, and a writer registered by the previous host is still
+            // the only one able to report its own exit. Comparing it here made
+            // that release fail on its own still-active writer.
+            let same = record["leaseId"] == input["leaseId"]
+                && record["generation"] == input["generation"]
+                && record["sessionId"] == input["sessionId"];
             if !same {
                 store.ensure_no_writer_leases(&workspace)?;
                 if !acquiring { return Err("writer_lease_stale".into()); }

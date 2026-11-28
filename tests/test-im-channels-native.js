@@ -10,6 +10,7 @@ const Module = require('node:module');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { getNative } = require('../src/native/binding');
+const controlledIO = require('./im-channels-controlled.cjs');
 
 const frozen = {
   wechat: ['wechat-ilink', 'cd966d16967dbb240ad91062a3c1a1c15925721d3a818729194ff9380490115a'],
@@ -17,21 +18,25 @@ const frozen = {
 };
 const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); };
 
-function harness(platform, legacy = false, initial = {}) {
+function harness(platform, legacy = false, initial = {}, controls = {}) {
   const events = [], sent = [], requests = [], inbound = [], polls = [], timers = new Set();
   let config = { ...(platform === 'wechat' ? { botToken: 'synthetic-token', baseUrl: '', outputIdle: 5000 } : { appId: 'synthetic-id', appSecret: 'synthetic-secret', domain: 'feishu' }), ...initial };
   let gateway = { id: platform === 'wechat' ? '__gateway__' : '__feishu_gateway__', cli: 'claude', cliSessionId: null };
-  let dispatch, turn, saveError, sendError, sdkError, chunks;
+  let dispatch, turn, saveError, sendError, sdkError, chunks, lifecycleOptions;
   const records = new Map(), chats = new Map();
   const agent = {}, http = {}, sdkOptions = [];
   const logs = { entries: [], push(type, text) { this.entries.push({ type, text }); }, filterSince() { return this.entries.slice(); }, addClient(res) { this.client = res; }, removeClient(res) { assert.equal(this.client, res); this.client = null; } };
   const echo = { values: [], add(text) { this.values.push(text); }, isEcho(text) { return this.values.includes(text); } };
   const ws = { connect() { events.push('connect'); }, disconnect() { events.push('disconnect'); }, reconnectIfRunning() { events.push('reconnect'); }, isOpen: () => true,
-    ensureOpen: async ms => { events.push(['ensure', ms]); }, sendUserMessage(text) { inbound.push(text); return true; } };
+    ensureOpen: ms => { events.push(['ensure', ms]); return controls.ensureOpen ? controls.ensureOpen(ms) : Promise.resolve(); }, sendUserMessage(text) { inbound.push(text); return true; } };
   const core = {
     deps: { fs: { readFileSync: () => JSON.stringify(config) } },
     createLogStore: () => logs, createEchoStore: () => echo,
-    createGatewayLifecycle: () => ({ get: () => gateway, create(cli) { gateway = { id: 'created', cli }; return gateway; }, switchCli(cli) { gateway.cli = cli; return gateway; }, destroy() { gateway = null; }, resetHistory() { events.push('reset'); } }),
+    createGatewayLifecycle(options) {
+      lifecycleOptions = options;
+      return { get: () => gateway, create(cli) { gateway = { id: 'created', cli }; return gateway; }, switchCli(cli) { gateway.cli = cli; return gateway; }, destroy() { gateway = null; },
+        resetHistory() { events.push('reset'); return controls.resetHistory?.(options); } };
+    },
     createChatWsClient(options) { turn = options.onTurn; return ws; },
     chunkOutbound(text, options) { events.push(['chunks', options.max]); return chunks || [text]; },
   };
@@ -65,6 +70,7 @@ function harness(platform, legacy = false, initial = {}) {
     sleep: async ms => { events.push(['sleep', ms]); },
     setInterval(callback, ms) { const timer = { callback, ms }; timers.add(timer); return timer; }, clearInterval(timer) { timers.delete(timer); },
     loadLark: () => Lark, createLarkHttpInstance: () => http, outboundAgent: agent,
+    ...controls.ports,
   };
   let bridge;
   if (legacy) {
@@ -79,7 +85,7 @@ function harness(platform, legacy = false, initial = {}) {
     instance.require = id => Object.hasOwn(mocks, id) ? mocks[id] : normal(id);
     instance._compile(source, filename); bridge = instance.exports;
   } else bridge = platform === 'wechat' ? getNative().wechatBridgeApi(ports) : getNative().feishuBridgeApi(ports);
-  bridge.init({ persistedSessions: records, chatSessions: chats, savePersistedSessions() {}, chatBroadcast() {}, port: 4500 });
+  bridge.init({ persistedSessions: records, chatSessions: chats, savePersistedSessions() {}, chatBroadcast() {}, port: 4500, clearBridgeHistory: controls.clearBridgeHistory });
   function route(method, url) {
     const found = bridge.router.stack.find(x => x.route?.path === url && x.route.methods[method.toLowerCase()]);
     assert.ok(found, `${method} ${url}`); return found.route.stack.at(-1).handle;
@@ -89,7 +95,7 @@ function harness(platform, legacy = false, initial = {}) {
     await route(method, url)({ body, query }, res); return { status: res.statusCode, body: res.body };
   }
   return { bridge, events, sent, requests, inbound, polls, timers, logs, echo, records, chats, sdkOptions, agent, http, ports, request, route, fetch,
-    onTurn: text => turn(text), onMessage: data => dispatch(data),
+    onTurn: text => turn(text), onMessage: data => dispatch(data), lifecycleOptions: () => lifecycleOptions,
     chunks(value) { chunks = value; }, failSave(error) { saveError = error; }, failSend(error) { sendError = error; }, failSdk(error) { sdkError = error; },
     noGateway() { gateway = null; } };
 }
@@ -217,4 +223,180 @@ test('Feishu command replies and inbound logs retain isolated UTF-16 units', asy
     results.push({ sent: h.sent, inboundLog: h.logs.entries.find(row => row.type === 'in') });
   }
   assert.deepEqual(results[1], results[0]);
+});
+
+function ownedWechat(t, controls = {}) {
+  const io = controlledIO.transport(controls), time = controlledIO.clock();
+  const h = harness('wechat', false, {}, { ...controls,
+    ports: { fetch: io.fetch, AbortSignal: time.AbortSignal, sleep: time.sleep, now: () => 120000 + time.now(), ...controls.ports } });
+  cleanup(t, h); return { h, io, time };
+}
+function message(text, user = 'synthetic-user') {
+  return { from_user_id: user, context_token: 'context-' + user, item_list: [{ type: 1, text_item: { text } }] };
+}
+function checkpoint(q) {
+  return { logs: structuredClone(q.h.logs.entries), inbound: q.h.inbound.slice(), echo: q.h.echo.values.slice(), requests: q.io.requests.length };
+}
+async function restart(q) { q.h.bridge.stopBridge(); await q.h.bridge.startBridge(); await flush(); }
+async function checkReplyTarget(q, user) {
+  assert.equal((await q.h.request('POST', '/send', { target: 'wechat', text: 'target-check' })).status, 200);
+  assert.equal(JSON.parse(q.io.sends().at(-1).options.body).msg.to_user_id, user);
+}
+
+test('getUpdates combines 45000ms deadline and stop cancellation without waiting for wall time', async t => {
+  const q = ownedWechat(t); await q.h.bridge.startBridge(); await flush();
+  const old = q.io.polls()[0]; assert.equal(q.time.timeouts[0].ms, 45000);
+  q.time.advance(44999); await flush(); assert.equal(old.options.signal.aborted, false);
+  q.time.advance(1); await flush(); assert.equal(old.options.signal.aborted, true);
+  assert.equal(old.options.signal.reason.name, 'TimeoutError');
+  assert.ok(q.h.logs.entries.some(row => row.type === 'error' && row.text.includes('synthetic request timeout')));
+  assert.equal(q.time.sleeps.at(-1).ms, 3000);
+  q.time.advance(3000); await flush(); assert.equal(q.io.polls().length, 2);
+  const before = checkpoint(q);
+  old.reply({ get_updates_buf: 'expired-cursor', msgs: [message('expired')] }); await flush();
+  assert.equal(old.jsonReads, 0); assert.deepEqual(checkpoint(q), before);
+  const live = q.io.polls()[1]; q.h.bridge.stopBridge(); await flush();
+  assert.equal(live.options.signal.aborted, true); assert.equal(q.io.polls().length, 2);
+});
+
+test('restart fences late fetch success and HTTP error before any body is read', async t => {
+  for (const ok of [true, false]) {
+    const q = ownedWechat(t); await q.h.bridge.startBridge(); const old = q.io.polls()[0];
+    await restart(q); const before = checkpoint(q);
+    old.resolve({ ok, status: 503,
+      json() { old.jsonReads++; return Promise.resolve({ get_updates_buf: 'old', msgs: [message('old')] }); },
+      text() { old.textReads++; return Promise.resolve('old HTTP failure'); } });
+    await flush(); assert.equal(old.jsonReads + old.textReads, 0); assert.deepEqual(checkpoint(q), before);
+    q.io.polls()[1].reply({ get_updates_buf: 'live-cursor', msgs: [message('live', 'live-user')] }); await flush();
+    assert.deepEqual(q.h.inbound, ['live']);
+    assert.equal(JSON.parse(q.io.polls()[2].options.body).get_updates_buf, 'live-cursor');
+    await checkReplyTarget(q, 'live-user');
+  }
+});
+
+test('restart fences pending json/text body completion and rejection', async t => {
+  for (const kind of ['json', 'text']) for (const reject of [false, true]) {
+    const q = ownedWechat(t), body = controlledIO.deferred();
+    await q.h.bridge.startBridge(); const old = q.io.polls()[0];
+    old.resolve({ ok: kind === 'json', status: 502,
+      json() { old.jsonReads++; return body.promise; }, text() { old.textReads++; return body.promise; } });
+    await flush(); assert.equal(old.jsonReads + old.textReads, 1);
+    await restart(q);
+    q.io.polls()[1].reply({ get_updates_buf: 'fresh', msgs: [message('fresh', 'fresh-user')] }); await flush();
+    const before = checkpoint(q);
+    if (reject) body.reject(new Error('late body failure'));
+    else body.resolve(kind === 'json' ? { get_updates_buf: 'old-cursor', msgs: [message('old body', 'old-user')] } : 'late error body');
+    await flush(); assert.deepEqual(checkpoint(q), before);
+    assert.equal(JSON.parse(q.io.polls().at(-1).options.body).get_updates_buf, 'fresh');
+    await checkReplyTarget(q, 'fresh-user');
+  }
+});
+
+test('a deadline covers a body promise even if the injected body reader ignores abort', async t => {
+  const q = ownedWechat(t), body = controlledIO.deferred();
+  await q.h.bridge.startBridge(); const old = q.io.polls()[0];
+  old.resolve({ ok: true, json() { old.jsonReads++; return body.promise; } }); await flush();
+  q.time.advance(45000); await flush(); assert.equal(q.time.sleeps.at(-1).ms, 3000);
+  q.time.advance(3000); await flush(); assert.equal(q.io.polls().length, 2);
+  const before = checkpoint(q);
+  body.resolve({ get_updates_buf: 'late-body-cursor', msgs: [message('late body')] }); await flush();
+  assert.deepEqual(checkpoint(q), before);
+  assert.equal(JSON.parse(q.io.polls()[1].options.body).get_updates_buf, '');
+});
+
+test('old ensureOpen cannot deliver, handle the next message, or schedule another poll after restart', async t => {
+  const gate = controlledIO.deferred(); let opens = 0;
+  const q = ownedWechat(t, { ensureOpen: () => opens++ === 0 ? gate.promise : Promise.resolve() });
+  await q.h.bridge.startBridge();
+  q.io.polls()[0].reply({ get_updates_buf: 'old', msgs: [message('first old'), message('second old', 'second-old-user')] });
+  await flush(); assert.deepEqual(q.h.inbound, []); await restart(q);
+  q.io.polls()[1].reply({ get_updates_buf: 'new', msgs: [message('new input', 'new-user')] }); await flush();
+  const before = checkpoint(q); gate.resolve(); await flush();
+  assert.deepEqual(checkpoint(q), before); assert.deepEqual(q.h.inbound, ['new input']);
+  await checkReplyTarget(q, 'new-user');
+});
+
+test('old retry backoff cannot wake into the new run', async t => {
+  for (const reject of [false, true]) {
+    const q = ownedWechat(t); await q.h.bridge.startBridge();
+    q.io.polls()[0].reject(new Error('synthetic transport failure')); await flush();
+    const sleep = q.time.sleeps.at(-1); assert.equal(sleep.ms, 3000); await restart(q);
+    const before = checkpoint(q);
+    if (reject) sleep.wait.reject(new Error('old backoff failed')); else q.time.advance(3000);
+    await flush(); assert.deepEqual(checkpoint(q), before); assert.equal(q.io.polls().length, 2);
+  }
+});
+
+test('old command send and chunk-delay continuations cannot log, send another chunk, or poll', async t => {
+  for (const deferSend of [true, false]) {
+    const q = ownedWechat(t, { deferSend }); q.h.chunks(['first', '(续2) second']);
+    await q.h.bridge.startBridge(); q.io.polls()[0].reply({ msgs: [message('/help'), message('must not follow')] });
+    await flush(); assert.equal(q.io.sends().length, 1);
+    const oldSend = q.io.sends()[0];
+    if (!deferSend) assert.equal(q.time.sleeps.at(-1).ms, 500);
+    await restart(q); const before = checkpoint(q);
+    if (deferSend) {assert.equal(oldSend.options.signal.aborted, true); oldSend.reply({});}
+    else q.time.advance(500);
+    await flush(); assert.deepEqual(checkpoint(q), before);
+    assert.equal(q.io.sends().length, 1); assert.equal(q.io.polls().length, 2);
+  }
+});
+
+test('old async reset command completion and rejection are silent after restart', async t => {
+  for (const reject of [false, true]) {
+    const owner = controlledIO.deferred(), calls = [];
+    const clearBridgeHistory = id => { calls.push(id); return owner.promise; };
+    const q = ownedWechat(t, { clearBridgeHistory, resetHistory: options => options.clearBridgeHistory(options.sessionId) });
+    assert.equal(q.h.lifecycleOptions().clearBridgeHistory, clearBridgeHistory);
+    await q.h.bridge.startBridge(); q.io.polls()[0].reply({ msgs: [message('/reset'), message('after old reset')] });
+    await flush(); assert.deepEqual(calls, ['__gateway__']); assert.equal(q.io.sends().length, 0);
+    await restart(q); const before = checkpoint(q);
+    if (reject) owner.reject(new Error('old reset failed')); else owner.resolve();
+    await flush(); assert.deepEqual(checkpoint(q), before); assert.equal(q.io.polls().length, 2);
+  }
+});
+
+test('both POST reset routes await the supplied history owner and map sync/async failure to 500', async t => {
+  for (const platform of ['wechat', 'feishu']) for (const mode of ['sync-ok', 'sync-fail', 'async-ok', 'async-fail']) {
+    const wait = controlledIO.deferred(), calls = [];
+    const clearBridgeHistory = id => { calls.push(id); if (mode === 'sync-fail') throw new Error('owner reset failed'); return mode === 'sync-ok' ? undefined : wait.promise; };
+    const h = harness(platform, false, {}, { clearBridgeHistory, resetHistory: options => options.clearBridgeHistory(options.sessionId) }); cleanup(t, h);
+    assert.equal(h.lifecycleOptions().clearBridgeHistory, clearBridgeHistory);
+    let settled = false; const response = h.request('POST', '/gateway/reset').then(value => {settled = true; return value;});
+    await flush();
+    if (mode.startsWith('async')) {
+      assert.equal(settled, false);
+      if (mode === 'async-ok') wait.resolve(); else wait.reject(new Error('owner reset failed'));
+    }
+    const result = await response;
+    assert.deepEqual(calls, [platform === 'wechat' ? '__gateway__' : '__feishu_gateway__']);
+    assert.deepEqual(result, mode.endsWith('ok') ? { status: 200, body: { ok: true } } : { status: 500, body: { error: 'owner reset failed' } });
+  }
+});
+
+test('Feishu reset commands wait for owner completion and never send success after sync/async failure', async t => {
+  for (const mode of ['sync-ok', 'sync-fail', 'async-ok', 'async-fail']) {
+    const wait = controlledIO.deferred();
+    const clearBridgeHistory = () => {if (mode === 'sync-fail') throw new Error('command owner failed'); return mode === 'sync-ok' ? undefined : wait.promise;};
+    const h = harness('feishu', false, {}, { clearBridgeHistory, resetHistory: options => options.clearBridgeHistory(options.sessionId) }); cleanup(t, h);
+    await h.bridge.startBridge(); const command = h.onMessage({ message: { chat_id: 'reset-chat', message_type: 'text', content: '{"text":"/reset"}' } });
+    await flush();
+    if (mode.startsWith('async')) {assert.equal(h.sent.length, 0); if (mode === 'async-ok') wait.resolve(); else wait.reject(new Error('command owner failed'));}
+    await command;
+    if (mode.endsWith('ok')) assert.equal(JSON.parse(h.sent[0].data.content).text, '✅ 已清空对话历史');
+    else {assert.equal(h.sent.length, 0); assert.ok(h.logs.entries.some(row => row.type === 'error' && row.text.includes('command owner failed')));}
+  }
+});
+
+test('WeChat reset command waits for owner, reports no success on rejection, and resumes only the live poll', async t => {
+  for (const reject of [false, true]) {
+    const wait = controlledIO.deferred();
+    const q = ownedWechat(t, { clearBridgeHistory: () => wait.promise, resetHistory: options => options.clearBridgeHistory(options.sessionId) });
+    await q.h.bridge.startBridge(); q.io.polls()[0].reply({ msgs: [message('/reset')] }); await flush();
+    assert.equal(q.io.sends().length, 0);
+    if (reject) wait.reject(new Error('WeChat owner failed')); else wait.resolve();
+    await flush();
+    if (reject) {assert.equal(q.io.sends().length, 0); assert.ok(q.h.logs.entries.some(row => row.type === 'error' && row.text.includes('WeChat owner failed')));}
+    else {assert.equal(JSON.parse(q.io.sends()[0].options.body).msg.item_list[0].text_item.text, '✅ 已清空对话历史'); assert.equal(q.io.polls().length, 2);}
+  }
 });

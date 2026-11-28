@@ -197,10 +197,8 @@ fn gateway_delete<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     })
 }
 fn gateway_reset<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
-    caught(s, a[1], 500, || {
-        call(s.get(c"gateway")?, c"resetHistory", &[])?;
-        ok(a[1])
-    })
+    let pending = async_result(s, || call(s.get(c"gateway")?, c"resetHistory", &[]))?;
+    reply(pending, s, a[1], 500)
 }
 fn start_route<'a>(s: L<'a>, a: &mut [L<'a>]) -> Result<L<'a>> {
     let pending = async_result(s, || {
