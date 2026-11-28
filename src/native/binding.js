@@ -2274,6 +2274,12 @@ exposeHostApi('processProbe', () => {
 
 exposeHostApi('cliResultCompletion', () => getNative().cliResultApi(getNative()));
 
+exposeHostApi('zcodeAppServer', () => getNative().zcodeAppServerApi(process));
+
+exposeHostApi('backgroundHold', () => getNative().backgroundHoldApi({
+  native: getNative(), process, isMainResult: module.exports.cliResultCompletion.isMainResult,
+}));
+
 exposeHostApi('cliCompletion', () => getNative().cliCompletionApi(getNative()));
 
 // V8's relational operators preserve coercion of legacy threshold values.

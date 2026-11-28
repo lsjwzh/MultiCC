@@ -1,7 +1,7 @@
 //! napi owner of the background hold.
 //!
-//! `src/chat/background-hold.js` only forwards arguments, supplies the host
-//! facts (`isMainResult`, `hasBackground`), arms one unref'd timer and logs.
+//! `background_hold/host.rs` supplies the host facts (`isMainResult`,
+//! `hasBackground`) and owns the unref'd timers, callbacks and release order.
 //! Every decision — what is held, when the turn may be released, which
 //! self-wake decides the outcome, which injected messages are still unanswered,
 //! which delivery identity was already written, and whether a typed message may
@@ -16,6 +16,8 @@ use napi::{
 };
 use napi_derive::napi;
 use std::cell::RefCell;
+
+mod host;
 
 fn read(env: Env, value: Unknown<'_>) -> Result<V> {
     unsafe { crate::js_bridge::read_value(env.raw(), value.raw(), 0, &mut Vec::new()) }

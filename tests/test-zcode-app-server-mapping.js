@@ -19,7 +19,7 @@ const {
   tokensOfUsage,
   buildRuntimeModel,
   createZcodeTurnMapper,
-} = require('../src/cli-adapters/zcode-app-server');
+} = require('../src/native/binding').zcodeAppServer;
 
 const SID = 'sess_11111111-2222-3333-4444-555555555555';
 
@@ -325,4 +325,80 @@ test('protocol constants stay in the shape the engine accepts', () => {
   assert.deepEqual(tokensOfUsage({ inputTokens: -1, outputTokens: 'x' }), {
     input: 0, output: 0, cache: { read: 0, write: 0 },
   });
+});
+
+test('native mapping preserves live inputs, missing output and malformed JSON recovery', () => {
+  const { mapper } = mapperFor();
+  feed(mapper, 1, 'turn.started', {});
+  const input = { command: 'synthetic', nested: { keep: true } };
+  const started = feed(mapper, 2, 'model.streaming', {
+    kind: 'tool_call', toolCallId: '__proto__', toolName: 'Bash', input,
+  });
+  assert.strictEqual(started.events[0].part.state.input, input);
+  const missing = feed(mapper, 3, 'tool.updated', {
+    kind: 'result', toolCallId: '__proto__', result: { success: false },
+  }).events[0].part.state;
+  assert.strictEqual(missing.input, input);
+  assert.equal(missing.status, 'error');
+  assert.equal(Object.hasOwn(missing, 'output'), false);
+  const nullOutput = feed(mapper, 4, 'tool.updated', {
+    kind: 'result', toolCallId: '__proto__', result: { content: null },
+  }).events[0].part.state;
+  assert.equal(nullOutput.output, '');
+  feed(mapper, 5, 'model.streaming', { kind: 'tool_input_start', toolCallId: 'bad' });
+  feed(mapper, 6, 'model.streaming', { kind: 'tool_input_delta', toolCallId: 'bad', delta: '{bad' });
+  const bad = feed(mapper, 7, 'model.streaming', { kind: 'tool_call', toolCallId: 'bad' });
+  assert.equal(bad.events[0].part.state.input, '{bad');
+  assert.equal(feed(mapper, 8, 'turn.completed', { resultType: 'success' }).done, 'success');
+});
+
+test('native usage conversion keeps Number coercion and the original thrown value', () => {
+  const trace = [];
+  const usage = {
+    get inputTokens() { trace.push('input'); return { valueOf() { trace.push('number'); return 1.5; } }; },
+    get outputTokens() { trace.push('output'); return 5n; },
+    cacheReadTokens: Infinity,
+    cacheWriteTokens: '2.4',
+  };
+  assert.deepEqual(tokensOfUsage(usage), { input: 2, output: 5, cache: { read: 0, write: 2 } });
+  assert.deepEqual(trace, ['input', 'number', 'output']);
+  const sentinel = {};
+  assert.throws(() => tokensOfUsage({ get inputTokens() { throw sentinel; } }), e => e === sentinel);
+  assert.throws(() => tokensOfUsage({ inputTokens: Symbol('count') }), TypeError);
+});
+
+test('native reasoning throttles by UTF-16 growth and allows reentrant clocks', () => {
+  let mapper;
+  mapper = createZcodeTurnMapper({ sessionId: SID, now: () => {
+    assert.deepEqual(mapper.map({ type: 'session.updated' }), { events: [], done: null });
+    return 0;
+  } });
+  feed(mapper, 1, 'turn.started', {});
+  assert.equal(feed(mapper, 2, 'model.streaming', {
+    kind: 'reasoning_delta', assistantMessageId: 'm', delta: '\ud800',
+  }).events[0].part.text, '\ud800');
+  assert.deepEqual(feed(mapper, 3, 'model.streaming', {
+    kind: 'reasoning_delta', assistantMessageId: 'm', delta: '😀'.repeat(1999),
+  }).events, []);
+  const growth = feed(mapper, 4, 'model.streaming', {
+    kind: 'reasoning_delta', assistantMessageId: 'm', delta: '😀',
+  });
+  assert.equal(growth.events[0].part.text.length, 4001);
+  const end = feed(mapper, 5, 'turn.completed', { resultType: 'success' });
+  assert.equal(end.events[0].part.completed, true);
+  assert.equal(Object.isFrozen(RUNTIME_PREFERENCES), true);
+});
+
+test('runtime model keeps live key order, slash suffix and thrown getter identity', t => {
+  t.mock.method(Date, 'now', () => 1234);
+  const token = { synthetic: true };
+  const model = buildRuntimeModel({ model: 'vendor/folder/model', provider: { vendor: {
+    options: { apiKey: token }, models: { '': {}, '10': {}, '2': {}, named: {} },
+  } } });
+  assert.deepEqual(model.model, { providerId: 'vendor', modelId: 'folder/model' });
+  assert.deepEqual(model.provider.models, [{ modelId: '2' }, { modelId: '10' }, { modelId: 'named' }]);
+  assert.equal(model.generatedAt, 1234);
+  assert.strictEqual(model.provider.apiKey.value, token);
+  const sentinel = {};
+  assert.throws(() => buildRuntimeModel({ get model() { throw sentinel; } }), e => e === sentinel);
 });

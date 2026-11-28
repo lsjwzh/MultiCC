@@ -49,7 +49,7 @@ test('Monitor hook only captures known native notifications and never captures s
 });
 
 test('background hold releases after quiet, keeps holding past the cap while background work is alive, and lets the last self-wake decide the outcome', async () => {
-  const { createBackgroundHold } = require('../src/chat/background-hold');
+  const { createBackgroundHold } = require('../src/native/binding').backgroundHold;
   const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
   const main = { type: 'result', subtype: 'success', is_error: false, result: 'first', usage: { input_tokens: 1 } };
   const wake = (result, extra = {}) => ({ type: 'result', subtype: 'success', is_error: false, result,
