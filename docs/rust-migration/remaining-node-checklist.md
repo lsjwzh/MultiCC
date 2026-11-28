@@ -1,5 +1,46 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 17 批（2026-11-28，MacPro x86_64）
+
+批次基线 `783f25a0f02cb8e48281341777231e73aef875b9`，最终验收基线 `9443a24ae17bb588a1c4d247bac47bc7363c9c42`。 发布前已变基至同期主线 `45a7d2b88839e3b2abf3a7bd0f477128c7b3594b`，本节门禁数字对应验收基线。发布时的可达清单已按变基后的源码重新生成。退役十个生产 Node 模块，共 3,315 物理行，覆盖聊天收尾、后台 hold、voice/ZCode 及四种频道桥。[逐文件清单](reachable-current.tsv) · [依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 215 / 65,732 | 211 / 64,404 |
+| server.js 与 src/ | 216 / 68,585 | 212 / 67,264 |
+| 含生产插件 | 228 / 72,504 | 218 / 69,309 |
+
+| 退役生产路径 | 原物理行 | 验收行为 |
+|---|---:|---|
+| `src/chat/finalize-host.js` | 73 | 收尾执行器与快照/persist/commit 边界 |
+| `src/cli-adapters/zcode-app-server.js` | 390 | ZCode 录制事件映射与后台跟踪 |
+| `src/chat/background-hold.js` | 143 | background hold 构造、定时器与注入 ACK |
+| `src/voice/acp-bridge.js` | 835 | voice ACP 会话、关联准入与清洗 |
+| `plugins/bridges/wechat-ilink.js` | 538 | 微信 iLink 适配及路由 |
+| `plugins/bridges/secure-config.js` | 33 | 桥配置迁移与私有文件写入 |
+| `plugins/bridges/gateway-core.js` | 380 | 共享网关生命周期、日志和回声/WS |
+| `plugins/bridges/feishu-bridge.js` | 351 | 飞书适配及路由 |
+| `plugins/bridges/telegram-bridge.js` | 271 | Telegram 适配及路由 |
+| `plugins/bridges/discord-bridge.js` | 301 | Discord 适配及路由 |
+
+Node 例外仅保留必要的 Express、JS 对象/回调、Node 定时器、fetch/ws、ACP 与平台 SDK 接线；业务状态和规则由 Rust 接管。保留原因是现有 JS SDK、流及宿主对象接口；待对应消费者迁入 Rust 且完成协议兼容验证后再撤除，不扩大 Node 业务核心。
+
+按目标及其生产调用方选择的固定 48 个现有 Node 入口，实际验收 63 个入口（纳入变更入口）；Node TAP 通过 815，跳过 2。真实独立网关 WS 另行通过 1；Rust 通过 2209，忽略 0。
+
+微信/飞书/Telegram/Discord 经真实隔离 HTTP 与本批基线源码对照，共 97 个响应及副作用匹配，旧侧哈希等于 source-manifest。另 8 组前门冻结差分共 1047 项一致、73 项已声明差异，覆盖 voice/CLI/会话/事件与插件/频道。
+
+同一源码树 x64 release 指纹 `a5da0d024f5583055ca21744`；验收进程通过绝对 MULTICC_RUST_ADDON 加载绑定。缓存指纹、二进制哈希、x64 架构与加载对象身份均在门禁首尾复核。
+
+npm 打包清单共 1,662 文件，覆盖本批 120 份 Rust 源文件及三份内置记忆规则。核对上一批发布基线的 npm 全量清单后，此次验收树增加 46 个 Rust 源文件及 2 个其他文件，含同期合入的历史分页资源。18 个变更 Node 入口由桌面和独立包兼容宿主使用；4 份 Cargo 集成测试保留在 Git 并执行。十个退役路径均退出工作树、Git 索引、可达表和 npm 包。
+
+试件只使用合成凭据、隔离 HOME/数据与回环端口、假 SDK，不访问真实账号或调用生产重启接口。每个 Node 入口、HTTP 请求与副作用、Rust 目标和构建均保留原始日志；首轮和重试分别归档并对 detached_result 确切版本 ACK。
+
+Claude 后台任务达到上限时提示，ZCode 常驻桥达到上限时结束宿主回合。全局 ACP 只认对应的 voice_admission 终态，JSON null 帧作为噪声忽略。微信每轮 getUpdates 限时 45 秒，停止并重新启动后丢弃旧轮询的迟到结果。五个平台清除历史统一等待历史 owner 成功，随后才保存和确认。
+
+官方 ACP SDK 的真实 stdio 与回环 HTTP 基线对照通过 5 个步骤，记录 3 次宿主 HTTP 请求。
+
+绑定 SHA-256：`038984a66fe86148df6c1cd6e309508aed0c845c4f21455c5b66803a4da26af0`。
+
 ## server.js 可达模块第 16 批（2026-11-27，MacPro x86_64）
 
 基线为 `d6c814fe`。本批退役的十个生产模块涵盖 插件内部宿主、隧道探测、持久等待与操作、API 错误、OAuth 续期和聊天生命周期，共 4,060 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
