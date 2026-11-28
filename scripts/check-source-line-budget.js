@@ -843,8 +843,9 @@ const REVIEWED_EXEMPTIONS = Object.freeze({
     // +5 bilingual Spaces labels, 14 missing English screen labels and 2 shared vault labels.
     // 任务详情消息列表、翻页和展开按钮的三组双语文案。
     // Air 手动归档入口、确认和结果共三个双语键。
-    maxLines: 10990,
-    maxBytes: 718666,
+    // 首启与设置中的 macOS 远程控制授权共七个双语键。
+    maxLines: 11004,
+    maxBytes: 719886,
     reason: 'generated bilingual dictionary (scripts/generate-i18n.js) — data, not hand-written source',
   }),
 });

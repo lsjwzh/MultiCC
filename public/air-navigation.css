@@ -200,6 +200,14 @@
 .setup-step.current .setup-number { color: white; background: var(--accent); }
 .setup-step .setup-actions { display: flex; flex-direction: row; flex-wrap: wrap; justify-content: flex-start; margin-top: 12px; }
 #setup-dismiss { display: block; margin: 18px auto 0; border: 0; background: transparent; color: var(--muted); }
+.air-global-permission-dialog { max-width: min(460px, calc(100vw - 28px)); border: 1px solid var(--hairline);
+  border-radius: 14px; padding: 22px; color: #25445e; box-shadow: 0 16px 50px rgba(18,45,70,.22); }
+.air-global-permission-dialog::backdrop { background: rgba(14,32,48,.48); }
+.air-global-permission-dialog h3 { margin: 0 0 8px; }
+.air-global-permission-dialog p { line-height: 1.6; overflow-wrap: anywhere; }
+.air-global-permission-status { display: grid; gap: 6px; }
+.air-global-permission-dialog .air-global-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 15px; }
+.air-global-permission-dialog .air-global-foot button { min-height: 32px; padding: 5px 11px; font-size: 11px; }
 @media (max-width: 1000px) { .air-settings-layout { grid-template-columns: 160px minmax(0,1fr); gap: 16px; } }
 @media (max-width: 760px) {
   .air-settings-layout { display: block; }
@@ -225,8 +233,8 @@
 /* 发送快捷键这行没有 ⓘ 浮层（电源行才有），说明直接排在标题下面；右侧让出 ⓘ 那一列
    （约 30px + 8px 间距），开关才和下面电源行的开关对齐。 */
 #settings-input-controls .sidebar-setting-row { padding-right: 38px; }
-#settings-input-controls .more-setting-copy strong, #settings-input-controls .more-setting-copy small { display: block; text-align: left; }
-#settings-input-controls .more-setting-copy small { margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.5; font-weight: 400; }
+:is(#settings-input-controls, #air-remote-control-settings) .more-setting-copy > * { display: block; text-align: left; }
+:is(#settings-input-controls, #air-remote-control-settings) .more-setting-copy small { margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.5; font-weight: 400; }
 .power-setting-wrap:has(button[hidden]) { display: none; }
 .power-setting-wrap details summary { list-style: none; color: var(--muted); cursor: pointer; padding: 8px; }
 .power-setting-wrap details small { position: absolute; z-index: 2; right: 0; top: 100%; width: min(300px, 100%); padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: var(--shadow-2); }

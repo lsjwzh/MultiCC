@@ -123,7 +123,7 @@ test('the setup card is driven by the real aux config, not a guess', () => {
   assert.match(airOnboarding,
     /const done = \[auxConfigured === true, data\.directories\.length > 0, data\.tasks\.length > 0\]/);
   assert.match(airOnboarding, /const incomplete = count < 3 && auxConfigured !== null/);
-  assert.match(airOnboarding, /\$\('setup-card'\)\.hidden = !incomplete \|\| dismissed/);
+  assert.match(airOnboarding, /\$\('setup-card'\)\.hidden = \(!incomplete && !showRemote\) \|\| dismissed/);
   // 离开 AI Assistant（或线路）设置页时重查：刚保存过的话卡片当场消失
   assert.match(airJs, /\['aux', 'provider'\]\.includes\(mode\) && next !== mode/);
   // 跳过只藏卡不等于已配置，且记录在本机

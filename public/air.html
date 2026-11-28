@@ -72,7 +72,7 @@
       </button>
     </div>
 
-    <button id="onboarding-entry" type="button" hidden><span data-i18n="airGuideTitle">上手指南</span><b id="onboarding-progress">0 / 3</b></button>
+    <button id="onboarding-entry" type="button" hidden><span id="onboarding-entry-guide" data-i18n="airGuideTitle">上手指南</span><span id="onboarding-entry-remote" data-i18n="airGuideRemoteEntry" hidden>可选：远程控制</span><b id="onboarding-progress">0 / 3</b></button>
 
     <!-- 控制台和「定时任务」一样是主区域里的一页：点它就在右边打开，地址写
          view=overview（裸 /air、/manage 与 App 的「网页版控制台」都落在这儿 ——
@@ -254,11 +254,7 @@
          renderOverview 画出来的，所以 #console-content 整块重建时它不受影响
          （air.js 的 renderSetupCard() 只管切 hidden）。 -->
     <section id="console-center" hidden>
-      <!-- 首启配置卡：/api/aux/config 还没有 providerId 时由 air.js 亮出来。
-           这张卡就是 2.0 的引导：先有模型（导入线路或用 CLI 自带），再配
-           AI Assistant —— 它是任务分类与归属的核心，必须配置，但轻量 flash
-           模型就够。配置完成后它永远消失；「暂时跳过」只记在本机
-           （air:setup-dismissed），跳过的只是这张卡，不是那项配置。 -->
+      <!-- 三步必需配置计入进度；可选的 macOS 授权由浏览器单独记录跳过状态。 -->
       <section id="setup-card" class="setup-card" hidden aria-label="首次配置引导" data-i18n-aria-label="airSetupGuide">
         <div class="setup-intro"><h2 data-i18n="airGuideWelcome">欢迎使用 MultiCC</h2><p data-i18n="airGuideLead">完成三步，开始你的第一个任务。</p><progress id="setup-progress" max="3" value="0" data-i18n-aria-label="airGuideTitle" aria-label="上手指南"></progress></div>
         <section id="setup-step-0" class="setup-step"><span class="setup-number">1</span><div><h3 data-i18n="airGuideModel">连接模型与 AI 助手</h3><p data-i18n="airGuideModelHint">准备执行任务的模型，再为分类和摘要配置一个轻量模型。</p>
@@ -269,6 +265,11 @@
           <div class="setup-actions"><button id="setup-provider" type="button" data-i18n="airAdminPanelProvider">模型线路</button><button id="setup-aux" type="button" data-i18n="airAdminAux">AI 助手</button></div></div></section>
         <section id="setup-step-1" class="setup-step"><span class="setup-number">2</span><div><h3 data-i18n="airGuideProject">选择项目</h3><p data-i18n="airGuideProjectHint">项目是任务使用的文件夹。可以使用已有项目，或添加一个新文件夹。</p><div class="setup-actions"><button id="setup-project" type="button" data-i18n="airAddDirectory">添加项目</button><button id="setup-example" type="button" data-i18n="airTryExample">用示例项目试试</button></div></div></section>
         <section id="setup-step-2" class="setup-step"><span class="setup-number">3</span><div><h3 data-i18n="airGuideTask">发出第一个任务</h3><p data-i18n="airGuideTaskHint">用一句话描述你想完成的事，任务会出现在左侧最近任务中。</p><div class="setup-actions"><button id="setup-first-task" class="primary" type="button" data-i18n="airNewTask">新任务</button></div></div></section>
+        <section id="setup-step-remote" class="setup-step" hidden><span class="setup-number" aria-hidden="true">4</span><div>
+          <h3 data-i18n="airGuideRemoteTitle">屏幕录制与远程控制（可选）</h3>
+          <p data-i18n="airGuideRemoteHint">以后任务遇到验证码、登录确认等卡点时，你可以从聊天打开「屏幕」，远程查看并接手这台 Mac。也可以稍后在「设置 → 电脑与电源」里授权。</p>
+          <div class="setup-actions"><button id="setup-remote-configure" type="button" data-i18n="airGuideRemoteConfigure">设置权限</button><button id="setup-remote-skip" type="button" data-i18n="airGuideRemoteSkip">跳过此步</button></div>
+        </div></section>
         <button id="setup-dismiss" type="button" data-i18n="airGuideLater">稍后再做，可从侧栏继续</button>
       </section>
       <div id="console-content" aria-live="polite"></div>
@@ -552,6 +553,7 @@
                       title="关盖时保持运行，不进入睡眠（点击切换）" data-i18n-title="airLidSleepOffTitle"><span>☾</span><span class="more-setting-copy"><strong data-i18n="airLidSleep">关盖运行</strong><small data-i18n="airGlobalPowerDesc">合上盖后任务继续运行、屏幕熄灭，开盖点亮。</small></span><span class="row-switch" aria-hidden="true"></span></button>
               <button type="button" class="sidebar-setting-row" id="air-auto-unlock" hidden
                       title="允许电脑操作工具在需要时自动解锁" data-i18n-title="airGlobalUnlockSaved"><span>♧</span><span class="more-setting-copy"><strong data-i18n="airGlobalUnlockToggle">允许自动解锁</strong><small data-i18n="airGlobalUnlockDesc">电脑操作工具需要使用桌面时，可用已保存的登录密码解锁。</small></span><span class="row-switch" aria-hidden="true"></span></button>
+              <button type="button" class="sidebar-setting-row" id="air-remote-control-settings" hidden><span aria-hidden="true">▣</span><span class="more-setting-copy"><strong data-i18n="airRemoteControlTitle">屏幕录制与远程控制</strong><small data-i18n="airRemoteControlDesc">检查 MultiCC Agent 权限，并在 macOS 系统设置中授权。</small></span><span aria-hidden="true">›</span></button>
     </section>
     <section id="settings-host-controls">
           <div class="ops-boot side-group">
@@ -784,6 +786,7 @@
   <script src="air-voice.js"></script>
   <script src="air-goal.js"></script>
   <script src="air-unattended.js"></script>
+  <script src="air-agent-permissions.js"></script>
   <script src="air-global.js"></script>
   <script src="air-power-shortcuts.js"></script>
   <script src="air-bark-devices.js"></script>
