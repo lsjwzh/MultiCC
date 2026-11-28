@@ -908,7 +908,7 @@ function pluginTree(root, platform, plugins, { manifest } = {}) {
   const resources = cliScript.bundleResources(root, platform);
   const dir = path.join(resources, 'app-server', 'plugins');
   fs.mkdirSync(path.join(dir, 'bridges'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'bridges', 'wechat-ilink.js'), '// internal module, not a plugin\n');
+  fs.writeFileSync(path.join(dir, 'bridges', 'internal-fixture.js'), '// internal module, not a plugin\n');
   for (const [id, version] of Object.entries(plugins)) {
     fs.mkdirSync(path.join(dir, id, 'bin'), { recursive: true });
     fs.writeFileSync(path.join(dir, id, 'plugin.json'), JSON.stringify({ id, version }));
@@ -949,7 +949,7 @@ for (const platform of ['darwin', 'linux', 'win32']) {
     assert.equal(fs.realpathSync(path.join(to, 'linked-tool')), fs.realpathSync(linked));
     assert.equal(pluginVersion(to, 'chrome-proxy-launcher'), '1.7.0', 'a built-in is the new package\'s own');
     assert.equal(fs.existsSync(path.join(to, 'retired-builtin')), false, 'a built-in the new package dropped is not brought back');
-    assert.equal(fs.readFileSync(path.join(to, 'bridges', 'wechat-ilink.js'), 'utf8'), '// internal module, not a plugin\n');
+    assert.equal(fs.readFileSync(path.join(to, 'bridges', 'internal-fixture.js'), 'utf8'), '// internal module, not a plugin\n');
     // A hand-installed plugin whose id is a built-in now gives way, but is kept.
     assert.equal(pluginVersion(to, 'my-tool'), '3.0.0');
     assert.equal(result.backedUp.length, 1);

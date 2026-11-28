@@ -832,6 +832,30 @@ function exposeHostApi(key, create) {
 
 module.exports.loadLegacyHostApi = (key, current) => legacyHostApis.get(key)(current);
 
+// Built-in channel policy/state is native. Only SDK loading, live Node handles
+// and timer/fetch/filesystem ports remain here; no fallback channel implementation.
+exposeHostApi('imChannelHost', () => {
+  const ports = options => ({
+    express: require('express'), fs: require('node:fs'), path: require('node:path'),
+    os: require('node:os'), crypto: require('node:crypto'),
+    legacyDir: require('node:path').resolve(__dirname, '../../plugins/bridges'),
+    bridgeConfig: module.exports.bridgeConfig, bridgeGateway: module.exports.bridgeGateway,
+    fetch: (...args) => globalThis.fetch(...args), AbortController, AbortSignal,
+    now: () => Date.now(), sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    setInterval, clearInterval,
+    loadLark: () => require('@larksuiteoapi/node-sdk'),
+    createLarkHttpInstance: (...args) => require('../network/sdk-bridges').createLarkHttpInstance(...args),
+    outboundAgent: module.exports.outbound.outboundAgent,
+    ...options,
+  });
+  return {
+    createWechatBridge: (options = {}) => getNative().wechatBridgeApi(ports(options)),
+    createFeishuBridge: (options = {}) => getNative().feishuBridgeApi(ports(options)),
+  };
+});
+exposeHostApi('wechatBridge', () => module.exports.imChannelHost.createWechatBridge());
+exposeHostApi('feishuBridge', () => module.exports.imChannelHost.createFeishuBridge());
+
 // Node owns the event-loop histogram and JavaScript's overloaded + operator.
 exposeHostApi('observability', () => {
   const native = getNative();

@@ -1,6 +1,7 @@
 mod outbox_runtime;
 mod orchestration_native_store;
 mod gateway_chat_bridge;
+mod im_channels;
 mod egress_ip_monitor;
 mod claude_official_oauth;
 mod orchestration_draft;
