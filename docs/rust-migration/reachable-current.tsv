@@ -115,7 +115,7 @@ src/routes/macos-privacy.js	220	src/routes/host-ops-host.js
 src/routes/opencode-quota.js	245	src/routes/quota-host.js
 src/routes/ops-terminal.js	356	src/doctor/service.js,src/routes/host-ops-host.js
 src/routes/orchestration-host.js	191	server.js,src/routes/session-admin.js
-src/routes/orchestration.js	667	server.js
+src/routes/orchestration.js	668	server.js
 src/routes/provider-balance-host.js	105	server.js
 src/routes/providers-host.js	617	src/routes/providers.js
 src/routes/providers.js	156	server.js
