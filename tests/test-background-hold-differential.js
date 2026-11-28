@@ -1,7 +1,7 @@
 'use strict';
 // Differential test: the frozen pre-Rust hold
 // (tests/helpers/legacy-background-hold.js) versus the Rust owner behind
-// src/chat/background-hold.js.
+// native/addon/src/background_hold/host.rs.
 //
 // Both are driven with the same fake clock (node:test mock timers patch
 // setTimeout/setInterval/Date), the same events and the same host facts. After
@@ -42,7 +42,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const legacy = require('./helpers/legacy-background-hold');
-const facade = require('../src/chat/background-hold');
+const facade = require('../src/native/binding').backgroundHold;
 
 const QUIET_MS = 5000;
 const TICK_MS = 1000;
@@ -653,4 +653,50 @@ test('an unanswered injection still receives the cap notice after background wor
   assert.deepStrictEqual(world.capNotes, [5000]);
   assert.equal(world.releases.length, 0);
   world.hold.dispose();
+});
+
+test('native hold retries answer boundaries until acknowledged, then releases once', t => {
+  enable(t);
+  let background = true;
+  const seen = [], released = [];
+  const hold = facade.createBackgroundHold({
+    hasBackground: () => background, release: event => released.push(event),
+    quietMs: 1000, tickMs: 1000, maxMs: 0,
+    onBoundary(event) { seen.push(event); },
+  });
+  assert.equal(hold.start(mainResult()), true, 'zero cap does not disable the Rust hold');
+  assert.equal(seen.length, 1);
+  background = false;
+  advanceClock(t, 5000);
+  assert.equal(released.length, 0, 'unacknowledged answer history owns the turn');
+  assert.ok(seen.length > 1);
+  assert.equal(new Set(seen.map(event => event.held_result_id)).size, 1);
+  seen.at(-1).acknowledge();
+  advanceClock(t, 3000);
+  assert.equal(released.length, 1);
+  assert.equal(released[0].held_answers_saved, true);
+  assert.equal(hold.flush(), null);
+  advanceClock(t, 3000);
+  assert.equal(released.length, 1);
+  hold.dispose();
+});
+
+test('native hold clears timers before a throwing release and keeps callback failures isolated', t => {
+  enable(t);
+  const sentinel = {};
+  let calls = 0;
+  const hold = facade.createBackgroundHold({ hasBackground: () => true,
+    release() { calls += 1; throw sentinel; },
+    onCapReached() { throw new Error('synthetic cap callback'); }, maxMs: 1000,
+  });
+  hold.start(mainResult());
+  advanceClock(t, 2000);
+  assert.throws(() => hold.flush(), error => error === sentinel);
+  assert.equal(hold.flush(), null);
+  advanceClock(t, 10000);
+  assert.equal(calls, 1);
+  hold.dispose();
+  const inactive = facade.createBackgroundHold({ hasBackground() { throw sentinel; }, release() {} });
+  assert.equal(inactive.start(mainResult()), false);
+  inactive.dispose();
 });

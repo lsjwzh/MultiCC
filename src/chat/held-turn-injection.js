@@ -20,7 +20,7 @@
 // missing row and never writes stdin again. A failed write aborts the
 // registration so the retry may write.
 
-const { mayInjectIntoHeldTurn, isDirectUserTyped, spawnContract } = require('./background-hold');
+const { mayInjectIntoHeldTurn, isDirectUserTyped, spawnContract } = require('../native/binding').backgroundHold;
 
 // Facts that decide WHICH process serves a turn. The same projection is taken
 // when the process is spawned (turn-engine passes the digest to chatStream) and

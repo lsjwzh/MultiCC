@@ -473,7 +473,7 @@ function probeAddon(file, node = process.execPath) {
       || ['start','observe','tick','flush','beginInjection','confirmInjection','acknowledgeHistory','historyPending','historyWritten','interruptInjections','requireAnswerHistory','pendingBoundaries','acknowledgeAnswer','abortInjection','capReached','dispose']
         .some(key=>typeof a.RustBackgroundHold.prototype[key]!=='function')
       || ['held','injections','maxMs'].some(key=>typeof Object.getOwnPropertyDescriptor(a.RustBackgroundHold.prototype,key)?.get!=='function')
-      || ['backgroundHoldMaxMs','backgroundHoldMayInject','backgroundHoldUserTyped',
+      || ['backgroundHoldApi','zcodeAppServerApi','backgroundHoldMaxMs','backgroundHoldMayInject','backgroundHoldUserTyped',
         'backgroundHoldProcessStale','backgroundHoldSpawnContract'].some(key=>typeof a[key]!=='function')) process.exit(1);
     {
       if(a.backgroundHoldMaxMs(undefined)!==3600000 || a.backgroundHoldMaxMs('0')!==0) process.exit(1);

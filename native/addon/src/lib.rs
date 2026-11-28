@@ -68,6 +68,7 @@ pub mod notify_settings;
 pub mod orchestration_command;
 pub mod workspace_release;
 pub mod zcode_engine;
+pub mod zcode_app_server;
 pub mod zcode_session;
 
 mod account_login_routes;
