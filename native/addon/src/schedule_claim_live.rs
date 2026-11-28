@@ -121,14 +121,12 @@ pub(crate) fn task_id<'a>(item: L<'a>) -> Result<L<'a>> {
     if transfer.truthy()? {
         return Ok(transfer);
     }
-    let payload = if item
-        .optional(c"payload")?
-        .optional(c"type")?
-        .is_string("dispatch.result")?
-    {
+    let payload_raw = item.optional(c"payload")?;
+    let typ = payload_raw.optional(c"type")?;
+    let payload = if typ.is_string("dispatch.result")? || typ.is_string("task.interrupted")? {
         item.from_value(&V::Null)?
     } else {
-        item.optional(c"payload")?
+        payload_raw
     };
     let task = payload.optional(c"taskId")?;
     if task.truthy()? {

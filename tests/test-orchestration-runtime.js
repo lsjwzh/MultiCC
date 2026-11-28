@@ -1720,3 +1720,51 @@ test('删除会话仍取消已完成操作发往其他会话的待投递回执',
   assert.equal((await runtime.operations.get(operation.id)).status, 'completed');
   await runtime.stop();
 });
+
+test('passive task.interrupted notice releases scheduler slot without wedging queued FIFO work', async t => {
+  const history = new Map();
+  const deliveries = [];
+  const h = fixture(t, {
+    history,
+    deliverOutbox: async descriptor => {
+      deliveries.push(descriptor);
+      const ids = history.get(descriptor.sessionId) || new Set();
+      ids.add(descriptor.opts.deliveryId);
+      history.set(descriptor.sessionId, ids);
+      return true;
+    },
+  });
+  await h.runtime.start();
+  await h.runtime.operations.observeTask({
+    sessionId: 'programmer',
+    taskId: 'codex-tool:01a221b1:exec-1',
+    kind: 'tool',
+    description: 'long running build',
+    status: 'running',
+  });
+  const interrupted = await h.runtime.operations.interruptActiveTasks();
+  assert.equal(interrupted.length, 1);
+
+  await h.runtime.register({
+    session: 'programmer',
+    mode: 'delay',
+    reason: 'resume batch after restart',
+    delaySeconds: 1,
+  });
+  h.clock.value += 1_000;
+  await h.runtime.tick();
+
+  // Passive notice must NOT stay pinned in schedule.active; the queued wait
+  // continuation behind it must be delivered on the next tick without manual cancel.
+  let queue = await h.runtime.sessionScheduler.status('programmer');
+  if (deliveries.length < 2) {
+    await h.runtime.tick();
+    queue = await h.runtime.sessionScheduler.status('programmer');
+  }
+  assert.equal(deliveries.length, 2);
+  assert.equal(deliveries[0].opts.deliveryClass, DELIVERY_CLASS.NOTICE);
+  assert.equal(deliveries[1].opts.deliveryClass, DELIVERY_CLASS.CONTINUATION);
+  assert.equal(queue.state, 'running');
+  assert.notEqual(queue.active?.source, 'task');
+  await h.runtime.stop();
+});

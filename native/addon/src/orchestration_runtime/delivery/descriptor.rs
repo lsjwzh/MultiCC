@@ -32,7 +32,8 @@ pub(super) fn task(it: L<'_>) -> Result<L<'_>> {
         return Ok(direct);
     }
     let p = it.optional(c"payload")?;
-    if p.optional(c"type")?.is_string("dispatch.result")? {
+    let typ = p.optional(c"type")?;
+    if typ.is_string("dispatch.result")? || typ.is_string("task.interrupted")? {
         return null(it);
     }
     let task = p.optional(c"taskId")?;

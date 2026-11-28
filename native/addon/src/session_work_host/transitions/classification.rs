@@ -171,6 +171,14 @@ fn dispatch_result_entry(id: L<'_>) -> Result<bool> {
         Some(v) => !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && parts.next().is_none(),
     })
 }
+fn task_interrupted_entry(id: L<'_>) -> Result<bool> {
+    let v = fallback(id, "".into())?.coerce_string()?.to_string_lossy();
+    let mut parts = v.split(':');
+    Ok(parts.next() == Some("task")
+        && !parts.next().unwrap_or("").is_empty()
+        && parts.next() == Some("interrupted")
+        && parts.next().is_none())
+}
 fn observe_slot<'a>(f: L<'a>, q: L<'a>) -> Result<L<'a>> {
     let s = f.get(c"host")?;
     let id = f.get(c"id")?;
@@ -185,7 +193,7 @@ fn observe_slot<'a>(f: L<'a>, q: L<'a>) -> Result<L<'a>> {
     if entry.truthy()? {
         f.set(c"entry", entry)?;
     }
-    if dispatch_result_entry(entry)? {
+    if dispatch_result_entry(entry)? || task_interrupted_entry(entry)? {
         f.set(c"task", null(s)?)?;
     }
     let task = f.get(c"task")?;

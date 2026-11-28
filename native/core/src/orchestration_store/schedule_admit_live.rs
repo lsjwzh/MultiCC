@@ -155,7 +155,8 @@ pub(super) fn task_id(item: &JsValue) -> JsValue {
         return lineage;
     }
     let payload = item_payload(item);
-    if is(&field(payload, "type"), "dispatch.result") {
+    let typ = field(payload, "type");
+    if is(&typ, "dispatch.result") || is(&typ, "task.interrupted") {
         return JsValue::Null;
     }
     fallback(field(payload, "taskId"), JsValue::Null)

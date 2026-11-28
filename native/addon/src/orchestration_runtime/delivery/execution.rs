@@ -178,6 +178,22 @@ fn normalized_status(value: L<'_>) -> Result<L<'_>> {
         Ok(status)
     }
 }
+fn is_passive_delivery(j: L<'_>) -> Result<bool> {
+    let it = item(j)?;
+    let payload = it.optional(c"payload")?;
+    let typ = payload.optional(c"type")?;
+    if typ.is_string("dispatch.result")? && payload.optional(c"gateway")?.truthy()? {
+        return Ok(true);
+    }
+    let desc_cls = j
+        .optional(c"descriptor")?
+        .optional(c"opts")?
+        .optional(c"deliveryClass")?;
+    if desc_cls.truthy()? {
+        return desc_cls.is_string("notice");
+    }
+    Ok(typ.is_string("task.interrupted")?)
+}
 fn accepted<'a>(j: L<'a>, ok: L<'a>) -> Result<L<'a>> {
     let it = item(j)?;
     let s = owner(j)?;
@@ -226,11 +242,23 @@ fn accepted<'a>(j: L<'a>, ok: L<'a>) -> Result<L<'a>> {
                     }
                     then(j, acknowledge(j)?, |j, ack| {
                         if ack.get(c"ok")?.truthy()? {
-                            then(
-                                j,
-                                unit(owner(j)?, c"sessionScheduler", c"started", &[item(j)?])?,
-                                |j, _| j.get(c"acknowledged"),
-                            )
+                            let s = owner(j)?;
+                            let it = item(j)?;
+                            // Passive notices (e.g. task.interrupted) and gateway-only
+                            // dispatch results append a chat message without starting an
+                            // AI turn. Release the scheduler claim immediately so the
+                            // active slot does not stay wedged in `running` forever.
+                            let settle = if is_passive_delivery(j)? {
+                                unit(
+                                    s,
+                                    c"sessionScheduler",
+                                    c"releaseClaim",
+                                    &[it, text(s, "passive_notice_delivered")?],
+                                )?
+                            } else {
+                                unit(s, c"sessionScheduler", c"started", &[it])?
+                            };
+                            then(j, settle, |j, _| j.get(c"acknowledged"))
                         } else {
                             Ok(ack)
                         }
@@ -336,6 +364,20 @@ fn claim(j: L<'_>) -> Result<L<'_>> {
                         }
                         then(j, acknowledge(j)?, |j, ack| {
                             j.set(c"result", ack)?;
+                            if is_passive_delivery(j)? {
+                                let s = owner(j)?;
+                                let it = item(j)?;
+                                return then(
+                                    j,
+                                    unit(
+                                        s,
+                                        c"sessionScheduler",
+                                        c"releaseClaim",
+                                        &[it, text(s, "passive_notice_delivered")?],
+                                    )?,
+                                    saved,
+                                );
+                            }
                             then(j, recovery(j)?, |j, recovered| {
                                 then(
                                     j,
