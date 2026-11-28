@@ -45,6 +45,11 @@
       "lane": "device"
     },
     {
+      "path": "app/test/agy_accounts_selection_test.dart",
+      "tier": "flow",
+      "lane": "flutter"
+    },
+    {
       "path": "app/test/agy_usage_test.dart",
       "tier": "other",
       "lane": "flutter"
