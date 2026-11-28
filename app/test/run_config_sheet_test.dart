@@ -110,7 +110,7 @@ void main() {
     return SettingsService.getInstance();
   }
 
-  testWidgets('Gemini 与 Antigravity 并列可选，切到 Antigravity 显示其自有账号', (tester) async {
+  testWidgets('Gemini 与 Antigravity 并列可选，切到 Antigravity 显示独立账号选择器', (tester) async {
     final out = _Captured();
     await _open(tester, const RunConfigSheet(
       cli: SessionCli.gemini,
@@ -122,8 +122,8 @@ void main() {
     expect(agy, findsOneWidget);
     await tester.tap(agy);
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('run-providerless-note')), findsOneWidget);
-    expect(tester.widget<Text>(find.byKey(const Key('run-providerless-note'))).data, '使用 Antigravity 自己的账号');
+    expect(find.byKey(const Key('run-agy-account-picker')), findsOneWidget);
+    expect(find.byKey(const Key('run-providerless-note')), findsNothing);
   });
 
   testWidgets('窄屏键盘展开时保存仍可点，旧会话不重复显示 CLI', (tester) async {
@@ -2947,6 +2947,7 @@ class _RecordingRunConfigManager extends SessionManager {
     SessionSubagent? subagent,
     bool clearSubagent = false,
     String? agent,
+    Map<String, String?>? cliAccounts,
   }) async {
     saves.add({
       'provider': provider,
@@ -2955,6 +2956,7 @@ class _RecordingRunConfigManager extends SessionManager {
       'subagentProvider': subagent?.providerId,
       'subagentModel': subagent?.model,
       'clearSubagent': clearSubagent,
+      if (cliAccounts != null) 'cliAccounts': cliAccounts,
     });
   }
 }

@@ -16,6 +16,7 @@ import '../../models/message.dart';
 import '../../providers/chat_provider.dart';
 import '../../providers/session_manager.dart';
 import '../../services/codex_models_service.dart';
+import '../../services/agy_accounts_service.dart';
 import '../../services/agy_models_service.dart';
 import '../../services/manage_service.dart';
 import '../../services/codebuddy_models_service.dart';
@@ -125,9 +126,15 @@ class _RunChipState extends State<RunChip> {
       if (cli == SessionCli.grok) {
         await GrokModelsService(settings: widget.settings).load();
       }
-      // agy 的「默认模型」由账号里的当前档位决定，只有目录回报才知道。
+      // agy 的「默认模型」与当前选定账号都由目录接口回报。
       if (cli == SessionCli.agy) {
-        await AgyModelsService(settings: widget.settings).load(accountId: _runtime?.agyAccountId);
+        await Future.wait([
+          AgyAccountsService(settings: widget.settings)
+              .load()
+              .catchError((_) => const AgyAccountsSnapshot()),
+          AgyModelsService(settings: widget.settings)
+              .load(accountId: _runtime?.agyAccountId),
+        ]);
         if (mounted && epoch == _loadEpoch) setState(() {});
         return;
       }
@@ -301,13 +308,25 @@ class _RunChipState extends State<RunChip> {
           model: runtime?.model,
         ),
       );
+    } else if (cli == SessionCli.agy) {
+      final snap = AgyAccountsService.cachedFor(widget.settings);
+      final acctId = runtime?.agyAccountId;
+      if ((acctId != null && acctId.isNotEmpty) ||
+          (snap != null && (snap.activeId ?? '').isNotEmpty)) {
+        parts.add((snap ?? const AgyAccountsSnapshot()).chipLabelFor(acctId));
+      }
     }
     parts.add(_modelLabel(cli, runtime));
     final level = runtime?.effectiveEffort ?? runtime?.effort ?? cli.defaultEffort;
     final model = runtime?.model;
     final choices = cli.effortOptionsForModel(model?.isNotEmpty == true ? model : runtime?.effectiveModel, agyAccountId: runtime?.agyAccountId);
-    if (cli == SessionCli.agy && model != null && level.isNotEmpty &&
-        cli.agyModelLabel(model, level, agyAccountId: runtime?.agyAccountId) != model) return parts.join(' · ');
+    if (cli == SessionCli.agy &&
+        model != null &&
+        level.isNotEmpty &&
+        cli.agyModelLabel(model, level, agyAccountId: runtime?.agyAccountId) !=
+            model) {
+      return parts.join(' · ');
+    }
     if (choices.contains(level.isEmpty ? cli.defaultEffort : level)) {
       final effort = effortChipLabel(cli, level);
       if (effort.isNotEmpty) parts.add(effort);

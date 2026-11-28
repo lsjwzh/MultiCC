@@ -1,3 +1,5 @@
+import 'package:http/http.dart' as http;
+
 import '../models/message.dart';
 import 'live_model_catalog.dart';
 import 'settings_service.dart';
@@ -6,8 +8,9 @@ import 'settings_service.dart';
 /// (GET /api/agy/models). There is no static table: the ids depend on the
 /// account tier, so an empty catalog means the CLI is not usable yet.
 class AgyModelsService {
-  AgyModelsService({required this.settings});
+  AgyModelsService({required this.settings, this.httpClient});
   final SettingsService settings;
+  final http.Client? httpClient;
 
   static final _catalogs = <String, LiveModelCatalog>{};
   static LiveModelCatalog forAccount(String? accountId) => _catalogs.putIfAbsent(
@@ -43,5 +46,6 @@ class AgyModelsService {
   /// Shown when the picker has nothing but the pinned default.
   static const emptyHint = '未读到反重力模型，请确认已登录 agy 并检查网络';
 
-  Future<List<LiveModel>> load({String? accountId}) => forAccount(accountId).load(settings);
+  Future<List<LiveModel>> load({String? accountId}) =>
+      forAccount(accountId).load(settings, httpClient: httpClient);
 }

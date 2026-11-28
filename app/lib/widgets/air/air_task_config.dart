@@ -20,6 +20,8 @@ class AirTaskRuntime {
     this.cli = '',
     this.provider = '',
     this.providerName = '',
+    this.agyAccountId = '',
+    this.agyAccountName = '',
     this.model = '',
     this.effort = '',
     this.claudeWorkflow = false,
@@ -35,6 +37,8 @@ class AirTaskRuntime {
 
   /// Provider 的显示名。任务记录里存的是 id，药丸上要给人看名字。
   final String providerName;
+  final String agyAccountId;
+  final String agyAccountName;
   final String model;
   final String effort;
   final bool claudeWorkflow;
@@ -68,10 +72,12 @@ class AirTaskRuntime {
     final sub = json['subagent'] == null
         ? null
         : SessionSubagent.fromJson(json['subagent']);
+    final agyAcct = ((json['cliAccounts'] as Map?)?['agy'] ?? '').toString().trim();
     return AirTaskRuntime(
       cli: cli,
       provider: s('provider'),
       providerName: s('providerName'),
+      agyAccountId: agyAcct,
       model: s('model'),
       effort: s('effort') == 'ultracode' ? 'xhigh' : s('effort'),
       claudeWorkflow: json['claudeWorkflow'] == true || s('effort') == 'ultracode',
@@ -88,6 +94,8 @@ class AirTaskRuntime {
   AirTaskRuntime copyWith({
     String? provider,
     String? providerName,
+    String? agyAccountId,
+    String? agyAccountName,
     String? model,
     String? effort,
     SessionProviderSelection? providerSelection,
@@ -96,6 +104,8 @@ class AirTaskRuntime {
     cli: cli,
     provider: provider ?? this.provider,
     providerName: providerName ?? this.providerName,
+    agyAccountId: agyAccountId ?? this.agyAccountId,
+    agyAccountName: agyAccountName ?? this.agyAccountName,
     model: model ?? this.model,
     effort: effort ?? this.effort,
     claudeWorkflow: claudeWorkflow,
@@ -118,6 +128,13 @@ class AirTaskRuntime {
           ? 'Auto ${_protocolLabel(providerSelection!.protocol)}'
           : 'Auto · $preset';
     }
+    if (cli == 'agy') {
+      if (agyAccountName.isNotEmpty) return agyAccountName;
+      if (agyAccountId.isNotEmpty) {
+        return '账号 ${agyAccountId.length >= 6 ? agyAccountId.substring(0, 6) : agyAccountId}';
+      }
+      return '默认账号';
+    }
     return providerName.isNotEmpty
         ? providerName
         : (provider.isNotEmpty ? provider : '默认线路');
@@ -126,10 +143,13 @@ class AirTaskRuntime {
   /// 没选模型时 agy 由它自己决定（账号里当前那一档），目录回报了就直接写出来，
   /// 不然「默认模型」四个字什么也没说。
   String get modelLabel {
+    final acct = agyAccountId.isEmpty ? null : agyAccountId;
     if (model.isNotEmpty) {
-      return cli == 'agy' ? SessionCli.agy.agyModelLabel(model, effort) : model;
+      return cli == 'agy'
+          ? SessionCli.agy.agyModelLabel(model, effort, agyAccountId: acct)
+          : model;
     }
-    final now = cli == 'agy' ? AgyModelsService.current : null;
+    final now = cli == 'agy' ? AgyModelsService.forAccount(acct).current : null;
     return now == null ? '默认模型' : '默认模型 · ${now.label}';
   }
 
@@ -185,10 +205,13 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
   // 先弹窗、里面填数据：Provider 池是一趟网络请求（codex 那一支连账号模型目录一起
   // 现拉），按下去到面板出现之间不该隔着它 —— 会话那条路（openAIConfigSheet）早就
   // 是这么做的，这里跟上。面板画出来之后这个 future 必然已经落地。
+  final initialAgyAccountId =
+      initial.agyAccountId.isEmpty ? null : initial.agyAccountId;
   final providersFuture = prepareAIConfigInputs(
     settings,
     cli,
     httpClient: httpClient,
+    agyAccountId: initialAgyAccountId,
   );
   if (!context.mounted) return null;
   final picked = await showModalBottomSheet<RunConfigOutcome>(
@@ -204,6 +227,7 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
         cli: cli,
         providers: providers,
         provider: initial.provider,
+        agyAccountId: initialAgyAccountId,
         providerSelection: initial.providerSelection,
         model: initial.model,
         claudeWorkflow: initial.claudeWorkflow,
@@ -241,14 +265,19 @@ Future<AirTaskRuntime?> showAirTaskRuntimeEditor(
   // Auto 选中时真正执行的是池子里的第一条线路，面板已经把它当成 provider 交
   // 出来了（见 RunConfigSheetBase._submit），任务记录里也存这一条 —— 否则药丸
   // 会显示「Auto」，而任务实际上跑在别的 Provider 上。
+  final nextCli = picked.switchToCli ?? initial.cli;
+  final nextAgyAccountId =
+      nextCli == 'agy' ? (picked.cliAccounts?['agy'] ?? '') : '';
   return AirTaskRuntime(
     // 面板上换了 CLI（固定一条换了车道，或池子第一条在别的车道上）就按它建任务。
-    cli: picked.switchToCli ?? initial.cli,
+    cli: nextCli,
     providerSelection: picked.providerSelection,
     provider: picked.provider,
     providerName: picked.provider.isEmpty
         ? ''
         : (_providerNameOf(providers, picked.provider) ?? picked.providerLabel),
+    agyAccountId: nextAgyAccountId,
+    agyAccountName: nextCli == 'agy' ? picked.providerLabel : '',
     model: picked.model,
     effort: picked.effort,
     claudeWorkflow: picked.claudeWorkflow == true,

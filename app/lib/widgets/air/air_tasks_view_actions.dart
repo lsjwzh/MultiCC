@@ -192,3 +192,158 @@ mixin _AirTasksViewActions on State<AirTasksView> {
     onChanged: _refresh,
   );
 }
+
+/// Terminal 模式里的一行终端会话（Web 的 `directory-terminal-row` 同款）：
+/// 状态点 + 一行元信息 + 出问题时的提示，行尾重命名 / 复制 id / 重启 / 删除。
+/// 三个事实都只翻译服务端折好的 state / lastActivityAt —— 客户端不自己推。
+class _DirectoryTerminalRow extends StatelessWidget {
+  const _DirectoryTerminalRow({
+    required this.session,
+    required this.onTap,
+    required this.onRename,
+    required this.onCopyId,
+    required this.onRestart,
+    required this.onDelete,
+  });
+
+  final AirSession session;
+  final VoidCallback onTap;
+  final VoidCallback onRename;
+  final VoidCallback onCopyId;
+  final VoidCallback onRestart;
+  final VoidCallback onDelete;
+
+  static const _stateLabelKey = {
+    'running': 'airTerminalStateRunning',
+    'stopped': 'airTerminalStateStopped',
+    'route_dead': 'airTerminalStateRouteDead',
+  };
+  // running 不给提示行：一切正常的时候，多一行字只是噪音。
+  static const _stateHintKey = {
+    'stopped': 'airTerminalStoppedHint',
+    'route_dead': 'airTerminalRouteDeadHint',
+  };
+  static const _stateColor = {
+    'running': AppColors.success,
+    'stopped': AppColors.muted,
+    'route_dead': AppColors.danger,
+  };
+
+  String get _meta {
+    final parts = <String>[session.cli];
+    final stateKey = _stateLabelKey[session.state];
+    if (stateKey != null) parts.add(t(stateKey));
+    // 停了的终端 lastActivityAt 是 null，「多久没动」整段不出现 ——
+    // 拿不到时刻还硬说「刚刚」，就是把一条死进程报成活的。
+    final ago = formatRelativeTime(session.lastActivityAt);
+    if (ago.isNotEmpty) parts.add(t('airTerminalLastOutput', {'ago': ago}));
+    return parts.where((part) => part.isNotEmpty).join(' · ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hintKey = _stateHintKey[session.state];
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: ListTile(
+        key: ValueKey('air-terminal-${session.id}'),
+        dense: true,
+        onTap: onTap,
+        title: Row(
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 7),
+              decoration: BoxDecoration(
+                // 老快照没有 state：灰点，也不编一个状态出来。
+                color: _stateColor[session.state] ?? AppColors.faint,
+                shape: BoxShape.circle,
+              ),
+            ),
+            Expanded(
+              child: Text(
+                session.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.text,
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _meta,
+              style: const TextStyle(color: AppColors.faint, fontSize: 11),
+            ),
+            if (hintKey != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  t(hintKey),
+                  style: TextStyle(
+                    color: session.state == 'route_dead'
+                        ? AppColors.danger
+                        : AppColors.warning,
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+          ],
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              key: ValueKey('air-terminal-rename-${session.id}'),
+              onPressed: onRename,
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              tooltip: t('airTerminalRenameAria', {'label': session.label}),
+              icon: const Icon(Icons.edit_outlined),
+              color: AppColors.muted,
+            ),
+            IconButton(
+              key: ValueKey('air-terminal-copy-${session.id}'),
+              onPressed: onCopyId,
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              tooltip: t('airTerminalCopyIdAria', {'label': session.label}),
+              icon: const Icon(Icons.copy_rounded),
+              color: AppColors.muted,
+            ),
+            IconButton(
+              key: ValueKey('air-terminal-restart-${session.id}'),
+              onPressed: onRestart,
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              tooltip: t('airTerminalRestartAria', {'label': session.label}),
+              icon: const Icon(Icons.refresh_rounded),
+              color: AppColors.muted,
+            ),
+            IconButton(
+              key: ValueKey('air-terminal-delete-${session.id}'),
+              onPressed: onDelete,
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              tooltip: t('airDeleteTerminalAria', {'label': session.label}),
+              icon: const Icon(Icons.delete_outline_rounded),
+              color: AppColors.danger,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

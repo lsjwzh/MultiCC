@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'settings_service.dart';
@@ -55,6 +56,13 @@ class LiveModelCatalog {
     return list;
   }
 
+  @visibleForTesting
+  void clearCache() {
+    _cache = null;
+    _cachedAt = null;
+    _current = null;
+  }
+
   String groupOf(String id) {
     for (final m in cached) {
       if (m.id == id) return m.group;
@@ -63,20 +71,28 @@ class LiveModelCatalog {
   }
 
   /// Never throws; returns `[]` when nothing could be read.
-  Future<List<LiveModel>> load(SettingsService settings) {
+  Future<List<LiveModel>> load(
+    SettingsService settings, {
+    http.Client? httpClient,
+  }) {
     final warm = cached;
     if (warm.isNotEmpty) return Future.value(warm);
-    return _inflight ??= _fetch(settings).whenComplete(() {
+    return _inflight ??= _fetch(settings, httpClient: httpClient).whenComplete(() {
       _inflight = null;
     });
   }
 
-  Future<List<LiveModel>> _fetch(SettingsService settings) async {
+  Future<List<LiveModel>> _fetch(
+    SettingsService settings, {
+    http.Client? httpClient,
+  }) async {
     try {
       final headers = <String, String>{};
       if (settings.token.isNotEmpty) headers['X-Access-Token'] = settings.token;
-      final res = await http
-          .get(Uri.parse(settings.buildHttpUrl(path)), headers: headers)
+      final uri = Uri.parse(settings.buildHttpUrl(path));
+      final res = await (httpClient != null
+              ? httpClient.get(uri, headers: headers)
+              : http.get(uri, headers: headers))
           .timeout(timeout);
       if (res.statusCode != 200) return const [];
       final body = jsonDecode(res.body);

@@ -81,6 +81,7 @@ class RunConfigOutcome {
     this.providerSelection,
     this.subagent,
     this.agent,
+    this.cliAccounts,
     this.switchToCli,
     this.subagentCli,
     this.syncSubagent = false,
@@ -98,6 +99,10 @@ class RunConfigOutcome {
   final SessionProviderSelection? providerSelection;
   final SessionSubagent? subagent;
   final String? agent;
+
+  /// 自持多账号车道（如 `agy`）按会话选定的账号映射：`{'agy': accountId}`，
+  /// 值为 `null` 表示清除覆盖、恢复跟随全局/本机默认。
+  final Map<String, String?>? cliAccounts;
 
   /// 子任务设置挂在哪条车道上（固定一条 = 选中的车道，自动挑选 = 池子第一条）。
   /// 保存之后要按这条车道找家族做「同步到全部任务」，所以单独带回来。
@@ -173,6 +178,7 @@ RunWireResult buildFixedOutcome({
   required String? subModel,
   required bool includeAgent,
   required String? agent,
+  Map<String, String?>? cliAccounts,
   String? subagentCli,
   bool syncSubagent = false,
   bool subagentCleared = false,
@@ -202,6 +208,7 @@ RunWireResult buildFixedOutcome({
       effortLabel: effortShortNameForCli(cli, effort),
       subagent: subagent,
       agent: includeAgent ? (agent ?? '').trim() : null,
+      cliAccounts: cliAccounts,
       switchToCli: cli.name == currentCli ? null : cli.name,
       subagentCli: subagentCli,
       syncSubagent: syncSubagent,

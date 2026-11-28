@@ -987,6 +987,7 @@ class AirService {
     };
     final request = switch (method) {
       'GET' => _http.get(uri, headers: headers),
+      'PATCH' => _http.patch(uri, headers: headers, body: jsonEncode(body ?? {})),
       'DELETE' =>
         body == null
             ? _http.delete(uri, headers: headers)
@@ -1340,6 +1341,18 @@ class AirService {
       ...runtime,
     });
     return '${result['taskId']}';
+  }
+
+  /// 在第一条消息发送前为新任务对应的会话写入 `cliAccounts`（对齐 Web `air.js`：
+  /// `/api/air/tasks` 只接 `runtime` 线路字段，自持多账号车道的 `cliAccounts`
+  /// 通过会话 PATCH 落盘）。
+  Future<void> patchSessionCliAccounts(
+    String sessionId,
+    Map<String, String?> cliAccounts,
+  ) async {
+    await _send('PATCH', '/api/sessions/${Uri.encodeComponent(sessionId)}', {
+      'cliAccounts': cliAccounts,
+    });
   }
 
   /// 发第一条消息。无人值守配置挂在**这一条消息**上（不是任务上）：

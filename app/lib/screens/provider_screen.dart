@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import '../widgets/claude_signin_dialog.dart';
 import '../widgets/named_back_button.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -8,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../i18n.dart';
 import '../models/provider_limit_label.dart';
 import '../models/vendor_quota.dart';
+import '../services/agy_accounts_service.dart';
 import '../services/manage_service.dart';
 import '../services/settings_service.dart';
 import '../theme.dart';
@@ -37,19 +39,29 @@ Future<void> openProviderConnection(SettingsService settings, String section) {
 /// 每个会话可在聊天页单独切换 provider，互相独立。
 class ProviderScreen extends StatefulWidget {
   final SettingsService settings;
-  const ProviderScreen({super.key, required this.settings});
+  final http.Client? httpClient;
+  const ProviderScreen({super.key, required this.settings, this.httpClient});
 
   @override
   State<ProviderScreen> createState() => _ProviderScreenState();
 }
 
 class _ProviderScreenState extends State<ProviderScreen> {
-  late final ManageService _manage = ManageService(settings: widget.settings);
+  late final ManageService _manage = ManageService(
+    settings: widget.settings,
+    httpClient: widget.httpClient,
+  );
+  late final AgyAccountsService _agySvc = AgyAccountsService(
+    settings: widget.settings,
+    httpClient: widget.httpClient,
+  );
 
   List<Map<String, dynamic>> _providers = [];
   Map<String, dynamic> _defaults = {'claude': null, 'codex': null};
   Map<String, dynamic> _ccSwitchStatus = const {};
   bool _ccSwitchAvailable = false;
+  AgyAccountsSnapshot? _agySnapshot;
+  String? _agyBusyId;
   bool _loading = true;
   bool _importing = false;
 
@@ -69,7 +81,12 @@ class _ProviderScreenState extends State<ProviderScreen> {
       _error = null;
     });
     try {
-      final d = await _manage.fetchProviders();
+      final results = await Future.wait<Object?>([
+        _manage.fetchProviders(),
+        _agySvc.load(force: true).then<Object?>((s) => s, onError: (_) => null),
+      ]);
+      final d = results[0] as Map<String, dynamic>;
+      final agySnap = results[1] as AgyAccountsSnapshot?;
       if (!mounted) return;
       final reportedStatus = (d['ccSwitchStatus'] as Map?)?.cast<String, dynamic>();
       final ccSwitchStatus = reportedStatus ?? <String, dynamic>{
@@ -84,6 +101,7 @@ class _ProviderScreenState extends State<ProviderScreen> {
         _defaults = (d['defaults'] as Map?)?.cast<String, dynamic>() ?? {'claude': null, 'codex': null};
         _ccSwitchStatus = ccSwitchStatus;
         _ccSwitchAvailable = ccSwitchStatus['available'] == true;
+        _agySnapshot = agySnap;
         _loading = false;
       });
     } catch (e) {
@@ -103,13 +121,102 @@ class _ProviderScreenState extends State<ProviderScreen> {
   List<Map<String, dynamic>> _byType(String t) =>
       _providers.where((p) => p['appType'] == t).toList();
 
-  /// 粘贴另一台 MultiCC 的分享码建线路 / 反重力账号；反重力账号不在本页展示，
-  /// 由网页管理台的「官方账号」面板承载。
+  /// 粘贴另一台 MultiCC 的分享码建线路或导入反重力共享账号（导入后在下方卡片展示）。
   Future<void> _importShareCode() async {
     final done = await showImportShareCodeSheet(context, manage: _manage);
     if (done == null || !mounted) return;
     _snack(done);
     await _refresh();
+  }
+
+  Future<void> _activateAgyAccount(String id) async {
+    setState(() => _agyBusyId = id);
+    try {
+      final snap = await _agySvc.activate(id);
+      if (!mounted) return;
+      setState(() => _agySnapshot = snap);
+      _snack('已设为反重力（agy）全局默认账号');
+    } catch (e) {
+      _snack('切换失败：$e');
+    } finally {
+      if (mounted) setState(() => _agyBusyId = null);
+    }
+  }
+
+  Future<void> _deactivateAgyAccount() async {
+    setState(() => _agyBusyId = '__deactivate__');
+    try {
+      final snap = await _agySvc.deactivate();
+      if (!mounted) return;
+      setState(() => _agySnapshot = snap);
+      _snack('已恢复使用本机默认 agy 登录');
+    } catch (e) {
+      _snack('操作失败：$e');
+    } finally {
+      if (mounted) setState(() => _agyBusyId = null);
+    }
+  }
+
+  Future<void> _importLocalAgyAccount() async {
+    setState(() => _agyBusyId = '__import__');
+    try {
+      final snap = await _agySvc.importLocal();
+      if (!mounted) return;
+      setState(() => _agySnapshot = snap);
+      _snack('已将本机 agy 登录导入为独立账号');
+    } catch (e) {
+      _snack('导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _agyBusyId = null);
+    }
+  }
+
+  Future<void> _testAgyAccount(AgyAccount account) async {
+    setState(() => _agyBusyId = account.id);
+    try {
+      final res = await _agySvc.testAccount(account.id);
+      final ok = res['ok'] == true;
+      final detail = (res['message'] ?? res['email'] ?? res['error'] ?? '').toString();
+      _snack(ok
+          ? '✓ 账号可用${detail.isNotEmpty ? '：$detail' : ''}'
+          : '账号检测未通过${detail.isNotEmpty ? '：$detail' : ''}');
+    } catch (e) {
+      _snack('检测失败：$e');
+    } finally {
+      if (mounted) setState(() => _agyBusyId = null);
+    }
+  }
+
+  Future<void> _deleteAgyAccount(AgyAccount account) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('移除反重力账号'),
+        content: Text('确定移除「${account.displayName}」？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消', style: TextStyle(color: AppColors.muted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('移除', style: TextStyle(color: AppColors.danger)),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() => _agyBusyId = account.id);
+    try {
+      final snap = await _agySvc.deleteAccount(account.id);
+      if (!mounted) return;
+      setState(() => _agySnapshot = snap);
+      _snack('已移除「${account.displayName}」');
+    } catch (e) {
+      _snack('移除失败：$e');
+    } finally {
+      if (mounted) setState(() => _agyBusyId = null);
+    }
   }
 
   Future<void> _import() async {
@@ -478,6 +585,10 @@ class _ProviderScreenState extends State<ProviderScreen> {
                       _importCard(),
                       const SizedBox(height: 16),
                       _defaultsCard(),
+                      if (_agySnapshot != null) ...[
+                        const SizedBox(height: 16),
+                        _agyAccountsCard(_agySnapshot!),
+                      ],
                       const SizedBox(height: 16),
                       if (_providers.isEmpty)
                         const Padding(
@@ -772,6 +883,180 @@ class _ProviderScreenState extends State<ProviderScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _agyAccountsCard(AgyAccountsSnapshot snap) {
+    final activeId = snap.activeId;
+    final busy = _agyBusyId != null;
+    return Container(
+      key: const ValueKey('provider-agy-accounts-card'),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        border: Border.all(color: AppColors.line),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '🪐 Antigravity (agy) 账号',
+                  style: TextStyle(
+                    color: AppColors.textBright,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              if (activeId != null && activeId.isNotEmpty)
+                TextButton(
+                  key: const ValueKey('provider-agy-deactivate'),
+                  onPressed: busy ? null : _deactivateAgyAccount,
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.muted,
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  child: const Text('恢复本机默认', style: TextStyle(fontSize: 12)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '当前默认：${snap.defaultOptionLabel}。每个任务也可在「运行配置」中单独指定本机或远程共享账号。',
+            style: const TextStyle(color: AppColors.faint, fontSize: 12, height: 1.45),
+          ),
+          const SizedBox(height: 10),
+          if (snap.accounts.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                '暂无独立或远程共享账号。可将本机登录导入，或点击上方「从分享码导入」添加其他电脑分享的 agy 账号。',
+                style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.45),
+              ),
+            )
+          else
+            for (final account in snap.accounts) ...[
+              Container(
+                key: ValueKey('provider-agy-account-${account.id}'),
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(11),
+                decoration: BoxDecoration(
+                  color: AppColors.panel2,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: account.id == activeId ? AppColors.accent : AppColors.line,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            account.displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textBright,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (account.id == activeId)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: AppColors.accent.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Text(
+                              '全局默认',
+                              style: TextStyle(
+                                color: AppColors.accent,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      [
+                        if (account.isRemote)
+                          account.transport == 'ssh' ? '远程 SSH 借用' : '远程借道共享'
+                        else
+                          '本机隔离账号',
+                        account.loggedIn ? (account.email ?? '已登录') : '未登录',
+                      ].join(' · '),
+                      style: const TextStyle(color: AppColors.muted, fontSize: 11.5),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        if (account.id != activeId)
+                          OutlinedButton(
+                            key: ValueKey('provider-agy-activate-${account.id}'),
+                            onPressed: busy ? null : () => _activateAgyAccount(account.id),
+                            style: OutlinedButton.styleFrom(
+                              visualDensity: VisualDensity.compact,
+                              side: const BorderSide(color: AppColors.lineStrong),
+                            ),
+                            child: const Text(
+                              '设为全局默认',
+                              style: TextStyle(color: AppColors.accent, fontSize: 12),
+                            ),
+                          ),
+                        OutlinedButton(
+                          key: ValueKey('provider-agy-test-${account.id}'),
+                          onPressed: busy ? null : () => _testAgyAccount(account),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            side: const BorderSide(color: AppColors.line),
+                          ),
+                          child: const Text(
+                            '检测',
+                            style: TextStyle(color: AppColors.text, fontSize: 12),
+                          ),
+                        ),
+                        TextButton(
+                          key: ValueKey('provider-agy-delete-${account.id}'),
+                          onPressed: busy ? null : () => _deleteAgyAccount(account),
+                          style: TextButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            foregroundColor: AppColors.danger,
+                          ),
+                          child: const Text('移除', style: TextStyle(fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          if (snap.localLoggedIn) ...[
+            const SizedBox(height: 4),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: const ValueKey('provider-agy-import-local'),
+                onPressed: busy ? null : _importLocalAgyAccount,
+                icon: const Icon(Icons.download_done_rounded, size: 16),
+                label: const Text('导入当前本机 agy 登录为独立账号', style: TextStyle(fontSize: 12)),
+                style: TextButton.styleFrom(foregroundColor: AppColors.accent),
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

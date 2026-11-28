@@ -110,8 +110,15 @@ String runModelOptionLabel(
   SessionCli cli,
   String providerId,
   String model,
-  List<Map<String, dynamic>> providers,
-) {
+  List<Map<String, dynamic>> providers, {
+  String? agyAccountId,
+}) {
+  if (cli == SessionCli.agy) {
+    if (model.isEmpty) return AgyModelsService.defaultLabelFor(agyAccountId);
+    for (final entry in AgyModelsService.options(agyAccountId)) {
+      if (entry.key == model) return entry.value;
+    }
+  }
   if (model.isEmpty && cli == SessionCli.pi) return '默认（跟随 Pi 配置）';
   if (model.isEmpty) return '线路默认';
   if (cli.isCodexFamily) return CodexModelsService.labelFor(model);

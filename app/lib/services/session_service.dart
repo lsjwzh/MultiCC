@@ -16,6 +16,7 @@ Map<String, dynamic> sessionAIConfigPatchBody({
   SessionSubagent? subagent,
   bool clearSubagent = false,
   String? agent,
+  Map<String, String?>? cliAccounts,
 }) {
   final body = <String, dynamic>{
     'provider': provider,
@@ -28,6 +29,9 @@ Map<String, dynamic> sessionAIConfigPatchBody({
     if (preferSubtasks != null) 'preferSubtasks': preferSubtasks,
   };
   if (agent != null) body['agent'] = agent;
+  if (cliAccounts != null && cliAccounts.isNotEmpty) {
+    body['cliAccounts'] = cliAccounts;
+  }
   if (clearSubagent) {
     body['subagent'] = null;
   } else if (subagent != null && !subagent.isEmpty) {
@@ -600,6 +604,7 @@ class SessionService {
     SessionSubagent? subagent,
     bool clearSubagent = false,
     String? agent,
+    Map<String, String?>? cliAccounts,
   }) async {
     final body = sessionAIConfigPatchBody(
       provider: provider,
@@ -611,15 +616,15 @@ class SessionService {
       subagent: subagent,
       clearSubagent: clearSubagent,
       agent: agent,
+      cliAccounts: cliAccounts,
     );
     // 服务端本身几十毫秒就回；放宽到 30s 是给慢隧道/弱网留余量 —— 超时只代表
     // 「没等到回执」，不代表没改成，调用方会按幂等重发一次。
-    final res = await http
-        .patch(
-          Uri.parse(_url('/api/sessions/$id')),
-          headers: _headers,
-          body: jsonEncode(body),
-        )
+    final client = httpClient;
+    final uri = Uri.parse(_url('/api/sessions/$id'));
+    final res = await (client != null
+            ? client.patch(uri, headers: _headers, body: jsonEncode(body))
+            : http.patch(uri, headers: _headers, body: jsonEncode(body)))
         .timeout(const Duration(seconds: 30));
     if (res.statusCode >= 400) {
       final err = _tryParseError(res.body);
@@ -1313,6 +1318,7 @@ class SessionService {
     bool preferSubtasks = false,
     String? agent,
     String? rolePrompt,
+    Map<String, String?>? cliAccounts,
   }) async {
     final body = <String, dynamic>{'cli': cli.name, 'kind': kind.name};
     if (label != null && label.isNotEmpty) body['label'] = label;
@@ -1325,12 +1331,14 @@ class SessionService {
     if (rolePrompt != null && rolePrompt.isNotEmpty) {
       body['rolePrompt'] = rolePrompt;
     }
-    final res = await http
-        .post(
-          Uri.parse(_url('/api/directories/$dirId/sessions')),
-          headers: _headers,
-          body: jsonEncode(body),
-        )
+    if (cliAccounts != null && cliAccounts.isNotEmpty) {
+      body['cliAccounts'] = cliAccounts;
+    }
+    final client = httpClient;
+    final uri = Uri.parse(_url('/api/directories/$dirId/sessions'));
+    final res = await (client != null
+            ? client.post(uri, headers: _headers, body: jsonEncode(body))
+            : http.post(uri, headers: _headers, body: jsonEncode(body)))
         .timeout(const Duration(seconds: 10));
     if (res.statusCode >= 400) {
       final err = _tryParseError(res.body);

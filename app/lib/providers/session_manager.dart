@@ -790,6 +790,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     bool preferSubtasks = false,
     String? agent,
     String? rolePrompt,
+    Map<String, String?>? cliAccounts,
   }) async {
     final s = await _sessionService.createSessionInDir(
       dirId: dirId,
@@ -803,6 +804,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       preferSubtasks: preferSubtasks,
       agent: agent,
       rolePrompt: rolePrompt,
+      cliAccounts: cliAccounts,
     );
     await loadDashboard();
     return s;
@@ -829,6 +831,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
     SessionSubagent? subagent,
     bool clearSubagent = false,
     String? agent,
+    Map<String, String?>? cliAccounts,
   }) async {
     await _sessionService.updateSessionAIConfig(
       id,
@@ -841,6 +844,7 @@ class SessionManager extends ChangeNotifier with WidgetsBindingObserver {
       subagent: subagent,
       clearSubagent: clearSubagent,
       agent: agent,
+      cliAccounts: cliAccounts,
     );
     // 配额条对齐（再读一次会话配置）与列表刷新都自己吞错，放后台并行跑：保存
     // 回执一到就算完成，不再串行多等两趟隧道往返。

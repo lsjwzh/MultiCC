@@ -56,6 +56,7 @@ class FlakySaveManager extends SessionManager {
     SessionSubagent? subagent,
     bool clearSubagent = false,
     String? agent,
+    Map<String, String?>? cliAccounts,
   }) async {
     saves += 1;
     if (saves <= failures) {

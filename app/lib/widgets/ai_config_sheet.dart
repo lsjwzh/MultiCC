@@ -13,6 +13,7 @@ import '../services/manage_service.dart';
 import '../services/opencode_models_service.dart';
 import '../services/qoder_models_service.dart';
 import '../services/codebuddy_models_service.dart';
+import '../services/agy_accounts_service.dart';
 import '../services/agy_models_service.dart';
 import '../services/commandcode_grok_models_service.dart';
 import '../services/settings_service.dart';
@@ -44,7 +45,13 @@ Future<void> _warmModelCatalog(
     } catch (_) {}
   } else if (cli == SessionCli.agy) {
     try {
-      await AgyModelsService(settings: settings).load(accountId: agyAccountId);
+      await Future.wait([
+        AgyAccountsService(settings: settings, httpClient: httpClient).load(),
+        AgyModelsService(
+          settings: settings,
+          httpClient: httpClient,
+        ).load(accountId: agyAccountId),
+      ]);
     } catch (_) {}
   } else if (cli == SessionCli.grok) {
     try {

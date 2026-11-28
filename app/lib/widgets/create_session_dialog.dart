@@ -18,6 +18,7 @@ import '../services/manage_service.dart';
 import '../services/session_service.dart';
 import '../services/claude_models_service.dart';
 import '../services/codebuddy_models_service.dart';
+import '../services/agy_accounts_service.dart';
 import '../services/agy_models_service.dart';
 import '../services/commandcode_grok_models_service.dart';
 import 'model_menu.dart';
@@ -42,6 +43,7 @@ class CreateSessionResult {
   final bool claudeWorkflow;
   final bool preferSubtasks;
   final String? agent;
+  final Map<String, String?>? cliAccounts;
   CreateSessionResult({
     required this.cli,
     this.label,
@@ -52,6 +54,7 @@ class CreateSessionResult {
     this.claudeWorkflow = false,
     this.preferSubtasks = false,
     this.agent,
+    this.cliAccounts,
   });
 }
 
@@ -123,6 +126,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   bool _hostNoCli = false;
 
   String? _pickedProvider; // null or '' = default; id = that provider
+  String _pickedAgyAccountId = '';
+  AgyAccountsSnapshot? _agyAccounts;
   String? _pickedModel;
   String _modelFilter = '';
   late String _pickedEffort;
@@ -135,6 +140,8 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
 
   bool get _isClaude => _pickedCli.isClaudeFamily;
   bool get _isCodex => _pickedCli.isCodexFamily;
+  String? get _effectiveAgyAccountId =>
+      _pickedAgyAccountId.isEmpty ? null : _pickedAgyAccountId;
 
   /// 这张弹窗能给哪种会话挑哪条车道，是车道的事实（服务端 cli-capability 的 kinds
   /// 列），不是这里的分支：chat 只给常驻车道（`codex exec` 那个一次性可执行文件归
@@ -150,6 +157,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
   bool get _isQoder => _pickedCli == SessionCli.qoder;
   List<String> get _modelEfforts => _pickedCli.effortOptionsForModel(
     _customModel ? _customModelCtrl.text : _pickedModel,
+    agyAccountId: _effectiveAgyAccountId,
   );
 
   String get _defaultEffort => _pickedCli.defaultEffort;
@@ -239,7 +247,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     _defaultProviderId = widget.defaultProviderId;
     if (_hasConcreteDefaultProvider) _pickedProvider = _defaultProviderId;
     _pickedEffort = _defaultEffort;
+    _agyAccounts = AgyAccountsService.cachedFor(widget.settings);
     _loadPresets();
+    if (_pickedCli == SessionCli.agy) unawaited(_loadAgyAccounts());
     if (_isQoder) _loadQoderModels();
     if (_isLiveModelCli(_pickedCli)) _loadLiveModels();
     if (_isClaude) _loadClaudeModels();
@@ -341,7 +351,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
     SessionCli.codebuddy => CodebuddyModelsService.cached.length,
     SessionCli.commandcode => CommandCodeModelsService.cached.length,
     SessionCli.grok => GrokModelsService.cached.length,
-    SessionCli.agy => AgyModelsService.cached.length,
+    SessionCli.agy => AgyModelsService.forAccount(_effectiveAgyAccountId).cached.length,
     _ => 0,
   };
 
@@ -354,10 +364,30 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       case SessionCli.grok:
         await GrokModelsService(settings: widget.settings).load();
       case SessionCli.agy:
-        await AgyModelsService(settings: widget.settings).load();
+        await AgyModelsService(
+          settings: widget.settings,
+          httpClient: widget.httpClient,
+        ).load(accountId: _effectiveAgyAccountId);
       default:
         break;
     }
+  }
+
+  Future<void> _loadAgyAccounts() async {
+    try {
+      final snap = await AgyAccountsService(
+        settings: widget.settings,
+        httpClient: widget.httpClient,
+      ).load();
+      if (!mounted) return;
+      setState(() {
+        _agyAccounts = snap;
+        if (_pickedAgyAccountId.isNotEmpty &&
+            snap.findById(_pickedAgyAccountId) == null) {
+          _pickedAgyAccountId = '';
+        }
+      });
+    } catch (_) {}
   }
 
   /// WorkBuddy / Command Code / Grok twin of [_loadQoderModels]: pull the host
@@ -433,7 +463,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       return CodebuddyModelsService.options();
     }
     if (_pickedCli == SessionCli.pi) return const [MapEntry('', '默认（跟随 Pi 配置）')];
-    if (_pickedCli == SessionCli.agy) return AgyModelsService.options();
+    if (_pickedCli == SessionCli.agy) {
+      return AgyModelsService.options(_effectiveAgyAccountId);
+    }
     if (_pickedCli == SessionCli.dsh) return kDshModelOptions;
     if (_pickedCli == SessionCli.gemini) return kGeminiModelOptions;
     if (_pickedCli == SessionCli.commandcode) {
@@ -676,6 +708,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
         _pickedModel = opts.isNotEmpty ? opts.first.key : null;
       });
       if (cli == SessionCli.qoder) _loadQoderModels();
+      if (cli == SessionCli.agy) unawaited(_loadAgyAccounts());
       if (_isLiveModelCli(cli)) _loadLiveModels();
       return;
     }
@@ -762,6 +795,9 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
       effort: _modelEfforts.contains(_pickedEffort) ? _pickedEffort : null,
       agent: _pickedCli.supportsAgent && _agentCtrl.text.trim().isNotEmpty
           ? _agentCtrl.text.trim()
+          : null,
+      cliAccounts: _pickedCli == SessionCli.agy && _pickedAgyAccountId.isNotEmpty
+          ? <String, String?>{'agy': _pickedAgyAccountId}
           : null,
     );
     Navigator.of(context).pop(result);
@@ -1030,10 +1066,58 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                   ],
                   onChanged: _onProviderChanged,
                 ),
-              ] else ...[
+              ] else if (_pickedCli == SessionCli.agy) ...[
                 const Text(
-                  'Qoder CN 使用自身账号 / BYOK 配置',
+                  '账号',
                   style: TextStyle(color: Color(0xFF6f8096), fontSize: 11),
+                ),
+                const SizedBox(height: 4),
+                DropdownButtonFormField<String>(
+                  key: const ValueKey('create-session-agy-account-picker'),
+                  value: _pickedAgyAccountId,
+                  isExpanded: true,
+                  dropdownColor: const Color(0xFFffffff),
+                  style: const TextStyle(
+                    color: Color(0xFF233249),
+                    fontSize: 13,
+                  ),
+                  decoration: sheetInputDecoration(),
+                  items: [
+                    DropdownMenuItem<String>(
+                      value: '',
+                      child: Text(
+                        (_agyAccounts ?? const AgyAccountsSnapshot())
+                            .defaultOptionLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Color(0xFF233249)),
+                      ),
+                    ),
+                    for (final account
+                        in _agyAccounts?.accounts ?? const <AgyAccount>[])
+                      DropdownMenuItem<String>(
+                        value: account.id,
+                        child: Text(
+                          account.optionLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Color(0xFF233249)),
+                        ),
+                      ),
+                  ],
+                  onChanged: (next) {
+                    setState(() {
+                      _pickedAgyAccountId = (next ?? '').trim();
+                    });
+                    unawaited(_loadLiveModels());
+                  },
+                ),
+              ] else ...[
+                Text(
+                  _isQoder
+                      ? 'Qoder CN 使用自身账号 / BYOK 配置'
+                      : '使用 ${_pickedCli.displayName} 自己的账号',
+                  style: const TextStyle(color: Color(0xFF6f8096), fontSize: 11),
                 ),
               ],
               // ── Model (linked to provider) ──
@@ -1089,7 +1173,7 @@ class CreateSessionDialogState extends State<CreateSessionDialog> {
                 },
               ),
               if (_pickedCli == SessionCli.agy &&
-                  AgyModelsService.cached.isEmpty) ...[
+                  AgyModelsService.forAccount(_effectiveAgyAccountId).cached.isEmpty) ...[
                 const SizedBox(height: 6),
                 Text(
                   AgyModelsService.emptyHint,

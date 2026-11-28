@@ -18,9 +18,11 @@ import '../../models/message.dart';
 import '../../models/provider_limit_label.dart';
 import '../../providers/session_manager.dart';
 import '../../services/auto_provider_routing.dart';
+import '../../services/agy_accounts_service.dart';
 import '../../services/codebuddy_models_service.dart';
 import '../../services/agy_models_service.dart';
 import '../../services/commandcode_grok_models_service.dart';
+import '../../services/manage_service.dart';
 import '../../services/native_vendor_service.dart';
 import '../../services/codex_models_service.dart';
 import '../../services/opencode_models_service.dart';
@@ -32,6 +34,7 @@ import '../../theme.dart';
 import '../../utils/cli_display.dart';
 import '../../utils/session_status_helpers.dart';
 import '../ai_config_sheet.dart' show prepareAIConfigInputs;
+import '../import_share_code_sheet.dart';
 import '../model_menu.dart';
 import '../provider_option.dart';
 import 'run_config_lanes.dart';
@@ -41,6 +44,7 @@ import 'run_config_style.dart';
 import 'run_config_wire.dart';
 import 'run_labels.dart';
 
+part 'run_config_sheet_agy.dart';
 part 'run_config_sheet_auto.dart';
 
 /// 首次打开面板时那张「子 agent 可以单独选线路」强引导的持久化标记。关掉之后
@@ -128,6 +132,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
     with SingleTickerProviderStateMixin {
   /// 「自动挑选」那半张面板由 part 里的 `RunConfigAutoSection` mixin 提供。
   List<Widget> buildAutoSection();
+  Future<void> loadAgyAccounts({bool force = false});
+  Widget _agyAccountPicker();
 
   RunConfigMode _mode = RunConfigMode.fixed;
 
@@ -139,6 +145,14 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   late String _effort;
   late bool _workflow = widget.claudeWorkflow || widget.effort == 'ultracode';
   late bool _preferSubtasks = widget.preferSubtasks;
+  late String _agyAccountId = (widget.agyAccountId ?? '').trim();
+  AgyAccountsSnapshot? _agyAccounts;
+  bool _agyAccountsLoading = false;
+  String _agyAccountsError = '';
+  bool _agyAccountVanished = false;
+
+  String? get _effectiveAgyAccountId =>
+      _agyAccountId.isEmpty ? null : _agyAccountId;
 
   bool _supportsWorkflow(SessionCli? cli, String provider, String model) {
     if (cli == null || !cli.isClaudeFamily || !cli.effortOptionsForModel(model).contains('xhigh')) {
@@ -285,6 +299,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       vsync: this,
       duration: const Duration(milliseconds: 1400),
     );
+    _agyAccounts = AgyAccountsService.cachedFor(widget.settings);
+    if (_cli == SessionCli.agy) {
+      unawaited(loadAgyAccounts());
+    }
     _initSubagentGuide();
     _loadSubagentDefaults();
   }
@@ -773,7 +791,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       if (_choicesFor(_provider).contains(seeded)) _model = seeded;
     }
     if (_model.isEmpty) _model = _defaultModelFor(_provider);
-    final rungs = effortRungsFor(widget.cli, _model, widget.agyAccountId);
+    final rungs = effortRungsFor(widget.cli, _model, _effectiveAgyAccountId);
     final values = rungs.map((rung) => rung.$1).toList();
     final selected = widget.effort == 'ultracode' ? 'xhigh' : widget.effort;
     _effort = values.contains(selected) || selected.isEmpty
@@ -934,7 +952,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   }
 
   List<String> _choicesFor(String provider) =>
-      runModelChoices(_cli, provider, _providers, agyAccountId: widget.agyAccountId);
+      runModelChoices(_cli, provider, _providers, agyAccountId: _effectiveAgyAccountId);
 
   /// 池子里同时有官方线路和用户自管线路吗 —— 相当于 web 的 selectionCrossesTrust
   /// （trust 域有两个就跨域）。混用本来就是这个面板的常态：跨域时不该拦，只是
@@ -1097,7 +1115,13 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       } else if (cli == SessionCli.commandcode) {
         await CommandCodeModelsService(settings: settings).load();
       } else if (cli == SessionCli.agy) {
-        await AgyModelsService(settings: settings).load(accountId: widget.agyAccountId);
+        await Future.wait([
+          loadAgyAccounts(),
+          AgyModelsService(
+            settings: settings,
+            httpClient: widget.httpClient,
+          ).load(accountId: _effectiveAgyAccountId),
+        ]);
       } else if (cli == SessionCli.grok) {
         await GrokModelsService(settings: settings).load();
       } else {
@@ -1168,7 +1192,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       final options = _choicesFor(_provider);
       model = options.isEmpty ? '' : options.first;
     }
-    final providerLabel = native
+    final providerLabel = _cli == SessionCli.agy
+        ? (_agyAccounts ?? const AgyAccountsSnapshot())
+              .chipLabelFor(_effectiveAgyAccountId)
+        : native
         ? _lineName(_provider)
         : (_provider.isEmpty && _cli == SessionCli.opencode
               ? 'OpenCode 原生配置（全部模型）'
@@ -1184,19 +1211,22 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       currentCli: widget.cli.name,
       providerId: _provider,
       model: model,
-      effort: _cli.effortOptionsForModel(model, agyAccountId: widget.agyAccountId).contains(_effort) ? _effort : '',
+      effort: _cli.effortOptionsForModel(model, agyAccountId: _effectiveAgyAccountId).contains(_effort) ? _effort : '',
       claudeWorkflow: _workflow || widget.claudeWorkflow ? _workflow && _supportsWorkflow(_cli, _provider, model) : null,
       preferSubtasks: _preferSubtasks || widget.preferSubtasks ? _preferSubtasks : null,
       providerLabel: providerLabel,
       modelLabel: model.isEmpty
           ? '默认'
           : _cli == SessionCli.agy
-              ? _cli.agyModelLabel(model, _effort, agyAccountId: widget.agyAccountId)
+              ? _cli.agyModelLabel(model, _effort, agyAccountId: _effectiveAgyAccountId)
               : runModelOptionLabel(_cli, _provider, model, _providers),
       subProviderId: _subProvider,
       subModel: subModel,
       includeAgent: _cli.supportsAgent,
       agent: _agentCtrl.text,
+      cliAccounts: _cli == SessionCli.agy
+          ? <String, String?>{'agy': _effectiveAgyAccountId}
+          : null,
       subagentCli: _cli.name,
       syncSubagent: _syncChecked && !_syncUnavailable,
       subagentCleared:
@@ -1502,9 +1532,12 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       _cliGrid(shown),
       if (hidden.isNotEmpty) _unavailableToggle(hidden.length),
       if (_showUnavailable) _cliGrid(hidden),
-      // 自持账号的车道没有 MultiCC 线路池：不画线路下拉，模型/强度照旧（模型候选
-      // 来自它自己的目录）。
-      if (!_cli.supportsProvider) ...[
+      // 自持账号的车道没有 MultiCC 线路池：agy 走 /api/agy/accounts 独立多账号选择器
+      // （支持本机隔离账号与远程 SSH / 借道共享账号），其余车道显示原生提示。
+      if (_cli == SessionCli.agy) ...[
+        const SizedBox(height: 14),
+        _agyAccountPicker(),
+      ] else if (!_cli.supportsProvider) ...[
         const SizedBox(height: 12),
         Text(
           '使用 ${_cli.displayName} 自己的账号',
@@ -1517,7 +1550,7 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
       ],
       const SizedBox(height: 12),
       _modelPicker(),
-      if (effortRungsFor(_cli, _customModel ? _customCtrl.text : _model, widget.agyAccountId).isNotEmpty) ...[
+      if (effortRungsFor(_cli, _customModel ? _customCtrl.text : _model, _effectiveAgyAccountId).isNotEmpty) ...[
         const SizedBox(height: 12),
         _effortPicker(),
       ],
@@ -1577,6 +1610,10 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
   /// 的说为什么。
   String _cliCardSubLabel(SessionCli cli, bool available) {
     if (!available) return _unavailableReason(cli);
+    if (cli == SessionCli.agy) {
+      final count = _agyAccounts?.accounts.length ?? 0;
+      return count > 0 ? '$count 个账号可选（含共享）' : '使用本机或共享账号';
+    }
     if (!cli.supportsProvider) return '使用 ${cli.displayName} 自己的账号';
     final lines = _laneCounts[cli.name];
     if (lines != null) return '$lines 条线路';
@@ -1797,7 +1834,13 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
             keys: [...choices, '__custom__'],
             labelOf: (m) => m == '__custom__'
                 ? '自定义…'
-                : runModelOptionLabel(_cli, _provider, m, _providers),
+                : runModelOptionLabel(
+                    _cli,
+                    _provider,
+                    m,
+                    _providers,
+                    agyAccountId: _effectiveAgyAccountId,
+                  ),
             groupOf: (m) => runModelGroup(_cli, m),
             style: Theme.of(context).textTheme.bodyMedium!.copyWith(
               color: AppColors.text,
@@ -1853,11 +1896,11 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
 
   void _clearUnavailableEffort() {
     final model = _customModel ? _customCtrl.text : _model;
-    if (!_cli.effortOptionsForModel(model, agyAccountId: widget.agyAccountId).contains(_effort)) _effort = _cli.defaultEffort;
+    if (!_cli.effortOptionsForModel(model, agyAccountId: _effectiveAgyAccountId).contains(_effort)) _effort = _cli.defaultEffort;
   }
 
   Widget _effortPicker() {
-    final rungs = effortRungsFor(_cli, _customModel ? _customCtrl.text : _model, widget.agyAccountId);
+    final rungs = effortRungsFor(_cli, _customModel ? _customCtrl.text : _model, _effectiveAgyAccountId);
     final index = effortRungIndexFor(_cli, _effort, rungs);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2542,7 +2585,8 @@ abstract class RunConfigSheetBase extends State<RunConfigSheet>
 }
 
 /// 真正的 State：把「固定一条」的状态基类与「自动挑选」的 mixin 拼在一起。
-class RunConfigSheetState extends RunConfigSheetBase with RunConfigAutoSection {
+class RunConfigSheetState extends RunConfigSheetBase
+    with RunConfigAutoSection, RunConfigAgySection {
   @override
   Widget build(BuildContext context) => buildSheet(context);
 }
@@ -2918,6 +2962,7 @@ Future<void> _applyRunConfig(
     preferSubtasks: picked.preferSubtasks,
     subagent: picked.subagent,
     agent: picked.agent,
+    cliAccounts: picked.cliAccounts,
     clearSubagent: picked.subagent == null,
   );
 }
