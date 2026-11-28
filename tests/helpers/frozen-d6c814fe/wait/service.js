@@ -8,12 +8,12 @@ function candidateRows(draft, collection, where) {
 }
 
 const crypto = require('crypto');
-const { getNative } = require('../native/binding');
+const { getNative } = require('../../../../src/native/binding');
 const {
   OutboxConflictError,
   hashSecret,
   normalizeJson,
-} = require('../native/binding').outboxRuntime;
+} = require('../../../../src/native/binding').outboxRuntime;
 
 function publicWait(wait) {
   const copy = JSON.parse(JSON.stringify(wait));

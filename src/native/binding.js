@@ -1579,7 +1579,6 @@ exposeHostApi('pluginInstaller', () => {
 exposeHostApi('pluginsRoutes', () => getNative().pluginsRoutesApi({
   process, catalog: module.exports.pluginCatalog, installer: module.exports.pluginInstaller,
   channel: module.exports.channelHost, registry: module.exports.channelRegistry,
-  mountHost: require('../routes/plugins-host').mountPluginsHostRoute,
   local: module.exports.requestLocality.isLocalRequest,
   fetch: (...args) => module.exports.outbound.outboundFetch(...args),
   spawn: require('node:child_process').spawn, path: require('node:path'),
@@ -1605,6 +1604,28 @@ exposeHostApi('kimiAuth', () => getNative().kimiAuthHost({
   process, path, homedir: require('node:os').homedir,
   spawn: require('node:child_process').spawn, findExecutableOnPath: module.exports.cliCommands.findExecutableOnPath,
 }));
+
+// Adapt the Node process callback to the outcome consumed by the native refresh ladder.
+exposeHostApi('claudeOAuthRefresh', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const { execFile } = require('node:child_process');
+  return getNative().claudeOauthRefreshHost({
+    process, tmpdir: os.tmpdir, defaultFile: () => path.join(os.homedir(), '.claude', '.credentials.json'),
+    defaultRead: file => fs.promises.readFile(file, 'utf8'),
+    buildChildEnv: module.exports.providersHost.buildChildEnv,
+    defaultRun(file, args, { timeoutMs, cwd, env }) {
+      return new Promise(resolve => {
+        execFile(file, args, { cwd, env, timeout: timeoutMs, killSignal: 'SIGKILL',
+          maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+          resolve({ code: error ? (Number.isInteger(error.code) ? error.code : 1) : 0,
+            stdout: String(stdout || ''), stderr: String(stderr || ''),
+            timedOut: !!error?.killed, error: error?.message ?? null });
+        });
+      });
+    },
+  });
+});
 
 exposeHostApi('codexOAuthRefresh', () => getNative().codexOauthRefreshHost({
   process, path, fs: require('node:fs'), os: require('node:os'),
@@ -2565,28 +2586,50 @@ exposeHostApi('rolloutPath', () => getNative().rolloutPathApi(getNative(), (deps
   key: (dir, record) => `${dir}::${record.cliSessionId}`, fresh: at => now() - at <= ttl,
 })));
 
+function tunnelHostPorts() {
+  return {
+    path, process, fs: require('node:fs'), os: require('node:os'), crypto: require('node:crypto'),
+    http: require('node:http'), https: require('node:https'),
+  };
+}
+exposeHostApi('tailscaleFunnelHealth', () => getNative().tailscaleFunnelHealthApi(tunnelHostPorts()));
+exposeHostApi('sakuraFrp', () => getNative().sakuraFrpApi(tunnelHostPorts()));
 exposeHostApi('tunnelMonitor', () => {
   const { atomicWriteJson } = module.exports.runtimeSecurity;
-  const { createTailscaleFunnelProbe } = require('../tailscale-funnel-health');
-  const { readLauncherToken, getUserInfo, discoverAccess } = require('../tunnel-sakurafrp-api');
   return getNative().tunnelMonitorApi({
-    pkgRoot: path.resolve(__dirname, '../..'), path, process,
-    fs: require('node:fs'), os: require('node:os'), http: require('node:http'), https: require('node:https'),
-    execFile: require('node:child_process').execFile, atomicWriteJson, createTailscaleFunnelProbe,
-    findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp, readLauncherToken, getUserInfo, discoverAccess,
+    ...tunnelHostPorts(), pkgRoot: path.resolve(__dirname, '../..'),
+    execFile: require('node:child_process').execFile, atomicWriteJson,
+    findSakuraLauncher, restartSakuraLauncher, diagnoseSakurafrp,
   });
+});
+
+let orchestrationServicePorts;
+exposeHostApi('orchestrationServices', () => {
+  class OperationConflictError extends Error {
+    constructor(message, operationId) {
+      super(message);
+      this.name = 'OperationConflictError';
+      this.code = 'OPERATION_CONFLICT';
+      this.statusCode = 409;
+      this.operationId = operationId || null;
+    }
+  }
+  orchestrationServicePorts = {
+    crypto: require('node:crypto'), OperationConflictError, outboxConflict: module.exports.outboxRuntime.OutboxConflictError,
+    overrideAddon: () => module.exports.getNative === getNative ? undefined : module.exports.getNative(),
+  };
+  return getNative().orchestrationServicesApi(orchestrationServicePorts);
 });
 
 exposeHostApi('orchestrationHost', () => {
   const { createOrchestrationStore } = module.exports.orchestrationJson;
   const { createOrchestrationSqliteStore } = module.exports.orchestrationSqlite;
   const { createOutbox } = module.exports.outboxRuntime;
-  const { createWaitService } = require('../wait/service');
-  const { createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES } = require('../operation-service');
+  const { TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES } = module.exports.orchestrationServices;
   const api = getNative().orchestrationRuntimeApi({
     crypto: require('node:crypto'), process, AsyncLocalStorage: require('node:async_hooks').AsyncLocalStorage,
-    createOrchestrationStore, createOrchestrationSqliteStore, createOutbox, createWaitService,
-    createOperationService, TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES,
+    createOrchestrationStore, createOrchestrationSqliteStore, createOutbox, servicePorts: orchestrationServicePorts,
+    TERMINAL_OPERATION_STATES, TERMINAL_TASK_STATES,
     jsonStorePorts: orchestrationJsonPorts(createOrchestrationStore),
     asyncMethod(native) {
       const method = async (...args) => native(...args);
@@ -2598,12 +2641,23 @@ exposeHostApi('orchestrationHost', () => {
     get DEFAULTS() { return api.DEFAULTS; } };
 });
 
+exposeHostApi('turnLifecycle', () => getNative().chatLifecycleApi(getNative()));
+exposeHostApi('chatHostCoordinator', () => getNative().chatCoordinatorApi({
+  lifecycle: module.exports.turnLifecycle, router: module.exports.postTurnRouter,
+}));
+exposeHostApi('chatHostRuntime', () => getNative().chatRuntimeApi({
+  coordinator: module.exports.chatHostCoordinator, redact: module.exports.observability.redactProviderRouteCapability,
+  protocol: module.exports.cliCapability.protocolFamilyOf, turnProgress: getTurnProgress,
+}));
 exposeHostApi('chatApi', () => getNative().chatHostExports([
   () => module.exports.turnRequestHost, getRetryPolicy, () => module.exports.apiErrorPolicy,
-  () => require('../chat/api-error-host'), () => module.exports.postTurnRouter,
+  () => getNative().apiErrorHostApi({
+    vendorLoginForCli: getVendorLogin().vendorLoginForCli,
+    systemProxyHijackHint: module.exports.globalProxy.systemProxyHijackHint,
+  }), () => module.exports.postTurnRouter,
   () => ({ createTurnRuntimeStore: module.exports.stateOwner.createTurnRuntimeStore }),
-  () => require('../chat/turn-lifecycle'), () => module.exports.providerAttemptRuntime,
-  () => providerInvocation, () => require('../chat/host-coordinator'), () => require('../chat/host-runtime'),
+  () => module.exports.turnLifecycle, () => module.exports.providerAttemptRuntime,
+  () => providerInvocation, () => module.exports.chatHostCoordinator, () => module.exports.chatHostRuntime,
   () => module.exports.finalizationPlan, () => require('../chat/finalize-host'),
 ]));
 

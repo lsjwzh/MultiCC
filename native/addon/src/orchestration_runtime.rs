@@ -4,6 +4,7 @@ mod delivery;
 mod lifecycle;
 mod operations;
 mod setup;
+mod services;
 mod waits;
 
 use crate::host_methods::{async_result, function as callback};

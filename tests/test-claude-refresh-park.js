@@ -18,7 +18,7 @@ const {
   classifyFailure,
   credentialFingerprint,
   redactCliOutput,
-} = require('../src/claude-auth/oauth-refresh');
+} = require('../src/native/binding').claudeOAuthRefresh;
 const { createRefreshHealthStore } = require('../src/native/binding').refreshHealth;
 const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');

@@ -6,6 +6,7 @@ use crate::plugin_catalog_host::{
 use napi_derive::napi;
 mod catalog;
 mod discover;
+mod internal;
 mod routes;
 mod run;
 fn create_channel<'a>(o: L<'a>, r: L<'a>) -> Result<L<'a>> {
@@ -213,6 +214,8 @@ pub fn plugins_routes_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_valu
         p,
         &[
             ("createPluginsRoutes", 1, 1, create),
+            ("mountPluginsHostRoute", 1, 2, internal::mount),
+            ("recheckItems", 2, 2, |_, a| internal::recheck(a[0], a[1])),
             ("pluginEntry", 4, 5, |p, a| {
                 discover::entry(
                     p,
@@ -231,5 +234,7 @@ pub fn plugins_routes_api(env: Env, ports: Unknown<'_>) -> Result<sys::napi_valu
             }),
         ],
     )?;
+    api.set(c"HOST_PATH", text(p, internal::HOST_PATH)?)?;
+    api.set(c"DEFAULT_UI", text(p, multicc_core::plugin_routes::DEFAULT_UI)?)?;
     Ok(api.raw())
 }

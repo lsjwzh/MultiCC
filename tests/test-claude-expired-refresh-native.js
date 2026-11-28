@@ -9,7 +9,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { execFileSync } = require('node:child_process');
 
-const { createClaudeOAuthRefresher, credentialFingerprint, parseCredentials } = require('../src/claude-auth/oauth-refresh');
+const { createClaudeOAuthRefresher, credentialFingerprint, parseCredentials } = require('../src/native/binding').claudeOAuthRefresh;
 const { createRefreshHealthStore } = require('../src/native/binding').refreshHealth;
 const { createOfficialAccountStore } = require('../src/native/binding').officialAccounts;
 const { createClaudeAccountRefreshSupervisor } = require('../src/claude-auth/accounts-refresh');
@@ -335,12 +335,12 @@ test('原生模块不可用时续期入口直接报错，强制调用也不会�
     let calls = 0;
     const done = fields => process.stdout.write(JSON.stringify({ ...fields, calls }));
     try {
-      const { createClaudeOAuthRefresher } = require(process.argv[1]);
-      const { createRefreshHealthStore } = require(process.argv[2]).refreshHealth;
+      const { createClaudeOAuthRefresher } = require(process.argv[1]).claudeOAuthRefresh;
+      const { createRefreshHealthStore } = require(process.argv[1]).refreshHealth;
       const refresher = createClaudeOAuthRefresher({
         platform: 'linux', claudeBin: '/fake/claude',
-        credentialsFile: process.argv[3],
-        health: createRefreshHealthStore({ root: process.argv[4] }), healthKey: 'account-1',
+        credentialsFile: process.argv[2],
+        health: createRefreshHealthStore({ root: process.argv[3] }), healthKey: 'account-1',
         now: () => ${T0}, buildEnv: () => ({}), isEnabled: () => true,
         run: async () => { calls += 1; return { code: 0, stdout: '', stderr: '' }; },
       });
@@ -352,7 +352,6 @@ test('原生模块不可用时续期入口直接报错，强制调用也不会�
   `;
   const stdout = execFileSync(process.execPath, [
     '-e', script,
-    require.resolve('../src/claude-auth/oauth-refresh'),
     require.resolve('../src/native/binding'),
     h.credentialsFile, h.root,
   ], {

@@ -5,7 +5,7 @@ const test = require('node:test');
 const {
   buildAdapterUserInputSignal,
   recordAdapterUserInput,
-} = require('../src/chat/host-coordinator');
+} = require('../src/native/binding').chatHostCoordinator;
 const { USER_INPUT_SIGNAL_PROMPT, buildCodexUserInputConstraint } = require('../src/native/binding').getHostPrompts();
 const { createUserInputSignalHost } = require('./helpers/legacy-user-input-signal');
 const { createCodexAdapter } = require('../src/native/binding').codexAdapter;

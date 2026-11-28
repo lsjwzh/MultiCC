@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const test = require('node:test');
 const { OutboxConflictError } = require('../src/native/binding').outboxRuntime;
-const { createOperationService, OperationConflictError } = require('../src/operation-service');
+const { createOperationService, OperationConflictError } = require('../src/native/binding').orchestrationServices;
 const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const Database = require('better-sqlite3');
@@ -1049,4 +1049,43 @@ test('startup task interruption uses indexed active rows without enumerating ter
   assert.equal((await service.interruptActiveTasks())[0].status, 'interrupted');
   assert.equal(draft.outbox['task:live:interrupted'].payload.taskId, 'cli-task');
   assert.equal(active.completedAt, 100);
+});
+
+test('wait, task and operation changes keep the baseline transaction results and projections', async () => {
+  const native = require('../src/native/binding').orchestrationServices;
+  const baseline = {
+    ...require('./helpers/frozen-d6c814fe/wait/service'),
+    ...require('./helpers/frozen-d6c814fe/operation-service'),
+  };
+  async function run(api) {
+    let state = { operations: {}, tasks: {}, waits: {}, outbox: {}, nextOutboxSequence: 1 };
+    let tick = 100;
+    const options = {
+      store: {
+        read: async fn => structuredClone(fn(state)),
+        mutate: async fn => {
+          const next = structuredClone(state);
+          const result = fn(next);
+          state = next;
+          return structuredClone(result);
+        },
+      },
+      now: () => ++tick, callbackTokenFactory: () => 'fixed-token', callbackBaseUrl: 'https://fixture.invalid///',
+    };
+    const waits = api.createWaitService(options), ops = api.createOperationService(options), results = [];
+    results.push(await waits.register({ id: 'a/一', sessionId: 's', metadata: { x: 4 } }));
+    results.push(await waits.register({ id: 'b', sessionId: 's', mode: 'delay' }));
+    results.push(await waits.list({ sessionId: 's', status: 'pending' }), await waits.cancelForSession('s'), await waits.get('b'));
+    results.push(await ops.observeTask({ sessionId: 's', taskId: 't', detail: { description: 'one' } }));
+    results.push(await ops.interruptActiveTasks(), await ops.observeTask({ sessionId: 's', taskId: 't' }), await ops.listTasks({ statuses: 'interrupted' }));
+    results.push(await ops.admitDispatch({ operationId: 'op_a', ownerSessionId: 's',
+      spec: { chatId: 'worker', targetId: 'target', message: 'work', targetLabel: '演示', resultMode: 'async' } }));
+    results.push(await ops.markRunning('op_a', { externalId: 'x', pid: '19' }));
+    results.push(await ops.completeDispatch('op_a', { status: 'failed', error: 'first' }));
+    results.push(await ops.completeDispatch('op_a', { status: 'completed', text: '  late  ' }, { resettle: true }));
+    results.push(await ops.cancelDispatch('op_a'), await ops.listReferences({ excludeTerminal: true }));
+    results.push(await ops.get('op_a'), await ops.listReferences(), await ops.list({ statuses: [] }));
+    return { results, state };
+  }
+  assert.deepEqual(await run(native), await run(baseline));
 });

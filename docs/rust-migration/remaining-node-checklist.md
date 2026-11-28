@@ -1,5 +1,38 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 16 批（2026-11-27，MacPro x86_64）
+
+基线为 `d6c814fe`。本批退役的十个生产模块涵盖 插件内部宿主、隧道探测、持久等待与操作、API 错误、OAuth 续期和聊天生命周期，共 4,060 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 225 / 69,738 | 215 / 65,732 |
+| server.js 与 src/ | 226 / 72,591 | 216 / 68,585 |
+| 含生产插件 | 238 / 76,510 | 228 / 72,504 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/routes/plugins-host.js` | 111 | 插件内部宿主与频道状态 |
+| `src/tailscale-funnel-health.js` | 496 | Tailscale 公网健康探测 |
+| `src/tunnel-sakurafrp-api.js` | 170 | SakuraFrp API 与状态整理 |
+| `src/wait/service.js` | 191 | 持久等待的注册和结算 |
+| `src/operation-service.js` | 479 | 操作记录及查询 |
+| `src/chat/api-error-host.js` | 444 | API 错误决策与通知 |
+| `src/claude-auth/oauth-refresh.js` | 872 | Claude OAuth 续期和隔离状态 |
+| `src/chat/turn-lifecycle.js` | 360 | 回合生命周期及归属 |
+| `src/chat/host-coordinator.js` | 625 | 聊天宿主协调与分派 |
+| `src/chat/host-runtime.js` | 312 | 聊天宿主运行时接线 |
+
+Rust 接管插件宿主、隧道探测、等待及操作状态与聊天协调。Node 宿主保留 Express 注册、可注入的 HTTP/TLS、事件、进程和凭据 SDK 等现有接口。相关调用方迁出 Node 后可移除相应端口。
+
+x64 产物源码指纹为 `9a72f494196b2d6b6804e6f0`。48 个关联 Node 入口通过 980 项，跳过 1 项。分类脚本以合成回环 URL 通过 19 项，14 条插件宿主 HTTP 行为与冻结基线一致。Rust 通过 254 项，真实网关 WebSocket 回环通过 1 项。
+
+4 组 HTTP 差分得到 484 项一致结果，并验证 14 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,614 个文件，覆盖本批 47 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `46aff17d16975c43e73af2769d676586828816efa6a787c70c24269f56210a05`。
+
+插件内部 HTTP 对照使用本批基线源码，前门 HTTP 对照使用冻结的插件、频道、编排及事件处理器；OAuth 与出站调用均使用隔离测试夹具。
+
 ## server.js 可达模块第 15 批（2026-11-27，MacPro x86_64）
 
 基线为 `1f3d27cc`。本批退役的十个生产模块涵盖 Air 同步、任务读模型、专用出口、插件管理与频道投递，共 2,650 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)

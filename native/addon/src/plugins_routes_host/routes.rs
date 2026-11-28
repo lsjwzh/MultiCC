@@ -205,19 +205,5 @@ pub(super) fn mount<'a>(o: L<'a>, app: L<'a>) -> Result<L<'a>> {
             &[text(o, path)?, function(o, "", 2, 2, action)?],
         )?;
     }
-    let ports = o.get(c"ports")?;
-    let opts = fields(
-        o,
-        &[
-            (
-                "findManifest",
-                function(o, "findManifest", 1, 1, |o, a| discover::find(o, a[0]))?,
-            ),
-            ("channelRegistry", ports.get(c"registry")?),
-            ("channelHost", o.get(c"channelHost")?),
-            ("isLocalRequest", o.get(c"isLocal")?),
-        ],
-    )?;
-    ports.get(c"mountHost")?.call_plain(&[app, opts])?;
-    undef(o)
+    internal::mount_installed(o, app)
 }

@@ -7,7 +7,7 @@ const path = require('path');
 const test = require('node:test');
 const { spawnSync } = require('node:child_process');
 const Database = require('better-sqlite3');
-const { createOperationService } = require('../src/operation-service');
+const { createOperationService } = require('../src/native/binding').orchestrationServices;
 const { createOrchestrationRuntime } = require('../src/orchestration/host');
 const { createOrchestrationStore } = require('../src/native/binding').orchestrationJson;
 const {
@@ -15,7 +15,7 @@ const {
   OrchestrationSqliteError,
   createOrchestrationSqliteStore,
 } = require('../src/native/binding').orchestrationSqlite;
-const { createWaitService } = require('../src/wait/service');
+const { createWaitService } = require('../src/native/binding').orchestrationServices;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));

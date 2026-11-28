@@ -6,7 +6,7 @@
 //   • spawn 不走 shell、stdin 喂 JSON、stdout 收一行 JSON（{ok,data} / {ok,error}）
 //   • 插件 UI 静态树、`GET /api/channels` 与 /api/channels/recheck 已由 Rust 前门独占；
 //     Node 只剩回环宿主端口 POST /api/__host/plugins（findPlugin / channelStillActive /
-//     channelsStatus，见 plugins-host.js）
+//     channelsStatus，见 plugins_routes_host/internal.rs）
 //   • git 只跟踪 plugins/ 的内置项：复制进来的插件默认被 .gitignore 忽略
 // 桩插件用 node 脚本充当二进制 —— 真正的 Rust 插件（chrome-proxy-launcher）
 // 由自己的 cargo test 与端到端验证覆盖，CI 无需 Rust 工具链也能跑这套契约。
@@ -18,8 +18,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { createPluginsRoutes, readManifest, resolveBinary } = require('../src/native/binding').pluginsRoutes;
-const { mountPluginsHostRoute, HOST_PATH } = require('../src/routes/plugins-host');
+const { createPluginsRoutes, readManifest, resolveBinary, mountPluginsHostRoute, HOST_PATH } = require('../src/native/binding').pluginsRoutes;
 
 function makeStubPluginsDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multicc-plugins-test-'));
@@ -393,6 +392,35 @@ test('mounting registers the host port and retired public routes stay gone', () 
   ]);
   assert.equal(app.routes.has('GET /plugins/:id/*'), false, 'the static tree moved to the front door');
   assert.equal(app.routes.has('GET /api/channels'), false, 'the channels status route moved to the front door');
+});
+
+test('default host locality runs before reading the body and recheck preserves sparse UTF-16 input', () => {
+  const app = fakeApp();
+  const calls = [];
+  mountPluginsHostRoute(app, {
+    findManifest: () => null, usage: () => [],
+    stillActive(id, category) { calls.push([id, category]); return true; },
+  });
+  const handler = hostHandler(app);
+  const req = {
+    socket: { remoteAddress: '127.0.0.1' },
+    headers: { host: 'localhost', 'x-forwarded-for': '192.0.2.1' },
+    get body() { throw new Error('unexpected body read'); },
+  };
+  const remote = makeResponse();
+  handler(req, remote);
+  assert.equal(remote.statusCode, 404);
+  assert.deepEqual(calls, []);
+
+  const id = 'a'.repeat(127) + '😀';
+  const items = new Array(3);
+  items[1] = { sessionId: id, category: 'done' };
+  const res = makeResponse();
+  handler({ socket: req.socket, headers: { host: 'localhost' }, body: { op: 'channelStillActive', items } }, res);
+  const expected = new Array(3);
+  expected[1] = true;
+  assert.deepEqual(res.body, { ok: true, active: expected });
+  assert.deepEqual(calls, [[id.slice(0, 128), 'done']]);
 });
 
 test('host mount registers only the internal POST endpoint', () => {

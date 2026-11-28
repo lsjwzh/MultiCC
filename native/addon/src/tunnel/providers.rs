@@ -184,13 +184,16 @@ pub(super) fn funnel_probe(s: L<'_>) -> Result<L<'_>> {
     if current.truthy()? {
         return Ok(current);
     }
-    let made = s.get(c"createTailscaleFunnelProbe")?.call_plain(&[fields(
-        s,
-        &[
-            ("run", s.get(c"execShell")?),
-            ("tailscaleBin", text(s, TAILSCALE)?),
-        ],
-    )?])?;
+    let made = super::funnel_health::owner(
+        s.get(c"ports")?,
+        fields(
+            s,
+            &[
+                ("run", s.get(c"execShell")?),
+                ("tailscaleBin", text(s, TAILSCALE)?),
+            ],
+        )?,
+    )?;
     s.set(c"probe", made)?;
     Ok(made)
 }

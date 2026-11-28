@@ -191,11 +191,20 @@ fn build_services<'a>(h: L<'a>, s: L<'a>) -> Result<()> {
     s.set(c"outbox", port(h, c"createOutbox", &[ob])?)?;
     let w = base()?;
     w.spread_from(s.get(c"waitOptions")?)?;
-    s.set(c"waits", port(h, c"createWaitService", &[w])?)?;
-    s.set(
-        c"operations",
-        port(h, c"createOperationService", &[base()?])?,
-    )?;
+    let ports = h.get(c"servicePorts")?;
+    if ports.undefined()? {
+        s.set(c"waits", port(h, c"createWaitService", &[w])?)?;
+        s.set(
+            c"operations",
+            port(h, c"createOperationService", &[base()?])?,
+        )?;
+    } else {
+        s.set(c"waits", services::waits::create(ports, &mut [w])?)?;
+        s.set(
+            c"operations",
+            services::operations::create(ports, &mut [base()?])?,
+        )?;
+    }
     let sch = base()?;
     for (to, from) in [
         (c"rustQuestionOwner".as_ref(), c"rustQuestionOwner".as_ref()),

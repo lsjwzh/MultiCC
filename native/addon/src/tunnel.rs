@@ -1,9 +1,11 @@
 //! An instance is bound to one data root. The generation invalidates delayed
 //! probes and the mutation tail serializes manual and automatic Funnel changes.
 mod config;
+mod funnel_health;
 mod ledger;
 mod monitor;
 mod providers;
+mod sakura_api;
 
 use crate::host_methods::{async_result, default_object, function as callback};
 use crate::route_response::*;
@@ -58,7 +60,7 @@ fn invalidate(s: L<'_>) -> Result<()> {
 fn clear_probe(s: L<'_>) -> Result<()> {
     let p = s.get(c"probe")?;
     if p.truthy()? {
-        call(p, c"clearCache", &[])?;
+        funnel_health::clear(p)?;
     }
     Ok(())
 }

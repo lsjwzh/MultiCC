@@ -19,8 +19,9 @@ const nativeChatEvents = fs.readFileSync(
 // extracted classify state machine.
 const classifyStateMachine = fs.readFileSync(
   path.join(root, 'native/addon/src/classify_machine/dispatch/settle.rs'), 'utf8');
-const apiErrorHost = fs.readFileSync(
-  path.join(root, 'src', 'chat', 'api-error-host.js'), 'utf8');
+const apiErrorHost = ['api_error_host.rs', 'api_error_host/identity.rs', 'api_error_host/retry.rs',
+  'api_error_host/decision.rs', 'api_error_host/decision/notices.rs']
+  .map(file => fs.readFileSync(path.join(root, 'native/addon/src', file), 'utf8')).join('\n');
 const waitInjector = fs.readFileSync(path.join(root, 'src', 'wait', 'injector.js'), 'utf8');
 
 test('Classify no longer owns an uncapped API retry or error-text pruning channel', () => {
@@ -85,11 +86,11 @@ test('a fresh Codex fallback owns and replaces its newly allocated native thread
 });
 
 test('host persistence and broadcast expose only stable policy fields', () => {
-  assert.equal(apiErrorHost.includes("type: 'api_error_policy'"), true);
-  assert.equal(apiErrorHost.includes('setTaskState(sessionName, { apiError: durableSafe }'), true);
-  assert.equal(apiErrorHost.includes('providerRouteScope: _scope, runtimeEpoch: _epoch, turnId: _turnId'), true,
+  assert.match(apiErrorHost, /"type", text\(s, "api_error_policy"\)/);
+  assert.match(apiErrorHost, /set_task\(s, ctx\.get\(c"sessionName"\)\?, durable, true\)/);
+  assert.match(apiErrorHost, /durable\.delete\(c"providerRouteScope"\)\?;\s*for key in identity::ROUTE_KEYS \{\s*durable\.delete\(key\)/,
     'ephemeral attempt correlation must be stripped from durable task state');
-  assert.equal(apiErrorHost.includes('...safe,'), true,
+  assert.match(apiErrorHost, /event\.spread_from\(safe\)/,
     'the live policy event keeps exact attempt correlation for client fencing');
   const io = fs.readFileSync(path.join(root, 'native/addon/src/turn_engine/process_runner/io.rs'), 'utf8');
   assert.match(io, /st\.log\(\s*c"warn",\s*"chat_provider_stderr"/);

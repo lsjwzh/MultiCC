@@ -306,17 +306,13 @@ pub(super) fn check<'a>(s: L<'a>, name: L<'a>, opts: L<'a>) -> Result<L<'a>> {
     st.set(c"checking", flag(s, true)?)?;
     let work = async_result(s, || {
         let v = if funnel && !probe.truthy()? {
-            let p = opts.get(c"funnelProbe")?;
-            let p = if p.truthy()? {
-                p
+            let injected = opts.get(c"funnelProbe")?;
+            let port = fields(s, &[("originPort", num(s, config::port(port)?)?)])?;
+            if injected.truthy()? {
+                call(injected, c"probe", &[port])?
             } else {
-                providers::funnel_probe(s)?
-            };
-            call(
-                p,
-                c"probe",
-                &[fields(s, &[("originPort", num(s, config::port(port)?)?)])?],
-            )?
+                funnel_health::run(providers::funnel_probe(s)?, port)?
+            }
         } else if probe.truthy()? {
             probe.call_plain(&[pc.get(c"url")?])?
         } else {
