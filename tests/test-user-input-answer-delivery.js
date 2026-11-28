@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
-const { createOutbox } = require('../src/outbox');
+const { createOutbox } = require('../src/native/binding').outboxRuntime;
 const { createSessionWorkScheduler } = require('../src/session-work');
 
 async function fixture(t) {

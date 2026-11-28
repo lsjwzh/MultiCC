@@ -13,7 +13,7 @@ const {
   OutboxConflictError,
   hashSecret,
   normalizeJson,
-} = require('../outbox');
+} = require('../native/binding').outboxRuntime;
 
 function publicWait(wait) {
   const copy = JSON.parse(JSON.stringify(wait));

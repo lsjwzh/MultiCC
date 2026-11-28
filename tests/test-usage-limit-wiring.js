@@ -189,7 +189,7 @@ test('the guard\'s stale release re-reads the provider through the balance refre
 
 test('a codex 401 routes to the shared or per-account OAuth refresher, never to a cliCopy', async (t) => {
   const { wireCodexAuthRefresher } = require('../src/native/binding').quotaSelfHeal;
-  const poller = require('../src/usage-limit-poller');
+  const poller = require('../src/native/binding').usageLimitPoller;
   t.after(() => poller.setCodexAuthRefresher(null));
   const attempts = [];
   const codexOAuthRefresh = {

@@ -1,5 +1,40 @@
 # 剩余 Node 后端清单
 
+## server.js 可达模块第 13 批（2026-11-27，MacPro x86_64）
+
+基线为 `e960f6eb`。本批退役十个 CLI、网关、编排和账号业务模块，共 3,805 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)
+
+| 静态可达范围 | 迁前文件 / 物理行 | 迁后文件 / 物理行 |
+|---|---:|---:|
+| 仅 src/ | 255 / 79,137 | 245 / 75,402 |
+| server.js 与 src/ | 256 / 81,990 | 246 / 78,255 |
+| 含生产插件 | 268 / 85,909 | 258 / 82,174 |
+
+| 退役生产文件 | 原物理行 | Rust 接管的行为 |
+|---|---:|---|
+| `src/cli-adapters/dsh.js` | 171 | DeepSeek Harness 配置和适配器 |
+| `src/cli-adapters/router-mcp.js` | 165 | CLI 路由 MCP 配置与子进程环境 |
+| `src/chat/claude-sdk-route.js` | 132 | Claude SDK 回环中继与生命周期 |
+| `src/providers/egress-ip.js` | 267 | 出口 IP 探测与缓存 |
+| `src/ws/gateway-chat-bridge.js` | 401 | 网关聊天虚拟套接字和帧传递 |
+| `src/orchestration/draft-host.js` | 439 | 编排草稿与变更跟踪 |
+| `src/orchestration/native-store-host.js` | 1135 | 隔离数据库所有者与事务调度 |
+| `src/outbox.js` | 412 | 发件箱幂等提交、租约与恢复 |
+| `src/claude-auth/official-oauth.js` | 391 | 官方 OAuth 及回环回调 |
+| `src/usage-limit-poller.js` | 292 | 账号额度轮询、缓存和刷新 |
+
+Rust 实现 CLI 配置、网关协议、编排与发件箱操作以及账号请求策略。Node 宿主继续提供运行中套接字、事件、SDK 和可注入端口；对应调用方迁出 Node 后可继续移除这些接口。
+
+x64 产物源码指纹为 `8ad9a7b2d90bdbab5400a0a5`。63 个关联 Node 入口通过 1049 项，跳过 0 项。Rust 通过 268 项。真实网关回环通过 1 项，桌面打包通过 4 项。
+
+5 组 HTTP 差分得到 855 项一致结果，并验证 6 项预期差异。源码行数与运行时写入清单门禁通过。npm 清单包含 1,525 个文件，覆盖本批 36 个 Rust 源文件与三份内置记忆规则。十个退役路径已退出 Git 索引和 npm 包。
+
+供应商 HTTP 对照使用批次基线已发布的 CLI 强度目录和 v3 分享码格式（提交 `b99b1d25`、`47b7e219`）。旧侧从基线目录数据独立生成固定快照，并按 v3 协议编码；对照继续逐字节检查响应、HEAD 长度和 ETag，同时核对分享创建的参数。
+
+SDK 本地中继按解析后的目标路径复核所绑定的会话范围。手工粘贴 OAuth 回调时，同时验证回调与最终兑换使用的 state，不匹配的输入会被拒绝。
+
+验收进程显式设置 `MULTICC_RUST_ADDON`。实际载入的 x64 绑定 SHA-256 为 `eb3f91875346b6d199f6f8420133da469ced5a6c7fee06b63be943d92c3f3614`。
+
 ## server.js 可达模块第 12 批（2026-11-27，MacPro x86_64）
 
 基线为 `bc29761b`。本批退役十个 CLI、供应商和 Codex 业务模块，共 3,585 行。[逐文件清单](reachable-current.tsv) · [生产依赖表](node-module-dependencies.md)

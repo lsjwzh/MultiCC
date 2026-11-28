@@ -6,8 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { OutboxConflictError } = require('../src/native/binding').outboxRuntime;
 const Database = require('better-sqlite3');
-const { normalizeJson } = require('../src/outbox');
+const { normalizeJson } = require('./helpers/frozen-e960f6eb/outbox');
 const { createOrchestrationSqliteStore } = require('../src/native/binding').orchestrationSqlite;
 const { createSessionWorkScheduler } = require('../src/session-work');
 const kinds = new Set(['answer', 'approval', 'callback', 'continuation', 'retry', 'resume']);
@@ -118,7 +119,8 @@ test('session admission keeps SQLite schedule and outbox atomic under retries an
   assert.equal(second.duplicate, true);
   assert.equal(second.entry.id, first.entry.id);
   assert.deepEqual(await store.snapshot(), before);
-  await assert.rejects(scheduler.admit({ ...spec, text: 'different' }), error => error.code === 'OUTBOX_PAYLOAD_CONFLICT');
+  await assert.rejects(scheduler.admit({ ...spec, text: 'different' }), error => error instanceof OutboxConflictError
+    && error.code === 'OUTBOX_PAYLOAD_CONFLICT');
   assert.deepEqual(await store.snapshot(), before);
   const workBefore = await store.sessionWorkState({ action: 'read', sessionId: 'other' });
   db.exec("CREATE TRIGGER fail_admit BEFORE INSERT ON orchestration_outbox BEGIN SELECT RAISE(ABORT,'blocked admission'); END");

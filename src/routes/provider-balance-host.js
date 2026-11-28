@@ -39,7 +39,7 @@ function mountProviderBalanceHost(app, options) {
     const appType = text(body.appType), id = text(body.id);
     if (body.op === 'list') return { ok: true, providers: deps.listProviders().map(p => ({ appType: p.appType, id: p.id, name: p.name || '' })) };
     if (body.op === 'credentials') return { ok: true, auth: await credentials(body.target || {}) };
-    if (body.op === 'refreshCodexAuth') return { ok: true, refreshed: await require('../usage-limit-poller').runCodexAuthRefresh({ authFile: body.target?.authFile || null }) };
+    if (body.op === 'refreshCodexAuth') return { ok: true, refreshed: await require('../native/binding').usageLimitPoller.runCodexAuthRefresh({ authFile: body.target?.authFile || null }) };
     if (body.op === 'record') {
       const entry = await deps.onResult?.(appType, id, body.result);
       return { ok: true, snapshot: providerLimitSnapshot(entry, body.now) };

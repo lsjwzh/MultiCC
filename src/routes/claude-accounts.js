@@ -28,7 +28,7 @@ const {
   exchangeCode,
   fetchUsage,
   waitForCallback,
-} = require('../claude-auth/official-oauth');
+} = require('../native/binding').claudeOfficialOAuth;
 const { officialAccountIdFromProvider } = require('../native/binding').officialAccounts;
 const { accountProviderId } = require('../native/binding').officialCatalog;
 const { createAccountEgressFetch, parseEgressBinding } = require('../network/egress-fetch');

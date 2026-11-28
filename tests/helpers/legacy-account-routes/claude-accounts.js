@@ -33,7 +33,7 @@ const {
   exchangeCode,
   fetchUsage,
   waitForCallback,
-} = require('../../../src/claude-auth/official-oauth');
+} = require('../frozen-e960f6eb/claude-auth/official-oauth');
 const { officialAccountIdFromProvider } = require('../frozen-bc29761b/official-accounts');
 const { accountProviderId } = require('../frozen-catalog-inputs/official-account-ids');
 const { createAccountEgressFetch, parseEgressBinding } = require('../../../src/network/egress-fetch');

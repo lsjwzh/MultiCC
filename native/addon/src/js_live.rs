@@ -136,7 +136,7 @@ impl<'env> LiveValue<'env> {
         }
         Ok(value.number()? > 0.0)
     }
-    fn number_hint_primitive(self) -> Result<Self> {
+    pub(crate) fn number_hint_primitive(self) -> Result<Self> {
         let key = self.global()?.get(c"Symbol")?.get(c"toPrimitive")?;
         let exotic = self.get_key(key)?;
         if !exotic.nullish()? {

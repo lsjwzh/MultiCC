@@ -55,7 +55,7 @@ function createCliLoginDetector({
   accounts,
   fetchImpl = outboundFetch,
   readClaudeCli = () => require('./native/binding').claudeCliUsage.readCliCredentials(),
-  fetchProfile = require('./claude-auth/official-oauth').fetchProfile,
+  fetchProfile = require('./native/binding').claudeOfficialOAuth.fetchProfile,
   codexAuthFile = defaultCodexAuthFile(),
   intervalMs = DEFAULT_INTERVAL_MS,
 } = {}) {

@@ -22,7 +22,7 @@ const { outboundFetch } = require('../native/binding').outbound;
 //   { status:'unavailable', sites }  — configured but every fetch failed (HTTP 502)
 
 const providers = require('../native/binding').providersHost;
-const { keyHash } = require('../usage-limit-poller');
+const { keyHash } = require('../native/binding').usageLimitPoller;
 const { getManagedQuotaBrowser } = require('../quota-managed-browser');
 
 // The last response that actually carried a balance. A Kimi balance fetch fails

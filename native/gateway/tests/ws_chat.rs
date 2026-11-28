@@ -115,6 +115,8 @@ impl Gateway {
             .stdout(Stdio::null())
             .stderr(Stdio::from(log));
         for key in [
+            "MULTICC_RUST_ADDON",
+            "MULTICC_RUST_PREBUILT_DIR",
             "HOME",
             "TMPDIR",
             "SystemRoot",

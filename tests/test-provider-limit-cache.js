@@ -550,7 +550,7 @@ function testWeeklyWindowAndRejectionRefresh() {
 
 function testEverySourceKeepsItsCycles() {
   const { limitState } = require('../src/native/binding').getAutoProviderPolicy();
-  const { pollCodexUsage } = require('../src/usage-limit-poller');
+  const { pollCodexUsage } = require('../src/native/binding').usageLimitPoller;
   const file = tmpDb('cycles');
   const clock = fixedClock(1_700_000_000_000);
   const cache = createProviderLimitCache({ file, now: clock.now });
